@@ -1,0 +1,75 @@
+/*
+ * Ops Workbench — Design Tokens
+ *
+ * Tailwind CSS 4 @theme
+ * See spec §16–§20 for full rationale.
+ *
+ * Color usage rules (§17):
+ *   Accent:   selection, focus, active tab, primary action, link
+ *   AI:       ai panel, ai suggestion, ai generated
+ *   Success:  connected, healthy, succeeded
+ *   Warning:  needs attention, waiting, risk
+ *   Danger:   disconnected, failed, destructive
+ */
+
+@theme {
+  /* ── Surface hierarchy ── */
+  --color-app: #0b0e13;
+  --color-surface-1: #10141b;
+  --color-surface-2: #151a23;
+  --color-surface-3: #1a202b;
+  --color-surface-hover: #202735;
+  --color-surface-active: #252e3e;
+
+  /* ── Borders / Dividers ── */
+  --color-line: #222935;
+  --color-line-strong: #303949;
+
+  /* ── Foreground ── */
+  --color-fg: #e9edf3;
+  --color-fg-muted: #9099a8;
+  --color-fg-subtle: #626c7c;
+
+  /* ── Accent (§17) ── */
+  --color-accent: #7297ff;
+  --color-accent-soft: #18233f;
+
+  /* ── AI (§17) ── */
+  --color-ai: #a58bff;
+  --color-ai-soft: #211b39;
+
+  /* ── Status (§17) ── */
+  --color-success: #4fc38a;
+  --color-warning: #e9b85d;
+  --color-danger: #ed6a73;
+
+  /* ── Radius (§19) ── */
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --radius-floating: 10px;
+
+  /* ── Fonts (§20) ── */
+  --font-ui: Inter, "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Cascadia Mono", monospace;
+
+  /* ── Type scale (§20) ──
+   *   11px  meta / secondary label
+   *   12px  secondary content
+   *   13px  default (desktop base)
+   *   14px  strong content
+   *   16px  section title
+   *   20px  page title
+   */
+  --text-11: 11px;
+  --text-11--line-height: 16px;
+  --text-12: 12px;
+  --text-12--line-height: 18px;
+  --text-13: 13px;
+  --text-13--line-height: 20px;
+  --text-14: 14px;
+  --text-14--line-height: 22px;
+  --text-16: 16px;
+  --text-16--line-height: 24px;
+  --text-20: 20px;
+  --text-20--line-height: 28px;
+}

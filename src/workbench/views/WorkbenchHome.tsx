@@ -44,30 +44,30 @@ export function WorkbenchHome() {
     <div className="h-full overflow-y-auto bg-app" data-selectable>
       <div className="mx-auto flex max-w-[760px] flex-col gap-6 p-6">
         <div>
-          <h1 className="text-20 font-semibold text-fg">Workbench</h1>
-          <p className="mt-0.5 text-12 text-fg-muted">Local operations console — servers, terminal, deploy.</p>
+          <h1 className="text-20 font-semibold text-fg">工作台</h1>
+          <p className="mt-0.5 text-12 text-fg-muted">本地运维控制台 — 服务器、终端、部署。</p>
         </div>
 
-        <Section title="Quick Connect">
+        <Section title="快速连接">
           <div className="flex items-center gap-1.5">
             <div className="relative flex min-w-0 flex-1 items-center">
               <Plug size={13} className="absolute left-2.5 text-fg-subtle" />
               <input
                 value={qc}
                 onChange={(e) => setQc(e.target.value)}
-                placeholder="user@host:22 — quick connect"
+                placeholder="user@host:22 — 快速连接"
                 spellCheck={false}
                 className="h-[34px] w-full rounded-[6px] border border-line bg-surface-1 pl-8 pr-2 text-13 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
               />
             </div>
-            <Button variant="primary" size="lg" onClick={() => openServer("Quick Connect") }>
+            <Button variant="primary" size="lg" onClick={() => openServer("快速连接") }>
               <ArrowRight size={14} />
-              Connect
+              连接
             </Button>
           </div>
         </Section>
 
-        <Section title="Recent Sessions">
+        <Section title="最近会话">
           <div className="flex flex-col gap-0.5">
             {RECENT.map((s) => (
               <button
@@ -90,7 +90,7 @@ export function WorkbenchHome() {
           </div>
         </Section>
 
-        <Section title="Favorites">
+        <Section title="收藏">
           <div className="flex flex-wrap gap-1.5">
             {FAVORITES.map((f) => (
               <button
@@ -107,7 +107,7 @@ export function WorkbenchHome() {
           </div>
         </Section>
 
-        <Section title="Running Tasks">
+        <Section title="运行中的任务">
           <div className="flex h-9 items-center gap-2.5 rounded-[6px] border border-line bg-surface-1 px-2.5">
             <ChevronDown size={14} className="shrink-0 text-fg-subtle" />
             <span className="min-w-0 flex-1 truncate text-12 text-fg">docker pull nginx:1.27</span>

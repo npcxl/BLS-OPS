@@ -28,16 +28,16 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "ssh", label: "SSH", icon: SquareTerminal },
-  { id: "servers", label: "Servers", icon: Server },
-  { id: "files", label: "Files", icon: Files },
-  { id: "projects", label: "Projects", icon: Boxes },
-  { id: "deploy", label: "Deploy", icon: Rocket },
-  { id: "docker", label: "Docker", icon: Container },
-  { id: "nginx", label: "Nginx", icon: Globe },
-  { id: "tasks", label: "Tasks", icon: ListTodo },
-  { id: "ai", label: "AI", icon: Sparkles, divider: true },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "ssh", label: "终端", icon: SquareTerminal },
+  { id: "servers", label: "服务器", icon: Server },
+  { id: "files", label: "文件", icon: Files },
+  { id: "projects", label: "项目", icon: Boxes },
+  { id: "deploy", label: "部署", icon: Rocket },
+  { id: "docker", label: "容器", icon: Container },
+  { id: "nginx", label: "网关", icon: Globe },
+  { id: "tasks", label: "任务", icon: ListTodo },
+  { id: "ai", label: "智能助手", icon: Sparkles, divider: true },
+  { id: "settings", label: "设置", icon: Settings },
 ];
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {

@@ -9,16 +9,16 @@ import { SshContextSidebar } from "./ssh-context-sidebar";
 import { ModulePlaceholderSidebar } from "./module-placeholder";
 
 const MODULE_TITLES: Record<NavModule, string> = {
-  ssh: "SSH",
-  servers: "Servers",
-  files: "Files",
-  projects: "Projects",
-  deploy: "Deploy",
-  docker: "Docker",
-  nginx: "Nginx",
-  tasks: "Tasks",
-  ai: "AI",
-  settings: "Settings",
+  ssh: "终端",
+  servers: "服务器",
+  files: "文件",
+  projects: "项目",
+  deploy: "部署",
+  docker: "容器",
+  nginx: "网关",
+  tasks: "任务",
+  ai: "智能助手",
+  settings: "设置",
 };
 
 /**
@@ -76,7 +76,7 @@ export function ContextSidebar() {
         <>
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-2.5">
             <h2 className="text-12 font-semibold tracking-wide text-fg">{MODULE_TITLES[activeModule]}</h2>
-            <Button variant="ghost" size="xs" onClick={() => setCollapsed(true)} aria-label="Collapse sidebar">
+            <Button variant="ghost" size="xs" onClick={() => setCollapsed(true)} aria-label="收起侧边栏">
               <ChevronsLeft size={14} />
             </Button>
           </div>

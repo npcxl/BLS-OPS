@@ -41,19 +41,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       </div>
 
       <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-line bg-surface-1 px-1.5">
-        <ToolbarIcon label="Search" icon={Search} />
-        <ToolbarIcon label="Split Vertical" icon={Columns2} />
-        <ToolbarIcon label="Split Horizontal" icon={Rows2} />
-        <ToolbarIcon label="Clear" icon={Eraser} />
+        <ToolbarIcon label="搜索" icon={Search} />
+        <ToolbarIcon label="垂直分栏" icon={Columns2} />
+        <ToolbarIcon label="水平分栏" icon={Rows2} />
+        <ToolbarIcon label="清空" icon={Eraser} />
         <div className="mx-1.5 h-4 w-px bg-line" />
         <Button variant="ghost" size="xs" className="gap-1 text-11">
           <ChevronDown size={12} />
           <span>API-01</span>
         </Button>
         <div className="ml-auto flex items-center gap-0.5">
-          <ToolbarIcon label="Open Files" icon={FileText} />
-          <ToolbarIcon label="Monitor" icon={MonitorCog} />
-          <ToolbarIcon label="Ask AI" icon={Sparkles} />
+          <ToolbarIcon label="文件" icon={FileText} />
+          <ToolbarIcon label="监控" icon={MonitorCog} />
+          <ToolbarIcon label="智能助手" icon={Sparkles} />
         </div>
       </div>
 
@@ -78,7 +78,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-11 text-fg-subtle">
         <span className="flex items-center gap-1">
           <span className="h-[5px] w-[5px] rounded-full bg-success" />
-          Connected
+          已连接
         </span>
         <span>18 ms</span>
         <span className="ml-auto">UTF-8</span>

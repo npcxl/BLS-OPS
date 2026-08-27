@@ -35,7 +35,7 @@ const FAVORITES: MockServer[] = [
 
 const GROUPS: { title: string; servers: MockServer[] }[] = [
   {
-    title: "Production",
+    title: "生产环境",
     servers: [
       { id: "s3", name: "API-01", host: "10.0.0.11", status: "connected" },
       { id: "s4", name: "API-02", host: "10.0.0.12", status: "connected" },
@@ -43,7 +43,7 @@ const GROUPS: { title: string; servers: MockServer[] }[] = [
     ],
   },
   {
-    title: "Testing",
+    title: "测试环境",
     servers: [
       { id: "s6", name: "TEST-01", host: "10.0.0.51", status: "idle" },
       { id: "s7", name: "TEST-02", host: "10.0.0.52", status: "error" },
@@ -115,7 +115,7 @@ export function SshContextSidebar() {
     <div className="flex flex-col gap-1 pb-3">
       {/* Quick Connect */}
       <div className="px-2.5 pt-1.5">
-        <SectionTitle actions={<Plug size={12} className="text-fg-subtle" />}>Quick Connect</SectionTitle>
+        <SectionTitle actions={<Plug size={12} className="text-fg-subtle" />}>快速连接</SectionTitle>
         <div className="mt-1 flex items-center gap-1">
           <input
             value={qc}
@@ -124,7 +124,7 @@ export function SshContextSidebar() {
             spellCheck={false}
             className="h-[30px] min-w-0 flex-1 rounded-control border border-line bg-surface-2 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
           />
-          <Button variant="primary" size="sm" className="h-[30px] px-2" aria-label="Connect">
+          <Button variant="primary" size="sm" className="h-[30px] px-2" aria-label="连接">
             <ArrowRight size={14} />
           </Button>
         </div>
@@ -132,7 +132,7 @@ export function SshContextSidebar() {
 
       {/* Favorites */}
       <div className="mt-2">
-        <SectionTitle actions={<Plus size={12} className="text-fg-subtle" />}>Favorites</SectionTitle>
+        <SectionTitle actions={<Plus size={12} className="text-fg-subtle" />}>收藏</SectionTitle>
         <div className="mt-0.5">{FAVORITES.map((s) => <ServerRow key={s.id} server={s} onOpen={openServer} />)}</div>
       </div>
 
@@ -143,7 +143,7 @@ export function SshContextSidebar() {
 
       {/* Active Sessions */}
       <div className="mt-2 border-t border-line pt-1">
-        <SectionTitle>Active Sessions</SectionTitle>
+        <SectionTitle>活跃会话</SectionTitle>
         <div className="mt-0.5">{ACTIVE_SESSIONS.map((s) => <ServerRow key={s.id} server={s} onOpen={openServer} />)}</div>
       </div>
     </div>

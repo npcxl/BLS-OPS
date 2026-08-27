@@ -25,7 +25,7 @@ export function AppTopBar() {
   const focusedPaneId = useWorkbenchStore((s) => s.focusedPaneId);
 
   const activePane = focusedPaneId ? findPane(rootPane, focusedPaneId) : null;
-  const activeTabTitle = activePane?.tabs.find((t) => t.id === activePane.activeTabId)?.title ?? "Home";
+  const activeTabTitle = activePane?.tabs.find((t) => t.id === activePane.activeTabId)?.title ?? "首页";
 
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
@@ -42,7 +42,7 @@ export function AppTopBar() {
         </div>
         <div className="min-w-0">
           <div className="truncate text-13 font-semibold leading-4 text-fg">{APP_NAME}</div>
-          <div className="truncate text-11 leading-3 text-fg-subtle">Local Workspace · v{APP_VERSION}</div>
+          <div className="truncate text-11 leading-3 text-fg-subtle">本地工作区 · v{APP_VERSION}</div>
         </div>
       </div>
 
@@ -50,19 +50,19 @@ export function AppTopBar() {
       <div className="ml-4 flex items-center gap-1">
         <Button variant="ghost" size="sm" onClick={toggleSidebar} className="px-2">
           <PanelsTopLeft size={14} />
-          <span>{sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar"}</span>
+          <span>{sidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏"}</span>
         </Button>
         <Button variant={activeModule === "ssh" ? "secondary" : "ghost"} size="sm" className="px-2" onClick={() => setModule("ssh")}>
-          SSH
+          终端
         </Button>
         <Button
           variant="ghost"
           size="sm"
           className="px-2"
-          onClick={() => quickOpen("terminal", "New Terminal")}
+          onClick={() => quickOpen("terminal", "新建终端")}
         >
           <SquareTerminal size={14} />
-          <span>New Tab</span>
+          <span>新建标签</span>
         </Button>
       </div>
 
@@ -84,15 +84,15 @@ export function AppTopBar() {
             e.preventDefault();
             setMenu(
               contextMenuStateAt(e, [
-                { label: "New Terminal", onSelect: () => quickOpen("terminal", "New Terminal") },
-                { label: "Open Docker", onSelect: () => quickOpen("docker", "Docker") },
+                { label: "新建终端", onSelect: () => quickOpen("terminal", "新建终端") },
+                { label: "打开容器", onSelect: () => quickOpen("docker", "容器") },
                 { separator: true },
-                { label: "Ask AI", onSelect: () => setModule("ai") },
+                { label: "智能助手", onSelect: () => setModule("ai") },
               ]),
             );
           }}
         >
-          Quick Actions
+          快捷操作
         </Button>
       </div>
 

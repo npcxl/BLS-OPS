@@ -47,13 +47,13 @@ export function useGlobalShortcuts() {
 
       if (ctrl && !shift && e.key === "t") {
         e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" });
+        openTab({ id: crypto.randomUUID(), type: "terminal", title: "新建终端" });
       }
 
       if (ctrl && shift && e.key === "T") {
         e.preventDefault();
         // Reopen last closed session — placeholder
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "Reopened Session" });
+        openTab({ id: crypto.randomUUID(), type: "terminal", title: "已恢复会话" });
       }
 
       if (ctrl && !shift && e.key === "w") {
@@ -85,7 +85,7 @@ export function useGlobalShortcuts() {
 
       if (ctrl && !shift && e.key === "`") {
         e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "Terminal" });
+        openTab({ id: crypto.randomUUID(), type: "terminal", title: "终端" });
       }
     };
 

@@ -6,6 +6,7 @@ import type { NavModule } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 
 import { SshContextSidebar } from "./ssh-context-sidebar";
+import { SettingsContextSidebar } from "./settings-context-sidebar";
 import { ModulePlaceholderSidebar } from "./module-placeholder";
 
 const MODULE_TITLES: Record<NavModule, string> = {
@@ -60,6 +61,7 @@ export function ContextSidebar() {
 
   const renderModuleContent = () => {
     if (activeModule === "ssh") return <SshContextSidebar />;
+    if (activeModule === "settings") return <SettingsContextSidebar />;
     return <ModulePlaceholderSidebar module={activeModule} />;
   };
 

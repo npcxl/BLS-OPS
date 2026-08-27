@@ -108,7 +108,7 @@ export function ModulePlaceholderSidebar({ module }: { module: NavModule }) {
         ))}
       </div>
       <p className="mt-1 border-t border-line pt-2 text-11 leading-relaxed text-fg-subtle">
-        {spec.title} context lands in {spec.phase}.
+        {spec.title} 模块将在 {spec.phase} 上线。
       </p>
     </div>
   );

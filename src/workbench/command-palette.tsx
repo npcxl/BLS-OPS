@@ -92,7 +92,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search actions, servers, tasks..."
+            placeholder="搜索操作、服务器、任务…"
             className="h-full flex-1 bg-transparent text-13 text-fg outline-none placeholder:text-fg-subtle"
           />
           <span className="rounded-control border border-line bg-surface-2 px-2 py-1 text-11 text-fg-muted">Ctrl+K</span>
@@ -100,7 +100,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
 
         <div className="max-h-[420px] overflow-y-auto p-1">
           {filtered.length === 0 ? (
-            <div className="px-3 py-8 text-center text-12 text-fg-muted">No commands match your search.</div>
+            <div className="px-3 py-8 text-center text-12 text-fg-muted">未找到匹配的命令。</div>
           ) : (
             filtered.map((action, index) => (
               <button

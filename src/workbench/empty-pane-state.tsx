@@ -11,16 +11,16 @@ export function EmptyPaneState({ paneId }: { paneId: string }) {
         <div className="flex h-10 w-10 items-center justify-center rounded-control border border-line bg-surface-1 text-fg-subtle">
           <SquareTerminal size={18} strokeWidth={1.75} />
         </div>
-        <p className="text-13 text-fg-muted">No open editors</p>
+        <p className="text-13 text-fg-muted">暂无打开的编辑器</p>
       </div>
       <div className="flex items-center gap-1.5">
-        <Button variant="secondary" size="sm" onClick={() => openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" }, { paneId })}>
+        <Button variant="secondary" size="sm" onClick={() => openTab({ id: crypto.randomUUID(), type: "terminal", title: "新建终端" }, { paneId })}>
           <SquareTerminal size={14} />
-          New Terminal
+          新建终端
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => openTab({ id: crypto.randomUUID(), type: "home", title: "Home" }, { paneId })}>
+        <Button variant="ghost" size="sm" onClick={() => openTab({ id: crypto.randomUUID(), type: "home", title: "首页" }, { paneId })}>
           <House size={14} />
-          Open Home
+          打开首页
         </Button>
       </div>
     </div>

@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Ops Workbench",
+        "title": "运维工作台",
         "label": "main",
         "width": 1440,
         "height": 900,

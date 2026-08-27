@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+keyring = "4.1.6"
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 russh = "0.63.1"
 serde = { version = "1", features = ["derive"] }

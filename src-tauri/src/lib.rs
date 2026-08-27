@@ -1,4 +1,6 @@
+mod commands;
 mod db;
+mod keyring;
 mod state;
 
 use tauri::Manager;
@@ -21,6 +23,20 @@ pub fn run() {
             app.manage(state::AppState::new(app_db));
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            commands::server_list,
+            commands::server_get,
+            commands::server_save,
+            commands::server_delete,
+            commands::credential_list,
+            commands::credential_save,
+            commands::credential_delete,
+            commands::known_host_list,
+            commands::known_host_save,
+            commands::credential_save_secret,
+            commands::credential_get_secret,
+            commands::credential_delete_secret,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

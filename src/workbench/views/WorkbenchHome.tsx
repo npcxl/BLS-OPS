@@ -14,9 +14,9 @@ interface RecentSession {
 }
 
 const RECENT: RecentSession[] = [
-  { id: "r1", name: "API-01", host: "10.0.0.11", when: "18 min ago", connected: true },
-  { id: "r2", name: "WEB-01", host: "10.0.0.21", when: "Yesterday", connected: false },
-  { id: "r3", name: "TEST-01", host: "10.0.0.51", when: "Aug 20", connected: false },
+  { id: "r1", name: "API-01", host: "10.0.0.11", when: "18 分钟前", connected: true },
+  { id: "r2", name: "WEB-01", host: "10.0.0.21", when: "昨天", connected: false },
+  { id: "r3", name: "TEST-01", host: "10.0.0.51", when: "8月20日", connected: false },
 ];
 
 const FAVORITES = [

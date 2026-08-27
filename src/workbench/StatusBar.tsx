@@ -15,10 +15,10 @@ export function StatusBar({ connectedSessions, runningTasks, transferDown, trans
     <footer className="flex h-6 shrink-0 items-center gap-0 border-t border-line bg-surface-1 px-2.5 text-11 text-fg-muted">
       <span className="flex items-center gap-1.5">
         <span className="h-[6px] w-[6px] rounded-full bg-success" />
-        SSH {connectedSessions}
+        终端 {connectedSessions}
       </span>
       <Divider />
-      <span>Tasks {runningTasks}</span>
+      <span>任务 {runningTasks}</span>
       <Divider />
       <span className="flex items-center gap-1">
         <Arrow direction="down" />
@@ -32,7 +32,7 @@ export function StatusBar({ connectedSessions, runningTasks, transferDown, trans
       <div className="ml-auto flex items-center gap-3">
         <span className="flex items-center gap-1.5">
           <span className={cn("h-[6px] w-[6px] rounded-full", aiReady ? "bg-ai" : "bg-fg-subtle")} />
-          AI {aiReady ? "Ready" : "Offline"}
+          智能助手 {aiReady ? "就绪" : "离线"}
         </span>
         <span>v{APP_VERSION}</span>
       </div>

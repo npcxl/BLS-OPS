@@ -57,7 +57,7 @@ function removePane(root: WorkbenchPane, id: string): WorkbenchPane | null {
   return { ...root, children: nextChildren };
 }
 
-const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "Home" });
+const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "首页" });
 
 const createInitialRootPane = (): WorkbenchPane => {
   const home = createHomeTab();
@@ -92,7 +92,7 @@ interface WorkbenchState {
 }
 
 function normalizeTab(tab: WorkspaceTab): WorkspaceTab {
-  return tab.type === "home" ? { ...tab, title: tab.title || "Home" } : tab;
+  return tab.type === "home" ? { ...tab, title: tab.title || "首页" } : tab;
 }
 
 function createSplitPane(target: WorkbenchPane, direction: SplitDirection, tab: WorkspaceTab): WorkbenchPane {

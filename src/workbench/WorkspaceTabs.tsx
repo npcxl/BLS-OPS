@@ -22,22 +22,22 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
     e.preventDefault();
     setMenu(
       contextMenuStateAt(e, [
-        { id: "close", label: "Close", onSelect: () => closeTab(pane.id, tab.id) },
+        { id: "close", label: "关闭", onSelect: () => closeTab(pane.id, tab.id) },
         {
           id: "close-others",
-          label: "Close Others",
+          label: "关闭其他",
           disabled: pane.tabs.length <= 1,
           onSelect: () => closeOtherTabs(pane.id, tab.id),
         },
         {
           id: "close-all",
-          label: "Close All",
+          label: "全部关闭",
           disabled: pane.tabs.length <= 1,
           onSelect: () => closeAllTabs(pane.id),
         },
         { id: "sep-1", separator: true },
-        { id: "split-v", label: "Split Vertical", icon: Columns2, onSelect: () => splitPane(pane.id, "horizontal") },
-        { id: "split-h", label: "Split Horizontal", icon: Rows2, onSelect: () => splitPane(pane.id, "vertical") },
+        { id: "split-v", label: "垂直分栏", icon: Columns2, onSelect: () => splitPane(pane.id, "horizontal") },
+        { id: "split-h", label: "水平分栏", icon: Rows2, onSelect: () => splitPane(pane.id, "vertical") },
       ]),
     );
   };
@@ -66,7 +66,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               <span className="truncate">{tab.title}</span>
               <button
                 type="button"
-                aria-label={`Close ${tab.title}`}
+                aria-label={`关闭 ${tab.title}`}
                 className="ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle opacity-0 hover:bg-surface-hover hover:text-fg group-hover:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -81,7 +81,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
       </div>
       <button
         type="button"
-        aria-label="New terminal tab"
+        aria-label="新建终端标签"
         className="flex w-[34px] shrink-0 items-center justify-center text-fg-subtle hover:bg-surface-hover hover:text-fg"
         onClick={() => openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" })}
       >

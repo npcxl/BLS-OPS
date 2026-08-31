@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
-import { toErrorMessage, type ServerRecord } from "@/api/ops-api";
+import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
 import { emptyGroup, emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSubmit } from "@/hooks/use-submit";
@@ -76,6 +76,86 @@ function ServerRow({
   );
 }
 
+/** Collapsible group header with inline rename and delete. */
+function GroupHeader({
+  label,
+  count,
+  group,
+  folded,
+  renaming,
+  onToggle,
+  onStartRename,
+  onRename,
+  onCancelRename,
+  onDelete,
+}: {
+  label: string;
+  count: number;
+  group?: ServerGroupRecord;
+  folded: boolean;
+  renaming: boolean;
+  onToggle: () => void;
+  onStartRename: () => void;
+  onRename: (name: string) => void;
+  onCancelRename: () => void;
+  onDelete: () => void;
+}) {
+  const [value, setValue] = useState(label);
+
+  if (renaming) {
+    const commit = () => {
+      const next = value.trim();
+      if (next && next !== label) onRename(next);
+      else onCancelRename();
+    };
+    return (
+      <div className="flex items-center gap-1 px-2.5 py-1">
+        <input
+          autoFocus
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") onCancelRename();
+          }}
+          onBlur={commit}
+          className="h-[22px] min-w-0 flex-1 rounded-[5px] border border-accent bg-surface-2 px-1.5 text-11 text-fg outline-none"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/g flex w-full items-center px-2.5 py-1 text-11 font-medium text-fg-subtle hover:text-fg">
+      <button type="button" className="flex min-w-0 flex-1 items-center gap-1 text-left" onClick={onToggle}>
+        <span className="w-2 shrink-0">{folded ? "▸" : "▾"}</span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="shrink-0">{count}</span>
+      </button>
+      {group && (
+        <span className="flex shrink-0 items-center opacity-0 group-hover/g:opacity-100">
+          <button
+            type="button"
+            aria-label={`重命名分组 ${label}`}
+            className="rounded p-1 hover:text-fg"
+            onClick={onStartRename}
+          >
+            <Pencil size={11} />
+          </button>
+          <button
+            type="button"
+            aria-label={`删除分组 ${label}`}
+            className="rounded p-1 hover:text-danger"
+            onClick={onDelete}
+          >
+            <Trash2 size={11} />
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** SSH module sidebar: server tree with edit, favorite, delete and connect. */
 export function SshContextSidebar() {
   const servers = useDomainStore((s) => s.servers);
@@ -83,12 +163,18 @@ export function SshContextSidebar() {
   const refreshServers = useDomainStore((s) => s.refreshServers);
   const removeServer = useDomainStore((s) => s.deleteServer);
   const setFavorite = useDomainStore((s) => s.setFavorite);
+  const saveGroup = useDomainStore((s) => s.saveGroup);
+  const removeGroup = useDomainStore((s) => s.deleteGroup);
 
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<ServerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const newGroupRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -114,7 +200,6 @@ export function SshContextSidebar() {
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),
-      connected: false,
     });
 
   const confirmDelete = async (server: ServerRecord) => {
@@ -145,6 +230,46 @@ export function SshContextSidebar() {
     }
     return [...buckets.entries()];
   }, [filtered]);
+
+  const renameGroup = async (group: ServerGroupRecord, name: string) => {
+    setRenamingGroupId(null);
+    try {
+      await saveGroup({ ...group, name, updated_at: Date.now() });
+      setError(null);
+    } catch (cause) {
+      setError(toErrorMessage(cause));
+    }
+  };
+
+  const confirmDeleteGroup = async (group: ServerGroupRecord, used: number) => {
+    const message =
+      used > 0
+        ? `分组“${group.name}”中有 ${used} 台服务器。\n删除分组后这些服务器会变为“未分组”，服务器本身不会被删除。\n\n确定删除分组吗？`
+        : `确定删除分组“${group.name}”吗？`;
+    if (!window.confirm(message)) return;
+    try {
+      await removeGroup(group.id);
+      setError(null);
+    } catch (cause) {
+      setError(toErrorMessage(cause));
+    }
+  };
+
+  const createGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) {
+      setCreatingGroup(false);
+      return;
+    }
+    try {
+      await saveGroup({ ...emptyGroup(), name });
+      setNewGroupName("");
+      setCreatingGroup(false);
+      setError(null);
+    } catch (cause) {
+      setError(toErrorMessage(cause));
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1 pb-3">
@@ -187,7 +312,10 @@ export function SshContextSidebar() {
                 size="xs"
                 className="h-5 px-1"
                 aria-label="新增分组"
-                onClick={() => void createGroup()}
+                onClick={() => {
+                  setCreatingGroup(true);
+                  requestAnimationFrame(() => newGroupRef.current?.focus());
+                }}
               >
                 <FolderPlus size={12} />
               </Button>
@@ -206,20 +334,26 @@ export function SshContextSidebar() {
         ) : (
           grouped.map(([groupId, items]) => {
             const group = groups.find((item) => item.id === groupId);
-            const label = group?.name ?? "未分组";
-            const folded = collapsed[groupId];
             return (
               <div key={groupId}>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-1 px-2.5 py-1 text-left text-11 font-medium text-fg-subtle hover:text-fg"
-                  onClick={() => setCollapsed((current) => ({ ...current, [groupId]: !folded }))}
-                >
-                  <span className="w-2">{folded ? "▸" : "▾"}</span>
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                  <span>{items.length}</span>
-                </button>
-                {!folded &&
+                <GroupHeader
+                  label={group?.name ?? "未分组"}
+                  count={items.length}
+                  group={group}
+                  folded={Boolean(collapsed[groupId])}
+                  renaming={renamingGroupId === groupId}
+                  onToggle={() => setCollapsed((current) => ({ ...current, [groupId]: !current[groupId] }))}
+                  onStartRename={() => setRenamingGroupId(groupId)}
+                  onRename={(name) => {
+                    if (group) void renameGroup(group, name);
+                    else setRenamingGroupId(null);
+                  }}
+                  onCancelRename={() => setRenamingGroupId(null)}
+                  onDelete={() => {
+                    if (group) void confirmDeleteGroup(group, items.length);
+                  }}
+                />
+                {!collapsed[groupId] &&
                   items.map((server) => (
                     <ServerRow
                       key={server.id}
@@ -236,17 +370,51 @@ export function SshContextSidebar() {
         )}
       </div>
 
+      {creatingGroup && (
+        <div className="flex items-center gap-1 px-2.5 py-1">
+          <input
+            ref={newGroupRef}
+            autoFocus
+            value={newGroupName}
+            onChange={(event) => setNewGroupName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void createGroup();
+              if (event.key === "Escape") {
+                setNewGroupName("");
+                setCreatingGroup(false);
+              }
+            }}
+            placeholder="分组名称，回车保存"
+            spellCheck={false}
+            className="h-[24px] min-w-0 flex-1 rounded-[5px] border border-accent bg-surface-2 px-1.5 text-11 text-fg outline-none placeholder:text-fg-subtle"
+          />
+          <button
+            type="button"
+            aria-label="保存分组"
+            className="rounded p-1 text-fg-subtle hover:text-success"
+            onClick={() => void createGroup()}
+          >
+            <Check size={12} />
+          </button>
+          <button
+            type="button"
+            aria-label="取消"
+            className="rounded p-1 text-fg-subtle hover:text-fg"
+            onClick={() => {
+              setNewGroupName("");
+              setCreatingGroup(false);
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {error && <ErrorText>{error}</ErrorText>}
 
       {editing && <ServerForm server={editing} onClose={() => setEditing(null)} />}
     </div>
   );
-}
-
-async function createGroup() {
-  const name = window.prompt("分组名称");
-  if (!name?.trim()) return;
-  await useDomainStore.getState().saveGroup({ ...emptyGroup(), name: name.trim() });
 }
 
 function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => void }) {

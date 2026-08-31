@@ -25,6 +25,57 @@ const KEEPALIVE_MS = 30_000;
 
 type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
 
+/** xterm palette matching the app theme (light-first, follows system). */
+function terminalTheme(dark: boolean): Record<string, string> {
+  return dark
+    ? {
+        background: "#0d1117",
+        foreground: "#c9d1d9",
+        cursor: "#5b9cff",
+        cursorAccent: "#0d1117",
+        selectionBackground: "rgba(91,156,255,0.35)",
+        black: "#16181d",
+        red: "#f26057",
+        green: "#4fd186",
+        yellow: "#f0bb4e",
+        blue: "#5b9cff",
+        magenta: "#b39dff",
+        cyan: "#6bd5e1",
+        white: "#c7d0dc",
+        brightBlack: "#6b7380",
+        brightRed: "#ff7b72",
+        brightGreen: "#7ee2a8",
+        brightYellow: "#ffd484",
+        brightBlue: "#9ecbff",
+        brightMagenta: "#d2c5ff",
+        brightCyan: "#9be8f0",
+        brightWhite: "#eceef2",
+      }
+    : {
+        background: "#ffffff",
+        foreground: "#1f2329",
+        cursor: "#3175f1",
+        cursorAccent: "#ffffff",
+        selectionBackground: "rgba(49,117,241,0.25)",
+        black: "#24292f",
+        red: "#cf222e",
+        green: "#1a7f37",
+        yellow: "#9a6700",
+        blue: "#0969da",
+        magenta: "#8250df",
+        cyan: "#1b7c83",
+        white: "#6e7781",
+        brightBlack: "#57606a",
+        brightRed: "#d1242f",
+        brightGreen: "#116329",
+        brightYellow: "#7d4e00",
+        brightBlue: "#0a68cf",
+        brightMagenta: "#6639ba",
+        brightCyan: "#126d73",
+        brightWhite: "#24292f",
+      };
+}
+
 function ToolbarIcon({
   label,
   icon: Icon,
@@ -171,12 +222,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   useEffect(() => {
     if (!containerRef.current || !hasTarget) return;
 
+    const isDark = document.documentElement.dataset.theme === "dark";
     const instance = new Terminal({
       convertEol: true,
       cursorBlink: true,
       fontSize: 13,
       scrollback: 5000,
-      theme: { background: "#090c10", foreground: "#c7d0dc" },
+      theme: terminalTheme(isDark),
     });
     const fit = new FitAddon();
     instance.loadAddon(fit);
@@ -185,6 +237,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     terminalRef.current = instance;
     fitRef.current = fit;
     setSize({ cols: instance.cols, rows: instance.rows });
+
+    // Follow the app theme live (system theme can change while running).
+    const themeObserver = new MutationObserver(() => {
+      instance.options.theme = terminalTheme(document.documentElement.dataset.theme === "dark");
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const dataSubscription = instance.onData((data) => {
       if (data === "\r") {
@@ -236,6 +294,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       disposed = true;
       window.clearInterval(keepalive);
       resizeObserver.disconnect();
+      themeObserver.disconnect();
       dataSubscription.dispose();
       void unlistenOutput.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());
@@ -374,8 +433,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-[#090c10] p-2" data-selectable />
-        {historyOpen && <CommandHistoryPanel sessionId={sessionId} onPick={(command) => void opsApi.sshInput(sessionId, `${command}\n`)} />}
+        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-app p-2" data-selectable />
+        {historyOpen && (
+          <CommandHistoryPanel
+            sessionId={sessionId}
+            serverId={tab.serverId}
+            onPick={(command) => void opsApi.sshInput(sessionId, `${command}\n`)}
+          />
+        )}
       </div>
 
       <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-11 text-fg-subtle">
@@ -400,11 +465,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   );
 }
 
+/**
+ * Commands recorded for this session, falling back to earlier sessions on the
+ * same server. Clicking one sends it to the shell.
+ */
 function CommandHistoryPanel({
   sessionId,
+  serverId,
   onPick,
 }: {
   sessionId: string;
+  serverId?: string;
   onPick: (command: string) => void;
 }) {
   const [items, setItems] = useState<{ id: string; command: string; timestamp: number }[]>([]);
@@ -415,27 +486,28 @@ function CommandHistoryPanel({
       .then((rows) =>
         setItems(
           rows
-            .filter((row) => row.session_id === sessionId || row.source === "terminal")
+            .filter((row) => row.session_id === sessionId || (!!serverId && row.server_id === serverId))
             .map((row) => ({ id: row.id, command: row.command, timestamp: row.timestamp })),
         ),
       )
       .catch(() => setItems([]));
-  }, [sessionId]);
+  }, [serverId, sessionId]);
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-l border-line bg-surface-1">
-      <div className="flex h-7 shrink-0 items-center px-2.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
+      <div className="flex h-7 shrink-0 items-center justify-between px-2.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
         命令历史
+        <span>{items.length}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">暂无记录</p>
+          <p className="px-2.5 py-2 text-11 text-fg-subtle">在此终端执行的命令会记录下来</p>
         ) : (
           items.map((item) => (
             <button
               key={item.id}
               type="button"
-              title={item.command}
+              title={`${item.command}\n${new Date(item.timestamp).toLocaleString()}`}
               className="block w-full truncate px-2.5 py-1 text-left text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
               onClick={() => onPick(item.command)}
             >
@@ -459,7 +531,6 @@ function TerminalPicker({ tabId, servers }: { tabId: string; servers: ServerReco
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),
-      connected: false,
     });
 
   return (

@@ -31,11 +31,11 @@ export function Modal({ open, title, description, width = 460, onClose, footer, 
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 px-4"
+      className="fixed inset-0 z-[130] flex items-center justify-center bg-black/30 px-4"
       onMouseDown={onClose}
     >
       <div
-        className="max-h-[85vh] overflow-hidden rounded-[10px] border border-line bg-surface-3 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
+        className="glass-panel-strong max-h-[85vh] overflow-hidden rounded-2xl"
         style={{ width }}
         onMouseDown={(event) => event.stopPropagation()}
       >

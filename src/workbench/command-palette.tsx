@@ -81,9 +81,9 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[120] flex items-start justify-center bg-black/45 px-4 pt-[12vh]" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[120] flex items-start justify-center bg-black/30 px-4 pt-[12vh]" onMouseDown={onClose}>
       <div
-        className="w-full max-w-[720px] overflow-hidden rounded-[10px] border border-line bg-surface-3 shadow-[0_24px_64px_rgba(0,0,0,0.45)]"
+        className="glass-panel-strong w-full max-w-[720px] overflow-hidden rounded-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex h-12 items-center gap-2 border-b border-line px-3">

@@ -44,7 +44,6 @@ export function Workbench() {
           subtitle: `${server.host}:${server.port}`,
           serverId: server.id,
           sessionId: crypto.randomUUID(),
-          connected: false,
         }),
     }));
 
@@ -65,7 +64,6 @@ export function Workbench() {
             subtitle: `${session.server_host}:${session.server_port}`,
             serverId: session.server_id,
             sessionId: crypto.randomUUID(),
-            connected: false,
           }),
       }));
 

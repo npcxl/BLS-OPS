@@ -29,8 +29,6 @@ export interface WorkspaceTab {
   credentialId?: string;
   /** Unsaved indicator (remote editor, config draft…). */
   dirty?: boolean;
-  /** Terminal / server tabs can carry a live connection state. */
-  connected?: boolean;
 }
 
 /**

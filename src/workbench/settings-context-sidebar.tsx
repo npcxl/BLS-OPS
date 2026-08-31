@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { ChevronRight, KeyRound, Monitor, Moon, Plus, ShieldCheck, Sun, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
-import { CREDENTIAL_TYPES, toErrorMessage, type CredentialRecord } from "@/api/ops-api";
+import {
+  CREDENTIAL_TYPES,
+  opsApi,
+  toErrorMessage,
+  type AuditLogRecord,
+  type CommandHistoryRecord,
+  type CredentialRecord,
+} from "@/api/ops-api";
 import { emptyCredential, useDomainStore } from "@/stores/domain-store";
 import { useSubmit } from "@/hooks/use-submit";
+import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
 import { KnownHostsPanel } from "./host-key-dialog";
+import { cn } from "@/lib/cn";
+
+const THEME_OPTIONS: { id: ThemeMode; label: string; icon: React.ElementType }[] = [
+  { id: "system", label: "跟随系统", icon: Monitor },
+  { id: "light", label: "浅色", icon: Sun },
+  { id: "dark", label: "深色", icon: Moon },
+];
 
 function SubTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -16,12 +31,82 @@ function SubTitle({ children, actions }: { children: React.ReactNode; actions?: 
   );
 }
 
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return <p className="px-2.5 py-2 text-11 text-fg-subtle">{children}</p>;
+}
+
+/**
+ * Collapsible list backed by a loader. Rows are only fetched once the section
+ * is expanded, so opening 设置 never pays for queries nobody looks at.
+ */
+function CollapsibleList<T>({
+  title,
+  load,
+  empty,
+  getKey,
+  children,
+}: {
+  title: string;
+  load: () => Promise<T[]>;
+  empty: string;
+  getKey: (row: T) => string;
+  children: (row: T) => React.ReactNode;
+}) {
+  const [rows, setRows] = useState<T[] | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void load().then(
+      (result) => active && setRows(result),
+      () => active && setRows([]),
+    );
+    return () => {
+      active = false;
+    };
+  }, [load, open]);
+
+  return (
+    <div>
+      <div className="px-2.5">
+        <SubTitle>
+          <button
+            type="button"
+            className="flex items-center gap-1 hover:text-fg"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <ChevronRight size={11} className={cn("transition-transform", open && "rotate-90")} />
+            {title}
+            {rows && rows.length > 0 && <span className="text-fg-muted">{rows.length}</span>}
+          </button>
+        </SubTitle>
+      </div>
+      {open && (
+        <div className="max-h-64 overflow-y-auto">
+          {rows === null ? (
+            <EmptyRow>正在加载…</EmptyRow>
+          ) : rows.length === 0 ? (
+            <EmptyRow>{empty}</EmptyRow>
+          ) : (
+            rows.map((row) => <div key={getKey(row)}>{children(row)}</div>)
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const loadHistory = () => opsApi.listHistory(200);
+const loadAuditLogs = () => opsApi.listAuditLogs(200);
+
 /** Settings module sidebar: credentials, known hosts and runtime diagnostics. */
 export function SettingsContextSidebar() {
   const credentials = useDomainStore((s) => s.credentials);
   const refreshCredentials = useDomainStore((s) => s.refreshCredentials);
   const appInfo = useDomainStore((s) => s.appInfo);
 
+  const [themeMode, setThemeMode] = useThemeMode();
   const [editing, setEditing] = useState<CredentialRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +141,31 @@ export function SettingsContextSidebar() {
 
   return (
     <div className="flex flex-col gap-1 pb-3">
+      <div className="px-2.5 pt-1.5">
+        <SubTitle>外观</SubTitle>
+        <div className="mt-1 flex rounded-[8px] border border-line bg-surface-1 p-0.5">
+          {THEME_OPTIONS.map((option) => {
+            const Icon = option.icon;
+            const active = themeMode === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-label={option.label}
+                className={cn(
+                  "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-[6px] text-12 transition-colors",
+                  active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
+                )}
+                onClick={() => setThemeMode(option.id)}
+              >
+                <Icon size={13} strokeWidth={1.75} />
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="px-2.5 pt-1.5">
         <SubTitle
           actions={
@@ -116,6 +226,48 @@ export function SettingsContextSidebar() {
         <SubTitle>已知主机</SubTitle>
       </div>
       <KnownHostsPanel />
+
+      <div className="mt-3">
+        <CollapsibleList
+          title="命令历史"
+          load={loadHistory}
+          empty="在终端中执行命令后会出现在这里。"
+          getKey={(row: CommandHistoryRecord) => row.id}
+        >
+          {(row) => (
+            <div className="px-2.5 py-1 hover:bg-surface-hover">
+              <code className="block truncate font-mono text-11 text-fg" title={row.command}>
+                {row.command}
+              </code>
+              <span className="text-10 text-fg-subtle">
+                {row.server_name || "未关联服务器"} · {new Date(row.timestamp).toLocaleString()}
+              </span>
+            </div>
+          )}
+        </CollapsibleList>
+
+        <CollapsibleList
+          title="审计日志"
+          load={loadAuditLogs}
+          empty="还没有审计记录。"
+          getKey={(row: AuditLogRecord) => row.id}
+        >
+          {(row) => (
+            <div className="px-2.5 py-1 hover:bg-surface-hover">
+              <div className="flex items-baseline gap-1.5">
+                <span className="truncate text-11 text-fg">{row.action}</span>
+                {row.server_name && (
+                  <span className="shrink-0 truncate text-10 text-fg-subtle">{row.server_name}</span>
+                )}
+              </div>
+              <span className="block text-10 text-fg-subtle">
+                {new Date(row.timestamp).toLocaleString()}
+                {row.details_json ? ` · ${row.details_json}` : ""}
+              </span>
+            </div>
+          )}
+        </CollapsibleList>
+      </div>
 
       {appInfo && (
         <div className="mt-3 px-2.5">

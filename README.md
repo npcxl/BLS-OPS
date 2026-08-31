@@ -60,15 +60,19 @@ cargo test              # Rust 单元测试
 | **UI 工作台外壳** | ✅ | 导航、侧边栏、Tab、分屏、命令面板、状态栏 |
 | **SQLite Schema + 迁移** | ✅ | `user_version` 驱动的幂等迁移（`db::migrate`），含 v1→v2 升级 |
 | **服务器 CRUD** | ✅ | 新增 / 列表 / **编辑** / 删除（级联清理会话与命令历史） |
-| **服务器分组 / 标签 / 收藏** | ✅ | `server_groups` 表 + 侧边栏分组树 |
+| **服务器分组** | ✅ | `server_groups` 表 + 侧边栏分组树：新增、**重命名**、**删除**（解除服务器引用）、折叠 |
+| **标签 / 收藏** | ✅ | 服务器标签与收藏开关，首页与侧边栏同步 |
 | **凭据 CRUD + 编辑** | ✅ | 密码、私钥、**私钥+口令**；密钥存系统 Keyring |
 | **凭据 ↔ 服务器绑定** | ✅ | 服务器表单选择凭据；删除凭据前统计引用并解除绑定 |
 | **Known Hosts** | ✅ | 列表、删除、首次连接确认、指纹变更拦截 |
 | **真实 SSH 会话** | ✅ | `SshSessionManager`：密码 / 私钥 / 私钥口令 / ProxyJump |
-| **终端** | ✅ | xterm.js 输入输出、Resize、断开、重连、KeepAlive、查找、命令历史 |
+| **终端** | ✅ | xterm.js 输入输出、Resize、断开、重连、KeepAlive、查找 |
+| **连接状态指示** | ✅ | Tab 上的状态点来自 `session-store`（连接中/已连接/失败/断开），不依赖任何本地假标记 |
+| **命令历史** | ✅ | 终端侧栏按会话+服务器过滤并可回放；设置页提供全局历史列表 |
+| **审计日志** | ✅ | 设置页查看 `audit_logs`（连接、断开、增删改、主机指纹决策） |
 | **Host Key 校验** | ✅ | 未信任 / 变更均弹窗拦截，拒绝则连接不成立 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 17 个测试（目标解析、迁移、级联删除、Known Hosts 去重） |
+| **Rust 单元测试** | ✅ | 21 个测试（目标解析、迁移、级联删除、Known Hosts 去重、服务器校验、会话记录） |
 | **CI** | ✅ | `.github/workflows/ci.yml`（Windows：cargo check/test/build + pnpm build） |
 | **Docker / Nginx / 部署 / 项目 / 文件 / AI** | ⏸ 暂停 | 仅保留占位说明，P0 验收通过前不开发 |
 

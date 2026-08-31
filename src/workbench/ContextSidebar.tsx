@@ -70,7 +70,7 @@ export function ContextSidebar() {
   return (
     <aside
       className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1 transition-[width] duration-150",
+        "relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1/60 backdrop-blur-xl transition-[width] duration-150",
         collapsed && "w-0 border-r-0",
       )}
       style={{ width: collapsed ? 0 : width }}

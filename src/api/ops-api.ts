@@ -18,6 +18,7 @@ export interface ServerRecord {
 }
 
 export interface ServerGroupRecord {
+  
   id: string;
   name: string;
   sort_order: number;

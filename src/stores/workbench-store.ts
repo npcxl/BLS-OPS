@@ -263,7 +263,6 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
         id: uuid(),
         title: `${active.title} 2`,
         sessionId: undefined,
-        connected: false,
       };
       const branch = createSplitPane(pane, direction, cloned);
       return {

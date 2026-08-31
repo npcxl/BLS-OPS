@@ -2,8 +2,30 @@ import { useState } from "react";
 import { Columns2, Plus, Rows2, X } from "lucide-react";
 import { ContextMenu, type ContextMenuState, contextMenuStateAt } from "@/components/ui/context-menu";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { useSessionStore, type SessionStatus } from "@/stores/session-store";
 import type { WorkbenchPane, WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
+
+const STATUS_DOT: Record<SessionStatus, string> = {
+  connected: "bg-success",
+  connecting: "bg-warning animate-pulse",
+  error: "bg-danger",
+  closed: "bg-fg-subtle",
+};
+
+const STATUS_LABEL: Record<SessionStatus, string> = {
+  connected: "已连接",
+  connecting: "连接中",
+  error: "连接失败",
+  closed: "已断开",
+};
+
+/** Connection indicator driven by the live session store, the only source of truth. */
+function TabStatus({ tab }: { tab: WorkspaceTab }) {
+  const status = useSessionStore((s) => (tab.sessionId ? s.sessions[tab.sessionId]?.status : undefined));
+  if (!status) return null;
+  return <span className={cn("h-[6px] w-[6px] shrink-0 rounded-full", STATUS_DOT[status])} title={STATUS_LABEL[status]} />;
+}
 
 /**
  * Per-pane tab strip — spec §10, §12.
@@ -43,7 +65,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   };
 
   return (
-    <div className="flex h-[34px] shrink-0 items-stretch border-b border-line bg-surface-1">
+    <div className="flex h-[34px] shrink-0 items-stretch border-b border-line bg-surface-1/60 backdrop-blur-xl">
       <div className="flex min-w-0 flex-1 items-stretch overflow-hidden">
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;
@@ -62,7 +84,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               }}
               onContextMenu={(e) => openTabMenu(e, tab)}
             >
-              {tab.connected && <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-success" />}
+              <TabStatus tab={tab} />
               <span className="truncate">{tab.title}</span>
               <button
                 type="button"

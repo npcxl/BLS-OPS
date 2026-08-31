@@ -63,7 +63,6 @@ export function useGlobalShortcuts() {
           subtitle: `${last.server_host}:${last.server_port}`,
           serverId: last.server_id,
           sessionId: crypto.randomUUID(),
-          connected: false,
         });
       }
 

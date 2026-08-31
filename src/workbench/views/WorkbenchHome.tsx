@@ -77,7 +77,6 @@ export function WorkbenchHome() {
       subtitle: `${host}:${port}`,
       serverId,
       sessionId: crypto.randomUUID(),
-      connected: false,
     });
 
   const startQuickConnect = () => {
@@ -283,7 +282,6 @@ export function WorkbenchHome() {
                 quickTarget: serverId ? undefined : `${username}@${host}:${port}`,
                 credentialId,
                 sessionId: crypto.randomUUID(),
-                connected: false,
               });
             if (saveAsServer) {
               const name = host;

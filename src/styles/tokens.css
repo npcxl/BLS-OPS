@@ -1,65 +1,110 @@
 /*
  * Ops Workbench — Design Tokens
  *
- * Tailwind CSS 4 @theme
- * See spec §16–§20 for full rationale.
- *
- * Color usage rules (§17):
- *   Accent:   selection, focus, active tab, primary action, link
- *   AI:       ai panel, ai suggestion, ai generated
- *   Success:  connected, healthy, succeeded
- *   Warning:  needs attention, waiting, risk
- *   Danger:   disconnected, failed, destructive
+ * Theme system: follow OS preference by default.
+ * Light theme is the primary visual language; dark mode is preserved for
+ * environments that request it from the OS.
  */
+/* stylelint-disable at-rule-no-unknown */
+
+:root {
+  color-scheme: light;
+
+  /* RGB channel tokens so Tailwind opacity modifiers keep working. */
+  --app: 244 247 252;
+  --surface-1: 255 255 255;
+  --surface-2: 248 250 253;
+  --surface-3: 243 246 251;
+  --surface-hover: 236 242 249;
+  --surface-active: 226 235 246;
+
+  --line: 215 223 233;
+  --line-strong: 187 199 214;
+
+  --fg: 24 28 36;
+  --fg-muted: 76 86 99;
+  --fg-subtle: 111 123 140;
+
+  --accent: 49 117 241;
+  --accent-soft: 227 238 255;
+
+  --ai: 125 95 220;
+  --ai-soft: 240 235 255;
+
+  --success: 43 173 90;
+  --warning: 225 163 38;
+  --danger: 226 83 74;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --app: 18 20 26;
+  --surface-1: 24 27 35;
+  --surface-2: 30 34 43;
+  --surface-3: 36 41 51;
+  --surface-hover: 42 48 60;
+  --surface-active: 50 58 72;
+
+  --line: 44 52 66;
+  --line-strong: 63 74 92;
+
+  --fg: 236 239 245;
+  --fg-muted: 170 179 192;
+  --fg-subtle: 123 133 147;
+
+  --accent: 91 156 255;
+  --accent-soft: 21 42 71;
+
+  --ai: 179 157 255;
+  --ai-soft: 36 28 61;
+
+  --success: 79 209 134;
+  --warning: 240 187 78;
+  --danger: 242 96 87;
+}
 
 @theme {
   /* ── Surface hierarchy ── */
-  --color-app: #16181d;
-  --color-surface-1: #1b1e24;
-  --color-surface-2: #20242b;
-  --color-surface-3: #262b33;
-  --color-surface-hover: #2c313a;
-  --color-surface-active: #323844;
+  --color-app: rgb(var(--app) / <alpha-value>);
+  --color-surface-1: rgb(var(--surface-1) / <alpha-value>);
+  --color-surface-2: rgb(var(--surface-2) / <alpha-value>);
+  --color-surface-3: rgb(var(--surface-3) / <alpha-value>);
+  --color-surface-hover: rgb(var(--surface-hover) / <alpha-value>);
+  --color-surface-active: rgb(var(--surface-active) / <alpha-value>);
 
   /* ── Borders / Dividers ── */
-  --color-line: #2b3038;
-  --color-line-strong: #3a414d;
+  --color-line: rgb(var(--line) / <alpha-value>);
+  --color-line-strong: rgb(var(--line-strong) / <alpha-value>);
 
   /* ── Foreground ── */
-  --color-fg: #eceef2;
-  --color-fg-muted: #9aa3b0;
-  --color-fg-subtle: #6b7380;
+  --color-fg: rgb(var(--fg) / <alpha-value>);
+  --color-fg-muted: rgb(var(--fg-muted) / <alpha-value>);
+  --color-fg-subtle: rgb(var(--fg-subtle) / <alpha-value>);
 
-  /* ── Accent (§17) — macOS-style blue ── */
-  --color-accent: #5b9cff;
-  --color-accent-soft: #17304f;
+  /* ── Accent ── */
+  --color-accent: rgb(var(--accent) / <alpha-value>);
+  --color-accent-soft: rgb(var(--accent-soft) / <alpha-value>);
 
-  /* ── AI (§17) ── */
-  --color-ai: #b39dff;
-  --color-ai-soft: #241c3d;
+  /* ── AI ── */
+  --color-ai: rgb(var(--ai) / <alpha-value>);
+  --color-ai-soft: rgb(var(--ai-soft) / <alpha-value>);
 
-  /* ── Status (§17) ── */
-  --color-success: #4fd186;
-  --color-warning: #f0bb4e;
-  --color-danger: #f26057;
+  /* ── Status ── */
+  --color-success: rgb(var(--success) / <alpha-value>);
+  --color-warning: rgb(var(--warning) / <alpha-value>);
+  --color-danger: rgb(var(--danger) / <alpha-value>);
 
-  /* ── Radius (§19) ── */
-  --radius-control: 6px;
-  --radius-panel: 8px;
-  --radius-floating: 10px;
+  /* ── Radius ── */
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-floating: 16px;
 
-  /* ── Fonts (§20) ── */
+  /* ── Fonts ── */
   --font-ui: Inter, "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Cascadia Mono", monospace;
 
-  /* ── Type scale (§20) ──
-   *   11px  meta / secondary label
-   *   12px  secondary content
-   *   13px  default (desktop base)
-   *   14px  strong content
-   *   16px  section title
-   *   20px  page title
-   */
+  /* ── Type scale ── */
   --text-11: 11px;
   --text-11--line-height: 16px;
   --text-12: 12px;

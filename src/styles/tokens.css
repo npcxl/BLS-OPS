@@ -66,34 +66,34 @@
 
 @theme {
   /* ── Surface hierarchy ── */
-  --color-app: rgb(var(--app) / <alpha-value>);
-  --color-surface-1: rgb(var(--surface-1) / <alpha-value>);
-  --color-surface-2: rgb(var(--surface-2) / <alpha-value>);
-  --color-surface-3: rgb(var(--surface-3) / <alpha-value>);
-  --color-surface-hover: rgb(var(--surface-hover) / <alpha-value>);
-  --color-surface-active: rgb(var(--surface-active) / <alpha-value>);
+  --color-app: rgb(var(--app));
+  --color-surface-1: rgb(var(--surface-1));
+  --color-surface-2: rgb(var(--surface-2));
+  --color-surface-3: rgb(var(--surface-3));
+  --color-surface-hover: rgb(var(--surface-hover));
+  --color-surface-active: rgb(var(--surface-active));
 
   /* ── Borders / Dividers ── */
-  --color-line: rgb(var(--line) / <alpha-value>);
-  --color-line-strong: rgb(var(--line-strong) / <alpha-value>);
+  --color-line: rgb(var(--line));
+  --color-line-strong: rgb(var(--line-strong));
 
   /* ── Foreground ── */
-  --color-fg: rgb(var(--fg) / <alpha-value>);
-  --color-fg-muted: rgb(var(--fg-muted) / <alpha-value>);
-  --color-fg-subtle: rgb(var(--fg-subtle) / <alpha-value>);
+  --color-fg: rgb(var(--fg));
+  --color-fg-muted: rgb(var(--fg-muted));
+  --color-fg-subtle: rgb(var(--fg-subtle));
 
   /* ── Accent ── */
-  --color-accent: rgb(var(--accent) / <alpha-value>);
-  --color-accent-soft: rgb(var(--accent-soft) / <alpha-value>);
+  --color-accent: rgb(var(--accent));
+  --color-accent-soft: rgb(var(--accent-soft));
 
   /* ── AI ── */
-  --color-ai: rgb(var(--ai) / <alpha-value>);
-  --color-ai-soft: rgb(var(--ai-soft) / <alpha-value>);
+  --color-ai: rgb(var(--ai));
+  --color-ai-soft: rgb(var(--ai-soft));
 
   /* ── Status ── */
-  --color-success: rgb(var(--success) / <alpha-value>);
-  --color-warning: rgb(var(--warning) / <alpha-value>);
-  --color-danger: rgb(var(--danger) / <alpha-value>);
+  --color-success: rgb(var(--success));
+  --color-warning: rgb(var(--warning));
+  --color-danger: rgb(var(--danger));
 
   /* ── Radius ── */
   --radius-control: 8px;
@@ -105,6 +105,8 @@
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Cascadia Mono", monospace;
 
   /* ── Type scale ── */
+  --text-10: 10px;
+  --text-10--line-height: 14px;
   --text-11: 11px;
   --text-11--line-height: 16px;
   --text-12: 12px;

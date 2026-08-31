@@ -1,2 +1,9 @@
+# Single-package repo. `packages` is required: without it pnpm 9 aborts with
+# "packages field missing or empty", which makes CI's
+# `pnpm install --frozen-lockfile` fail before it installs anything.
+packages:
+  - "."
+
+# pnpm 10+ blocks build scripts by default; esbuild needs its postinstall.
 allowBuilds:
   esbuild: true

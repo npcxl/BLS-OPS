@@ -1,16 +1,13 @@
+import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { ChevronDown, Columns2, Eraser, FileText, MonitorCog, Rows2, Search, Sparkles } from "lucide-react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
+import { opsApi } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
-
-/** Terminal view — spec §30, §31. */
-const MOCK_LINES = [
-  { prompt: "root@api-01", cwd: "~", out: "$ docker ps" },
-  { out: "CONTAINER ID   IMAGE          STATUS        PORTS" },
-  { out: "a1b2c3d4e5f6   nginx:1.27     Up 2 hours    0.0.0.0:80->80/tcp" },
-  { out: "f6e5d4c3b2a1   redis:7.2      Up 2 hours    6379/tcp" },
-  { prompt: "root@api-01", cwd: "~", out: "$ " },
-];
 
 function ToolbarIcon({ label, icon: Icon, active }: { label: string; icon: React.ElementType; active?: boolean }) {
   return (
@@ -29,14 +26,65 @@ function ToolbarIcon({ label, icon: Icon, active }: { label: string; icon: React
 }
 
 export function TerminalView({ tab }: { tab: WorkspaceTab }) {
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const terminal = useRef<Terminal | null>(null);
+  const sessionId = useRef(tab.sessionId ?? crypto.randomUUID());
+  const [status, setStatus] = useState(tab.serverId ? "未连接" : "本地终端");
+
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    const instance = new Terminal({ convertEol: true, cursorBlink: true, fontSize: 13, theme: { background: "#090c10", foreground: "#c7d0dc" } });
+    const fit = new FitAddon();
+    instance.loadAddon(fit);
+    instance.open(terminalRef.current);
+    fit.fit();
+    terminal.current = instance;
+    instance.writeln("运维终端 — 交互式 SSH 会话");
+    instance.write("$ ");
+    let currentInput = "";
+    const input = instance.onData(async (data) => {
+      if (data === "\r") {
+        instance.write("\r\n");
+        if (tab.serverId) await opsApi.sshInput(sessionId.current, `${currentInput}\n`);
+        currentInput = "";
+      } else if (data === "\u007f") {
+        if (currentInput.length > 0) { currentInput = currentInput.slice(0, -1); instance.write("\b \b"); }
+      } else if (data === "\u001b[A" || data === "\u001b[B" || data === "\u001b[C" || data === "\u001b[D") {
+        if (tab.serverId) await opsApi.sshInput(sessionId.current, data);
+      } else if (data >= " ") { currentInput += data; instance.write(data); }
+    });
+    const resize = () => { fit.fit(); if (tab.serverId) void opsApi.sshResize(sessionId.current, instance.cols, instance.rows); };
+    window.addEventListener("resize", resize);
+    resize();
+    let unlistenOutput: (() => void) | undefined;
+    const bootstrap = async () => {
+      if (!tab.serverId) {
+        setStatus("本地终端");
+        return;
+      }
+      try {
+        await opsApi.sshConnect(sessionId.current, tab.serverId);
+        setStatus("已连接");
+        unlistenOutput = await listen<string>(`ssh-output-${sessionId.current}`, (event) => {
+          instance.write(event.payload);
+        });
+      } catch (error) {
+        setStatus("连接失败");
+        instance.writeln(`\\r\\n连接失败：${String(error)}`);
+      }
+    };
+    void bootstrap();
+    return () => { input.dispose(); window.removeEventListener("resize", resize); unlistenOutput?.(); if (tab.serverId) void opsApi.sshDisconnect(sessionId.current); instance.dispose(); terminal.current = null; };
+  }, [tab.serverId]);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-app">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        <span className="h-[6px] w-[6px] rounded-full bg-success" />
+        <span className={cn("h-[6px] w-[6px] rounded-full", status === "已连接" ? "bg-success" : "bg-warning")} />
         <span className="text-12 font-semibold text-fg">{tab.title}</span>
         {tab.subtitle && <span className="truncate text-11 text-fg-subtle">{tab.subtitle}</span>}
         <span className="ml-auto flex items-center gap-1 rounded-control border border-line bg-surface-2 px-2 py-0.5 text-11 text-fg-muted">
-          Ubuntu 24.04 · 4 CPU · RAM 42%
+          Ubuntu 24.04 · 4 核 CPU · 内存 42%
         </span>
       </div>
 
@@ -57,28 +105,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-[#090c10] p-3 font-mono text-[13px] leading-[1.55]" data-selectable>
-        <div className="flex flex-col">
-          {MOCK_LINES.map((line, i) => (
-            <div key={i} className="flex gap-1.5">
-              {line.prompt && (
-                <span>
-                  <span className="text-success">{line.prompt}</span>
-                  <span className="text-fg-subtle">:{line.cwd}</span>
-                  <span className="text-accent">#</span>
-                </span>
-              )}
-              <span className="text-[#c7d0dc]">{line.out}</span>
-            </div>
-          ))}
-          <span className="inline-block h-[15px] w-[7px] animate-pulse bg-fg-muted" />
-        </div>
-      </div>
+      <div ref={terminalRef} className="min-h-0 flex-1 overflow-hidden bg-[#090c10] p-3" data-selectable />
 
       <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-11 text-fg-subtle">
         <span className="flex items-center gap-1">
           <span className="h-[5px] w-[5px] rounded-full bg-success" />
-          已连接
+          {status}
         </span>
         <span>18 ms</span>
         <span className="ml-auto">UTF-8</span>

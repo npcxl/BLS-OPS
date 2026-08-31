@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod keyring;
+mod ssh;
 mod state;
 
 use tauri::Manager;
@@ -32,10 +33,20 @@ pub fn run() {
             commands::credential_save,
             commands::credential_delete,
             commands::known_host_list,
+            commands::known_host_get,
             commands::known_host_save,
+            commands::known_host_confirm,
+            commands::audit_log_list,
+            commands::audit_log_record,
+            commands::history_record,
+            commands::history_list,
             commands::credential_save_secret,
             commands::credential_get_secret,
             commands::credential_delete_secret,
+            commands::ssh_connect,
+            commands::ssh_input,
+            commands::ssh_resize,
+            commands::ssh_disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

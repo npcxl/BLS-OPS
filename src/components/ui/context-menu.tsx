@@ -126,7 +126,7 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
             )}
             onMouseEnter={() => setFocusIdx(i)}
             onClick={() => {
-              requestClose();
+              onClose();
               if (!item.disabled && item.onSelect) item.onSelect();
             }}
           >

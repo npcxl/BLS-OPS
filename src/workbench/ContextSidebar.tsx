@@ -23,9 +23,8 @@ const MODULE_TITLES: Record<NavModule, string> = {
 };
 
 /**
- * Context Sidebar — spec §8, §9.
- * 244px default, resizable (180–400px), collapsible.
- * Content is dynamic per active Navigation module.
+ * Context Sidebar — resizable content panel for the active module.
+ * Renders the module's list/detail content (servers, settings, …).
  */
 export function ContextSidebar() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
@@ -45,7 +44,7 @@ export function ContextSidebar() {
 
       const onMove = (ev: MouseEvent) => {
         if (!dragRef.current) return;
-        setWidth(Math.min(400, Math.max(180, ev.clientX - 48)));
+        setWidth(Math.min(400, Math.max(200, ev.clientX - 52)));
       };
       const onUp = () => {
         dragRef.current = false;
@@ -60,12 +59,26 @@ export function ContextSidebar() {
   );
 
   const renderModuleContent = () => {
-    // The server list lives in the SSH module; "服务器" is just another entry
-    // point to the same real data.
     if (activeModule === "ssh" || activeModule === "servers") return <SshContextSidebar />;
     if (activeModule === "settings") return <SettingsContextSidebar />;
     return <ModulePlaceholderSidebar module={activeModule} />;
   };
+
+  if (collapsed) {
+    return (
+      <div className="flex w-10 shrink-0 flex-col items-center border-r border-line bg-surface-1/60 pt-2 backdrop-blur-xl">
+        <button
+          type="button"
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          className="flex h-8 w-8 items-center justify-center rounded-[8px] text-fg-subtle hover:bg-surface-hover hover:text-fg"
+          onClick={() => setCollapsed(false)}
+        >
+          <ChevronsLeft size={16} className="rotate-180" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <aside
@@ -78,9 +91,9 @@ export function ContextSidebar() {
     >
       {!collapsed && (
         <>
-          <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-2.5">
-            <h2 className="text-12 font-semibold tracking-wide text-fg">{MODULE_TITLES[activeModule]}</h2>
-            <Button variant="ghost" size="xs" onClick={() => setCollapsed(true)} aria-label="收起侧边栏">
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-line/70 px-2.5">
+            <h2 className="truncate text-12 font-semibold text-fg">{MODULE_TITLES[activeModule]}</h2>
+            <Button variant="ghost" size="xs" className="h-6 w-6 px-0" onClick={() => setCollapsed(true)} aria-label="收起侧边栏">
               <ChevronsLeft size={14} />
             </Button>
           </div>
@@ -94,7 +107,7 @@ export function ContextSidebar() {
               dragging ? "bg-accent/25" : "hover:bg-accent/15",
             )}
             onMouseDown={onResizeStart}
-            onDoubleClick={() => setWidth(244)}
+            onDoubleClick={() => setWidth(280)}
           >
             <GripVertical size={12} className="text-fg-subtle" />
           </div>

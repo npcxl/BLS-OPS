@@ -41,12 +41,6 @@ const PASTE_END = "\x1b[201~";
 /** CSI: ESC [ params final-byte */
 const CSI = /^\x1b\[[0-9;]*[A-Za-z~]/;
 
-/** ESC O <char>, the SS3 form some terminals emit for arrows and F-keys. */
-const SS3 = /^\x1bO./;
-
-/** Any other two-byte ESC sequence, e.g. Alt+<char>. */
-const ESC_2 = /^\x1b./;
-
 /** Guards against buffering forever on a malformed sequence. */
 const MAX_ESCAPE_LENGTH = 32;
 
@@ -96,6 +90,20 @@ export class LineEditor {
     let i = 0;
 
     while (i < data.length) {
+      // An escape sequence that spanned the previous chunk: the current chunk
+      // starts *inside* the sequence, so resume matching before anything else.
+      if (this.pending) {
+        const sequence = this.pending + data.slice(i);
+        const matched = matchEscape(sequence);
+        if (matched === null) {
+          this.pending = sequence;
+          return completed;
+        }
+        i += matched.length - this.pending.length;
+        this.pending = "";
+        continue;
+      }
+
       // Bracketed paste: everything up to the end marker is literal text.
       if (this.inPaste) {
         const end = data.indexOf(PASTE_END, i);
@@ -119,21 +127,16 @@ export class LineEditor {
       }
 
       if (data[i] === "\x1b") {
-        const sequence = this.pending + data.slice(i);
-        const matched = matchEscape(sequence);
+        const matched = matchEscape(data.slice(i));
         if (matched === null) {
           // Incomplete — wait for the rest of the sequence.
-          this.pending = sequence;
+          this.pending = data.slice(i);
           return completed;
         }
         // Escape sequences never contribute text.
-        i += matched.length - this.pending.length;
-        this.pending = "";
+        i += matched.length;
         continue;
       }
-
-      // Any pending escape that did not complete is stale input; drop it.
-      this.pending = "";
 
       const char = data[i];
       i += 1;
@@ -205,9 +208,19 @@ function matchEscape(text: string): string | null {
   if (text.length < 2) return null;
   if (text.length > MAX_ESCAPE_LENGTH) return text.slice(0, 2);
 
-  for (const pattern of [CSI, SS3, ESC_2]) {
-    const match = pattern.exec(text);
-    if (match) return match[0];
+  // CSI must wait for its final byte. Without this guard a bare `ESC [` looks
+  // like a complete two-byte sequence, the `[` is consumed early, and the next
+  // byte (the real final byte) leaks into the command as text.
+  if (text[1] === "[") {
+    const match = CSI.exec(text);
+    return match ? match[0] : null;
   }
-  return null;
+
+  // SS3 (ESC O <char>) is always three bytes.
+  if (text[1] === "O") {
+    return text.length >= 3 ? text.slice(0, 3) : null;
+  }
+
+  // Any other ESC <char> is a complete two-byte sequence, e.g. Alt+<char>.
+  return text.slice(0, 2);
 }

@@ -16,8 +16,8 @@ import type { NavModule } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 
 /**
- * Primary Navigation Rail — spec §7.
- * 48px, icons only, label reveals on hover, 2px active indicator on the left.
+ * Primary Navigation Rail — the far-left icon strip.
+ * Icons only, label reveals on hover, accent highlight for the active module.
  */
 
 interface NavItem {
@@ -48,20 +48,12 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
       onClick={onClick}
       aria-label={item.label}
       className={cn(
-        "group relative flex h-10 w-10 items-center justify-center rounded-[10px] outline-none transition-all duration-150",
+        "group relative flex h-10 w-10 items-center justify-center rounded-[10px] outline-none transition-colors",
         active ? "bg-surface-active text-accent" : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
       )}
     >
-      {/* active indicator */}
-      <span
-        className={cn(
-          "pointer-events-none absolute -left-2 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
-          active ? "bg-accent opacity-100" : "opacity-0",
-        )}
-      />
-      <Icon size={17} strokeWidth={1.6} />
-      {/* hover label (tooltip-style) */}
-      <span className="pointer-events-none absolute left-[calc(100%+8px)] z-50 whitespace-nowrap rounded-[8px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
+      <Icon size={18} strokeWidth={1.6} />
+      <span className="pointer-events-none absolute left-[calc(100%+6px)] z-50 whitespace-nowrap rounded-[7px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
         {item.label}
       </span>
     </button>
@@ -71,6 +63,13 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
 export function NavigationRail() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
   const setModule = useWorkbenchStore((s) => s.setModule);
+  const sidebarCollapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
+
+  const navigate = (item: NavItem) => {
+    setModule(item.id);
+    if (sidebarCollapsed) setSidebarCollapsed(false);
+  };
 
   return (
     <nav
@@ -81,7 +80,7 @@ export function NavigationRail() {
         item.divider ? (
           <div key="divider" className="my-1.5 h-px w-5 bg-line" />
         ) : (
-          <RailButton key={item.id} item={item} active={activeModule === item.id} onClick={() => setModule(item.id)} />
+          <RailButton key={item.id} item={item} active={activeModule === item.id} onClick={() => navigate(item)} />
         ),
       )}
     </nav>

@@ -272,6 +272,8 @@ export const opsApi = {
     serverId?: string;
     target?: string;
     credentialId?: string;
+    /** One-time password: used for this connection, never persisted by Rust. */
+    password?: string;
     cols?: number;
     rows?: number;
   }) =>
@@ -280,6 +282,7 @@ export const opsApi = {
       serverId: args.serverId ?? null,
       target: args.target ?? null,
       credentialId: args.credentialId ?? null,
+      password: args.password ?? null,
       cols: args.cols ?? 120,
       rows: args.rows ?? 32,
     }),

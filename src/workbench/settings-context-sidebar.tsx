@@ -16,38 +16,48 @@ import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { cn } from "@/lib/cn";
 
-const THEME_OPTIONS: { id: ThemeMode; label: string; icon: React.ElementType }[] = [
-  { id: "system", label: "跟随系统", icon: Monitor },
-  { id: "light", label: "浅色", icon: Sun },
-  { id: "dark", label: "深色", icon: Moon },
+const THEME_OPTIONS: { id: ThemeMode; label: string; short: string; icon: React.ElementType }[] = [
+  { id: "system", label: "跟随系统", short: "系统", icon: Monitor },
+  { id: "light", label: "浅色", short: "浅色", icon: Sun },
+  { id: "dark", label: "深色", short: "深色", icon: Moon },
 ];
 
-function SubTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
+function Group({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title: string;
+  hint?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex h-7 items-center justify-between px-2.5">
-      <span className="text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">{children}</span>
-      {actions}
-    </div>
+    <section className="flex flex-col gap-1.5">
+      <div className="flex h-6 items-center justify-between px-0.5">
+        <span className="text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">{title}</span>
+        {action}
+      </div>
+      {hint && <p className="px-0.5 text-11 leading-relaxed text-fg-subtle">{hint}</p>}
+      {children}
+    </section>
   );
-}
-
-function EmptyRow({ children }: { children: React.ReactNode }) {
-  return <p className="px-2.5 py-2 text-11 text-fg-subtle">{children}</p>;
 }
 
 /** macOS-style grouped inset list — a rounded panel whose rows are divided. */
 function ListGroup({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mx-2.5 overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
       <div className="divide-y divide-line/60">{children}</div>
     </div>
   );
 }
 
-/**
- * Collapsible list backed by a loader. Rows are only fetched once the section
- * is expanded, so opening 设置 never pays for queries nobody looks at.
- */
+function EmptyRow({ children }: { children: React.ReactNode }) {
+  return <p className="px-3 py-3 text-11 text-fg-subtle">{children}</p>;
+}
+
 function CollapsibleList<T>({
   title,
   load,
@@ -77,22 +87,22 @@ function CollapsibleList<T>({
   }, [load, open]);
 
   return (
-    <div>
-      <div className="px-2.5">
-        <SubTitle>
-          <button
-            type="button"
-            className="flex items-center gap-1 hover:text-fg"
-            onClick={() => setOpen((value) => !value)}
-          >
-            <ChevronRight size={11} className={cn("transition-transform", open && "rotate-90")} />
-            {title}
-            {rows && rows.length > 0 && <span className="text-fg-muted">{rows.length}</span>}
-          </button>
-        </SubTitle>
-      </div>
+    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-surface-hover/60"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="flex items-center gap-1.5 text-12 text-fg">
+          <ChevronRight size={13} className={cn("transition-transform", open && "rotate-90")} />
+          {title}
+        </span>
+        {rows && rows.length > 0 && (
+          <span className="rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">{rows.length}</span>
+        )}
+      </button>
       {open && (
-        <div className="max-h-64 overflow-y-auto">
+        <div className="divide-y divide-line/60 border-t border-line">
           {rows === null ? (
             <EmptyRow>正在加载…</EmptyRow>
           ) : rows.length === 0 ? (
@@ -149,172 +159,161 @@ export function SettingsContextSidebar() {
   };
 
   return (
-    <div className="flex flex-col gap-1 pb-3">
-      <div className="px-2.5 pt-1.5">
-        <SubTitle>外观</SubTitle>
-        <div className="mt-1 flex rounded-[8px] border border-line bg-surface-1 p-0.5">
-          {THEME_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const active = themeMode === option.id;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                aria-label={option.label}
-                className={cn(
-                  "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-[6px] text-12 transition-colors",
-                  active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
-                )}
-                onClick={() => setThemeMode(option.id)}
-              >
-                <Icon size={13} strokeWidth={1.75} />
-                <span>{option.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="px-2.5 pt-1.5">
-        <SubTitle
-          actions={
-            <Button
-              variant="ghost"
-              size="xs"
-              className="h-5 px-1"
-              aria-label="新增凭据"
-              onClick={() => setEditing(emptyCredential())}
-            >
-              <Plus size={12} />
-            </Button>
-          }
-        >
-          凭据
-        </SubTitle>
-        <p className="mt-1 text-11 leading-relaxed text-fg-subtle">
-          密钥只写入系统凭据管理器，数据库仅保存引用，且不会回传到界面。
-        </p>
-      </div>
-
-      {credentials.length === 0 ? (
-        <p className="px-2.5 py-2 text-11 text-fg-subtle">暂无凭据</p>
-      ) : (
+    <div className="flex flex-col gap-5 p-3 pb-6">
+      <Group title="外观">
         <ListGroup>
-          {credentials.map((credential) => (
-            <div
-              key={credential.id}
-              className="group flex w-full items-center gap-2 px-2.5 py-2 transition-colors hover:bg-surface-hover/60"
-            >
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                onClick={() => setEditing(credential)}
-              >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-fg-subtle">
-                  <KeyRound size={13} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-12 text-fg">{credential.name}</span>
-                  <span className="block truncate text-11 text-fg-subtle">
-                    {credential.username} ·{" "}
-                    {credential.credential_type === "private_key" ? "私钥" : "密码"} ·{" "}
-                    {credential.secret_ref ? "密钥已保存" : "缺少密钥"}
-                  </span>
-                </span>
-                <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
-              </button>
-              <button
-                type="button"
-                aria-label={`删除凭据 ${credential.name}`}
-                className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-                onClick={() => void remove(credential)}
-              >
-                <Trash2 size={12} />
-              </button>
+          <div className="flex items-center justify-between gap-3 px-3 py-2">
+            <span className="shrink-0 text-12 text-fg">主题</span>
+            <div className="flex flex-1 justify-end rounded-[8px] border border-line bg-surface-2 p-0.5">
+              {THEME_OPTIONS.map((option) => {
+                const Icon = option.icon;
+                const active = themeMode === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-label={option.label}
+                    title={option.label}
+                    className={cn(
+                      "flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[6px] text-11 transition-colors",
+                      active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
+                    )}
+                    onClick={() => setThemeMode(option.id)}
+                  >
+                    <Icon size={13} strokeWidth={1.75} className="shrink-0" />
+                    <span className="truncate">{option.short}</span>
+                  </button>
+                );
+              })}
             </div>
-          ))}
+          </div>
         </ListGroup>
-      )}
+      </Group>
 
-      <div className="mt-3 px-2.5">
-        <SubTitle>已知主机</SubTitle>
-      </div>
-      <div className="mx-2.5 overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
-        <div className="divide-y divide-line/60">
-          <KnownHostsPanel />
-        </div>
-      </div>
-
-      <div className="mt-3">
-        <CollapsibleList
-          title="命令历史"
-          load={loadHistory}
-          empty="在终端中执行命令后会出现在这里。"
-          getKey={(row: CommandHistoryRecord) => row.id}
-        >
-          {(row) => (
-            <div className="px-2.5 py-1 hover:bg-surface-hover">
-              <code className="block truncate font-mono text-11 text-fg" title={row.command}>
-                {row.command}
-              </code>
-              <span className="text-10 text-fg-subtle">
-                {row.server_name || "未关联服务器"} · {new Date(row.timestamp).toLocaleString()}
-              </span>
-            </div>
-          )}
-        </CollapsibleList>
-
-        <CollapsibleList
-          title="审计日志"
-          load={loadAuditLogs}
-          empty="还没有审计记录。"
-          getKey={(row: AuditLogRecord) => row.id}
-        >
-          {(row) => (
-            <div className="px-2.5 py-1 hover:bg-surface-hover">
-              <div className="flex items-baseline gap-1.5">
-                <span className="truncate text-11 text-fg">{row.action}</span>
-                {row.server_name && (
-                  <span className="shrink-0 truncate text-10 text-fg-subtle">{row.server_name}</span>
-                )}
+      <Group
+        title="凭据"
+        hint="密钥只写入系统凭据管理器，数据库仅保存引用，保存后无法在界面再次查看。"
+        action={
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 px-1.5"
+            aria-label="新增凭据"
+            onClick={() => setEditing(emptyCredential())}
+          >
+            <Plus size={13} />
+          </Button>
+        }
+      >
+        <ListGroup>
+          {credentials.length === 0 ? (
+            <EmptyRow>暂无凭据</EmptyRow>
+          ) : (
+            credentials.map((credential) => (
+              <div
+                key={credential.id}
+                className="group flex w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-surface-hover/60"
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                  onClick={() => setEditing(credential)}
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-fg-subtle">
+                    <KeyRound size={13} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-12 text-fg">{credential.name}</span>
+                    <span className="block truncate text-11 text-fg-subtle">
+                      {credential.username} · {credential.credential_type === "private_key" ? "私钥" : "密码"} ·{" "}
+                      {credential.secret_ref ? "密钥已保存" : "缺少密钥"}
+                    </span>
+                  </span>
+                  <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`删除凭据 ${credential.name}`}
+                  className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
+                  onClick={() => void remove(credential)}
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
-              <span className="block text-10 text-fg-subtle">
-                {new Date(row.timestamp).toLocaleString()}
-                {row.details_json ? ` · ${row.details_json}` : ""}
-              </span>
-            </div>
+            ))
           )}
-        </CollapsibleList>
-      </div>
+        </ListGroup>
+      </Group>
+
+      <Group title="已知主机" hint="首次连接时确认过的服务器指纹会记录在这里。">
+        <ListGroup>
+          <KnownHostsPanel />
+        </ListGroup>
+      </Group>
+
+      <Group title="数据">
+        <div className="flex flex-col gap-1.5">
+          <CollapsibleList
+            title="命令历史"
+            load={loadHistory}
+            empty="在终端中执行命令后会出现在这里。"
+            getKey={(row: CommandHistoryRecord) => row.id}
+          >
+            {(row) => (
+              <div className="px-3 py-1.5 hover:bg-surface-hover/60">
+                <code className="block truncate font-mono text-11 text-fg" title={row.command}>
+                  {row.command}
+                </code>
+                <span className="block truncate text-10 text-fg-subtle">
+                  {row.server_name || "未关联服务器"} · {new Date(row.timestamp).toLocaleString()}
+                </span>
+              </div>
+            )}
+          </CollapsibleList>
+
+          <CollapsibleList
+            title="审计日志"
+            load={loadAuditLogs}
+            empty="还没有审计记录。"
+            getKey={(row: AuditLogRecord) => row.id}
+          >
+            {(row) => (
+              <div className="px-3 py-1.5 hover:bg-surface-hover/60">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="truncate text-11 text-fg">{row.action}</span>
+                  {row.server_name && (
+                    <span className="shrink-0 truncate text-10 text-fg-subtle">{row.server_name}</span>
+                  )}
+                </div>
+                <span className="block truncate text-10 text-fg-subtle">
+                  {new Date(row.timestamp).toLocaleString()}
+                  {row.details_json ? ` · ${row.details_json}` : ""}
+                </span>
+              </div>
+            )}
+          </CollapsibleList>
+        </div>
+      </Group>
 
       {appInfo && (
-        <div className="mt-3 px-2.5">
-          <SubTitle>运行环境</SubTitle>
-          <dl className="mt-1 flex flex-col gap-0.5 text-11 text-fg-subtle">
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0">版本</dt>
-              <dd className="min-w-0 flex-1 truncate">v{appInfo.version}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0">Schema</dt>
-              <dd className="min-w-0 flex-1 truncate">v{appInfo.schema_version}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0">平台</dt>
-              <dd className="min-w-0 flex-1 truncate">
-                {appInfo.os} / {appInfo.arch}
-              </dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0">KeepAlive</dt>
-              <dd className="min-w-0 flex-1 truncate">{appInfo.keepalive_secs}s</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="w-16 shrink-0">数据库</dt>
-              <dd className="min-w-0 flex-1 break-all">{appInfo.db_path}</dd>
-            </div>
-          </dl>
-        </div>
+        <Group title="运行环境">
+          <ListGroup>
+            {(
+              [
+                ["版本", `v${appInfo.version}`],
+                ["Schema", `v${appInfo.schema_version}`],
+                ["平台", `${appInfo.os} / ${appInfo.arch}`],
+                ["KeepAlive", `${appInfo.keepalive_secs}s`],
+                ["数据库", appInfo.db_path],
+              ] as [string, string][]
+            ).map(([key, value]) => (
+              <div key={key} className="flex items-center justify-between gap-3 px-3 py-2">
+                <span className="shrink-0 text-11 text-fg-muted">{key}</span>
+                <span className="min-w-0 flex-1 truncate text-right text-11 text-fg">{value}</span>
+              </div>
+            ))}
+          </ListGroup>
+        </Group>
       )}
 
       {error && <ErrorText>{error}</ErrorText>}
@@ -418,7 +417,7 @@ function CredentialForm({
           }
         >
           <textarea
-            className="h-28 w-full resize-none rounded-[6px] border border-line bg-surface-1 px-2 py-1.5 font-mono text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+            className="h-28 w-full resize-none rounded-[8px] border border-line bg-surface-1/70 px-2 py-1.5 font-mono text-11 text-fg outline-none placeholder:text-fg-subtle shadow-[inset_0_1px_0_rgb(255_255_255/0.45)] focus:border-accent"
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
             placeholder={

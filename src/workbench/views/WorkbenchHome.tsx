@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ArrowRight, Clock, FolderOpen, Plug, Server, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ErrorText, Field, Modal, selectClass } from "@/components/ui/modal";
+import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { parseSshTarget, type CredentialRecord } from "@/api/ops-api";
 import { emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -283,7 +283,7 @@ export function WorkbenchHome() {
         <QuickConnectDialog
           draft={draft}
           onClose={() => setDraft(null)}
-          onConnect={(credentialId, saveAsServer) => {
+          onConnect={(auth, saveAsServer) => {
             const { username, host, port } = draft;
             const open = (serverId?: string) =>
               openTab({
@@ -293,7 +293,10 @@ export function WorkbenchHome() {
                 subtitle: `${host}:${port}`,
                 serverId,
                 quickTarget: serverId ? undefined : `${username}@${host}:${port}`,
-                credentialId,
+                credentialId: auth.credentialId,
+                // A one-time password is passed straight through for this
+                // connection only; it is never persisted by Rust.
+                oneTimePassword: auth.password,
                 sessionId: crypto.randomUUID(),
               });
             if (saveAsServer) {
@@ -306,7 +309,7 @@ export function WorkbenchHome() {
                   host,
                   port,
                   username,
-                  credential_id: credentialId,
+                  credential_id: auth.credentialId ?? null,
                 })
                 .then((saved) => {
                   setQc("");
@@ -324,6 +327,13 @@ export function WorkbenchHome() {
   );
 }
 
+/** How the quick-connect attempt authenticates. */
+export type QuickConnectAuth = {
+  credentialId?: string;
+  /** Typed for this connection only; never stored. */
+  password?: string;
+};
+
 function QuickConnectDialog({
   draft,
   onClose,
@@ -331,17 +341,25 @@ function QuickConnectDialog({
 }: {
   draft: { username: string; host: string; port: number };
   onClose: () => void;
-  onConnect: (credentialId: string, saveAsServer: boolean) => void;
+  onConnect: (auth: QuickConnectAuth, saveAsServer: boolean) => void;
 }) {
   const credentials = useDomainStore((s) => s.credentials);
   const [credentialId, setCredentialId] = useState<string>(credentials[0]?.id ?? "");
+  const [password, setPassword] = useState("");
   const [saveAsServer, setSaveAsServer] = useState(true);
   const submit = useSubmit();
 
+  // Either a saved credential or a one-time password — never both.
+  const usingOneTimePassword = credentialId === "";
+
   const connect = () =>
     submit.run(async () => {
-      if (!credentialId) throw new Error("请先选择凭据");
-      onConnect(credentialId, saveAsServer);
+      if (usingOneTimePassword) {
+        if (!password) throw new Error("请输入密码");
+        onConnect({ password }, saveAsServer);
+        return;
+      }
+      onConnect({ credentialId }, saveAsServer);
     });
 
   return (
@@ -363,16 +381,14 @@ function QuickConnectDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        {credentials.length === 0 ? (
-          <ErrorText>还没有任何凭据，请先到“设置 → 凭据”中创建一个。</ErrorText>
-        ) : (
-          <Field label="凭据">
+        {credentials.length > 0 && (
+          <Field label="已保存凭据" hint="选择“一次性密码”可不依赖任何已保存凭据">
             <select
               className={selectClass}
               value={credentialId}
               onChange={(event) => setCredentialId(event.target.value)}
             >
-              <option value="">请选择凭据</option>
+              <option value="">使用一次性密码（不保存）</option>
               {credentials.map((credential: CredentialRecord) => (
                 <option key={credential.id} value={credential.id}>
                   {credential.name} · {credential.username} ·{" "}
@@ -380,6 +396,29 @@ function QuickConnectDialog({
                 </option>
               ))}
             </select>
+          </Field>
+        )}
+
+        {usingOneTimePassword && (
+          <Field
+            label="一次性密码"
+            hint={
+              credentials.length === 0
+                ? "还没有凭据，可先直接用密码连接。密钥不会保存。"
+                : "仅用于本次连接，不会写入系统凭据管理器。"
+            }
+          >
+            <input
+              type="password"
+              autoFocus
+              className={fieldClass}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void connect();
+              }}
+              placeholder="登录密码"
+            />
           </Field>
         )}
 
@@ -391,6 +430,11 @@ function QuickConnectDialog({
           />
           保存为服务器（下次可从列表直接连接）
         </label>
+        {usingOneTimePassword && saveAsServer && (
+          <p className="-mt-1.5 pl-[22px] text-11 leading-relaxed text-fg-subtle">
+            服务器条目会被保存，但不含凭据——下次连接仍需选择凭据或再次输入密码。
+          </p>
+        )}
 
         <ErrorText>{submit.error}</ErrorText>
       </div>

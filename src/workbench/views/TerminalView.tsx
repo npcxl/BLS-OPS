@@ -18,10 +18,13 @@ import { opsApi, toErrorMessage, type ServerRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { LineEditor } from "@/lib/terminal-line-editor";
 import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 
 const KEEPALIVE_MS = 30_000;
+/** Consecutive failed probes before the session is declared dead. */
+const KEEPALIVE_MAX_FAILURES = 2;
 
 type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
 
@@ -130,6 +133,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const splitPane = useWorkbenchStore((s) => s.splitPane);
+  const updateTab = useWorkbenchStore((s) => s.updateTab);
   const servers = useDomainStore((s) => s.servers);
   const register = useSessionStore((s) => s.register);
   const setStatus = useSessionStore((s) => s.setStatus);
@@ -142,8 +146,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [servers, tab.serverId],
   );
 
-  // Keeps track of the line being typed so it can be stored as command history.
-  const lineRef = useRef("");
+  // Recovers the command being typed from the raw keystroke stream so it can be
+  // recorded as history. Created once per session.
+  const lineEditorRef = useRef<LineEditor | null>(null);
+  if (!lineEditorRef.current) lineEditorRef.current = new LineEditor();
 
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
@@ -170,6 +176,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         serverId: tab.serverId,
         target: tab.quickTarget,
         credentialId: tab.credentialId,
+        password: tab.oneTimePassword,
         cols,
         rows,
       });
@@ -181,6 +188,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         setPhase("connected");
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
         instance?.writeln(`\r\n已连接 ${result.host}:${result.port}（${result.fingerprint_type}）`);
+        // The one-time password has served its purpose; drop it from tab state
+        // so it is not kept in memory or reused for a later reconnect.
+        if (tab.oneTimePassword) updateTab(tab.id, { oneTimePassword: undefined });
         return;
       }
 
@@ -222,7 +232,20 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     } finally {
       connectingRef.current = false;
     }
-  }, [raiseChallenge, register, sessionId, setStatus, tab.credentialId, tab.id, tab.quickTarget, tab.serverId, tab.subtitle, tab.title]);
+  }, [
+    raiseChallenge,
+    register,
+    sessionId,
+    setStatus,
+    tab.credentialId,
+    tab.id,
+    tab.oneTimePassword,
+    tab.quickTarget,
+    tab.serverId,
+    tab.subtitle,
+    tab.title,
+    updateTab,
+  ]);
 
   // Terminal instance + data plumbing.
   useEffect(() => {
@@ -251,18 +274,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const dataSubscription = instance.onData((data) => {
-      if (data === "\r") {
-        const command = lineRef.current.trim();
-        lineRef.current = "";
-        if (command && (tab.serverId || tab.quickTarget)) {
+      // Recover whole commands from the raw stream; arrow keys, Ctrl+C, pastes
+      // and line continuations are handled by the editor.
+      const commands = lineEditorRef.current?.feed(data) ?? [];
+      for (const command of commands) {
+        if (tab.serverId || tab.quickTarget) {
           void opsApi
             .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
             .catch(() => undefined);
         }
-      } else if (data === "\u007f") {
-        lineRef.current = lineRef.current.slice(0, -1);
-      } else if (data >= " " || data === "\t") {
-        lineRef.current += data;
       }
       void opsApi.sshInput(sessionId, data).catch(() => undefined);
     });
@@ -290,15 +310,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setStatus(sessionId, "closed");
     });
 
-    const keepalive = window.setInterval(() => {
-      opsApi.sshKeepalive(sessionId).catch(() => undefined);
-    }, KEEPALIVE_MS);
-
     void connect();
 
     return () => {
       disposed = true;
-      window.clearInterval(keepalive);
       resizeObserver.disconnect();
       themeObserver.disconnect();
       dataSubscription.dispose();
@@ -313,6 +328,34 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     // Reconnecting on target change is intentional; `connect` is stable per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasTarget, sessionId]);
+
+  // Keepalive only runs while the session is actually connected. Consecutive
+  // failures flip the session to "closed" so the UI stops claiming a live
+  // connection that the server has already dropped.
+  useEffect(() => {
+    if (phase !== "connected") return;
+
+    let failures = 0;
+    const timer = window.setInterval(() => {
+      opsApi.sshKeepalive(sessionId).then(
+        () => {
+          failures = 0;
+        },
+        (cause) => {
+          failures += 1;
+          if (failures < KEEPALIVE_MAX_FAILURES) return;
+          window.clearInterval(timer);
+          const message = `连接已断开：${toErrorMessage(cause)}`;
+          setPhase("closed");
+          setError(message);
+          setStatus(sessionId, "closed", { error: message });
+          terminalRef.current?.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+        },
+      );
+    }, KEEPALIVE_MS);
+
+    return () => window.clearInterval(timer);
+  }, [phase, sessionId, setStatus]);
 
   const runSearch = useCallback(() => {
     const instance = terminalRef.current;

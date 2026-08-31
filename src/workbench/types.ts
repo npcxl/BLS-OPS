@@ -27,6 +27,11 @@ export interface WorkspaceTab {
   quickTarget?: string;
   /** Credential chosen for a quick connect. */
   credentialId?: string;
+  /**
+   * Password typed for this one connection only. Held just long enough to open
+   * the session; Rust discards it and never persists it.
+   */
+  oneTimePassword?: string;
   /** Unsaved indicator (remote editor, config draft…). */
   dirty?: boolean;
 }

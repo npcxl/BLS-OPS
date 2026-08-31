@@ -16,6 +16,26 @@ export default defineConfig(async () => ({
     },
   },
 
+  build: {
+    // Keep the initial shell small: the terminal stack is lazy-loaded, and the
+    // remaining vendor code is split so app edits don't invalidate it in cache.
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("@xterm")) return "xterm";
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("/react-dom/")) {
+            return "react";
+          }
+          if (id.includes("lucide-react")) return "icons";
+          return "vendor";
+        },
+      },
+    },
+    // The bundle ships inside the desktop app, so source maps only bloat it.
+    sourcemap: false,
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

@@ -610,17 +610,34 @@ fn load_secrets(credential: &CredentialRecord) -> Result<CredentialSecrets, Stri
     })
 }
 
+/// Builds one hop of the connection.
+///
+/// `one_time_password` is used as-is and never persisted — it never reaches the
+/// keyring or the database. It applies to this hop only; a jump host keeps
+/// using its own stored credential, because the typed password is for the
+/// destination the user named.
 fn build_target(
     conn: &Connection,
     host: String,
     port: i64,
     username: String,
     credential_id: Option<String>,
+    one_time_password: Option<String>,
     proxy_jump_id: Option<String>,
 ) -> Result<ConnectTarget, String> {
-    let credential_id = credential_id.ok_or_else(|| "请先为该连接选择凭据".to_string())?;
-    let credential = require_existing_credential(conn, &credential_id)?;
-    let secrets = load_secrets(&credential)?;
+    let secrets = match one_time_password {
+        Some(password) => CredentialSecrets {
+            credential_type: "password".to_string(),
+            secret: password,
+            passphrase: None,
+        },
+        None => {
+            let credential_id = credential_id.ok_or_else(|| "请先为该连接选择凭据".to_string())?;
+            let credential = require_existing_credential(conn, &credential_id)?;
+            load_secrets(&credential)?
+        }
+    };
+
     let known_fingerprint = db::get_known_host(conn, &host, port)
         .map_err(|error| error.to_string())?
         .filter(|record| record.status == "confirmed")
@@ -637,6 +654,7 @@ fn build_target(
                 jump.port,
                 jump.username,
                 jump.credential_id,
+                None,
                 jump.proxy_jump_id,
             )?))
         }
@@ -703,6 +721,9 @@ pub async fn ssh_connect(
     server_id: Option<String>,
     target: Option<String>,
     credential_id: Option<String>,
+    // Password typed for this one connection. Used to authenticate and then
+    // dropped — it never reaches the keyring, the database or a log.
+    password: Option<String>,
     cols: Option<u32>,
     rows: Option<u32>,
 ) -> Result<SshConnectResult, String> {
@@ -715,6 +736,7 @@ pub async fn ssh_connect(
         server_id,
         target,
         credential_id,
+        password,
         cols,
         rows,
     )
@@ -820,6 +842,8 @@ pub async fn server_test_connection(
         Some(server_id),
         None,
         None,
+        // A saved server always uses its stored credential.
+        None,
         80,
         24,
     )
@@ -842,6 +866,8 @@ async fn ssh_connect_internal(
     server_id: Option<String>,
     target: Option<String>,
     credential_id: Option<String>,
+    // Password typed for this one connection; used and discarded, never stored.
+    password: Option<String>,
     cols: u32,
     rows: u32,
 ) -> Result<ConnectAttempt, String> {
@@ -858,6 +884,7 @@ async fn ssh_connect_internal(
                     server.port,
                     server.username.clone(),
                     server.credential_id.clone().or(credential_id),
+                    password,
                     server.proxy_jump_id.clone(),
                 )?;
                 (server.id.clone(), server.name.clone(), resolved)
@@ -872,6 +899,7 @@ async fn ssh_connect_internal(
                     i64::from(port),
                     username.clone(),
                     credential_id,
+                    password,
                     None,
                 )?;
                 (String::new(), format!("{username}@{host}:{port}"), resolved)

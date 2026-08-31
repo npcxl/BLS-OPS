@@ -10,6 +10,15 @@ import { cn } from "@/lib/cn";
 
 /** Workbench Home — spec §28. All data comes from SQLite; nothing is mocked. */
 
+/** macOS-style grouped list — a rounded panel whose rows are divided. */
+function ListPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+      <div className="divide-y divide-line/60">{children}</div>
+    </div>
+  );
+}
+
 function Section({
   title,
   count,
@@ -22,11 +31,15 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1.5">
+    <section className="flex flex-col gap-2">
       <div className="flex h-6 items-center justify-between">
         <h2 className="text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
           {title}
-          {typeof count === "number" && <span className="ml-1.5 text-fg-muted">{count}</span>}
+          {typeof count === "number" && (
+            <span className="ml-1.5 rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
+              {count}
+            </span>
+          )}
         </h2>
         {actions}
       </div>
@@ -93,8 +106,8 @@ export function WorkbenchHome() {
     <div className="h-full overflow-y-auto bg-app" data-selectable>
       <div className="mx-auto flex max-w-[760px] flex-col gap-6 p-6">
         <div>
-          <h1 className="text-20 font-semibold text-fg">工作台</h1>
-          <p className="mt-0.5 text-12 text-fg-muted">本地 SSH 运维控制台 — 服务器、终端、凭据。</p>
+          <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-fg">工作台</h1>
+          <p className="mt-1 text-12 text-fg-muted">本地 SSH 运维控制台 — 服务器、终端、凭据。</p>
         </div>
 
         <Section title="快速连接">
@@ -112,7 +125,7 @@ export function WorkbenchHome() {
                 }}
                 placeholder="user@host:22 — 快速连接"
                 spellCheck={false}
-                className="h-[34px] w-full rounded-[6px] border border-line bg-surface-1 pl-8 pr-2 text-13 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+                className="h-[34px] w-full rounded-[8px] border border-line bg-surface-1/70 pl-8 pr-2 text-13 text-fg outline-none placeholder:text-fg-subtle shadow-[inset_0_1px_0_rgb(255_255_255/0.45)] focus:border-accent"
               />
             </div>
             <Button variant="primary" size="lg" disabled={!qc.trim()} onClick={startQuickConnect}>
@@ -137,12 +150,12 @@ export function WorkbenchHome() {
           {recent.length === 0 ? (
             <p className="text-12 text-fg-subtle">还没有连接记录。连接一次后会出现在这里。</p>
           ) : (
-            <div className="flex flex-col gap-0.5">
+            <ListPanel>
               {recent.map((session) => (
                 <button
                   key={session.id}
                   type="button"
-                  className="flex h-9 items-center gap-2 rounded-[6px] px-2.5 text-left hover:bg-surface-hover"
+                  className="flex h-10 w-full items-center gap-2.5 px-2.5 text-left transition-colors hover:bg-surface-hover/60"
                   onClick={() =>
                     openServer(
                       session.server_id,
@@ -170,12 +183,12 @@ export function WorkbenchHome() {
                     <span className="shrink-0 truncate text-11 text-danger">{session.error_message}</span>
                   )}
                   <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
-                    <Clock size={11} />
+                    <Clock size={12} />
                     {relativeTime(session.connected_at ?? session.disconnected_at)}
                   </span>
                 </button>
               ))}
-            </div>
+            </ListPanel>
           )}
         </Section>
 
@@ -188,7 +201,7 @@ export function WorkbenchHome() {
                 <button
                   key={server.id}
                   type="button"
-                  className="flex h-[30px] items-center gap-1.5 rounded-control border border-line bg-surface-1 px-2.5 text-12 text-fg hover:border-line-strong hover:bg-surface-hover"
+                  className="flex h-[30px] items-center gap-1.5 rounded-[9px] border border-line bg-surface-1/70 px-2.5 text-12 text-fg shadow-[0_1px_2px_rgb(15_23_42/0.05)] transition-colors hover:border-line-strong hover:bg-surface-hover hover:shadow-[0_2px_6px_rgb(15_23_42/0.08)]"
                   onClick={() => openServer(server.id, server.name, server.host, server.port)}
                 >
                   <Star size={12} className="fill-current text-accent" />
@@ -214,11 +227,11 @@ export function WorkbenchHome() {
           {servers.length === 0 ? (
             <p className="text-12 text-fg-subtle">还没有服务器。请在左侧“终端 → 服务器列表”中新增。</p>
           ) : (
-            <div className="flex flex-col gap-0.5">
+            <ListPanel>
               {servers.slice(0, 8).map((server) => (
                 <div
                   key={server.id}
-                  className="group flex h-9 items-center gap-2 rounded-[6px] px-2.5 hover:bg-surface-hover"
+                  className="group flex h-10 w-full items-center gap-2.5 px-2.5 transition-colors hover:bg-surface-hover/60"
                 >
                   <Server size={13} className="shrink-0 text-fg-subtle" />
                   <button
@@ -240,7 +253,7 @@ export function WorkbenchHome() {
                     className="shrink-0 rounded p-1 text-fg-subtle hover:text-accent"
                     onClick={() => void setFavorite(server.id, !server.favorite)}
                   >
-                    <Star size={12} className={server.favorite ? "fill-current text-accent" : ""} />
+                    <Star size={13} className={server.favorite ? "fill-current text-accent" : ""} />
                   </button>
                   <button
                     type="button"
@@ -252,11 +265,11 @@ export function WorkbenchHome() {
                       }
                     }}
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
               ))}
-            </div>
+            </ListPanel>
           )}
         </Section>
 

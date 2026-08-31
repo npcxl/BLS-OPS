@@ -3183,6 +3183,7 @@ dependencies = [
  "chrono",
  "dirs",
  "keyring",
+ "rand",
  "rusqlite",
  "russh",
  "serde",

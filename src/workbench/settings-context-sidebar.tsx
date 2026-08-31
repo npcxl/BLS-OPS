@@ -35,6 +35,15 @@ function EmptyRow({ children }: { children: React.ReactNode }) {
   return <p className="px-2.5 py-2 text-11 text-fg-subtle">{children}</p>;
 }
 
+/** macOS-style grouped inset list — a rounded panel whose rows are divided. */
+function ListGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mx-2.5 overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+      <div className="divide-y divide-line/60">{children}</div>
+    </div>
+  );
+}
+
 /**
  * Collapsible list backed by a loader. Rows are only fetched once the section
  * is expanded, so opening 设置 never pays for queries nobody looks at.
@@ -190,42 +199,51 @@ export function SettingsContextSidebar() {
       {credentials.length === 0 ? (
         <p className="px-2.5 py-2 text-11 text-fg-subtle">暂无凭据</p>
       ) : (
-        credentials.map((credential) => (
-          <div
-            key={credential.id}
-            className="group flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 hover:bg-surface-hover"
-          >
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-center gap-2 text-left"
-              onClick={() => setEditing(credential)}
+        <ListGroup>
+          {credentials.map((credential) => (
+            <div
+              key={credential.id}
+              className="group flex w-full items-center gap-2 px-2.5 py-2 transition-colors hover:bg-surface-hover/60"
             >
-              <KeyRound size={13} className="shrink-0 text-fg-subtle" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-12 text-fg">{credential.name}</span>
-                <span className="block truncate text-11 text-fg-subtle">
-                  {credential.username} ·{" "}
-                  {credential.credential_type === "private_key" ? "私钥" : "密码"} ·{" "}
-                  {credential.secret_ref ? "密钥已保存" : "缺少密钥"}
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                onClick={() => setEditing(credential)}
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-fg-subtle">
+                  <KeyRound size={13} />
                 </span>
-              </span>
-            </button>
-            <button
-              type="button"
-              aria-label={`删除凭据 ${credential.name}`}
-              className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-              onClick={() => void remove(credential)}
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        ))
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-12 text-fg">{credential.name}</span>
+                  <span className="block truncate text-11 text-fg-subtle">
+                    {credential.username} ·{" "}
+                    {credential.credential_type === "private_key" ? "私钥" : "密码"} ·{" "}
+                    {credential.secret_ref ? "密钥已保存" : "缺少密钥"}
+                  </span>
+                </span>
+                <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
+              </button>
+              <button
+                type="button"
+                aria-label={`删除凭据 ${credential.name}`}
+                className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
+                onClick={() => void remove(credential)}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </ListGroup>
       )}
 
       <div className="mt-3 px-2.5">
         <SubTitle>已知主机</SubTitle>
       </div>
-      <KnownHostsPanel />
+      <div className="mx-2.5 overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+        <div className="divide-y divide-line/60">
+          <KnownHostsPanel />
+        </div>
+      </div>
 
       <div className="mt-3">
         <CollapsibleList

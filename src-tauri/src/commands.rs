@@ -6,7 +6,7 @@ use crate::{
     db,
     db::{CredentialRecord, ServerRecord},
     keyring,
-    ssh::{CredentialSecrets, ConnectTarget},
+    ssh::{ConnectTarget, CredentialSecrets},
     state::AppState,
 };
 
@@ -16,21 +16,30 @@ fn open_db(state: &AppState) -> Result<Connection, String> {
     state.db.open().map_err(|error| error.to_string())
 }
 
-fn record_audit(state: &AppState, action: &str, server_id: Option<&str>, server_name: Option<&str>, details: &str) {
+fn record_audit(
+    state: &AppState,
+    action: &str,
+    server_id: Option<&str>,
+    server_name: Option<&str>,
+    details: &str,
+) {
     let Ok(conn) = state.db.open() else { return };
-    let _ = db::insert_audit_log(&conn, &db::AuditLogRecord {
-        id: uuid::Uuid::new_v4().to_string(),
-        action: action.to_string(),
-        timestamp: db::AppDb::now(),
-        user_id: None,
-        server_id: server_id.map(str::to_string),
-        server_name: server_name.map(str::to_string),
-        project_id: None,
-        project_name: None,
-        details_json: details.to_string(),
-        ip_address: None,
-        user_agent: Some("ops-workbench".to_string()),
-    });
+    let _ = db::insert_audit_log(
+        &conn,
+        &db::AuditLogRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            action: action.to_string(),
+            timestamp: db::AppDb::now(),
+            user_id: None,
+            server_id: server_id.map(str::to_string),
+            server_name: server_name.map(str::to_string),
+            project_id: None,
+            project_name: None,
+            details_json: details.to_string(),
+            ip_address: None,
+            user_agent: Some("ops-workbench".to_string()),
+        },
+    );
 }
 
 fn require_existing_credential(conn: &Connection, id: &str) -> Result<CredentialRecord, String> {
@@ -46,7 +55,10 @@ fn require_existing_credential(conn: &Connection, id: &str) -> Result<Credential
 /// All referential checks for a server, kept free of Tauri types so it can be
 /// unit-tested directly.
 fn validate_server(conn: &Connection, server: &ServerRecord) -> Result<(), String> {
-    if server.name.trim().is_empty() || server.host.trim().is_empty() || server.username.trim().is_empty() {
+    if server.name.trim().is_empty()
+        || server.host.trim().is_empty()
+        || server.username.trim().is_empty()
+    {
         return Err("服务器名称、主机和用户名不能为空".to_string());
     }
     if !(1..=65535).contains(&server.port) {
@@ -56,7 +68,11 @@ fn validate_server(conn: &Connection, server: &ServerRecord) -> Result<(), Strin
     if let Some(credential_id) = server.credential_id.as_deref() {
         require_existing_credential(conn, credential_id)?;
     }
-    if let Some(group_id) = server.group_id.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(group_id) = server
+        .group_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         let exists = db::list_server_groups(conn)
             .map_err(|error| error.to_string())?
             .iter()
@@ -65,7 +81,11 @@ fn validate_server(conn: &Connection, server: &ServerRecord) -> Result<(), Strin
             return Err("所选分组不存在".to_string());
         }
     }
-    if let Some(jump_id) = server.proxy_jump_id.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(jump_id) = server
+        .proxy_jump_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         if jump_id == server.id {
             return Err("跳板机不能是服务器自身".to_string());
         }
@@ -95,7 +115,10 @@ pub fn server_get(state: State<'_, AppState>, id: String) -> Result<Option<Serve
 }
 
 #[tauri::command]
-pub fn server_save(state: State<'_, AppState>, server: ServerRecord) -> Result<ServerRecord, String> {
+pub fn server_save(
+    state: State<'_, AppState>,
+    server: ServerRecord,
+) -> Result<ServerRecord, String> {
     let conn = open_db(&state)?;
     validate_server(&conn, &server)?;
 
@@ -107,14 +130,20 @@ pub fn server_save(state: State<'_, AppState>, server: ServerRecord) -> Result<S
     server.host = server.host.trim().to_string();
     server.username = server.username.trim().to_string();
     server.group_id = server.group_id.filter(|value| !value.trim().is_empty());
-    server.proxy_jump_id = server.proxy_jump_id.filter(|value| !value.trim().is_empty());
+    server.proxy_jump_id = server
+        .proxy_jump_id
+        .filter(|value| !value.trim().is_empty());
     server.last_connected_at = existing.and_then(|item| item.last_connected_at);
     server.updated_at = db::AppDb::now();
 
     db::insert_or_replace_server(&conn, &server).map_err(|error| error.to_string())?;
     record_audit(
         &state,
-        if is_new { "server_create" } else { "server_update" },
+        if is_new {
+            "server_create"
+        } else {
+            "server_update"
+        },
         Some(&server.id),
         Some(&server.name),
         &server.host,
@@ -141,7 +170,11 @@ pub fn server_delete(state: State<'_, AppState>, id: String) -> Result<db::Casca
 }
 
 #[tauri::command]
-pub fn server_set_favorite(state: State<'_, AppState>, id: String, favorite: bool) -> Result<(), String> {
+pub fn server_set_favorite(
+    state: State<'_, AppState>,
+    id: String,
+    favorite: bool,
+) -> Result<(), String> {
     let conn = open_db(&state)?;
     db::set_server_favorite(&conn, &id, favorite).map_err(|error| error.to_string())
 }
@@ -157,7 +190,10 @@ pub fn group_list(state: State<'_, AppState>) -> Result<Vec<db::ServerGroupRecor
 }
 
 #[tauri::command]
-pub fn group_save(state: State<'_, AppState>, group: db::ServerGroupRecord) -> Result<db::ServerGroupRecord, String> {
+pub fn group_save(
+    state: State<'_, AppState>,
+    group: db::ServerGroupRecord,
+) -> Result<db::ServerGroupRecord, String> {
     if group.name.trim().is_empty() {
         return Err("分组名称不能为空".to_string());
     }
@@ -219,8 +255,14 @@ pub fn credential_save(
     credential.username = credential.username.trim().to_string();
     credential.updated_at = db::AppDb::now();
 
-    let trimmed_secret = secret.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    let trimmed_passphrase = passphrase.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let trimmed_secret = secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let trimmed_passphrase = passphrase
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let is_new_secret = trimmed_secret.is_some();
 
     if existing.is_none() && trimmed_secret.is_none() {
@@ -272,7 +314,11 @@ pub fn credential_save(
             }
             record_audit(
                 &state,
-                if existing.is_none() { "credential_create" } else { "credential_update" },
+                if existing.is_none() {
+                    "credential_create"
+                } else {
+                    "credential_update"
+                },
                 None,
                 None,
                 &format!("{} (secret={})", credential.name, is_new_secret),
@@ -307,20 +353,30 @@ pub fn credential_delete(
     let credential = db::get_credential(&conn, &id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "凭据不存在".to_string())?;
-    let references = db::count_servers_by_credential(&conn, &id).map_err(|error| error.to_string())?;
+    let references =
+        db::count_servers_by_credential(&conn, &id).map_err(|error| error.to_string())?;
 
     if references > 0 && force != Some(true) {
-        return Ok(CredentialDeleteResult { deleted: false, references });
+        return Ok(CredentialDeleteResult {
+            deleted: false,
+            references,
+        });
     }
 
     db::delete_credential(&conn, &id).map_err(|error| error.to_string())?;
-    for reference in [credential.secret_ref, credential.passphrase_ref].into_iter().flatten() {
+    for reference in [credential.secret_ref, credential.passphrase_ref]
+        .into_iter()
+        .flatten()
+    {
         if !reference.trim().is_empty() {
             let _ = keyring::delete_secret(&reference);
         }
     }
     record_audit(&state, "credential_delete", None, None, &credential.name);
-    Ok(CredentialDeleteResult { deleted: true, references })
+    Ok(CredentialDeleteResult {
+        deleted: true,
+        references,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +390,11 @@ pub fn known_host_list(state: State<'_, AppState>) -> Result<Vec<db::KnownHostRe
 }
 
 #[tauri::command]
-pub fn known_host_get(state: State<'_, AppState>, host: String, port: i64) -> Result<Option<db::KnownHostRecord>, String> {
+pub fn known_host_get(
+    state: State<'_, AppState>,
+    host: String,
+    port: i64,
+) -> Result<Option<db::KnownHostRecord>, String> {
     let conn = open_db(&state)?;
     db::get_known_host(&conn, &host, port).map_err(|error| error.to_string())
 }
@@ -364,7 +424,13 @@ pub fn known_host_trust(
         return Err("端口必须在 1 到 65535 之间".to_string());
     }
     if !trust {
-        record_audit(&state, "known_host_reject", None, None, &format!("{host}:{port}"));
+        record_audit(
+            &state,
+            "known_host_reject",
+            None,
+            None,
+            &format!("{host}:{port}"),
+        );
         return Ok(None);
     }
     if fingerprint.trim().is_empty() {
@@ -379,7 +445,13 @@ pub fn known_host_trust(
         fingerprint_type.as_deref().unwrap_or("ssh-rsa"),
     )
     .map_err(|error| error.to_string())?;
-    record_audit(&state, "known_host_confirm", None, None, &format!("{host}:{port}"));
+    record_audit(
+        &state,
+        "known_host_confirm",
+        None,
+        None,
+        &format!("{host}:{port}"),
+    );
     Ok(Some(record))
 }
 
@@ -388,9 +460,13 @@ pub fn known_host_trust(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn session_list(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<db::SessionRecord>, String> {
+pub fn session_list(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<db::SessionRecord>, String> {
     let conn = open_db(&state)?;
-    db::list_recent_sessions(&conn, limit.unwrap_or(20).clamp(1, 200)).map_err(|error| error.to_string())
+    db::list_recent_sessions(&conn, limit.unwrap_or(20).clamp(1, 200))
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,36 +497,54 @@ pub fn history_record(
         return Ok(());
     }
     let conn = open_db(&state)?;
-    db::insert_command_history(&conn, &db::CommandHistoryRecord {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id,
-        server_id,
-        server_name,
-        command,
-        timestamp: db::AppDb::now(),
-        exit_code: None,
-        source: "terminal".to_string(),
-        output: None,
-    })
+    db::insert_command_history(
+        &conn,
+        &db::CommandHistoryRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+            server_id,
+            server_name,
+            command,
+            timestamp: db::AppDb::now(),
+            exit_code: None,
+            source: "terminal".to_string(),
+            output: None,
+        },
+    )
     .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn history_list(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<db::CommandHistoryRecord>, String> {
+pub fn history_list(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<db::CommandHistoryRecord>, String> {
     let conn = open_db(&state)?;
-    db::list_command_history(&conn, limit.unwrap_or(100).clamp(1, 500)).map_err(|error| error.to_string())
+    db::list_command_history(&conn, limit.unwrap_or(100).clamp(1, 500))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn audit_log_list(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec<db::AuditLogRecord>, String> {
+pub fn audit_log_list(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<db::AuditLogRecord>, String> {
     let conn = open_db(&state)?;
-    db::list_audit_logs(&conn, limit.unwrap_or(100).clamp(1, 500)).map_err(|error| error.to_string())
+    db::list_audit_logs(&conn, limit.unwrap_or(100).clamp(1, 500))
+        .map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
 // SSH
 // ---------------------------------------------------------------------------
 
+/// Returned by `ssh_connect` / `server_test_connection`.
+///
+/// `host` / `port` always describe the final destination (what the user sees
+/// in the tab). `challenge_host` / `challenge_port` describe the endpoint whose
+/// key must be trusted — with ProxyJump that is the jump host. The UI must save
+/// the fingerprint under the *challenge* endpoint; saving it under `host`
+/// would loop forever on a two-hop connection.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum SshConnectResult {
@@ -463,17 +557,23 @@ pub enum SshConnectResult {
     },
     HostKeyUnknown {
         session_id: String,
+        /// Endpoint to trust — a jump host when ProxyJump is in play.
+        challenge_host: String,
+        challenge_port: i64,
+        /// Final destination, for display only.
         host: String,
         port: i64,
-        hop: String,
         fingerprint: String,
         fingerprint_type: String,
     },
     HostKeyChanged {
         session_id: String,
+        /// Endpoint to re-trust — a jump host when ProxyJump is in play.
+        challenge_host: String,
+        challenge_port: i64,
+        /// Final destination, for display only.
         host: String,
         port: i64,
-        hop: String,
         fingerprint: String,
         fingerprint_type: String,
         known_fingerprint: String,
@@ -574,8 +674,16 @@ fn session_record(
         server_port: port,
         username: username.to_string(),
         status: status.to_string(),
-        connected_at: if status == "connected" { Some(now) } else { None },
-        disconnected_at: if status == "connected" { None } else { Some(now) },
+        connected_at: if status == "connected" {
+            Some(now)
+        } else {
+            None
+        },
+        disconnected_at: if status == "connected" {
+            None
+        } else {
+            Some(now)
+        },
         error_message: error,
         keep_alive_interval: crate::ssh::DEFAULT_KEEPALIVE_SECS as i64,
         reconnect_policy: "manual".to_string(),
@@ -601,7 +709,16 @@ pub async fn ssh_connect(
     let cols = cols.unwrap_or(120).clamp(20, 500);
     let rows = rows.unwrap_or(32).clamp(5, 200);
 
-    let (result, reader) = ssh_connect_internal(&state, session_id.clone(), server_id, target, credential_id, cols, rows).await?;
+    let (result, reader) = ssh_connect_internal(
+        &state,
+        session_id.clone(),
+        server_id,
+        target,
+        credential_id,
+        cols,
+        rows,
+    )
+    .await?;
 
     if let Some(mut reader) = reader {
         let app_handle = app.clone();
@@ -611,7 +728,8 @@ pub async fn ssh_connect(
         tauri::async_runtime::spawn(async move {
             while let Some(message) = reader.wait().await {
                 match message {
-                    russh::ChannelMsg::Data { data } | russh::ChannelMsg::ExtendedData { data, .. } => {
+                    russh::ChannelMsg::Data { data }
+                    | russh::ChannelMsg::ExtendedData { data, .. } => {
                         let _ = app_handle.emit(
                             &format!("ssh-output-{session_key}"),
                             String::from_utf8_lossy(&data).into_owned(),
@@ -633,7 +751,11 @@ pub async fn ssh_connect(
 }
 
 #[tauri::command]
-pub async fn ssh_input(state: State<'_, AppState>, session_id: String, data: String) -> Result<(), String> {
+pub async fn ssh_input(
+    state: State<'_, AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     state
         .ssh
         .input(&session_id, data.into_bytes())
@@ -642,13 +764,26 @@ pub async fn ssh_input(state: State<'_, AppState>, session_id: String, data: Str
 }
 
 #[tauri::command]
-pub async fn ssh_resize(state: State<'_, AppState>, session_id: String, cols: u32, rows: u32) -> Result<(), String> {
-    state.ssh.resize(&session_id, cols, rows).await.map_err(|error| error.to_string())
+pub async fn ssh_resize(
+    state: State<'_, AppState>,
+    session_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    state
+        .ssh
+        .resize(&session_id, cols, rows)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn ssh_keepalive(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    state.ssh.keepalive(&session_id).await.map_err(|error| error.to_string())
+    state
+        .ssh
+        .keepalive(&session_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -657,10 +792,15 @@ pub async fn ssh_status(state: State<'_, AppState>, session_id: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn ssh_disconnect(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+pub async fn ssh_disconnect(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
     state.ssh.disconnect(&session_id).await;
     let conn = open_db(&state)?;
-    db::update_session_status(&conn, &session_id, "disconnected", None).map_err(|error| error.to_string())?;
+    db::update_session_status(&conn, &session_id, "disconnected", None)
+        .map_err(|error| error.to_string())?;
     record_audit(&state, "ssh_disconnect", None, None, &session_id);
     let _ = app.emit(&format!("ssh-closed-{session_id}"), "user");
     Ok(())
@@ -674,7 +814,16 @@ pub async fn server_test_connection(
     server_id: String,
 ) -> Result<SshConnectResult, String> {
     let probe_session = format!("probe-{}", uuid::Uuid::new_v4());
-    let (result, _) = ssh_connect_internal(&state, probe_session.clone(), Some(server_id), None, None, 80, 24).await?;
+    let (result, _) = ssh_connect_internal(
+        &state,
+        probe_session.clone(),
+        Some(server_id),
+        None,
+        None,
+        80,
+        24,
+    )
+    .await?;
     state.ssh.disconnect(&probe_session).await;
     if let Ok(conn) = state.db.open() {
         let _ = db::update_session_status(&conn, &probe_session, "disconnected", None);
@@ -715,10 +864,16 @@ async fn ssh_connect_internal(
             }
             None => {
                 let raw = target.ok_or_else(|| "缺少连接目标".to_string())?;
-                let (username, host, port) =
-                    crate::ssh::parse_ssh_target(&raw, DEFAULT_SSH_PORT).map_err(|error| error.to_string())?;
-                let resolved =
-                    build_target(&conn, host.clone(), i64::from(port), username.clone(), credential_id, None)?;
+                let (username, host, port) = crate::ssh::parse_ssh_target(&raw, DEFAULT_SSH_PORT)
+                    .map_err(|error| error.to_string())?;
+                let resolved = build_target(
+                    &conn,
+                    host.clone(),
+                    i64::from(port),
+                    username.clone(),
+                    credential_id,
+                    None,
+                )?;
                 (String::new(), format!("{username}@{host}:{port}"), resolved)
             }
         }
@@ -733,18 +888,52 @@ async fn ssh_connect_internal(
     if let Ok(conn) = state.db.open() {
         let _ = db::insert_session(
             &conn,
-            &session_record(&session_id, &resolved_server_id, &server_name, &host, port, &username, "connecting", None, cols, rows),
+            &session_record(
+                &session_id,
+                &resolved_server_id,
+                &server_name,
+                &host,
+                port,
+                &username,
+                "connecting",
+                None,
+                cols,
+                rows,
+            ),
         );
     }
 
-    let outcome = state.ssh.connect(session_id.clone(), target, cols, rows).await;
+    let outcome = state
+        .ssh
+        .connect(session_id.clone(), target, cols, rows)
+        .await;
     let conn = open_db(state)?;
+
+    // The endpoint the user still has to trust. With ProxyJump this is a jump
+    // host, so it is deliberately *not* just `host:port`.
+    let hop = match &outcome {
+        Ok((connect_outcome, _)) => connect_outcome
+            .challenge_label()
+            .unwrap_or_else(|| format!("{host}:{port}")),
+        Err(_) => format!("{host}:{port}"),
+    };
 
     match outcome {
         Ok((crate::ssh::ConnectOutcome::Connected { host_key }, reader)) => {
             let _ = db::insert_session(
                 &conn,
-                &session_record(&session_id, &resolved_server_id, &server_name, &host, port, &username, "connected", None, cols, rows),
+                &session_record(
+                    &session_id,
+                    &resolved_server_id,
+                    &server_name,
+                    &host,
+                    port,
+                    &username,
+                    "connected",
+                    None,
+                    cols,
+                    rows,
+                ),
             );
             if !resolved_server_id.is_empty() {
                 let _ = db::touch_server_connection(&conn, &resolved_server_id);
@@ -768,30 +957,60 @@ async fn ssh_connect_internal(
                 reader,
             ))
         }
-        Ok((crate::ssh::ConnectOutcome::HostKeyUnknown { host_key, hop }, _)) => {
+        Ok((
+            crate::ssh::ConnectOutcome::HostKeyUnknown {
+                host_key,
+                challenge_host,
+                challenge_port,
+            },
+            _,
+        )) => {
             let _ = db::update_session_status(&conn, &session_id, "error", Some("主机指纹未确认"));
-            record_audit(state, "ssh_host_key_unknown", Some(&resolved_server_id), Some(&server_name), &hop);
+            record_audit(
+                state,
+                "ssh_host_key_unknown",
+                Some(&resolved_server_id),
+                Some(&server_name),
+                &hop,
+            );
             Ok((
                 SshConnectResult::HostKeyUnknown {
                     session_id,
+                    challenge_host,
+                    challenge_port: i64::from(challenge_port),
                     host,
                     port,
-                    hop,
                     fingerprint: host_key.fingerprint,
                     fingerprint_type: host_key.key_type,
                 },
                 None,
             ))
         }
-        Ok((crate::ssh::ConnectOutcome::HostKeyChanged { host_key, known_fingerprint, hop }, _)) => {
-            let _ = db::update_session_status(&conn, &session_id, "error", Some("主机指纹发生变化"));
-            record_audit(state, "ssh_host_key_changed", Some(&resolved_server_id), Some(&server_name), &hop);
+        Ok((
+            crate::ssh::ConnectOutcome::HostKeyChanged {
+                host_key,
+                known_fingerprint,
+                challenge_host,
+                challenge_port,
+            },
+            _,
+        )) => {
+            let _ =
+                db::update_session_status(&conn, &session_id, "error", Some("主机指纹发生变化"));
+            record_audit(
+                state,
+                "ssh_host_key_changed",
+                Some(&resolved_server_id),
+                Some(&server_name),
+                &hop,
+            );
             Ok((
                 SshConnectResult::HostKeyChanged {
                     session_id,
+                    challenge_host,
+                    challenge_port: i64::from(challenge_port),
                     host,
                     port,
-                    hop,
                     fingerprint: host_key.fingerprint,
                     fingerprint_type: host_key.key_type,
                     known_fingerprint,
@@ -979,7 +1198,18 @@ mod tests {
 
     #[test]
     fn session_record_tracks_status_and_geometry() {
-        let connected = session_record("sess-1", "s1", "web", "10.0.0.1", 22, "root", "connected", None, 100, 40);
+        let connected = session_record(
+            "sess-1",
+            "s1",
+            "web",
+            "10.0.0.1",
+            22,
+            "root",
+            "connected",
+            None,
+            100,
+            40,
+        );
         assert_eq!(connected.status, "connected");
         assert_eq!(connected.username, "root");
         assert_eq!(connected.terminal_cols, Some(100));

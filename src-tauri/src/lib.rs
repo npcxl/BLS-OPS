@@ -1,7 +1,8 @@
 mod commands;
 mod db;
 mod keyring;
-mod ssh;
+/// Public so the integration tests in `tests/` can drive the real SSH layer.
+pub mod ssh;
 mod state;
 
 use tauri::Manager;
@@ -12,7 +13,9 @@ pub fn run() {
         .setup(|app| {
             let base_dir = dirs::data_local_dir()
                 .or_else(dirs::data_dir)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+                .unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                });
             let db_path = base_dir.join("ops-workbench").join("ops-workbench.sqlite3");
             let app_db = db::AppDb::new(db_path.clone());
             if let Err(e) = app_db.init() {

@@ -10,6 +10,9 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db: AppDb) -> Self {
-        Self { db: Arc::new(db), ssh: SshSessionManager::default() }
+        Self {
+            db: Arc::new(db),
+            ssh: SshSessionManager::default(),
+        }
     }
 }

@@ -65,8 +65,8 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   };
 
   return (
-    <div className="flex h-[34px] shrink-0 items-stretch border-b border-line bg-surface-1/60 backdrop-blur-xl">
-      <div className="flex min-w-0 flex-1 items-stretch overflow-hidden">
+    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;
           return (
@@ -75,8 +75,10 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               role="tab"
               aria-selected={active}
               className={cn(
-                "group relative flex h-full max-w-[200px] shrink-0 cursor-default items-center gap-1.5 border-r border-line px-3 text-12 select-none",
-                active ? "border-t-2 border-t-accent bg-app text-fg" : "border-t-2 border-t-transparent text-fg-muted hover:bg-surface-hover hover:text-fg",
+                "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-12 select-none transition-colors duration-100",
+                active
+                  ? "bg-surface-active text-fg shadow-[inset_0_1px_0_rgb(255_255_255/0.55),0_1px_2px_rgb(15_23_42/0.06)]"
+                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
               )}
               onClick={() => setActiveTab(pane.id, tab.id)}
               onAuxClick={(e) => {
@@ -89,7 +91,10 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               <button
                 type="button"
                 aria-label={`关闭 ${tab.title}`}
-                className="ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle opacity-0 hover:bg-surface-hover hover:text-fg group-hover:opacity-100"
+                className={cn(
+                  "ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg",
+                  active ? "opacity-70 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100",
+                )}
                 onClick={(e) => {
                   e.stopPropagation();
                   closeTab(pane.id, tab.id);
@@ -104,7 +109,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
       <button
         type="button"
         aria-label="新建终端标签"
-        className="flex w-[34px] shrink-0 items-center justify-center text-fg-subtle hover:bg-surface-hover hover:text-fg"
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-fg-subtle hover:bg-surface-hover hover:text-fg"
         onClick={() => openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" })}
       >
         <Plus size={14} />

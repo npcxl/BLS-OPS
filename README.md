@@ -71,9 +71,13 @@ cargo test              # Rust 单元测试
 | **命令历史** | ✅ | 终端侧栏按会话+服务器过滤并可回放；设置页提供全局历史列表 |
 | **审计日志** | ✅ | 设置页查看 `audit_logs`（连接、断开、增删改、主机指纹决策） |
 | **Host Key 校验** | ✅ | 未信任 / 变更均弹窗拦截，拒绝则连接不成立 |
+| **ProxyJump 指纹信任** | ✅ | 挑战返回 `challenge_host` / `challenge_port`，依次信任跳板机与目标机 |
+| **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
+| **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 21 个测试（目标解析、迁移、级联删除、Known Hosts 去重、服务器校验、会话记录） |
-| **CI** | ✅ | `.github/workflows/ci.yml`（Windows：cargo check/test/build + pnpm build） |
+| **Rust 单元测试** | ✅ | 26 个（目标解析、主机密钥信任矩阵、迁移、级联删除、Known Hosts、服务器校验、会话记录） |
+| **SSH 端到端测试** | ✅ | 10 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开 |
+| **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` |
 | **Docker / Nginx / 部署 / 项目 / 文件 / AI** | ⏸ 暂停 | 仅保留占位说明，P0 验收通过前不开发 |
 
 ### 关于 Windows `0xc0000139`
@@ -81,10 +85,14 @@ cargo test              # Rust 单元测试
 历史记录里出现过启动崩溃（`STATUS_ENTRYPOINT_NOT_FOUND`）。当前状态：
 
 - `Cargo.lock` 中**不存在** `openssl-sys` / `libgit2-sys` / `libssh2-sys` 等需要外部 DLL 的原生依赖；SSH 走 rustls/ring（纯 Rust），SQLite 为 `bundled` 静态编译。
-- 本机验证：`cargo build` 生成的 `src-tauri/target/debug/ops-workbench.exe` 可正常启动并创建窗口（进程持续存活，窗口标题 `BLS-OPS`）。
-- CI 会在 Windows 上执行 `cargo check --all-targets`、`cargo test`、`cargo build`，状态显示在提交右侧。
+- **CI 每次提交都会在干净的 `windows-latest` 上运行启动冒烟测试**：构建后拉起 `ops-workbench.exe`，等待 20 秒，断言进程存活且创建了窗口（标题 `BLS-OPS`）。这是对 `0xc0000139` 的持续回归防线，不再依赖人工确认。
+- 本机同样验证过：`src-tauri/target/debug/ops-workbench.exe` 正常启动并保持运行。
 
 如在特定机器上仍遇到该错误，优先排查 PATH 中的第三方 OpenSSL / Git for Windows DLL 冲突。
+
+### 关于 CI 状态
+
+`.github/workflows/ci.yml` 已在版本控制中。若某次提交右侧没有状态检查，通常是**该提交尚未推送到 `origin`**——GitHub 只对已推送的 commit 运行 workflow。可用 `git status -sb` 确认分支是否领先于 origin。
 
 ---
 
@@ -168,11 +176,45 @@ BLS-OPS/
 ```ts
 type SshConnectResult =
   | { status: "connected"; session_id; host; port; fingerprint; fingerprint_type }
-  | { status: "host_key_unknown"; session_id; host; port; hop; fingerprint; fingerprint_type }
-  | { status: "host_key_changed"; ...; known_fingerprint }
+  | {
+      status: "host_key_unknown";
+      session_id;
+      challenge_host;
+      challenge_port; // ← 必须把指纹存到这个端点
+      host;
+      port; // 最终目标，仅用于展示
+      fingerprint;
+      fingerprint_type;
+    }
+  | { status: "host_key_changed"; ... challenge_host; challenge_port; known_fingerprint }
 ```
 
 后两种状态必须由用户确认指纹后重试，绝不会被当作“已连接”。
+
+`host` / `port` 是最终目标（Tab 显示的服务器），`challenge_host` / `challenge_port` 是需要被信任的端点。使用 ProxyJump 时两者**不同**——指纹必须存在 `challenge_*` 下，否则会污染错误主机并陷入无限重试。UI 会在跳板机场景下明确提示这一点。
+
+---
+
+## 🧪 测试
+
+```bash
+cd src-tauri
+cargo test                 # 26 单元测试 + 10 端到端测试
+cargo test --test ssh_e2e  # 只跑端到端
+```
+
+`tests/ssh_e2e.rs` 会在进程内启动**真实的 SSH 服务端**（russh server，ed25519 主机密钥，监听 127.0.0.1 随机端口），然后驱动生产代码里同一套 `SshSessionManager`。覆盖：
+
+- 首次连接返回未信任指纹，且挑战端点正确；
+- 指纹变化时返回 `HostKeyChanged` 并带上旧指纹；
+- **信任 → 重连 → 拿到 shell → 输入回显 → Resize** 全链路；
+- 密码错误被正常报错；
+- **ProxyJump 逐跳信任**：跳板机先挑战（端口是跳板机端口）→ 目标机再挑战（端口是目标机端口）→ 两端都信任后落到目标机 shell；
+- 跳板机拒绝隧道时有明确错误；
+- 断开后会话被移除，重复断开安全；
+- 多会话互不干扰。
+
+这套测试替代了“找一台真实服务器手测”的大部分价值，且在 CI 上每次提交都会跑。
 
 ---
 
@@ -182,7 +224,19 @@ type SshConnectResult =
 2. Rust 从 Keyring 读取密码 / 私钥 / 私钥口令。
 3. Rust 建立 SSH 连接，前端只接收终端输出。
 4. 主机指纹未确认或发生变化时连接被拒绝，需用户显式确认。
-5. `tauri.conf.json` 已启用 CSP，禁止外部脚本与网络访问。
+5. 在主机指纹被信任之前，**不会发送任何凭据**——握手阶段就中止，避免把密码交给不受信任的主机。
+6. `tauri.conf.json` 已启用 CSP，禁止外部脚本与网络访问。
+
+---
+
+## 🚫 数据真实性约定
+
+这个项目有一条硬性规则：**Mock 数据不得伪装成真实状态**。
+
+- `src/` 中不存在任何种子数据、示例数据或硬编码指标。空列表就是“用户还没有创建任何东西”。
+- 每个数字都必须能追到来源：状态栏的会话数来自 `session-store`，服务器/凭据/已知主机计数来自 SQLite。
+- 未实现的模块（文件、容器、网关、项目、部署、AI）在 UI 中明确显示“未实现”，不展示占位假数据。
+- 曾经存在一套与数据库模型并行的旧 domain 类型（`src/stores/domain/`，含 Docker/Nginx/部署等），已整目录删除——它与 `ServerRecord` 字段命名冲突，且无人引用，留着只会误导后续开发。
 
 ---
 

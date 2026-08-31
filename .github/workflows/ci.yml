@@ -4,10 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   backend:
-    name: Rust (${{ matrix.os }})
+    name: Rust / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,17 +32,46 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --all-targets
 
+      # Unit tests + the SSH end-to-end suite, which drives a real (in-process)
+      # SSH server: handshake, host-key trust, password auth, ProxyJump.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --all-targets
 
       - name: cargo build
         working-directory: src-tauri
         run: cargo build
+
+      # Regression guard for the Windows 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)
+      # crash: the app must actually start and stay alive on a clean runner.
+      - name: Smoke test - desktop app launches
+        shell: pwsh
+        working-directory: src-tauri/target/debug
+        run: |
+          $proc = Start-Process -FilePath ".\ops-workbench.exe" -PassThru
+          try {
+            Start-Sleep -Seconds 20
+            if ($proc.HasExited) {
+              Write-Error "ops-workbench.exe exited during startup with code $($proc.ExitCode)"
+              exit 1
+            }
+            $title = (Get-Process -Id $proc.Id).MainWindowTitle
+            Write-Host "App is running. Window title: '$title'"
+            if ([string]::IsNullOrWhiteSpace($title)) {
+              Write-Error "App process is alive but never created a window."
+              exit 1
+            }
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
 
   frontend:
     name: Frontend
@@ -52,5 +90,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # `pnpm build` runs `tsc && vite build`, so types are checked too.
       - name: Type check + build
         run: pnpm build

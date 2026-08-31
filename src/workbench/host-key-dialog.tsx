@@ -10,6 +10,9 @@ import { useSessionStore } from "@/stores/session-store";
  *
  * The connection is refused until the user accepts the fingerprint, and a
  * changed fingerprint is shown side by side with the previously trusted one.
+ *
+ * With ProxyJump the key usually belongs to a jump host, not to the server in
+ * the tab — that is called out explicitly so the user knows what they trust.
  */
 export function HostKeyDialog() {
   const challenge = useSessionStore((s) => s.challenge);
@@ -18,6 +21,7 @@ export function HostKeyDialog() {
 
   if (!challenge) return null;
   const changed = challenge.kind === "changed";
+  const endpoint = `${challenge.challengeHost}:${challenge.challengePort}`;
 
   const decide = async (trust: boolean) => {
     setBusy(true);
@@ -35,8 +39,8 @@ export function HostKeyDialog() {
       title={changed ? "主机指纹已变化" : "首次连接，请确认主机指纹"}
       description={
         changed
-          ? `${challenge.hop} 返回的主机密钥与已保存的不一致。如果这不是你预期中的变更，可能是中间人攻击——请拒绝并向服务器管理员核实。`
-          : `${challenge.hop} 的主机密钥尚未被信任。请核对指纹后再继续。`
+          ? `${endpoint} 返回的主机密钥与已保存的不一致。如果这不是你预期中的变更，可能是中间人攻击——请拒绝并向服务器管理员核实。`
+          : `${endpoint} 的主机密钥尚未被信任。请核对指纹后再继续。`
       }
       footer={
         <>
@@ -59,11 +63,23 @@ export function HostKeyDialog() {
           )}
           <div className="min-w-0 flex-1">
             <div className="text-11 text-fg-subtle">
-              {challenge.host}:{challenge.port} · {challenge.fingerprintType}
+              {endpoint} · {challenge.fingerprintType}
             </div>
             <code className="mt-1 block break-all font-mono text-12 text-fg">{challenge.fingerprint}</code>
           </div>
         </div>
+
+        {challenge.isJumpHop && (
+          <div className="rounded-[6px] border border-line bg-surface-1 px-3 py-2">
+            <p className="text-11 leading-relaxed text-fg-muted">
+              这是 <span className="text-fg">跳板机</span>的指纹，不是目标服务器{" "}
+              <span className="font-mono text-fg">
+                {challenge.targetHost}:{challenge.targetPort}
+              </span>{" "}
+              的。信任后会先记录跳板机，随后再询问目标服务器的指纹。
+            </p>
+          </div>
+        )}
 
         {changed && challenge.knownFingerprint && (
           <div className="rounded-[6px] border border-line bg-surface-1 px-3 py-2">

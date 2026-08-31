@@ -120,6 +120,15 @@ export interface AppInfo {
   arch: string;
 }
 
+/**
+ * Result of a connect attempt.
+ *
+ * `host` / `port` are the final destination (what the tab shows).
+ * `challenge_host` / `challenge_port` are the endpoint whose key must be
+ * trusted — with ProxyJump that is a jump host. The fingerprint MUST be saved
+ * under the challenge endpoint; saving it under `host` loops forever on a
+ * two-hop connection.
+ */
 export type SshConnectResult =
   | {
       status: "connected";
@@ -132,18 +141,24 @@ export type SshConnectResult =
   | {
       status: "host_key_unknown";
       session_id: string;
+      /** Endpoint to trust — the jump host when ProxyJump is in play. */
+      challenge_host: string;
+      challenge_port: number;
+      /** Final destination, for display only. */
       host: string;
       port: number;
-      hop: string;
       fingerprint: string;
       fingerprint_type: string;
     }
   | {
       status: "host_key_changed";
       session_id: string;
+      /** Endpoint to re-trust — the jump host when ProxyJump is in play. */
+      challenge_host: string;
+      challenge_port: number;
+      /** Final destination, for display only. */
       host: string;
       port: number;
-      hop: string;
       fingerprint: string;
       fingerprint_type: string;
       known_fingerprint: string;

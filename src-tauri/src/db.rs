@@ -150,7 +150,10 @@ fn add_column(conn: &Connection, table: &str, column: &str, definition: &str) ->
     if column_exists(conn, table, column)? {
         return Ok(());
     }
-    conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -364,7 +367,10 @@ pub fn delete_server_cascade(conn: &Connection, id: &str) -> Result<CascadeResul
     conn.execute("DELETE FROM ssh_sessions WHERE server_id = ?1", [id])?;
     conn.execute("DELETE FROM servers WHERE id = ?1", [id])?;
     // Any remaining server pointing at this one as a jump host would dangle.
-    conn.execute("UPDATE servers SET proxy_jump_id = NULL WHERE proxy_jump_id = ?1", [id])?;
+    conn.execute(
+        "UPDATE servers SET proxy_jump_id = NULL WHERE proxy_jump_id = ?1",
+        [id],
+    )?;
 
     Ok(CascadeResult { sessions, history })
 }
@@ -405,13 +411,22 @@ pub fn insert_or_replace_server_group(conn: &Connection, group: &ServerGroupReco
             sort_order=excluded.sort_order,
             updated_at=excluded.updated_at
         "#,
-        params![group.id, group.name, group.sort_order, group.created_at, group.updated_at],
+        params![
+            group.id,
+            group.name,
+            group.sort_order,
+            group.created_at,
+            group.updated_at
+        ],
     )?;
     Ok(())
 }
 
 pub fn delete_server_group(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute("UPDATE servers SET group_id = NULL WHERE group_id = ?1", [id])?;
+    conn.execute(
+        "UPDATE servers SET group_id = NULL WHERE group_id = ?1",
+        [id],
+    )?;
     conn.execute("DELETE FROM server_groups WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -432,7 +447,10 @@ pub fn get_server(conn: &Connection, id: &str) -> Result<Option<ServerRecord>> {
     }
 }
 
-pub fn insert_or_replace_credential(conn: &Connection, credential: &CredentialRecord) -> Result<()> {
+pub fn insert_or_replace_credential(
+    conn: &Connection,
+    credential: &CredentialRecord,
+) -> Result<()> {
     conn.execute(
         r#"
         INSERT INTO credentials (id, name, type, username, secret_ref, passphrase_ref, created_at, updated_at)
@@ -491,7 +509,10 @@ pub fn list_credentials(conn: &Connection) -> Result<Vec<CredentialRecord>> {
 pub fn delete_credential(conn: &Connection, id: &str) -> Result<()> {
     // Servers referencing a removed credential would be unable to connect, so the
     // reference is cleared explicitly instead of leaving a dangling id.
-    conn.execute("UPDATE servers SET credential_id = NULL WHERE credential_id = ?1", [id])?;
+    conn.execute(
+        "UPDATE servers SET credential_id = NULL WHERE credential_id = ?1",
+        [id],
+    )?;
     conn.execute("DELETE FROM credentials WHERE id = ?1", [id])?;
     Ok(())
 }
@@ -522,7 +543,8 @@ pub fn insert_known_host(conn: &Connection, host: &KnownHostRecord) -> Result<()
 }
 
 pub fn get_known_host(conn: &Connection, host: &str, port: i64) -> Result<Option<KnownHostRecord>> {
-    let mut stmt = conn.prepare("SELECT * FROM known_hosts WHERE host = ?1 AND port = ?2 LIMIT 1")?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM known_hosts WHERE host = ?1 AND port = ?2 LIMIT 1")?;
     let mut rows = stmt.query(params![host, port])?;
     if let Some(row) = rows.next()? {
         Ok(Some(KnownHostRecord {
@@ -576,13 +598,19 @@ pub fn trust_known_host(
     let now = AppDb::now();
     let existing = get_known_host(conn, host, port)?;
     let record = KnownHostRecord {
-        id: existing.as_ref().map(|item| item.id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        id: existing
+            .as_ref()
+            .map(|item| item.id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         host: host.to_string(),
         port,
         fingerprint: fingerprint.to_string(),
         fingerprint_type: fingerprint_type.to_string(),
         status: "confirmed".to_string(),
-        first_seen_at: existing.as_ref().map(|item| item.first_seen_at).unwrap_or(now),
+        first_seen_at: existing
+            .as_ref()
+            .map(|item| item.first_seen_at)
+            .unwrap_or(now),
         last_seen_at: now,
     };
     insert_known_host(conn, &record)?;
@@ -661,7 +689,8 @@ pub fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionReco
 }
 
 pub fn list_recent_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionRecord>> {
-    let mut stmt = conn.prepare("SELECT * FROM ssh_sessions ORDER BY COALESCE(connected_at, 0) DESC LIMIT ?1")?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM ssh_sessions ORDER BY COALESCE(connected_at, 0) DESC LIMIT ?1")?;
     let rows = stmt.query_map([limit], session_from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -678,7 +707,10 @@ pub fn update_session_status(
             params![status, error_message, AppDb::now(), id],
         )?;
     } else {
-        conn.execute("UPDATE ssh_sessions SET status = ?1, error_message = ?2 WHERE id = ?3", params![status, error_message, id])?;
+        conn.execute(
+            "UPDATE ssh_sessions SET status = ?1, error_message = ?2 WHERE id = ?3",
+            params![status, error_message, id],
+        )?;
     }
     Ok(())
 }
@@ -705,7 +737,8 @@ pub fn insert_command_history(conn: &Connection, history: &CommandHistoryRecord)
 }
 
 pub fn list_command_history(conn: &Connection, limit: i64) -> Result<Vec<CommandHistoryRecord>> {
-    let mut stmt = conn.prepare("SELECT * FROM command_history ORDER BY timestamp DESC LIMIT ?1")?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM command_history ORDER BY timestamp DESC LIMIT ?1")?;
     let rows = stmt.query_map([limit], |row| {
         Ok(CommandHistoryRecord {
             id: row.get("id")?,
@@ -820,7 +853,9 @@ mod tests {
     #[test]
     fn schema_reaches_current_version() {
         let conn = test_db();
-        let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).expect("user_version");
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
         assert_eq!(version, SCHEMA_VERSION);
     }
 
@@ -889,7 +924,10 @@ mod tests {
         insert_or_replace_server(&conn, &server("s1", "web")).unwrap();
         insert_session(
             &conn,
-            &SessionRecord { id: "sess-1".to_string(), ..session_fixture("s1", "web") },
+            &SessionRecord {
+                id: "sess-1".to_string(),
+                ..session_fixture("s1", "web")
+            },
         )
         .unwrap();
         insert_command_history(
@@ -925,7 +963,10 @@ mod tests {
 
         delete_server_cascade(&conn, "jump").unwrap();
 
-        assert_eq!(get_server(&conn, "target").unwrap().unwrap().proxy_jump_id, None);
+        assert_eq!(
+            get_server(&conn, "target").unwrap().unwrap().proxy_jump_id,
+            None
+        );
     }
 
     #[test]
@@ -953,7 +994,10 @@ mod tests {
         delete_credential(&conn, "c1").unwrap();
 
         assert_eq!(count_servers_by_credential(&conn, "c1").unwrap(), 0);
-        assert_eq!(get_server(&conn, "s1").unwrap().unwrap().credential_id, None);
+        assert_eq!(
+            get_server(&conn, "s1").unwrap().unwrap().credential_id,
+            None
+        );
     }
 
     #[test]

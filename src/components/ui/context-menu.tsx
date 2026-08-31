@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -37,6 +37,23 @@ const GAP = 4;
 export function ContextMenu({ state, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: state.x, y: state.y });
+  const [leaving, setLeaving] = useState(false);
+  const leaveTimer = useRef<number | null>(null);
+
+  const requestClose = useMemo(
+    () => () => {
+      if (leaving) return;
+      setLeaving(true);
+      leaveTimer.current = window.setTimeout(onClose, 120);
+    },
+    [leaving, onClose],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
+    };
+  }, []);
 
   // clamp to viewport so the menu never overflows the window
   useLayoutEffect(() => {
@@ -51,11 +68,11 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [requestClose]);
 
   // keyboard navigation over menu items
   const [focusIdx, setFocusIdx] = useState(0);
@@ -82,7 +99,10 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
     <div
       ref={ref}
       role="menu"
-      className="fixed z-[100] min-w-[180px] rounded-[10px] border border-line bg-surface-3 p-1 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+      className={cn(
+        "glass-panel-strong fixed z-[100] min-w-[180px] rounded-[12px] p-1 transition-[opacity,transform] duration-150 ease-out",
+        leaving ? "opacity-0 translate-y-1 scale-[0.985]" : "opacity-100 translate-y-0 scale-100",
+      )}
       style={{ left: pos.x, top: pos.y, paddingTop: MENU_PAD, paddingBottom: MENU_PAD }}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -99,14 +119,14 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
             role="menuitem"
             disabled={item.disabled}
             className={cn(
-              "flex h-7 w-full cursor-default items-center gap-2 rounded-[6px] px-2 text-12",
+              "flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] px-2 text-12 transition-colors",
               item.danger ? "text-danger" : "text-fg",
               active && "bg-surface-hover",
               item.disabled && "opacity-50",
             )}
             onMouseEnter={() => setFocusIdx(i)}
             onClick={() => {
-              onClose();
+              requestClose();
               if (!item.disabled && item.onSelect) item.onSelect();
             }}
           >

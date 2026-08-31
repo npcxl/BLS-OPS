@@ -48,20 +48,20 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
       onClick={onClick}
       aria-label={item.label}
       className={cn(
-        "group relative flex h-11 w-11 items-center justify-center rounded-[10px] outline-none transition-colors duration-100",
+        "group relative flex h-10 w-10 items-center justify-center rounded-[10px] outline-none transition-all duration-150",
         active ? "bg-surface-active text-accent" : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
       )}
     >
       {/* active indicator */}
       <span
         className={cn(
-          "absolute left-[7px] top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r-full transition-opacity",
+          "pointer-events-none absolute -left-2 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
           active ? "bg-accent opacity-100" : "opacity-0",
         )}
       />
-      <Icon size={18} strokeWidth={1.6} />
+      <Icon size={17} strokeWidth={1.6} />
       {/* hover label (tooltip-style) */}
-      <span className="pointer-events-none absolute left-[calc(100%+6px)] z-50 whitespace-nowrap rounded-[6px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
+      <span className="pointer-events-none absolute left-[calc(100%+8px)] z-50 whitespace-nowrap rounded-[8px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
         {item.label}
       </span>
     </button>
@@ -73,10 +73,13 @@ export function NavigationRail() {
   const setModule = useWorkbenchStore((s) => s.setModule);
 
   return (
-    <nav className="flex w-12 shrink-0 flex-col items-center border-r border-line bg-surface-1/60 py-1 backdrop-blur-xl" aria-label="Navigation">
+    <nav
+      className="flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-1/60 py-2 backdrop-blur-xl"
+      aria-label="Navigation"
+    >
       {NAV_ITEMS.map((item) =>
         item.divider ? (
-          <div key="divider" className="my-1 h-px w-6 bg-line" />
+          <div key="divider" className="my-1.5 h-px w-5 bg-line" />
         ) : (
           <RailButton key={item.id} item={item} active={activeModule === item.id} onClick={() => setModule(item.id)} />
         ),

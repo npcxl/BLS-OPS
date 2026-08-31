@@ -25,6 +25,9 @@ tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+[dev-dependencies]
+rand = "0.10"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)'] }
 

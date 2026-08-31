@@ -11,9 +11,10 @@ type Variant = "primary" | "secondary" | "ghost" | "outline" | "danger";
 type Size = "xs" | "sm" | "md" | "lg";
 
 const variantClasses: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:bg-accent/90 active:bg-accent/80",
+  primary:
+    "bg-accent text-white shadow-[0_1px_0_rgb(255_255_255/0.35)_inset,0_1px_2px_rgb(15_23_42/0.12)] hover:bg-accent/92 active:bg-accent/84",
   secondary:
-    "bg-surface-3 text-fg border border-line hover:bg-surface-hover hover:border-line-strong",
+    "bg-surface-2 text-fg border border-line shadow-[0_1px_0_rgb(255_255_255/0.45)_inset] hover:bg-surface-hover hover:border-line-strong",
   ghost: "text-fg-muted hover:text-fg hover:bg-surface-hover",
   outline: "text-fg border border-line-strong hover:bg-surface-hover hover:border-fg-subtle",
   danger: "text-danger hover:bg-danger/10",
@@ -36,8 +37,8 @@ export function Button({ variant = "ghost", size = "md", className, type = "butt
     <button
       type={type}
       className={cn(
-        "inline-flex shrink-0 cursor-default items-center justify-center rounded-control font-medium select-none",
-        "transition-colors duration-100",
+        "inline-flex shrink-0 cursor-default items-center justify-center rounded-[8px] font-medium select-none",
+        "transition-all duration-150 ease-out active:scale-[0.985]",
         "disabled:pointer-events-none disabled:opacity-50",
         variantClasses[variant],
         sizeClasses[size],

@@ -97,12 +97,12 @@ function ToolbarIcon({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex h-6 w-6 items-center justify-center rounded-[5px] text-fg-muted hover:bg-surface-hover hover:text-fg",
-        active && "text-accent",
+        "flex h-7 w-7 items-center justify-center rounded-[8px] border border-transparent text-fg-muted transition-all duration-150 ease-out hover:border-line hover:bg-surface-2 hover:text-fg active:scale-[0.98]",
+        active && "border-line bg-surface-active text-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]",
         disabled && "pointer-events-none opacity-40",
       )}
     >
-      <Icon size={14} strokeWidth={1.75} />
+      <Icon size={13} strokeWidth={1.75} />
     </button>
   );
 }
@@ -185,19 +185,25 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       }
 
       // Host key needs a human decision — never silently accepted.
+      // With ProxyJump `challenge_host` is a jump host, so the copy has to
+      // name the endpoint being trusted rather than the tab's destination.
+      const challengeLabel = `${result.challenge_host}:${result.challenge_port}`;
+      const isJumpHop = challengeLabel !== `${result.host}:${result.port}`;
       setPhase("error");
       setError(
         result.status === "host_key_changed"
-          ? `${result.hop} 的主机指纹已变化，请确认后再连接`
-          : `首次连接 ${result.hop}，请确认主机指纹`,
+          ? `${challengeLabel} 的主机指纹已变化，请确认后再连接`
+          : `首次连接 ${challengeLabel}，请确认主机指纹`,
       );
       setStatus(sessionId, "error", { error: "等待主机指纹确认" });
       raiseChallenge({
         sessionId,
         kind: result.status === "host_key_changed" ? "changed" : "unknown",
-        host: result.host,
-        port: result.port,
-        hop: result.hop,
+        challengeHost: result.challenge_host,
+        challengePort: result.challenge_port,
+        targetHost: result.host,
+        targetPort: result.port,
+        isJumpHop,
         fingerprint: result.fingerprint,
         fingerprintType: result.fingerprint_type,
         knownFingerprint: "known_fingerprint" in result ? result.known_fingerprint : undefined,
@@ -377,13 +383,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         )}
       </div>
 
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-line bg-surface-1 px-1.5">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
         <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
         <ToolbarIcon label="水平分栏" icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
         <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
-        <div className="mx-1.5 h-4 w-px bg-line" />
+        <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" ? (
           <ToolbarIcon
             label="断开连接"
@@ -408,9 +414,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
               }}
               placeholder="在回滚缓冲中查找"
               spellCheck={false}
-              className="h-[24px] w-48 rounded-[5px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+              className="h-[26px] w-48 rounded-[7px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
             />
-            <Button variant="ghost" size="xs" onClick={runSearch}>
+            <Button variant="ghost" size="xs" className="rounded-[7px]" onClick={runSearch}>
               查找
             </Button>
             {searchState && (

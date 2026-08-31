@@ -25,9 +25,17 @@ export interface LiveSession {
 export interface HostKeyChallenge {
   sessionId: string;
   kind: "unknown" | "changed";
-  host: string;
-  port: number;
-  hop: string;
+  /**
+   * Endpoint whose key must be trusted. With ProxyJump this is the jump host,
+   * NOT the server shown in the tab — always save under these values.
+   */
+  challengeHost: string;
+  challengePort: number;
+  /** Final destination, used only to explain the context to the user. */
+  targetHost: string;
+  targetPort: number;
+  /** True when the challenge comes from a jump host rather than the target. */
+  isJumpHop: boolean;
   fingerprint: string;
   fingerprintType: string;
   knownFingerprint?: string;
@@ -81,9 +89,10 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     if (!challenge) return;
     set({ challenge: null });
     try {
+      // Trust the endpoint that presented the key, not the tab's destination.
       await opsApi.trustKnownHost(
-        challenge.host,
-        challenge.port,
+        challenge.challengeHost,
+        challenge.challengePort,
         challenge.fingerprint,
         challenge.fingerprintType,
         trust,

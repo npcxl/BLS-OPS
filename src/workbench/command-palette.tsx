@@ -81,12 +81,12 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[120] flex items-start justify-center bg-black/30 px-4 pt-[12vh]" onMouseDown={onClose}>
+    <div className="overlay-scrim fixed inset-0 z-[120] flex items-start justify-center bg-black/20 px-4 pt-[12vh]" onMouseDown={onClose}>
       <div
-        className="glass-panel-strong w-full max-w-[720px] overflow-hidden rounded-2xl"
+        className="overlay-enter glass-panel-strong w-full max-w-[720px] overflow-hidden rounded-2xl"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex h-12 items-center gap-2 border-b border-line px-3">
+        <div className="flex h-12 items-center gap-2 border-b border-line/80 px-3">
           <Search size={14} className="text-fg-subtle" />
           <input
             ref={inputRef}
@@ -95,10 +95,10 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
             placeholder="搜索操作、服务器、任务…"
             className="h-full flex-1 bg-transparent text-13 text-fg outline-none placeholder:text-fg-subtle"
           />
-          <span className="rounded-control border border-line bg-surface-2 px-2 py-1 text-11 text-fg-muted">Ctrl+K</span>
+          <span className="rounded-[7px] border border-line bg-surface-2 px-2 py-1 text-11 text-fg-muted shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]">Ctrl+K</span>
         </div>
 
-        <div className="max-h-[420px] overflow-y-auto p-1">
+        <div className="max-h-[420px] overflow-y-auto p-1.5">
           {filtered.length === 0 ? (
             <div className="px-3 py-8 text-center text-12 text-fg-muted">未找到匹配的命令。</div>
           ) : (
@@ -107,8 +107,10 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
                 key={action.id}
                 type="button"
                 className={cn(
-                  "flex w-full items-center gap-3 rounded-[6px] px-3 py-2 text-left",
-                  index === activeIndex ? "bg-surface-hover" : "hover:bg-surface-hover/70",
+                  "flex w-full items-center gap-3 rounded-[7px] px-3 py-2 text-left transition-colors",
+                  index === activeIndex
+                    ? "bg-accent/10 text-fg"
+                    : "hover:bg-surface-hover/70",
                 )}
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => {

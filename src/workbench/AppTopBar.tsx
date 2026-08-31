@@ -71,8 +71,8 @@ export function AppTopBar() {
           <WindowButton kind="maximize" />
         </div>
         <div data-tauri-drag-region className="flex min-w-0 items-center gap-2 pl-0.5">
-          <div className="flex h-6 w-6 items-center justify-center rounded-[7px] bg-gradient-to-b from-surface-3 to-surface-2 text-accent ring-1 ring-line-strong">
-            <SquareTerminal size={13} strokeWidth={2} />
+          <div className="flex h-7 w-7 items-center justify-center rounded-[9px] bg-accent-soft text-accent ring-1 ring-line-strong/60 shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]">
+            <SquareTerminal size={14} strokeWidth={2} />
           </div>
           <span className="truncate text-12 font-medium text-fg-muted">{APP_NAME}</span>
         </div>

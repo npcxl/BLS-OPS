@@ -20,10 +20,28 @@ function findPane(root: WorkbenchPane | null, id: string): WorkbenchPane | null 
   return null;
 }
 
+function findLeafWithTab(root: WorkbenchPane, tabId: string): WorkbenchPane | null {
+  if (root.tabs.some((tab) => tab.id === tabId)) return root;
+  for (const child of root.children ?? []) {
+    const found = findLeafWithTab(child, tabId);
+    if (found) return found;
+  }
+  return null;
+}
+
 function mapPane(root: WorkbenchPane, id: string, fn: (p: WorkbenchPane) => WorkbenchPane): WorkbenchPane {
   if (root.id === id) return fn(root);
   if (!root.children) return root;
   return { ...root, children: root.children.map((child) => mapPane(child, id, fn)) };
+}
+
+function mapTab(root: WorkbenchPane, tabId: string, fn: (tab: WorkspaceTab) => WorkspaceTab): WorkbenchPane {
+  const withTabs: WorkbenchPane = {
+    ...root,
+    tabs: root.tabs.map((tab) => (tab.id === tabId ? fn(tab) : tab)),
+  };
+  if (!root.children) return withTabs;
+  return { ...withTabs, children: root.children.map((child) => mapTab(child, tabId, fn)) };
 }
 
 function firstLeafPane(root: WorkbenchPane): WorkbenchPane {
@@ -85,10 +103,13 @@ interface WorkbenchState {
   setActiveTab: (paneId: string, tabId: string) => void;
   openTab: (tab: WorkspaceTab, opts?: { paneId?: string; split?: SplitDirection }) => void;
   closeTab: (paneId: string, tabId: string) => void;
+  closeTabById: (tabId: string) => void;
   closeOtherTabs: (paneId: string, tabId: string) => void;
   closeAllTabs: (paneId: string) => void;
   splitPane: (paneId: string, direction: SplitDirection) => void;
   replacePane: (paneId: string, nextPane: WorkbenchPane) => void;
+  /** Patches a tab in place — used when a placeholder terminal picks a server. */
+  updateTab: (tabId: string, patch: Partial<WorkspaceTab>) => void;
 }
 
 function normalizeTab(tab: WorkspaceTab): WorkspaceTab {
@@ -104,6 +125,39 @@ function createSplitPane(target: WorkbenchPane, direction: SplitDirection, tab: 
     tabs: [],
     activeTabId: null,
     children: [paneA, paneB],
+  };
+}
+
+interface PanePatch {
+  rootPane: WorkbenchPane;
+  focusedPaneId: string | null;
+}
+
+/** Closing a tab may collapse a pane, so the root is rebuilt as a whole. */
+function closeTabInPane(state: WorkbenchState, paneId: string, tabId: string): PanePatch | null {
+  const pane = findPane(state.rootPane, paneId);
+  if (!pane || !isLeafPane(pane)) return null;
+  const index = pane.tabs.findIndex((tab) => tab.id === tabId);
+  if (index < 0) return null;
+
+  const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
+  if (tabs.length === 0) {
+    if (state.rootPane.id === paneId) {
+      const home = createHomeTab();
+      return {
+        rootPane: { id: state.rootPane.id, tabs: [home], activeTabId: home.id },
+        focusedPaneId: paneId,
+      };
+    }
+    const nextRoot = removePane(state.rootPane, paneId) ?? createInitialRootPane();
+    return { rootPane: nextRoot, focusedPaneId: firstLeafPane(nextRoot).id };
+  }
+
+  const activeTabId =
+    pane.activeTabId === tabId ? (tabs[index] ?? tabs[index - 1] ?? tabs[0]).id : pane.activeTabId;
+  return {
+    rootPane: replacePane(state.rootPane, paneId, { ...pane, tabs, activeTabId }),
+    focusedPaneId: paneId,
   };
 }
 
@@ -164,29 +218,13 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
       };
     }),
 
-  closeTab: (paneId, tabId) =>
+  closeTab: (paneId, tabId) => set((state) => closeTabInPane(state, paneId, tabId) ?? state),
+
+  closeTabById: (tabId) =>
     set((state) => {
-      const pane = findPane(state.rootPane, paneId);
-      if (!pane || !isLeafPane(pane)) return state;
-      const index = pane.tabs.findIndex((tab) => tab.id === tabId);
-      if (index < 0) return state;
-
-      const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
-      if (tabs.length === 0) {
-        if (state.rootPane.id === paneId) {
-          const home = createHomeTab();
-          return { rootPane: { id: state.rootPane.id, tabs: [home], activeTabId: home.id }, focusedPaneId: paneId };
-        }
-        const nextRoot = removePane(state.rootPane, paneId) ?? createInitialRootPane();
-        const nextFocus = firstLeafPane(nextRoot).id;
-        return { rootPane: nextRoot, focusedPaneId: nextFocus };
-      }
-
-      const activeTabId = pane.activeTabId === tabId ? (tabs[index] ?? tabs[index - 1] ?? tabs[0]).id : pane.activeTabId;
-      return {
-        rootPane: replacePane(state.rootPane, paneId, { ...pane, tabs, activeTabId }),
-        focusedPaneId: paneId,
-      };
+      const pane = findLeafWithTab(state.rootPane, tabId);
+      if (!pane) return state;
+      return closeTabInPane(state, pane.id, tabId) ?? state;
     }),
 
   closeOtherTabs: (paneId, tabId) =>
@@ -218,7 +256,15 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
       const pane = findPane(state.rootPane, paneId);
       if (!pane || !isLeafPane(pane) || pane.tabs.length === 0) return state;
       const active = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-      const cloned: WorkspaceTab = { ...active, id: uuid(), title: `${active.title} 2` };
+      // A split duplicates the view, not the connection: the clone starts its
+      // own session instead of stealing the original's.
+      const cloned: WorkspaceTab = {
+        ...active,
+        id: uuid(),
+        title: `${active.title} 2`,
+        sessionId: undefined,
+        connected: false,
+      };
       const branch = createSplitPane(pane, direction, cloned);
       return {
         rootPane: replacePane(state.rootPane, paneId, branch),
@@ -228,4 +274,7 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
 
   replacePane: (paneId, nextPane) =>
     set((state) => ({ rootPane: replacePane(state.rootPane, paneId, nextPane), focusedPaneId: paneId })),
+
+  updateTab: (tabId, patch) =>
+    set((state) => ({ rootPane: mapTab(state.rootPane, tabId, (tab) => ({ ...tab, ...patch })) })),
 }));

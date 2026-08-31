@@ -60,7 +60,9 @@ export function ContextSidebar() {
   );
 
   const renderModuleContent = () => {
-    if (activeModule === "ssh") return <SshContextSidebar />;
+    // The server list lives in the SSH module; "服务器" is just another entry
+    // point to the same real data.
+    if (activeModule === "ssh" || activeModule === "servers") return <SshContextSidebar />;
     if (activeModule === "settings") return <SettingsContextSidebar />;
     return <ModulePlaceholderSidebar module={activeModule} />;
   };

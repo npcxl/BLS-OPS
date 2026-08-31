@@ -27,7 +27,9 @@ export function PlaceholderView({ tab }: { tab: WorkspaceTab }) {
         <span className="text-14 font-medium text-fg">{tab.title}</span>
         <span className="rounded-control border border-line bg-surface-1 px-1.5 py-0.5 text-11 text-fg-subtle">{meta.phase}</span>
       </div>
-      <p className="text-12 text-fg-muted">该视图已搭好框架，将在 {meta.phase} 实现。</p>
+      <p className="text-12 text-fg-muted">
+        该视图尚未实现。文件、容器、网关、项目、部署类功能在 P0（真实 SSH 终端与主机密钥校验）验收通过前暂停开发。
+      </p>
     </div>
   );
 }

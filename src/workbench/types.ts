@@ -20,9 +20,13 @@ export interface WorkspaceTab {
   type: WorkspaceTabType;
   title: string;
   subtitle?: string;
-  /** Server/session context — wired from Phase 2 onward. */
+  /** Server/session context. */
   serverId?: string;
   sessionId?: string;
+  /** `user@host[:port]` typed into quick connect (no saved server). */
+  quickTarget?: string;
+  /** Credential chosen for a quick connect. */
+  credentialId?: string;
   /** Unsaved indicator (remote editor, config draft…). */
   dirty?: boolean;
   /** Terminal / server tabs can carry a live connection state. */

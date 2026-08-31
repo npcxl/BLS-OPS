@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { useDomainStore } from "@/stores/domain-store";
 
 /**
  * Global keyboard shortcuts — spec §26.
@@ -52,8 +53,18 @@ export function useGlobalShortcuts() {
 
       if (ctrl && shift && e.key === "T") {
         e.preventDefault();
-        // Reopen last closed session — placeholder
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "已恢复会话" });
+        // Reopen the most recent session recorded in SQLite.
+        const last = useDomainStore.getState().sessions.find((session) => session.server_id);
+        if (!last) return;
+        openTab({
+          id: crypto.randomUUID(),
+          type: "terminal",
+          title: last.server_name,
+          subtitle: `${last.server_host}:${last.server_port}`,
+          serverId: last.server_id,
+          sessionId: crypto.randomUUID(),
+          connected: false,
+        });
       }
 
       if (ctrl && !shift && e.key === "w") {

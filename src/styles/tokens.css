@@ -14,34 +14,34 @@
 
 @theme {
   /* ── Surface hierarchy ── */
-  --color-app: #0b0e13;
-  --color-surface-1: #10141b;
-  --color-surface-2: #151a23;
-  --color-surface-3: #1a202b;
-  --color-surface-hover: #202735;
-  --color-surface-active: #252e3e;
+  --color-app: #16181d;
+  --color-surface-1: #1b1e24;
+  --color-surface-2: #20242b;
+  --color-surface-3: #262b33;
+  --color-surface-hover: #2c313a;
+  --color-surface-active: #323844;
 
   /* ── Borders / Dividers ── */
-  --color-line: #222935;
-  --color-line-strong: #303949;
+  --color-line: #2b3038;
+  --color-line-strong: #3a414d;
 
   /* ── Foreground ── */
-  --color-fg: #e9edf3;
-  --color-fg-muted: #9099a8;
-  --color-fg-subtle: #626c7c;
+  --color-fg: #eceef2;
+  --color-fg-muted: #9aa3b0;
+  --color-fg-subtle: #6b7380;
 
-  /* ── Accent (§17) ── */
-  --color-accent: #7297ff;
-  --color-accent-soft: #18233f;
+  /* ── Accent (§17) — macOS-style blue ── */
+  --color-accent: #5b9cff;
+  --color-accent-soft: #17304f;
 
   /* ── AI (§17) ── */
-  --color-ai: #a58bff;
-  --color-ai-soft: #211b39;
+  --color-ai: #b39dff;
+  --color-ai-soft: #241c3d;
 
   /* ── Status (§17) ── */
-  --color-success: #4fc38a;
-  --color-warning: #e9b85d;
-  --color-danger: #ed6a73;
+  --color-success: #4fd186;
+  --color-warning: #f0bb4e;
+  --color-danger: #f26057;
 
   /* ── Radius (§19) ── */
   --radius-control: 6px;

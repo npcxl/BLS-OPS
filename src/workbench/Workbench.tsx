@@ -1,12 +1,13 @@
-import { useMemo } from "react";
-import { SHELL_TELEMETRY } from "@/app/app-meta";
+import { useEffect, useMemo } from "react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { useDomainStore } from "@/stores/domain-store";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 import { AppTopBar } from "./AppTopBar";
 import { NavigationRail } from "./NavigationRail";
 import { ContextSidebar } from "./ContextSidebar";
 import { Workspace } from "./Workspace";
 import { StatusBar } from "./StatusBar";
+import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
 
 /**
@@ -20,48 +21,81 @@ export function Workbench() {
   const setCommandPaletteOpen = useWorkbenchStore((s) => s.setCommandPaletteOpen);
   const commandPaletteOpen = useWorkbenchStore((s) => s.commandPaletteOpen);
 
-  const actions = useMemo<PaletteAction[]>(
-    () => [
+  const refreshAll = useDomainStore((s) => s.refreshAll);
+  const servers = useDomainStore((s) => s.servers);
+  const sessions = useDomainStore((s) => s.sessions);
+
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
+
+  const actions = useMemo<PaletteAction[]>(() => {
+    const connectActions: PaletteAction[] = servers.map((server) => ({
+      id: `connect-${server.id}`,
+      title: `连接 ${server.name}`,
+      category: "终端",
+      description: `${server.username}@${server.host}:${server.port}`,
+      keywords: ["连接", server.host, server.username, ...server.tags],
+      onSelect: () =>
+        openTab({
+          id: crypto.randomUUID(),
+          type: "terminal",
+          title: server.name,
+          subtitle: `${server.host}:${server.port}`,
+          serverId: server.id,
+          sessionId: crypto.randomUUID(),
+          connected: false,
+        }),
+    }));
+
+    const recentActions: PaletteAction[] = sessions
+      .filter((session, index, all) => session.server_id && all.findIndex((s) => s.server_id === session.server_id) === index)
+      .slice(0, 5)
+      .map((session) => ({
+        id: `recent-${session.id}`,
+        title: `重新连接 ${session.server_name}`,
+        category: "最近会话",
+        description: `${session.username}@${session.server_host}:${session.server_port}`,
+        keywords: ["最近", session.server_host],
+        onSelect: () =>
+          openTab({
+            id: crypto.randomUUID(),
+            type: "terminal",
+            title: session.server_name,
+            subtitle: `${session.server_host}:${session.server_port}`,
+            serverId: session.server_id,
+            sessionId: crypto.randomUUID(),
+            connected: false,
+          }),
+      }));
+
+    return [
+      ...connectActions,
+      ...recentActions,
       {
-        id: "connect-api-01",
-        title: "连接 API-01",
-        category: "终端",
-        description: "在 10.0.0.11 上打开终端会话",
-        shortcut: "回车",
-        keywords: ["服务器", "终端", "连接"],
-        onSelect: () => openTab({ id: crypto.randomUUID(), type: "terminal", title: "API-01", subtitle: "10.0.0.11", connected: true }),
-      },
-      {
-        id: "open-ne-web",
-        title: "打开 WEB 会话",
-        category: "终端",
-        description: "打开 WEB 会话",
-        onSelect: () => openTab({ id: crypto.randomUUID(), type: "terminal", title: "WEB-01", subtitle: "10.0.0.21", connected: true }),
-      },
-      {
-        id: "open-docker",
-        title: "打开容器",
-        category: "工作区",
-        description: "切换到容器模块",
-        onSelect: () => setModule("docker"),
-      },
-      {
-        id: "ask-ai",
-        title: "智能助手",
-        category: "智能助手",
-        description: "打开智能助手面板",
-        onSelect: () => setModule("ai"),
-      },
-      {
-        id: "quick-connect",
-        title: "快速连接",
-        category: "终端",
-        description: "聚焦到快速连接输入框",
+        id: "manage-servers",
+        title: "管理服务器",
+        category: "服务器",
+        description: "打开服务器列表",
         onSelect: () => setModule("ssh"),
       },
-    ],
-    [openTab, setModule],
-  );
+      {
+        id: "manage-credentials",
+        title: "管理凭据",
+        category: "设置",
+        description: "打开凭据与已知主机",
+        onSelect: () => setModule("settings"),
+      },
+      {
+        id: "open-home",
+        title: "回到首页",
+        category: "工作区",
+        description: "打开工作台首页",
+        onSelect: () =>
+          openTab({ id: crypto.randomUUID(), type: "home", title: "首页" }),
+      },
+    ];
+  }, [openTab, servers, sessions, setModule]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app text-fg">
@@ -71,14 +105,9 @@ export function Workbench() {
         <ContextSidebar />
         <Workspace />
       </div>
-      <StatusBar
-        connectedSessions={SHELL_TELEMETRY.connectedSessions}
-        runningTasks={SHELL_TELEMETRY.runningTasks}
-        transferDown={SHELL_TELEMETRY.transferDown}
-        transferUp={SHELL_TELEMETRY.transferUp}
-        aiReady={SHELL_TELEMETRY.aiReady}
-      />
+      <StatusBar />
       <CommandPalette open={commandPaletteOpen} actions={actions} onClose={() => setCommandPaletteOpen(false)} />
+      <HostKeyDialog />
     </div>
   );
 }

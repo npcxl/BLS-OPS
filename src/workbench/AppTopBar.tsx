@@ -11,8 +11,6 @@ const MODULE_TITLES: Record<string, string> = {
   files: "文件",
   projects: "项目",
   deploy: "部署",
-  docker: "容器",
-  nginx: "网关",
   tasks: "任务",
   ai: "智能助手",
   settings: "设置",

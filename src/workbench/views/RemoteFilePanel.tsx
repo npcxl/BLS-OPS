@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Calculator,
   ClipboardCopy,
   CornerDownLeft,
   Copy,
@@ -23,15 +24,17 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  XCircle,
 } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
-import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
+import { opsApi, toErrorMessage, type DirectorySizeResult, type RemoteFileEntry } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
 import { useSubmit } from "@/hooks/use-submit";
 import { cn } from "@/lib/cn";
+import { useDirSizeStore } from "@/stores/dir-size-store";
 
 const DEFAULT_WIDTH = 320;
 const MIN_WIDTH = 240;
@@ -84,6 +87,54 @@ function formatTime(seconds?: number | null): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
+  pending: "排队中",
+  computing: "计算中…",
+  completed: "已完成",
+  partial: "部分统计",
+  permission_denied: "权限不足",
+  cancelled: "已取消",
+  timed_out: "计算超时",
+  session_gone: "连接已断开",
+  failed: "计算失败",
+};
+
+/**
+ * Renders the second line for a directory row from its size result.
+ *
+ * Folders never report a content size over SFTP (only their own ~4096 B
+ * metadata). Before the user asks for the size — or if the probe failed for a
+ * benign reason (no `du`, session gone) — we keep the second line as a plain
+ * "文件夹" so the row doesn't look broken. While computing we show progress;
+ * once done we show "1.26 GB · 12,586 个文件" and warn when some entries were
+ * skipped. Genuinely terminal errors (permission denied, timed out, cancelled,
+ * failed) are surfaced so the user knows why no size is shown.
+ */
+function dirSizeSummary(result: DirectorySizeResult | undefined): string {
+  if (!result) return "文件夹";
+  switch (result.status) {
+    case "computing":
+    case "pending":
+      return "计算中…";
+    case "completed":
+      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件`;
+    case "partial":
+      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件 · 部分统计`;
+    case "permission_denied":
+    case "timed_out":
+    case "cancelled":
+    case "failed":
+    case "session_gone":
+      return `文件夹 · ${DIR_SIZE_STATUS_LABEL[result.status] ?? result.status}`;
+    default:
+      return "文件夹";
+  }
+}
+
+function formatCount(count: number): string {
+  return count.toLocaleString();
 }
 
 type PanelStatus =
@@ -402,6 +453,37 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   /** The panel element, used to hit-test OS drag events. */
   const panelRef = useRef<HTMLElement>(null);
 
+  // Subscribe to directory-size updates once per mount; stale results for
+  // this session are cleared when the connection drops.
+  useEffect(() => {
+    void useDirSizeStore.getState().ensureListening();
+  }, []);
+  useEffect(() => {
+    if (!connected) useDirSizeStore.getState().forgetSession(sessionId);
+  }, [connected, sessionId]);
+
+  const computeDirSize = useCallback(
+    (path: string) => {
+      if (!path) return;
+      void opsApi.directorySizeStart(sessionId, path);
+    },
+    [sessionId],
+  );
+  const cancelDirSize = useCallback(
+    (path: string) => {
+      if (!path) return;
+      void opsApi.directorySizeCancel(sessionId, path);
+    },
+    [sessionId],
+  );
+
+  /** Computes the size of every directory visible in the current listing. */
+  const computeAllDirSizes = useCallback(() => {
+    for (const entry of entries) {
+      if (entry.kind === "directory") computeDirSize(entry.path);
+    }
+  }, [entries, computeDirSize]);
+
   useEffect(() => {
     if (!uploadNotice) return;
     const timer = window.setTimeout(() => setUploadNotice(null), 4500);
@@ -528,12 +610,37 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const contextTargetRef = useRef<RemoteFileEntry | null>(null);
 
   const entryMenu = menu.onContextMenu(() => {
-    const entry = contextTargetRef.current;
-    if (!entry) return [];
-    const isDir = entry.kind === "directory";
-    return [
-      { id: "open", label: isDir ? "打开" : "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
-      { id: "sep1", separator: true },
+  const entry = contextTargetRef.current;
+  if (!entry) return [];
+  const isDir = entry.kind === "directory";
+  const dirSize = isDir ? useDirSizeStore.getState().get(sessionId, entry.path) : undefined;
+  const computing = dirSize?.status === "computing" || dirSize?.status === "pending";
+  const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
+    { id: "open", label: "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
+  ];
+  if (isDir) {
+    items.push({ id: "sep-size", separator: true });
+    if (computing) {
+      items.push({
+        id: "size-cancel",
+        label: "停止计算大小",
+        icon: XCircle,
+        onSelect: () => cancelDirSize(entry.path),
+      });
+    } else {
+      items.push({
+        id: "size-compute",
+        label: dirSize?.complete ? "重新计算大小" : "计算文件夹大小",
+        icon: Calculator,
+        onSelect: () => computeDirSize(entry.path),
+      });
+    }
+    items.push({ id: "sep1", separator: true });
+  } else {
+    items.push({ id: "sep1", separator: true });
+  }
+  return [
+    ...items,
       { id: "rename", label: "重命名", icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
       { id: "duplicate", label: "创建副本", icon: Copy, onSelect: () => copyEntry(entry) },
       {
@@ -576,6 +683,14 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
       { id: "touch", label: "新建文件", icon: FilePlus2, disabled: !cwd, onSelect: createFile },
       { id: "sep2", separator: true },
       { id: "refresh", label: "刷新", icon: RefreshCw, disabled: !cwd, onSelect: refresh },
+      { id: "sep3", separator: true },
+      {
+        id: "size-all",
+        label: "计算当前目录文件夹大小",
+        icon: Calculator,
+        disabled: !cwd,
+        onSelect: computeAllDirSizes,
+      },
     ];
   });
 
@@ -640,6 +755,12 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
           disabled={!cwd || picking}
           className={picking ? "animate-spin" : undefined}
           onClick={() => void pickFilesToUpload()}
+        />
+        <PanelButton
+          label="计算当前目录文件夹大小"
+          icon={Calculator}
+          disabled={!cwd}
+          onClick={computeAllDirSizes}
         />
         <PanelButton label="折叠面板" icon={Pause} onClick={onClose} />
       </div>
@@ -756,6 +877,7 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
             {entries.map((entry) => (
               <FileRow
                 key={entry.path}
+                sessionId={sessionId}
                 entry={entry}
                 selected={entry.path === selected}
                 onSelect={handleRowSelect}
@@ -846,18 +968,26 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
  * them. Every callback it receives is stable.
  */
 const FileRow = memo(function FileRow({
+  sessionId,
   entry,
   selected,
   onSelect,
   onOpen,
   onContextMenu,
 }: {
+  sessionId: string;
   entry: RemoteFileEntry;
   selected: boolean;
   onSelect: (entry: RemoteFileEntry) => void;
   onOpen: (entry: RemoteFileEntry) => void;
   onContextMenu: (event: ReactMouseEvent, entry: RemoteFileEntry) => void;
 }) {
+  // Subscribe only to this directory's size result: a size event for another
+  // path must not re-render this row.
+  const dirSize = useDirSizeStore((state) =>
+    entry.kind === "directory" ? state.get(sessionId, entry.path) : undefined,
+  );
+
   return (
     <button
       type="button"
@@ -883,8 +1013,9 @@ const FileRow = memo(function FileRow({
           {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
         </span>
         <span className="block truncate text-10 text-fg-subtle">
-          {entry.kind === "directory" ? "文件夹" : formatSize(entry.size)} ·{" "}
-          {formatTime(entry.modified_at)}
+          {entry.kind === "directory"
+            ? dirSizeSummary(dirSize)
+            : `${formatSize(entry.size)} · ${formatTime(entry.modified_at)}`}
         </span>
       </span>
       {entry.kind === "directory" && (

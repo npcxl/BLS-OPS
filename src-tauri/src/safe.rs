@@ -352,6 +352,13 @@ pub enum Capability {
     OsRelease,
     /// `command -v <tool>` for an optional tool.
     Probe(ProbeTool),
+    /// Prints `<tool> --version` only if the tool exists. Used to collect
+    /// runtime/build-tool versions during capability recognition.
+    ToolVersion(ProbeTool),
+    /// First-layer capability probe: OS/arch/kernel/user/init/security/cgroup in
+    /// one fixed invocation. Never runs any Docker/Nginx command — those only
+    /// run once their capability is confirmed by `probe_capabilities`.
+    CapabilitySystemInfo,
 
     // systemd
     ListServices,
@@ -438,24 +445,157 @@ pub enum Capability {
 
 /// Optional tools we probe for before offering a module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Tools that `probe_capabilities` may detect. Each maps to a fixed command
+/// name used by `Capability::Probe` (existence check) and `Capability::ToolVersion`
+/// (version string). All are whitelisted — no free-form command is ever built.
 pub enum ProbeTool {
+    // 包管理器
+    Apt,
+    Dnf,
+    Yum,
+    Apk,
+    Pacman,
+    Zypper,
+    Brew,
+    Winget,
+    Choco,
+    // 运行时
+    Java,
+    Node,
+    Python,
+    Go,
+    Rustc,
+    Php,
+    Dotnet,
+    Ruby,
+    // 版本管理器
+    Nvm,
+    Fnm,
+    Pyenv,
+    Uv,
+    Sdkman,
+    Rustup,
+    // 构建工具
+    Maven,
+    Gradle,
+    Npm,
+    Pnpm,
+    Yarn,
+    Cargo,
+    Pip,
+    Poetry,
+    Composer,
+    // 服务管理
     Systemctl,
-    Journalctl,
+    Openrc,
+    Supervisor,
+    Pm2,
+    Runit,
+    Sc,
+    // 容器与编排
     Docker,
     DockerCompose,
+    Podman,
+    Containerd,
+    Kubectl,
+    K3s,
+    Helm,
+    Nomad,
+    // 网关
     Nginx,
+    Apache,
+    Caddy,
+    Traefik,
+    Haproxy,
+    Iis,
+    // 数据中间件
+    Mysql,
+    Psql,
+    Redis,
+    Mongo,
+    Elasticsearch,
+    Rabbitmq,
+    Kafka,
+    // 其他
     Git,
+    Journalctl,
 }
 
 impl ProbeTool {
+    /// The binary name used by `command -v` and version probes.
     pub fn name(self) -> &'static str {
         match self {
+            ProbeTool::Apt => "apt-get",
+            ProbeTool::Dnf => "dnf",
+            ProbeTool::Yum => "yum",
+            ProbeTool::Apk => "apk",
+            ProbeTool::Pacman => "pacman",
+            ProbeTool::Zypper => "zypper",
+            ProbeTool::Brew => "brew",
+            ProbeTool::Winget => "winget",
+            ProbeTool::Choco => "choco",
+            ProbeTool::Java => "java",
+            ProbeTool::Node => "node",
+            ProbeTool::Python => "python3",
+            ProbeTool::Go => "go",
+            ProbeTool::Rustc => "rustc",
+            ProbeTool::Php => "php",
+            ProbeTool::Dotnet => "dotnet",
+            ProbeTool::Ruby => "ruby",
+            ProbeTool::Nvm => "nvm",
+            ProbeTool::Fnm => "fnm",
+            ProbeTool::Pyenv => "pyenv",
+            ProbeTool::Uv => "uv",
+            ProbeTool::Sdkman => "sdk",
+            ProbeTool::Rustup => "rustup",
+            ProbeTool::Maven => "mvn",
+            ProbeTool::Gradle => "gradle",
+            ProbeTool::Npm => "npm",
+            ProbeTool::Pnpm => "pnpm",
+            ProbeTool::Yarn => "yarn",
+            ProbeTool::Cargo => "cargo",
+            ProbeTool::Pip => "pip3",
+            ProbeTool::Poetry => "poetry",
+            ProbeTool::Composer => "composer",
             ProbeTool::Systemctl => "systemctl",
-            ProbeTool::Journalctl => "journalctl",
+            ProbeTool::Openrc => "openrc",
+            ProbeTool::Supervisor => "supervisorctl",
+            ProbeTool::Pm2 => "pm2",
+            ProbeTool::Runit => "runsv",
+            ProbeTool::Sc => "sc",
             ProbeTool::Docker => "docker",
             ProbeTool::DockerCompose => "docker-compose",
+            ProbeTool::Podman => "podman",
+            ProbeTool::Containerd => "containerd",
+            ProbeTool::Kubectl => "kubectl",
+            ProbeTool::K3s => "k3s",
+            ProbeTool::Helm => "helm",
+            ProbeTool::Nomad => "nomad",
             ProbeTool::Nginx => "nginx",
+            ProbeTool::Apache => "apache2",
+            ProbeTool::Caddy => "caddy",
+            ProbeTool::Traefik => "traefik",
+            ProbeTool::Haproxy => "haproxy",
+            ProbeTool::Iis => "iisreset",
+            ProbeTool::Mysql => "mysql",
+            ProbeTool::Psql => "psql",
+            ProbeTool::Redis => "redis-server",
+            ProbeTool::Mongo => "mongod",
+            ProbeTool::Elasticsearch => "elasticsearch",
+            ProbeTool::Rabbitmq => "rabbitmqctl",
+            ProbeTool::Kafka => "kafka-server-start",
             ProbeTool::Git => "git",
+            ProbeTool::Journalctl => "journalctl",
+        }
+    }
+
+    /// The flag used to request a version string. Most tools accept `--version`;
+    /// a few (Go) require a subcommand.
+    pub fn version_flag(self) -> &'static str {
+        match self {
+            ProbeTool::Go => "version",
+            ProbeTool::Sdkman => "--version",
+            _ => "--version",
         }
     }
 }
@@ -578,6 +718,16 @@ impl Capability {
             Capability::Probe(tool) => {
                 format!("command -v -- {} >/dev/null 2>&1", quoted(tool.name()))
             }
+            Capability::ToolVersion(tool) => {
+                // Only emit a version string when the tool exists; if it is
+                // missing this command fails and `detect_version` records `None`.
+                format!(
+                    "command -v -- {} >/dev/null 2>&1 && {} {}",
+                    quoted(tool.name()),
+                    quoted(tool.name()),
+                    tool.version_flag()
+                )
+            }
 
             // -- systemd -----------------------------------------------------
             Capability::ListServices => LIST_SERVICES.to_string(),
@@ -591,8 +741,10 @@ impl Capability {
             }
 
             Capability::ServiceStatus { unit } => {
+                // Options must precede the unit; anything after `--` is parsed
+                // as another unit name by systemctl.
                 format!(
-                    "systemctl status -- {} --no-pager",
+                    "systemctl --no-pager status -- {}",
                     quoted(validate_unit(unit)?)
                 )
             }
@@ -626,7 +778,17 @@ impl Capability {
             // -- Project discovery ------------------------------------------
             // Commands are fixed and bounded; their output is parsed as metadata only.
             Capability::ProjectInventory => "find /home /root /srv /opt /var/www /data /app /apps /workspace /usr/local -xdev -maxdepth 6 -type f -printf '%h\\t%f\\n' 2>/dev/null | head -n 20000".to_string(),
-            Capability::ProjectRuntimeInventory => "ps -eo pid=,cwd=,args= 2>/dev/null | head -n 2000; systemctl show --all --no-pager -p Id -p WorkingDirectory -p ExecStart 2>/dev/null | head -n 5000; docker ps -a --format '{{.Names}}|{{.Label \"com.docker.compose.project.\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}|{{.Ports}}' 2>/dev/null | head -n 2000; nginx -T 2>/dev/null | head -n 20000".to_string(),
+            // Runtime inventory is capability-agnostic: it collects process and
+            // systemd evidence that never depends on Docker/Nginx. Docker and
+            // Nginx evidence is gathered separately, *only* after `probe_capabilities`
+            // has confirmed those tools are installed — so we never emit a
+            // `docker ps` / `nginx -T` against a server that lacks them.
+            Capability::ProjectRuntimeInventory => "ps -eo pid=,cwd=,args= 2>/dev/null | head -n 2000; systemctl show --all --no-pager -p Id -p WorkingDirectory -p ExecStart 2>/dev/null | head -n 5000".to_string(),
+
+            // -- First-layer capability probe ---------------------------------
+            // One fixed invocation that yields OS/arch/kernel/user/init/security/cgroup.
+            // No Docker/Nginx command is ever present here by design.
+            Capability::CapabilitySystemInfo => "printf 'OS=%s\\n' \"$(. /etc/os-release 2>/dev/null && echo \"${PRETTY_NAME:-$NAME $VERSION_ID}\")\"; printf 'ARCH=%s\\n' \"$(uname -m)\"; printf 'KERNEL=%s\\n' \"$(uname -r)\"; printf 'USER=%s\\n' \"$(id -un)\"; printf 'INIT=%s\\n' \"$(ps -p 1 -o comm= 2>/dev/null)\"; printf 'PKG=%s\\n' \"$(command -v apt-get >/dev/null && echo apt; command -v dnf >/dev/null && echo dnf; command -v yum >/dev/null && echo yum; command -v apk >/dev/null && echo apk; command -v pacman >/dev/null && echo pacman; command -v zypper >/dev/null && echo zypper; command -v brew >/dev/null && echo brew; command -v winget >/dev/null && echo winget; command -v choco >/dev/null && echo choco)\"; printf 'SECURITY=%s\\n' \"$(command -v getenforce >/dev/null && getenforce 2>/dev/null; command -v apparmor_status >/dev/null && echo apparmor)\"; printf 'CGROUP=%s\\n' \"$(stat -fc %T /sys/fs/cgroup 2>/dev/null)\"; printf 'SUDO=%s\\n' \"$(command -v sudo >/dev/null && echo yes || echo no)\"".to_string(),
 
             // -- Docker ------------------------------------------------------
             Capability::DockerPs => DOCKER_PS.to_string(),
@@ -950,6 +1112,16 @@ mod tests {
         }
         .command();
         assert!(result.is_err(), "恶意单元名必须被拒绝，而不是拼进命令");
+    }
+
+    #[test]
+    fn service_status_places_options_before_the_unit() {
+        let command = Capability::ServiceStatus {
+            unit: "nginx.service".to_string(),
+        }
+        .command()
+        .unwrap();
+        assert_eq!(command, "systemctl --no-pager status -- 'nginx.service'");
     }
 
     #[test]

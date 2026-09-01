@@ -204,7 +204,7 @@ export function ModuleFrame({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+      <div className="ops-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden">{children}</div>
     </div>
   );
 }
@@ -225,6 +225,7 @@ export function ToolbarStatus({
   className?: string;
 }) {
   return (
+    
     <span
       className={cn(
         "ml-auto flex min-w-0 shrink items-center gap-2 overflow-hidden text-11 text-fg-subtle",
@@ -309,16 +310,19 @@ export function ModuleEmpty({
   icon: Icon = PlugZap,
   title,
   hint,
+  action,
 }: {
   icon?: React.ElementType;
   title: string;
   hint?: string;
+  action?: ReactNode;
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
       <Icon size={20} className="text-fg-subtle" />
       <p className="text-13 text-fg-muted">{title}</p>
       {hint && <p className="max-w-md text-12 text-fg-subtle">{hint}</p>}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }

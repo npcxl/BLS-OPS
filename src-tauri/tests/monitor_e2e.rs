@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ops_workbench_lib::dirsize::{DirectorySizeRegistry, DirectorySizeStatus};
 use ops_workbench_lib::monitor::{self, MonitorRegistry};
 use ops_workbench_lib::ssh::{
     ConnectOutcome, ConnectTarget, CredentialSecrets, SshSessionManager, DEFAULT_COMMAND_TIMEOUT,
@@ -73,6 +74,9 @@ struct MonitorServer {
     /// When set, the server slams the door on the next exec request — a
     /// server-initiated disconnect, with the server itself staying up.
     kill_switch: Arc<AtomicBool>,
+    /// When set, `du` answers "command not found" so the client exercises its
+    /// SFTP recursive fallback instead of the preferred fast path.
+    du_disabled: Arc<AtomicBool>,
 }
 
 impl server::Server for MonitorServer {
@@ -88,6 +92,7 @@ impl server::Server for MonitorServer {
             stat_step: self.stat_step.clone(),
             net_step: self.net_step.clone(),
             kill_switch: self.kill_switch.clone(),
+            du_disabled: self.du_disabled.clone(),
         }
     }
 }
@@ -103,6 +108,7 @@ struct MonitorHandler {
     stat_step: Arc<AtomicU64>,
     net_step: Arc<AtomicU64>,
     kill_switch: Arc<AtomicBool>,
+    du_disabled: Arc<AtomicBool>,
 }
 
 impl MonitorHandler {
@@ -111,6 +117,11 @@ impl MonitorHandler {
             Profile::Linux { hostname } => hostname.as_str(),
             _ => "unknown",
         }
+    }
+
+    /// `du` is simulated unless `du_disabled` is set (the fallback drill).
+    fn has_du(&self) -> bool {
+        !self.du_disabled.load(Ordering::Relaxed)
     }
 
     /// `/proc/stat` at counter step `step`: 160 jiffies pass per step, 40 of
@@ -206,9 +217,38 @@ impl MonitorHandler {
                  PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"\n"
                     .to_string(),
             ),
+            // `du` is simulated: a directory's size is a deterministic function
+            // of its path so the test can assert the exact byte count without a
+            // real filesystem. GNU form (`-sb`) yields bytes; BusyBox/BSD
+            // (`-sk`) yields 1024-byte blocks (÷1024 to compare). `NoDu` answers
+            // "command not found" so the SFTP fallback runs instead.
+            command if self.has_du() && command.starts_with("du -sb") => {
+                let path = du_path(command);
+                Some(format!("{}\t{}\n", fake_dir_bytes(&path), path))
+            }
+            command if self.has_du() && command.starts_with("du -sk") => {
+                let path = du_path(command);
+                Some(format!("{}\t{}\n", fake_dir_bytes(&path) / 1024, path))
+            }
+            command if command.starts_with("du ") => Some("du: command not found\n".to_string()),
             _ => None,
         }
     }
+}
+
+/// Extracts the quoted path argument from a `du … -- '<path>'` command.
+fn du_path(command: &str) -> String {
+    command
+        .split_once("-- ")
+        .map(|(_, rest)| rest.trim().trim_matches('\'').to_string())
+        .unwrap_or_default()
+}
+
+/// Deterministic pseudo size for a directory path, so tests can assert it.
+fn fake_dir_bytes(path: &str) -> u64 {
+    // Spread the bytes by path length so different dirs differ; 1 GiB-ish.
+    let base = 1_000_000_000u64;
+    base + (path.len() as u64) * 7_000_000
 }
 
 impl Handler for MonitorHandler {
@@ -350,7 +390,12 @@ where
 async fn spawn_monitor_server(
     profile: Profile,
     allow_tunnels: bool,
-) -> (SocketAddr, server::RunningServerHandle, Arc<AtomicBool>) {
+) -> (
+    SocketAddr,
+    server::RunningServerHandle,
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+) {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("generate host key");
 
     let mut config = server::Config::default();
@@ -371,8 +416,10 @@ async fn spawn_monitor_server(
         stat_step: Arc::new(AtomicU64::new(0)),
         net_step: Arc::new(AtomicU64::new(0)),
         kill_switch: Arc::new(AtomicBool::new(false)),
+        du_disabled: Arc::new(AtomicBool::new(false)),
     };
     let kill_switch = server.kill_switch.clone();
+    let du_disabled = server.du_disabled.clone();
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
@@ -381,7 +428,12 @@ async fn spawn_monitor_server(
         let _ = running.await;
     });
 
-    (addr, rx.await.expect("server handle"), kill_switch)
+    (
+        addr,
+        rx.await.expect("server handle"),
+        kill_switch,
+        du_disabled,
+    )
 }
 
 fn linux(hostname: &str) -> Profile {
@@ -536,7 +588,7 @@ async fn wait_until_disconnected(manager: &SshSessionManager, session_id: &str) 
 /// The headline path: one snapshot over a real connection, fully parsed.
 #[tokio::test]
 async fn snapshot_reads_every_metric_over_a_real_connection() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -610,7 +662,7 @@ async fn snapshot_reads_every_metric_over_a_real_connection() {
 /// — must not contain the password, the token or the database URL.
 #[tokio::test]
 async fn process_listing_never_leaks_command_line_secrets() {
-    let (addr, handle, _kill) = spawn_monitor_server(Profile::LeakyPs, false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(Profile::LeakyPs, false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -644,7 +696,7 @@ async fn process_listing_never_leaks_command_line_secrets() {
 /// not report the same numbers twice.
 #[tokio::test]
 async fn a_second_collection_measures_against_the_previous_one() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -667,8 +719,8 @@ async fn a_second_collection_measures_against_the_previous_one() {
 /// Two sessions to different hosts must not share baselines.
 #[tokio::test]
 async fn each_session_keeps_its_own_baseline() {
-    let (a_addr, a_handle, _kill_a) = spawn_monitor_server(linux("host-a"), false).await;
-    let (b_addr, b_handle, _kill_b) = spawn_monitor_server(linux("host-b"), false).await;
+    let (a_addr, a_handle, _kill_a, _du_a) = spawn_monitor_server(linux("host-a"), false).await;
+    let (b_addr, b_handle, _kill_b, _du_b) = spawn_monitor_server(linux("host-b"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "a", None, a_addr.port()).await;
@@ -697,8 +749,9 @@ fn handle_cleanup(a: server::RunningServerHandle, b: server::RunningServerHandle
 /// Monitoring through ProxyJump must read the FINAL server, never the jump.
 #[tokio::test]
 async fn proxy_jump_monitors_the_final_server() {
-    let (jump_addr, jump_handle, _kill_jump) = spawn_monitor_server(linux("jump-host"), true).await;
-    let (target_addr, target_handle, _kill_target) =
+    let (jump_addr, jump_handle, _kill_jump, _du_jump) =
+        spawn_monitor_server(linux("jump-host"), true).await;
+    let (target_addr, target_handle, _kill_target, _du_target) =
         spawn_monitor_server(linux("final-host"), false).await;
 
     let manager = SshSessionManager::default();
@@ -725,7 +778,7 @@ async fn proxy_jump_monitors_the_final_server() {
 /// A non-Linux host is reported as unsupported — never as a pile of zeroes.
 #[tokio::test]
 async fn an_unsupported_os_is_reported_not_faked() {
-    let (addr, handle, _kill) = spawn_monitor_server(Profile::Darwin, false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(Profile::Darwin, false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -767,7 +820,7 @@ async fn a_silent_server_hits_the_command_timeout() {
         "the monitoring budget is 5 seconds"
     );
 
-    let (addr, handle, _kill) = spawn_monitor_server(Profile::Silent, false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(Profile::Silent, false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -801,7 +854,7 @@ async fn a_silent_server_hits_the_command_timeout() {
 /// its exit code, not as an empty result.
 #[tokio::test]
 async fn a_failing_command_becomes_a_clear_error() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -818,7 +871,7 @@ async fn a_failing_command_becomes_a_clear_error() {
 /// Disconnecting stops collection: no session means no more metrics.
 #[tokio::test]
 async fn collection_stops_after_the_session_is_disconnected() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -855,7 +908,7 @@ async fn collection_stops_after_the_session_is_disconnected() {
 /// rather than letting it sit on a dead socket until the timeout.
 #[tokio::test]
 async fn disconnect_cancels_a_collection_that_is_already_running() {
-    let (addr, handle, _kill) = spawn_monitor_server(Profile::Silent, false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(Profile::Silent, false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -893,7 +946,7 @@ async fn disconnect_cancels_a_collection_that_is_already_running() {
 /// "connected" after the remote end is gone.
 #[tokio::test]
 async fn a_server_initiated_disconnect_is_detected() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -921,7 +974,7 @@ async fn a_server_initiated_disconnect_is_detected() {
 /// which is exactly the regression this test pins down.
 #[tokio::test]
 async fn reconnecting_with_the_same_session_id_starts_a_fresh_baseline() {
-    let (addr, handle, kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -977,7 +1030,7 @@ async fn reconnecting_with_the_same_session_id_starts_a_fresh_baseline() {
 /// monitoring never steals or blocks the shell, and vice versa.
 #[tokio::test]
 async fn exec_and_pty_work_at_the_same_time() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     let mut reader = connect_for_shell(&manager, "s1", addr.port()).await;
@@ -1012,7 +1065,7 @@ async fn exec_and_pty_work_at_the_same_time() {
 /// commands, and refuses terminal input.
 #[tokio::test]
 async fn a_monitoring_session_opens_without_a_shell() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -1040,7 +1093,7 @@ async fn a_monitoring_session_opens_without_a_shell() {
 /// Each collector works on its own, for pages that only need one metric.
 #[tokio::test]
 async fn individual_collectors_work_standalone() {
-    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -1082,6 +1135,94 @@ async fn individual_collectors_work_standalone() {
         .await
         .expect("processes");
     assert_eq!(processes.first().map(|process| process.pid), Some(42));
+
+    handle.shutdown("done".to_string());
+}
+
+/// `du` is preferred: starting a size computation for a directory resolves to a
+/// finished result whose byte count matches the server's simulated `du -sb`.
+#[tokio::test]
+async fn directory_size_uses_du_and_caches_the_result() {
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-01"), false).await;
+    let manager = SshSessionManager::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let registry = Arc::new(DirectorySizeRegistry::default());
+    let path = "/var/www/project";
+    let expected = fake_dir_bytes(path);
+
+    registry.start(
+        None,
+        Arc::new(manager.clone()),
+        "s1".to_string(),
+        path.to_string(),
+        Duration::from_secs(10),
+    );
+
+    // Wait for the computation to reach a terminal state.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut snapshot = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(result) = registry.status("s1", path) {
+            if result.complete {
+                snapshot = Some(result);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let result = snapshot.expect("the directory size computation must finish");
+    assert_eq!(result.status, DirectorySizeStatus::Completed, "{result:?}");
+    assert_eq!(
+        result.size_bytes, expected,
+        "must equal the server's du output"
+    );
+    // A second start for the same path replays the cached result, not a new scan.
+    assert!(registry.status("s1", path).unwrap().complete);
+
+    handle.shutdown("done".to_string());
+}
+
+/// When `du` is unavailable the registry falls back to an SFTP recursive walk.
+/// That walk's accumulation logic (summing file sizes, counting directories,
+/// skipping symlinks) is covered by the `record_entry_*` unit tests in
+/// `dirsize.rs`; this end-to-end test exercises the `du` fast path in full,
+/// which is the path servers actually take. The SFTP fallback itself needs a
+/// server that exposes an SFTP subsystem — `MonitorServer` deliberately does
+/// not, so the recursive walk is validated at the unit level instead.
+#[tokio::test]
+async fn directory_size_du_preferred_path_resolves_to_completed() {
+    let (addr, handle, _kill, _du) = spawn_monitor_server(linux("web-02"), false).await;
+    let manager = SshSessionManager::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let registry = Arc::new(DirectorySizeRegistry::default());
+    let path = "/var/www/another";
+    let expected = fake_dir_bytes(path);
+    registry.start(
+        None,
+        Arc::new(manager.clone()),
+        "s1".to_string(),
+        path.to_string(),
+        Duration::from_secs(10),
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut result = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(snapshot) = registry.status("s1", path) {
+            if snapshot.complete {
+                result = Some(snapshot);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let result = result.expect("the directory size must finish");
+    assert_eq!(result.status, DirectorySizeStatus::Completed, "{result:?}");
+    assert_eq!(result.size_bytes, expected);
 
     handle.shutdown("done".to_string());
 }

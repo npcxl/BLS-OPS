@@ -102,8 +102,6 @@ const MODULE_LABELS: Record<NavModule, string> = {
   files: "文件",
   projects: "项目",
   deploy: "部署",
-  docker: "容器",
-  nginx: "网关",
   tasks: "任务",
   ai: "智能助手",
   settings: "设置",
@@ -118,8 +116,6 @@ const MODULE_LABELS: Record<NavModule, string> = {
 const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
   services: "service",
   logs: "logs",
-  docker: "docker",
-  nginx: "nginx",
   projects: "project",
 };
 
@@ -137,8 +133,6 @@ const TAB_TYPE_TO_MODULE: Partial<Record<WorkspaceTabType, NavModule>> = {
   file: "files",
   service: "services",
   logs: "logs",
-  docker: "docker",
-  nginx: "nginx",
   project: "projects",
   workflow: "deploy",
   deployment: "deploy",

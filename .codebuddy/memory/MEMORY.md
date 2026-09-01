@@ -10,7 +10,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 3. **只保留一套 domain 模型**。DB 记录类型在 `src/api/ops-api.ts`（snake_case，与 Rust 一致）。旧的 `src/stores/domain/`（camelCase，含暂停模块类型）已删除——不要再加回来。
 2. **密码/私钥永不回传前端**。前端只提交 `credential_id`；Rust 从系统 Keyring 读取密钥后直接建立 SSH。因此不存在 `credential_get_secret` 命令。
 3. **Host Key 必须人工确认**。首次连接与指纹变更都要弹窗，且未确认时连接不成立（不能返回“已连接”）。
-4. 在 P0 验收通过前**暂停**：Docker、Nginx、部署、项目、文件、AI 模块。
+4. **P3 已按修订方案重做**（用户 2026-09-01 明确"按照这个重做"）：P3 不再从 Docker/Nginx 固设开始，改为"能力识别前置 + 适配器按需启用"。P0 仍是最高优先级；Docker/Nginx 的**写操作**仍属 P4（未实现，前端为只读/占位）。其余（文件、AI 模块）仍暂停。
 5. 凭据的“私钥 + 私钥口令”是一组配置，不是互斥类型。
 
 ## 监控模块约定（阶段：服务器状态监控——**P2 正式完成**）
@@ -32,15 +32,42 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 - lucide-react v1.x：`AlertTriangle` 已改名 `TriangleAlert`，`Loader` 改名 `LoaderCircle`。
 - 上传这类操作必须同时提供**点击入口**（`tauri-plugin-dialog` 的 `open()`）和拖拽入口，拖拽不能是唯一路径。
 
-## P3 管理模块约定（服务 / 日志 / 容器 / 网关 / 部署）
-- **安全边界是 `src-tauri/src/safe.rs` 的 `Capability` 枚举**：它是唯一把「动作」翻译成命令字符串的地方。新增任何管理动作都必须在这里加变体 + 写死命令模板，**禁止在其他任何地方拼接命令**。
-- 前端**永不传命令字符串**：只传结构化标识（单元名、容器名、路径、项目 id）。Tauri 命令不接受 shell 文本。
-- **校验必须在任何网络 I/O 之前**（用 `remote::run_on_linux`，它先 `capability.command()?` 再做 OS 探测）。否则恶意参数会白跑一次 `uname` 往返。
-- 部署步骤三重校验：命令白名单 + 禁止 shell 操作符 + 绝对路径必须在项目 `deploy_path` 内；`deployment_execute` 只收 `projectId`，步骤从 DB 读出后**重新校验**。
-- 会改服务端状态的操作必须有 `ConfirmDialog`；Nginx 配置「先 `nginx -t` 再重载」，失败时明确告知未重载。
-- 「不可用」≠「空」：Docker 没装、Nginx 无站点、journal 读不到，都要给原因，不能显示空列表。
-- 新模块用 `useCommandSession(tab)`（非交互会话，无 PTY 无 shell）+ `ModuleFrame`；新 tab 类型需在 `workbench-store` 的 `MODULE_TAB_TYPES` 注册。
-- e2e 手法：`tests/p3_e2e.rs` 的测试服务端**记录收到的每条命令**，测试从外部断言命令字符串 —— 能证明被拒参数「一条都没发出去」。
+## P3 管理模块约定 —— 已修订架构（2026-09-01 用户确认）
+**核心修订**：P3 **不是从 Docker/Nginx 开始**，而是「先识别服务器系统和能力，再按需启用可选适配器」。Docker、Nginx、systemd、Caddy、Podman、K8s 等都只是**检测到安装后才启用的可选能力适配器**，不再是「服务器一定用 Docker/Nginx」的固定预设。
+
+### P3 五层流程（修订后）
+1. **P3.1 识别操作系统/权限/磁盘/安全**：Linux/Win/macOS、发行版与版本、架构、内核、init 系统、当前用户、sudo、文件系统/挂载、SELinux/AppArmor、cgroup 版本、磁盘/内存、网络与端口。
+2. **P3.2 识别运行时/构建工具/包管理器**：Java/Node/Python/Go/Rust/PHP/.NET/Ruby + 版本管理器(nvm/fnm/pyenv/uv/SDKMAN/rustup)；Maven/Gradle/npm/pnpm/Cargo/pip/Composer 等。
+3. **P3.3 识别部署方式与服务能力**：包管理(apt/dnf/yum/apk/pacman/zypper/brew/winget/choco)、进程服务(systemd/OpenRC/Supervisor/PM2/runit/WinSvc)、容器编排(Docker/Compose/Podman/containerd/K8s/k3s/Helm/Nomad)、网关(Nginx/Apache/Caddy/Traefik/HAProxy/IIS)、数据中间件(MySQL/PG/Redis/Mongo/ES/RabbitMQ/Kafka)。
+4. **P3.4 按真实能力启用收集器**：未安装的组件**绝不执行其探测命令**（不跑 `docker ps`/`nginx -T`），避免无意义报错。输出能力图谱 JSON（os/packageManager/initSystem/runtimes/deploymentCapabilities）。
+5. **P3.5~P3.7 服务端口反向发现 → 受控文件系统扫描 → 证据合并评分**：扫描优先级由 P3.3 的能力决定（如识别到 Java+Maven+systemd 则提高 pom.xml/systemd WorkingDirectory/端口证据权重）。
+6. **P3.8 部署准备度与能力差距**：项目要求 vs 服务器能力 → 可直接部署 / 需安装 / 冲突 / 无法确认。
+7. **P3.9 用户确认项目，输出给 P4**。
+
+### 部署适配器注册系统（替代硬编码无限列表）
+`DeploymentAdapter { id, displayName, supportedSystems, detect(), collectEvidence(), assessReadiness(), supportedOperations(), rollbackCapabilities() }`。
+第一批：静态文件、原生二进制、Java JAR/WAR、Node.js、Python venv、systemd、PM2、Supervisor、Docker、Docker Compose、Podman、Nginx、Apache、Caddy、K8s/Helm。新增部署方式只加适配器，**不改动项目发现核心**。无法识别的服务显示「检测到未知运行服务，暂无匹配适配器，可看证据或手动指定」，**禁止为声称全支持而猜测**。
+
+### P3 三张输出图谱
+1. 服务器能力图谱（系统→包管理器→运行时→构建→服务管理→容器→网关→数据）。
+2. 项目证据图谱（项目→文件→Git→进程→端口→服务→容器→网关）。
+3. 部署可行性图谱（项目要求 ∩ 服务器能力 → 结论）。
+
+### P3 现有代码处置（不删除，分级）
+- **保留只读部分**（P3）：Docker/Nginx 的「是否安装/版本/容器列表/Compose/挂载/端口/配置/静态目录/代理端口/项目证据」等只读探测。
+- **移入 P4（操作部分）**：docker build/up/stop/restart、systemd start/stop/restart、nginx 配置保存+reload、项目部署、文件修改、回滚。
+- **禁止/重做**：`docker_prune` 不符合软删除原则（Volume/数据库/镜像不能被 AI 直接永久清理），应禁用。
+- 现有 `src-tauri/src/project_discovery.rs` 已是「证据 + 确定性评分 + 只读」方向，需补的只是【能力识别前置 + 收集器按需启用】这两块，不必推倒重来。
+
+### 仍适用的安全边界（保留）
+- **安全边界是 `src-tauri/src/safe.rs` 的 `Capability` 枚举**：唯一把「动作」翻译成命令字符串的地方，新增动作必须在此加变体+写死模板，**禁止别处拼接命令**。
+- 前端**永不传命令字符串**：只传结构化标识（单元名、容器名、路径、项目 id）。
+- **校验必须在网络 I/O 之前**（用 `remote::run_on_linux`，先 `capability.command()?` 再 OS 探测）。
+- 部署步骤三重校验：命令白名单 + 禁 shell 操作符 + 绝对路径须在项目 `deploy_path` 内；`deployment_execute` 只收 `projectId`，步骤从 DB 读出后**重新校验**。
+- 会改服务端状态的操作必须有 `ConfirmDialog`；Nginx「先 `nginx -t` 再 reload」，失败明确告知未重载。
+- 「不可用」≠「空」：Docker 没装、Nginx 无站点、journal 读不到，都要给原因。
+- 新模块用 `useCommandSession(tab)`（非交互会话，无 PTY 无 shell）+ `ModuleFrame`；tab 类型需在 `workbench-store` 的 `MODULE_TAB_TYPES` 注册。
+- e2e：`tests/p3_e2e.rs` 测试服务端记录每条命令，外部断言命令字符串，证明被拒参数「一条都没发出去」。
 
 ## 技术要点
 - Workbench 布局约定：终端/服务器模块走左侧 `ContextSidebar`（服务器列表，`openModuleTab` 对 `ssh`/`servers` 只切换 `activeModule`，不开页签）；设置等其他模块走 `ModulePage` 居中页签。

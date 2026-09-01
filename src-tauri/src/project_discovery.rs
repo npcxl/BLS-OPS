@@ -124,6 +124,34 @@ pub struct ProjectScanResult {
     pub warnings: Vec<String>,
     pub completed_at: i64,
     pub incremental: bool,
+    /// 第一/二层产物：服务器能力图谱。扫描先做能力前置识别，再按需启用收集器。
+    /// 未做能力识别（旧路径或被取消）时为 `None`。
+    pub capability: Option<crate::capability_probe::ServerCapabilityProfile>,
+    /// 第三张图谱：每个已注册部署适配器的准备度评估（部署可行性图谱）。
+    pub deployment_readiness: Vec<crate::deployment_adapter::AdapterReadiness>,
+}
+
+impl ProjectScanResult {
+    /// 便捷构造：能力图谱与可行性图谱默认为空。
+    pub fn with(
+        scan_id: String,
+        server_id: String,
+        candidates: Vec<ProjectCandidate>,
+        warnings: Vec<String>,
+        completed_at: i64,
+        incremental: bool,
+    ) -> Self {
+        Self {
+            scan_id,
+            server_id,
+            candidates,
+            warnings,
+            completed_at,
+            incremental,
+            capability: None,
+            deployment_readiness: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

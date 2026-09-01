@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Columns2, Plus, Rows2, X } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -38,15 +39,69 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   const openTab = useWorkbenchStore((s) => s.openTab);
 
   const menu = useContextMenu();
+  const tabStripRef = useRef<HTMLDivElement>(null);
 
-  // Translate vertical wheel into horizontal scroll so the strip scrolls even
-  // when the scrollbar is hidden (it is intentionally hidden for a clean look).
+  // Keep the active tab visible when a new tab is opened or the active pane changes.
+  useEffect(() => {
+    const strip = tabStripRef.current;
+    if (!strip) return;
+    const activeTab = strip.querySelector<HTMLElement>('[aria-selected="true"]');
+    activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [pane.activeTabId, pane.tabs.length]);
+
+  // Translate vertical wheel / trackpad horizontal gesture into horizontal
+  // scroll so the strip scrolls even when its scrollbar is intentionally hidden.
   const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     if (el.scrollWidth <= el.clientWidth) return;
-    if (e.deltaY === 0) return;
-    el.scrollLeft += e.deltaY;
+    // Trackpads emit deltaX for sideways swipes; mouse wheels emit deltaY.
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (delta === 0) return;
+    e.preventDefault();
+    el.scrollLeft += delta;
   };
+
+  // Drag-to-scroll: grab the strip and fling it sideways. Uses document-level
+  // listeners (NOT setPointerCapture, which would hijack the whole pointer
+  // route and can leave the terminal unable to receive focus/keystrokes).
+  const dragRef = useRef<{ el: HTMLDivElement; startX: number; startLeft: number; moved: boolean } | null>(null);
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = e.currentTarget;
+    if (el.scrollWidth <= el.clientWidth) return;
+    dragRef.current = { el, startX: e.clientX, startLeft: el.scrollLeft, moved: false };
+  };
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      if (Math.abs(dx) > 2) drag.moved = true;
+      drag.el.scrollLeft = drag.startLeft - dx;
+    };
+    const onUp = () => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const moved = drag.moved;
+      dragRef.current = null;
+      // Suppress the click that follows a drag so we don't switch tabs.
+      if (moved) {
+        const target = drag.el;
+        const swallow = (ev: Event) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          target.removeEventListener("click", swallow, true);
+        };
+        target.addEventListener("click", swallow, true);
+      }
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+  }, []);
 
   const tabMenu = (tab: WorkspaceTab) =>
     menu.onContextMenu(() => [
@@ -71,8 +126,10 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   return (
     <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
       <div
+        ref={tabStripRef}
         onWheel={onWheel}
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onPointerDown={onPointerDown}
+        className="flex min-w-0 flex-1 cursor-grab items-center gap-1 overflow-x-auto overscroll-x-contain active:cursor-grabbing [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;

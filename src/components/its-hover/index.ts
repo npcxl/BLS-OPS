@@ -1,0 +1,9 @@
+export { default as TerminalIcon } from "./terminal-icon";
+export { default as WorldIcon } from "./world-icon";
+export { default as GearIcon } from "./gear-icon";
+export { default as FileDescriptionIcon } from "./file-description-icon";
+export { default as Stack3Icon } from "./stack-3-icon";
+export { default as RocketIcon } from "./rocket-icon";
+export { default as UnorderedListIcon } from "./unordered-list-icon";
+export { default as SparklesIcon } from "./sparkles-icon";
+export { default as SlidersHorizontalIcon } from "./sliders-horizontal-icon";

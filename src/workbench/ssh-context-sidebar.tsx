@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Check, ChevronsLeft, Container, FolderPlus, Globe, Pencil, Plug, Plus, RefreshCw, ScrollText, SquareCheckBig, Star, Trash2, X } from "lucide-react";
+import { Activity, Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, ScrollText, SquareCheckBig, Star, Trash2, X } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -14,13 +14,11 @@ import { MacButton } from "@/components/ui/mac-button";
 const UNGROUPED = "__ungrouped__";
 
 /** The session-driven management modules reachable from a server. */
-export type ManageKind = "service" | "logs" | "docker" | "nginx";
+export type ManageKind = "service" | "logs";
 
 const MANAGE_LABELS: Record<ManageKind, string> = {
   service: "服务",
   logs: "日志",
-  docker: "容器",
-  nginx: "网关",
 };
 
 function SectionTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
@@ -63,8 +61,6 @@ function ServerRow({
           { id: "sep-manage", separator: true },
           { id: "services", label: "服务管家", icon: SquareCheckBig, onSelect: () => onManage(server, "service") },
           { id: "logs", label: "日志中心", icon: ScrollText, onSelect: () => onManage(server, "logs") },
-          { id: "docker", label: "Docker 管家", icon: Container, onSelect: () => onManage(server, "docker") },
-          { id: "nginx", label: "Nginx 管家", icon: Globe, onSelect: () => onManage(server, "nginx") },
           { id: "favorite", label: server.favorite ? "取消收藏" : "收藏", icon: Star, onSelect: () => onToggleFavorite(server) },
           { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
           { id: "sep", separator: true },

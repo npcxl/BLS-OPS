@@ -32,15 +32,23 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
         {pane.tabs.length === 0 ? (
           <EmptyPaneState paneId={pane.id} />
         ) : (
-          pane.tabs.map((tab) => (
-            <div
-              key={tab.id}
-              className={cn("absolute inset-0", tab.id === pane.activeTabId ? "block" : "hidden")}
-              aria-hidden={tab.id === pane.activeTabId ? undefined : true}
-            >
-              <TabContent tab={tab} />
-            </div>
-          ))
+          pane.tabs.map((tab) => {
+            const active = tab.id === pane.activeTabId;
+            return (
+              <div
+                key={tab.id}
+                className={cn("absolute inset-0", active ? "block" : "hidden")}
+                aria-hidden={active ? undefined : true}
+                // Keep focusable elements in inactive (hidden) tabs out of the
+                // tab order and away from assistive tech — otherwise a lingering
+                // focus inside an aria-hidden container throws a11y warnings and
+                // can interfere with the active terminal's focus.
+                {...(!active ? { inert: "" as unknown as boolean } : {})}
+              >
+                <TabContent tab={tab} />
+              </div>
+            );
+          })
         )}
       </div>
     </div>

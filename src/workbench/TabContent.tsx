@@ -33,18 +33,6 @@ const LogCenterView = lazy(() =>
   })),
 );
 
-const DockerManagerView = lazy(() =>
-  import("@/workbench/views/DockerManagerView").then((module) => ({
-    default: module.DockerManagerView,
-  })),
-);
-
-const NginxManagerView = lazy(() =>
-  import("@/workbench/views/NginxManagerView").then((module) => ({
-    default: module.NginxManagerView,
-  })),
-);
-
 const ProjectView = lazy(() =>
   import("@/workbench/views/ProjectView").then((module) => ({
     default: module.ProjectView,
@@ -88,18 +76,6 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <LogCenterView tab={tab} />
-        </Suspense>
-      );
-    case "docker":
-      return (
-        <Suspense fallback={<TerminalFallback />}>
-          <DockerManagerView tab={tab} />
-        </Suspense>
-      );
-    case "nginx":
-      return (
-        <Suspense fallback={<TerminalFallback />}>
-          <NginxManagerView tab={tab} />
         </Suspense>
       );
     case "project":

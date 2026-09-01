@@ -212,14 +212,22 @@ pub async fn service_status(
     session_id: &str,
     unit: &str,
 ) -> Result<String> {
-    run_on_linux(
-        manager,
-        session_id,
-        &Capability::ServiceStatus {
-            unit: unit.to_string(),
-        },
-    )
-    .await
+    let capability = Capability::ServiceStatus {
+        unit: unit.to_string(),
+    };
+    let command = capability.command()?;
+    crate::remote::require_linux(manager, session_id).await?;
+
+    // `systemctl status` returns a non-zero code for inactive or failed units,
+    // while its stdout is still the detail the operator asked to inspect.
+    let output = manager
+        .exec(session_id, &command, capability.timeout())
+        .await?;
+    if output.stdout.is_empty() && !output.stderr.is_empty() {
+        Ok(output.stderr)
+    } else {
+        Ok(output.stdout)
+    }
 }
 
 /// Whether the host is managed by systemd.

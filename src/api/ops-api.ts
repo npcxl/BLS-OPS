@@ -149,6 +149,43 @@ export interface SftpListResult {
   entries: RemoteFileEntry[];
 }
 
+/** Lifecycle of a single directory-size computation. */
+export type DirectorySizeStatus =
+  | "pending"
+  | "computing"
+  | "completed"
+  | "partial"
+  | "permission_denied"
+  | "cancelled"
+  | "timed_out"
+  | "session_gone"
+  | "failed";
+
+/**
+ * Result of an on-demand directory-size computation. Pushed over the
+ * `directory-size-update` event as it progresses, and returned by
+ * `directorySizeStatus`. Folders do not report a size via SFTP (only their
+ * own metadata, ~4096 B), so this is the only honest way to learn a folder's
+ * total content size.
+ */
+export interface DirectorySizeResult {
+  sessionId: string;
+  path: string;
+  /** Total bytes of regular files under `path` (symlink targets excluded). */
+  sizeBytes: number;
+  fileCount: number;
+  directoryCount: number;
+  /** Entries skipped because of an error (permission denied, unreadable, …). */
+  skippedCount: number;
+  status: DirectorySizeStatus;
+  /** `true` once the computation has reached a terminal state. */
+  complete: boolean;
+  calculatedAt: number;
+}
+
+/** Tauri event name carrying `DirectorySizeResult` updates. */
+export const DIRECTORY_SIZE_EVENT = "directory-size-update";
+
 export type SshConnectResult =
   | {
       status: "connected";
@@ -412,7 +449,69 @@ export interface ProjectCandidate { id: string; server_id: string; name: string;
 export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
 export interface ScanProgress { phase: string; progress: number; checked_directories: number; discovered_candidates: number; current_path: string | null; warnings: number; }
 export interface ProjectScanStatus { id: string; server_id: string; state: ScanState; progress: ScanProgress; error: string | null; started_at: number; finished_at: number | null; }
-export interface ProjectScanResult { scan_id: string; server_id: string; candidates: ProjectCandidate[]; warnings: string[]; completed_at: number; incremental: boolean; }
+
+// -- P3 server capability graph (first/second layer) ----------------------
+export interface SystemProfile {
+  family: string;
+  os: string;
+  arch: string;
+  kernel: string;
+  init_system: string;
+  user: string;
+  sudo: boolean | null;
+  package_manager: string;
+  security_module: string;
+  cgroup_version: string;
+}
+export interface RuntimeProfile {
+  java: string | null; node: string | null; python: string | null; go: string | null;
+  rust: string | null; php: string | null; dotnet: string | null; ruby: string | null;
+}
+export interface VersionManagerProfile {
+  nvm: string | null; fnm: string | null; pyenv: string | null; uv: string | null;
+  sdkman: string | null; rustup: string | null;
+}
+export interface BuildToolProfile {
+  maven: string | null; gradle: string | null; npm: string | null; pnpm: string | null;
+  yarn: string | null; cargo: string | null; pip: string | null; poetry: string | null; composer: string | null;
+}
+export interface DeploymentCapabilities {
+  systemd: boolean | null; openrc: boolean | null; supervisor: boolean | null; pm2: boolean | null;
+  runit: boolean | null; windows_service: boolean | null;
+  docker: boolean | null; docker_compose: boolean | null; podman: boolean | null; containerd: boolean | null;
+  kubernetes: boolean | null; k3s: boolean | null; helm: boolean | null; nomad: boolean | null;
+  nginx: boolean | null; apache: boolean | null; caddy: boolean | null; traefik: boolean | null;
+  haproxy: boolean | null; iis: boolean | null;
+  mysql: boolean | null; postgresql: boolean | null; redis: boolean | null; mongodb: boolean | null;
+  elasticsearch: boolean | null; rabbitmq: boolean | null; kafka: boolean | null;
+}
+export interface ServerCapabilityProfile {
+  system: SystemProfile;
+  runtimes: RuntimeProfile;
+  version_managers: VersionManagerProfile;
+  build_tools: BuildToolProfile;
+  deployment: DeploymentCapabilities;
+  warnings: string[];
+}
+export type ReadinessVerdict = "ready" | "needs_install" | "conflict" | "unconfirmed";
+export interface AdapterReadiness {
+  adapter: string;
+  verdict: ReadinessVerdict;
+  note: string;
+}
+
+export interface ProjectScanResult {
+  scan_id: string;
+  server_id: string;
+  candidates: ProjectCandidate[];
+  warnings: string[];
+  completed_at: number;
+  incremental: boolean;
+  /** 第一/二层产物：服务器能力图谱。 */
+  capability: ServerCapabilityProfile | null;
+  /** 第三张图谱：部署可行性（每个已注册适配器的准备度）。 */
+  deployment_readiness: AdapterReadiness[];
+}
 
 // -- Projects & deployments (legacy P5 foundation) -------------------------
 
@@ -666,6 +765,15 @@ export const opsApi = {
   monitorSnapshot: (sessionId: string) =>
     invoke<MonitorSnapshot>("monitor_snapshot", { sessionId }),
 
+  // -- Project discovery ----------------------------------------------------
+  projectScanStart: (sessionId: string, serverId: string, incremental = false) =>
+    invoke<ProjectScanStatus>("project_scan_start", { sessionId, serverId, incremental }),
+  projectScanCancel: (scanId: string) => invoke<boolean>("project_scan_cancel", { scanId }),
+  projectScanStatus: (scanId: string) =>
+    invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
+  projectScanResult: (scanId: string) =>
+    invoke<ProjectScanResult | null>("project_scan_result", { scanId }),
+
   // -- Services (systemd) ---------------------------------------------------
   serviceList: (sessionId: string) => invoke<ServiceUnit[]>("service_list", { sessionId }),
   /**
@@ -720,13 +828,6 @@ export const opsApi = {
   nginxSetSiteEnabled: (sessionId: string, site: string, enable: boolean) =>
     invoke<string>("nginx_set_site_enabled", { sessionId, site, enable }),
 
-  // -- Project discovery (read-only P3) -------------------------------------
-  projectScanStart: (sessionId: string, serverId: string, incremental = false) =>
-    invoke<ProjectScanStatus>("project_scan_start", { sessionId, serverId, incremental }),
-  projectScanCancel: (scanId: string) => invoke<boolean>("project_scan_cancel", { scanId }),
-  projectScanStatus: (scanId: string) => invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
-  projectScanResult: (scanId: string) => invoke<ProjectScanResult | null>("project_scan_result", { scanId }),
-
   // -- Legacy project records (P5 foundation) -------------------------------
   projectList: () => invoke<ProjectRecord[]>("project_list"),
   projectGet: (id: string) => invoke<ProjectRecord | null>("project_get", { id }),
@@ -753,4 +854,23 @@ export const opsApi = {
       sessionId: args.sessionId,
       deploymentId: args.deploymentId ?? null,
     }),
+
+  // -- Directory size (on-demand, background) ------------------------------
+  /**
+   * Starts computing the size of a remote directory in the background.
+   * Progress and the final result arrive via the `directory-size-update`
+   * event; a second call for the same path replays the current state.
+   */
+  directorySizeStart: (sessionId: string, path: string, timeoutMs?: number) =>
+    invoke<void>("directory_size_start", {
+      sessionId,
+      path,
+      timeoutMs: timeoutMs ?? null,
+    }),
+  /** Asks a running computation to stop. */
+  directorySizeCancel: (sessionId: string, path: string) =>
+    invoke<void>("directory_size_cancel", { sessionId, path }),
+  /** Current (or last) computation snapshot for a path, or `null`. */
+  directorySizeStatus: (sessionId: string, path: string) =>
+    invoke<DirectorySizeResult | null>("directory_size_status", { sessionId, path }),
 };

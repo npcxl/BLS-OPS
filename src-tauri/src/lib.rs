@@ -1,5 +1,11 @@
+/// First/second-layer server capability recognition — the P3 pipeline start.
+pub mod capability_probe;
 mod commands;
 mod db;
+/// Fourth-layer deployment adapter registry.
+pub mod deployment_adapter;
+/// On-demand directory-size calculation (SFTP `du` / recursive walk).
+pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
 pub mod docker;
 /// journald log querying (P3-1.2).
@@ -103,6 +109,10 @@ pub fn run() {
             commands::sftp_touch,
             commands::sftp_read_file,
             commands::sftp_write_file,
+            // directory size (on-demand, background)
+            commands::directory_size_start,
+            commands::directory_size_cancel,
+            commands::directory_size_status,
             // services — systemd (P3-1.1)
             commands::service_list,
             commands::service_action,
@@ -128,6 +138,7 @@ pub fn run() {
             commands::project_scan_cancel,
             commands::project_scan_status,
             commands::project_scan_result,
+            commands::capability_profile,
             // legacy project records retained as P5 foundation
             commands::project_list,
             commands::project_get,

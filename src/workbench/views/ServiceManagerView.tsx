@@ -43,7 +43,12 @@ function activeTone(unit: ServiceUnit): string {
 }
 
 function activeLabel(unit: ServiceUnit): string {
-  const sub = unit.sub || "—";
+  if (unit.active === "active" && unit.sub === "running") return "运行中";
+  if (unit.active === "failed" || unit.sub === "failed") return "启动失败";
+  if (unit.active === "inactive") return "未运行";
+  if (unit.active === "activating") return "启动中";
+  if (unit.active === "deactivating") return "停止中";
+  const sub = unit.sub || "未知";
   return `${unit.active} · ${sub}`;
 }
 
@@ -320,7 +325,7 @@ function ServiceTable({
         <tr>
           <th className="w-[34px] px-3 py-1.5" />
           <th className="px-2 py-1.5 text-left font-semibold">服务单元</th>
-          <th className="w-[150px] px-2 py-1.5 text-left font-semibold">状态</th>
+          <th className="w-[150px] px-2 py-1.5 text-left font-semibold">运行状态</th>
           <th className="w-[92px] px-2 py-1.5 text-left font-semibold">自启</th>
           <th className="px-3 py-1.5 text-left font-semibold">说明</th>
         </tr>
@@ -342,7 +347,11 @@ function ServiceTable({
                 <RotateCw size={10} className="ml-1.5 inline animate-spin text-accent" />
               )}
             </td>
-            <td className="px-2 py-1.5 text-fg-muted">{activeLabel(unit)}</td>
+            <td className="px-2 py-1.5">
+              <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-10", unit.active === "active" && unit.sub === "running" ? "bg-success/12 text-success" : unit.active === "failed" || unit.sub === "failed" ? "bg-danger/12 text-danger" : "bg-surface-3 text-fg-subtle")}>
+                {activeLabel(unit)}
+              </span>
+            </td>
             <td className="px-2 py-1.5 text-fg-muted">{enabledLabel(unit)}</td>
             <td className="max-w-0 truncate px-3 py-1.5 text-fg-subtle" title={unit.description}>
               {unit.description}

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Boxes, Container, Globe, ScrollText, SquareCheckBig } from "lucide-react";
+import { Boxes, ScrollText, SquareCheckBig } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { NavModule, WorkbenchPane, WorkspaceTab } from "@/workbench/types";
 import { useDomainStore } from "@/stores/domain-store";
@@ -7,13 +7,11 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 
 /** Modules that, when opened from the rail, show a left server list instead of
  *  a placeholder — picking a server opens that module bound to that server. */
-export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "docker", "nginx", "projects"];
+export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects"];
 
 const MODULE_ICON: Partial<Record<NavModule, LucideIcon>> = {
   services: SquareCheckBig,
   logs: ScrollText,
-  docker: Container,
-  nginx: Globe,
   projects: Boxes,
 };
 

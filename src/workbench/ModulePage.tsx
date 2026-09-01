@@ -1,9 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Boxes,
-  Container,
   Files,
-  Globe,
   ListTodo,
   Rocket,
   ScrollText,
@@ -32,8 +30,6 @@ const MODULES: Record<NavModule, ModuleSpec> = {
   files: { title: "文件", icon: Files, description: "远程文件浏览与传输", sections: ["远程浏览", "传输队列"] },
   projects: { title: "项目", icon: Boxes, description: "项目与分组管理", sections: ["最近项目", "分组", "关联关系"] },
   deploy: { title: "部署", icon: Rocket, description: "部署目标与工作流", sections: ["目标环境", "工作流", "历史记录"] },
-  docker: { title: "容器", icon: Container, description: "容器、镜像与编排", sections: ["容器", "镜像", "编排"] },
-  nginx: { title: "网关", icon: Globe, description: "Nginx 实例与站点", sections: ["实例", "站点", "上游服务", "证书"] },
   tasks: { title: "任务", icon: ListTodo, description: "构建与上传任务", sections: ["构建", "上传", "部署", "历史"] },
   ai: { title: "智能助手", icon: Sparkles, description: "AI 辅助运维", sections: ["上下文", "模型提供方", "历史记录"] },
   settings: { title: "设置", icon: Settings, description: "", sections: [] },

@@ -1,10 +1,14 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{Emitter, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     db,
     db::{CredentialRecord, ServerRecord},
+    dirsize::DirectorySizeResult,
     keyring,
     ssh::{ConnectTarget, CredentialSecrets},
     state::AppState,
@@ -847,6 +851,56 @@ pub async fn sftp_list_dir(
         .await
         .map_err(|error| error.to_string())?;
     Ok(SftpListResult { path, entries })
+}
+
+// -- Directory size (on-demand, background) -------------------------------
+
+/// Starts computing the size of a remote directory in the background and
+/// begins emitting `directory-size-update` events as it progresses. A second
+/// call for the same session + path replays the current (possibly finished)
+/// state instead of launching a duplicate scan.
+#[tauri::command]
+pub async fn directory_size_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    timeout_ms: Option<u64>,
+) -> Result<(), String> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(5 * 60_000).max(1_000));
+    state.dir_sizes.start(
+        Some(Arc::new(move |result| {
+            let _ = app.emit(crate::dirsize::DIR_SIZE_EVENT, &result);
+        })),
+        Arc::new(state.ssh.clone()),
+        session_id,
+        path,
+        timeout,
+    );
+    Ok(())
+}
+
+/// Asks a running computation to stop. The result, once cancelled, is
+/// reported with status `cancelled` through the event stream.
+#[tauri::command]
+pub async fn directory_size_cancel(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    state.dir_sizes.cancel(&session_id, &path);
+    Ok(())
+}
+
+/// Snapshot of the current (or last) computation for a path, or `None` if it
+/// was never requested.
+#[tauri::command]
+pub async fn directory_size_status(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<Option<DirectorySizeResult>, String> {
+    Ok(state.dir_sizes.status(&session_id, &path))
 }
 
 #[tauri::command]
@@ -1803,6 +1857,18 @@ pub async fn nginx_set_site_enabled(
 // Project discovery (P3 read-only)
 // ---------------------------------------------------------------------------
 
+fn runtime_links_for_path(raw: &str, path: &str) -> Vec<crate::project_discovery::RuntimeLink> {
+    let mut links = Vec::new();
+    for line in raw.lines() {
+        if line.contains(path) {
+            let kind = if line.contains("systemctl") || line.contains("WorkingDirectory") { crate::project_discovery::RuntimeKind::Systemd } else if line.contains("docker") || line.contains("compose") { crate::project_discovery::RuntimeKind::Docker } else if line.contains("nginx") || line.contains("proxy_pass") { crate::project_discovery::RuntimeKind::Nginx } else { crate::project_discovery::RuntimeKind::Process };
+            links.push(crate::project_discovery::RuntimeLink { kind, name: line.split_whitespace().next().unwrap_or("runtime").to_string(), status: Some("running".into()), ports: Vec::new(), source: "runtime_inventory".into() });
+            break;
+        }
+    }
+    links
+}
+
 fn scan_status(
     id: &str,
     server_id: &str,
@@ -1851,6 +1917,24 @@ pub async fn project_scan_start(
     let server = server_id.clone();
     tauri::async_runtime::spawn(async move {
         let result = async {
+            // ---- 第一/二层：能力识别前置 ----
+            // 先做能力图谱，再据此决定启用哪些收集器。未安装的组件（Docker/Nginx/…）
+            // 不会产生任何探测命令，因此不会出现"Docker 未安装"的无意义报错。
+            let profile = match crate::capability_probe::probe_capabilities(&sid, &ssh).await {
+                Ok(p) => p,
+                Err(e) => return Err(format!("服务器能力识别失败：{e}")),
+            };
+
+            // ---- 第三层：按能力启用收集器 ----
+            let enabled = profile.enabled_collectors();
+            let mut warnings = profile.warnings.clone();
+            let enabled_list = if enabled.is_empty() {
+                "无".to_string()
+            } else {
+                enabled.join(", ")
+            };
+            warnings.push(format!("已启用的能力收集器：{enabled_list}"));
+
             let inventory = crate::remote::run_capability(
                 &ssh,
                 &sid,
@@ -1858,30 +1942,46 @@ pub async fn project_scan_start(
             )
             .await
             .map_err(|e| e.to_string())?;
-            let _runtime = crate::remote::run_capability(
+            // 运行时清单只收集进程与 systemd 证据，不依赖 Docker/Nginx。
+            let runtime = crate::remote::run_capability(
                 &ssh,
                 &sid,
                 &crate::safe::Capability::ProjectRuntimeInventory,
             )
             .await
             .unwrap_or_default();
-            let mut candidates = Vec::new();
+
+            let mut markers_by_path: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
             for line in inventory.lines() {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err("扫描已取消".to_string());
-                }
                 let mut parts = line.splitn(2, '\t');
                 let Some(path) = parts.next() else { continue };
                 let Some(file) = parts.next() else { continue };
-                let parent = path.to_string();
-                let marker = file.to_string();
+                markers_by_path.entry(path.to_string()).or_default().push(file.to_string());
+            }
+            let mut candidates = Vec::new();
+            let total = markers_by_path.len().max(1) as u32;
+            for (index, (parent, markers)) in markers_by_path.into_iter().enumerate() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("扫描已取消".to_string());
+                }
+                let runtime_links = runtime_links_for_path(&runtime, &parent);
+                {
+                    let mut tasks = registry.tasks.lock().await;
+                    if let Some(status) = tasks.get_mut(&id) {
+                        status.progress.phase = if runtime_links.is_empty() { "候选发现".into() } else { "运行服务关联".into() };
+                        status.progress.progress = ((index as u32 + 1) * 70 / total) as u8;
+                        status.progress.checked_directories = index as u32 + 1;
+                        status.progress.current_path = Some(parent.clone());
+                        status.progress.discovered_candidates = candidates.len() as u32;
+                    }
+                }
                 let input = crate::project_discovery::CandidateInput {
                     path: parent.clone(),
                     name: parent.rsplit('/').next().unwrap_or("项目").into(),
                     server_id: server.clone(),
-                    markers: vec![marker],
+                    markers,
                     source: "filesystem".into(),
-                    runtime_links: Vec::new(),
+                    runtime_links,
                     modules: Vec::new(),
                     env_names: Vec::new(),
                     ports: Vec::new(),
@@ -1894,13 +1994,32 @@ pub async fn project_scan_start(
                 }
             }
             let candidates = crate::project_discovery::merge_candidates(candidates);
+
+            // ---- 第四层：部署可行性图谱 ----
+            // 评估每个已注册适配器在当前服务器能力下的准备度（P3.8）。
+            // 项目是否"需要"某方式在 P3 仅做占位（证据尚未归集到具体适配器），
+            // 这里以"服务器是否具备该能力"作为就绪与否的依据，绝不猜测。
+            let deployment_readiness: Vec<crate::deployment_adapter::AdapterReadiness> =
+                crate::deployment_adapter::DeploymentAdapter::all()
+                    .iter()
+                    .map(|id| {
+                        let adapter = crate::deployment_adapter::DeploymentAdapter { id: *id };
+                        // 在 P3 阶段，无法从候选项精确反推"项目是否需要"，故统一按
+                        // 服务器能力是否具备评估；需要明确需求的判定由 P4 完成。
+                        let required = adapter.is_applicable(&profile);
+                        adapter.assess_readiness(&profile, required)
+                    })
+                    .collect();
+
             let result = crate::project_discovery::ProjectScanResult {
                 scan_id: id.clone(),
                 server_id: server.clone(),
                 candidates,
-                warnings: Vec::new(),
+                warnings,
                 completed_at: crate::project_discovery::chrono_like_now(),
                 incremental: incremental.unwrap_or(false),
+                capability: Some(profile),
+                deployment_readiness,
             };
             registry
                 .results
@@ -1960,6 +2079,21 @@ pub async fn project_scan_result(
         .await
         .get(&scan_id)
         .cloned())
+}
+
+/// 单独获取服务器能力图谱（第一/二层），供前端在扫描前展示"这是一台什么服务器"。
+/// 这是 P3 流水线的起点，绝不执行任何未安装组件（Docker/Nginx/…）的命令。
+#[tauri::command]
+pub async fn capability_profile(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::capability_probe::ServerCapabilityProfile, String> {
+    if !state.ssh.is_connected(&session_id).await {
+        return Err("SSH 会话不存在或已断开，请先连接服务器".into());
+    }
+    crate::capability_probe::probe_capabilities(&session_id, &state.ssh)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

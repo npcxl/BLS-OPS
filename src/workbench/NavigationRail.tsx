@@ -1,21 +1,18 @@
-import type { LucideIcon } from "lucide-react";
-import {
-  Boxes,
-  Container,
-  Files,
-  Globe,
-  ListTodo,
-  Rocket,
-  ScrollText,
-  Server,
-  Settings,
-  Sparkles,
-  SquareTerminal,
-  SquareCheckBig,
-} from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { NavModule } from "@/workbench/types";
 import { cn } from "@/lib/cn";
+import {
+  TerminalIcon,
+  WorldIcon,
+  GearIcon,
+  FileDescriptionIcon,
+  Stack3Icon,
+  RocketIcon,
+  UnorderedListIcon,
+  SparklesIcon,
+  SlidersHorizontalIcon,
+} from "@/components/its-hover";
+import type { ComponentType } from "react";
 
 /**
  * Primary Navigation Rail — the far-left icon strip.
@@ -25,23 +22,21 @@ import { cn } from "@/lib/cn";
 interface NavItem {
   id: NavModule;
   label: string;
-  icon: LucideIcon;
+  icon: ComponentType<{ size?: number | string; className?: string; color?: string }>;
   divider?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "ssh", label: "终端", icon: SquareTerminal },
-  { id: "servers", label: "服务器", icon: Server },
-  { id: "services", label: "服务", icon: SquareCheckBig },
-  { id: "logs", label: "日志", icon: ScrollText },
-  { id: "files", label: "文件", icon: Files },
-  { id: "projects", label: "项目", icon: Boxes },
-  { id: "deploy", label: "部署", icon: Rocket },
-  { id: "docker", label: "容器", icon: Container },
-  { id: "nginx", label: "网关", icon: Globe },
-  { id: "tasks", label: "任务", icon: ListTodo },
-  { id: "ai", label: "智能助手", icon: Sparkles, divider: true },
-  { id: "settings", label: "设置", icon: Settings },
+  { id: "ssh", label: "终端", icon: TerminalIcon },
+  { id: "servers", label: "服务器", icon: WorldIcon },
+  { id: "services", label: "服务", icon: SlidersHorizontalIcon },
+  { id: "logs", label: "日志", icon: FileDescriptionIcon },
+  { id: "files", label: "文件", icon: FileDescriptionIcon },
+  { id: "projects", label: "项目", icon: Stack3Icon },
+  { id: "deploy", label: "部署", icon: RocketIcon },
+  { id: "tasks", label: "任务", icon: UnorderedListIcon },
+  { id: "ai", label: "智能助手", icon: SparklesIcon, divider: true },
+  { id: "settings", label: "设置", icon: GearIcon },
 ];
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
@@ -51,12 +46,20 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
       type="button"
       onClick={onClick}
       aria-label={item.label}
+      aria-current={active ? "page" : undefined}
       className={cn(
         "group relative flex h-10 w-10 items-center justify-center rounded-[10px] outline-none transition-colors",
-        active ? "bg-surface-active text-accent" : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+        active ? "text-accent" : "text-fg-subtle hover:text-fg",
       )}
     >
-      <Icon size={18} strokeWidth={1.6} />
+      {/* active indicator bar (left) */}
+      <span
+        className={cn(
+          "pointer-events-none absolute left-[-8px] h-5 w-[3px] rounded-r-full bg-accent transition-all duration-200",
+          active ? "opacity-100 scale-y-100" : "opacity-0 scale-y-0",
+        )}
+      />
+      <Icon size={19} className="transition-transform duration-200 group-hover:scale-110" color="currentColor" />
       <span className="pointer-events-none absolute left-[calc(100%+6px)] z-50 whitespace-nowrap rounded-[7px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
         {item.label}
       </span>

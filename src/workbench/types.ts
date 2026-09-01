@@ -15,8 +15,6 @@ export type WorkspaceTabType =
   /** P3 management modules. Each opens its own non-interactive session. */
   | "service"
   | "logs"
-  | "docker"
-  | "nginx"
   | "project"
   | "workflow"
   | "deployment";
@@ -67,8 +65,6 @@ export type NavModule =
   | "files"
   | "projects"
   | "deploy"
-  | "docker"
-  | "nginx"
   | "tasks"
   | "ai"
   | "settings";

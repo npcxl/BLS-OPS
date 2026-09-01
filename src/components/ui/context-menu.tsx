@@ -228,9 +228,8 @@ export const ContextMenu = memo(function ContextMenu({
             role="menuitem"
             disabled={item.disabled}
             className={cn(
-              "flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] px-2 text-12 select-none",
-              item.danger ? "text-danger" : "text-fg",
-              highlighted && (item.danger ? "bg-danger/12" : "bg-surface-hover"),
+              "relative flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
+              item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
               item.disabled && "pointer-events-none opacity-40",
             )}
             onPointerEnter={() => !item.disabled && setActive(index)}
@@ -240,11 +239,18 @@ export const ContextMenu = memo(function ContextMenu({
               item.onSelect?.();
             }}
           >
+            {/* active indicator bar (left) — replaces the old full-row highlight */}
+            <span
+              className={cn(
+                "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150",
+                highlighted ? "opacity-100" : "opacity-0",
+              )}
+            />
             {Icon ? (
               <Icon
                 size={14}
                 strokeWidth={1.75}
-                className={cn("shrink-0", item.danger ? "text-danger/80" : "text-fg-subtle")}
+                className={cn("shrink-0", item.danger ? "text-danger/80" : highlighted ? "text-accent" : "text-fg-subtle")}
               />
             ) : (
               <span className="w-[14px] shrink-0" />

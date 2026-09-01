@@ -20,8 +20,6 @@ const MANAGE_KINDS: {
 }[] = [
   { id: "service", label: "服务", tabType: "service", description: "systemd 服务：启动、停止、重启、自启" },
   { id: "logs", label: "日志", tabType: "logs", description: "journalctl 日志查询与过滤" },
-  { id: "docker", label: "容器", tabType: "docker", description: "Docker 容器、镜像与资源占用" },
-  { id: "nginx", label: "网关", tabType: "nginx", description: "Nginx 站点配置、校验与重载" },
 ];
 
 /**

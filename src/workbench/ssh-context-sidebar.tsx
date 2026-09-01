@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
+import { Activity, Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
 import { ContextMenu, contextMenuStateAt, type ContextMenuState } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
 import { emptyGroup, emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { cn } from "@/lib/cn";
 
 const UNGROUPED = "__ungrouped__";
 
@@ -24,12 +24,15 @@ function SectionTitle({ children, actions }: { children: React.ReactNode; action
 function ServerRow({
   server,
   onOpen,
+  onMonitor,
   onEdit,
   onDelete,
   onToggleFavorite,
 }: {
   server: ServerRecord;
   onOpen: (server: ServerRecord) => void;
+  /** Opens read-only monitoring for this server. */
+  onMonitor: (server: ServerRecord) => void;
   onEdit: (server: ServerRecord) => void;
   onDelete: (server: ServerRecord) => void;
   onToggleFavorite: (server: ServerRecord) => void;
@@ -45,6 +48,7 @@ function ServerRow({
           setMenu(
             contextMenuStateAt(event, [
               { id: "connect", label: "打开终端", icon: Plug, onSelect: () => onOpen(server) },
+              { id: "monitor", label: "打开监控", icon: Activity, onSelect: () => onMonitor(server) },
               { id: "favorite", label: server.favorite ? "取消收藏" : "收藏", icon: Star, onSelect: () => onToggleFavorite(server) },
               { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
               { id: "sep", separator: true },
@@ -64,33 +68,9 @@ function ServerRow({
           {server.username}@{server.host}:{server.port}
         </span>
       </button>
-      <div className="flex shrink-0 items-center">
-        <button
-          type="button"
-          aria-label={server.favorite ? `取消收藏 ${server.name}` : `收藏 ${server.name}`}
-          className={cn("rounded p-1 hover:text-accent", server.favorite ? "text-accent" : "text-fg-subtle")}
-          onClick={() => onToggleFavorite(server)}
-        >
-          <Star size={12} className={server.favorite ? "fill-current" : ""} />
-        </button>
-        <button
-          type="button"
-          aria-label={`编辑 ${server.name}`}
-          className="rounded p-1 text-fg-subtle opacity-0 hover:text-fg group-hover:opacity-100"
-          onClick={() => onEdit(server)}
-        >
-          <Pencil size={12} />
-        </button>
-        <button
-          type="button"
-          aria-label={`删除 ${server.name}`}
-          className="rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-          onClick={() => onDelete(server)}
-        >
-          <Trash2 size={12} />
-        </button>
       </div>
-    </div>
+      {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
+    </>
   );
 }
 
@@ -185,6 +165,7 @@ export function SshContextSidebar() {
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
   const removeGroup = useDomainStore((s) => s.deleteGroup);
   const [editing, setEditing] = useState<ServerRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -221,10 +202,23 @@ export function SshContextSidebar() {
       sessionId: crypto.randomUUID(),
     });
 
-  const confirmDelete = async (server: ServerRecord) => {
-    if (!window.confirm(`删除“${server.name}”会同时删除它的会话与命令历史，确定继续？`)) return;
+  // Monitoring deliberately gets its own tab and its own session: it runs
+  // read-only exec channels and must not disturb an open shell.
+  const openMonitor = (server: ServerRecord) =>
+    useWorkbenchStore.getState().openTab({
+      id: crypto.randomUUID(),
+      type: "monitor",
+      title: `${server.name} · 监控`,
+      subtitle: `${server.host}:${server.port}`,
+      serverId: server.id,
+      sessionId: crypto.randomUUID(),
+    });
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await removeServer(server.id);
+      await removeServer(deleteTarget.id);
+      setDeleteTarget(null);
       setError(null);
     } catch (cause) {
       setError(toErrorMessage(cause));
@@ -367,8 +361,9 @@ export function SshContextSidebar() {
                       key={server.id}
                       server={server}
                       onOpen={openServer}
+                      onMonitor={openMonitor}
                       onEdit={setEditing}
-                      onDelete={(item) => void confirmDelete(item)}
+                      onDelete={setDeleteTarget}
                       onToggleFavorite={(item) => void setFavorite(item.id, !item.favorite)}
                     />
                   ))}
@@ -421,6 +416,17 @@ export function SshContextSidebar() {
       {error && <ErrorText>{error}</ErrorText>}
 
       {editing && <ServerForm server={editing} onClose={() => setEditing(null)} />}
+      {deleteTarget && (
+        <ConfirmDialog
+          open
+          title="删除服务器"
+          description={`删除“${deleteTarget.name}”会同时删除它的会话与命令历史。此操作不可撤销。`}
+          confirmLabel="确认删除"
+          danger
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => void confirmDelete()}
+        />
+      )}
     </div>
   );
 }

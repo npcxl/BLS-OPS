@@ -1,6 +1,7 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
+    future::Future,
     sync::Arc,
     time::{Duration, UNIX_EPOCH},
 };
@@ -8,20 +9,34 @@ use std::{
 use anyhow::{anyhow, Result};
 use russh::client;
 use russh::keys::{decode_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::client::{fs::DirEntry, SftpSession};
 use russh_sftp::protocol::{FileAttributes, FileType, StatusCode as SftpStatusCode};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 /// How often an idle session sends a keepalive probe; also drives russh's
 /// `keepalive_max` disconnect detection.
 pub const DEFAULT_KEEPALIVE_SECS: u64 = 30;
 
+/// Hard budget for one non-interactive command. Monitoring must never be able
+/// to hang a tab, so a command that has not finished by then is abandoned and
+/// its channel closed.
+pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The SFTP subsystem is requested on its own channel over the same
 /// connection, so the shell and the file browser never block each other.
 pub const SFTP_SUBSYSTEM: &str = "sftp";
+
+/// Result of one non-interactive command run over a short-lived exec channel.
+#[derive(Debug, Clone)]
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    /// `None` when the server never reported an exit status.
+    pub exit_code: Option<u32>,
+}
 
 pub const KIND_DIRECTORY: &str = "directory";
 pub const KIND_FILE: &str = "file";
@@ -402,7 +417,13 @@ type SessionWriter = ChannelWriteHalf<client::Msg>;
 /// only ever held long enough to look a session up.
 struct SshSession {
     handle: client::Handle<ClientHandler>,
-    writer: Mutex<SessionWriter>,
+    /// `None` for non-interactive sessions (monitoring): those never open a
+    /// shell channel and run each command on its own exec channel instead.
+    writer: Mutex<Option<SessionWriter>>,
+    /// Flipped once when the session is torn down. Every in-flight command
+    /// selects on it, so a disconnect cancels work instead of leaving it
+    /// waiting on a dead socket.
+    closed: watch::Sender<bool>,
     /// Jump-host handles must outlive the tunneled session, otherwise the
     /// direct-tcpip channel is dropped and the connection dies.
     _chain: Vec<client::Handle<ClientHandler>>,
@@ -437,19 +458,88 @@ impl SshSession {
         Ok(sftp)
     }
 
+    /// Runs one command on a dedicated exec channel — never a PTY, never the
+    /// interactive shell.
+    ///
+    /// A shell channel echoes prompts and would interleave command output with
+    /// whatever the user happens to be typing, so monitoring always opens its
+    /// own channel, reads until the exit status, and closes the channel before
+    /// returning. The whole call is bounded by `timeout` and is cancelled the
+    /// moment the session is disconnected.
+    pub async fn exec(&self, command: &str, timeout: Duration) -> Result<ExecOutput> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut closed = self.closed.subscribe();
+
+        let mut channel = timed(
+            self.handle.channel_open_session(),
+            deadline,
+            &mut closed,
+            timeout,
+        )
+        .await??;
+
+        let outcome: Result<ExecOutput> = async {
+            timed(
+                channel.exec(true, command.as_bytes()),
+                deadline,
+                &mut closed,
+                timeout,
+            )
+            .await??;
+
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_code = None;
+
+            loop {
+                let message = match timed(channel.wait(), deadline, &mut closed, timeout).await? {
+                    Some(message) => message,
+                    None => break,
+                };
+                match message {
+                    ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                    ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                    ChannelMsg::ExitStatus { exit_status } => exit_code = Some(exit_status),
+                    // OpenSSH sends exit-status before eof, so eof after a
+                    // status means the command is finished; a bare eof may
+                    // still be followed by the status.
+                    ChannelMsg::Eof if exit_code.is_some() => break,
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+
+            Ok(ExecOutput {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                exit_code,
+            })
+        }
+        .await;
+
+        // A command owns its channel: close it whether the run succeeded,
+        // timed out or was cancelled.
+        let _ = channel.close().await;
+        outcome
+    }
+
     /// Best-effort teardown. Each step is attempted even if an earlier one
     /// fails, so the remote side is told to release the session.
     async fn shutdown(&self) {
+        // Cancels every command still waiting on this session.
+        let _ = self.closed.send(true);
         // Close SFTP while the connection is still alive so it sees a clean
         // EOF instead of dying with the socket.
         if let Some(sftp) = self.sftp.lock().await.take() {
             let _ = sftp.close().await;
         }
         {
-            let writer = self.writer.lock().await;
-            // Tell the pty we're done writing, then close the channel.
-            let _ = writer.eof().await;
-            let _ = writer.close().await;
+            let mut writer = self.writer.lock().await;
+            if let Some(writer) = writer.as_mut() {
+                // Tell the pty we're done writing, then close the channel.
+                let _ = writer.eof().await;
+                let _ = writer.close().await;
+            }
         }
         let _ = self
             .handle
@@ -458,7 +548,30 @@ impl SshSession {
     }
 }
 
-/// Registry of live interactive sessions.
+/// Awaits `future` but gives up as soon as `deadline` passes or the session is
+/// disconnected, so neither a stuck command nor a dropped connection can hold
+/// a caller (or a channel) forever.
+async fn timed<F>(
+    future: F,
+    deadline: tokio::time::Instant,
+    closed: &mut watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<F::Output>
+where
+    F: Future,
+{
+    tokio::select! {
+        output = future => Ok(output),
+        _ = tokio::time::sleep_until(deadline) => {
+            Err(anyhow!("命令执行超时（超过 {} 秒）", timeout.as_secs()))
+        }
+        // Both `Ok` (session closed) and `Err` (session dropped) mean stop.
+        _ = closed.changed() => Err(anyhow!("SSH 会话已断开，命令已取消")),
+    }
+}
+
+/// Registry of live sessions — interactive shells and non-interactive
+/// (monitoring) connections alike.
 #[derive(Clone, Default)]
 pub struct SshSessionManager {
     sessions: Arc<Mutex<HashMap<String, Arc<SshSession>>>>,
@@ -486,23 +599,49 @@ impl SshSessionManager {
         cols: u32,
         rows: u32,
     ) -> Result<(ConnectOutcome, Option<ChannelReadHalf>)> {
+        self.connect_with(session_id, target, cols, rows).await
+    }
+
+    /// Opens a session for non-interactive use (monitoring). No PTY and no
+    /// shell are requested — commands run on their own short-lived exec
+    /// channels, so nothing consumes a shell on the server.
+    pub async fn connect_command(
+        &self,
+        session_id: String,
+        target: ConnectTarget,
+    ) -> Result<ConnectOutcome> {
+        let (outcome, _) = self.connect_with(session_id, target, 0, 0).await?;
+        Ok(outcome)
+    }
+
+    /// Shared connect path. `cols`/`rows` of 0 skip the PTY + shell entirely
+    /// (see `connect_hop`), which is what non-interactive sessions want.
+    async fn connect_with(
+        &self,
+        session_id: String,
+        target: ConnectTarget,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(ConnectOutcome, Option<ChannelReadHalf>)> {
         match connect_hop(&target, cols, rows).await? {
             HopResult::Connected(connection) => {
                 let host_key = connection.host_key;
-                let (reader, writer) = connection
-                    .channel
-                    .ok_or_else(|| anyhow!("会话未打开终端通道"))?;
+                let (reader, writer) = match connection.channel {
+                    Some((reader, writer)) => (Some(reader), Some(writer)),
+                    None => (None, None),
+                };
                 self.sessions.lock().await.insert(
                     session_id,
                     Arc::new(SshSession {
                         handle: connection.handle,
                         writer: Mutex::new(writer),
+                        closed: watch::channel(false).0,
                         _chain: connection.chain,
                         sftp: Mutex::new(None),
                         cwd: Mutex::new(None),
                     }),
                 );
-                Ok((ConnectOutcome::Connected { host_key }, Some(reader)))
+                Ok((ConnectOutcome::Connected { host_key }, reader))
             }
             HopResult::HostKeyUnknown {
                 host_key,
@@ -535,19 +674,36 @@ impl SshSessionManager {
 
     pub async fn input(&self, session_id: &str, data: Vec<u8>) -> Result<()> {
         let session = self.get(session_id).await?;
-        session.writer.lock().await.data_bytes(data).await?;
+        let mut writer = session.writer.lock().await;
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| anyhow!("该会话没有交互式终端"))?;
+        writer.data_bytes(data).await?;
         Ok(())
     }
 
     pub async fn resize(&self, session_id: &str, cols: u32, rows: u32) -> Result<()> {
         let session = self.get(session_id).await?;
-        session
-            .writer
-            .lock()
-            .await
-            .window_change(cols, rows, 0, 0)
-            .await?;
+        let mut writer = session.writer.lock().await;
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| anyhow!("该会话没有交互式终端"))?;
+        writer.window_change(cols, rows, 0, 0).await?;
         Ok(())
+    }
+
+    /// Runs one command on its own exec channel of a live session.
+    ///
+    /// The registry lock is released before any network I/O, and the command is
+    /// cancelled if the session is disconnected while it is running.
+    pub async fn exec(
+        &self,
+        session_id: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<ExecOutput> {
+        let session = self.get(session_id).await?;
+        session.exec(command, timeout).await
     }
 
     /// Explicit keepalive, on top of russh's built-in timer.
@@ -669,16 +825,16 @@ impl SshSessionManager {
 
     /// Stat for a single entry. Uses lstat semantics so a symlink is reported
     /// as a symlink rather than as its target — what a file browser wants.
+    /// Stat for a single entry, with true lstat semantics: a symlink is
+    /// reported as a link, never resolved to its target. Canonicalizing first
+    /// would silently defeat the lstat (and misreport links as directories).
     pub async fn sftp_stat(&self, session_id: &str, path: &str) -> Result<RemoteFileEntry> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
-        let meta = sftp
-            .symlink_metadata(&canonical)
-            .await
-            .map_err(sftp_error)?;
-        let name = canonical.rsplit('/').next().unwrap_or(&canonical);
-        Ok(build_entry(&canonical, name, &meta))
+        let raw = posix_normalize(path);
+        let meta = sftp.symlink_metadata(&raw).await.map_err(sftp_error)?;
+        let name = raw.rsplit('/').next().unwrap_or(&raw);
+        Ok(build_entry(&raw, name, &meta))
     }
 
     /// Closes the session's SFTP client and releases its channel.
@@ -696,11 +852,18 @@ impl SshSessionManager {
     /// Directories are removed recursively: entries first, then the directory
     /// itself. Symlinks are unlinked, never followed, so `remove` on a link
     /// cannot wipe out the target.
+    /// Removes a remote file, symlink or directory tree.
+    ///
+    /// SECURITY: the path is used exactly as given — **never canonicalized**.
+    /// `canonicalize` would resolve a symlink to its target, so removing
+    /// `link → /var/www/project` would recurse into and delete the real
+    /// directory. Instead the entry itself is lstat'd: a symlink is unlinked,
+    /// a directory is recursed (with lstat at every level, so links inside the
+    /// tree are unlinked too), a file is unlinked.
     pub async fn sftp_remove(&self, session_id: &str, path: &str) -> Result<()> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
-        remove_recursive(&sftp, &canonical).await
+        remove_recursive(&sftp, &posix_normalize(path)).await
     }
 
     /// Renames an entry within its directory (`new_name` is a plain name, not
@@ -713,30 +876,37 @@ impl SshSessionManager {
     ) -> Result<String> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
         if new_name.trim().is_empty() || new_name.contains('/') {
             return Err(anyhow!("名称不能为空，且不能包含 /"));
         }
-        let target = posix_join(&parent_of(&canonical), new_name);
-        sftp.rename(&canonical, &target).await.map_err(sftp_error)?;
+        // Operate on the raw path: rename moves the entry itself, which for a
+        // symlink is the link — exactly the semantics we want.
+        let source = posix_normalize(path);
+        let target = posix_join(&parent_of(&source), new_name);
+        sftp.rename(&source, &target).await.map_err(sftp_error)?;
         Ok(target)
     }
 
     /// Creates a copy of a file or directory inside its own directory.
-    /// Directories are copied recursively; symlinks are reported as
-    /// unsupported to keep phase 2 honest.
+    /// Symlinks are reported as unsupported — copying a link by copying its
+    /// resolved target is a data-loss trap (and copying "as a link" needs
+    /// SFTP extensions not every server has).
     pub async fn sftp_copy(&self, session_id: &str, path: &str, new_name: &str) -> Result<String> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
         if new_name.trim().is_empty() || new_name.contains('/') {
             return Err(anyhow!("名称不能为空，且不能包含 /"));
         }
-        let target = posix_join(&parent_of(&canonical), new_name);
+        let source = posix_normalize(path);
+        let source_meta = sftp.symlink_metadata(&source).await.map_err(sftp_error)?;
+        if source_meta.file_type() == FileType::Symlink {
+            return Err(anyhow!("暂不支持复制符号链接：{source}"));
+        }
+        let target = posix_join(&parent_of(&source), new_name);
         if sftp.symlink_metadata(&target).await.is_ok() {
             return Err(anyhow!("目标已存在：{new_name}"));
         }
-        copy_recursive(&sftp, &canonical, &target).await?;
+        copy_recursive(&sftp, &source, &target).await?;
         Ok(target)
     }
 
@@ -744,11 +914,7 @@ impl SshSessionManager {
     pub async fn sftp_mkdir(&self, session_id: &str, path: &str) -> Result<String> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp
-            .canonicalize(parent_of(&posix_normalize(path)))
-            .await
-            .map_err(sftp_error)?;
-        let target = posix_join(&canonical, &base_name(&posix_normalize(path)));
+        let target = posix_normalize(path);
         sftp.create_dir(&target).await.map_err(sftp_error)?;
         Ok(target)
     }
@@ -1212,10 +1378,13 @@ impl client::Handler for ClientHandler {
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_host_key, natural_cmp, parse_ssh_target, posix_join, posix_normalize,
+        evaluate_host_key, natural_cmp, parse_ssh_target, posix_join, posix_normalize, timed,
         ConnectOutcome, ConnectTarget, CredentialSecrets, Endpoint, HostKeyInfo, HostKeyVerdict,
+        Result,
     };
     use std::cmp::Ordering;
+    use std::time::Duration;
+    use tokio::sync::watch;
 
     fn key(fingerprint: &str) -> HostKeyInfo {
         HostKeyInfo {
@@ -1250,6 +1419,67 @@ mod tests {
             (user.as_str(), host.as_str(), port),
             ("root", "10.0.0.11", 2222)
         );
+    }
+
+    /// A command that outlives its budget must fail instead of hanging: this is
+    /// the primitive behind the 5-second monitoring timeout.
+    #[tokio::test]
+    async fn timed_aborts_once_the_deadline_passes() {
+        let (_sender, mut receiver) = watch::channel(false);
+        let started = tokio::time::Instant::now();
+        let result: Result<()> = timed(
+            async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            },
+            started + Duration::from_millis(30),
+            &mut receiver,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let error = result.expect_err("a missed deadline must be an error");
+        assert!(error.to_string().contains("超时"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must not wait 30s"
+        );
+    }
+
+    /// Disconnecting cancels work that is already waiting on the server.
+    #[tokio::test]
+    async fn timed_aborts_when_the_session_is_closed() {
+        let (sender, mut receiver) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = sender.send(true);
+        });
+
+        let result: Result<()> = timed(
+            async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            },
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            &mut receiver,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let error = result.expect_err("a disconnect must cancel the command");
+        assert!(error.to_string().contains("已断开"), "{error}");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn timed_returns_the_value_when_it_finishes_in_time() {
+        let (_sender, mut receiver) = watch::channel(false);
+        let value: Result<u8> = timed(
+            async { 7u8 },
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            &mut receiver,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(value.expect("in time"), 7);
     }
 
     #[test]

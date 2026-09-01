@@ -14,6 +14,12 @@ const TerminalView = lazy(() =>
   import("@/workbench/views/TerminalView").then((module) => ({ default: module.TerminalView })),
 );
 
+const ServerMonitorView = lazy(() =>
+  import("@/workbench/views/ServerMonitorView").then((module) => ({
+    default: module.ServerMonitorView,
+  })),
+);
+
 function TerminalFallback() {
   return (
     <div className="flex h-full items-center justify-center bg-app">
@@ -33,6 +39,12 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <TerminalView tab={tab} />
+        </Suspense>
+      );
+    case "monitor":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <ServerMonitorView tab={tab} />
         </Suspense>
       );
     default:

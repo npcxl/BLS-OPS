@@ -67,6 +67,7 @@ cargo test              # Rust 单元测试
 | **Known Hosts** | ✅ | 列表、删除、首次连接确认、指纹变更拦截 |
 | **真实 SSH 会话** | ✅ | `SshSessionManager`：密码 / 私钥 / 私钥口令 / ProxyJump |
 | **终端** | ✅ | xterm.js 输入输出、Resize、断开、重连、KeepAlive、查找 |
+| **服务器状态监控（只读）** | ✅ | `monitor.rs`：固定命令表 + exec 通道（不经 PTY）/ 5 秒超时 / 断连取消；`ServerMonitorView`：4 张指标卡、30 分钟趋势、磁盘/网络/进程三个详情 Tab |
 | **远程文件浏览器** | ✅ | 独立 SFTP subsystem 通道（复用最终目标连接，兼容 ProxyJump）；面包屑/后退/前进/上一级/刷新；**重命名、副本、删除（递归）、新建文件夹/文件**；**本地拖拽上传**（文件与文件夹递归，落在当前目录）；**跟随终端 `cd` 联动**；右侧面板默认展开、可拖宽、可折叠 |
 | **文件类型识别与图标** | ✅ | 按扩展名区分 SQL / HTML / JS / TS / Java / Python / JSON / YAML / PDF / Excel / Word / 图片 / 压缩包 / 视频音频等，各类独立彩色图标 |
 | **文本文件预览编辑** | ✅ | 双击文本/代码文件打开内置编辑器（CodeMirror，语法高亮：SQL、HTML、JS/TS/JSX、Java、JSON、CSS、Python、Markdown），Ctrl+S 保存回写；二进制与大文件（>2MB）明确拒绝；编辑器代码分包懒加载 |
@@ -80,9 +81,10 @@ cargo test              # Rust 单元测试
 | **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
 | **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 31 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录） |
-| **SSH 端到端测试** | ✅ | 24 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
-| **前端测试** | ✅ | vitest + happy-dom：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别（扩展名/点文件/大小写/未知类型） |
+| **Rust 单元测试** | ✅ | 60 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析） |
+| **SSH 端到端测试** | ✅ | 27 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
+| **监控端到端测试** | ✅ | 12 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、exec 与 PTY 同时使用、无 shell 的监控会话 |
+| **前端测试** | ✅ | 23 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口 / 断连停止 / 不重叠采集** |
 | **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` + `pnpm test` |
 | **Docker / Nginx / 部署 / 项目 / AI** | ⏸ 暂停 | 仅保留占位说明，验收通过前不开发。**文件模块第一阶段（SFTP 只读浏览）已上线**，上传/下载/删除/重命名/在线编辑留待后续 |
 
@@ -111,9 +113,10 @@ BLS-OPS/
 │   ├── stores/
 │   │   ├── workbench-store.ts    # Tab / 分屏 UI 状态
 │   │   ├── domain-store.ts       # 服务器 / 凭据 / 分组 / Known Hosts / 会话
-│   │   └── session-store.ts      # 实时会话状态与 Host Key 挑战
+│   │   ├── session-store.ts      # 实时会话状态与 Host Key 挑战
+│   │   └── monitor-store.ts      # 监控状态：按 Tab 隔离、暂停、30 分钟趋势窗口
 │   ├── workbench/
-│   │   ├── views/               # WorkbenchHome、TerminalView、PlaceholderView
+│   │   ├── views/               # WorkbenchHome、TerminalView、ServerMonitorView、PlaceholderView
 │   │   ├── host-key-dialog.tsx  # Host Key 确认弹窗 + 已知主机面板
 │   │   ├── ssh-context-sidebar.tsx      # 服务器列表 / 编辑表单
 │   │   ├── settings-context-sidebar.tsx # 凭据 / 已知主机 / 运行环境
@@ -123,7 +126,8 @@ BLS-OPS/
 ├── src-tauri/src/
 │   ├── lib.rs              # Tauri 入口与命令注册
 │   ├── db.rs               # Schema、迁移、CRUD、单元测试
-│   ├── ssh.rs              # SshSessionManager：认证、Host Key、KeepAlive、ProxyJump
+│   ├── ssh.rs              # SshSessionManager：认证、Host Key、KeepAlive、ProxyJump、exec 通道
+│   ├── monitor.rs          # 只读监控：固定命令表 / /proc·df·ps 解析 / 速率基线 / 断连取消
 │   ├── commands.rs         # IPC 命令层（密钥只在此读取）
 │   ├── keyring.rs          # 系统凭据管理器封装
 │   └── state.rs            # AppState
@@ -164,11 +168,26 @@ BLS-OPS/
 | `known_host_trust` | 写入（或拒绝）主机指纹，来自 Host Key 弹窗 |
 | `known_host_delete` | 撤销信任 |
 
+### 服务器监控（只读）
+
+| Command | 说明 |
+|---------|------|
+| `monitor_snapshot` | **优先使用**：一次返回主机信息 + CPU / 内存 / 磁盘 / 网络 / 进程 |
+| `monitor_system_info` | 主机名、发行版、内核、架构、运行时长 |
+| `monitor_cpu` | 使用率（两次 `/proc/stat` 采样求差）、1/5/15 分钟负载、逻辑核心数 |
+| `monitor_memory` | 物理内存与交换分区（字节）、使用率 |
+| `monitor_disks` | `df -B1 -P -T`，已剔除 tmpfs / devtmpfs |
+| `monitor_network` | 每接口累计收发字节 + 相对上一次采集的速率（B/s），已剔除 `lo` |
+| `monitor_processes` | Top N 进程（按 CPU 排序，上限 100） |
+
+> 这些命令**只接受 `sessionId`**。要执行的命令是 `monitor.rs` 里的固定表，WebView 无法传入任意 shell 字符串。
+
 ### 会话与 SSH
 
 | Command | 说明 |
 |---------|------|
 | `ssh_connect` | 建立会话；支持 `serverId` 或 `target`（`user@host:port`）+ `credentialId`，或 `password`（一次性密码，仅本次使用，不落盘） |
+| `ssh_connect_monitor` | 同上，但**不请求 PTY、不打开 shell**，专供监控使用 |
 | `ssh_input` / `ssh_resize` / `ssh_keepalive` / `ssh_status` / `ssh_disconnect` | 会话控制 |
 | `sftp_open` | 打开 SFTP，返回远程 Home 的规范路径 |
 | `sftp_list_dir` | 列目录：返回规范路径 + 条目（文件夹优先、名称自然排序） |
@@ -207,10 +226,11 @@ type SshConnectResult =
 ## 🧪 测试
 
 ```bash
-pnpm test                  # 前端测试（vitest + happy-dom）
+pnpm test                     # 前端测试（vitest + happy-dom）
 cd src-tauri
-cargo test                 # 31 单元测试 + 17 端到端测试
-cargo test --test ssh_e2e  # 只跑端到端
+cargo test                    # 60 单元测试 + 27 SSH 端到端 + 12 监控端到端
+cargo test --test ssh_e2e     # 只跑 SSH 端到端
+cargo test --test monitor_e2e # 只跑监控端到端
 ```
 
 `tests/ssh_e2e.rs` 会在进程内启动**真实的 SSH 服务端**（russh server + russh-sftp server，ed25519 主机密钥，监听 127.0.0.1 随机端口），然后驱动生产代码里同一套 `SshSessionManager`。覆盖：
@@ -226,6 +246,19 @@ cargo test --test ssh_e2e  # 只跑端到端
 - **SFTP**：连接后打开远程 Home 并列出条目（中文名、空格、隐藏文件、符号链接、自然排序）、进入子目录与返回、stat 详情（大小/mtime/链接类型）、无权限目录返回明确错误且会话存活、**SSH 断开后 SFTP 立即失败**、shell 与 SFTP 同时工作、**ProxyJump 后浏览的是最终服务器的文件而非跳板机**。
 
 这套测试替代了“找一台真实服务器手测”的大部分价值，且在 CI 上每次提交都会跑。
+
+`tests/monitor_e2e.rs` 用同样的办法启动**真实的 SSH 服务端**，但让它按命令返回 Linux 夹具输出——其中 `/proc/stat` 与 `/proc/net/dev` 每次读取都会**真的往前走**，所以 CPU 使用率与网速必须是两次采样的差值得出的。覆盖：
+
+- 全量快照解析（主机名 / 发行版 / 内核 / 架构 / 运行时长 / CPU / 内存 / 磁盘 / 网络 / 进程）；
+- 连续两次采集：计数器在动，速率是真实差值；
+- 两个会话各自持有独立基线；
+- **ProxyJump 采集的是最终服务器**（`jump-host` 与 `final-host` 夹具不同，断言看到 `final-host`）；
+- 不支持的操作系统（Darwin）：快照返回 `supported: false` 并带上原因，**指标列表为空而不是零**；
+- 命令超时：服务端接受 exec 通道后保持沉默，客户端必须在预算内失败；
+- **断开后采集停止**（所有 collector 都失败且原因是“会话不存在”）；
+- **断开会取消正在进行中的采集**，而不是等满 5 秒；
+- **exec 与 PTY 同时使用**：shell 回显与监控采集互不干扰；
+- 监控会话没有 shell（`ssh_input` 明确报错“没有交互式终端”，但 `exec` 正常）。
 
 ### 人工验收步骤（真实环境）
 
@@ -243,6 +276,60 @@ cargo test --test ssh_e2e  # 只跑端到端
 12. **cd 联动**：在终端执行 `cd /var/log`，右侧面板自动跳到该目录；`cd`、`cd ~`、`cd ..`、`cd -` 均生效；
 13. **ProxyJump**：经跳板机连接后打开文件面板，确认看到的是**目标服务器**的目录（对照 `ls /home` 输出）；
 14. 断开连接后文件面板应显示“连接已断开”。
+15. **监控**：服务器右键 → “打开监控”（或命令面板搜“监控”），确认顶部显示主机名 / 发行版 / 内核 / 运行时长，四张指标卡有真实数值，趋势图从第二个采样点开始绘制；
+16. **监控对照**：在终端里执行 `top -bn1`、`free -b`、`df -B1 -P -T`、`cat /proc/net/dev`、`ps -eo pid,user,pcpu,pmem,stat,lstart,args --sort=-pcpu | head`，与监控页数字逐一比对；
+17. **监控控制**：点“暂停”数字应停止变化，点“继续”恢复；切换采集间隔生效；切到别的 Tab 或最小化窗口后轮询停止（回到该 Tab 立即恢复一次采集）；
+18. **监控断连**：断开连接后监控页显示“已断开”且数字不再刷新；
+19. **ProxyJump 监控**：经跳板机打开监控，确认主机名是**目标服务器**的（对照 `hostname`）。
+
+---
+
+## ✅ 阶段验收清单：服务器状态监控（只读）
+
+### 后端
+
+- [x] 基于现有 SSH `Handle` 新增 exec 通道（`SshSession::exec`），不依赖任何新依赖
+- [x] 监控命令**从不走交互式 PTY**：每条命令开自己的 exec 通道，读完退出码即关闭通道
+- [x] exec、PTY、SFTP 可同时使用（e2e：`exec_and_pty_work_at_the_same_time`；SFTP 与 shell 并发由 `sftp_and_shell_work_simultaneously` 覆盖）
+- [x] 每次 exec 完成后关闭 channel（成功、超时、取消三条路径都关闭）
+- [x] 所有命令 5 秒超时（`DEFAULT_COMMAND_TIMEOUT`，e2e 断言其等于 5 秒并验证超时生效）
+- [x] 不在持全局会话注册表锁时 await 网络（注册表只在查表时持锁；监控基线是独立的 `Mutex`，同样只在查表时持锁）
+- [x] SSH 断开时取消全部监控任务（会话级 `watch` 取消信号 + 断开时清理基线；e2e 验证“进行中的采集立即返回”）
+- [x] 仅执行后端内置固定命令（`monitor.rs` 常量表），前端命令只接受 `sessionId`
+- [x] 数据结构齐全：`SystemInfo` / `CpuMetrics` / `MemoryMetrics` / `DiskMetrics` / `NetworkMetrics` / `ProcessInfo`
+- [x] 七个 Tauri 命令：`monitor_system_info` / `monitor_cpu` / `monitor_memory` / `monitor_disks` / `monitor_network` / `monitor_processes` / `monitor_snapshot`
+- [x] 优先 `monitor_snapshot`：一次 IPC 返回页面主要指标（命令并发执行，8~9 条命令一轮完成）
+- [x] 不支持的操作系统返回 `supported: false` + 明确原因，而不是一堆零
+
+### 前端
+
+- [x] 新增 `ServerMonitorView`
+- [x] 顶部显示主机信息（主机名 / 发行版 / 内核 / 架构 / 运行时长）与连接状态点
+- [x] CPU、内存、磁盘、系统负载四张指标卡
+- [x] 最近 30 分钟 CPU、内存、上传、下载趋势（SVG，点数不足时明确提示“等待第二次采集”）
+- [x] 磁盘 / 网络 / 进程三个详情 Tab
+- [x] 默认 5 秒采集一次（可切 2 / 5 / 10 / 30 秒）
+- [x] 暂停、继续、手动刷新
+- [x] 页面隐藏（窗口不可见，或该 Tab 不是当前活动页签）时暂停轮询
+- [x] SSH 断开后停止轮询并显示断开状态（`ssh-closed-*` 事件 + `ssh_status` 复核）
+- [x] 每个服务器与终端 Tab 独立保存监控状态（`monitor-store` 按 Tab id 分条目）
+- [x] 无任何模拟指标或随机数（未采集到的值显示 `—`）
+- [x] 不支持的操作系统显示明确提示（顶部黄色横幅 + 说明）
+
+### 测试与质量
+
+- [x] Linux 数据解析使用固定样本做单元测试（`/proc/stat`、`/proc/meminfo`、`df`、`/proc/net/dev`、`ps`、`os-release`、`loadavg`、`uptime`）
+- [x] 测试 `/proc/stat` 两次采样计算 CPU 使用率
+- [x] 测试内存、磁盘、网络、进程解析
+- [x] 测试命令超时（单元级 `timed` + e2e 级“沉默的服务端”）
+- [x] 测试 SSH 断开后采集停止、并取消进行中的采集
+- [x] 测试 ProxyJump 采集最终服务器
+- [x] `pnpm test`、`pnpm build`、`cargo fmt --check`、`cargo check --all-targets`、`cargo test --all-targets`、`cargo build` 全部通过
+- [x] GitHub CI 保持全绿（未改动 `.github/workflows/ci.yml`，新增测试自动纳入）
+
+### 本阶段明确不做
+
+进程终止、服务重启、Docker、Nginx、项目部署、AI——这些在 P0 验收通过前保持暂停。
 
 ---
 
@@ -264,6 +351,7 @@ cargo test --test ssh_e2e  # 只跑端到端
 - `src/` 中不存在任何种子数据、示例数据或硬编码指标。空列表就是“用户还没有创建任何东西”。
 - 每个数字都必须能追到来源：状态栏的会话数来自 `session-store`，服务器/凭据/已知主机计数来自 SQLite。
 - 未实现的模块（文件、容器、网关、项目、部署、AI）在 UI 中明确显示“未实现”，不展示占位假数据。
+- 监控也遵守同一条规则：CPU 使用率与网速是**两次采样的差值**，第一次采集会真的再读一次 `/proc/stat`（间隔 200ms）而不是先填个 0；读不到的值显示 `—`，趋势图点数不足时显示“等待第二次采集”，不支持的系统直接给出原因。
 - 曾经存在一套与数据库模型并行的旧 domain 类型（`src/stores/domain/`，含 Docker/Nginx/部署等），已整目录删除——它与 `ServerRecord` 字段命名冲突，且无人引用，留着只会误导后续开发。
 
 ---

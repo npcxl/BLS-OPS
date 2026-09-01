@@ -9,6 +9,8 @@ export type WorkspaceTabType =
   | "module"
   | "terminal"
   | "server"
+  /** Read-only Linux monitoring for one server — runs on its own session. */
+  | "monitor"
   | "file"
   | "project"
   | "docker"

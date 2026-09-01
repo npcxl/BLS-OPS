@@ -48,6 +48,25 @@ export function Workbench() {
         }),
     }));
 
+    // Read-only monitoring gets its own tab per server, keyed by tab id, so
+    // each one keeps its own history and pause state.
+    const monitorActions: PaletteAction[] = servers.map((server) => ({
+      id: `monitor-${server.id}`,
+      title: `监控 ${server.name}`,
+      category: "监控",
+      description: `只读指标：CPU、内存、磁盘、网络、进程`,
+      keywords: ["监控", "monitor", server.host, server.name],
+      onSelect: () =>
+        openTab({
+          id: crypto.randomUUID(),
+          type: "monitor",
+          title: `${server.name} · 监控`,
+          subtitle: `${server.host}:${server.port}`,
+          serverId: server.id,
+          sessionId: crypto.randomUUID(),
+        }),
+    }));
+
     const recentActions: PaletteAction[] = sessions
       .filter((session, index, all) => session.server_id && all.findIndex((s) => s.server_id === session.server_id) === index)
       .slice(0, 5)
@@ -70,6 +89,7 @@ export function Workbench() {
 
     return [
       ...connectActions,
+      ...monitorActions,
       ...recentActions,
       {
         id: "manage-servers",

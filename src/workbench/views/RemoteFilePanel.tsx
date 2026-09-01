@@ -76,14 +76,6 @@ function formatTime(seconds?: number | null): string {
   });
 }
 
-/** Size column for directory rows: direct-child count, lazily resolved. */
-function formatDirCount(count: number | "loading" | undefined): string {
-  if (count === undefined) return "…";
-  if (count === "loading") return "…";
-  if (count === -1) return "?"; // unreadable (permissions)
-  return `${count} 项`;
-}
-
 type PanelStatus =
   | { state: "idle" }
   | { state: "loading" }
@@ -145,12 +137,7 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
-  /**
-   * Child counts for directory rows, filled in lazily: after a listing loads,
-   * each directory gets one cheap readdir (concurrency-capped) to report
-   * "N 项" in the size column. Cached per session; invalidated on refresh.
-   */
-  const [dirCounts, setDirCounts] = useState<Record<string, number | "loading">>({});
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
 
   const cwd = nav.index >= 0 && nav.index < nav.stack.length ? nav.stack[nav.index] : null;
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
@@ -163,8 +150,6 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         const result = await opsApi.sftpListDir(sessionId, path);
         setEntries(result.entries);
         setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
-        // New listing: previous counts may be stale (files may have changed).
-        setDirCounts({});
         // Reconcile with the canonical path the server actually resolved.
         setNav((current) => {
           if (current.stack[current.index] === result.path) return current;
@@ -179,57 +164,6 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     },
     [sessionId],
   );
-
-  // Fill the size column for directory rows: one readdir per directory,
-  // concurrency-capped, reporting the direct-child count. Failures (e.g.
-  // permission denied) simply leave that row without a count.
-  useEffect(() => {
-    if (status.state !== "ready") return;
-    const dirs = entries.filter((entry) => entry.kind === "directory");
-    const missing = dirs.filter((entry) => dirCounts[entry.path] === undefined);
-    if (missing.length === 0) return;
-
-    let cancelled = false;
-    const pending = new Set(missing.map((entry) => entry.path));
-    setDirCounts((current) => {
-      const next = { ...current };
-      for (const entry of missing) next[entry.path] = "loading";
-      return next;
-    });
-
-    const CONCURRENCY = 4;
-    const queue = [...missing];
-    const worker = async () => {
-      while (queue.length > 0 && !cancelled) {
-        const entry = queue.shift()!;
-        try {
-          const listing = await opsApi.sftpListDir(sessionId, entry.path);
-          // NOTE: listing a subdirectory overwrites the session's cwd on the
-          // Rust side (sftp_list_dir tracks it). That's fine: we always pass
-          // explicit paths, and `None` is only used by the initial open.
-          pending.delete(entry.path);
-          if (cancelled) return;
-          setDirCounts((current) => ({ ...current, [entry.path]: listing.entries.length }));
-        } catch {
-          pending.delete(entry.path);
-          if (cancelled) return;
-          setDirCounts((current) => ({ ...current, [entry.path]: -1 }));
-        }
-      }
-    };
-    void Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker)).then(
-      () => {
-        // Anything still pending here means the component raced; ignore.
-        void pending;
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-    // dirCounts intentionally excluded: this effect schedules its own updates.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, status.state, sessionId]);
-
 
   // Open SFTP and land in the home directory when the session comes up.
   useEffect(() => {
@@ -357,10 +291,17 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     [cwd, load],
   );
 
+  const [deleteTarget, setDeleteTarget] = useState<RemoteFileEntry | null>(null);
+
   const removeEntry = (entry: RemoteFileEntry) => {
-    const label = entry.kind === "directory" ? "文件夹（含全部内容）" : "文件";
-    if (!window.confirm(`确定删除${label}“${entry.name}”？此操作不可撤销。`)) return;
-    runAndRefresh(() => opsApi.sftpRemove(sessionId, entry.path));
+    setDeleteTarget(entry);
+  };
+
+  const confirmRemove = () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    runAndRefresh(() => opsApi.sftpRemove(sessionId, target.path));
   };
 
   const renameEntry = (entry: RemoteFileEntry) => {
@@ -415,10 +356,12 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const uploadFiles = useCallback(
     async (paths: string[]) => {
       if (!cwd || paths.length === 0) return;
+      setUploadNotice(null);
       setUploads({ total: paths.length, done: 0 });
       try {
         await opsApi.sftpUpload(sessionId, paths, cwd);
         await load(cwd);
+        setUploadNotice(paths.length === 1 ? "文件上传完成" : `${paths.length} 个文件上传完成`);
       } catch (cause) {
         setStatus({ state: "error", message: toErrorMessage(cause) });
       } finally {
@@ -427,6 +370,12 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     },
     [cwd, load, sessionId],
   );
+
+  useEffect(() => {
+    if (!uploadNotice) return;
+    const timer = window.setTimeout(() => setUploadNotice(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [uploadNotice]);
 
   // Drag & drop from the local machine. Tauri intercepts the OS drop and hands
   // over absolute paths; DOM drop events would only give opaque File objects.
@@ -629,16 +578,29 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         }}
       >
         {dragging && (
-          <div className="flex flex-col items-center gap-1.5 px-3 py-6 text-11 text-accent">
-            <Upload size={18} />
-            拖放到此处上传到当前目录
+          <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[12px] border-2 border-dashed border-accent bg-accent/10 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-2 rounded-[10px] bg-surface-1/90 px-5 py-4 text-11 text-accent shadow-lg">
+              <Upload size={20} />
+              <span className="font-medium">松开以上传到当前目录</span>
+              <span className="text-fg-subtle">支持多个文件</span>
+            </div>
           </div>
         )}
 
         {uploads && (
           <div className="flex items-center gap-2 border-b border-line bg-accent/10 px-3 py-2 text-11 text-fg">
             <Loader2 size={12} className="animate-spin" />
-            正在上传 {uploads.done + 1}/{uploads.total}…
+            <span className="min-w-0 flex-1">正在上传 {uploads.total} 个文件…</span>
+            <span className="text-fg-subtle">请勿关闭面板</span>
+          </div>
+        )}
+
+        {uploadNotice && (
+          <div className="flex items-center justify-between border-b border-line bg-success/10 px-3 py-2 text-11 text-success">
+            <span>{uploadNotice}</span>
+            <button type="button" className="text-success/70 hover:text-success" onClick={() => setUploadNotice(null)}>
+              关闭
+            </button>
           </div>
         )}
 
@@ -709,10 +671,8 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
                       {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
                     </span>
                     <span className="block truncate text-10 text-fg-subtle">
-                      {entry.kind === "directory"
-                        ? formatDirCount(dirCounts[entry.path])
-                        : formatSize(entry.size)}{" "}
-                      · {formatTime(entry.modified_at)}
+                      {entry.kind === "directory" ? "文件夹" : formatSize(entry.size)} ·{" "}
+                      {formatTime(entry.modified_at)}
                     </span>
                   </span>
                   {entry.kind === "directory" && (
@@ -734,6 +694,30 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
       </div>
 
       {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
+
+      {deleteTarget && (
+        <Modal
+          open
+          width={360}
+          title={`删除${deleteTarget.kind === "directory" ? "文件夹" : "文件"}`}
+          description={`确定删除“${deleteTarget.name}”？此操作不可撤销。`}
+          onClose={() => setDeleteTarget(null)}
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>
+                取消
+              </Button>
+              <Button variant="danger" size="sm" onClick={confirmRemove}>
+                确认删除
+              </Button>
+            </>
+          }
+        >
+          <p className="text-12 text-fg-muted">
+            {deleteTarget.kind === "directory" ? "文件夹内的全部内容也会被删除。" : "文件内容将被永久删除。"}
+          </p>
+        </Modal>
+      )}
 
       {nameDialog && (
         <NamePromptModal

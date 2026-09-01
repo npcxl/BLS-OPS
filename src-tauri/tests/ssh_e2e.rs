@@ -298,6 +298,9 @@ struct TestEntry {
     content: Option<Vec<u8>>,
     /// When true, readdir omits the SIZE attr — simulating servers that do.
     omit_size: bool,
+    /// Where a symlink points. `None` for a "dangling" link and for every
+    /// non-link entry; relative targets resolve against the link's directory.
+    link_target: Option<String>,
 }
 
 fn file(size: u64) -> TestEntry {
@@ -309,6 +312,7 @@ fn file(size: u64) -> TestEntry {
         perms: 0o644,
         content: Some(vec![0u8; size as usize]),
         omit_size: false,
+        link_target: None,
     }
 }
 
@@ -322,6 +326,7 @@ fn file_with_content(content: &[u8]) -> TestEntry {
         perms: 0o644,
         content: Some(content.to_vec()),
         omit_size: false,
+        link_target: None,
     }
 }
 
@@ -334,10 +339,20 @@ fn dir() -> TestEntry {
         perms: 0o755,
         content: None,
         omit_size: false,
+        link_target: None,
     }
 }
 
+/// A dangling symlink (`lstat` reports a link, `stat` reports "no such file").
 fn link() -> TestEntry {
+    link_to("/nowhere")
+}
+
+/// A symlink pointing at `target`, which may be absolute or relative.
+///
+/// This is what makes the delete-a-link regression reproducible: a real server
+/// resolves links while canonicalizing, and only `lstat` sees the link itself.
+fn link_to(target: &str) -> TestEntry {
     TestEntry {
         is_dir: false,
         is_link: true,
@@ -346,6 +361,7 @@ fn link() -> TestEntry {
         perms: 0o777,
         content: None,
         omit_size: false,
+        link_target: Some(target.to_string()),
     }
 }
 
@@ -411,6 +427,59 @@ impl TestFs {
             format!("/{}", parts.join("/"))
         }
     }
+
+    /// `resolve` plus symlink resolution, the way a real kernel does it:
+    /// intermediate links are always followed, the final component only when
+    /// `follow_final` is set (`stat` follows, `lstat` / `unlink` / `rmdir` do
+    /// not). This gap is exactly what the delete-a-symlink bug lived in.
+    fn resolve_links(&self, path: &str, follow_final: bool) -> String {
+        const MAX_LINKS: usize = 8;
+
+        let lexical = self.resolve(path);
+        let components: Vec<&str> = lexical.split('/').filter(|part| !part.is_empty()).collect();
+        let mut resolved: Vec<String> = Vec::new();
+        let mut followed = 0;
+
+        for (index, component) in components.iter().enumerate() {
+            resolved.push(component.to_string());
+            let is_last = index + 1 == components.len();
+            if is_last && !follow_final {
+                break;
+            }
+            let current = format!("/{}", resolved.join("/"));
+            let Some(entry) = self.get(&current) else {
+                continue; // dangling component: report the path as-is
+            };
+            let Some(target) = entry.link_target.clone() else {
+                continue;
+            };
+            followed += 1;
+            if followed > MAX_LINKS {
+                return current; // link loop — tests never hit this
+            }
+            // Replace the link component with its target.
+            if target.starts_with('/') {
+                resolved.clear();
+            } else {
+                resolved.pop();
+            }
+            for part in target.split('/') {
+                match part {
+                    "" | "." => {}
+                    ".." => {
+                        resolved.pop();
+                    }
+                    part => resolved.push(part.to_string()),
+                }
+            }
+        }
+
+        if resolved.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", resolved.join("/"))
+        }
+    }
 }
 
 fn sftp_attrs(entry: &TestEntry) -> FileAttributes {
@@ -468,12 +537,12 @@ impl SftpHandlerTrait for SftpState {
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         Ok(Name {
             id,
-            files: vec![File::dummy(self.fs.resolve(&path))],
+            files: vec![File::dummy(self.fs.resolve_links(&path, true))],
         })
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
-        let canonical = self.fs.resolve(&path);
+        let canonical = self.fs.resolve_links(&path, true);
         let entry = self.fs.get(&canonical).ok_or(StatusCode::NoSuchFile)?;
         if !entry.is_dir {
             return Err(StatusCode::NoSuchFile);
@@ -521,17 +590,14 @@ impl SftpHandlerTrait for SftpState {
         Ok(Name { id, files })
     }
 
+    /// Follows symlinks: the reported type is the *target's* type.
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-        self.lstat(id, path).await
+        self.attrs_at(id, &path, true).await
     }
 
+    /// Does not follow the final symlink: reports the link itself.
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-        let canonical = self.fs.resolve(&path);
-        let entry = self.fs.get(&canonical).ok_or(StatusCode::NoSuchFile)?;
-        Ok(Attrs {
-            id,
-            attrs: sftp_attrs(&entry),
-        })
+        self.attrs_at(id, &path, false).await
     }
 
     /// Handles both reads (shell side) and writes (upload/copy side). A write
@@ -543,7 +609,7 @@ impl SftpHandlerTrait for SftpState {
         pflags: OpenFlags,
         _attrs: FileAttributes,
     ) -> Result<Handle, Self::Error> {
-        let canonical = self.fs.resolve(&filename);
+        let canonical = self.fs.resolve_links(&filename, true);
         let writing = pflags.contains(OpenFlags::WRITE);
 
         if writing {
@@ -651,7 +717,7 @@ impl SftpHandlerTrait for SftpState {
         path: String,
         _attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
-        let canonical = self.fs.resolve(&path);
+        let canonical = self.fs.resolve_links(&path, false);
         if self.fs.exists(&canonical) {
             return Err(StatusCode::Failure);
         }
@@ -659,8 +725,10 @@ impl SftpHandlerTrait for SftpState {
         Ok(self.ok_status(id))
     }
 
+    /// `unlink`: the final component is never followed, so a symlink is removed
+    /// as a link — exactly like the kernel. Directories need `rmdir`.
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
-        let canonical = self.fs.resolve(&filename);
+        let canonical = self.fs.resolve_links(&filename, false);
         let entry = self.fs.get(&canonical).ok_or(StatusCode::NoSuchFile)?;
         if entry.is_dir {
             return Err(StatusCode::Failure);
@@ -670,7 +738,7 @@ impl SftpHandlerTrait for SftpState {
     }
 
     async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
-        let canonical = self.fs.resolve(&path);
+        let canonical = self.fs.resolve_links(&path, false);
         let prefix = format!("{canonical}/");
         let has_children = self
             .fs
@@ -695,8 +763,8 @@ impl SftpHandlerTrait for SftpState {
         oldpath: String,
         newpath: String,
     ) -> Result<Status, Self::Error> {
-        let from = self.fs.resolve(&oldpath);
-        let to = self.fs.resolve(&newpath);
+        let from = self.fs.resolve_links(&oldpath, false);
+        let to = self.fs.resolve_links(&newpath, false);
         if !self.fs.exists(&from) || self.fs.exists(&to) {
             return Err(StatusCode::Failure);
         }
@@ -720,6 +788,7 @@ impl SftpHandlerTrait for SftpState {
                         perms: 0o644,
                         content: Some(opened.buffer),
                         omit_size: false,
+                        link_target: None,
                     },
                 );
             }
@@ -731,6 +800,16 @@ impl SftpHandlerTrait for SftpState {
 }
 
 impl SftpState {
+    /// Shared body of `stat` / `lstat`; `follow` is the only difference.
+    async fn attrs_at(&mut self, id: u32, path: &str, follow: bool) -> Result<Attrs, StatusCode> {
+        let canonical = self.fs.resolve_links(path, follow);
+        let entry = self.fs.get(&canonical).ok_or(StatusCode::NoSuchFile)?;
+        Ok(Attrs {
+            id,
+            attrs: sftp_attrs(&entry),
+        })
+    }
+
     fn ok_status(&self, id: u32) -> Status {
         Status {
             id,
@@ -1792,6 +1871,100 @@ async fn sftp_remove_deletes_files_and_directories() {
         .sftp_remove("s1", "/home/opsuser/ghost")
         .await
         .is_err());
+
+    handle.shutdown("done".to_string());
+}
+
+/// A fs where symlinks point at real directories and files.
+///
+/// `link-to-docs` is absolute, `tree/inner-link` is relative — both must
+/// resolve for the delete path to be exercised honestly.
+fn symlink_fs() -> TestFs {
+    let mut entries = HashMap::new();
+    entries.insert("/home".to_string(), dir());
+    entries.insert("/home/opsuser".to_string(), dir());
+    entries.insert("/home/opsuser/docs".to_string(), dir());
+    entries.insert(
+        "/home/opsuser/docs/keep.txt".to_string(),
+        file_with_content(b"KEEP ME"),
+    );
+    entries.insert("/home/opsuser/tree".to_string(), dir());
+    entries.insert(
+        "/home/opsuser/link-to-docs".to_string(),
+        link_to("/home/opsuser/docs"),
+    );
+    entries.insert(
+        "/home/opsuser/tree/inner-link".to_string(),
+        link_to("../docs"),
+    );
+    TestFs::with("/home/opsuser", entries)
+}
+
+/// Regression: deleting a symlink must delete the *link*, never its target.
+///
+/// The old implementation canonicalized the path first, which turns
+/// `link-to-docs` into `/home/opsuser/docs` — a recursive delete then wiped
+/// the real directory tree. `sftp_remove` now lstats the path as given.
+#[tokio::test]
+async fn sftp_remove_unlinks_a_symlink_without_touching_its_target() {
+    let (_addr, handle, manager) = open_session(symlink_fs()).await;
+
+    // The server really does resolve the link — otherwise this test proves
+    // nothing about the canonicalize-then-delete trap.
+    let resolved = manager
+        .sftp_realpath("s1", "/home/opsuser/link-to-docs")
+        .await
+        .expect("realpath");
+    assert_eq!(resolved, "/home/opsuser/docs");
+
+    // …while lstat sees the link itself. The gap between the two is the bug.
+    let link_entry = manager
+        .sftp_stat("s1", "/home/opsuser/link-to-docs")
+        .await
+        .expect("stat link");
+    assert_eq!(link_entry.kind, "symlink");
+
+    manager
+        .sftp_remove("s1", "/home/opsuser/link-to-docs")
+        .await
+        .expect("remove symlink");
+
+    // The link is gone …
+    assert!(manager
+        .sftp_stat("s1", "/home/opsuser/link-to-docs")
+        .await
+        .is_err());
+    // … and the target directory is completely untouched.
+    let (canonical, remaining) = manager
+        .sftp_list_dir("s1", Some("/home/opsuser/docs".to_string()))
+        .await
+        .expect("list target dir");
+    assert_eq!(canonical, "/home/opsuser/docs");
+    assert!(
+        remaining.iter().any(|entry| entry.name == "keep.txt"),
+        "target dir must survive: {remaining:?}"
+    );
+
+    handle.shutdown("done".to_string());
+}
+
+/// The same rule one level down: a symlink *inside* a deleted tree is
+/// unlinked, not followed, so the tree it points at survives.
+#[tokio::test]
+async fn sftp_remove_tree_unlinks_inner_symlinks_instead_of_their_targets() {
+    let (_addr, handle, manager) = open_session(symlink_fs()).await;
+
+    manager
+        .sftp_remove("s1", "/home/opsuser/tree")
+        .await
+        .expect("remove tree");
+
+    assert!(manager.sftp_stat("s1", "/home/opsuser/tree").await.is_err());
+    // `../docs` from inside `tree` is the real docs dir — it must still be here.
+    assert!(manager
+        .sftp_stat("s1", "/home/opsuser/docs/keep.txt")
+        .await
+        .is_ok());
 
     handle.shutdown("done".to_string());
 }

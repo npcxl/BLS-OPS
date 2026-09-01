@@ -1,6 +1,9 @@
 mod commands;
 mod db;
 mod keyring;
+/// Public so the integration tests in `tests/` can drive the real monitoring
+/// layer against an in-process SSH server.
+pub mod monitor;
 /// Public so the integration tests in `tests/` can drive the real SSH layer.
 pub mod ssh;
 mod state;
@@ -56,11 +59,20 @@ pub fn run() {
             commands::audit_log_list,
             // ssh
             commands::ssh_connect,
+            commands::ssh_connect_monitor,
             commands::ssh_input,
             commands::ssh_resize,
             commands::ssh_keepalive,
             commands::ssh_status,
             commands::ssh_disconnect,
+            // monitoring — read-only Linux metrics, fixed built-in commands
+            commands::monitor_system_info,
+            commands::monitor_cpu,
+            commands::monitor_memory,
+            commands::monitor_disks,
+            commands::monitor_network,
+            commands::monitor_processes,
+            commands::monitor_snapshot,
             // sftp — file browsing and management over the live session
             commands::sftp_open,
             commands::sftp_list_dir,

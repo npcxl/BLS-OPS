@@ -13,6 +13,14 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 4. 在 P0 验收通过前**暂停**：Docker、Nginx、部署、项目、文件、AI 模块。
 5. 凭据的“私钥 + 私钥口令”是一组配置，不是互斥类型。
 
+## 监控模块约定（阶段：服务器状态监控）
+- 监控命令是 `monitor.rs` 里的**固定常量表**；Tauri 命令只收 `sessionId`，前端无法传 shell 字符串。
+- 监控**绝不走 PTY**：每条命令开自己的 exec channel，读完 exit-status+eof 就 `channel.close()`，超时/取消也关。
+- `SshSession.writer` 是 `Mutex<Option<SessionWriter>>`：`Some` = 交互终端，`None` = 监控等非交互会话（`connect_command` 用 0×0 建立）。`ssh_input` / `ssh_resize` 对 `None` 明确报错。
+- 会话级取消信号：`SshSession.closed: watch::Sender<bool>`，`shutdown()` 里 `send(true)`，在途命令通过 `timed()` 的 `select!` 立即失败。
+- 速率（CPU%、网速）必须是两次采样的差值；首次采集额外隔 200ms 再读一次，禁止用 0 占位。
+- 不支持的操作系统：`monitor_snapshot` 返回 `supported:false` + 原因且指标列表为空；单个 collector 返回 Err。禁止返回「零值指标」。
+
 ## 技术要点
 - Workbench 布局约定：终端/服务器模块走左侧 `ContextSidebar`（服务器列表，`openModuleTab` 对 `ssh`/`servers` 只切换 `activeModule`，不开页签）；设置等其他模块走 `ModulePage` 居中页签。
 - SSH 用 `russh 0.63`，默认 `check_server_key` 拒绝所有键，必须实现。

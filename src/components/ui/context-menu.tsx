@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -37,23 +37,7 @@ const GAP = 4;
 export function ContextMenu({ state, onClose }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: state.x, y: state.y });
-  const [leaving, setLeaving] = useState(false);
-  const leaveTimer = useRef<number | null>(null);
-
-  const requestClose = useMemo(
-    () => () => {
-      if (leaving) return;
-      setLeaving(true);
-      leaveTimer.current = window.setTimeout(onClose, 120);
-    },
-    [leaving, onClose],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (leaveTimer.current) window.clearTimeout(leaveTimer.current);
-    };
-  }, []);
+  const closeImmediately = useCallback(() => onClose(), [onClose]);
 
   // clamp to viewport so the menu never overflows the window
   useLayoutEffect(() => {
@@ -68,12 +52,12 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onClose();
+      if (!ref.current?.contains(event.target as Node)) closeImmediately();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") closeImmediately();
     };
-    const onWindowBlur = () => onClose();
+    const onWindowBlur = () => closeImmediately();
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", onWindowBlur);
@@ -82,7 +66,7 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [onClose]);
+  }, [closeImmediately]);
 
   // keyboard navigation over menu items
   const [focusIdx, setFocusIdx] = useState(0);
@@ -111,7 +95,7 @@ export function ContextMenu({ state, onClose }: ContextMenuProps) {
       role="menu"
       className={cn(
         "glass-panel-strong fixed z-[100] min-w-[180px] rounded-[12px] p-1 transition-[opacity,transform] duration-150 ease-out",
-        leaving ? "opacity-0 translate-y-1 scale-[0.985]" : "opacity-100 translate-y-0 scale-100",
+        "opacity-100 translate-y-0 scale-100",
       )}
       style={{ left: pos.x, top: pos.y, paddingTop: MENU_PAD, paddingBottom: MENU_PAD }}
       onMouseDown={(e) => e.stopPropagation()}

@@ -682,6 +682,7 @@ fn session_record(
     error: Option<String>,
     cols: u32,
     rows: u32,
+    pty: bool,
 ) -> db::SessionRecord {
     let now = db::AppDb::now();
     db::SessionRecord {
@@ -707,7 +708,7 @@ fn session_record(
         reconnect_policy: "manual".to_string(),
         terminal_rows: Some(i64::from(rows)),
         terminal_cols: Some(i64::from(cols)),
-        terminal_pty: Some(true),
+        terminal_pty: Some(pty),
         sftp_enabled: false,
         port_forwards_json: "[]".to_string(),
     }
@@ -739,6 +740,7 @@ pub async fn ssh_connect(
         password,
         cols,
         rows,
+        true,
     )
     .await?;
 
@@ -1046,6 +1048,9 @@ pub async fn ssh_disconnect(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    // Monitoring must not resume mid-measurement on a reconnect: the rates
+    // would be diffed across the outage. Drop the baseline first.
+    state.monitor.forget(&session_id).await;
     state.ssh.disconnect(&session_id).await;
     let conn = open_db(&state)?;
     db::update_session_status(&conn, &session_id, "disconnected", None)
@@ -1053,6 +1058,41 @@ pub async fn ssh_disconnect(
     record_audit(&state, "ssh_disconnect", None, None, &session_id);
     let _ = app.emit(&format!("ssh-closed-{session_id}"), "user");
     Ok(())
+}
+
+/// Opens a session for monitoring: authenticated, but **no PTY and no shell**.
+///
+/// Monitoring runs fixed read-only commands on short-lived exec channels, so
+/// allocating an interactive terminal on the server would be pure waste. The
+/// host-key flow is identical to `ssh_connect`.
+#[tauri::command]
+pub async fn ssh_connect_monitor(
+    state: State<'_, AppState>,
+    session_id: String,
+    server_id: Option<String>,
+    target: Option<String>,
+    credential_id: Option<String>,
+    password: Option<String>,
+) -> Result<SshConnectResult, String> {
+    let (result, reader) = ssh_connect_internal(
+        &state,
+        session_id.clone(),
+        server_id,
+        target,
+        credential_id,
+        password,
+        // 0×0 is how the SSH layer knows to skip the PTY + shell.
+        0,
+        0,
+        false,
+    )
+    .await?;
+
+    // A non-interactive session never has a shell channel, so there is no
+    // output pump to start and nothing to read.
+    debug_assert!(reader.is_none(), "monitor session must not open a shell");
+
+    Ok(result)
 }
 
 /// Opens and immediately closes a session. Used by "测试连接" so a broken
@@ -1073,6 +1113,7 @@ pub async fn server_test_connection(
         None,
         80,
         24,
+        true,
     )
     .await?;
     state.ssh.disconnect(&probe_session).await;
@@ -1097,6 +1138,8 @@ async fn ssh_connect_internal(
     password: Option<String>,
     cols: u32,
     rows: u32,
+    // `pty: false` opens the session without a PTY or shell (monitoring).
+    pty: bool,
 ) -> Result<ConnectAttempt, String> {
     let (resolved_server_id, server_name, target) = {
         let conn = open_db(state)?;
@@ -1154,6 +1197,7 @@ async fn ssh_connect_internal(
                 None,
                 cols,
                 rows,
+                pty,
             ),
         );
     }
@@ -1188,6 +1232,7 @@ async fn ssh_connect_internal(
                     None,
                     cols,
                     rows,
+                    pty,
                 ),
             );
             if !resolved_server_id.is_empty() {
@@ -1286,6 +1331,91 @@ async fn ssh_connect_internal(
             Err(message)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Server monitoring — read-only Linux metrics over the live session
+//
+// Every command here takes only a `session_id`: the commands that run on the
+// server are a fixed table inside `monitor.rs`, so the WebView cannot ask for
+// an arbitrary shell string.
+// ---------------------------------------------------------------------------
+
+use crate::monitor::{
+    CpuMetrics, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetworkMetrics, ProcessInfo,
+    SystemInfo,
+};
+
+#[tauri::command]
+pub async fn monitor_system_info(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SystemInfo, String> {
+    crate::monitor::collect_system_info(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn monitor_cpu(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<CpuMetrics, String> {
+    crate::monitor::collect_cpu(&state.ssh, &state.monitor, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn monitor_memory(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<MemoryMetrics, String> {
+    crate::monitor::collect_memory(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn monitor_disks(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<DiskMetrics>, String> {
+    crate::monitor::collect_disks(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn monitor_network(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<NetworkMetrics>, String> {
+    crate::monitor::collect_network(&state.ssh, &state.monitor, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn monitor_processes(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<ProcessInfo>, String> {
+    crate::monitor::collect_processes(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The one call the monitoring page is built around: every headline metric in
+/// a single round trip.
+#[tauri::command]
+pub async fn monitor_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<MonitorSnapshot, String> {
+    crate::monitor::collect_snapshot(&state.ssh, &state.monitor, &session_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,8 +1594,10 @@ mod tests {
             None,
             100,
             40,
+            true,
         );
         assert_eq!(connected.status, "connected");
+        assert_eq!(connected.terminal_pty, Some(true));
         assert_eq!(connected.username, "root");
         assert_eq!(connected.terminal_cols, Some(100));
         assert_eq!(connected.terminal_rows, Some(40));
@@ -1483,9 +1615,27 @@ mod tests {
             Some("认证失败".to_string()),
             80,
             24,
+            true,
         );
         assert_eq!(failed.error_message.as_deref(), Some("认证失败"));
         assert!(failed.connected_at.is_none());
         assert!(failed.disconnected_at.is_some());
+
+        // Monitoring sessions record that they did not allocate a terminal.
+        let monitor = session_record(
+            "sess-3",
+            "s1",
+            "web",
+            "10.0.0.1",
+            22,
+            "root",
+            "connected",
+            None,
+            0,
+            0,
+            false,
+        );
+        assert_eq!(monitor.terminal_pty, Some(false));
+        assert_eq!(monitor.terminal_cols, Some(0));
     }
 }

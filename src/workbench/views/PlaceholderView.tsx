@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Boxes, Container, FileText, Globe, House, LayoutGrid, Rocket, Server, SquareTerminal, Workflow } from "lucide-react";
+import { Activity, Boxes, Container, FileText, Globe, House, LayoutGrid, Rocket, Server, SquareTerminal, Workflow } from "lucide-react";
 import type { WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
 
 /** Generic placeholder for tab types that land in later phases. */
@@ -8,6 +8,7 @@ const META: Record<WorkspaceTabType, { icon: LucideIcon; phase: string }> = {
   module: { icon: LayoutGrid, phase: "进行中" },
   terminal: { icon: SquareTerminal, phase: "阶段 2" },
   server: { icon: Server, phase: "阶段 2" },
+  monitor: { icon: Activity, phase: "阶段 2" },
   file: { icon: FileText, phase: "阶段 3" },
   project: { icon: Boxes, phase: "阶段 5" },
   docker: { icon: Container, phase: "阶段 4" },

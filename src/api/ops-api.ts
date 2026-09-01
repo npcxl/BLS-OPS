@@ -184,6 +184,84 @@ export type SshConnectResult =
       known_fingerprint: string;
     };
 
+// ---------------------------------------------------------------------------
+// Server monitoring — read-only Linux metrics over the live session.
+//
+// The commands run on the server are a fixed table inside Rust: these calls
+// take only a `session_id`, so the WebView can never pass a shell string.
+// ---------------------------------------------------------------------------
+
+export interface SystemInfo {
+  hostname: string;
+  os_name: string;
+  os_version: string;
+  kernel: string;
+  architecture: string;
+  uptime_seconds: number;
+}
+
+export interface CpuMetrics {
+  usage_percent: number;
+  load_1: number;
+  load_5: number;
+  load_15: number;
+  logical_cores: number;
+}
+
+/** Memory and swap, in bytes. */
+export interface MemoryMetrics {
+  total: number;
+  used: number;
+  available: number;
+  swap_total: number;
+  swap_used: number;
+  usage_percent: number;
+}
+
+export interface DiskMetrics {
+  device: string;
+  mount_point: string;
+  filesystem: string;
+  total: number;
+  used: number;
+  available: number;
+  usage_percent: number;
+}
+
+export interface NetworkMetrics {
+  interface: string;
+  received_bytes: number;
+  transmitted_bytes: number;
+  /** Bytes per second, measured against the previous sample. */
+  receive_speed: number;
+  transmit_speed: number;
+}
+
+export interface ProcessInfo {
+  pid: number;
+  user: string;
+  cpu_percent: number;
+  memory_percent: number;
+  status: string;
+  started_at: string;
+  command: string;
+}
+
+export interface MonitorSnapshot {
+  session_id: string;
+  /** Unix seconds of the collection. */
+  collected_at: number;
+  /** `false` when the remote OS is not Linux — no metrics are invented. */
+  supported: boolean;
+  unsupported_reason: string | null;
+  system: SystemInfo;
+  cpu: CpuMetrics;
+  memory: MemoryMetrics;
+  disks: DiskMetrics[];
+  network: NetworkMetrics[];
+  processes: ProcessInfo[];
+}
+
 export const CREDENTIAL_TYPES = [
   { value: "password", label: "密码" },
   { value: "private_key", label: "私钥" },
@@ -306,6 +384,25 @@ export const opsApi = {
       cols: args.cols ?? 120,
       rows: args.rows ?? 32,
     }),
+  /**
+   * Opens a session for monitoring: authenticated, but without a PTY or shell.
+   * Metrics are read with fixed read-only commands on short-lived exec
+   * channels, so nothing occupies a shell on the server.
+   */
+  sshConnectMonitor: (args: {
+    sessionId: string;
+    serverId?: string;
+    target?: string;
+    credentialId?: string;
+    password?: string;
+  }) =>
+    invoke<SshConnectResult>("ssh_connect_monitor", {
+      sessionId: args.sessionId,
+      serverId: args.serverId ?? null,
+      target: args.target ?? null,
+      credentialId: args.credentialId ?? null,
+      password: args.password ?? null,
+    }),
   sshInput: (sessionId: string, data: string) => invoke<void>("ssh_input", { sessionId, data }),
   sshResize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>("ssh_resize", { sessionId, cols, rows }),
@@ -348,4 +445,16 @@ export const opsApi = {
   sftpWriteFile: (sessionId: string, path: string, content: string) =>
     invoke<void>("sftp_write_file", { sessionId, path, content }),
   sftpClose: (sessionId: string) => invoke<void>("sftp_close", { sessionId }),
+
+  // Monitoring — read-only Linux metrics. `monitor_snapshot` is the one the
+  // page polls: every headline metric in a single round trip.
+  monitorSystemInfo: (sessionId: string) =>
+    invoke<SystemInfo>("monitor_system_info", { sessionId }),
+  monitorCpu: (sessionId: string) => invoke<CpuMetrics>("monitor_cpu", { sessionId }),
+  monitorMemory: (sessionId: string) => invoke<MemoryMetrics>("monitor_memory", { sessionId }),
+  monitorDisks: (sessionId: string) => invoke<DiskMetrics[]>("monitor_disks", { sessionId }),
+  monitorNetwork: (sessionId: string) => invoke<NetworkMetrics[]>("monitor_network", { sessionId }),
+  monitorProcesses: (sessionId: string) => invoke<ProcessInfo[]>("monitor_processes", { sessionId }),
+  monitorSnapshot: (sessionId: string) =>
+    invoke<MonitorSnapshot>("monitor_snapshot", { sessionId }),
 };

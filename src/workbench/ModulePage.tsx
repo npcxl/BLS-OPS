@@ -72,6 +72,10 @@ function ModulePlaceholder({ module }: { module: NavModule }) {
 /**
  * Module page — the rail modules' content rendered as a centered column in
  * the main area (System Settings style), instead of a full-height sidebar.
+ *
+ * The session-driven modules that operate on a server (日志 / 服务 / 容器 / 网关 / 项目)
+ * render their own left server list inside their tab view, so here they fall back
+ * to the placeholder only when reached via a plain `type: "module"` tab.
  */
 export function ModulePage({ module }: { module: NavModule }) {
   const spec = MODULES[module];

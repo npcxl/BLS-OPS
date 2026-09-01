@@ -1800,7 +1800,170 @@ pub async fn nginx_set_site_enabled(
 }
 
 // ---------------------------------------------------------------------------
-// Projects & deployments (P3-2.2, P3-2.3, P3-3.5)
+// Project discovery (P3 read-only)
+// ---------------------------------------------------------------------------
+
+fn scan_status(
+    id: &str,
+    server_id: &str,
+    state: crate::project_discovery::ScanState,
+) -> crate::project_discovery::ProjectScanStatus {
+    crate::project_discovery::ProjectScanStatus {
+        id: id.into(),
+        server_id: server_id.into(),
+        state,
+        progress: crate::project_discovery::ScanProgress {
+            phase: "候选发现".into(),
+            progress: 0,
+            checked_directories: 0,
+            discovered_candidates: 0,
+            current_path: None,
+            warnings: 0,
+        },
+        error: None,
+        started_at: crate::project_discovery::chrono_like_now(),
+        finished_at: None,
+    }
+}
+
+#[tauri::command]
+pub async fn project_scan_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    server_id: String,
+    incremental: Option<bool>,
+) -> Result<crate::project_discovery::ProjectScanStatus, String> {
+    if !state.ssh.is_connected(&session_id).await {
+        return Err("SSH 会话不存在或已断开，请先连接服务器".into());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let status = scan_status(
+        &id,
+        &server_id,
+        crate::project_discovery::ScanState::Running,
+    );
+    let cancel = state.project_scans.start(status.clone()).await?;
+    let registry = state.project_scans.clone();
+    let ssh = state.ssh.clone();
+    let app_handle = app.clone();
+    let sid = session_id.clone();
+    let server = server_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = async {
+            let inventory = crate::remote::run_capability(
+                &ssh,
+                &sid,
+                &crate::safe::Capability::ProjectInventory,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let _runtime = crate::remote::run_capability(
+                &ssh,
+                &sid,
+                &crate::safe::Capability::ProjectRuntimeInventory,
+            )
+            .await
+            .unwrap_or_default();
+            let mut candidates = Vec::new();
+            for line in inventory.lines() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("扫描已取消".to_string());
+                }
+                let mut parts = line.splitn(2, '\t');
+                let Some(path) = parts.next() else { continue };
+                let Some(file) = parts.next() else { continue };
+                let parent = path.to_string();
+                let marker = file.to_string();
+                let input = crate::project_discovery::CandidateInput {
+                    path: parent.clone(),
+                    name: parent.rsplit('/').next().unwrap_or("项目").into(),
+                    server_id: server.clone(),
+                    markers: vec![marker],
+                    source: "filesystem".into(),
+                    runtime_links: Vec::new(),
+                    modules: Vec::new(),
+                    env_names: Vec::new(),
+                    ports: Vec::new(),
+                };
+                if let Some(candidate) = crate::project_discovery::score_candidate(
+                    input,
+                    &crate::project_discovery::chrono_like_now().to_string(),
+                ) {
+                    candidates.push(candidate);
+                }
+            }
+            let candidates = crate::project_discovery::merge_candidates(candidates);
+            let result = crate::project_discovery::ProjectScanResult {
+                scan_id: id.clone(),
+                server_id: server.clone(),
+                candidates,
+                warnings: Vec::new(),
+                completed_at: crate::project_discovery::chrono_like_now(),
+                incremental: incremental.unwrap_or(false),
+            };
+            registry
+                .results
+                .lock()
+                .await
+                .insert(id.clone(), result.clone());
+            let _ = app_handle.emit(&format!("project-scan-result-{id}"), &result);
+            Ok::<(), String>(())
+        }
+        .await;
+        registry
+            .finish(
+                &id,
+                &server,
+                if result.is_ok() {
+                    crate::project_discovery::ScanState::Completed
+                } else if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    crate::project_discovery::ScanState::Cancelled
+                } else {
+                    crate::project_discovery::ScanState::Failed
+                },
+            )
+            .await;
+    });
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn project_scan_cancel(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> Result<bool, String> {
+    Ok(state.project_scans.cancel(&scan_id).await)
+}
+#[tauri::command]
+pub async fn project_scan_status(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> Result<Option<crate::project_discovery::ProjectScanStatus>, String> {
+    Ok(state
+        .project_scans
+        .tasks
+        .lock()
+        .await
+        .get(&scan_id)
+        .cloned())
+}
+#[tauri::command]
+pub async fn project_scan_result(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> Result<Option<crate::project_discovery::ProjectScanResult>, String> {
+    Ok(state
+        .project_scans
+        .results
+        .lock()
+        .await
+        .get(&scan_id)
+        .cloned())
+}
+
+// ---------------------------------------------------------------------------
+// Projects & deployments (legacy records retained for P5)
 // ---------------------------------------------------------------------------
 
 #[tauri::command]

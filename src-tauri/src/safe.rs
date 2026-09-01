@@ -415,6 +415,10 @@ pub enum Capability {
         enable: bool,
     },
 
+    // Project discovery (read-only, bounded inventory commands)
+    ProjectInventory,
+    ProjectRuntimeInventory,
+
     // Files / deployments
     /// Reads a text file (log tailing, config viewing).
     ReadFile {
@@ -618,6 +622,11 @@ impl Capability {
             }
 
             Capability::JournalDiskUsage => "journalctl --disk-usage".to_string(),
+
+            // -- Project discovery ------------------------------------------
+            // Commands are fixed and bounded; their output is parsed as metadata only.
+            Capability::ProjectInventory => "find /home /root /srv /opt /var/www /data /app /apps /workspace /usr/local -xdev -maxdepth 6 -type f -printf '%h\\t%f\\n' 2>/dev/null | head -n 20000".to_string(),
+            Capability::ProjectRuntimeInventory => "ps -eo pid=,cwd=,args= 2>/dev/null | head -n 2000; systemctl show --all --no-pager -p Id -p WorkingDirectory -p ExecStart 2>/dev/null | head -n 5000; docker ps -a --format '{{.Names}}|{{.Label \"com.docker.compose.project.\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}|{{.Ports}}' 2>/dev/null | head -n 2000; nginx -T 2>/dev/null | head -n 20000".to_string(),
 
             // -- Docker ------------------------------------------------------
             Capability::DockerPs => DOCKER_PS.to_string(),

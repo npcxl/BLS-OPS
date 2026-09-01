@@ -14,7 +14,14 @@ import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
 import { opsApi, toErrorMessage, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
-import { ModuleEmpty, ModuleFrame, RefreshButton } from "@/workbench/views/module-frame";
+import {
+  ModuleEmpty,
+  ModuleFrame,
+  RefreshButton,
+  ToolbarInput,
+  ToolbarStat,
+  ToolbarStatus,
+} from "@/workbench/views/module-frame";
 import type { WorkspaceTab } from "@/workbench/types";
 
 type StateFilter = "all" | "running" | "failed" | "inactive" | "enabled";
@@ -208,11 +215,11 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         <>
           <RefreshButton busy={loading} onClick={() => void load()} />
           <div className="mx-1 h-4 w-px bg-line" />
-          <input
+          <ToolbarInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="搜索服务…"
-            className="h-[24px] w-40 rounded-[6px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+            width="w-40"
           />
           <div className="mx-1 h-4 w-px bg-line" />
           {FILTERS.map((item) => (
@@ -230,9 +237,9 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
               {item.label}
             </button>
           ))}
-          <span className="ml-auto text-11 text-fg-subtle">
-            {loading ? "读取中…" : `${visible.length} / ${units.length} 个服务`}
-          </span>
+          <ToolbarStatus>
+            <ToolbarStat>{loading ? "读取中…" : `${visible.length} / ${units.length} 个服务`}</ToolbarStat>
+          </ToolbarStatus>
         </>
       }
     >

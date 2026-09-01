@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Columns2,
@@ -154,10 +154,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const raiseChallenge = useSessionStore((s) => s.raiseChallenge);
 
   const hasTarget = Boolean(tab.serverId || tab.quickTarget);
-  const server = useMemo(
-    () => servers.find((item) => item.id === tab.serverId),
-    [servers, tab.serverId],
-  );
 
   // Recovers the command being typed from the raw keystroke stream so it can be
   // recorded as history. Created once per session.
@@ -443,37 +439,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     return <TerminalPicker tabId={tab.id} servers={servers} />;
   }
 
-  const statusLabel =
-    phase === "connected"
-      ? "已连接"
-      : phase === "connecting"
-        ? "连接中"
-        : phase === "closed"
-          ? "已断开"
-          : phase === "error"
-            ? "连接失败"
-            : "未连接";
-
   return (
     <div className="flex h-full min-h-0 flex-row bg-app">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="relative z-10 flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        <span
-          className={cn(
-            "h-[6px] w-[6px] rounded-full",
-            phase === "connected" ? "bg-success" : phase === "error" ? "bg-danger" : "bg-warning",
-          )}
-        />
-        <span className="text-12 font-semibold text-fg">{tab.title}</span>
-        {tab.subtitle && <span className="truncate text-11 text-fg-subtle">{tab.subtitle}</span>}
-        {server && (
-          <span className="ml-auto truncate text-11 text-fg-subtle">
-            {server.username}@{server.host}:{server.port}
-            {server.proxy_jump_id ? " · 经跳板机" : ""}
-          </span>
-        )}
-      </div>
-
+      {/* The tab strip already shows the title, host and a connection dot, so
+          the terminal itself gets no header of its own. */}
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
         <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
@@ -560,18 +530,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         )}
       </div>
 
-      <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-1 px-3 text-11 text-fg-subtle">
-        <span className="flex items-center gap-1">
-          <span
-            className={cn(
-              "h-[5px] w-[5px] rounded-full",
-              phase === "connected" ? "bg-success" : phase === "error" ? "bg-danger" : "bg-fg-subtle",
-            )}
-          />
-          {statusLabel}
-        </span>
-        {error && <span className="min-w-0 flex-1 truncate text-danger">{error}</span>}
-      </div>
       </div>
 
       {filesOpen && (

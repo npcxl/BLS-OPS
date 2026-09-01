@@ -28,6 +28,7 @@ import {
   type MonitorEntry,
   type MonitorSample,
 } from "@/stores/monitor-store";
+import { ToolbarStat, ToolbarStatus } from "@/workbench/views/module-frame";
 import type { WorkbenchPane, WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 
@@ -561,7 +562,9 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
       </div>
 
       {/* Toolbar */}
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+      {/* One row, always: the status text gives up space instead of wrapping
+          out of sight behind the fixed 40px height. */}
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <Button
           variant="ghost"
           size="xs"
@@ -616,12 +619,15 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             重新连接
           </Button>
         )}
-        <span className="ml-auto flex items-center gap-1.5 text-11 text-fg-subtle">
-          {entry?.collecting && <span className="h-[5px] w-[5px] animate-pulse rounded-full bg-accent" />}
-          {statusLabel}
-          <span className="text-line-strong">|</span>
-          <span>{formatClock(entry?.lastUpdatedAt ?? null)}</span>
-        </span>
+        <ToolbarStatus className="gap-1.5">
+          {entry?.collecting && (
+            <span className="h-[5px] w-[5px] shrink-0 animate-pulse rounded-full bg-accent" />
+          )}
+          <ToolbarStat>{statusLabel}</ToolbarStat>
+          <span className="shrink-0 text-line-strong">|</span>
+          {/* The last collection time is what the user checks, so it stays whole. */}
+          <ToolbarStat className="shrink-0">{formatClock(entry?.lastUpdatedAt ?? null)}</ToolbarStat>
+        </ToolbarStatus>
       </div>
 
       {/* Banners */}

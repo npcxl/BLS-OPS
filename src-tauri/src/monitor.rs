@@ -58,7 +58,10 @@ const CMD_CPU: &str = "cat /proc/stat";
 const CMD_MEMORY: &str = "cat /proc/meminfo";
 const CMD_DISKS: &str = "df -B1 -P -T";
 const CMD_NETWORK: &str = "cat /proc/net/dev";
-const CMD_PROCESSES: &str = "ps -eo pid,user,pcpu,pmem,stat,lstart,args";
+/// `comm` instead of `args`: a full command line carries passwords
+/// (`--password=…`), tokens, database URLs and API keys — none of that may
+/// reach the client. `comm` answers with the bare executable name.
+const CMD_PROCESSES: &str = "ps -eo pid,user,pcpu,pmem,stat,lstart,comm";
 /// `/etc/os-release` is the documented location; systemd also publishes it in
 /// `/usr/lib/os-release` for distributions that treat `/etc` as editable.
 const CMD_OS_RELEASE: &[&str] = &["cat /etc/os-release", "cat /usr/lib/os-release"];
@@ -376,10 +379,14 @@ pub fn parse_net_dev(input: &str) -> Vec<(String, NetSample)> {
     interfaces
 }
 
-/// `ps -eo pid,user,pcpu,pmem,stat,lstart,args` → processes sorted by CPU.
+/// `ps -eo pid,user,pcpu,pmem,stat,lstart,comm` → processes sorted by CPU.
 ///
 /// `lstart` is five whitespace-separated tokens (weekday, month, day, time,
-/// year), so the command is everything after them — including its spaces.
+/// year), and `comm` is a single token — the executable name. The command
+/// column is therefore exactly `fields[10]`, and everything after it is
+/// dropped on the floor: if a server ever answers with an old `args`-style
+/// listing (passwords, tokens, database URLs inside), only the first token of
+/// the executable path survives into the struct that reaches the frontend.
 pub fn parse_processes(input: &str, limit: usize) -> Vec<ProcessInfo> {
     let mut processes = Vec::new();
 
@@ -407,7 +414,9 @@ pub fn parse_processes(input: &str, limit: usize) -> Vec<ProcessInfo> {
             memory_percent,
             status: fields[4].to_string(),
             started_at: fields[5..10].join(" "),
-            command: fields[10..].join(" "),
+            // `comm` is one token. Taking fields[10] and nothing else is the
+            // safety net: arguments — where secrets live — are never copied.
+            command: fields[10].to_string(),
         });
     }
 
@@ -1023,9 +1032,9 @@ Inter-|   Receive                                                |  Transmit
 
     const PS: &str = "\
   PID USER     %CPU %MEM STAT                  STARTED COMMAND
-    1 root      0.0  0.1 Ss   Tue Aug 31 10:00:00 2026 /sbin/init splash
-   42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 /usr/sbin/nginx -g daemon on;
-    7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps -eo pid,user,pcpu,pmem,stat,lstart,args
+    1 root      0.0  0.1 Ss   Tue Aug 31 10:00:00 2026 init
+   42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 nginx
+    7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps
 ";
 
     const OS_RELEASE: &str = "\
@@ -1190,12 +1199,40 @@ PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"
         assert_eq!(processes[0].memory_percent, 3.2);
         assert_eq!(processes[0].status, "S");
         assert_eq!(processes[0].started_at, "Mon Sep 1 09:15:30 2026");
-        // The full command keeps its spaces — including in the sort winner.
-        assert_eq!(processes[0].command, "/usr/sbin/nginx -g daemon on;");
+        // `comm` output: the bare executable name, one token.
+        assert_eq!(processes[0].command, "nginx");
 
         assert_eq!(processes[1].pid, 7);
         assert_eq!(processes[2].pid, 1);
-        assert_eq!(processes[2].command, "/sbin/init splash");
+        assert_eq!(processes[2].command, "init");
+    }
+
+    /// The safety net: if a server answers with an old `args`-style listing —
+    /// command lines carrying passwords, tokens and database URLs — the parser
+    /// must keep only the executable's first token. Nothing after it may reach
+    /// the serialized struct that goes to the frontend.
+    #[test]
+    fn process_listing_never_carries_command_line_secrets() {
+        let args_style = "\
+  PID USER     %CPU %MEM STAT                  STARTED COMMAND
+   42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 /usr/sbin/nginx --password=hunter2 --token=tok_abc postgresql://ops:hunter2@db.internal/ops
+    7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps -eo pid,user,pcpu,pmem,stat,lstart,args
+";
+        let processes = parse_processes(args_style, 10);
+        assert_eq!(processes.len(), 2, "{processes:?}");
+
+        // The whole structure is serialized the same way Tauri hands it to
+        // the WebView — the secrets must not be in there, under any field.
+        let serialized = serde_json::to_string(&processes).expect("serialize");
+        assert!(!serialized.contains("hunter2"), "{serialized}");
+        assert!(!serialized.contains("tok_abc"), "{serialized}");
+        assert!(!serialized.contains("postgresql://"), "{serialized}");
+        assert!(!serialized.contains("db.internal"), "{serialized}");
+        assert!(!serialized.contains("--password"), "{serialized}");
+
+        // The executable name itself is still usable.
+        assert_eq!(processes[0].command, "/usr/sbin/nginx");
+        assert_eq!(processes[1].command, "ps");
     }
 
     #[test]

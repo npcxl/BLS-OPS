@@ -37,7 +37,7 @@ const CMD_CPU: &str = "cat /proc/stat";
 const CMD_MEMORY: &str = "cat /proc/meminfo";
 const CMD_DISKS: &str = "df -B1 -P -T";
 const CMD_NETWORK: &str = "cat /proc/net/dev";
-const CMD_PROCESSES: &str = "ps -eo pid,user,pcpu,pmem,stat,lstart,args";
+const CMD_PROCESSES: &str = "ps -eo pid,user,pcpu,pmem,stat,lstart,comm";
 const CMD_OS_RELEASE: &str = "cat /etc/os-release";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,10 @@ enum Profile {
     Darwin,
     /// Accepts exec channels and then never replies — for timeout tests.
     Silent,
+    /// Like Linux, but `ps` answers with the old `args`-style listing whose
+    /// command lines carry secrets. The client must strip everything after
+    /// the executable name; this is the leak-prevention drill.
+    LeakyPs,
 }
 
 #[derive(Clone)]
@@ -178,11 +182,20 @@ impl MonitorHandler {
                     .to_string(),
             ),
             CMD_NETWORK => Some(self.net_dev(self.net_step.fetch_add(1, Ordering::Relaxed))),
+            // `LeakyPs` simulates a server that ignores the `comm` request and
+            // answers with an old `args`-style listing full of secrets — the
+            // client must not let any of it through.
+            CMD_PROCESSES if matches!(self.profile, Profile::LeakyPs) => Some(
+                "  PID USER     %CPU %MEM STAT                  STARTED COMMAND\n\
+                 42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 /usr/sbin/nginx --password=hunter2 --token=tok_abc postgresql://ops:hunter2@db.internal/ops\n\
+                 7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps -eo pid,user,pcpu,pmem,stat,lstart,args\n"
+                    .to_string(),
+            ),
             CMD_PROCESSES => Some(
                 "  PID USER     %CPU %MEM STAT                  STARTED COMMAND\n\
-                 1 root      0.0  0.1 Ss   Tue Aug 31 10:00:00 2026 /sbin/init splash\n\
-                 42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 /usr/sbin/nginx -g daemon on;\n\
-                 7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps -eo pid,user,pcpu,pmem,stat,lstart,args\n"
+                 1 root      0.0  0.1 Ss   Tue Aug 31 10:00:00 2026 init\n\
+                 42 www-data 12.5  3.2 S    Mon Sep  1 09:15:30 2026 nginx\n\
+                 7 root      0.5  0.0 R    Tue Aug 31 10:00:05 2026 ps\n"
                     .to_string(),
             ),
             CMD_OS_RELEASE => Some(
@@ -579,16 +592,50 @@ async fn snapshot_reads_every_metric_over_a_real_connection() {
         "first collection must measure a real speed"
     );
 
-    // Processes: header skipped, sorted by CPU, full command preserved.
+    // Processes: header skipped, sorted by CPU, executable name only —
+    // startup arguments never leave the server.
     assert_eq!(snapshot.processes.len(), 3, "{:?}", snapshot.processes);
     assert_eq!(snapshot.processes[0].pid, 42);
     assert_eq!(snapshot.processes[0].user, "www-data");
     assert_eq!(snapshot.processes[0].cpu_percent, 12.5);
     assert_eq!(snapshot.processes[0].started_at, "Mon Sep 1 09:15:30 2026");
-    assert_eq!(
-        snapshot.processes[0].command,
-        "/usr/sbin/nginx -g daemon on;"
-    );
+    assert_eq!(snapshot.processes[0].command, "nginx");
+
+    handle.shutdown("done".to_string());
+}
+
+/// Even when a server answers the process request with an old `args`-style
+/// listing full of secrets, nothing after the executable name may reach the
+/// client: the serialized response — the exact shape Tauri hands the WebView
+/// — must not contain the password, the token or the database URL.
+#[tokio::test]
+async fn process_listing_never_leaks_command_line_secrets() {
+    let (addr, handle, _kill) = spawn_monitor_server(Profile::LeakyPs, false).await;
+    let manager = SshSessionManager::default();
+    let registry = MonitorRegistry::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let snapshot = monitor::collect_snapshot(&manager, &registry, "s1")
+        .await
+        .expect("the leaky server still reports a full snapshot");
+    assert!(snapshot.supported);
+
+    let serialized = serde_json::to_string(&snapshot).expect("the response must be serializable");
+    assert!(!serialized.contains("hunter2"), "{serialized}");
+    assert!(!serialized.contains("tok_abc"), "{serialized}");
+    assert!(!serialized.contains("--password"), "{serialized}");
+    assert!(!serialized.contains("--token"), "{serialized}");
+    assert!(!serialized.contains("postgresql://"), "{serialized}");
+    assert!(!serialized.contains("db.internal"), "{serialized}");
+
+    // The executable names themselves are still usable for the table.
+    let commands: Vec<&str> = snapshot
+        .processes
+        .iter()
+        .map(|process| process.command.as_str())
+        .collect();
+    assert!(commands.contains(&"/usr/sbin/nginx"), "{commands:?}");
+    assert!(commands.contains(&"ps"), "{commands:?}");
 
     handle.shutdown("done".to_string());
 }

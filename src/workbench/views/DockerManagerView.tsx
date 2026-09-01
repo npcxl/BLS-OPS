@@ -29,7 +29,13 @@ import {
   type ImageInfo,
 } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
-import { ModuleEmpty, ModuleFrame, RefreshButton } from "@/workbench/views/module-frame";
+import {
+  ModuleEmpty,
+  ModuleFrame,
+  RefreshButton,
+  ToolbarStat,
+  ToolbarStatus,
+} from "@/workbench/views/module-frame";
 import type { WorkspaceTab } from "@/workbench/types";
 
 type DetailTab = "containers" | "images" | "stats";
@@ -251,9 +257,11 @@ export function DockerManagerView({ tab }: { tab: WorkspaceTab }) {
             <Trash2 size={12} />
             清理无用资源
           </Button>
-          <span className="ml-auto text-11 text-fg-subtle">
-            {snapshot?.available ? `${runningCount} / ${containers.length} 个容器运行中` : ""}
-          </span>
+          <ToolbarStatus>
+            <ToolbarStat>
+              {snapshot?.available ? `${runningCount} / ${containers.length} 个容器运行中` : ""}
+            </ToolbarStat>
+          </ToolbarStatus>
         </>
       }
     >

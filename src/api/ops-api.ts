@@ -244,6 +244,7 @@ export interface ProcessInfo {
   memory_percent: number;
   status: string;
   started_at: string;
+  /** Executable name only (`ps … comm`). Startup arguments never leave the server. */
   command: string;
 }
 
@@ -398,7 +399,22 @@ export interface NginxSaveResult {
   backup_path: string | null;
 }
 
-// -- Projects & deployments -------------------------------------------------
+// -- Project discovery ------------------------------------------------------
+
+export type ConfidenceLevel = "high" | "likely" | "possible";
+export interface ProjectEvidence { id: string; kind: string; source: string; summary: string; weight: number; verified_at: string; sensitive: boolean; }
+export interface ProjectPenalty { kind: string; summary: string; weight: number; }
+export type RuntimeKind = "process" | "systemd" | "docker" | "nginx";
+export interface RuntimeLink { kind: RuntimeKind; name: string; status?: string; ports: number[]; source: string; }
+export interface ProjectModule { id: string; name: string; path: string; project_type: string; deployable: boolean; children: ProjectModule[]; }
+export interface DeploymentReadiness { score: number; blockers: string[]; warnings: string[]; confirmed_facts: string[]; unknown_facts: string[]; }
+export interface ProjectCandidate { id: string; server_id: string; name: string; path: string; project_type: string; score: number; confidence: ConfidenceLevel; evidence: ProjectEvidence[]; penalties: ProjectPenalty[]; runtime_links: RuntimeLink[]; modules: ProjectModule[]; detected_ports: number[]; required_environment_names: string[]; blockers: string[]; warnings: string[]; readiness: DeploymentReadiness; updated_at: string; }
+export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
+export interface ScanProgress { phase: string; progress: number; checked_directories: number; discovered_candidates: number; current_path: string | null; warnings: number; }
+export interface ProjectScanStatus { id: string; server_id: string; state: ScanState; progress: ScanProgress; error: string | null; started_at: number; finished_at: number | null; }
+export interface ProjectScanResult { scan_id: string; server_id: string; candidates: ProjectCandidate[]; warnings: string[]; completed_at: number; incremental: boolean; }
+
+// -- Projects & deployments (legacy P5 foundation) -------------------------
 
 export interface ProjectRecord {
   id: string;
@@ -704,7 +720,14 @@ export const opsApi = {
   nginxSetSiteEnabled: (sessionId: string, site: string, enable: boolean) =>
     invoke<string>("nginx_set_site_enabled", { sessionId, site, enable }),
 
-  // -- Projects & deployments -----------------------------------------------
+  // -- Project discovery (read-only P3) -------------------------------------
+  projectScanStart: (sessionId: string, serverId: string, incremental = false) =>
+    invoke<ProjectScanStatus>("project_scan_start", { sessionId, serverId, incremental }),
+  projectScanCancel: (scanId: string) => invoke<boolean>("project_scan_cancel", { scanId }),
+  projectScanStatus: (scanId: string) => invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
+  projectScanResult: (scanId: string) => invoke<ProjectScanResult | null>("project_scan_result", { scanId }),
+
+  // -- Legacy project records (P5 foundation) -------------------------------
   projectList: () => invoke<ProjectRecord[]>("project_list"),
   projectGet: (id: string) => invoke<ProjectRecord | null>("project_get", { id }),
   projectSave: (project: ProjectRecord) => invoke<ProjectRecord>("project_save", { project }),

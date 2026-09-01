@@ -39,6 +39,15 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
 
   const menu = useContextMenu();
 
+  // Translate vertical wheel into horizontal scroll so the strip scrolls even
+  // when the scrollbar is hidden (it is intentionally hidden for a clean look).
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollWidth <= el.clientWidth) return;
+    if (e.deltaY === 0) return;
+    el.scrollLeft += e.deltaY;
+  };
+
   const tabMenu = (tab: WorkspaceTab) =>
     menu.onContextMenu(() => [
       { id: "close", label: "关闭", onSelect: () => closeTab(pane.id, tab.id) },
@@ -61,7 +70,10 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
 
   return (
     <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+      <div
+        onWheel={onWheel}
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;
           return (

@@ -7,7 +7,7 @@
  * scroll area. Putting that here keeps five views from drifting apart — and
  * keeps "connection lost" looking the same everywhere.
  */
-import { type ReactNode, useMemo, useState } from "react";
+import { type InputHTMLAttributes, type ReactNode, useMemo, useState } from "react";
 import {
   Activity,
   Loader2,
@@ -113,19 +113,36 @@ export function ModuleFrame({
   session,
   icon: Icon,
   toolbar,
+  toolbar2,
   children,
 }: {
   tab: { id: string; title: string; subtitle?: string };
   session: CommandSession;
   icon: ReactNode | React.ElementType;
-  /** Right-hand controls: refresh, filters, actions. */
+  /** Primary actions on the first (top) row: refresh, follow, status sum-up. */
   toolbar?: ReactNode;
+  /** Secondary row (filter bar) shown beneath the first row when present. */
+  toolbar2?: ReactNode;
   children: ReactNode;
 }) {
   const Glyph = Icon as React.ElementType;
+  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
   if (!session.hasTarget) {
-    return <ServerPicker tabId={tab.id} />;
+    // The module view is wrapped in `ModuleWithSidebar`, which already shows the
+    // server list on the left. A full-screen picker here would just duplicate it,
+    // so we only point the user at the sidebar and let them close a stray tab.
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-app px-6">
+        <p className="text-13 text-fg-muted">从左侧选择一台服务器</p>
+        <p className="max-w-sm text-center text-12 text-fg-subtle">
+          日志、容器、网关等模块都运行在具体的服务器上。在左侧列表点选一台，即可在此查看它的内容。
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
+          关闭页签
+        </Button>
+      </div>
+    );
   }
 
   const banner = () => {
@@ -164,36 +181,108 @@ export function ModuleFrame({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        <span
-          className={cn(
-            "h-[6px] w-[6px] shrink-0 rounded-full",
-            PHASE_TONE[session.phase] ?? "bg-fg-subtle",
-          )}
-        />
+      {/* One compact header row: icon + toolbar (filters/actions) + connection
+          state. The server name itself lives on the tab, so we don't repeat it
+          here — this row is purely the module's controls. */}
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <Glyph size={13} className="shrink-0 text-fg-subtle" />
-        <span className="truncate text-12 font-semibold text-fg">{tab.title}</span>
-        {tab.subtitle && (
-          <span className="truncate text-11 text-fg-subtle">{tab.subtitle}</span>
-        )}
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-11 text-fg-subtle">
-          {session.phase === "connected" && (
-            <ServerIcon size={11} className="text-fg-subtle" />
-          )}
+        {toolbar && <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div>}
+        <span className="ml-2 flex shrink-0 items-center gap-1.5 text-11 text-fg-subtle">
+          <span
+            className={cn("h-[6px] w-[6px] shrink-0 rounded-full", PHASE_TONE[session.phase] ?? "bg-fg-subtle")}
+          />
+          {session.phase === "connected" && <ServerIcon size={11} className="text-fg-subtle" />}
           <span>{PHASE_LABEL[session.phase] ?? session.phase}</span>
         </span>
       </div>
 
-      {toolbar && (
-        <div className="flex h-10 shrink-0 flex-wrap items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
-          {toolbar}
+      {banner()}
+
+      {toolbar2 && (
+        <div className="flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-surface-1/40 px-2 backdrop-blur-xl">
+          {toolbar2}
         </div>
       )}
 
-      {banner()}
-
       <div className="min-h-0 flex-1 overflow-auto">{children}</div>
     </div>
+  );
+}
+
+/**
+ * Right-aligned summary text in a module toolbar.
+ *
+ * This is the part that gives up space first when the window narrows: the row
+ * itself is fixed at one line, so the summary shrinks while the controls keep
+ * their full size. Each piece is a {@link ToolbarStat} so it ellipsizes and
+ * keeps the full text in a tooltip.
+ */
+export function ToolbarStatus({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "ml-auto flex min-w-0 shrink items-center gap-2 overflow-hidden text-11 text-fg-subtle",
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * One piece of a {@link ToolbarStatus}.
+ *
+ * `shrink-0` marks a piece as essential — it never ellipsizes, so reserve it
+ * for the one number the user actually reads (a row count, say).
+ */
+export function ToolbarStat({
+  children,
+  title,
+  className,
+}: {
+  children: ReactNode;
+  /** Overrides the tooltip; defaults to the text when it is plain. */
+  title?: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn("truncate", className)}
+      title={title ?? (typeof children === "string" ? children : undefined)}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * A compact toolbar input.
+ *
+ * `width` is a *maximum*: the field is the first control to narrow when the
+ * toolbar runs out of room, because a slightly shorter box still works while
+ * a clipped button does not.
+ */
+export function ToolbarInput({
+  width = "w-44",
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { width?: string }) {
+  return (
+    <input
+      {...props}
+      className={cn(
+        "h-[24px] min-w-[72px] shrink rounded-[6px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent",
+        width,
+        className,
+      )}
+    />
   );
 }
 

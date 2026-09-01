@@ -9,6 +9,7 @@ import type {
   WorkspaceTab,
   WorkspaceTabType,
 } from "@/workbench/types";
+import { useDomainStore } from "@/stores/domain-store";
 
 const uuid = () => crypto.randomUUID();
 
@@ -122,6 +123,27 @@ const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
   projects: "project",
 };
 
+/**
+ * Inverse of {@link MODULE_TAB_TYPES} plus the terminal/monitor tab types.
+ *
+ * Keeps the navigation rail highlight in step with whichever tab the user just
+ * clicked: activating a `logs` tab should light up the "日志" rail item, and a
+ * `terminal` tab should keep the server list (`ssh`) rail item lit.
+ */
+const TAB_TYPE_TO_MODULE: Partial<Record<WorkspaceTabType, NavModule>> = {
+  terminal: "ssh",
+  server: "ssh",
+  monitor: "ssh",
+  file: "files",
+  service: "services",
+  logs: "logs",
+  docker: "docker",
+  nginx: "nginx",
+  project: "projects",
+  workflow: "deploy",
+  deployment: "deploy",
+};
+
 const createInitialRootPane = (): WorkbenchPane => {
   const home = createHomeTab();
   return { id: uuid(), tabs: [home], activeTabId: home.id };
@@ -161,6 +183,12 @@ interface WorkbenchState {
    * tab, so for those this only switches the active module.
    */
   openModuleTab: (module: NavModule) => void;
+  /**
+   * Opens (or focuses, if already open for that server) a session-driven module
+   * tab bound to a specific server, e.g. the "日志" tab for server X. Used by the
+   * module's left server-list sidebar so picking a server loads its view directly.
+   */
+  openModuleTabForServer: (module: NavModule, serverId: string) => void;
   closeTab: (paneId: string, tabId: string) => void;
   closeTabById: (tabId: string) => void;
   closeOtherTabs: (paneId: string, tabId: string) => void;
@@ -242,7 +270,13 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
     set((state) => {
       const pane = findPane(state.rootPane, paneId);
       if (!pane || !isLeafPane(pane)) return state;
+      const tab = pane.tabs.find((t) => t.id === tabId);
+      if (!tab) return state;
+      const module = tab.type === "module" && tab.module
+        ? tab.module
+        : TAB_TYPE_TO_MODULE[tab.type] ?? state.activeModule;
       return {
+        activeModule: module,
         rootPane: replacePane(state.rootPane, paneId, { ...pane, activeTabId: tabId }),
         focusedPaneId: paneId,
       };
@@ -363,6 +397,55 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
         rootPane: replacePane(state.rootPane, paneId, {
           ...pane,
           tabs: [...pane.tabs, tab],
+          activeTabId: tab.id,
+        }),
+        focusedPaneId: paneId,
+      };
+    }),
+
+  openModuleTabForServer: (module, serverId) =>
+    set((state) => {
+      const tabType = MODULE_TAB_TYPES[module];
+      if (!tabType) return state;
+      const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+      const pane = findPane(state.rootPane, paneId);
+      if (!pane || !isLeafPane(pane)) return state;
+
+      // Reuse the tab already bound to this server for this module.
+      const existing = pane.tabs.find((tab) => tab.type === tabType && tab.serverId === serverId);
+      if (existing) {
+        return {
+          activeModule: module,
+          rootPane: replacePane(state.rootPane, paneId, { ...pane, activeTabId: existing.id }),
+          focusedPaneId: paneId,
+        };
+      }
+
+      const server = useDomainStore.getState().servers.find((s) => s.id === serverId);
+      const tab = normalizeTab({
+        id: uuid(),
+        type: tabType,
+        module,
+        title: server ? `${server.name} · ${MODULE_LABELS[module]}` : MODULE_LABELS[module],
+        subtitle: server ? `${server.host}:${server.port}` : undefined,
+        serverId,
+        sessionId: uuid(),
+      });
+
+      // If the active tab in this pane is the same module with no server bound
+      // yet (the "pick a server" page), replace it so we don't accumulate a dead
+      // selector tab.
+      const active = pane.tabs.find((t) => t.id === pane.activeTabId);
+      const isSelector = !!active && active.module === module && !active.serverId;
+      const tabs = isSelector
+        ? pane.tabs.map((t) => (t.id === active!.id ? tab : t))
+        : [...pane.tabs, tab];
+
+      return {
+        activeModule: module,
+        rootPane: replacePane(state.rootPane, paneId, {
+          ...pane,
+          tabs,
           activeTabId: tab.id,
         }),
         focusedPaneId: paneId,

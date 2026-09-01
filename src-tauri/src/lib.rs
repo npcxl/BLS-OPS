@@ -10,6 +10,7 @@ mod keyring;
 pub mod monitor;
 /// Nginx site and configuration management (P3-1.4).
 pub mod nginx;
+pub mod project_discovery;
 /// Shared helpers for running fixed commands on a session.
 pub mod remote;
 /// The security boundary: every management command is built here (P3-2.4).
@@ -122,14 +123,17 @@ pub fn run() {
             commands::nginx_test,
             commands::nginx_reload,
             commands::nginx_set_site_enabled,
-            // projects & deployments (P3-2.2, P3-2.3)
+            // project discovery (P3 read-only)
+            commands::project_scan_start,
+            commands::project_scan_cancel,
+            commands::project_scan_status,
+            commands::project_scan_result,
+            // legacy project records retained as P5 foundation
             commands::project_list,
             commands::project_get,
             commands::project_save,
             commands::project_delete,
-            commands::deployment_list,
-            commands::deployment_get,
-            commands::deployment_execute,
+            // deployment IPC is intentionally not exposed in P3; retained as P5 foundation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

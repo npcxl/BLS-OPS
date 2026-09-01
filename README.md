@@ -73,7 +73,7 @@ cargo test              # Rust 单元测试
 | **Nginx 管家** | ✅ **P3** | `nginx.rs` + `NginxManagerView`：站点列表（兼容 `sites-available` 与 `conf.d` 两种布局）、配置编辑、**保存即校验、校验通过才重载**、失败时明确告知并给出备份路径 |
 | **项目与部署** | ✅ **P3** | `projects` / `deployments` 表 + `ProjectView`：项目 CRUD（部署步骤后端白名单校验）、一键部署、**实时日志流**、部署历史与回看 |
 | **安全执行层** | ✅ **P3** | `safe.rs`：所有管理命令由常量模板 + 参数白名单生成，前端永不传命令字符串；部署步骤限制在项目目录内 |
-| **服务器状态监控（只读）** | ✅ **P2 正式完成** | `monitor.rs`：固定命令表 + exec 通道（不经 PTY）/ 5 秒超时 / 断连取消 / **意外断网检测**（远端主动断开、transport 错误、exec 无法建通道时标记会话失效，`ssh_status` 立即返回 false）/ **重连即新基线**（同 sessionId 重连前关闭并移除旧会话、清除采样基线）；`ServerMonitorView`：4 张指标卡、**30 分钟趋势（样本上限按采集间隔动态计算：2s→900 / 5s→360 / 30s→60）**、磁盘/网络/进程三个详情 Tab |
+| **服务器状态监控（只读）** | ✅ **P2 正式完成** | `monitor.rs`：固定命令表 + exec 通道（不经 PTY）/ 5 秒超时 / 断连取消 / **意外断网检测**（远端主动断开、transport 错误、exec 无法建通道时标记会话失效，`ssh_status` 立即返回 false）/ **重连即新基线**（同 sessionId 重连前关闭并移除旧会话、清除采样基线）/ **进程命令用 `comm` 不回传启动参数**（`--password`、token、数据库连接串等敏感信息永不进入响应；即使服务端误回 `args` 风格输出，解析也只保留可执行名）；`ServerMonitorView`：4 张指标卡、**30 分钟趋势（样本上限按采集间隔动态计算：2s→900 / 5s→360 / 30s→60）**、磁盘/网络/进程三个详情 Tab |
 | **远程文件浏览器** | ✅ | 独立 SFTP subsystem 通道（复用最终目标连接，兼容 ProxyJump）；面包屑/后退/前进/上一级/刷新；**重命名、副本、删除（递归，带确认弹窗）、新建文件夹/文件**；**上传支持两种入口**：工具栏“上传”按钮（系统文件选择器，可多选）与本地拖拽（文件与文件夹递归，落在当前目录）；**跟随终端 `cd` 联动**；右侧面板默认展开、可拖宽、可折叠 |
 | **通用右键菜单组件** | ✅ | `components/ui/context-menu.tsx` + `useContextMenu()`：左键/Escape/失焦/尺寸变化即关闭，**右键别处直接移动而非关闭重开**（不闪烁），键盘 ↑↓/Home/End/Enter 导航（跳过分隔符与禁用项），越界自动吸附视口内，`memo` 化不随父组件重渲染 |
 | **文件类型识别与图标** | ✅ | 按扩展名区分 SQL / HTML / JS / TS / Java / Python / JSON / YAML / PDF / Excel / Word / 图片 / 压缩包 / 视频音频等，各类独立彩色图标 |
@@ -88,10 +88,10 @@ cargo test              # Rust 单元测试
 | **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
 | **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 152 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析等） |
+| **Rust 单元测试** | ✅ | 153 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析、**进程列表不携带命令行机密**等） |
 | **SSH 端到端测试** | ✅ | 27 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
-| **监控端到端测试** | ✅ | 14 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、**服务端主动断开被识别**、**断开后同 sessionId 重连、首次采集使用新基线**、exec 与 PTY 同时使用、无 shell 的监控会话 |
-| **前端测试** | ✅ | 43 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口（2s/5s/30s 三个间隔的样本上限）/ 断连停止 / 不重叠采集**、**右键菜单的打开 / 外部点击关闭 / Escape 关闭 / 失焦关闭 / 右键别处不闪烁 / 无 handler 区域右键关闭 / 键盘跳过分隔符与禁用项 / 视口吸附** |
+| **监控端到端测试** | ✅ | 15 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、**服务端主动断开被识别**、**断开后同 sessionId 重连、首次采集使用新基线**、**服务端误回 args 风格进程列表时密码/token/连接串不进入响应**、exec 与 PTY 同时使用、无 shell 的监控会话 |
+| **前端测试** | ✅ | 52 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口（2s/5s/30s 三个间隔的样本上限）/ 断连停止 / 不重叠采集**、**右键菜单的打开 / 外部点击关闭 / Escape 关闭 / 失焦关闭 / 右键别处不闪烁 / 无 handler 区域右键关闭 / 键盘跳过分隔符与禁用项 / 视口吸附** |
 | **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` + `pnpm test` |
 | **Docker / Nginx / 部署 / 项目 / AI** | ⏸ 暂停 | 仅保留占位说明，验收通过前不开发。**文件模块第一阶段（SFTP 只读浏览）已上线**，上传/下载/删除/重命名/在线编辑留待后续 |
 
@@ -260,7 +260,7 @@ type SshConnectResult =
 ```bash
 pnpm test                     # 前端测试（vitest + happy-dom）
 cd src-tauri
-cargo test                    # 152 单元测试 + 27 SSH + 14 监控 + 25 P3 端到端
+cargo test                    # 153 单元测试 + 27 SSH + 15 监控 + 25 P3 端到端
 cargo test --test ssh_e2e     # 只跑 SSH 端到端
 cargo test --test monitor_e2e # 只跑监控端到端
 cargo test --test p3_e2e      # 只跑服务/日志/容器/网关端到端
@@ -351,6 +351,7 @@ cargo test --test p3_e2e      # 只跑服务/日志/容器/网关端到端
 - [x] 不支持的操作系统返回 `supported: false` + 明确原因，而不是一堆零
 - [x] **意外断网检测**：`SshSession` 持有真实存活状态（handler 的 `disconnected` 回调 + russh handle 关闭，双信号）；远端关闭连接、transport 错误或 exec 无法创建通道时标记会话失效；失效会话被立即从 registry 移除，`ssh_status` 返回 false。普通命令解析失败不会被误判：只有 `SendError` / `Disconnect` / `HUP`（或 handle 已关闭）才标记，服务器拒绝单个通道与预算超时都不算断开
 - [x] **同 sessionId 重连**：`connect_with` 在新连接开始前关闭并移除旧会话（绝不直接 insert 覆盖）；`ssh_connect_monitor` 开始新连接前调用 `monitor.forget(sessionId)`，新连接不与旧连接共享 CPU / 网络采样基线
+- [x] **进程命令脱敏**：采集命令固定为 `ps -eo pid,user,pcpu,pmem,stat,lstart,comm`——只取可执行名，`--password=…`、token、数据库连接串等启动参数永不离开服务器；解析层只复制 `fields[10]` 一个 token，即使服务端误回 `args` 风格输出也不会把机密带进响应结构；后端全程不打印进程输出到日志
 
 ### 前端
 

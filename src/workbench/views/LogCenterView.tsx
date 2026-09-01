@@ -18,7 +18,14 @@ import {
   type JournalEntry,
 } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
-import { ModuleEmpty, ModuleFrame, RefreshButton } from "@/workbench/views/module-frame";
+import {
+  ModuleEmpty,
+  ModuleFrame,
+  RefreshButton,
+  ToolbarInput,
+  ToolbarStat,
+  ToolbarStatus,
+} from "@/workbench/views/module-frame";
 import type { WorkspaceTab } from "@/workbench/types";
 
 const LINE_CHOICES = [100, 200, 500, 1000, 5000];
@@ -111,14 +118,40 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
         <>
           <RefreshButton busy={loading} onClick={() => void load()} />
           <div className="mx-1 h-4 w-px bg-line" />
-          <input
+          <Button
+            variant="ghost"
+            size="xs"
+            className="min-w-0 shrink"
+            onClick={() => setFollowTail((value) => !value)}
+            title={followTail ? "停止跟随最新" : "跟随最新"}
+          >
+            <ArrowDownToLine
+              size={12}
+              className={cn("shrink-0", followTail ? "text-accent" : undefined)}
+            />
+            <span className="truncate">{followTail ? "跟随中" : "已停止跟随"}</span>
+          </Button>
+          <ToolbarStatus>
+            {errorCount > 0 && (
+              <ToolbarStat className="text-danger">{errorCount} 条错误及以上</ToolbarStat>
+            )}
+            {usage?.raw && <ToolbarStat>占用 {usage.raw}</ToolbarStat>}
+            {/* The row count is what the user reads, so it never ellipsizes. */}
+            <ToolbarStat className="shrink-0">{visible.length} 条</ToolbarStat>
+          </ToolbarStatus>
+        </>
+      }
+      toolbar2={
+        <>
+          <ToolbarInput
             value={unit}
             onChange={(event) => setUnit(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && void load()}
             placeholder="单元名，如 nginx.service"
-            className="h-[24px] w-52 rounded-[6px] border border-line bg-surface-2 px-2 font-mono text-11 text-fg outline-none placeholder:font-sans placeholder:text-fg-subtle focus:border-accent"
+            width="w-52"
+            className="font-mono placeholder:font-sans"
           />
-          <label className="flex items-center gap-1 text-11 text-fg-subtle">
+          <label className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
             <Filter size={11} />
             <select
               value={priority === null ? "" : String(priority)}
@@ -134,38 +167,26 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
               ))}
             </select>
           </label>
-          <select
-            value={lines}
-            onChange={(event) => setLines(Number(event.target.value))}
-            className="h-[24px] rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
-          >
-            {LINE_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice} 行
-              </option>
-            ))}
-          </select>
-          <div className="mx-1 h-4 w-px bg-line" />
-          <input
+          <label className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
+            行数
+            <select
+              value={lines}
+              onChange={(event) => setLines(Number(event.target.value))}
+              className="h-[24px] rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
+            >
+              {LINE_CHOICES.map((choice) => (
+                <option key={choice} value={choice}>
+                  {choice}
+                </option>
+              ))}
+            </select>
+          </label>
+          <ToolbarInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="在结果中搜索…"
-            className="h-[24px] w-44 rounded-[6px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+            className="flex-1"
           />
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => setFollowTail((value) => !value)}
-            title={followTail ? "停止跟随最新" : "跟随最新"}
-          >
-            <ArrowDownToLine size={12} className={followTail ? "text-accent" : undefined} />
-            {followTail ? "跟随中" : "已停止跟随"}
-          </Button>
-          <span className="ml-auto flex items-center gap-2 text-11 text-fg-subtle">
-            {errorCount > 0 && <span className="text-danger">{errorCount} 条错误及以上</span>}
-            {usage?.raw && <span className="truncate">占用 {usage.raw}</span>}
-            <span>{visible.length} 条</span>
-          </span>
         </>
       }
     >

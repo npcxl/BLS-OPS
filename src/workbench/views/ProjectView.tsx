@@ -1,609 +1,88 @@
-/**
- * 项目与部署 (P3-2.2, P3-2.3, P3-3.5).
- *
- * A project is a deployment target: one directory on one server plus the steps
- * that publish to it. Steps are validated by Rust before they are stored
- * (allowlisted programs, no shell operators, no paths outside `deploy_path`),
- * and re-validated at run time — the WebView only ever sends a project id.
- */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import {
-  AlertOctagon,
-  Check,
-  FolderTree,
-  GitBranch,
-  Loader2,
-  Pencil,
-  Plus,
-  Rocket,
-  ScrollText,
-  Trash2,
-  TriangleAlert,
-} from "lucide-react";
+import { Check, ChevronDown, FolderSearch, Loader2, Pause, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { Field, Modal, fieldClass } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
-import {
-  deployStatusLabel,
-  opsApi,
-  projectSteps,
-  toErrorMessage,
-  type DeploymentRecord,
-  type ProjectRecord,
-} from "@/api/ops-api";
+import { opsApi, toErrorMessage, type ProjectCandidate, type ProjectScanResult, type ProjectScanStatus } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
-import { useDomainStore } from "@/stores/domain-store";
-import { ModuleEmpty, ModuleFrame, RefreshButton } from "@/workbench/views/module-frame";
+import { ModuleEmpty, ModuleFrame, RefreshButton, ToolbarStat, ToolbarStatus } from "@/workbench/views/module-frame";
 import type { WorkspaceTab } from "@/workbench/types";
 
+/** P3 is intentionally discovery-only. Deployment records remain available to P5, but are not exposed here. */
 export function ProjectView({ tab }: { tab: WorkspaceTab }) {
   const session = useCommandSession(tab);
-
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [deployments, setDeployments] = useState<DeploymentRecord[]>([]);
+  const [scan, setScan] = useState<ProjectScanStatus | null>(null);
+  const [result, setResult] = useState<ProjectScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"all" | "high" | "running">("all");
+  const timerRef = useRef<number | null>(null);
 
-  const [editing, setEditing] = useState<ProjectRecord | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<ProjectRecord | null>(null);
-  const [running, setRunning] = useState<string | null>(null);
-  const [liveLog, setLiveLog] = useState<{ id: string; name: string; text: string } | null>(null);
-  const [viewLog, setViewLog] = useState<DeploymentRecord | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [list, history] = await Promise.all([
-        opsApi.projectList(),
-        opsApi.deploymentList(undefined, 50),
-      ]);
-      setProjects(list);
-      setDeployments(history);
-    } catch (cause) {
-      setError(toErrorMessage(cause));
-    } finally {
-      setLoading(false);
+  const discover = useCallback(async (incremental = false) => {
+    if (!session.ready || !tab.serverId) {
+      setError("SSH 会话未连接，请先连接服务器");
+      return;
     }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const execute = useCallback(
-    async (project: ProjectRecord) => {
-      if (!session.ready) {
-        setError("SSH 会话未连接，请先连接服务器");
-        return;
-      }
-      setRunning(project.id);
-      setError(null);
-
-      // The id is generated here so the subscription is live *before* the run
-      // starts; otherwise the first steps' output would be emitted before
-      // anyone was listening.
-      const deploymentId = crypto.randomUUID();
-      const event = `deploy-progress-${deploymentId}`;
-      setLiveLog({ id: deploymentId, name: project.name, text: "正在启动部署…\n" });
-
-      const unlisten = await listen<string>(event, (message) => {
-        setLiveLog((current) =>
-          current && current.id === deploymentId
-            ? { ...current, text: message.payload }
-            : current,
-        );
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const started = await opsApi.projectScanStart(session.sessionId, tab.serverId, incremental);
+      setScan(started);
+      const unlisten = await listen<ProjectScanResult>(`project-scan-result-${started.id}`, (event) => {
+        setResult(event.payload); setScan((current) => current ? { ...current, state: "completed", progress: { ...current.progress, progress: 100 } } : current); setLoading(false); unlisten();
       });
+      const poll = window.setInterval(async () => {
+        timerRef.current = poll;
+        try {
+          const status = await opsApi.projectScanStatus(started.id);
+          if (status) setScan(status);
+          if (status && ["completed", "cancelled", "failed"].includes(status.state)) {
+            window.clearInterval(poll); const found = await opsApi.projectScanResult(started.id); if (found) setResult(found); setLoading(false); unlisten();
+          }
+        } catch (cause) { window.clearInterval(poll); setError(toErrorMessage(cause)); setLoading(false); unlisten(); }
+      }, 700);
+    } catch (cause) { setError(toErrorMessage(cause)); setLoading(false); }
+  }, [session.ready, session.sessionId, tab.serverId]);
 
-      try {
-        const record = await opsApi.deploymentExecute({
-          projectId: project.id,
-          sessionId: session.sessionId,
-          deploymentId,
-        });
-        setLiveLog({
-          id: record.id,
-          name: project.name,
-          text: record.log || "（部署没有产生输出）",
-        });
-      } catch (cause) {
-        setError(toErrorMessage(cause));
-        setLiveLog(null);
-      } finally {
-        unlisten();
-        setRunning(null);
-        void refresh();
-      }
-    },
-    [refresh, session.ready, session.sessionId],
-  );
+  useEffect(() => () => { if (timerRef.current !== null) window.clearInterval(timerRef.current); if (scan && ["running", "queued"].includes(scan.state)) void opsApi.projectScanCancel(scan.id); }, [scan]);
 
-  const menu = useContextMenu();
-  const projectMenu = (project: ProjectRecord) =>
-    menu.onContextMenu(() => [
-      {
-        id: "deploy",
-        label: "执行部署",
-        icon: Rocket,
-        disabled: !session.ready || running !== null,
-        onSelect: () => void execute(project),
-      },
-      { id: "edit", label: "编辑项目", icon: Pencil, onSelect: () => openEditor(project) },
-      { id: "sep", separator: true },
-      {
-        id: "delete",
-        label: "删除项目",
-        icon: Trash2,
-        danger: true,
-        onSelect: () => setPendingDelete(project),
-      },
-    ]);
-
-  const openEditor = (project: ProjectRecord | null) => {
-    setEditing(project ?? emptyProject());
-    setDialogOpen(true);
-  };
-
-  const serverName = (id: string) =>
-    useDomainStore.getState().servers.find((server) => server.id === id)?.name ?? id;
+  const cancel = async () => { if (scan) await opsApi.projectScanCancel(scan.id); };
+  const candidates = result?.candidates.filter((candidate) => filter === "all" || filter === "high" && candidate.confidence === "high" || filter === "running" && candidate.runtime_links.length > 0) ?? [];
 
   return (
-    <ModuleFrame
-      tab={tab}
-      session={session}
-      icon={FolderTree}
-      toolbar={
-        <>
-          <RefreshButton busy={loading} onClick={() => void refresh()} />
-          <div className="mx-1 h-4 w-px bg-line" />
-          <Button variant="ghost" size="xs" onClick={() => openEditor(null)}>
-            <Plus size={12} />
-            新建项目
-          </Button>
-          <span className="ml-auto text-11 text-fg-subtle">
-            {projects.length} 个项目 · 最近 {deployments.length} 次部署
-          </span>
-        </>
-      }
-    >
-      {error && (
-        <div className="mx-3 mt-3 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          {error}
-        </div>
-      )}
-
+    <ModuleFrame tab={tab} session={session} icon={FolderSearch} toolbar={<>
+      <RefreshButton busy={loading} onClick={() => void discover(true)} />
+      <Button variant="primary" size="sm" disabled={!session.ready || loading} onClick={() => void discover()}>
+        {loading ? <Loader2 size={13} className="animate-spin" /> : <FolderSearch size={13} />}发现服务器项目
+      </Button>
+      <ToolbarStatus><ToolbarStat>{result ? `${result.candidates.length} 个候选项目` : "只读扫描 · 不修改服务器文件"}</ToolbarStat></ToolbarStatus>
+    </>}>
       <div className="flex flex-col gap-4 p-3">
-        <section>
-          <h3 className="mb-2 text-11 font-semibold tracking-[0.06em] text-fg-subtle uppercase">
-            项目
-          </h3>
-          {projects.length === 0 ? (
-            <ModuleEmpty
-              icon={FolderTree}
-              title="还没有任何项目"
-              hint="新建项目来保存部署目标与部署步骤，之后就能一键执行部署。"
-            />
-          ) : (
-            <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1">
-              {projects.map((project) => (
-                <ProjectRow
-                  key={project.id}
-                  project={project}
-                  serverName={serverName(project.server_id)}
-                  running={running === project.id}
-                  canDeploy={session.ready && running === null}
-                  onContextMenu={projectMenu(project)}
-                  onDeploy={() => void execute(project)}
-                  onEdit={() => openEditor(project)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section>
-          <h3 className="mb-2 text-11 font-semibold tracking-[0.06em] text-fg-subtle uppercase">
-            部署历史
-          </h3>
-          {deployments.length === 0 ? (
-            <ModuleEmpty icon={ScrollText} title="还没有部署记录" />
-          ) : (
-            <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1">
-              {deployments.map((deployment) => (
-                <DeploymentRow
-                  key={deployment.id}
-                  deployment={deployment}
-                  onViewLog={() => setViewLog(deployment)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+        <div className="flex items-center gap-1 text-10 text-fg-subtle"><span className="rounded bg-accent/12 px-2 py-1 text-accent">1 发现项目</span><span>→</span><span>2 确认项目与模块</span><span>→</span><span>3 检查部署环境</span><span>→</span><span>4 生成部署方案（P4）</span></div>
+        {error && <div className="rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">{error}</div>}
+        {!result && !loading && <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center"><ModuleEmpty icon={FolderSearch} title="发现服务器项目" hint="自动扫描常见应用目录，并结合 Git、运行进程、systemd、Docker 与 Nginx 线索定位项目。整个过程只读，不会执行部署。" /><Button variant="primary" size="sm" disabled={!session.ready} onClick={() => void discover()}>开始发现</Button></div>}
+        {loading && scan && <ScanProgress scan={scan} onCancel={() => void cancel()} />}
+        {result && <>
+          <div className="flex items-center gap-1 border-b border-line pb-2">
+            <Button variant={filter === "all" ? "secondary" : "ghost"} size="xs" onClick={() => setFilter("all")}>全部</Button>
+            <Button variant={filter === "high" ? "secondary" : "ghost"} size="xs" onClick={() => setFilter("high")}>高置信度</Button>
+            <Button variant={filter === "running" ? "secondary" : "ghost"} size="xs" onClick={() => setFilter("running")}>正在运行</Button>
+          </div>
+          {candidates.length === 0 ? <ModuleEmpty icon={FolderSearch} title="没有符合筛选条件的候选" hint="可以切换筛选条件，或重新执行增量扫描。" /> : <div className="flex flex-col gap-2">{candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} />)}</div>}
+          {result.warnings.length > 0 && <div className="text-11 text-warning">扫描警告：{result.warnings.join("；")}</div>}
+        </>}
       </div>
-
-      <ContextMenu {...menu.props} title={pendingDelete?.name} />
-
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title={`删除项目 ${pendingDelete?.name ?? ""}`}
-        description={`确定删除项目“${pendingDelete?.name ?? ""}”？它的全部部署历史也会一并删除，此操作不可撤销。`}
-        confirmLabel="删除"
-        danger
-        onConfirm={async () => {
-          if (!pendingDelete) return;
-          try {
-            await opsApi.projectDelete(pendingDelete.id);
-          } catch (cause) {
-            setError(toErrorMessage(cause));
-          }
-          setPendingDelete(null);
-          void refresh();
-        }}
-        onCancel={() => setPendingDelete(null)}
-      />
-
-      {dialogOpen && editing && (
-        <ProjectDialog
-          project={editing}
-          onClose={() => setDialogOpen(false)}
-          onSaved={() => {
-            setDialogOpen(false);
-            void refresh();
-          }}
-        />
-      )}
-
-      {liveLog && (
-        <LogOverlay
-          title={`正在部署 ${liveLog.name}`}
-          text={liveLog.text}
-          busy
-          onClose={() => setLiveLog(null)}
-        />
-      )}
-
-      {viewLog && (
-        <LogOverlay
-          title={`部署记录 · ${viewLog.project_name}`}
-          text={viewLog.log || "（没有输出）"}
-          error={viewLog.error_message}
-          onClose={() => setViewLog(null)}
-        />
-      )}
     </ModuleFrame>
   );
 }
 
-function ProjectRow({
-  project,
-  serverName,
-  running,
-  canDeploy,
-  onContextMenu,
-  onDeploy,
-  onEdit,
-}: {
-  project: ProjectRecord;
-  serverName: string;
-  running: boolean;
-  canDeploy: boolean;
-  onContextMenu: (event: React.MouseEvent) => void;
-  onDeploy: () => void;
-  onEdit: () => void;
-}) {
-  const steps = projectSteps(project);
-  const tone =
-    project.status === "failed"
-      ? "text-danger"
-      : project.status === "success"
-        ? "text-success"
-        : project.status === "running"
-          ? "text-accent"
-          : "text-fg-subtle";
-
-  return (
-    <div
-      className="flex items-center gap-3 border-b border-line px-3 py-2 last:border-b-0 hover:bg-surface-hover"
-      onContextMenu={onContextMenu}
-      onDoubleClick={onEdit}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-12 text-fg">{project.name}</span>
-          <span className={cn("shrink-0 text-11", tone)}>{project.status}</span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 truncate text-11 text-fg-subtle">
-          <span>{serverName}</span>
-          <span className="text-line-strong">|</span>
-          <span className="font-mono">{project.deploy_path}</span>
-          {project.branch && (
-            <>
-              <span className="text-line-strong">|</span>
-              <span className="flex items-center gap-1">
-                <GitBranch size={10} />
-                {project.branch}
-              </span>
-            </>
-          )}
-        </div>
-        <div className="mt-1 truncate text-10 text-fg-subtle">
-          {steps.length} 个步骤：{steps.join(" · ") || "—"}
-        </div>
-      </div>
-      <Button variant="ghost" size="xs" onClick={onDeploy} disabled={!canDeploy}>
-        {running ? <Loader2 size={12} className="animate-spin" /> : <Rocket size={12} />}
-        {running ? "部署中" : "部署"}
-      </Button>
-    </div>
-  );
+function ScanProgress({ scan, onCancel }: { scan: ProjectScanStatus; onCancel: () => void }) {
+  return <div className="rounded-[10px] border border-line bg-surface-1 p-4"><div className="flex items-center gap-2 text-12 font-medium"><Loader2 size={14} className="animate-spin text-accent" />正在扫描服务器</div><div className="mt-2 flex justify-between text-11 text-fg-muted"><span>当前阶段：{scan.progress.phase}</span><span>{scan.progress.progress}%</span></div><div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3"><div className="h-full bg-accent transition-[width]" style={{ width: `${scan.progress.progress}%` }} /></div><div className="mt-2 flex items-center justify-between text-10 text-fg-subtle"><span>已检查 {scan.progress.checked_directories} 个目录 · 已发现 {scan.progress.discovered_candidates} 个候选 · 警告 {scan.progress.warnings} 个</span><Button variant="ghost" size="xs" onClick={onCancel}><Pause size={11} />取消扫描</Button></div>{scan.progress.current_path && <div className="mt-2 truncate font-mono text-10 text-fg-subtle" title={scan.progress.current_path}>{scan.progress.current_path}</div>}</div>;
 }
 
-function DeploymentRow({
-  deployment,
-  onViewLog,
-}: {
-  deployment: DeploymentRecord;
-  onViewLog: () => void;
-}) {
-  const tone =
-    deployment.status === "failed"
-      ? "text-danger"
-      : deployment.status === "success"
-        ? "text-success"
-        : "text-accent";
-
-  const when = deployment.started_at
-    ? new Date(deployment.started_at).toLocaleString(undefined, { hour12: false })
-    : "—";
-
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-3 border-b border-line px-3 py-2 text-left last:border-b-0 hover:bg-surface-hover"
-      onClick={onViewLog}
-    >
-      <span className={cn("w-[48px] shrink-0 text-11", tone)}>
-        {deployStatusLabel(deployment.status)}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-12 text-fg">
-        {deployment.project_name}
-        {deployment.error_message && (
-          <span className="ml-2 text-11 text-danger">{deployment.error_message}</span>
-        )}
-      </span>
-      <span className="shrink-0 text-11 text-fg-subtle">{when}</span>
-      <span className="w-[64px] shrink-0 text-right text-11 text-fg-subtle">
-        {deployment.duration_ms === null ? "—" : `${(deployment.duration_ms / 1000).toFixed(1)}s`}
-      </span>
-    </button>
-  );
+function CandidateCard({ candidate }: { candidate: ProjectCandidate }) {
+  const [expanded, setExpanded] = useState(false);
+  const running = candidate.runtime_links.length > 0;
+  const confidence = candidate.confidence === "high" ? "高置信度" : candidate.confidence === "likely" ? "待确认" : "可能项目";
+  return <article className="rounded-[10px] border border-line bg-surface-1"><button type="button" className="flex w-full items-start gap-3 p-3 text-left hover:bg-surface-hover" onClick={() => setExpanded((value) => !value)}><FolderSearch size={16} className="mt-0.5 shrink-0 text-accent" /><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="truncate text-13 text-fg">{candidate.name}</strong><span className={cn("rounded px-1.5 py-0.5 text-10", candidate.confidence === "high" ? "bg-success/12 text-success" : "bg-warning/12 text-warning")}>{confidence} · {candidate.score} 分</span>{running && <span className="text-10 text-success">正在运行</span>}</div><div className="mt-1 truncate font-mono text-11 text-fg-muted">{candidate.path}</div><div className="mt-1 text-10 text-fg-subtle">{candidate.project_type} · {candidate.modules.length} 个模块 · {candidate.detected_ports.length} 个端口 · 准备度 {candidate.readiness.score}</div></div><ChevronDown size={14} className={cn("mt-1 text-fg-subtle transition-transform", expanded && "rotate-180")} /></button>{expanded && <div className="border-t border-line px-3 pb-3 pt-2 text-11"><Detail title="判定依据" items={candidate.evidence.map((item) => `+${item.weight} ${item.summary}（${item.source}）`)} /><Detail title="扣分与风险" items={candidate.penalties.map((item) => `-${item.weight} ${item.summary}`)} /><Detail title="运行关联" items={candidate.runtime_links.map((item) => `${item.kind}：${item.name}${item.ports.length ? ` · 端口 ${item.ports.join(", ")}` : ""}`)} /><Detail title="环境变量名称" items={candidate.required_environment_names} /><Detail title="部署准备" items={[...candidate.readiness.blockers.map((item) => `阻塞：${item}`), ...candidate.readiness.warnings.map((item) => `警告：${item}`), ...candidate.readiness.confirmed_facts]} /><div className="mt-3 flex gap-1"><Button variant="secondary" size="xs"><Check size={11} />确认项目</Button><Button variant="ghost" size="xs">忽略目录</Button><Button variant="ghost" size="xs">合并 / 拆分</Button></div></div>}</article>;
 }
-
-/** Full-screen log overlay, used for both a running deploy and past records. */
-function LogOverlay({
-  title,
-  text,
-  error,
-  busy = false,
-  onClose,
-}: {
-  title: string;
-  text: string;
-  error?: string | null;
-  busy?: boolean;
-  onClose: () => void;
-}) {
-  const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [text]);
-
-  return (
-    <div className="absolute inset-0 z-40 flex flex-col bg-app/85 backdrop-blur-sm">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        {busy ? (
-          <Loader2 size={13} className="shrink-0 animate-spin text-accent" />
-        ) : (
-          <ScrollText size={13} className="shrink-0 text-fg-subtle" />
-        )}
-        <span className="text-12 font-semibold text-fg">{title}</span>
-        <Button variant="ghost" size="xs" className="ml-auto" onClick={onClose}>
-          关闭
-        </Button>
-      </div>
-      {error && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-11 text-danger">
-          <AlertOctagon size={12} className="shrink-0" />
-          <span className="min-w-0 flex-1">{error}</span>
-        </div>
-      )}
-      <pre className="flex-1 overflow-auto whitespace-pre-wrap p-3 font-mono text-11 leading-relaxed text-fg-muted">
-        {text}
-      </pre>
-      <div ref={endRef} />
-    </div>
-  );
-}
-
-// -- Editor ------------------------------------------------------------------
-
-export function emptyProject(): ProjectRecord {
-  const now = Date.now();
-  return {
-    id: crypto.randomUUID(),
-    name: "",
-    description: "",
-    server_id: "",
-    repo_url: "",
-    branch: "main",
-    deploy_path: "",
-    commands_json: '["git pull --ff-only"]',
-    status: "idle",
-    created_at: now,
-    updated_at: now,
-  };
-}
-
-function ProjectDialog({
-  project,
-  onClose,
-  onSaved,
-}: {
-  project: ProjectRecord;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const servers = useDomainStore((s) => s.servers);
-  const [draft, setDraft] = useState<ProjectRecord>(project);
-  /** Steps are edited as lines; serialising happens on save. */
-  const [stepsText, setStepsText] = useState(projectSteps(project).join("\n"));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const patch = (next: Partial<ProjectRecord>) => setDraft((prev) => ({ ...prev, ...next }));
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    const steps = stepsText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-
-    let commandsJson: string;
-    try {
-      commandsJson = JSON.stringify(steps);
-    } catch {
-      setError("部署步骤无法序列化");
-      setSaving(false);
-      return;
-    }
-
-    try {
-      await opsApi.projectSave({
-        ...draft,
-        name: draft.name.trim(),
-        deploy_path: draft.deploy_path.trim(),
-        branch: draft.branch.trim(),
-        repo_url: draft.repo_url.trim(),
-        commands_json: commandsJson,
-        updated_at: Date.now(),
-      });
-      onSaved();
-    } catch (cause) {
-      setError(toErrorMessage(cause));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal
-      open
-      width={520}
-      title={project.name ? `编辑项目 · ${project.name}` : "新建项目"}
-      description="部署步骤会被后端校验：只允许白名单内的命令，且不能引用项目目录之外的路径。"
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            取消
-          </Button>
-          <Button variant="primary" size="sm" disabled={saving} onClick={() => void save()}>
-            {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-            保存
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error && <ErrorTextFor message={error} />}
-
-        <Field label="项目名称">
-          <input
-            value={draft.name}
-            onChange={(event) => patch({ name: event.target.value })}
-            placeholder="my-app"
-            className={fieldClass}
-          />
-        </Field>
-
-        <Field label="部署服务器">
-          <select
-            value={draft.server_id}
-            onChange={(event) => patch({ server_id: event.target.value })}
-            className={fieldClass}
-          >
-            <option value="">选择服务器…</option>
-            {servers.map((server) => (
-              <option key={server.id} value={server.id}>
-                {server.name}（{server.username}@{server.host}）
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label="服务器上的部署目录" hint="必须是绝对路径，部署步骤不能访问它之外的路径">
-          <input
-            value={draft.deploy_path}
-            onChange={(event) => patch({ deploy_path: event.target.value })}
-            placeholder="/var/www/my-app"
-            className={fieldClass}
-          />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="仓库地址（可选）">
-            <input
-              value={draft.repo_url}
-              onChange={(event) => patch({ repo_url: event.target.value })}
-              placeholder="https://github.com/acme/app.git"
-              className={fieldClass}
-            />
-          </Field>
-          <Field label="分支（可选）">
-            <input
-              value={draft.branch}
-              onChange={(event) => patch({ branch: event.target.value })}
-              placeholder="main"
-              className={fieldClass}
-            />
-          </Field>
-        </div>
-
-        <Field label="部署步骤" hint="每行一条，按顺序执行；任一失败即中止">
-          <textarea
-            value={stepsText}
-            onChange={(event) => setStepsText(event.target.value)}
-            rows={5}
-            spellCheck={false}
-            placeholder={"git pull --ff-only\nnpm ci\nnpm run build"}
-            className={cn(fieldClass, "resize-none font-mono leading-relaxed")}
-          />
-        </Field>
-
-        <Field label="描述（可选）">
-          <input
-            value={draft.description}
-            onChange={(event) => patch({ description: event.target.value })}
-            placeholder="这个部署做什么"
-            className={fieldClass}
-          />
-        </Field>
-      </div>
-    </Modal>
-  );
-}
-
-function ErrorTextFor({ message }: { message: string }) {
-  return (
-    <div className="flex items-start gap-2 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-      <TriangleAlert size={13} className="mt-0.5 shrink-0" />
-      <span className="min-w-0 flex-1">{message}</span>
-    </div>
-  );
-}
+function Detail({ title, items }: { title: string; items: string[] }) { return <div className="mt-2"><div className="mb-1 flex items-center gap-1 font-medium text-fg"><ShieldCheck size={12} className="text-fg-subtle" />{title}</div>{items.length ? <ul className="space-y-0.5 text-fg-muted">{items.map((item) => <li key={item} className="truncate">{item}</li>)}</ul> : <div className="text-fg-subtle">暂无</div>}</div>; }

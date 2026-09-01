@@ -3,6 +3,7 @@ import { GripVertical } from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 import { SshContextSidebar } from "./ssh-context-sidebar";
+import { ModuleServerSidebar, isServerListModule } from "./module-server-sidebar";
 
 const MODULE_TITLES: Record<string, string> = {
   ssh: "终端",
@@ -45,6 +46,14 @@ export function ContextSidebar() {
     },
     [setWidth],
   );
+
+  if (isServerListModule(activeModule)) {
+    // Session-driven modules (日志 / 服务 / 容器 / 网关 / 项目) operate on a
+    // chosen server, so the left rail shows the server list — same as the
+    // terminal/server module — and clicking a server loads that module for it.
+    if (collapsed) return <div className="w-0 shrink-0" aria-hidden="true" />;
+    return <ModuleServerSidebar module={activeModule} />;
+  }
 
   if (activeModule !== "ssh" && activeModule !== "servers") return null;
 

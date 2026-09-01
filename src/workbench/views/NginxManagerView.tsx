@@ -26,7 +26,13 @@ import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
 import { opsApi, toErrorMessage, type NginxSite, type NginxTestResult } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
-import { ModuleEmpty, ModuleFrame, RefreshButton } from "@/workbench/views/module-frame";
+import {
+  ModuleEmpty,
+  ModuleFrame,
+  RefreshButton,
+  ToolbarStat,
+  ToolbarStatus,
+} from "@/workbench/views/module-frame";
 import type { WorkspaceTab } from "@/workbench/types";
 
 export function NginxManagerView({ tab }: { tab: WorkspaceTab }) {
@@ -162,9 +168,13 @@ export function NginxManagerView({ tab }: { tab: WorkspaceTab }) {
             )}
             校验并重载
           </Button>
-          <span className="ml-auto text-11 text-fg-subtle">
-            {sites.length > 0 && `${sites.filter((site) => site.enabled).length} / ${sites.length} 个站点已启用`}
-          </span>
+          <ToolbarStatus>
+            <ToolbarStat>
+              {sites.length > 0
+                ? `${sites.filter((site) => site.enabled).length} / ${sites.length} 个站点已启用`
+                : ""}
+            </ToolbarStat>
+          </ToolbarStatus>
         </>
       }
     >

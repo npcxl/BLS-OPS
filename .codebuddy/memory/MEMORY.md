@@ -13,13 +13,34 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 4. 在 P0 验收通过前**暂停**：Docker、Nginx、部署、项目、文件、AI 模块。
 5. 凭据的“私钥 + 私钥口令”是一组配置，不是互斥类型。
 
-## 监控模块约定（阶段：服务器状态监控）
+## 监控模块约定（阶段：服务器状态监控——**P2 正式完成**）
 - 监控命令是 `monitor.rs` 里的**固定常量表**；Tauri 命令只收 `sessionId`，前端无法传 shell 字符串。
 - 监控**绝不走 PTY**：每条命令开自己的 exec channel，读完 exit-status+eof 就 `channel.close()`，超时/取消也关。
 - `SshSession.writer` 是 `Mutex<Option<SessionWriter>>`：`Some` = 交互终端，`None` = 监控等非交互会话（`connect_command` 用 0×0 建立）。`ssh_input` / `ssh_resize` 对 `None` 明确报错。
 - 会话级取消信号：`SshSession.closed: watch::Sender<bool>`，`shutdown()` 里 `send(true)`，在途命令通过 `timed()` 的 `select!` 立即失败。
-- 速率（CPU%、网速）必须是两次采样的差值；首次采集额外隔 200ms 再读一次，禁止用 0 占位。
+- **存活状态是双信号**：`SshSession.dead: Arc<AtomicBool>`（与该 hop 的 ClientHandler 共享，`disconnected` 回调置位）+ `handle.is_closed()`；`is_alive()` 两者都查。exec 的 channel_open 失败只在 `SendError|Disconnect|HUP`（或 handle 已关）时标记——`ChannelOpenFailure` 与预算超时都不算断开，普通命令解析错误永远不算。
+- 死会话由 `get()` / `is_connected()` / `active_count()` 在查表时即时移除；`connect_with` 重连前先 remove+shutdown 旧会话；`ssh_connect_monitor` 开头 `monitor.forget(sessionId)`。
+- 速率（CPU%、网速）必须是两次采样的差值；首次采集额外隔 200ms 再读一次，禁止用 0 占位。同 sessionId 重连必须 forget 基线。
+- 历史窗口样本上限按间隔动态算 `maxSamplesFor = ceil(30min / intervalMs)`（2s→900 / 5s→360 / 30s→60），时间过滤同时保留。
 - 不支持的操作系统：`monitor_snapshot` 返回 `supported:false` + 原因且指标列表为空；单个 collector 返回 Err。禁止返回「零值指标」。
+
+## UI 组件约定
+- **右键菜单统一用 `components/ui/context-menu.tsx` 的 `useContextMenu()`**，不要手写浮动菜单。用法：`const menu = useContextMenu(); <div onContextMenu={menu.onContextMenu(() => items)} /><ContextMenu {...menu.props} />`
+  - 关键：右键的 `pointerdown` 不能关闭菜单（否则 `contextmenu` 重开时会闪），`contextmenu` 用 bubble 阶段靠 `defaultPrevented` 判断是否有新菜单。
+- 删除等破坏性操作统一走 `components/ui/confirm-dialog.tsx`，不用 `window.confirm`，也不要自己拼 `Modal`。
+- 长列表（文件列表）的行必须 `memo` 化且回调引用稳定；高频事件（Tauri 拖拽 `over`）要用 ref 短路后再 setState。
+- lucide-react v1.x：`AlertTriangle` 已改名 `TriangleAlert`，`Loader` 改名 `LoaderCircle`。
+- 上传这类操作必须同时提供**点击入口**（`tauri-plugin-dialog` 的 `open()`）和拖拽入口，拖拽不能是唯一路径。
+
+## P3 管理模块约定（服务 / 日志 / 容器 / 网关 / 部署）
+- **安全边界是 `src-tauri/src/safe.rs` 的 `Capability` 枚举**：它是唯一把「动作」翻译成命令字符串的地方。新增任何管理动作都必须在这里加变体 + 写死命令模板，**禁止在其他任何地方拼接命令**。
+- 前端**永不传命令字符串**：只传结构化标识（单元名、容器名、路径、项目 id）。Tauri 命令不接受 shell 文本。
+- **校验必须在任何网络 I/O 之前**（用 `remote::run_on_linux`，它先 `capability.command()?` 再做 OS 探测）。否则恶意参数会白跑一次 `uname` 往返。
+- 部署步骤三重校验：命令白名单 + 禁止 shell 操作符 + 绝对路径必须在项目 `deploy_path` 内；`deployment_execute` 只收 `projectId`，步骤从 DB 读出后**重新校验**。
+- 会改服务端状态的操作必须有 `ConfirmDialog`；Nginx 配置「先 `nginx -t` 再重载」，失败时明确告知未重载。
+- 「不可用」≠「空」：Docker 没装、Nginx 无站点、journal 读不到，都要给原因，不能显示空列表。
+- 新模块用 `useCommandSession(tab)`（非交互会话，无 PTY 无 shell）+ `ModuleFrame`；新 tab 类型需在 `workbench-store` 的 `MODULE_TAB_TYPES` 注册。
+- e2e 手法：`tests/p3_e2e.rs` 的测试服务端**记录收到的每条命令**，测试从外部断言命令字符串 —— 能证明被拒参数「一条都没发出去」。
 
 ## 技术要点
 - Workbench 布局约定：终端/服务器模块走左侧 `ContextSidebar`（服务器列表，`openModuleTab` 对 `ssh`/`servers` 只切换 `activeModule`，不开页签）；设置等其他模块走 `ModulePage` 居中页签。

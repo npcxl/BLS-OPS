@@ -12,9 +12,12 @@ export type WorkspaceTabType =
   /** Read-only Linux monitoring for one server — runs on its own session. */
   | "monitor"
   | "file"
-  | "project"
+  /** P3 management modules. Each opens its own non-interactive session. */
+  | "service"
+  | "logs"
   | "docker"
   | "nginx"
+  | "project"
   | "workflow"
   | "deployment";
 
@@ -57,6 +60,10 @@ export interface WorkbenchPane {
 export type NavModule =
   | "ssh"
   | "servers"
+  /** systemd 服务管家 — per-server, session-driven. */
+  | "services"
+  /** journald 日志中心 — per-server, session-driven. */
+  | "logs"
   | "files"
   | "projects"
   | "deploy"

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use ops_workbench_lib::ssh::{
 };
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{self, Auth, Handler, Msg, Server, Session};
-use russh::{Channel, ChannelId};
+use russh::{Channel, ChannelId, Disconnect};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -66,6 +66,9 @@ struct MonitorServer {
     /// percentage then comes out of a real delta instead of a constant.
     stat_step: Arc<AtomicU64>,
     net_step: Arc<AtomicU64>,
+    /// When set, the server slams the door on the next exec request — a
+    /// server-initiated disconnect, with the server itself staying up.
+    kill_switch: Arc<AtomicBool>,
 }
 
 impl server::Server for MonitorServer {
@@ -80,6 +83,7 @@ impl server::Server for MonitorServer {
             tunnels: HashSet::new(),
             stat_step: self.stat_step.clone(),
             net_step: self.net_step.clone(),
+            kill_switch: self.kill_switch.clone(),
         }
     }
 }
@@ -94,6 +98,7 @@ struct MonitorHandler {
     tunnels: HashSet<ChannelId>,
     stat_step: Arc<AtomicU64>,
     net_step: Arc<AtomicU64>,
+    kill_switch: Arc<AtomicBool>,
 }
 
 impl MonitorHandler {
@@ -222,6 +227,13 @@ impl Handler for MonitorHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // The server ends the connection ITSELF — no client-side disconnect
+        // involved, exactly what an unexpected remote shutdown looks like.
+        if self.kill_switch.load(Ordering::Relaxed) {
+            let _ = session.disconnect(Disconnect::ByApplication, "server closing", "en");
+            return Ok(());
+        }
+
         if matches!(self.profile, Profile::Silent) {
             // Accept the channel and stay quiet: the client must time out.
             return Ok(());
@@ -325,7 +337,7 @@ where
 async fn spawn_monitor_server(
     profile: Profile,
     allow_tunnels: bool,
-) -> (SocketAddr, server::RunningServerHandle) {
+) -> (SocketAddr, server::RunningServerHandle, Arc<AtomicBool>) {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("generate host key");
 
     let mut config = server::Config::default();
@@ -345,7 +357,9 @@ async fn spawn_monitor_server(
         allow_tunnels,
         stat_step: Arc::new(AtomicU64::new(0)),
         net_step: Arc::new(AtomicU64::new(0)),
+        kill_switch: Arc::new(AtomicBool::new(false)),
     };
+    let kill_switch = server.kill_switch.clone();
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
@@ -354,7 +368,7 @@ async fn spawn_monitor_server(
         let _ = running.await;
     });
 
-    (addr, rx.await.expect("server handle"))
+    (addr, rx.await.expect("server handle"), kill_switch)
 }
 
 fn linux(hostname: &str) -> Profile {
@@ -486,6 +500,22 @@ async fn read_until(reader: &mut russh::ChannelReadHalf, needle: &str) -> String
     }
 }
 
+/// Polls until the manager stops reporting the session as connected.
+///
+/// The client learns about a server-initiated close asynchronously, so a
+/// short grace period is expected; five seconds without noticing means the
+/// detection is broken, not merely slow.
+async fn wait_until_disconnected(manager: &SshSessionManager, session_id: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while manager.is_connected(session_id).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the disconnect was never noticed by the client"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -493,7 +523,7 @@ async fn read_until(reader: &mut russh::ChannelReadHalf, needle: &str) -> String
 /// The headline path: one snapshot over a real connection, fully parsed.
 #[tokio::test]
 async fn snapshot_reads_every_metric_over_a_real_connection() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -567,7 +597,7 @@ async fn snapshot_reads_every_metric_over_a_real_connection() {
 /// not report the same numbers twice.
 #[tokio::test]
 async fn a_second_collection_measures_against_the_previous_one() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -590,8 +620,8 @@ async fn a_second_collection_measures_against_the_previous_one() {
 /// Two sessions to different hosts must not share baselines.
 #[tokio::test]
 async fn each_session_keeps_its_own_baseline() {
-    let (a_addr, a_handle) = spawn_monitor_server(linux("host-a"), false).await;
-    let (b_addr, b_handle) = spawn_monitor_server(linux("host-b"), false).await;
+    let (a_addr, a_handle, _kill_a) = spawn_monitor_server(linux("host-a"), false).await;
+    let (b_addr, b_handle, _kill_b) = spawn_monitor_server(linux("host-b"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "a", None, a_addr.port()).await;
@@ -620,8 +650,9 @@ fn handle_cleanup(a: server::RunningServerHandle, b: server::RunningServerHandle
 /// Monitoring through ProxyJump must read the FINAL server, never the jump.
 #[tokio::test]
 async fn proxy_jump_monitors_the_final_server() {
-    let (jump_addr, jump_handle) = spawn_monitor_server(linux("jump-host"), true).await;
-    let (target_addr, target_handle) = spawn_monitor_server(linux("final-host"), false).await;
+    let (jump_addr, jump_handle, _kill_jump) = spawn_monitor_server(linux("jump-host"), true).await;
+    let (target_addr, target_handle, _kill_target) =
+        spawn_monitor_server(linux("final-host"), false).await;
 
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
@@ -647,7 +678,7 @@ async fn proxy_jump_monitors_the_final_server() {
 /// A non-Linux host is reported as unsupported — never as a pile of zeroes.
 #[tokio::test]
 async fn an_unsupported_os_is_reported_not_faked() {
-    let (addr, handle) = spawn_monitor_server(Profile::Darwin, false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(Profile::Darwin, false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -689,7 +720,7 @@ async fn a_silent_server_hits_the_command_timeout() {
         "the monitoring budget is 5 seconds"
     );
 
-    let (addr, handle) = spawn_monitor_server(Profile::Silent, false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(Profile::Silent, false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -723,7 +754,7 @@ async fn a_silent_server_hits_the_command_timeout() {
 /// its exit code, not as an empty result.
 #[tokio::test]
 async fn a_failing_command_becomes_a_clear_error() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -740,7 +771,7 @@ async fn a_failing_command_becomes_a_clear_error() {
 /// Disconnecting stops collection: no session means no more metrics.
 #[tokio::test]
 async fn collection_stops_after_the_session_is_disconnected() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -777,7 +808,7 @@ async fn collection_stops_after_the_session_is_disconnected() {
 /// rather than letting it sit on a dead socket until the timeout.
 #[tokio::test]
 async fn disconnect_cancels_a_collection_that_is_already_running() {
-    let (addr, handle) = spawn_monitor_server(Profile::Silent, false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(Profile::Silent, false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
@@ -809,11 +840,97 @@ async fn disconnect_cancels_a_collection_that_is_already_running() {
     handle.shutdown("done".to_string());
 }
 
+/// The SERVER closes the connection itself — no client-side disconnect is
+/// ever called. The very next status check must report the session dead and
+/// the next collection must fail: a registry entry must never keep answering
+/// "connected" after the remote end is gone.
+#[tokio::test]
+async fn a_server_initiated_disconnect_is_detected() {
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let manager = SshSessionManager::default();
+    let registry = MonitorRegistry::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    monitor::collect_snapshot(&manager, &registry, "s1")
+        .await
+        .expect("collection while the server is alive");
+
+    // The server slams the door on the connection itself.
+    handle.shutdown("server closing".to_string());
+    wait_until_disconnected(&manager, "s1").await;
+
+    // And the next collection fails instead of pretending all is well.
+    let error = monitor::collect_snapshot(&manager, &registry, "s1")
+        .await
+        .expect_err("collection after the server closed the connection");
+    assert!(error.to_string().contains("会话不存在"), "{error}");
+}
+
+/// After the server kills the connection, reconnecting with the SAME session
+/// id must start from a fresh rate baseline. The first snapshot of the new
+/// connection takes its own double sample: the network fixture is read twice,
+/// so `received_bytes` comes back at net step 3 (2_500_000). Diffing against
+/// the dead connection's last reading would report step 2 (2_000_000) —
+/// which is exactly the regression this test pins down.
+#[tokio::test]
+async fn reconnecting_with_the_same_session_id_starts_a_fresh_baseline() {
+    let (addr, handle, kill) = spawn_monitor_server(linux("web-01"), false).await;
+    let manager = SshSessionManager::default();
+    let registry = MonitorRegistry::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    monitor::collect_snapshot(&manager, &registry, "s1")
+        .await
+        .expect("first collection");
+
+    // The server drops this one connection but stays up for the reconnect.
+    kill.store(true, Ordering::Relaxed);
+    // One exec triggers the server-side disconnect; whether it surfaces as an
+    // error or an empty reply does not matter — the transport is dead either
+    // way, and the next status check must say so.
+    let _ = manager.exec("s1", CMD_UNAME, DEFAULT_COMMAND_TIMEOUT).await;
+    wait_until_disconnected(&manager, "s1").await;
+    // The kill switch only ever ends the OLD connection: re-arm the server so
+    // the reconnect below is answered normally.
+    kill.store(false, Ordering::Relaxed);
+
+    // Reconnect on the same session id, exactly the way `ssh_connect_monitor`
+    // does: forget the old baselines, then connect. The old session must be
+    // torn down and replaced — never silently overwritten.
+    registry.forget("s1").await;
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let snapshot = monitor::collect_snapshot(&manager, &registry, "s1")
+        .await
+        .expect("first snapshot of the new connection");
+    assert!(
+        snapshot.supported,
+        "reason: {:?}",
+        snapshot.unsupported_reason
+    );
+    // 1_000_000 + step 3 × 500_000: only a fresh double sample lands here.
+    assert_eq!(
+        snapshot.network[0].received_bytes,
+        1_000_000 + 3 * 500_000,
+        "the first collection after a reconnect must take a fresh double sample"
+    );
+    assert!(
+        snapshot.network[0].receive_speed > 0.0,
+        "the new connection must measure a real speed"
+    );
+    assert_eq!(snapshot.cpu.usage_percent, 75.0);
+
+    // Exactly one live session answers to "s1" — the old one was removed.
+    assert_eq!(manager.active_count().await, 1);
+
+    handle.shutdown("done".to_string());
+}
+
 /// Exec channels and the interactive PTY must coexist on one connection:
 /// monitoring never steals or blocks the shell, and vice versa.
 #[tokio::test]
 async fn exec_and_pty_work_at_the_same_time() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     let mut reader = connect_for_shell(&manager, "s1", addr.port()).await;
@@ -848,7 +965,7 @@ async fn exec_and_pty_work_at_the_same_time() {
 /// commands, and refuses terminal input.
 #[tokio::test]
 async fn a_monitoring_session_opens_without_a_shell() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 
@@ -876,7 +993,7 @@ async fn a_monitoring_session_opens_without_a_shell() {
 /// Each collector works on its own, for pages that only need one metric.
 #[tokio::test]
 async fn individual_collectors_work_standalone() {
-    let (addr, handle) = spawn_monitor_server(linux("web-01"), false).await;
+    let (addr, handle, _kill) = spawn_monitor_server(linux("web-01"), false).await;
     let manager = SshSessionManager::default();
     let registry = MonitorRegistry::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;

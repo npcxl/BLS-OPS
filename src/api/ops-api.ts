@@ -262,6 +262,198 @@ export interface MonitorSnapshot {
   processes: ProcessInfo[];
 }
 
+// ---------------------------------------------------------------------------
+// P3 — service / log / container / gateway management, projects & deployments
+//
+// These calls never accept a command string. They take a `sessionId` plus
+// structured identifiers, and Rust turns those into fixed commands after
+// validating every parameter (see `src-tauri/src/safe.rs`).
+// ---------------------------------------------------------------------------
+
+// -- systemd ----------------------------------------------------------------
+
+export interface ServiceUnit {
+  /** Unit name, e.g. `nginx.service`. */
+  unit: string;
+  load: string;
+  active: string;
+  sub: string;
+  description: string;
+  /**
+   * Enabled at boot. `null` when systemd reports a state with no on/off
+   * meaning (`static`, `indirect`, `masked`) — never a guessed `false`.
+   */
+  enabled: boolean | null;
+  enabled_state: string | null;
+}
+
+export type ServiceActionName =
+  | "start"
+  | "stop"
+  | "restart"
+  | "reload"
+  | "enable"
+  | "disable";
+
+// -- journald ---------------------------------------------------------------
+
+export interface JournalEntry {
+  /** ISO 8601 in UTC. */
+  timestamp: string;
+  unit: string;
+  /** syslog priority, 0 (emerg) … 7 (debug). */
+  priority: number;
+  message: string;
+}
+
+export interface JournalDiskUsage {
+  raw: string;
+  bytes: number | null;
+}
+
+/** Maximum syslog priority to include. `null` means "everything". */
+export const JOURNAL_PRIORITIES = [
+  { value: null, label: "全部级别" },
+  { value: 0, label: "紧急" },
+  { value: 1, label: "警报" },
+  { value: 2, label: "严重" },
+  { value: 3, label: "错误" },
+  { value: 4, label: "警告" },
+  { value: 5, label: "通知" },
+  { value: 6, label: "信息" },
+  { value: 7, label: "调试" },
+] as const;
+
+/** Chinese label for a journald priority. */
+export function priorityLabel(priority: number): string {
+  return JOURNAL_PRIORITIES.find((item) => item.value === priority)?.label ?? "其他";
+}
+
+// -- Docker -----------------------------------------------------------------
+
+export interface ContainerInfo {
+  id: string;
+  short_id: string;
+  name: string;
+  image: string;
+  status: string;
+  state: string;
+  ports: string;
+  created_at: string;
+}
+
+export interface ImageInfo {
+  id: string;
+  short_id: string;
+  repository: string;
+  tag: string;
+  size: string;
+  created_since: string;
+  display_name: string;
+}
+
+export interface ContainerStats {
+  name: string;
+  cpu_percent: number;
+  memory_usage: string;
+  memory_percent: number;
+  net_io: string;
+  block_io: string;
+}
+
+export interface DockerSnapshot {
+  available: boolean;
+  containers: ContainerInfo[];
+  images: ImageInfo[];
+  stats: ContainerStats[];
+  /** Set when Docker is missing or the daemon is unreachable. */
+  unavailable_reason: string | null;
+}
+
+export type ContainerActionName = "start" | "stop" | "restart" | "remove";
+
+// -- Nginx ------------------------------------------------------------------
+
+export type NginxSource = "sites_available" | "conf_d";
+
+export interface NginxSite {
+  name: string;
+  enabled: boolean;
+  path: string;
+  source: NginxSource;
+  server_names: string[];
+  listen_ports: number[];
+  is_default: boolean;
+}
+
+export interface NginxTestResult {
+  success: boolean;
+  output: string;
+}
+
+export interface NginxSaveResult {
+  saved: boolean;
+  test: NginxTestResult;
+  reloaded: boolean;
+  backup_path: string | null;
+}
+
+// -- Projects & deployments -------------------------------------------------
+
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  description: string;
+  server_id: string;
+  repo_url: string;
+  branch: string;
+  /** Absolute directory on the server; steps may not write outside it. */
+  deploy_path: string;
+  /** JSON array of deployment steps, each validated by Rust before saving. */
+  commands_json: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DeploymentRecord {
+  id: string;
+  project_id: string;
+  project_name: string;
+  server_id: string;
+  server_name: string;
+  status: string;
+  trigger_source: string;
+  branch: string;
+  commit_sha: string;
+  started_at: number | null;
+  finished_at: number | null;
+  duration_ms: number | null;
+  log: string;
+  error_message: string | null;
+  created_at: number;
+}
+
+export const DEPLOY_STATUSES = {
+  running: { label: "进行中", tone: "text-accent" },
+  success: { label: "成功", tone: "text-success" },
+  failed: { label: "失败", tone: "text-danger" },
+} as const;
+
+export function deployStatusLabel(status: string): string {
+  return DEPLOY_STATUSES[status as keyof typeof DEPLOY_STATUSES]?.label ?? status;
+}
+
+/** Parses the stored JSON steps. Returns `[]` when the record is malformed. */
+export function projectSteps(project: ProjectRecord): string[] {
+  try {
+    const parsed: unknown = JSON.parse(project.commands_json);
+    return Array.isArray(parsed) ? parsed.filter((step): step is string => typeof step === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 export const CREDENTIAL_TYPES = [
   { value: "password", label: "密码" },
   { value: "private_key", label: "私钥" },
@@ -457,4 +649,85 @@ export const opsApi = {
   monitorProcesses: (sessionId: string) => invoke<ProcessInfo[]>("monitor_processes", { sessionId }),
   monitorSnapshot: (sessionId: string) =>
     invoke<MonitorSnapshot>("monitor_snapshot", { sessionId }),
+
+  // -- Services (systemd) ---------------------------------------------------
+  serviceList: (sessionId: string) => invoke<ServiceUnit[]>("service_list", { sessionId }),
+  /**
+   * Start / stop / restart / reload / enable / disable.
+   *
+   * Only the fixed verb and a validated unit name are sent — the command
+   * string itself is built in Rust.
+   */
+  serviceAction: (sessionId: string, action: ServiceActionName, unit: string) =>
+    invoke<string>("service_action", { sessionId, action, unit }),
+  serviceStatus: (sessionId: string, unit: string) =>
+    invoke<string>("service_status", { sessionId, unit }),
+
+  // -- Log centre (journald) ------------------------------------------------
+  journalQuery: (args: {
+    sessionId: string;
+    unit?: string | null;
+    lines: number;
+    priority?: number | null;
+  }) =>
+    invoke<JournalEntry[]>("journal_query", {
+      sessionId: args.sessionId,
+      unit: args.unit ?? null,
+      lines: args.lines,
+      priority: args.priority ?? null,
+    }),
+  journalDiskUsage: (sessionId: string) =>
+    invoke<JournalDiskUsage>("journal_disk_usage", { sessionId }),
+
+  // -- Docker ---------------------------------------------------------------
+  dockerSnapshot: (sessionId: string) => invoke<DockerSnapshot>("docker_snapshot", { sessionId }),
+  dockerLogs: (sessionId: string, container: string, lines: number) =>
+    invoke<string>("docker_logs", { sessionId, container, lines }),
+  dockerContainerAction: (
+    sessionId: string,
+    action: ContainerActionName,
+    container: string,
+  ) => invoke<string>("docker_container_action", { sessionId, action, container }),
+  dockerImageRemove: (sessionId: string, image: string) =>
+    invoke<string>("docker_image_remove", { sessionId, image }),
+  dockerPrune: (sessionId: string) => invoke<string>("docker_prune", { sessionId }),
+
+  // -- Nginx ----------------------------------------------------------------
+  nginxSites: (sessionId: string) => invoke<NginxSite[]>("nginx_sites", { sessionId }),
+  nginxConfig: (sessionId: string, path: string) =>
+    invoke<string>("nginx_config", { sessionId, path }),
+  /** Writes, validates, and reloads only when the config tests clean. */
+  nginxSaveConfig: (sessionId: string, path: string, content: string) =>
+    invoke<NginxSaveResult>("nginx_save_config", { sessionId, path, content }),
+  nginxTest: (sessionId: string) => invoke<NginxTestResult>("nginx_test", { sessionId }),
+  nginxReload: (sessionId: string) => invoke<string>("nginx_reload", { sessionId }),
+  nginxSetSiteEnabled: (sessionId: string, site: string, enable: boolean) =>
+    invoke<string>("nginx_set_site_enabled", { sessionId, site, enable }),
+
+  // -- Projects & deployments -----------------------------------------------
+  projectList: () => invoke<ProjectRecord[]>("project_list"),
+  projectGet: (id: string) => invoke<ProjectRecord | null>("project_get", { id }),
+  projectSave: (project: ProjectRecord) => invoke<ProjectRecord>("project_save", { project }),
+  projectDelete: (id: string) => invoke<number>("project_delete", { id }),
+
+  deploymentList: (projectId?: string, limit = 50) =>
+    invoke<DeploymentRecord[]>("deployment_list", { projectId: projectId ?? null, limit }),
+  deploymentGet: (id: string) => invoke<DeploymentRecord | null>("deployment_get", { id }),
+  /**
+   * Runs a project's recorded steps. Only the project id crosses the bridge —
+   * the steps themselves come from SQLite and are re-validated in Rust.
+   *
+   * Pass `deploymentId` to subscribe to `deploy-progress-<id>` before the run
+   * starts, so no early output is missed.
+   */
+  deploymentExecute: (args: {
+    projectId: string;
+    sessionId: string;
+    deploymentId?: string;
+  }) =>
+    invoke<DeploymentRecord>("deployment_execute", {
+      projectId: args.projectId,
+      sessionId: args.sessionId,
+      deploymentId: args.deploymentId ?? null,
+    }),
 };

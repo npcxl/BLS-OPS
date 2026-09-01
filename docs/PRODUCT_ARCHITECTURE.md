@@ -9,7 +9,7 @@ BLS-OPS 是 Windows 优先的本地 SSH 运维工作台，路线遵循 SSH First
 - **React UI**：导航、服务器列表、标签页、终端呈现和交互状态。
 - **前端 API**：集中封装 Tauri `invoke`，组件不直接调用 IPC。
 - **Tauri Commands**：参数校验、状态访问和错误转换。
-- **领域服务**：Server、Credential、Known Host、SSH Session Manager、Monitor（只读 Linux 指标：固定命令表 + exec 通道 + 速率基线）。
+- **领域服务**：Server、Credential、Known Host、SSH Session Manager、Monitor（只读 Linux 指标：固定命令表 + exec 通道 + 速率基线）、Systemd / Journal / Docker / Nginx（P3 管理：固定命令 + exec 通道）、Safe（所有管理命令的唯一生成点）、Projects / Deployments。
 - **SQLite**：保存服务器元数据、引用和历史；绝不保存凭据明文。
 - **系统安全存储**：保存密码、私钥和私钥口令，后续接入 Windows Credential Manager。
 

@@ -9,6 +9,20 @@ import { Workspace } from "./Workspace";
 import { StatusBar } from "./StatusBar";
 import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
+import type { WorkspaceTabType } from "./types";
+
+/** The P3 management modules, as command-palette entries. */
+const MANAGE_KINDS: {
+  id: string;
+  label: string;
+  tabType: WorkspaceTabType;
+  description: string;
+}[] = [
+  { id: "service", label: "服务", tabType: "service", description: "systemd 服务：启动、停止、重启、自启" },
+  { id: "logs", label: "日志", tabType: "logs", description: "journalctl 日志查询与过滤" },
+  { id: "docker", label: "容器", tabType: "docker", description: "Docker 容器、镜像与资源占用" },
+  { id: "nginx", label: "网关", tabType: "nginx", description: "Nginx 站点配置、校验与重载" },
+];
 
 /**
  * Workbench shell — spec §6.
@@ -67,6 +81,27 @@ export function Workbench() {
         }),
     }));
 
+    // One entry per server × management module. Each opens its own
+    // non-interactive session, so a module never shares a shell with a terminal.
+    const managerActions: PaletteAction[] = servers.flatMap((server) =>
+      MANAGE_KINDS.map((kind) => ({
+        id: `${kind.id}-${server.id}`,
+        title: `${kind.label} ${server.name}`,
+        category: kind.label,
+        description: kind.description,
+        keywords: [kind.label, kind.id, server.host, server.name],
+        onSelect: () =>
+          openTab({
+            id: crypto.randomUUID(),
+            type: kind.tabType,
+            title: `${server.name} · ${kind.label}`,
+            subtitle: `${server.host}:${server.port}`,
+            serverId: server.id,
+            sessionId: crypto.randomUUID(),
+          }),
+      })),
+    );
+
     const recentActions: PaletteAction[] = sessions
       .filter((session, index, all) => session.server_id && all.findIndex((s) => s.server_id === session.server_id) === index)
       .slice(0, 5)
@@ -90,6 +125,7 @@ export function Workbench() {
     return [
       ...connectActions,
       ...monitorActions,
+      ...managerActions,
       ...recentActions,
       {
         id: "manage-servers",

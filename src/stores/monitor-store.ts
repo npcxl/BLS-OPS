@@ -13,7 +13,18 @@ import { opsApi, toErrorMessage, type MonitorSnapshot } from "@/api/ops-api";
 export const MONITOR_INTERVAL_MS = 5_000;
 /** How much history the trend charts keep. */
 export const MONITOR_HISTORY_WINDOW_MS = 30 * 60 * 1000;
-const MAX_SAMPLES = Math.ceil(MONITOR_HISTORY_WINDOW_MS / MONITOR_INTERVAL_MS);
+
+/**
+ * Sample budget for one refresh interval: whatever the cadence, the history
+ * must hold the full 30-minute window, so the cap is
+ * `ceil(30min / intervalMs)` — 900 samples at 2 s, 360 at 5 s, 60 at 30 s.
+ */
+export function maxSamplesFor(intervalMs: number): number {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return Math.ceil(MONITOR_HISTORY_WINDOW_MS / MONITOR_INTERVAL_MS);
+  }
+  return Math.ceil(MONITOR_HISTORY_WINDOW_MS / intervalMs);
+}
 
 export const MONITOR_INTERVALS = [
   { value: 2_000, label: "2 秒" },
@@ -204,12 +215,13 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
       const history = [...entry.history, sampleFrom(snapshot, at)].filter(
         (point) => at - point.at <= MONITOR_HISTORY_WINDOW_MS,
       );
-      // Trim from the front as well: a manual refresh storm must not grow the
-      // array without bound.
+      // The cap scales with the interval so every cadence covers the whole
+      // 30-minute window; slicing also keeps a manual refresh storm from
+      // growing the array without bound.
       finish({
         phase: "connected",
         snapshot,
-        history: history.slice(-MAX_SAMPLES),
+        history: history.slice(-maxSamplesFor(entry.intervalMs)),
         error: null,
         unsupportedReason: null,
         lastUpdatedAt: at,

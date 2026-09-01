@@ -1,18 +1,33 @@
 mod commands;
 mod db;
+/// Container and image management over the live session (P3-1.3).
+pub mod docker;
+/// journald log querying (P3-1.2).
+pub mod journal;
 mod keyring;
 /// Public so the integration tests in `tests/` can drive the real monitoring
 /// layer against an in-process SSH server.
 pub mod monitor;
+/// Nginx site and configuration management (P3-1.4).
+pub mod nginx;
+/// Shared helpers for running fixed commands on a session.
+pub mod remote;
+/// The security boundary: every management command is built here (P3-2.4).
+pub mod safe;
 /// Public so the integration tests in `tests/` can drive the real SSH layer.
 pub mod ssh;
 mod state;
+/// systemd service management (P3-1.1).
+pub mod systemd;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Native open/save dialogs: the file panel needs "upload" to work from
+        // a click, not only from a drag & drop.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let base_dir = dirs::data_local_dir()
                 .or_else(dirs::data_dir)
@@ -87,6 +102,34 @@ pub fn run() {
             commands::sftp_touch,
             commands::sftp_read_file,
             commands::sftp_write_file,
+            // services — systemd (P3-1.1)
+            commands::service_list,
+            commands::service_action,
+            commands::service_status,
+            // log centre — journald (P3-1.2)
+            commands::journal_query,
+            commands::journal_disk_usage,
+            // docker (P3-1.3)
+            commands::docker_snapshot,
+            commands::docker_logs,
+            commands::docker_container_action,
+            commands::docker_image_remove,
+            commands::docker_prune,
+            // nginx (P3-1.4)
+            commands::nginx_sites,
+            commands::nginx_config,
+            commands::nginx_save_config,
+            commands::nginx_test,
+            commands::nginx_reload,
+            commands::nginx_set_site_enabled,
+            // projects & deployments (P3-2.2, P3-2.3)
+            commands::project_list,
+            commands::project_get,
+            commands::project_save,
+            commands::project_delete,
+            commands::deployment_list,
+            commands::deployment_get,
+            commands::deployment_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

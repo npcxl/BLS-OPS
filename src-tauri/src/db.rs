@@ -40,9 +40,59 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
-const SCHEMA_SQL: &str = r#"
+/// Project and deployment tables (P3-2.2, P3-2.3).
+///
+/// A macro rather than a plain constant so the same literal can be spliced
+/// into `SCHEMA_SQL` (fresh databases) and re-run by `migrate()` (existing
+/// ones): both paths must produce exactly the same shape.
+macro_rules! p3_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    server_id TEXT NOT NULL,
+    repo_url TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT 'main',
+    deploy_path TEXT NOT NULL,
+    commands TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'idle',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deployments (
+    id TEXT PRIMARY KEY NOT NULL,
+    project_id TEXT NOT NULL,
+    project_name TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    server_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    trigger_source TEXT NOT NULL DEFAULT 'manual',
+    branch TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    started_at INTEGER,
+    finished_at INTEGER,
+    duration_ms INTEGER,
+    log TEXT NOT NULL DEFAULT '',
+    error_message TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployments_project
+    ON deployments (project_id, created_at DESC);
+"#
+    };
+}
+
+/// The P3 tables on their own, for `migrate()`.
+pub const P3_SCHEMA_SQL: &str = p3_schema_sql!();
+
+const SCHEMA_SQL: &str = concat!(
+    r#"
 CREATE TABLE IF NOT EXISTS servers (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
@@ -136,7 +186,9 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     ip_address TEXT,
     user_agent TEXT
 );
-"#;
+"#,
+    p3_schema_sql!()
+);
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -172,6 +224,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         add_column(conn, "servers", "last_connected_at", "INTEGER")?;
         add_column(conn, "credentials", "passphrase_ref", "TEXT")?;
         conn.pragma_update(None, "user_version", 2u32)?;
+    }
+    if version < 3 {
+        // Projects and deployments are additive, so the same
+        // `CREATE TABLE IF NOT EXISTS` block used for new databases works
+        // here: an upgraded database ends up byte-identical in shape.
+        conn.execute_batch(P3_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 3u32)?;
     }
     Ok(())
 }
@@ -259,6 +318,51 @@ pub struct CommandHistoryRecord {
     pub exit_code: Option<i64>,
     pub source: String,
     pub output: Option<String>,
+}
+
+/// A deployment target: one project on one server (P3-2.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRecord {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub server_id: String,
+    pub repo_url: String,
+    pub branch: String,
+    /// Absolute directory on the server. Deployment steps may not reference
+    /// paths outside it — enforced on save *and* on every run.
+    pub deploy_path: String,
+    /// JSON array of deployment steps. Each one is validated against the
+    /// allowlist in `safe::validate_deploy_step` before it is stored.
+    pub commands_json: String,
+    /// Mirrors the last deployment: `idle` | `success` | `failed` | `running`.
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One deployment run (P3-2.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploymentRecord {
+    pub id: String,
+    pub project_id: String,
+    /// Denormalised so history stays readable after a project is renamed.
+    pub project_name: String,
+    pub server_id: String,
+    pub server_name: String,
+    /// `pending` | `running` | `success` | `failed`
+    pub status: String,
+    /// What started it: `manual` today.
+    pub trigger_source: String,
+    pub branch: String,
+    pub commit_sha: String,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    /// Step-by-step output, appended as the run proceeds.
+    pub log: String,
+    pub error_message: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -798,6 +902,224 @@ pub fn list_audit_logs(conn: &Connection, limit: i64) -> Result<Vec<AuditLogReco
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// ---------------------------------------------------------------------------
+// Projects & deployments (P3-2.2, P3-2.3)
+// ---------------------------------------------------------------------------
+
+/// Deployment status values used across the app.
+pub const DEPLOY_RUNNING: &str = "running";
+pub const DEPLOY_SUCCESS: &str = "success";
+pub const DEPLOY_FAILED: &str = "failed";
+
+pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectRecord>> {
+    let mut stmt = conn.prepare("SELECT * FROM projects ORDER BY name ASC")?;
+    let rows = stmt.query_map([], project_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn get_project(conn: &Connection, id: &str) -> Result<Option<ProjectRecord>> {
+    let mut stmt = conn.prepare("SELECT * FROM projects WHERE id = ?1")?;
+    let mut rows = stmt.query_map([id], project_from_row)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+pub fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    Ok(ProjectRecord {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        description: row.get("description")?,
+        server_id: row.get("server_id")?,
+        repo_url: row.get("repo_url")?,
+        branch: row.get("branch")?,
+        deploy_path: row.get("deploy_path")?,
+        commands_json: row.get("commands")?,
+        status: row.get("status")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+pub fn insert_or_replace_project(conn: &Connection, project: &ProjectRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO projects (id, name, description, server_id, repo_url, branch, deploy_path, commands, status, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            description=excluded.description,
+            server_id=excluded.server_id,
+            repo_url=excluded.repo_url,
+            branch=excluded.branch,
+            deploy_path=excluded.deploy_path,
+            commands=excluded.commands,
+            status=excluded.status,
+            updated_at=excluded.updated_at
+        "#,
+        params![
+            project.id,
+            project.name,
+            project.description,
+            project.server_id,
+            project.repo_url,
+            project.branch,
+            project.deploy_path,
+            project.commands_json,
+            project.status,
+            project.created_at,
+            project.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Mirrors the last deployment outcome onto the project, so the list shows
+/// "failed" without loading the whole history.
+pub fn set_project_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE projects SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        params![status, AppDb::now(), id],
+    )?;
+    Ok(())
+}
+
+/// Removes a project together with its deployment history — history without
+/// its project would be an orphan the UI cannot explain.
+pub fn delete_project_cascade(conn: &Connection, id: &str) -> Result<i64> {
+    let deployments: i64 = conn
+        .prepare("SELECT COUNT(*) FROM deployments WHERE project_id = ?1")?
+        .query_row([id], |row| row.get(0))?;
+    conn.execute("DELETE FROM deployments WHERE project_id = ?1", [id])?;
+    conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+    Ok(deployments)
+}
+
+// -- deployments -------------------------------------------------------------
+
+pub fn insert_deployment(conn: &Connection, deployment: &DeploymentRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO deployments (id, project_id, project_name, server_id, server_name, status, trigger_source, branch, commit_sha, started_at, finished_at, duration_ms, log, error_message, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        "#,
+        params![
+            deployment.id,
+            deployment.project_id,
+            deployment.project_name,
+            deployment.server_id,
+            deployment.server_name,
+            deployment.status,
+            deployment.trigger_source,
+            deployment.branch,
+            deployment.commit_sha,
+            deployment.started_at,
+            deployment.finished_at,
+            deployment.duration_ms,
+            deployment.log,
+            deployment.error_message,
+            deployment.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Appends to the log and updates status/timing. Called repeatedly as a run
+/// progresses so a crash mid-deploy still leaves a record.
+pub fn update_deployment_progress(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    log: &str,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    error_message: Option<&str>,
+) -> Result<()> {
+    let duration_ms = match (started_at, finished_at) {
+        (Some(started), Some(finished)) => Some((finished - started).max(0)),
+        _ => None,
+    };
+    conn.execute(
+        r#"
+        UPDATE deployments
+        SET status = ?1, log = ?2, started_at = COALESCE(?3, started_at),
+            finished_at = ?4, duration_ms = ?5, error_message = ?6
+        WHERE id = ?7
+        "#,
+        params![
+            status,
+            log,
+            started_at,
+            finished_at,
+            duration_ms,
+            error_message,
+            id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_deployment(conn: &Connection, id: &str) -> Result<Option<DeploymentRecord>> {
+    let mut stmt = conn.prepare("SELECT * FROM deployments WHERE id = ?1")?;
+    let mut rows = stmt.query_map([id], deployment_from_row)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+/// Deployment history, newest first. `project_id` narrows it to one project.
+pub fn list_deployments(
+    conn: &Connection,
+    project_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<DeploymentRecord>> {
+    // Collect inside the branch: `MappedRows` borrows the statement, so it
+    // must not outlive the branch that owns it.
+    match project_id {
+        Some(project_id) => {
+            let mut stmt = conn.prepare(
+                "SELECT * FROM deployments WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let mut records = Vec::new();
+            for row in stmt.query_map(params![project_id, limit], deployment_from_row)? {
+                records.push(row?);
+            }
+            Ok(records)
+        }
+        None => {
+            let mut stmt =
+                conn.prepare("SELECT * FROM deployments ORDER BY created_at DESC LIMIT ?1")?;
+            let mut records = Vec::new();
+            for row in stmt.query_map([limit], deployment_from_row)? {
+                records.push(row?);
+            }
+            Ok(records)
+        }
+    }
+}
+
+pub fn deployment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeploymentRecord> {
+    Ok(DeploymentRecord {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        project_name: row.get("project_name")?,
+        server_id: row.get("server_id")?,
+        server_name: row.get("server_name")?,
+        status: row.get("status")?,
+        trigger_source: row.get("trigger_source")?,
+        branch: row.get("branch")?,
+        commit_sha: row.get("commit_sha")?,
+        started_at: row.get("started_at")?,
+        finished_at: row.get("finished_at")?,
+        duration_ms: row.get("duration_ms")?,
+        log: row.get("log")?,
+        error_message: row.get("error_message")?,
+        created_at: row.get("created_at")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +1147,42 @@ mod tests {
             status: "idle".to_string(),
             created_at: 1,
             updated_at: 1,
+        }
+    }
+
+    fn project(id: &str, name: &str, server_id: &str) -> ProjectRecord {
+        ProjectRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            server_id: server_id.to_string(),
+            repo_url: "https://github.com/acme/app.git".to_string(),
+            branch: "main".to_string(),
+            deploy_path: "/var/www/app".to_string(),
+            commands_json: r#"["git pull --ff-only","npm run build"]"#.to_string(),
+            status: "idle".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn deployment(id: &str, project_id: &str) -> DeploymentRecord {
+        DeploymentRecord {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            project_name: "app".to_string(),
+            server_id: "s1".to_string(),
+            server_name: "web".to_string(),
+            status: "pending".to_string(),
+            trigger_source: "manual".to_string(),
+            branch: "main".to_string(),
+            commit_sha: String::new(),
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            log: String::new(),
+            error_message: None,
+            created_at: 2,
         }
     }
 
@@ -1037,5 +1395,198 @@ mod tests {
 
         assert_eq!(get_server(&conn, "s1").unwrap().unwrap().group_id, None);
         assert!(list_server_groups(&conn).unwrap().is_empty());
+    }
+
+    // -- projects ------------------------------------------------------------
+
+    #[test]
+    fn a_project_round_trips_with_its_steps() {
+        let conn = test_db();
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+
+        let loaded = get_project(&conn, "p1").unwrap().unwrap();
+        assert_eq!(loaded.name, "app");
+        assert_eq!(loaded.deploy_path, "/var/www/app");
+        assert_eq!(loaded.branch, "main");
+
+        // Steps are stored as a JSON array, not flattened into a string.
+        let steps: Vec<String> = serde_json::from_str(&loaded.commands_json).unwrap();
+        assert_eq!(steps, vec!["git pull --ff-only", "npm run build"]);
+    }
+
+    #[test]
+    fn saving_a_project_twice_updates_in_place() {
+        let conn = test_db();
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+        let mut renamed = project("p1", "app-v2", "s1");
+        renamed.branch = "release".to_string();
+        insert_or_replace_project(&conn, &renamed).unwrap();
+
+        let all = list_projects(&conn).unwrap();
+        assert_eq!(all.len(), 1, "重复保存不能产生第二条记录");
+        assert_eq!(all[0].name, "app-v2");
+        assert_eq!(all[0].branch, "release");
+    }
+
+    #[test]
+    fn projects_are_listed_by_name() {
+        let conn = test_db();
+        insert_or_replace_project(&conn, &project("p2", "zeta", "s1")).unwrap();
+        insert_or_replace_project(&conn, &project("p1", "alpha", "s1")).unwrap();
+
+        let names: Vec<String> = list_projects(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|project| project.name)
+            .collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn deleting_a_project_takes_its_deployments_with_it() {
+        let conn = test_db();
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+        insert_deployment(&conn, &deployment("d1", "p1")).unwrap();
+        insert_deployment(&conn, &deployment("d2", "p1")).unwrap();
+        // Another project's history must survive.
+        insert_or_replace_project(&conn, &project("p2", "other", "s1")).unwrap();
+        insert_deployment(&conn, &deployment("d3", "p2")).unwrap();
+
+        let removed = delete_project_cascade(&conn, "p1").unwrap();
+        assert_eq!(removed, 2);
+        assert!(get_project(&conn, "p1").unwrap().is_none());
+        assert_eq!(list_deployments(&conn, None, 100).unwrap().len(), 1);
+    }
+
+    // -- deployments ---------------------------------------------------------
+
+    #[test]
+    fn a_deployment_records_its_outcome() {
+        let conn = test_db();
+        insert_deployment(&conn, &deployment("d1", "p1")).unwrap();
+
+        update_deployment_progress(
+            &conn,
+            "d1",
+            DEPLOY_RUNNING,
+            "$ git pull --ff-only\n",
+            Some(1000),
+            None,
+            None,
+        )
+        .unwrap();
+        update_deployment_progress(
+            &conn,
+            "d1",
+            DEPLOY_SUCCESS,
+            "$ git pull --ff-only\nAlready up to date.\n",
+            Some(1000),
+            Some(4500),
+            None,
+        )
+        .unwrap();
+
+        let loaded = get_deployment(&conn, "d1").unwrap().unwrap();
+        assert_eq!(loaded.status, DEPLOY_SUCCESS);
+        assert_eq!(loaded.duration_ms, Some(3500));
+        assert!(loaded.log.contains("Already up to date."));
+        assert_eq!(loaded.error_message, None);
+    }
+
+    #[test]
+    fn a_failed_deployment_keeps_the_error() {
+        let conn = test_db();
+        insert_deployment(&conn, &deployment("d1", "p1")).unwrap();
+        update_deployment_progress(
+            &conn,
+            "d1",
+            DEPLOY_FAILED,
+            "$ npm run build\n",
+            Some(10),
+            Some(20),
+            Some("npm: command not found"),
+        )
+        .unwrap();
+
+        let loaded = get_deployment(&conn, "d1").unwrap().unwrap();
+        assert_eq!(loaded.status, DEPLOY_FAILED);
+        assert_eq!(
+            loaded.error_message.as_deref(),
+            Some("npm: command not found")
+        );
+        // The partial log is what makes a failure diagnosable.
+        assert!(loaded.log.contains("npm run build"));
+    }
+
+    #[test]
+    fn deployment_history_is_newest_first_and_filterable() {
+        let conn = test_db();
+        for (id, project_id, created) in [("d1", "p1", 10i64), ("d2", "p2", 30), ("d3", "p1", 20)] {
+            let mut record = deployment(id, project_id);
+            record.created_at = created;
+            insert_deployment(&conn, &record).unwrap();
+        }
+
+        let all = list_deployments(&conn, None, 10).unwrap();
+        assert_eq!(
+            all.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            vec!["d2", "d3", "d1"]
+        );
+
+        let only_p1 = list_deployments(&conn, Some("p1"), 10).unwrap();
+        assert_eq!(only_p1.len(), 2);
+        assert!(only_p1.iter().all(|d| d.project_id == "p1"));
+    }
+
+    #[test]
+    fn migration_v3_adds_the_p3_tables_to_an_existing_database() {
+        // A database created before P3 has no projects table at all.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS servers (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                credential_id TEXT,
+                group_id TEXT,
+                tags TEXT NOT NULL DEFAULT '[]',
+                proxy_jump_id TEXT,
+                favorite INTEGER NOT NULL DEFAULT 0,
+                last_connected_at INTEGER,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 2u32).unwrap();
+
+        migrate(&conn).unwrap();
+
+        // The tables now exist and are usable.
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+        assert_eq!(list_projects(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migration_keeps_p3_tables_on_every_start() {
+        let conn = test_db();
+        // Running twice (every app start) must not fail or duplicate anything.
+        migrate(&conn).unwrap();
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(list_projects(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn project_status_mirrors_the_last_deployment() {
+        let conn = test_db();
+        insert_or_replace_project(&conn, &project("p1", "app", "s1")).unwrap();
+        set_project_status(&conn, "p1", DEPLOY_FAILED).unwrap();
+        assert_eq!(get_project(&conn, "p1").unwrap().unwrap().status, "failed");
     }
 }

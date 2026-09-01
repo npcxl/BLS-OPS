@@ -6,10 +6,12 @@ import {
   Globe,
   ListTodo,
   Rocket,
+  ScrollText,
   Server,
   Settings,
   Sparkles,
   SquareTerminal,
+  SquareCheckBig,
 } from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { NavModule } from "@/workbench/types";
@@ -30,6 +32,8 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: "ssh", label: "终端", icon: SquareTerminal },
   { id: "servers", label: "服务器", icon: Server },
+  { id: "services", label: "服务", icon: SquareCheckBig },
+  { id: "logs", label: "日志", icon: ScrollText },
   { id: "files", label: "文件", icon: Files },
   { id: "projects", label: "项目", icon: Boxes },
   { id: "deploy", label: "部署", icon: Rocket },

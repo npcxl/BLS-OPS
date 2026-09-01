@@ -1,4 +1,13 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -15,7 +24,8 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { ContextMenu, type ContextMenuState, contextMenuStateAt } from "@/components/ui/context-menu";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
@@ -119,9 +129,10 @@ type EditorTarget = { path: string; name: string; language?: ReturnType<typeof f
  * never from shell commands, never from mock data. The panel is keyed by
  * session id, so tabs never see each other's directory state.
  *
- * Operations: browse, rename, copy, delete (recursive), mkdir, create file,
- * drag & drop upload into the current directory, and double-click editing of
- * text/code files (SQL, conf, JS, Java, …) with syntax highlighting.
+ * Operations: browse, rename, copy, delete (recursive, confirmed), mkdir,
+ * create file, upload (toolbar button or drag & drop into the current
+ * directory), and double-click editing of text/code files (SQL, conf, JS,
+ * Java, …) with syntax highlighting.
  */
 export function RemoteFilePanel({ sessionId, connected, follow, onClose }: RemoteFilePanelProps) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
@@ -131,13 +142,25 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
   const [status, setStatus] = useState<PanelStatus>({ state: "idle" });
   const [selected, setSelected] = useState<string | null>(null);
-  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const menu = useContextMenu();
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const [dragging, setDraggingState] = useState(false);
   const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+
+  /**
+   * `over` fires on every mouse move while dragging. Writing the highlight
+   * through a ref keeps that from turning into a setState — and a full
+   * re-render of the file list — dozens of times per second.
+   */
+  const draggingRef = useRef(false);
+  const setDragging = useCallback((next: boolean) => {
+    if (draggingRef.current === next) return;
+    draggingRef.current = next;
+    setDraggingState(next);
+  }, []);
 
   const cwd = nav.index >= 0 && nav.index < nav.stack.length ? nav.stack[nav.index] : null;
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
@@ -371,43 +394,94 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     [cwd, load, sessionId],
   );
 
+  // The drag listener is registered once, so it calls through this ref rather
+  // than closing over a directory that is about to change.
+  const uploadRef = useRef(uploadFiles);
+  uploadRef.current = uploadFiles;
+
+  /** The panel element, used to hit-test OS drag events. */
+  const panelRef = useRef<HTMLElement>(null);
+
   useEffect(() => {
     if (!uploadNotice) return;
     const timer = window.setTimeout(() => setUploadNotice(null), 4500);
     return () => window.clearTimeout(timer);
   }, [uploadNotice]);
 
+  // Upload from a click: opens the OS file picker, because drag & drop is not
+  // discoverable and does not work at all for keyboard-only users. The native
+  // dialog returns absolute local paths — exactly what `sftp_upload` wants.
+  const [picking, setPicking] = useState(false);
+  const pickFilesToUpload = useCallback(async () => {
+    if (!cwd || picking) return;
+    setPicking(true);
+    try {
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const chosen = await openDialog({
+        multiple: true,
+        directory: false,
+        title: `上传到 ${cwd}`,
+      });
+      if (!chosen) return; // cancelled
+      const paths = Array.isArray(chosen) ? chosen : [chosen];
+      if (paths.length === 0) return;
+      await uploadFiles(paths);
+    } catch (cause) {
+      setStatus({ state: "error", message: toErrorMessage(cause) });
+    } finally {
+      setPicking(false);
+    }
+  }, [cwd, picking, uploadFiles]);
+
   // Drag & drop from the local machine. Tauri intercepts the OS drop and hands
   // over absolute paths; DOM drop events would only give opaque File objects.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
-    void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
-      getCurrentWebview()
-        .onDragDropEvent((event) => {
-          if (cancelled) return;
-          const payload = event.payload;
-          if (payload.type === "enter") {
-            if (payload.paths.length > 0) setDragging(true);
-          } else if (payload.type === "over") {
-            setDragging(true);
-          } else if (payload.type === "leave") {
-            setDragging(false);
-          } else if (payload.type === "drop") {
-            setDragging(false);
-            void uploadFiles(payload.paths);
-          }
-        })
-        .then((fn) => {
-          if (cancelled) fn();
-          else unlisten = fn;
-        }),
-    );
+
+    void (async () => {
+      const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
+        import("@tauri-apps/api/webview"),
+        import("@tauri-apps/api/window"),
+      ]);
+      if (cancelled) return;
+      // `over` reports physical pixels; the panel is measured in CSS pixels.
+      const scale = await getCurrentWindow().scaleFactor();
+      if (cancelled) return;
+
+      const el = panelRef.current;
+      // The event goes to the whole webview, so hit-test it: dragging over the
+      // terminal or another pane must not highlight this panel and must not
+      // upload into its directory.
+      const hit = (position: { x: number; y: number }) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const x = position.x / scale;
+        const y = position.y / scale;
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      };
+
+      const handler = await getCurrentWebview().onDragDropEvent((event) => {
+        if (cancelled) return;
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragging(hit(payload.position));
+        } else if (payload.type === "leave") {
+          setDragging(false);
+        } else if (payload.type === "drop") {
+          setDragging(false);
+          if (hit(payload.position)) void uploadRef.current(payload.paths);
+        }
+      });
+      if (cancelled) handler();
+      else unlisten = handler;
+    })();
+
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [uploadFiles]);
+  }, [setDragging]);
 
   // -- interactions ----------------------------------------------------------
 
@@ -447,38 +521,79 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     }
   };
 
-  const openEntryMenu = (event: React.MouseEvent, entry: RemoteFileEntry) => {
-    event.preventDefault();
-    setSelected(entry.path);
-    setMenu(
-      contextMenuStateAt(event, [
-        { id: "open", label: "打开", onSelect: () => openEntry(entry) },
-        { id: "sep1", separator: true },
-        { id: "rename", label: "重命名", icon: Pencil, onSelect: () => renameEntry(entry) },
-        { id: "copy-entry", label: "创建副本", icon: Copy, onSelect: () => copyEntry(entry) },
-        {
-          id: "copy-path",
-          label: "复制路径",
-          icon: ClipboardCopy,
-          onSelect: () => void navigator.clipboard.writeText(entry.path),
-        },
-        { id: "sep2", separator: true },
-        { id: "delete", label: "删除", icon: Trash2, danger: true, onSelect: () => removeEntry(entry) },
-      ]),
-    );
-  };
+  /**
+   * The row currently being right-clicked. The menu factory is created once
+   * per render but only reads this at click time, so it stays stable.
+   */
+  const contextTargetRef = useRef<RemoteFileEntry | null>(null);
 
-  const openBackgroundMenu = (event: React.MouseEvent) => {
-    event.preventDefault();
-    setMenu(
-      contextMenuStateAt(event, [
-        { id: "mkdir", label: "新建文件夹", icon: FolderPlus, onSelect: createFolder },
-        { id: "touch", label: "新建文件", icon: FilePlus2, onSelect: createFile },
-        { id: "sep", separator: true },
-        { id: "refresh", label: "刷新", icon: RefreshCw, onSelect: refresh },
-      ]),
-    );
-  };
+  const entryMenu = menu.onContextMenu(() => {
+    const entry = contextTargetRef.current;
+    if (!entry) return [];
+    const isDir = entry.kind === "directory";
+    return [
+      { id: "open", label: isDir ? "打开" : "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
+      { id: "sep1", separator: true },
+      { id: "rename", label: "重命名", icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
+      { id: "duplicate", label: "创建副本", icon: Copy, onSelect: () => copyEntry(entry) },
+      {
+        id: "copy-path",
+        label: "复制完整路径",
+        icon: ClipboardCopy,
+        onSelect: () => void navigator.clipboard.writeText(entry.path),
+      },
+      {
+        id: "copy-name",
+        label: "复制文件名",
+        icon: ClipboardCopy,
+        onSelect: () => void navigator.clipboard.writeText(entry.name),
+      },
+      { id: "sep2", separator: true },
+      {
+        id: "delete",
+        label: "删除",
+        icon: Trash2,
+        hint: "Delete",
+        danger: true,
+        onSelect: () => removeEntry(entry),
+      },
+    ];
+  });
+
+  const backgroundMenu = menu.onContextMenu(() => {
+    // No row is the subject of a background menu.
+    contextTargetRef.current = null;
+    return [
+      {
+        id: "upload",
+        label: "上传文件…",
+        icon: Upload,
+        disabled: !cwd || picking,
+        onSelect: () => void pickFilesToUpload(),
+      },
+      { id: "sep1", separator: true },
+      { id: "mkdir", label: "新建文件夹", icon: FolderPlus, disabled: !cwd, onSelect: createFolder },
+      { id: "touch", label: "新建文件", icon: FilePlus2, disabled: !cwd, onSelect: createFile },
+      { id: "sep2", separator: true },
+      { id: "refresh", label: "刷新", icon: RefreshCw, disabled: !cwd, onSelect: refresh },
+    ];
+  });
+
+  // Kept in refs so the callbacks handed to memoised rows never change.
+  const entryMenuRef = useRef(entryMenu);
+  entryMenuRef.current = entryMenu;
+
+  const handleRowContextMenu = useCallback((event: ReactMouseEvent, entry: RemoteFileEntry) => {
+    setSelected(entry.path);
+    contextTargetRef.current = entry;
+    entryMenuRef.current(event);
+  }, []);
+
+  const handleRowSelect = useCallback((entry: RemoteFileEntry) => setSelected(entry.path), []);
+
+  const openEntryRef = useRef(openEntry);
+  openEntryRef.current = openEntry;
+  const handleRowOpen = useCallback((entry: RemoteFileEntry) => openEntryRef.current(entry), []);
 
   // Breadcrumb segments for the current path.
   const crumbs: { label: string; path: string }[] = [];
@@ -493,6 +608,7 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
 
   return (
     <aside
+      ref={panelRef}
       className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-line bg-surface-1"
       style={{ width }}
       aria-label="远程文件"
@@ -518,6 +634,13 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         <PanelButton label="刷新" icon={RefreshCw} disabled={!cwd} onClick={refresh} />
         <PanelButton label="新建文件夹" icon={FolderPlus} disabled={!cwd} onClick={createFolder} />
         <PanelButton label="新建文件" icon={FilePlus2} disabled={!cwd} onClick={createFile} />
+        <PanelButton
+          label="上传文件到当前目录"
+          icon={picking ? Loader2 : Upload}
+          disabled={!cwd || picking}
+          className={picking ? "animate-spin" : undefined}
+          onClick={() => void pickFilesToUpload()}
+        />
         <PanelButton label="折叠面板" icon={Pause} onClick={onClose} />
       </div>
 
@@ -566,27 +689,14 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
 
       <div
         tabIndex={0}
-        className={cn(
-          "min-h-0 flex-1 overflow-y-auto outline-none",
-          dragging && "ring-2 ring-inset ring-accent/60 bg-accent/5",
-        )}
+        className="min-h-0 flex-1 overflow-y-auto outline-none"
         onKeyDown={onKeyDown}
-        onContextMenu={openBackgroundMenu}
+        onContextMenu={backgroundMenu}
         onClick={(event) => {
           // Clicking empty space clears the selection (rows stop propagation).
           if (event.target === event.currentTarget) setSelected(null);
         }}
       >
-        {dragging && (
-          <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[12px] border-2 border-dashed border-accent bg-accent/10 backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-2 rounded-[10px] bg-surface-1/90 px-5 py-4 text-11 text-accent shadow-lg">
-              <Upload size={20} />
-              <span className="font-medium">松开以上传到当前目录</span>
-              <span className="text-fg-subtle">支持多个文件</span>
-            </div>
-          </div>
-        )}
-
         {uploads && (
           <div className="flex items-center gap-2 border-b border-line bg-accent/10 px-3 py-2 text-11 text-fg">
             <Loader2 size={12} className="animate-spin" />
@@ -643,81 +753,57 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
 
         {status.state === "ready" && (
           <div className="divide-y divide-line/50">
-            {entries.map((entry) => {
-              const isSelected = entry.path === selected;
-              return (
-                <button
-                  key={entry.path}
-                  type="button"
-                  data-kind={entry.kind}
-                  className={cn(
-                    "group flex w-full items-center gap-2 px-3 py-1.5 text-left",
-                    isSelected ? "bg-accent/15" : "hover:bg-surface-hover/70",
-                  )}
-                  onClick={() => setSelected(entry.path)}
-                  onDoubleClick={() => openEntry(entry)}
-                  onContextMenu={(event) => openEntryMenu(event, entry)}
-                >
-                  <EntryIcon entry={entry} />
-                  <span className="min-w-0 flex-1">
-                    <span
-                      className={cn(
-                        "block truncate text-12",
-                        entry.kind === "directory" ? "text-fg" : "text-fg-muted",
-                      )}
-                      title={entry.path}
-                    >
-                      {entry.name}
-                      {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
-                    </span>
-                    <span className="block truncate text-10 text-fg-subtle">
-                      {entry.kind === "directory" ? "文件夹" : formatSize(entry.size)} ·{" "}
-                      {formatTime(entry.modified_at)}
-                    </span>
-                  </span>
-                  {entry.kind === "directory" && (
-                    <CornerDownLeft
-                      size={11}
-                      className="shrink-0 text-fg-subtle opacity-0 group-hover:opacity-100"
-                    />
-                  )}
-                </button>
-              );
-            })}
+            {entries.map((entry) => (
+              <FileRow
+                key={entry.path}
+                entry={entry}
+                selected={entry.path === selected}
+                onSelect={handleRowSelect}
+                onOpen={handleRowOpen}
+                onContextMenu={handleRowContextMenu}
+              />
+            ))}
           </div>
         )}
       </div>
+
+      {/* Drop overlay lives outside the scroll container: inside it the
+          highlight would scroll away with the file list and sit off-screen. */}
+      {dragging && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-2">
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-[12px] border-2 border-dashed border-accent bg-accent/10 backdrop-blur-[2px]">
+            <div className="flex flex-col items-center gap-2 rounded-[10px] bg-surface-1/95 px-5 py-4 text-11 text-accent shadow-lg">
+              <Upload size={20} />
+              <span className="font-medium">松开以上传到当前目录</span>
+              <span className="truncate text-fg-subtle">{cwd ?? ""}</span>
+              <span className="text-fg-subtle">支持多个文件与文件夹</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex h-6 shrink-0 items-center justify-between border-t border-line px-2 text-10 text-fg-subtle">
         <span className="truncate">{cwd ?? "—"}</span>
         <span className="shrink-0">SFTP</span>
       </div>
 
-      {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
+      {/* Names the row the menu applies to — set by the row's context handler
+          and cleared by the background one. */}
+      <ContextMenu {...menu.props} title={contextTargetRef.current?.name ?? undefined} />
 
-      {deleteTarget && (
-        <Modal
-          open
-          width={360}
-          title={`删除${deleteTarget.kind === "directory" ? "文件夹" : "文件"}`}
-          description={`确定删除“${deleteTarget.name}”？此操作不可撤销。`}
-          onClose={() => setDeleteTarget(null)}
-          footer={
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>
-                取消
-              </Button>
-              <Button variant="danger" size="sm" onClick={confirmRemove}>
-                确认删除
-              </Button>
-            </>
-          }
-        >
-          <p className="text-12 text-fg-muted">
-            {deleteTarget.kind === "directory" ? "文件夹内的全部内容也会被删除。" : "文件内容将被永久删除。"}
-          </p>
-        </Modal>
-      )}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`删除${deleteTarget?.kind === "directory" ? "文件夹" : "文件"}`}
+        description={
+          deleteTarget?.kind === "directory"
+            ? `确定删除文件夹“${deleteTarget?.name ?? ""}”？文件夹内的全部内容也会一并删除，此操作不可撤销。`
+            : `确定删除文件“${deleteTarget?.name ?? ""}”？此操作不可撤销。`
+        }
+        confirmLabel="删除"
+        danger
+        onConfirm={confirmRemove}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       {nameDialog && (
         <NamePromptModal
@@ -753,6 +839,63 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     </aside>
   );
 }
+
+/**
+ * One row of the listing. Memoised because the list can hold thousands of
+ * entries: hovering, selecting and right-clicking must not re-render all of
+ * them. Every callback it receives is stable.
+ */
+const FileRow = memo(function FileRow({
+  entry,
+  selected,
+  onSelect,
+  onOpen,
+  onContextMenu,
+}: {
+  entry: RemoteFileEntry;
+  selected: boolean;
+  onSelect: (entry: RemoteFileEntry) => void;
+  onOpen: (entry: RemoteFileEntry) => void;
+  onContextMenu: (event: ReactMouseEvent, entry: RemoteFileEntry) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-kind={entry.kind}
+      className={cn(
+        "group flex w-full items-center gap-2 px-3 py-1.5 text-left",
+        selected ? "bg-accent/15" : "hover:bg-surface-hover/70",
+      )}
+      onClick={() => onSelect(entry)}
+      onDoubleClick={() => onOpen(entry)}
+      onContextMenu={(event) => onContextMenu(event, entry)}
+    >
+      <EntryIcon entry={entry} />
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block truncate text-12",
+            entry.kind === "directory" ? "text-fg" : "text-fg-muted",
+          )}
+          title={entry.path}
+        >
+          {entry.name}
+          {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
+        </span>
+        <span className="block truncate text-10 text-fg-subtle">
+          {entry.kind === "directory" ? "文件夹" : formatSize(entry.size)} ·{" "}
+          {formatTime(entry.modified_at)}
+        </span>
+      </span>
+      {entry.kind === "directory" && (
+        <CornerDownLeft
+          size={11}
+          className="shrink-0 text-fg-subtle opacity-0 group-hover:opacity-100"
+        />
+      )}
+    </button>
+  );
+});
 
 /** Rejects empty names and anything containing a path separator. */
 function validateName(name: string): string | null {

@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { Columns2, Plus, Rows2, X } from "lucide-react";
-import { ContextMenu, type ContextMenuState, contextMenuStateAt } from "@/components/ui/context-menu";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useSessionStore, type SessionStatus } from "@/stores/session-store";
 import type { WorkbenchPane, WorkspaceTab } from "@/workbench/types";
@@ -38,31 +37,27 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const openTab = useWorkbenchStore((s) => s.openTab);
 
-  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const menu = useContextMenu();
 
-  const openTabMenu = (e: React.MouseEvent, tab: WorkspaceTab) => {
-    e.preventDefault();
-    setMenu(
-      contextMenuStateAt(e, [
-        { id: "close", label: "关闭", onSelect: () => closeTab(pane.id, tab.id) },
-        {
-          id: "close-others",
-          label: "关闭其他",
-          disabled: pane.tabs.length <= 1,
-          onSelect: () => closeOtherTabs(pane.id, tab.id),
-        },
-        {
-          id: "close-all",
-          label: "全部关闭",
-          disabled: pane.tabs.length <= 1,
-          onSelect: () => closeAllTabs(pane.id),
-        },
-        { id: "sep-1", separator: true },
-        { id: "split-v", label: "垂直分栏", icon: Columns2, onSelect: () => splitPane(pane.id, "horizontal") },
-        { id: "split-h", label: "水平分栏", icon: Rows2, onSelect: () => splitPane(pane.id, "vertical") },
-      ]),
-    );
-  };
+  const tabMenu = (tab: WorkspaceTab) =>
+    menu.onContextMenu(() => [
+      { id: "close", label: "关闭", onSelect: () => closeTab(pane.id, tab.id) },
+      {
+        id: "close-others",
+        label: "关闭其他",
+        disabled: pane.tabs.length <= 1,
+        onSelect: () => closeOtherTabs(pane.id, tab.id),
+      },
+      {
+        id: "close-all",
+        label: "全部关闭",
+        disabled: pane.tabs.length <= 1,
+        onSelect: () => closeAllTabs(pane.id),
+      },
+      { id: "sep-1", separator: true },
+      { id: "split-v", label: "垂直分栏", icon: Columns2, onSelect: () => splitPane(pane.id, "horizontal") },
+      { id: "split-h", label: "水平分栏", icon: Rows2, onSelect: () => splitPane(pane.id, "vertical") },
+    ]);
 
   return (
     <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
@@ -84,7 +79,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               onAuxClick={(e) => {
                 if (e.button === 1) closeTab(pane.id, tab.id);
               }}
-              onContextMenu={(e) => openTabMenu(e, tab)}
+              onContextMenu={tabMenu(tab)}
             >
               <TabStatus tab={tab} />
               <span className="truncate">{tab.title}</span>
@@ -115,7 +110,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
         <Plus size={14} />
       </button>
 
-      {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
+      <ContextMenu {...menu.props} />
     </div>
   );
 }

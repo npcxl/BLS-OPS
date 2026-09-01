@@ -20,6 +20,7 @@ const {
   useMonitorStore,
   MONITOR_HISTORY_WINDOW_MS,
   MONITOR_INTERVAL_MS,
+  maxSamplesFor,
   totalThroughput,
 } = await import("./monitor-store");
 
@@ -146,6 +147,77 @@ describe("monitor store", () => {
     expect(history).toHaveLength(1);
     expect(history[0].cpu).toBe(25);
   });
+
+  describe("history window per interval", () => {
+    // ceil(30min / intervalMs): every cadence must be able to hold the whole
+    // 30-minute window, however fast it polls.
+    it("allows at least 900 samples at the 2 second interval", () => {
+      expect(maxSamplesFor(2_000)).toBeGreaterThanOrEqual(900);
+    });
+
+    it("caps the 5 second interval at 360 samples", () => {
+      expect(maxSamplesFor(5_000)).toBe(360);
+    });
+
+    it("keeps 60 samples at the 30 second interval", () => {
+      expect(maxSamplesFor(30_000)).toBe(60);
+    });
+
+    it("covers the full 30 minute window at every cadence", () => {
+      for (const intervalMs of [2_000, 5_000, 10_000, 30_000]) {
+        expect(maxSamplesFor(intervalMs) * intervalMs).toBeGreaterThanOrEqual(
+          MONITOR_HISTORY_WINDOW_MS,
+        );
+      }
+    });
+  });
+
+  it.each([2_000, 5_000, 30_000])(
+    "holds the whole window at a %i cadence without growing unbounded",
+    async (intervalMs) => {
+      monitorSnapshot.mockResolvedValue(snapshot());
+      store().attach("tab-a", "session-a", "server-1");
+      store().setPhase("tab-a", "connected");
+      store().setInterval("tab-a", intervalMs);
+
+      // Stuff the history past the cap and past the window: stale points must
+      // go through the time filter, in-window overflow through the count cap.
+      const now = Date.now();
+      const total = maxSamplesFor(intervalMs) + 50;
+      const stale = Array.from({ length: 20 }, (_, index) => ({
+        at: now - MONITOR_HISTORY_WINDOW_MS - (20 - index) * intervalMs,
+        cpu: 1,
+        memory: 1,
+        download: 0,
+        upload: 0,
+      }));
+      const fresh = Array.from({ length: total }, (_, index) => ({
+        at: now - (total - index) * intervalMs,
+        cpu: 2,
+        memory: 2,
+        download: 0,
+        upload: 0,
+      }));
+      useMonitorStore.setState((state) => ({
+        entries: {
+          ...state.entries,
+          "tab-a": { ...state.entries["tab-a"], history: [...stale, ...fresh] },
+        },
+      }));
+
+      await store().refresh("tab-a");
+
+      const history = store().entries["tab-a"].history;
+      // Exactly one window's worth of the interval's samples survives …
+      expect(history).toHaveLength(maxSamplesFor(intervalMs));
+      // … the time filter still applies (nothing older than 30 minutes) …
+      expect(history.every((point) => Date.now() - point.at <= MONITOR_HISTORY_WINDOW_MS)).toBe(
+        true,
+      );
+      // … and the newest point wins.
+      expect(history[history.length - 1]?.cpu).toBe(25);
+    },
+  );
 
   it("stops collecting when the OS is unsupported instead of showing zeroes", async () => {
     monitorSnapshot.mockResolvedValue(

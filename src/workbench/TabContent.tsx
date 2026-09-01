@@ -20,6 +20,37 @@ const ServerMonitorView = lazy(() =>
   })),
 );
 
+/** The P3 management modules — each one is session-driven and command-backed. */
+const ServiceManagerView = lazy(() =>
+  import("@/workbench/views/ServiceManagerView").then((module) => ({
+    default: module.ServiceManagerView,
+  })),
+);
+
+const LogCenterView = lazy(() =>
+  import("@/workbench/views/LogCenterView").then((module) => ({
+    default: module.LogCenterView,
+  })),
+);
+
+const DockerManagerView = lazy(() =>
+  import("@/workbench/views/DockerManagerView").then((module) => ({
+    default: module.DockerManagerView,
+  })),
+);
+
+const NginxManagerView = lazy(() =>
+  import("@/workbench/views/NginxManagerView").then((module) => ({
+    default: module.NginxManagerView,
+  })),
+);
+
+const ProjectView = lazy(() =>
+  import("@/workbench/views/ProjectView").then((module) => ({
+    default: module.ProjectView,
+  })),
+);
+
 function TerminalFallback() {
   return (
     <div className="flex h-full items-center justify-center bg-app">
@@ -45,6 +76,36 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <ServerMonitorView tab={tab} />
+        </Suspense>
+      );
+    case "service":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <ServiceManagerView tab={tab} />
+        </Suspense>
+      );
+    case "logs":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <LogCenterView tab={tab} />
+        </Suspense>
+      );
+    case "docker":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <DockerManagerView tab={tab} />
+        </Suspense>
+      );
+    case "nginx":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <NginxManagerView tab={tab} />
+        </Suspense>
+      );
+    case "project":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <ProjectView tab={tab} />
         </Suspense>
       );
     default:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
-import { ContextMenu, contextMenuStateAt, type ContextMenuState } from "@/components/ui/context-menu";
+import { Activity, Check, ChevronsLeft, Container, FolderPlus, Globe, Pencil, Plug, Plus, RefreshCw, ScrollText, SquareCheckBig, Star, Trash2, X } from "lucide-react";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
@@ -9,8 +9,19 @@ import { emptyGroup, emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { MacButton } from "@/components/ui/mac-button";
 
 const UNGROUPED = "__ungrouped__";
+
+/** The session-driven management modules reachable from a server. */
+export type ManageKind = "service" | "logs" | "docker" | "nginx";
+
+const MANAGE_LABELS: Record<ManageKind, string> = {
+  service: "服务",
+  logs: "日志",
+  docker: "容器",
+  nginx: "网关",
+};
 
 function SectionTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -25,6 +36,7 @@ function ServerRow({
   server,
   onOpen,
   onMonitor,
+  onManage,
   onEdit,
   onDelete,
   onToggleFavorite,
@@ -33,29 +45,31 @@ function ServerRow({
   onOpen: (server: ServerRecord) => void;
   /** Opens read-only monitoring for this server. */
   onMonitor: (server: ServerRecord) => void;
+  /** Opens one of the P3 session-driven management modules. */
+  onManage: (server: ServerRecord, kind: ManageKind) => void;
   onEdit: (server: ServerRecord) => void;
   onDelete: (server: ServerRecord) => void;
   onToggleFavorite: (server: ServerRecord) => void;
 }) {
-  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const menu = useContextMenu();
 
   return (
     <>
       <div
         className="flex w-full items-center rounded-[6px] px-2.5 py-1.5 hover:bg-surface-hover"
-        onContextMenu={(event) => {
-          event.preventDefault();
-          setMenu(
-            contextMenuStateAt(event, [
-              { id: "connect", label: "打开终端", icon: Plug, onSelect: () => onOpen(server) },
-              { id: "monitor", label: "打开监控", icon: Activity, onSelect: () => onMonitor(server) },
-              { id: "favorite", label: server.favorite ? "取消收藏" : "收藏", icon: Star, onSelect: () => onToggleFavorite(server) },
-              { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
-              { id: "sep", separator: true },
-              { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: () => onDelete(server) },
-            ]),
-          );
-        }}
+        onContextMenu={menu.onContextMenu(() => [
+          { id: "connect", label: "打开终端", icon: Plug, onSelect: () => onOpen(server) },
+          { id: "monitor", label: "打开监控", icon: Activity, onSelect: () => onMonitor(server) },
+          { id: "sep-manage", separator: true },
+          { id: "services", label: "服务管家", icon: SquareCheckBig, onSelect: () => onManage(server, "service") },
+          { id: "logs", label: "日志中心", icon: ScrollText, onSelect: () => onManage(server, "logs") },
+          { id: "docker", label: "Docker 管家", icon: Container, onSelect: () => onManage(server, "docker") },
+          { id: "nginx", label: "Nginx 管家", icon: Globe, onSelect: () => onManage(server, "nginx") },
+          { id: "favorite", label: server.favorite ? "取消收藏" : "收藏", icon: Star, onSelect: () => onToggleFavorite(server) },
+          { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
+          { id: "sep", separator: true },
+          { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: () => onDelete(server) },
+        ])}
       >
       <button type="button" className="flex min-w-0 flex-1 flex-col gap-0.5 text-left" onClick={() => onOpen(server)}>
         <div className="flex items-center gap-1.5">
@@ -69,7 +83,7 @@ function ServerRow({
         </span>
       </button>
       </div>
-      {menu && <ContextMenu state={menu} onClose={() => setMenu(null)} />}
+      <ContextMenu {...menu.props} title={server.name} />
     </>
   );
 }
@@ -209,6 +223,20 @@ export function SshContextSidebar() {
       id: crypto.randomUUID(),
       type: "monitor",
       title: `${server.name} · 监控`,
+      subtitle: `${server.host}:${server.port}`,
+      serverId: server.id,
+      sessionId: crypto.randomUUID(),
+    });
+
+  /**
+   * The P3 modules each get their own tab and their own session: they run
+   * read-only (or validated) exec channels and must not disturb an open shell.
+   */
+  const openManage = (server: ServerRecord, kind: ManageKind) =>
+    useWorkbenchStore.getState().openTab({
+      id: crypto.randomUUID(),
+      type: kind,
+      title: `${server.name} · ${MANAGE_LABELS[kind]}`,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),
@@ -362,6 +390,7 @@ export function SshContextSidebar() {
                       server={server}
                       onOpen={openServer}
                       onMonitor={openMonitor}
+                      onManage={openManage}
                       onEdit={setEditing}
                       onDelete={setDeleteTarget}
                       onToggleFavorite={(item) => void setFavorite(item.id, !item.favorite)}
@@ -529,9 +558,9 @@ function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => 
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
             关闭
           </Button>
-          <Button variant="primary" size="sm" disabled={submit.pending} onClick={() => void save()}>
+          <MacButton  disabled={submit.pending} onClick={() => void save()}>
             {submit.pending ? "保存中…" : "保存 Ctrl+S"}
-          </Button>
+          </MacButton>
         </>
       }
     >

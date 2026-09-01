@@ -2,7 +2,10 @@ use std::{
     cmp::Ordering,
     collections::HashMap,
     future::Future,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc,
+    },
     time::{Duration, UNIX_EPOCH},
 };
 
@@ -424,6 +427,11 @@ struct SshSession {
     /// selects on it, so a disconnect cancels work instead of leaving it
     /// waiting on a dead socket.
     closed: watch::Sender<bool>,
+    /// Liveness of the underlying transport, shared with this hop's client
+    /// handler: the handler flips it when the server disconnects or the
+    /// transport errors, so an unexpected remote shutdown can be told apart
+    /// from a mere command failure.
+    dead: Arc<AtomicBool>,
     /// Jump-host handles must outlive the tunneled session, otherwise the
     /// direct-tcpip channel is dropped and the connection dies.
     _chain: Vec<client::Handle<ClientHandler>>,
@@ -438,6 +446,22 @@ struct SshSession {
 }
 
 impl SshSession {
+    /// Whether the transport underneath is still alive.
+    ///
+    /// Two independent signals: the `dead` flag (set by the handler's
+    /// `disconnected` callback or by an exec that could not create a channel)
+    /// and russh's own handle, which is closed as soon as its connection task
+    /// ends — remote close, transport error, keepalive timeout.
+    fn is_alive(&self) -> bool {
+        !self.dead.load(AtomicOrdering::Relaxed) && !self.handle.is_closed()
+    }
+
+    /// Marks the transport as gone and cancels every in-flight command.
+    fn mark_dead(&self) {
+        self.dead.store(true, AtomicOrdering::Relaxed);
+        // Commands waiting on this session must stop immediately.
+        let _ = self.closed.send(true);
+    }
     /// Returns the session's SFTP client, opening the subsystem channel on
     /// first use.
     ///
@@ -470,13 +494,34 @@ impl SshSession {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut closed = self.closed.subscribe();
 
-        let mut channel = timed(
+        let opened = timed(
             self.handle.channel_open_session(),
             deadline,
             &mut closed,
             timeout,
         )
-        .await??;
+        .await;
+        let mut channel = match opened {
+            Ok(Ok(channel)) => channel,
+            // A failure to open a channel rides on the transport: a send
+            // error, a hang-up or a dropped reply mean the connection itself
+            // is gone. A server-side `ChannelOpenFailure` only refuses *this
+            // one* channel while the session stays healthy — the two must
+            // never be confused, and a plain command failure (a parse error
+            // downstream) never even reaches this branch.
+            Ok(Err(error)) => {
+                let transport_gone = matches!(
+                    error,
+                    russh::Error::SendError | russh::Error::Disconnect | russh::Error::HUP
+                ) || self.handle.is_closed();
+                if transport_gone {
+                    self.mark_dead();
+                }
+                return Err(anyhow!("SSH 通道创建失败：{error}"));
+            }
+            // Budget expiry alone is not evidence of a dead transport.
+            Err(deadline_error) => return Err(deadline_error),
+        };
 
         let outcome: Result<ExecOutput> = async {
             timed(
@@ -582,10 +627,22 @@ impl SshSessionManager {
     ///
     /// Every caller can therefore `.await` on network I/O without holding the
     /// global lock — a stuck server blocks only its own session.
+    ///
+    /// A session whose transport has died is removed on sight: keeping it
+    /// would make `is_connected` answer "yes" forever after the server
+    /// dropped the connection on its own.
     async fn get(&self, session_id: &str) -> Result<Arc<SshSession>> {
         let session = {
-            let sessions = self.sessions.lock().await;
-            sessions.get(session_id).cloned()
+            let mut sessions = self.sessions.lock().await;
+            match sessions.get(session_id).cloned() {
+                Some(session) if session.is_alive() => Some(session),
+                Some(stale) => {
+                    sessions.remove(session_id);
+                    stale.mark_dead();
+                    None
+                }
+                None => None,
+            }
         };
         session.ok_or_else(|| anyhow!("SSH 会话不存在或已断开"))
     }
@@ -616,6 +673,11 @@ impl SshSessionManager {
 
     /// Shared connect path. `cols`/`rows` of 0 skip the PTY + shell entirely
     /// (see `connect_hop`), which is what non-interactive sessions want.
+    ///
+    /// A reconnect on the same id replaces the old session outright: the old
+    /// connection is torn down and removed *before* the new handshake starts.
+    /// A plain insert would silently overwrite it, orphaning its channels and
+    /// SFTP client while its handle kept running.
     async fn connect_with(
         &self,
         session_id: String,
@@ -623,6 +685,11 @@ impl SshSessionManager {
         cols: u32,
         rows: u32,
     ) -> Result<(ConnectOutcome, Option<ChannelReadHalf>)> {
+        let stale = self.sessions.lock().await.remove(&session_id);
+        if let Some(old) = stale {
+            old.shutdown().await;
+        }
+
         match connect_hop(&target, cols, rows).await? {
             HopResult::Connected(connection) => {
                 let host_key = connection.host_key;
@@ -636,6 +703,7 @@ impl SshSessionManager {
                         handle: connection.handle,
                         writer: Mutex::new(writer),
                         closed: watch::channel(false).0,
+                        dead: connection.dead,
                         _chain: connection.chain,
                         sftp: Mutex::new(None),
                         cwd: Mutex::new(None),
@@ -727,13 +795,37 @@ impl SshSessionManager {
         }
     }
 
+    /// True only while the transport underneath is still alive.
+    ///
+    /// A remote-initiated close, a transport error or keepalive giving up all
+    /// make this answer `false` (and evict the dead session), even though the
+    /// registry entry itself has not been touched by an explicit disconnect.
     pub async fn is_connected(&self, session_id: &str) -> bool {
-        let sessions = self.sessions.lock().await;
-        sessions.contains_key(session_id)
+        let mut sessions = self.sessions.lock().await;
+        match sessions.get(session_id).cloned() {
+            Some(session) if session.is_alive() => true,
+            Some(stale) => {
+                sessions.remove(session_id);
+                stale.mark_dead();
+                false
+            }
+            None => false,
+        }
     }
 
+    /// Number of sessions whose transport is still alive; dead entries are
+    /// evicted so the status bar never counts ghosts.
     pub async fn active_count(&self) -> usize {
-        self.sessions.lock().await.len()
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, session| {
+            if session.is_alive() {
+                true
+            } else {
+                session.mark_dead();
+                false
+            }
+        });
+        sessions.len()
     }
 
     // -- SFTP ----------------------------------------------------------------
@@ -1185,6 +1277,8 @@ struct HopConnection {
     /// `None` for jump hops, which are tunnels only.
     channel: Option<(ChannelReadHalf, SessionWriter)>,
     host_key: HostKeyInfo,
+    /// Liveness flag shared with this hop's client handler.
+    dead: Arc<AtomicBool>,
     chain: Vec<client::Handle<ClientHandler>>,
 }
 
@@ -1212,9 +1306,11 @@ fn build_config() -> Arc<client::Config> {
 
 async fn connect_hop(target: &ConnectTarget, cols: u32, rows: u32) -> Result<HopResult> {
     let observed: Arc<Mutex<Option<HostKeyInfo>>> = Arc::new(Mutex::new(None));
+    let dead = Arc::new(AtomicBool::new(false));
     let handler = ClientHandler {
         expected: target.known_fingerprint.clone(),
         observed: observed.clone(),
+        dead: dead.clone(),
     };
     let config = build_config();
 
@@ -1307,6 +1403,7 @@ async fn connect_hop(target: &ConnectTarget, cols: u32, rows: u32) -> Result<Hop
         handle,
         channel,
         host_key,
+        dead,
         chain,
     }))
 }
@@ -1351,6 +1448,9 @@ async fn host_key_outcome(
 struct ClientHandler {
     expected: Option<String>,
     observed: Arc<Mutex<Option<HostKeyInfo>>>,
+    /// Flipped as soon as russh reports the transport going away, so the
+    /// session registry stops calling a dead connection "connected".
+    dead: Arc<AtomicBool>,
 }
 
 impl client::Handler for ClientHandler {
@@ -1371,6 +1471,20 @@ impl client::Handler for ClientHandler {
                 key_type,
             });
             Ok(matches!(expected.as_deref(), Some(expected) if expected == fingerprint))
+        }
+    }
+
+    /// The server sent a disconnect (or the transport errored): record the
+    /// death so `ssh_status` stops reporting this session as connected even
+    /// though nobody called an explicit disconnect on it.
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        self.dead.store(true, AtomicOrdering::Relaxed);
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+            client::DisconnectReason::Error(error) => Err(error),
         }
     }
 }

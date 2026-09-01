@@ -6,9 +6,11 @@ import {
   Globe,
   ListTodo,
   Rocket,
+  ScrollText,
   Server,
   Settings,
   Sparkles,
+  SquareCheckBig,
   SquareTerminal,
 } from "lucide-react";
 import type { NavModule } from "@/workbench/types";
@@ -25,6 +27,8 @@ interface ModuleSpec {
 const MODULES: Record<NavModule, ModuleSpec> = {
   ssh: { title: "终端", icon: SquareTerminal, description: "", sections: [] },
   servers: { title: "服务器", icon: Server, description: "", sections: [] },
+  services: { title: "服务", icon: SquareCheckBig, description: "", sections: [] },
+  logs: { title: "日志", icon: ScrollText, description: "", sections: [] },
   files: { title: "文件", icon: Files, description: "远程文件浏览与传输", sections: ["远程浏览", "传输队列"] },
   projects: { title: "项目", icon: Boxes, description: "项目与分组管理", sections: ["最近项目", "分组", "关联关系"] },
   deploy: { title: "部署", icon: Rocket, description: "部署目标与工作流", sections: ["目标环境", "工作流", "历史记录"] },

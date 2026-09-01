@@ -2,7 +2,13 @@
  * Workbench UI state — spec §10, §14, §70.
  */
 import { create } from "zustand";
-import type { NavModule, SplitDirection, WorkbenchPane, WorkspaceTab } from "@/workbench/types";
+import type {
+  NavModule,
+  SplitDirection,
+  WorkbenchPane,
+  WorkspaceTab,
+  WorkspaceTabType,
+} from "@/workbench/types";
 
 const uuid = () => crypto.randomUUID();
 
@@ -90,6 +96,8 @@ const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "�
 const MODULE_LABELS: Record<NavModule, string> = {
   ssh: "终端",
   servers: "服务器",
+  services: "服务",
+  logs: "日志",
   files: "文件",
   projects: "项目",
   deploy: "部署",
@@ -98,6 +106,20 @@ const MODULE_LABELS: Record<NavModule, string> = {
   tasks: "任务",
   ai: "智能助手",
   settings: "设置",
+};
+
+/**
+ * Modules that own a real session-driven view rather than a placeholder page.
+ *
+ * They are opened as their own tab type instead of `type: "module"`, because
+ * `TabContent` routes on tab type and each of these needs a live session.
+ */
+const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
+  services: "service",
+  logs: "logs",
+  docker: "docker",
+  nginx: "nginx",
+  projects: "project",
 };
 
 const createInitialRootPane = (): WorkbenchPane => {
@@ -296,6 +318,36 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
       const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
       const pane = findPane(state.rootPane, paneId);
       if (!pane || !isLeafPane(pane)) return state;
+
+      // Session-driven modules: reuse an open tab of that kind if there is
+      // one, so clicking the rail twice does not spawn a second session.
+      const tabType = MODULE_TAB_TYPES[module];
+      if (tabType) {
+        const existing = pane.tabs.find((tab) => tab.type === tabType);
+        if (existing) {
+          return {
+            activeModule: module,
+            rootPane: replacePane(state.rootPane, paneId, { ...pane, activeTabId: existing.id }),
+            focusedPaneId: paneId,
+          };
+        }
+        const tab = normalizeTab({
+          id: uuid(),
+          type: tabType,
+          module,
+          title: MODULE_LABELS[module],
+          sessionId: uuid(),
+        });
+        return {
+          activeModule: module,
+          rootPane: replacePane(state.rootPane, paneId, {
+            ...pane,
+            tabs: [...pane.tabs, tab],
+            activeTabId: tab.id,
+          }),
+          focusedPaneId: paneId,
+        };
+      }
 
       const existing = pane.tabs.find((tab) => tab.type === "module" && tab.module === module);
       if (existing) {

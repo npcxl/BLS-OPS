@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 
@@ -41,10 +40,7 @@ export function ConfirmDialog({
 
   return (
     <Modal open={open} width={360} title={title} onClose={onCancel}>
-      <div className="flex items-start gap-2.5">
-        <AlertTriangle size={16} className={danger ? "mt-0.5 shrink-0 text-danger" : "mt-0.5 shrink-0 text-warning"} />
-        <p className="text-12 leading-relaxed text-fg-muted">{description}</p>
-      </div>
+      <p className="text-12 leading-relaxed text-fg-muted">{description}</p>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
           {cancelLabel}

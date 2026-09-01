@@ -1074,6 +1074,11 @@ pub async fn ssh_connect_monitor(
     credential_id: Option<String>,
     password: Option<String>,
 ) -> Result<SshConnectResult, String> {
+    // A reconnect with the same id must not inherit the dead connection's
+    // rate baselines: CPU/network diffs read across two different TCP
+    // sessions are garbage. Drop them before the new handshake starts.
+    state.monitor.forget(&session_id).await;
+
     let (result, reader) = ssh_connect_internal(
         &state,
         session_id.clone(),
@@ -1446,10 +1451,625 @@ pub async fn app_info(state: State<'_, AppState>) -> Result<AppInfo, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Service management — systemd (P3-1.1)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn service_list(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::systemd::ServiceUnit>, String> {
+    crate::systemd::collect_services(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Start / stop / restart / reload / enable / disable a unit.
+///
+/// `action` is one of the fixed verbs in [`crate::safe::ServiceAction`]; an
+/// unknown verb never reaches the shell.
+#[tauri::command]
+pub async fn service_action(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    action: String,
+    unit: String,
+) -> Result<String, String> {
+    let action = parse_service_action(&action)?;
+    let outcome = crate::systemd::service_action(&state.ssh, &session_id, action, &unit)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    record_audit(
+        &state,
+        "service_action",
+        None,
+        None,
+        &format!(
+            "{{\"session\":\"{session_id}\",\"action\":\"{}\",\"unit\":\"{unit}\"}}",
+            action.label()
+        ),
+    );
+    // The list page reloads on this event so the new state shows immediately.
+    let _ = app.emit(&format!("services-changed-{session_id}"), &unit);
+
+    Ok(outcome)
+}
+
+fn parse_service_action(action: &str) -> Result<crate::safe::ServiceAction, String> {
+    use crate::safe::ServiceAction;
+    match action {
+        "start" => Ok(ServiceAction::Start),
+        "stop" => Ok(ServiceAction::Stop),
+        "restart" => Ok(ServiceAction::Restart),
+        "reload" => Ok(ServiceAction::Reload),
+        "enable" => Ok(ServiceAction::Enable),
+        "disable" => Ok(ServiceAction::Disable),
+        other => Err(format!("不支持的服务操作：{other}")),
+    }
+}
+
+#[tauri::command]
+pub async fn service_status(
+    state: State<'_, AppState>,
+    session_id: String,
+    unit: String,
+) -> Result<String, String> {
+    crate::systemd::service_status(&state.ssh, &session_id, &unit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Log centre — journald (P3-1.2)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn journal_query(
+    state: State<'_, AppState>,
+    session_id: String,
+    unit: Option<String>,
+    lines: u32,
+    priority: Option<u8>,
+) -> Result<Vec<crate::journal::JournalEntry>, String> {
+    let query = crate::journal::JournalQuery {
+        unit: unit.filter(|value| !value.trim().is_empty()),
+        lines,
+        priority,
+    };
+    crate::journal::collect_journal(&state.ssh, &session_id, &query)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn journal_disk_usage(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::journal::JournalDiskUsage, String> {
+    crate::journal::collect_disk_usage(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Docker (P3-1.3)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn docker_snapshot(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::docker::DockerSnapshot, String> {
+    crate::docker::collect_snapshot(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn docker_logs(
+    state: State<'_, AppState>,
+    session_id: String,
+    container: String,
+    lines: u32,
+) -> Result<String, String> {
+    crate::docker::collect_logs(&state.ssh, &session_id, &container, lines)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn docker_container_action(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    action: String,
+    container: String,
+) -> Result<String, String> {
+    let action = match action.as_str() {
+        "start" => crate::safe::ContainerAction::Start,
+        "stop" => crate::safe::ContainerAction::Stop,
+        "restart" => crate::safe::ContainerAction::Restart,
+        "remove" => crate::safe::ContainerAction::Remove,
+        other => return Err(format!("不支持的容器操作：{other}")),
+    };
+
+    let outcome = crate::docker::container_action(&state.ssh, &session_id, action, &container)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    record_audit(
+        &state,
+        "docker_container_action",
+        None,
+        None,
+        &format!(
+            "{{\"session\":\"{session_id}\",\"action\":\"{}\",\"container\":\"{container}\"}}",
+            action.label()
+        ),
+    );
+    let _ = app.emit(&format!("docker-changed-{session_id}"), &container);
+
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn docker_image_remove(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    image: String,
+) -> Result<String, String> {
+    let outcome = crate::docker::image_remove(&state.ssh, &session_id, &image)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "docker_image_remove",
+        None,
+        None,
+        &format!("{{\"session\":\"{session_id}\",\"image\":\"{image}\"}}"),
+    );
+    let _ = app.emit(&format!("docker-changed-{session_id}"), &image);
+    Ok(outcome)
+}
+
+/// Drops stopped containers and dangling images. Destructive, so it is audited
+/// and the frontend confirms before calling.
+#[tauri::command]
+pub async fn docker_prune(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let outcome = crate::docker::system_prune(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "docker_prune",
+        None,
+        None,
+        &format!("{{\"session\":\"{session_id}\"}}"),
+    );
+    let _ = app.emit(&format!("docker-changed-{session_id}"), "prune");
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// Nginx (P3-1.4)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn nginx_sites(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<crate::nginx::NginxSite>, String> {
+    crate::nginx::collect_sites_with_summary(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn nginx_config(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    crate::nginx::read_config(&state.ssh, &session_id, &path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Writes a config file, validates it, and only then reloads.
+///
+/// The order matters: saving an invalid config and reloading would take the
+/// site offline, so the reload is skipped when `nginx -t` fails and the error
+/// is returned for the UI to show.
+#[derive(Debug, Clone, Serialize)]
+pub struct NginxSaveResult {
+    pub saved: bool,
+    pub test: crate::nginx::NginxTestResult,
+    pub reloaded: bool,
+    /// Where the pre-edit copy went, so a mistake is recoverable.
+    pub backup_path: Option<String>,
+}
+
+#[tauri::command]
+pub async fn nginx_save_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    content: String,
+) -> Result<NginxSaveResult, String> {
+    // Back up first: an edit that fails validation still leaves the original
+    // recoverable, and the operator is told where it is.
+    let backup_path = crate::nginx::backup_config(&state.ssh, &session_id, &path)
+        .await
+        .ok();
+
+    state
+        .ssh
+        .sftp_write_file(&session_id, &path, &content)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let test = crate::nginx::test_config(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let reloaded = if test.success {
+        crate::nginx::reload(&state.ssh, &session_id).await.is_ok()
+    } else {
+        false
+    };
+
+    record_audit(
+        &state,
+        "nginx_save_config",
+        None,
+        None,
+        &format!(
+            "{{\"session\":\"{session_id}\",\"path\":\"{path}\",\"ok\":{}}}",
+            test.success
+        ),
+    );
+    let _ = app.emit(&format!("nginx-changed-{session_id}"), &path);
+
+    Ok(NginxSaveResult {
+        saved: true,
+        test,
+        reloaded,
+        backup_path,
+    })
+}
+
+#[tauri::command]
+pub async fn nginx_test(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::nginx::NginxTestResult, String> {
+    crate::nginx::test_config(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn nginx_reload(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let outcome = crate::nginx::reload(&state.ssh, &session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "nginx_reload",
+        None,
+        None,
+        &format!("{{\"session\":\"{session_id}\"}}"),
+    );
+    let _ = app.emit(&format!("nginx-changed-{session_id}"), "reload");
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn nginx_set_site_enabled(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    site: String,
+    enable: bool,
+) -> Result<String, String> {
+    let outcome = crate::nginx::set_site_enabled(&state.ssh, &session_id, &site, enable)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "nginx_set_site_enabled",
+        None,
+        None,
+        &format!("{{\"session\":\"{session_id}\",\"site\":\"{site}\",\"enable\":{enable}}}"),
+    );
+    let _ = app.emit(&format!("nginx-changed-{session_id}"), &site);
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// Projects & deployments (P3-2.2, P3-2.3, P3-3.5)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn project_list(state: State<'_, AppState>) -> Result<Vec<db::ProjectRecord>, String> {
+    let conn = open_db(&state)?;
+    db::list_projects(&conn).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn project_get(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<db::ProjectRecord>, String> {
+    let conn = open_db(&state)?;
+    db::get_project(&conn, &id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn project_save(
+    state: State<'_, AppState>,
+    project: db::ProjectRecord,
+) -> Result<db::ProjectRecord, String> {
+    let conn = open_db(&state)?;
+    validate_project(&conn, &project)?;
+    db::insert_or_replace_project(&conn, &project).map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "project_save",
+        Some(&project.server_id),
+        None,
+        &format!(
+            "{{\"id\":\"{}\",\"name\":\"{}\"}}",
+            project.id, project.name
+        ),
+    );
+    Ok(project)
+}
+
+#[tauri::command]
+pub async fn project_delete(state: State<'_, AppState>, id: String) -> Result<i64, String> {
+    let conn = open_db(&state)?;
+    let removed = db::delete_project_cascade(&conn, &id).map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "project_delete",
+        None,
+        None,
+        &format!("{{\"id\":\"{id}\",\"deployments_removed\":{removed}}}"),
+    );
+    Ok(removed)
+}
+
+#[tauri::command]
+pub async fn deployment_list(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<db::DeploymentRecord>, String> {
+    let conn = open_db(&state)?;
+    db::list_deployments(
+        &conn,
+        project_id.as_deref(),
+        limit.unwrap_or(50).min(500) as i64,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn deployment_get(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<db::DeploymentRecord>, String> {
+    let conn = open_db(&state)?;
+    db::get_deployment(&conn, &id).map_err(|error| error.to_string())
+}
+
+/// Runs a project's deployment steps on a live session.
+///
+/// The steps come from the project record, **not** from the caller: the
+/// WebView passes only a project id, so it cannot smuggle in a command. Each
+/// step is re-validated here even though it was validated on save, because the
+/// record could have been edited since.
+#[tauri::command]
+pub async fn deployment_execute(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: String,
+    // Supplying the id lets the caller subscribe to `deploy-progress-<id>`
+    // *before* the run starts, so nothing emitted early is missed.
+    // (A doc comment is not allowed on a command parameter.)
+    deployment_id: Option<String>,
+) -> Result<db::DeploymentRecord, String> {
+    let conn = open_db(&state)?;
+
+    let project = db::get_project(&conn, &project_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "项目不存在".to_string())?;
+
+    if !state.ssh.is_connected(&session_id).await {
+        return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
+    }
+
+    let steps: Vec<String> = serde_json::from_str(&project.commands_json)
+        .map_err(|error| format!("项目的部署步骤不是合法的 JSON：{error}"))?;
+
+    // Validate before anything runs: a project with one bad step should fail
+    // immediately, not halfway through a deploy.
+    for step in &steps {
+        crate::safe::validate_deploy_step(step, &project.deploy_path)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let server_name = db::get_server(&conn, &project.server_id)
+        .map_err(|error| error.to_string())?
+        .map(|server| server.name)
+        .unwrap_or_default();
+
+    let now = db::AppDb::now();
+    let deployment_id = deployment_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut record = db::DeploymentRecord {
+        id: deployment_id,
+        project_id: project.id.clone(),
+        project_name: project.name.clone(),
+        server_id: project.server_id.clone(),
+        server_name: server_name.clone(),
+        status: db::DEPLOY_RUNNING.to_string(),
+        trigger_source: "manual".to_string(),
+        branch: project.branch.clone(),
+        commit_sha: String::new(),
+        started_at: Some(now),
+        finished_at: None,
+        duration_ms: None,
+        log: String::new(),
+        error_message: None,
+        created_at: now,
+    };
+    db::insert_deployment(&conn, &record).map_err(|error| error.to_string())?;
+    db::set_project_status(&conn, &project.id, db::DEPLOY_RUNNING)
+        .map_err(|error| error.to_string())?;
+
+    let event = format!("deploy-progress-{}", record.id);
+    let mut log = String::new();
+    let mut failure: Option<String> = None;
+
+    for (index, step) in steps.iter().enumerate() {
+        let header = format!("[{}/{}] $ {}\n", index + 1, steps.len(), step);
+        log.push_str(&header);
+        let _ = app.emit(&event, log.clone());
+
+        match crate::remote::run_capability(
+            &state.ssh,
+            &session_id,
+            &crate::safe::Capability::DeployStep {
+                step: step.clone(),
+                root: project.deploy_path.clone(),
+            },
+        )
+        .await
+        {
+            Ok(output) => {
+                if !output.trim().is_empty() {
+                    log.push_str(output.trim_end());
+                    log.push('\n');
+                }
+            }
+            Err(error) => {
+                // The failing step's output is what makes the failure
+                // diagnosable, so it is kept in the log.
+                log.push_str(&format!("失败：{error}\n"));
+                failure = Some(error.to_string());
+            }
+        }
+
+        let _ = app.emit(&event, log.clone());
+        if failure.is_some() {
+            break;
+        }
+    }
+
+    let finished = db::AppDb::now();
+    let status = if failure.is_some() {
+        db::DEPLOY_FAILED
+    } else {
+        db::DEPLOY_SUCCESS
+    };
+    record.status = status.to_string();
+    record.finished_at = Some(finished);
+    record.started_at = Some(record.started_at.unwrap_or(finished));
+    record.duration_ms = Some((finished - record.started_at.unwrap_or(finished)).max(0));
+    record.log = log.clone();
+    record.error_message = failure.clone();
+
+    db::update_deployment_progress(
+        &conn,
+        &record.id,
+        status,
+        &log,
+        record.started_at,
+        record.finished_at,
+        failure.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    db::set_project_status(&conn, &project.id, status).map_err(|error| error.to_string())?;
+
+    record_audit(
+        &state,
+        "deployment_execute",
+        Some(&project.server_id),
+        Some(&server_name),
+        &format!(
+            "{{\"project\":\"{}\",\"status\":\"{status}\",\"deployment\":\"{}\"}}",
+            project.name, record.id
+        ),
+    );
+    let _ = app.emit(&event, log);
+
+    Ok(record)
+}
+
+/// Project validation kept free of Tauri types so it can be unit-tested.
+fn validate_project(conn: &Connection, project: &db::ProjectRecord) -> Result<(), String> {
+    if project.name.trim().is_empty() {
+        return Err("项目名称不能为空".to_string());
+    }
+    if project.server_id.trim().is_empty() {
+        return Err("请选择部署服务器".to_string());
+    }
+    db::get_server(conn, &project.server_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "所选服务器不存在，请重新选择".to_string())?;
+
+    let path = project.deploy_path.trim();
+    if !path.starts_with('/') {
+        return Err("部署路径必须是绝对路径".to_string());
+    }
+    crate::safe::validate_abs_path(path, "部署路径").map_err(|error| error.to_string())?;
+
+    if !project.branch.trim().is_empty() {
+        crate::safe::validate_git_ref(project.branch.trim()).map_err(|error| error.to_string())?;
+    }
+    if !project.repo_url.trim().is_empty() {
+        crate::safe::validate_repo_url(project.repo_url.trim())
+            .map_err(|error| error.to_string())?;
+    }
+
+    // The important one: a deployment step is a command, so it is held to the
+    // allowlist and confined to the project directory.
+    let steps: Vec<String> = serde_json::from_str(&project.commands_json)
+        .map_err(|error| format!("部署步骤不是合法的 JSON 数组：{error}"))?;
+    if steps.is_empty() {
+        return Err("至少需要一个部署步骤".to_string());
+    }
+    for step in &steps {
+        crate::safe::validate_deploy_step(step, path).map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{session_record, validate_server};
-    use crate::db::{self, CredentialRecord, ServerGroupRecord, ServerRecord};
+    use super::{parse_service_action, session_record, validate_project, validate_server};
+    use crate::db::{
+        self, insert_or_replace_server, CredentialRecord, ServerGroupRecord, ServerRecord,
+    };
     use rusqlite::Connection;
 
     fn db() -> Connection {
@@ -1498,6 +2118,22 @@ mod tests {
         }
     }
 
+    fn project(id: &str, server_id: &str) -> db::ProjectRecord {
+        db::ProjectRecord {
+            id: id.to_string(),
+            name: "app".to_string(),
+            description: String::new(),
+            server_id: server_id.to_string(),
+            repo_url: "https://github.com/acme/app.git".to_string(),
+            branch: "main".to_string(),
+            deploy_path: "/var/www/app".to_string(),
+            commands_json: r#"["git pull --ff-only","npm run build"]"#.to_string(),
+            status: "idle".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
     fn credential(id: &str) -> CredentialRecord {
         CredentialRecord {
             id: id.to_string(),
@@ -1509,6 +2145,96 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn rejects_unknown_service_actions() {
+        // Only the six fixed verbs exist; anything else must not reach a shell.
+        assert!(parse_service_action("restart").is_ok());
+        assert!(parse_service_action("enable").is_ok());
+        assert!(parse_service_action("rm -rf /").is_err());
+        assert!(parse_service_action("").is_err());
+    }
+
+    // -- projects ------------------------------------------------------------
+
+    #[test]
+    fn accepts_a_well_formed_project() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+        assert!(validate_project(&conn, &project("p1", "s1")).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_project_without_a_name_or_server() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+
+        let mut blank = project("p1", "s1");
+        blank.name = "  ".to_string();
+        assert!(validate_project(&conn, &blank).is_err());
+
+        // A project pointing at a deleted server would deploy nowhere.
+        assert!(validate_project(&conn, &project("p1", "missing")).is_err());
+    }
+
+    #[test]
+    fn rejects_a_relative_or_traversing_deploy_path() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+
+        let mut relative = project("p1", "s1");
+        relative.deploy_path = "var/www/app".to_string();
+        assert!(validate_project(&conn, &relative).is_err());
+
+        let mut traversing = project("p1", "s1");
+        traversing.deploy_path = "/var/www/../../etc".to_string();
+        assert!(validate_project(&conn, &traversing).is_err());
+    }
+
+    #[test]
+    fn rejects_a_project_whose_steps_are_not_allowlisted() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+
+        let mut evil = project("p1", "s1");
+        evil.commands_json = r#"["git pull; rm -rf /"]"#.to_string();
+        assert!(validate_project(&conn, &evil).is_err());
+
+        let mut outside = project("p1", "s1");
+        outside.commands_json = r#"["rm -rf /var/log"]"#.to_string();
+        assert!(
+            validate_project(&conn, &outside).is_err(),
+            "步骤不能触碰项目目录之外"
+        );
+    }
+
+    #[test]
+    fn rejects_a_project_with_no_steps_or_broken_json() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+
+        let mut empty = project("p1", "s1");
+        empty.commands_json = "[]".to_string();
+        assert!(validate_project(&conn, &empty).is_err());
+
+        let mut broken = project("p1", "s1");
+        broken.commands_json = "not json".to_string();
+        assert!(validate_project(&conn, &broken).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_repo_urls_and_branches() {
+        let conn = db();
+        insert_or_replace_server(&conn, &server("s1")).unwrap();
+
+        let mut bad_url = project("p1", "s1");
+        bad_url.repo_url = "rm -rf /".to_string();
+        assert!(validate_project(&conn, &bad_url).is_err());
+
+        let mut bad_branch = project("p1", "s1");
+        bad_branch.branch = "--upload-pack=evil".to_string();
+        assert!(validate_project(&conn, &bad_branch).is_err());
     }
 
     #[test]

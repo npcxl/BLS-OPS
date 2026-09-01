@@ -25,12 +25,24 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
     );
   }
 
-  const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
-
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-app" onMouseDown={() => focusPane(pane.id)}>
       <WorkspaceTabs pane={pane} />
-      <div className="min-h-0 flex-1">{activeTab ? <TabContent tab={activeTab} /> : <EmptyPaneState paneId={pane.id} />}</div>
+      <div className="relative min-h-0 flex-1">
+        {pane.tabs.length === 0 ? (
+          <EmptyPaneState paneId={pane.id} />
+        ) : (
+          pane.tabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={cn("absolute inset-0", tab.id === pane.activeTabId ? "block" : "hidden")}
+              aria-hidden={tab.id === pane.activeTabId ? undefined : true}
+            >
+              <TabContent tab={tab} />
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

@@ -93,3 +93,6 @@ jobs:
       # `pnpm build` runs `tsc && vite build`, so types are checked too.
       - name: Type check + build
         run: pnpm build
+
+      - name: Frontend tests
+        run: pnpm test

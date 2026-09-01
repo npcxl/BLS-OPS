@@ -129,6 +129,26 @@ export interface AppInfo {
  * under the challenge endpoint; saving it under `host` loops forever on a
  * two-hop connection.
  */
+/** One entry of a remote directory listing, read over the SFTP subsystem. */
+export interface RemoteFileEntry {
+  name: string;
+  /** Absolute remote POSIX path. */
+  path: string;
+  /** `directory` | `file` | `symlink` | `other`. */
+  kind: string;
+  size: number;
+  modified_at?: number | null;
+  /** `rwxr-xr-x` style, as reported by the server. */
+  permissions?: string | null;
+  hidden: boolean;
+}
+
+export interface SftpListResult {
+  /** The canonical path that was actually read (server-resolved). */
+  path: string;
+  entries: RemoteFileEntry[];
+}
+
 export type SshConnectResult =
   | {
       status: "connected";
@@ -292,4 +312,40 @@ export const opsApi = {
   sshKeepalive: (sessionId: string) => invoke<void>("ssh_keepalive", { sessionId }),
   sshStatus: (sessionId: string) => invoke<boolean>("ssh_status", { sessionId }),
   sshDisconnect: (sessionId: string) => invoke<void>("ssh_disconnect", { sessionId }),
+
+  // SFTP — remote file browsing + management over the live session. Each
+  // session owns its own SFTP client, so tabs never share directory state.
+  sftpOpen: (sessionId: string) => invoke<string>("sftp_open", { sessionId }),
+  sftpListDir: (sessionId: string, path?: string) =>
+    invoke<SftpListResult>("sftp_list_dir", { sessionId, path: path ?? null }),
+  sftpRealpath: (sessionId: string, path: string) =>
+    invoke<string>("sftp_realpath", { sessionId, path }),
+  sftpStat: (sessionId: string, path: string) =>
+    invoke<RemoteFileEntry>("sftp_stat", { sessionId, path }),
+  sftpUpload: (sessionId: string, localPaths: string[], remoteDir: string) =>
+    invoke<RemoteFileEntry[]>("sftp_upload", {
+      sessionId,
+      localPaths,
+      remoteDir,
+    }),
+  sftpRemove: (sessionId: string, path: string) =>
+    invoke<void>("sftp_remove", { sessionId, path }),
+  sftpRename: (sessionId: string, path: string, newName: string) =>
+    invoke<string>("sftp_rename", { sessionId, path, newName }),
+  sftpCopy: (sessionId: string, path: string, newName: string) =>
+    invoke<string>("sftp_copy", { sessionId, path, newName }),
+  sftpMkdir: (sessionId: string, path: string) =>
+    invoke<string>("sftp_mkdir", { sessionId, path }),
+  sftpTouch: (sessionId: string, path: string) =>
+    invoke<string>("sftp_touch", { sessionId, path }),
+  /** Reads a remote file for the in-app editor (text files, size-capped). */
+  sftpReadFile: (sessionId: string, path: string) =>
+    invoke<{ path: string; size: number; binary: boolean; content: string | null }>(
+      "sftp_read_file",
+      { sessionId, path },
+    ),
+  /** Overwrites a remote text file (editor save). */
+  sftpWriteFile: (sessionId: string, path: string, content: string) =>
+    invoke<void>("sftp_write_file", { sessionId, path, content }),
+  sftpClose: (sessionId: string) => invoke<void>("sftp_close", { sessionId }),
 };

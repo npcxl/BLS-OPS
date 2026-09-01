@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
+import { Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
@@ -164,9 +164,10 @@ export function SshContextSidebar() {
   const removeServer = useDomainStore((s) => s.deleteServer);
   const setFavorite = useDomainStore((s) => s.setFavorite);
   const saveGroup = useDomainStore((s) => s.saveGroup);
+  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
   const removeGroup = useDomainStore((s) => s.deleteGroup);
+  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
 
-  const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<ServerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -192,8 +193,10 @@ export function SshContextSidebar() {
     void load();
   }, [load]);
 
+  // Reuses an existing terminal tab for this server when one exists, so the
+  // SSH session (and the file panel's state) survives switching around.
   const openServer = (server: ServerRecord) =>
-    useWorkbenchStore.getState().openTab({
+    useWorkbenchStore.getState().openOrFocusServerTab({
       id: crypto.randomUUID(),
       type: "terminal",
       title: server.name,
@@ -212,24 +215,16 @@ export function SshContextSidebar() {
     }
   };
 
-  const filtered = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return servers;
-    return servers.filter((server) =>
-      `${server.name} ${server.host} ${server.username} ${server.tags.join(" ")}`.toLowerCase().includes(needle),
-    );
-  }, [servers, filter]);
-
   const grouped = useMemo(() => {
     const buckets = new Map<string, ServerRecord[]>();
-    for (const server of filtered) {
+    for (const server of servers) {
       const key = server.group_id ?? UNGROUPED;
       const bucket = buckets.get(key);
       if (bucket) bucket.push(server);
       else buckets.set(key, [server]);
     }
     return [...buckets.entries()];
-  }, [filtered]);
+  }, [servers]);
 
   const renameGroup = async (group: ServerGroupRecord, name: string) => {
     setRenamingGroupId(null);
@@ -273,31 +268,20 @@ export function SshContextSidebar() {
 
   return (
     <div className="flex flex-col gap-1 pb-3">
-      <div className="px-2.5 pt-1.5">
-        <SectionTitle
-          actions={
-            <Button variant="ghost" size="xs" className="h-5 px-1" aria-label="刷新服务器" onClick={() => void load()}>
-              <RefreshCw size={12} />
-            </Button>
-          }
-        >
-          筛选
-        </SectionTitle>
-        <div className="mt-1 flex items-center gap-1">
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="搜索名称、主机、用户名、标签"
-            spellCheck={false}
-            className="h-[30px] min-w-0 flex-1 rounded-control border border-line bg-surface-2 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          />
-        </div>
-      </div>
-
-      <div className="mt-2">
+      <div className="mt-1">
         <SectionTitle
           actions={
             <div className="flex items-center">
+              <Button
+                variant="ghost"
+                size="xs"
+                className="h-5 w-5 px-0"
+                aria-label="收起侧边栏"
+                title="收起侧边栏"
+                onClick={() => setSidebarCollapsed(true)}
+              >
+                <ChevronsLeft size={12} />
+              </Button>
               <Button
                 variant="ghost"
                 size="xs"
@@ -327,10 +311,8 @@ export function SshContextSidebar() {
 
         {loading ? (
           <p className="px-2.5 py-2 text-11 text-fg-subtle">正在加载…</p>
-        ) : filtered.length === 0 ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">
-            {servers.length === 0 ? "暂无服务器，点击 + 新增" : "没有匹配的服务器"}
-          </p>
+        ) : servers.length === 0 ? (
+          <p className="px-2.5 py-2 text-11 text-fg-subtle">暂无服务器，点击 + 新增</p>
         ) : (
           grouped.map(([groupId, items]) => {
             const group = groups.find((item) => item.id === groupId);

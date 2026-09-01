@@ -64,7 +64,8 @@ export function WorkbenchHome() {
   const [draft, setDraft] = useState<{ username: string; host: string; port: number } | null>(null);
 
   const openTab = useWorkbenchStore((s) => s.openTab);
-  const setModule = useWorkbenchStore((s) => s.setModule);
+  const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
+  const openModuleTab = useWorkbenchStore((s) => s.openModuleTab);
   const servers = useDomainStore((s) => s.servers);
   const sessions = useDomainStore((s) => s.sessions);
   const deleteServer = useDomainStore((s) => s.deleteServer);
@@ -83,7 +84,7 @@ export function WorkbenchHome() {
   }, [sessions]);
 
   const openServer = (serverId: string, name: string, host: string, port: number) =>
-    openTab({
+    openOrFocusServerTab({
       id: crypto.randomUUID(),
       type: "terminal",
       title: name,
@@ -141,7 +142,7 @@ export function WorkbenchHome() {
           count={recent.length}
           actions={
             servers.length === 0 ? (
-              <Button variant="ghost" size="xs" onClick={() => setModule("ssh")}>
+              <Button variant="ghost" size="xs" onClick={() => openModuleTab("servers")}>
                 去新增服务器
               </Button>
             ) : undefined
@@ -219,7 +220,7 @@ export function WorkbenchHome() {
           title="服务器"
           count={servers.length}
           actions={
-            <Button variant="ghost" size="xs" onClick={() => setModule("ssh")}>
+            <Button variant="ghost" size="xs" onClick={() => openModuleTab("servers")}>
               管理
             </Button>
           }

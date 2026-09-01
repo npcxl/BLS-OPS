@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Columns2,
+  Copy,
   Eraser,
+  FolderOpen,
   History,
   PlugZap,
   Rows2,
@@ -18,6 +20,7 @@ import { opsApi, toErrorMessage, type ServerRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { RemoteFilePanel } from "@/workbench/views/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
@@ -25,6 +28,11 @@ import { cn } from "@/lib/cn";
 const KEEPALIVE_MS = 30_000;
 /** Consecutive failed probes before the session is declared dead. */
 const KEEPALIVE_MAX_FAILURES = 2;
+const SELECTION_MENU_DELAY_MS = 450;
+
+function isCommandNotFoundOutput(output: string): boolean {
+  return /command ['“”']?[^'“”']+['“”']? not found/i.test(output);
+}
 
 type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
 
@@ -55,7 +63,7 @@ function terminalTheme(dark: boolean): Record<string, string> {
         brightWhite: "#eceef2",
       }
     : {
-        background: "#ffffff",
+        background: "#f4f7fc",
         foreground: "#1f2329",
         cursor: "#3175f1",
         cursorAccent: "#ffffff",
@@ -100,7 +108,7 @@ function ToolbarIcon({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "flex h-7 w-7 items-center justify-center rounded-[8px] border border-transparent text-fg-muted transition-all duration-150 ease-out hover:border-line hover:bg-surface-2 hover:text-fg active:scale-[0.98]",
+        "flex h-7 w-7 items-center justify-center rounded-[8px] border border-transparent text-fg-muted transition-colors duration-150 ease-out hover:border-line hover:bg-surface-2 hover:text-fg",
         active && "border-line bg-surface-active text-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]",
         disabled && "pointer-events-none opacity-40",
       )}
@@ -124,13 +132,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [connectMs, setConnectMs] = useState<number | null>(null);
-  const [fingerprint, setFingerprint] = useState<string | null>(null);
-  const [size, setSize] = useState({ cols: 0, rows: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchState, setSearchState] = useState<{ index: number; total: number } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(true);
+  /**
+   * Shell-to-panel sync: every `cd` typed in the terminal bumps this nonce
+   * with the raw argument; the file panel resolves it against its own cwd.
+   */
+  const [follow, setFollow] = useState<{ nonce: number; arg: string }>({ nonce: 0, arg: "" });
+  const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  const selectionMenuTimerRef = useRef<number | null>(null);
 
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const updateTab = useWorkbenchStore((s) => s.updateTab);
@@ -183,8 +196,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
       if (result.status === "connected") {
         const elapsed = Math.round(performance.now() - startedAt);
-        setConnectMs(elapsed);
-        setFingerprint(result.fingerprint);
         setPhase("connected");
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
         instance?.writeln(`\r\n已连接 ${result.host}:${result.port}（${result.fingerprint_type}）`);
@@ -265,7 +276,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     fit.fit();
     terminalRef.current = instance;
     fitRef.current = fit;
-    setSize({ cols: instance.cols, rows: instance.rows });
 
     // Follow the app theme live (system theme can change while running).
     const themeObserver = new MutationObserver(() => {
@@ -283,17 +293,27 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
             .catch(() => undefined);
         }
+        // Follow `cd` commands in the file panel: the panel resolves the
+        // argument against its own cwd (handles `cd`, `cd ~`, `cd -`, paths).
+        const match = /^cd(?:\s+(.*))?$/.exec(command.trim());
+        if (match) {
+          const arg = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+          setFollow((current) => ({ nonce: current.nonce + 1, arg }));
+        }
       }
       void opsApi.sshInput(sessionId, data).catch(() => undefined);
     });
 
     const resizeObserver = new ResizeObserver(() => {
+      // While this tab is hidden (display:none) the container measures 0;
+      // refitting would collapse the terminal and spam the connection with
+      // resize packets. Skip until it is visible again.
+      if (containerRef.current && containerRef.current.clientWidth === 0) return;
       try {
         fit.fit();
       } catch {
         return;
       }
-      setSize({ cols: instance.cols, rows: instance.rows });
       if (instance.cols > 0 && instance.rows > 0) {
         void opsApi.sshResize(sessionId, instance.cols, instance.rows).catch(() => undefined);
       }
@@ -302,7 +322,32 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
     let disposed = false;
     const unlistenOutput = listen<string>(`ssh-output-${sessionId}`, (event) => {
-      if (!disposed) instance.write(event.payload);
+      if (disposed) return;
+      const output = event.payload;
+      if (isCommandNotFoundOutput(output)) {
+        instance.write(`\x1b[31m命令无效：${output}\x1b[0m`);
+      } else {
+        instance.write(output);
+      }
+    });
+
+    const selectionSubscription = instance.onSelectionChange(() => {
+      if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
+      const text = instance.getSelection();
+      if (!text) {
+        setSelectionMenu(null);
+        return;
+      }
+      selectionMenuTimerRef.current = window.setTimeout(() => {
+        const container = containerRef.current;
+        if (!container || !instance.hasSelection()) return;
+        const terminalRect = container.getBoundingClientRect();
+        setSelectionMenu({
+          x: Math.min(terminalRect.width - 12, Math.max(12, terminalRect.width / 2)),
+          y: 12,
+          text,
+        });
+      }, SELECTION_MENU_DELAY_MS);
     });
     const unlistenClosed = listen<string>(`ssh-closed-${sessionId}`, () => {
       if (disposed) return;
@@ -317,6 +362,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       resizeObserver.disconnect();
       themeObserver.disconnect();
       dataSubscription.dispose();
+      selectionSubscription.dispose();
+      if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
       void unlistenOutput.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());
       void opsApi.sshDisconnect(sessionId).catch(() => undefined);
@@ -408,8 +455,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             : "未连接";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app">
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
+    <div className="flex h-full min-h-0 flex-row bg-app">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="relative z-10 flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
         <span
           className={cn(
             "h-[6px] w-[6px] rounded-full",
@@ -432,6 +480,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ToolbarIcon label="水平分栏" icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
         <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
+        <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
         <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" ? (
           <ToolbarIcon
@@ -481,8 +530,27 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1" onMouseDown={() => setSelectionMenu(null)}>
         <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-app p-2" data-selectable />
+        {selectionMenu && (
+          <div
+            className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <span className="px-1 text-11 text-fg-subtle">已选择 {selectionMenu.text.length} 个字符</span>
+            <button
+              type="button"
+              className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
+              onClick={() => {
+                void navigator.clipboard.writeText(selectionMenu.text);
+                setSelectionMenu(null);
+              }}
+            >
+              <Copy size={12} />
+              复制
+            </button>
+          </div>
+        )}
         {historyOpen && (
           <CommandHistoryPanel
             sessionId={sessionId}
@@ -502,14 +570,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           />
           {statusLabel}
         </span>
-        {connectMs !== null && <span>握手 {connectMs} ms</span>}
-        {fingerprint && <span className="truncate">{fingerprint}</span>}
-        <span className="ml-auto">
-          {size.cols}×{size.rows}
-        </span>
-        <span>UTF-8</span>
-        <span>keepalive 30s</span>
+        {error && <span className="min-w-0 flex-1 truncate text-danger">{error}</span>}
       </div>
+      </div>
+
+      {filesOpen && (
+        <RemoteFilePanel
+          key={sessionId}
+          sessionId={sessionId}
+          connected={phase === "connected"}
+          follow={follow}
+          onClose={() => setFilesOpen(false)}
+        />
+      )}
     </div>
   );
 }

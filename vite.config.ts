@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,11 @@ export default defineConfig(async () => ({
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
           if (id.includes("@xterm")) return "xterm";
+          // The editor is only imported by the lazy FileEditorModal; keeping it
+          // out of `vendor` stops ~500 KB of CodeMirror from the first paint.
+          if (id.includes("@codemirror") || id.includes("@uiw") || id.includes("codemirror")) {
+            return "editor";
+          }
           if (id.includes("react-dom") || id.includes("/react/") || id.includes("/react-dom/")) {
             return "react";
           }
@@ -34,6 +39,10 @@ export default defineConfig(async () => ({
     },
     // The bundle ships inside the desktop app, so source maps only bloat it.
     sourcemap: false,
+  },
+
+  test: {
+    environment: "happy-dom",
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

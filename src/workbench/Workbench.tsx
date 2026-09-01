@@ -17,7 +17,8 @@ export function Workbench() {
   useGlobalShortcuts();
 
   const openTab = useWorkbenchStore((s) => s.openTab);
-  const setModule = useWorkbenchStore((s) => s.setModule);
+  const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
+  const openModuleTab = useWorkbenchStore((s) => s.openModuleTab);
   const setCommandPaletteOpen = useWorkbenchStore((s) => s.setCommandPaletteOpen);
   const commandPaletteOpen = useWorkbenchStore((s) => s.commandPaletteOpen);
 
@@ -37,7 +38,7 @@ export function Workbench() {
       description: `${server.username}@${server.host}:${server.port}`,
       keywords: ["连接", server.host, server.username, ...server.tags],
       onSelect: () =>
-        openTab({
+        openOrFocusServerTab({
           id: crypto.randomUUID(),
           type: "terminal",
           title: server.name,
@@ -57,7 +58,7 @@ export function Workbench() {
         description: `${session.username}@${session.server_host}:${session.server_port}`,
         keywords: ["最近", session.server_host],
         onSelect: () =>
-          openTab({
+          openOrFocusServerTab({
             id: crypto.randomUUID(),
             type: "terminal",
             title: session.server_name,
@@ -75,14 +76,14 @@ export function Workbench() {
         title: "管理服务器",
         category: "服务器",
         description: "打开服务器列表",
-        onSelect: () => setModule("ssh"),
+        onSelect: () => openModuleTab("servers"),
       },
       {
         id: "manage-credentials",
         title: "管理凭据",
         category: "设置",
         description: "打开凭据与已知主机",
-        onSelect: () => setModule("settings"),
+        onSelect: () => openModuleTab("settings"),
       },
       {
         id: "open-home",
@@ -93,7 +94,7 @@ export function Workbench() {
           openTab({ id: crypto.randomUUID(), type: "home", title: "首页" }),
       },
     ];
-  }, [openTab, servers, sessions, setModule]);
+  }, [openTab, openModuleTab, servers, sessions]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app text-fg">

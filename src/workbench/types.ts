@@ -6,6 +6,7 @@
  */
 export type WorkspaceTabType =
   | "home"
+  | "module"
   | "terminal"
   | "server"
   | "file"
@@ -20,6 +21,8 @@ export interface WorkspaceTab {
   type: WorkspaceTabType;
   title: string;
   subtitle?: string;
+  /** Module page this tab shows, when `type === "module"`. */
+  module?: NavModule;
   /** Server/session context. */
   serverId?: string;
   sessionId?: string;

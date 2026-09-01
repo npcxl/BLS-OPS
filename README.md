@@ -67,6 +67,11 @@ cargo test              # Rust 单元测试
 | **Known Hosts** | ✅ | 列表、删除、首次连接确认、指纹变更拦截 |
 | **真实 SSH 会话** | ✅ | `SshSessionManager`：密码 / 私钥 / 私钥口令 / ProxyJump |
 | **终端** | ✅ | xterm.js 输入输出、Resize、断开、重连、KeepAlive、查找 |
+| **远程文件浏览器** | ✅ | 独立 SFTP subsystem 通道（复用最终目标连接，兼容 ProxyJump）；面包屑/后退/前进/上一级/刷新；**重命名、副本、删除（递归）、新建文件夹/文件**；**本地拖拽上传**（文件与文件夹递归，落在当前目录）；**跟随终端 `cd` 联动**；右侧面板默认展开、可拖宽、可折叠 |
+| **文件类型识别与图标** | ✅ | 按扩展名区分 SQL / HTML / JS / TS / Java / Python / JSON / YAML / PDF / Excel / Word / 图片 / 压缩包 / 视频音频等，各类独立彩色图标 |
+| **文本文件预览编辑** | ✅ | 双击文本/代码文件打开内置编辑器（CodeMirror，语法高亮：SQL、HTML、JS/TS/JSX、Java、JSON、CSS、Python、Markdown），Ctrl+S 保存回写；二进制与大文件（>2MB）明确拒绝；编辑器代码分包懒加载 |
+| **表单弹窗** | ✅ | 新建文件/文件夹、重命名均为带校验的 Modal 弹窗（禁空名、禁 `/`），不再使用 window.prompt |
+| **命令历史解析** | ✅ | 方向键、Ctrl+C/Ctrl+U/Ctrl+W、括号粘贴（多行）、`\` 续行与未闭合引号均正确处理 |
 | **连接状态指示** | ✅ | Tab 上的状态点来自 `session-store`（连接中/已连接/失败/断开），不依赖任何本地假标记 |
 | **命令历史** | ✅ | 终端侧栏按会话+服务器过滤并可回放；设置页提供全局历史列表 |
 | **审计日志** | ✅ | 设置页查看 `audit_logs`（连接、断开、增删改、主机指纹决策） |
@@ -75,10 +80,11 @@ cargo test              # Rust 单元测试
 | **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
 | **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 26 个（目标解析、主机密钥信任矩阵、迁移、级联删除、Known Hosts、服务器校验、会话记录） |
-| **SSH 端到端测试** | ✅ | 10 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开 |
-| **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` |
-| **Docker / Nginx / 部署 / 项目 / 文件 / AI** | ⏸ 暂停 | 仅保留占位说明，P0 验收通过前不开发 |
+| **Rust 单元测试** | ✅ | 31 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录） |
+| **SSH 端到端测试** | ✅ | 24 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
+| **前端测试** | ✅ | vitest + happy-dom：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别（扩展名/点文件/大小写/未知类型） |
+| **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` + `pnpm test` |
+| **Docker / Nginx / 部署 / 项目 / AI** | ⏸ 暂停 | 仅保留占位说明，验收通过前不开发。**文件模块第一阶段（SFTP 只读浏览）已上线**，上传/下载/删除/重命名/在线编辑留待后续 |
 
 ### 关于 Windows `0xc0000139`
 
@@ -162,8 +168,11 @@ BLS-OPS/
 
 | Command | 说明 |
 |---------|------|
-| `ssh_connect` | 建立会话；支持 `serverId` 或 `target`（`user@host:port`）+ `credentialId` |
+| `ssh_connect` | 建立会话；支持 `serverId` 或 `target`（`user@host:port`）+ `credentialId`，或 `password`（一次性密码，仅本次使用，不落盘） |
 | `ssh_input` / `ssh_resize` / `ssh_keepalive` / `ssh_status` / `ssh_disconnect` | 会话控制 |
+| `sftp_open` | 打开 SFTP，返回远程 Home 的规范路径 |
+| `sftp_list_dir` | 列目录：返回规范路径 + 条目（文件夹优先、名称自然排序） |
+| `sftp_realpath` / `sftp_stat` / `sftp_close` | 路径规范化 / 单条目详情（lstat 语义）/ 关闭 SFTP |
 | `session_list` / `session_stats` | 历史会话与实时会话数 |
 | `history_record` / `history_list` | 命令历史 |
 | `audit_log_list` | 审计日志 |
@@ -198,12 +207,13 @@ type SshConnectResult =
 ## 🧪 测试
 
 ```bash
+pnpm test                  # 前端测试（vitest + happy-dom）
 cd src-tauri
-cargo test                 # 26 单元测试 + 10 端到端测试
+cargo test                 # 31 单元测试 + 17 端到端测试
 cargo test --test ssh_e2e  # 只跑端到端
 ```
 
-`tests/ssh_e2e.rs` 会在进程内启动**真实的 SSH 服务端**（russh server，ed25519 主机密钥，监听 127.0.0.1 随机端口），然后驱动生产代码里同一套 `SshSessionManager`。覆盖：
+`tests/ssh_e2e.rs` 会在进程内启动**真实的 SSH 服务端**（russh server + russh-sftp server，ed25519 主机密钥，监听 127.0.0.1 随机端口），然后驱动生产代码里同一套 `SshSessionManager`。覆盖：
 
 - 首次连接返回未信任指纹，且挑战端点正确；
 - 指纹变化时返回 `HostKeyChanged` 并带上旧指纹；
@@ -212,9 +222,27 @@ cargo test --test ssh_e2e  # 只跑端到端
 - **ProxyJump 逐跳信任**：跳板机先挑战（端口是跳板机端口）→ 目标机再挑战（端口是目标机端口）→ 两端都信任后落到目标机 shell；
 - 跳板机拒绝隧道时有明确错误；
 - 断开后会话被移除，重复断开安全；
-- 多会话互不干扰。
+- 多会话互不干扰；
+- **SFTP**：连接后打开远程 Home 并列出条目（中文名、空格、隐藏文件、符号链接、自然排序）、进入子目录与返回、stat 详情（大小/mtime/链接类型）、无权限目录返回明确错误且会话存活、**SSH 断开后 SFTP 立即失败**、shell 与 SFTP 同时工作、**ProxyJump 后浏览的是最终服务器的文件而非跳板机**。
 
 这套测试替代了“找一台真实服务器手测”的大部分价值，且在 CI 上每次提交都会跑。
+
+### 人工验收步骤（真实环境）
+
+1. `pnpm tauri dev` 启动，确认无 `0xc0000139`；
+2. 新建密码凭据 + 服务器，首次连接：先点**拒绝**（连接应失败），再连接并**信任**；
+3. 执行 `pwd`、`ls`、`echo test`，检查输出正常；
+4. 缩放窗口，确认终端跟随 Resize；断开 → 重连；
+5. 重启应用，确认服务器、凭据、历史仍在；
+6. 私钥与带口令私钥各测一次；
+7. 手动改动服务器指纹（如重新生成主机密钥），确认出现强警告；
+8. **文件浏览**：连接后右侧面板默认展开，显示 Home 目录；双击文件夹进入、点面包屑跳转、`Backspace` 上一级、`Enter` 打开选中项、拖动左边缘调整宽度、折叠后从工具栏恢复；找一个无权限目录（如 `/root` 普通用户），确认显示“权限不足”且应用不崩；
+9. **文件操作**：单击文件 → 顶部出现操作条（打开/重命名/副本/删除）；或右键同名菜单。新建文件夹/文件弹出 Modal（输入空名或带 `/` 会被拦截）；删除有确认；
+10. **文本编辑**：双击 `.sql`/`.conf`/`.js`/`.java` 等文件 → 弹出带语法高亮的编辑器，修改后 Ctrl+S 保存，列表大小刷新；双击 `.pdf`/`.xlsx`/`.png` 显示“暂不支持打开”的提示条；`.bin`（含 NUL）拒绝编辑并说明是二进制；
+11. **拖拽上传**：从资源管理器拖文件/文件夹到面板 → 显示高亮提示，松手后上传到当前目录，完成后列表自动刷新；
+12. **cd 联动**：在终端执行 `cd /var/log`，右侧面板自动跳到该目录；`cd`、`cd ~`、`cd ..`、`cd -` 均生效；
+13. **ProxyJump**：经跳板机连接后打开文件面板，确认看到的是**目标服务器**的目录（对照 `ls /home` 输出）；
+14. 断开连接后文件面板应显示“连接已断开”。
 
 ---
 

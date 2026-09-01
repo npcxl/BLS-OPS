@@ -813,6 +813,233 @@ pub async fn ssh_status(state: State<'_, AppState>, session_id: String) -> Resul
     Ok(state.ssh.is_connected(&session_id).await)
 }
 
+// ---------------------------------------------------------------------------
+// SFTP (remote file browsing over the live session)
+// ---------------------------------------------------------------------------
+
+/// One directory listing: the canonical path actually read, plus its entries.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SftpListResult {
+    pub path: String,
+    pub entries: Vec<crate::ssh::RemoteFileEntry>,
+}
+
+#[tauri::command]
+pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+    state
+        .ssh
+        .sftp_open(&session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_list_dir(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: Option<String>,
+) -> Result<SftpListResult, String> {
+    let (path, entries) = state
+        .ssh
+        .sftp_list_dir(&session_id, path)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(SftpListResult { path, entries })
+}
+
+#[tauri::command]
+pub async fn sftp_realpath(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    state
+        .ssh
+        .sftp_realpath(&session_id, &path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_stat(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<crate::ssh::RemoteFileEntry, String> {
+    state
+        .ssh
+        .sftp_stat(&session_id, &path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_close(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    state
+        .ssh
+        .sftp_close(&session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Uploads local files/directories (paths handed over by a drag & drop) into
+/// `remote_dir`. Emits `sftp-upload-{session_id}` once per finished file so
+/// the UI can show progress without polling.
+#[tauri::command]
+pub async fn sftp_upload(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    local_paths: Vec<String>,
+    remote_dir: String,
+) -> Result<Vec<crate::ssh::RemoteFileEntry>, String> {
+    let session_id_for_cb = session_id.clone();
+    let uploaded = state
+        .ssh
+        .sftp_upload(&session_id, &local_paths, &remote_dir, &|name| {
+            let _ = app.emit(
+                &format!("sftp-upload-{session_id_for_cb}"),
+                name.to_string(),
+            );
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "sftp_upload",
+        None,
+        None,
+        &format!("{} file(s) → {remote_dir}", uploaded.len()),
+    );
+    Ok(uploaded)
+}
+
+#[tauri::command]
+pub async fn sftp_remove(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .sftp_remove(&session_id, &path)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_remove", None, None, &path);
+    Ok(())
+}
+
+/// Renames `path` to `new_name` (plain name, stays in the same directory).
+#[tauri::command]
+pub async fn sftp_rename(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let new_path = state
+        .ssh
+        .sftp_rename(&session_id, &path, &new_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "sftp_rename",
+        None,
+        None,
+        &format!("{path} → {new_path}"),
+    );
+    Ok(new_path)
+}
+
+/// Copies a file or directory within its own directory under `new_name`.
+#[tauri::command]
+pub async fn sftp_copy(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let new_path = state
+        .ssh
+        .sftp_copy(&session_id, &path, &new_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "sftp_copy",
+        None,
+        None,
+        &format!("{path} → {new_path}"),
+    );
+    Ok(new_path)
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let created = state
+        .ssh
+        .sftp_mkdir(&session_id, &path)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_mkdir", None, None, &created);
+    Ok(created)
+}
+
+/// Creates an empty remote file (the "新建文件" action).
+#[tauri::command]
+pub async fn sftp_touch(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let created = state
+        .ssh
+        .sftp_touch(&session_id, &path)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_touch", None, None, &created);
+    Ok(created)
+}
+
+/// Reads a remote file for the in-app editor (text files only, size-capped).
+#[tauri::command]
+pub async fn sftp_read_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<crate::ssh::RemoteFileContent, String> {
+    const MAX_EDIT_SIZE: u64 = 2 * 1024 * 1024;
+    let content = state
+        .ssh
+        .sftp_read_file(&session_id, &path, MAX_EDIT_SIZE)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_read_file", None, None, &path);
+    Ok(content)
+}
+
+/// Saves editor content back to the remote file.
+#[tauri::command]
+pub async fn sftp_write_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    state
+        .ssh
+        .sftp_write_file(&session_id, &path, &content)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_write_file", None, None, &path);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ssh_disconnect(
     app: tauri::AppHandle,

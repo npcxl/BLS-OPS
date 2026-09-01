@@ -38,7 +38,7 @@ export function Button({ variant = "ghost", size = "md", className, type = "butt
       type={type}
       className={cn(
         "inline-flex shrink-0 cursor-default items-center justify-center rounded-[8px] font-medium select-none",
-        "transition-all duration-150 ease-out active:scale-[0.985]",
+        "transition-colors duration-150 ease-out",
         "disabled:pointer-events-none disabled:opacity-50",
         variantClasses[variant],
         sizeClasses[size],

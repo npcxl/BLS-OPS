@@ -85,7 +85,7 @@ export function useGlobalShortcuts() {
 
       if (ctrl && !shift && e.key === "j") {
         e.preventDefault();
-        useWorkbenchStore.getState().setModule("ai");
+        useWorkbenchStore.getState().openModuleTab("ai");
       }
 
       if (ctrl && !shift && e.key === "b") {

@@ -62,25 +62,18 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
 
 export function NavigationRail() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
-  const setModule = useWorkbenchStore((s) => s.setModule);
-  const sidebarCollapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
-  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
-
-  const navigate = (item: NavItem) => {
-    setModule(item.id);
-    if (sidebarCollapsed) setSidebarCollapsed(false);
-  };
+  const openModuleTab = useWorkbenchStore((s) => s.openModuleTab);
 
   return (
     <nav
-      className="flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-1/60 py-2 backdrop-blur-xl"
+      className="relative z-30 flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-1/60 py-2 backdrop-blur-xl"
       aria-label="Navigation"
     >
       {NAV_ITEMS.map((item) =>
         item.divider ? (
           <div key="divider" className="my-1.5 h-px w-5 bg-line" />
         ) : (
-          <RailButton key={item.id} item={item} active={activeModule === item.id} onClick={() => navigate(item)} />
+          <RailButton key={item.id} item={item} active={activeModule === item.id} onClick={() => openModuleTab(item.id)} />
         ),
       )}
     </nav>

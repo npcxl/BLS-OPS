@@ -29,6 +29,16 @@ function findLeafWithTab(root: WorkbenchPane, tabId: string): WorkbenchPane | nu
   return null;
 }
 
+/** The leaf pane holding a terminal for this server, if any. */
+function findLeafWithServer(root: WorkbenchPane, serverId: string): WorkbenchPane | null {
+  if (root.tabs.some((tab) => tab.serverId === serverId)) return root;
+  for (const child of root.children ?? []) {
+    const found = findLeafWithServer(child, serverId);
+    if (found) return found;
+  }
+  return null;
+}
+
 function mapPane(root: WorkbenchPane, id: string, fn: (p: WorkbenchPane) => WorkbenchPane): WorkbenchPane {
   if (root.id === id) return fn(root);
   if (!root.children) return root;
@@ -77,6 +87,19 @@ function removePane(root: WorkbenchPane, id: string): WorkbenchPane | null {
 
 const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "首页" });
 
+const MODULE_LABELS: Record<NavModule, string> = {
+  ssh: "终端",
+  servers: "服务器",
+  files: "文件",
+  projects: "项目",
+  deploy: "部署",
+  docker: "容器",
+  nginx: "网关",
+  tasks: "任务",
+  ai: "智能助手",
+  settings: "设置",
+};
+
 const createInitialRootPane = (): WorkbenchPane => {
   const home = createHomeTab();
   return { id: uuid(), tabs: [home], activeTabId: home.id };
@@ -102,6 +125,20 @@ interface WorkbenchState {
 
   setActiveTab: (paneId: string, tabId: string) => void;
   openTab: (tab: WorkspaceTab, opts?: { paneId?: string; split?: SplitDirection }) => void;
+  /**
+   * Opens a terminal for a server, or — if a terminal tab for that server is
+   * already open anywhere — focuses that existing tab instead. Clicking the
+   * same server twice therefore never re-connects: one server, one live
+   * session, exactly what keeps file-panel state (and the shell) alive while
+   * you switch around.
+   */
+  openOrFocusServerTab: (tab: WorkspaceTab & { serverId: string }) => void;
+  /**
+   * Opens (or focuses, if already open) the module page tab in the focused pane.
+   * 终端/服务器 share the left context sidebar (server list) instead of a page
+   * tab, so for those this only switches the active module.
+   */
+  openModuleTab: (module: NavModule) => void;
   closeTab: (paneId: string, tabId: string) => void;
   closeTabById: (tabId: string) => void;
   closeOtherTabs: (paneId: string, tabId: string) => void;
@@ -215,6 +252,68 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
           activeTabId: nextTab.id,
         }),
         focusedPaneId: targetPaneId,
+      };
+    }),
+
+  openOrFocusServerTab: (tab) =>
+    set((state) => {
+      // A terminal for this server may live in any pane; prefer the focused
+      // pane's tab, then any other. Reusing it keeps the SSH session (and the
+      // file panel's directory state) exactly as the user left it.
+      const pane = findLeafWithServer(state.rootPane, tab.serverId);
+      if (pane) {
+        const existing = pane.tabs.find((item) => item.serverId === tab.serverId);
+        if (existing) {
+          return {
+            rootPane: replacePane(state.rootPane, pane.id, { ...pane, activeTabId: existing.id }),
+            focusedPaneId: pane.id,
+          };
+        }
+      }
+
+      // None open: create a fresh session in the focused pane.
+      const targetPaneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+      const target = findPane(state.rootPane, targetPaneId);
+      if (!target || !isLeafPane(target)) return state;
+      const nextTab = normalizeTab(tab);
+      return {
+        rootPane: replacePane(state.rootPane, targetPaneId, {
+          ...target,
+          tabs: [...target.tabs, nextTab],
+          activeTabId: nextTab.id,
+        }),
+        focusedPaneId: targetPaneId,
+      };
+    }),
+
+  openModuleTab: (module) =>
+    set((state) => {
+      // 终端/服务器 render in the left context sidebar — just switch the module.
+      if (module === "ssh" || module === "servers") {
+        return { activeModule: module };
+      }
+
+      const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+      const pane = findPane(state.rootPane, paneId);
+      if (!pane || !isLeafPane(pane)) return state;
+
+      const existing = pane.tabs.find((tab) => tab.type === "module" && tab.module === module);
+      if (existing) {
+        return {
+          activeModule: module,
+          rootPane: replacePane(state.rootPane, paneId, { ...pane, activeTabId: existing.id }),
+          focusedPaneId: paneId,
+        };
+      }
+      const tab = normalizeTab({ id: uuid(), type: "module", module, title: MODULE_LABELS[module] });
+      return {
+        activeModule: module,
+        rootPane: replacePane(state.rootPane, paneId, {
+          ...pane,
+          tabs: [...pane.tabs, tab],
+          activeTabId: tab.id,
+        }),
+        focusedPaneId: paneId,
       };
     }),
 

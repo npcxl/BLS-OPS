@@ -14,6 +14,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 5. 凭据的“私钥 + 私钥口令”是一组配置，不是互斥类型。
 
 ## 技术要点
+- Workbench 布局约定：终端/服务器模块走左侧 `ContextSidebar`（服务器列表，`openModuleTab` 对 `ssh`/`servers` 只切换 `activeModule`，不开页签）；设置等其他模块走 `ModulePage` 居中页签。
 - SSH 用 `russh 0.63`，默认 `check_server_key` 拒绝所有键，必须实现。
 - KeepAlive 用 `client::Config.keepalive_interval` + `Handle::send_keepalive`。
 - ProxyJump：`Handle::channel_open_direct_tcpip(...)` → `Channel::into_stream()` → `client::connect_stream(...)`；跳板机 handle 必须保活，否则通道被丢弃。

@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react";
 import { Loader2 } from "lucide-react";
 import type { WorkspaceTab } from "@/workbench/types";
 import { WorkbenchHome } from "@/workbench/views/WorkbenchHome";
+import { ModulePage } from "@/workbench/ModulePage";
 import { PlaceholderView } from "@/workbench/views/PlaceholderView";
 
 /**
@@ -26,6 +27,8 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
   switch (tab.type) {
     case "home":
       return <WorkbenchHome />;
+    case "module":
+      return tab.module ? <ModulePage module={tab.module} /> : null;
     case "terminal":
       return (
         <Suspense fallback={<TerminalFallback />}>

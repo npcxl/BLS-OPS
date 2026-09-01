@@ -61,6 +61,20 @@ pub fn run() {
             commands::ssh_keepalive,
             commands::ssh_status,
             commands::ssh_disconnect,
+            // sftp — file browsing and management over the live session
+            commands::sftp_open,
+            commands::sftp_list_dir,
+            commands::sftp_realpath,
+            commands::sftp_stat,
+            commands::sftp_close,
+            commands::sftp_upload,
+            commands::sftp_remove,
+            commands::sftp_rename,
+            commands::sftp_copy,
+            commands::sftp_mkdir,
+            commands::sftp_touch,
+            commands::sftp_read_file,
+            commands::sftp_write_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

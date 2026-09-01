@@ -15,7 +15,7 @@ interface ModalProps {
 }
 
 /** Centered dialog used for host-key confirmation and entity forms. */
-export function Modal({ open, title, description, width = 460, onClose, footer, children }: ModalProps) {
+export function Modal({ open, title, description, width = 360, onClose, footer, children }: ModalProps) {
   const { render, exiting } = useExiting(open, 150);
 
   useEffect(() => {

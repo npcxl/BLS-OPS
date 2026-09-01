@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
+import { ContextMenu, contextMenuStateAt, type ContextMenuState } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
@@ -33,8 +34,25 @@ function ServerRow({
   onDelete: (server: ServerRecord) => void;
   onToggleFavorite: (server: ServerRecord) => void;
 }) {
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+
   return (
-    <div className="group flex w-full items-center rounded-[6px] px-2.5 py-1.5 hover:bg-surface-hover">
+    <>
+      <div
+        className="flex w-full items-center rounded-[6px] px-2.5 py-1.5 hover:bg-surface-hover"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu(
+            contextMenuStateAt(event, [
+              { id: "connect", label: "打开终端", icon: Plug, onSelect: () => onOpen(server) },
+              { id: "favorite", label: server.favorite ? "取消收藏" : "收藏", icon: Star, onSelect: () => onToggleFavorite(server) },
+              { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
+              { id: "sep", separator: true },
+              { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: () => onDelete(server) },
+            ]),
+          );
+        }}
+      >
       <button type="button" className="flex min-w-0 flex-1 flex-col gap-0.5 text-left" onClick={() => onOpen(server)}>
         <div className="flex items-center gap-1.5">
           <span className="truncate text-12 text-fg">{server.name}</span>
@@ -166,8 +184,6 @@ export function SshContextSidebar() {
   const saveGroup = useDomainStore((s) => s.saveGroup);
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
   const removeGroup = useDomainStore((s) => s.deleteGroup);
-  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
-
   const [editing, setEditing] = useState<ServerRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -271,7 +287,17 @@ export function SshContextSidebar() {
       <div className="mt-1">
         <SectionTitle
           actions={
-            <div className="flex items-center">
+            <div className="flex items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="xs"
+                className="h-5 w-5 px-0"
+                aria-label="刷新服务器"
+                title="刷新服务器"
+                onClick={() => void load()}
+              >
+                <RefreshCw size={12} />
+              </Button>
               <Button
                 variant="ghost"
                 size="xs"
@@ -414,6 +440,7 @@ function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => 
     pending: false,
     result: null,
   });
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const isNew = !servers.some((item) => item.id === form.id);
 
@@ -426,7 +453,7 @@ function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => 
           .map((tag) => tag.trim())
           .filter(Boolean),
       });
-      onClose();
+      setSaveMessage("已保存");
     });
 
   const runTest = async () => {
@@ -466,20 +493,38 @@ function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => 
     }
   };
 
+  useEffect(() => {
+    if (!saveMessage) return;
+    const timer = window.setTimeout(() => setSaveMessage(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [saveMessage]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (!submit.pending) void save();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   return (
     <Modal
       open
-      width={480}
+      width={360}
       title={isNew ? "新增服务器" : `编辑服务器 — ${server.name || server.host}`}
       description="凭据密钥保存在系统凭据管理器中，数据库只保存引用。"
       onClose={onClose}
       footer={
         <>
+          {saveMessage && <span className="mr-auto text-11 text-success">{saveMessage}</span>}
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
-            取消
+            关闭
           </Button>
           <Button variant="primary" size="sm" disabled={submit.pending} onClick={() => void save()}>
-            {submit.pending ? "保存中…" : "保存"}
+            {submit.pending ? "保存中…" : "保存 Ctrl+S"}
           </Button>
         </>
       }

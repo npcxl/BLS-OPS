@@ -25,7 +25,11 @@ function WindowButton({ kind }: { kind: "close" | "minimize" | "maximize" }) {
       aria-label={kind}
       onClick={() => {
         const win = getCurrentWindow();
-        void (kind === "close" ? win.close() : kind === "minimize" ? win.minimize() : win.toggleMaximize());
+        void (kind === "close"
+          ? win.close()
+          : kind === "minimize"
+            ? win.minimize()
+            : win.toggleMaximize());
       }}
       className={cn(
         "group flex h-3 w-3 items-center justify-center rounded-full transition-colors",
@@ -45,28 +49,25 @@ export function AppTopBar() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
   const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
   const setCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
-  const canToggleSidebar = activeModule === "ssh" || activeModule === "servers";
 
   return (
     <header
       data-tauri-drag-region
       className="group relative flex h-9 shrink-0 select-none items-center gap-2 px-3"
     >
-      {canToggleSidebar && (
-        <button
-          type="button"
-          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
-          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
-          className="flex h-3 w-3 items-center justify-center rounded-full text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
-          onClick={() => setCollapsed(!collapsed)}
-          data-tauri-drag-region="false"
-        >
-          <ChevronsLeft size={10} className={collapsed ? "rotate-180" : ""} />
-        </button>
-      )}
       <WindowButton kind="close" />
       <WindowButton kind="minimize" />
       <WindowButton kind="maximize" />
+      <button
+        type="button"
+        aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        className="flex h-3 w-3 items-center justify-center rounded-full text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+        onClick={() => setCollapsed(!collapsed)}
+        data-tauri-drag-region="false"
+      >
+        <ChevronsLeft size={10} className={collapsed ? "rotate-180" : ""} />
+      </button>
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
         {MODULE_TITLES[activeModule] ?? "BLS-OPS"}
       </span>

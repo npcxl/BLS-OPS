@@ -76,6 +76,14 @@ function formatTime(seconds?: number | null): string {
   });
 }
 
+/** Size column for directory rows: direct-child count, lazily resolved. */
+function formatDirCount(count: number | "loading" | undefined): string {
+  if (count === undefined) return "…";
+  if (count === "loading") return "…";
+  if (count === -1) return "?"; // unreadable (permissions)
+  return `${count} 项`;
+}
+
 type PanelStatus =
   | { state: "idle" }
   | { state: "loading" }
@@ -701,8 +709,10 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
                       {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
                     </span>
                     <span className="block truncate text-10 text-fg-subtle">
-                      {entry.kind === "directory" ? "—" : formatSize(entry.size)} ·{" "}
-                      {formatTime(entry.modified_at)}
+                      {entry.kind === "directory"
+                        ? formatDirCount(dirCounts[entry.path])
+                        : formatSize(entry.size)}{" "}
+                      · {formatTime(entry.modified_at)}
                     </span>
                   </span>
                   {entry.kind === "directory" && (

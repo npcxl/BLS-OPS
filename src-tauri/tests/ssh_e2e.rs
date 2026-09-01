@@ -719,6 +719,7 @@ impl SftpHandlerTrait for SftpState {
                         mtime: MTIME,
                         perms: 0o644,
                         content: Some(opened.buffer),
+                        omit_size: false,
                     },
                 );
             }
@@ -1964,8 +1965,13 @@ async fn sftp_list_recovers_missing_sizes_via_lstat() {
     let mut shy = file_with_content(b"shy size 12345");
     shy.omit_size = true;
     entries.insert("/home/opsuser/shy.txt".to_string(), shy);
-    let (addr, handle) =
-        spawn_server_fs("target-host", false, true, TestFs::with("/home/opsuser", entries)).await;
+    let (addr, handle) = spawn_server_fs(
+        "target-host",
+        false,
+        true,
+        TestFs::with("/home/opsuser", entries),
+    )
+    .await;
     let manager = SshSessionManager::default();
     connect_trusted(&manager, "s1", addr.port()).await;
     manager.sftp_open("s1").await.expect("sftp open");

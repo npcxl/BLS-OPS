@@ -5,6 +5,7 @@
 //! guessed, and container-internal paths never masquerade as host paths.
 
 use super::*;
+use crate::safe::validate_unit;
 use serde_json::json;
 
 // -- Docker inspect ------------------------------------------------------
@@ -178,6 +179,22 @@ LISTEN 0      128             [::]:22            [::]:*    users:((\"sshd\",pid=
     assert_eq!(map.get(&80), Some(&100), "取第一个 pid");
     assert_eq!(map.get(&22), Some(&9));
     assert!(map.get(&443).is_none());
+}
+
+#[test]
+fn escaped_unit_names_are_rejected_by_the_validator() {
+    // Regression: systemd escapes some names (`systemd\x2dfsck@dev-sda1.service`).
+    // The backslash is not in the safe set, but `parse_list_units` keeps them
+    // (they do end in `.service`), so the collector must drop them — otherwise
+    // one such unit fails an entire batched `systemctl show` and the machine
+    // ends up reporting zero systemd instances.
+    let escaped = "systemd\\x2dfsck@dev-sda1.service";
+    assert!(escaped.ends_with(".service"), "会被 parse_list_units 保留");
+    assert!(
+        validate_unit(escaped).is_err(),
+        "转义单元名必须被校验器拒绝"
+    );
+    assert!(validate_unit("order.service").is_ok());
 }
 
 #[test]

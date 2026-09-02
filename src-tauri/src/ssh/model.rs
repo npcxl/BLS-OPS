@@ -60,6 +60,23 @@ pub struct RemoteFileContent {
     pub content: Option<String>,
 }
 
+/// Payload of `sftp_read_binary`: the raw bytes of any remote file, for the
+/// in-app preview. Base64 (not a byte array) because the IPC layer is JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteBinaryContent {
+    /// Canonical path the bytes were read from.
+    pub path: String,
+    /// Full remote size, even when `data` was truncated.
+    pub size: u64,
+    /// Best-effort MIME type from the file name; `application/octet-stream`
+    /// when the extension says nothing.
+    pub mime: String,
+    /// Base64 of the first `size` (or `max_len`) bytes.
+    pub data: String,
+    /// True when the file is larger than the caller's budget.
+    pub truncated: bool,
+}
+
 /// Host key observed during the SSH handshake.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct HostKeyInfo {

@@ -27,12 +27,24 @@ fn collect_markers(
 
 /// 候选路径与部署实例的双向前缀关联：候选目录是实例源码目录（或其父/子目录），
 /// 就建立运行时关联 —— 这取代旧的 ps/systemctl 文本匹配。
+/// 找出与该目录相关的部署实例：既给出评分用的运行时关联，也给出 UI 展示用的
+/// 实例详情（运行位置、镜像、服务、配置文件路径）。
+///
+/// **操作系统自带的实例（sshd / cron / containerd / kubelet / k8s 沙箱容器）
+/// 不参与项目发现** —— 它们不是用户部署的东西。
 fn instance_links_for_path(
     instances: &[crate::deployment_collector::DeploymentInstance],
     path: &str,
-) -> Vec<crate::project_discovery::RuntimeLink> {
+) -> (
+    Vec<crate::project_discovery::RuntimeLink>,
+    Vec<crate::project_discovery::CandidateInstance>,
+) {
     let mut links = Vec::new();
+    let mut linked = Vec::new();
     for instance in instances {
+        if instance.system_owned {
+            continue;
+        }
         let related = instance
             .source_paths
             .iter()
@@ -57,9 +69,24 @@ fn instance_links_for_path(
             status: Some(instance.status.clone()),
             ports: instance.ports.clone(),
             source: "deployment_instance".into(),
+            runtime: instance.runtime,
+            service: instance.service.clone(),
+        });
+        linked.push(crate::project_discovery::CandidateInstance {
+            id: instance.id.clone(),
+            kind: instance.kind.clone(),
+            name: instance.name.clone(),
+            status: instance.status.clone(),
+            runtime: instance.runtime,
+            image: instance.image.clone(),
+            service: instance.service.clone(),
+            ports: instance.ports.clone(),
+            config_files: instance.config_files.clone(),
+            working_directories: instance.working_directories.clone(),
+            detail: instance.detail.clone(),
         });
     }
-    links
+    (links, linked)
 }
 
 /// 刷新一条扫描任务的进度。全部阶段共用；`current` 是正在处理的路径。
@@ -270,7 +297,7 @@ pub async fn project_scan_start(
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err("扫描已取消".to_string());
                 }
-                let runtime_links = instance_links_for_path(&instances, &path);
+                let (runtime_links, linked_instances) = instance_links_for_path(&instances, &path);
                 set_progress(
                     &registry,
                     &id,
@@ -293,6 +320,7 @@ pub async fn project_scan_start(
                     markers,
                     source: "deployment_instance_scan".into(),
                     runtime_links,
+                    instances: linked_instances,
                     modules: Vec::new(),
                     env_names: Vec::new(),
                     ports: Vec::new(),

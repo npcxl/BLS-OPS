@@ -11,6 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+use crate::service_catalog::{is_plausible_project_root, DetectedService, InstanceRuntime};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfidenceLevel {
@@ -50,6 +52,87 @@ pub struct RuntimeLink {
     pub status: Option<String>,
     pub ports: Vec<u16>,
     pub source: String,
+    /// 实例跑在哪里：宿主机 / 容器 / Kubernetes。
+    #[serde(default)]
+    pub runtime: InstanceRuntime,
+    /// 识别出的服务（MySQL / Redis / Nginx …）；识别不出为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<DetectedService>,
+}
+
+impl RuntimeLink {
+    /// 该运行时关联是否来自基础设施（数据库 / 缓存 / 网关 / 监控 …），
+    /// 而不是用户部署的业务应用。
+    pub fn is_infrastructure(&self) -> bool {
+        self.service
+            .as_ref()
+            .map(|service| service.group.is_infrastructure())
+            .unwrap_or(false)
+    }
+}
+
+/// 候选项目性质：业务应用，还是"跑在这台机器上的基础设施"。
+///
+/// 一台服务器上 "MySQL 容器" 和 "订单服务" 是完全不同的东西：前者是依赖，
+/// 不该出现在"要不要部署这个项目"的清单里。区分不出来就返回 `Unknown`，
+/// 绝不把基础设施说成业务应用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    /// 业务应用：用户自己的代码。
+    Application,
+    /// 基础设施：数据库、缓存、消息队列、网关、监控、CI 等。
+    Infrastructure,
+    /// 证据不足以判断。
+    Unknown,
+}
+
+impl ProjectKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProjectKind::Application => "业务应用",
+            ProjectKind::Infrastructure => "基础设施",
+            ProjectKind::Unknown => "未确定",
+        }
+    }
+
+    /// 反序列化缺省值：缺少该字段的旧数据视为"未确定"。
+    fn default() -> Self {
+        ProjectKind::Unknown
+    }
+}
+
+/// 候选项目关联到的一个部署实例。UI 用它提供"查看项目文件 / Docker 配置 /
+/// Nginx 配置 / unit 文件"的跳转入口 —— 配置文件路径在这里，点开就能到目录。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandidateInstance {
+    /// `docker:<id>` / `systemd:<unit>` / `nginx:<site>` / `k8s:<ns>/<pod>`
+    pub id: String,
+    /// `docker` / `systemd` / `nginx` / `k8s`
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub runtime: InstanceRuntime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<DetectedService>,
+    pub ports: Vec<u16>,
+    /// 宿主机上的配置文件（Compose / unit 片段 / Nginx 配置）。镜像运行的
+    /// 实例**没有**宿主机配置文件，此时为空 —— 前端要如实说"没有配置文件"，
+    /// 而不是给一个假的入口。
+    #[serde(default)]
+    pub config_files: Vec<String>,
+    #[serde(default)]
+    pub working_directories: Vec<String>,
+    pub detail: String,
+}
+
+impl CandidateInstance {
+    /// 该实例是否有任何宿主机上的配置文件可看。
+    pub fn has_config(&self) -> bool {
+        !self.config_files.is_empty()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectModule {
@@ -89,6 +172,16 @@ pub struct ProjectCandidate {
     pub confidence: ConfidenceLevel,
     /// 已部署（关联实例）或仅源码。
     pub category: CandidateCategory,
+    /// 业务应用 / 基础设施 / 未确定。MySQL、Redis、Nginx 这类是**依赖**而不是
+    /// 项目，必须与业务应用分开放，否则"要不要部署"清单里会混进一堆中间件。
+    #[serde(default = "ProjectKind::default")]
+    pub project_kind: ProjectKind,
+    /// 关联到的部署实例（含配置文件路径，供 UI 跳转查看）。
+    #[serde(default)]
+    pub deploy_instances: Vec<CandidateInstance>,
+    /// 所有关联实例的配置文件汇总（去重、有序）。
+    #[serde(default)]
+    pub config_files: Vec<String>,
     pub evidence: Vec<ProjectEvidence>,
     pub penalties: Vec<ProjectPenalty>,
     pub runtime_links: Vec<RuntimeLink>,
@@ -178,6 +271,8 @@ pub struct CandidateInput {
     pub markers: Vec<String>,
     pub source: String,
     pub runtime_links: Vec<RuntimeLink>,
+    /// 与 `runtime_links` 一一对应的部署实例（含配置文件路径）。
+    pub instances: Vec<CandidateInstance>,
     pub modules: Vec<ProjectModule>,
     pub env_names: Vec<String>,
     pub ports: Vec<u16>,
@@ -203,6 +298,13 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         .iter()
         .any(|part| input.path.split('/').any(|p| p == *part))
     {
+        return None;
+    }
+    // **操作系统自带的目录不是项目**。`find /home /srv /opt …` 会命中
+    // `/usr/local/lib/python3/.../package.json` 这类属于发行版的东西，列出来
+    // 只会淹没真正的业务代码。判定规则集中在 `service_catalog`，与"什么算
+    // 依赖目录"共用同一张表。
+    if let Err(reason) = is_plausible_project_root(&input.path) {
         return None;
     }
     let mut evidence = Vec::new();
@@ -375,6 +477,30 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     };
     let project_type = detect_type(&markers);
     let readiness = readiness(&markers, &input.runtime_links, &input.env_names);
+    // **业务应用 vs 基础设施**：只要任一关联实例被认成中间件（MySQL / Redis /
+    // Nginx / 监控 …），这个候选就是"跑在这台机器上的依赖"，不是要部署的项目。
+    // 一个都没认出来时保持 `Unknown`，不谎称是业务应用。
+    let identified: Vec<_> = input
+        .runtime_links
+        .iter()
+        .filter(|link| link.service.is_some())
+        .collect();
+    let project_kind = if identified.is_empty() {
+        ProjectKind::Unknown
+    } else if identified.iter().any(|link| link.is_infrastructure()) {
+        ProjectKind::Infrastructure
+    } else {
+        ProjectKind::Application
+    };
+    // 配置文件汇总：UI 的"查看 Docker 配置 / Nginx 配置"就靠它跳转。
+    let mut config_files: Vec<String> = Vec::new();
+    for instance in &input.instances {
+        for file in &instance.config_files {
+            if !config_files.contains(file) {
+                config_files.push(file.clone());
+            }
+        }
+    }
     Some(ProjectCandidate {
         id: format!("{}:{}", input.server_id, input.path),
         server_id: input.server_id,
@@ -388,6 +514,9 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         } else {
             CandidateCategory::Deployed
         },
+        project_kind,
+        deploy_instances: input.instances,
+        config_files,
         evidence,
         penalties,
         runtime_links: input.runtime_links,
@@ -574,9 +703,29 @@ mod tests {
             markers: markers.iter().map(|m| m.to_string()).collect(),
             source: "test".to_string(),
             runtime_links: Vec::new(),
+            instances: Vec::new(),
             modules: Vec::new(),
             env_names: Vec::new(),
             ports: Vec::new(),
+        }
+    }
+
+    /// 构造一个带服务身份的运行时关联（模拟收集器识别出的实例）。
+    fn link_with_service(name: &str, service_id: Option<&str>) -> RuntimeLink {
+        RuntimeLink {
+            kind: RuntimeKind::Docker,
+            name: name.to_string(),
+            status: Some("running".into()),
+            ports: Vec::new(),
+            source: "deployment_instance".into(),
+            runtime: InstanceRuntime::Container,
+            service: service_id.map(|id| DetectedService {
+                id: id.to_string(),
+                label: id.to_string(),
+                group: crate::service_catalog::identify_image(id)
+                    .map(|identity| identity.group)
+                    .unwrap_or(crate::service_catalog::ServiceGroup::Application),
+            }),
         }
     }
 
@@ -656,9 +805,84 @@ mod tests {
             status: Some("active".into()),
             ports: vec![8080],
             source: "deployment_instance".into(),
+            runtime: InstanceRuntime::Host,
+            service: None,
         });
         let candidate = score_candidate(linked, "0").expect("被实例关联的目录必须保留");
         assert_eq!(candidate.category, CandidateCategory::Deployed);
         assert!(candidate.score >= 25, "score = {}", candidate.score);
+    }
+
+    /// MySQL / Redis 这类是**依赖**，不是要部署的项目。它们必须能被区分出来，
+    /// 否则"要不要部署"的清单里会混进一堆数据库和缓存。
+    #[test]
+    fn databases_are_classified_as_infrastructure_not_projects() {
+        let mut linked = input("/opt/mysql", &["docker-compose.yml"]);
+        linked
+            .runtime_links
+            .push(link_with_service("mysql", Some("mysql")));
+        let candidate = score_candidate(linked, "0").expect("仍要保留，只是性质不同");
+        assert_eq!(candidate.project_kind, ProjectKind::Infrastructure);
+
+        let mut linked = input("/opt/redis", &["docker-compose.yml"]);
+        linked
+            .runtime_links
+            .push(link_with_service("redis", Some("redis")));
+        let candidate = score_candidate(linked, "0").expect("仍要保留");
+        assert_eq!(candidate.project_kind, ProjectKind::Infrastructure);
+    }
+
+    /// 认不出服务时保持"未确定" —— 绝不把不认识的东西说成业务应用。
+    #[test]
+    fn an_unidentified_instance_stays_unknown() {
+        let mut linked = input("/opt/app", &["package.json"]);
+        linked
+            .runtime_links
+            .push(link_with_service("order-api", None));
+        let candidate = score_candidate(linked, "0").expect("业务目录必须保留");
+        assert_eq!(candidate.project_kind, ProjectKind::Unknown);
+    }
+
+    /// 操作系统自带目录下的 package.json 不是项目。
+    #[test]
+    fn operating_system_directories_are_never_candidates() {
+        assert!(score_candidate(
+            input("/usr/local/lib/node_modules/npm", &["package.json"]),
+            "0"
+        )
+        .is_none());
+        assert!(score_candidate(input("/var/lib/docker/overlay2/abc", &["src"]), "0").is_none());
+        assert!(score_candidate(input("/usr/share/some-app", &["package.json"]), "0").is_none());
+    }
+
+    /// 配置文件必须随候选一起给出 —— UI 的"查看 Docker 配置 / Nginx 配置"
+    /// 就是靠它跳到目录的。
+    #[test]
+    fn config_files_are_carried_through_to_the_candidate() {
+        let mut linked = input("/srv/app", &["package.json"]);
+        linked.runtime_links.push(link_with_service("app", None));
+        linked.instances.push(CandidateInstance {
+            id: "docker:abc123".into(),
+            kind: "docker".into(),
+            name: "app".into(),
+            status: "running".into(),
+            runtime: InstanceRuntime::Container,
+            image: Some("registry.local/team/app:1.0".into()),
+            service: None,
+            ports: vec![8080],
+            config_files: vec!["/srv/app/docker-compose.yml".into()],
+            working_directories: vec!["/srv/app".into()],
+            detail: "镜像 registry.local/team/app:1.0".into(),
+        });
+        let candidate = score_candidate(linked, "0").expect("必须保留");
+        assert_eq!(
+            candidate.config_files,
+            vec!["/srv/app/docker-compose.yml".to_string()]
+        );
+        assert!(candidate
+            .deploy_instances
+            .first()
+            .expect("实例详情必须带上")
+            .has_config());
     }
 }

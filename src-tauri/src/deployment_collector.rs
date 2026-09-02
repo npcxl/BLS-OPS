@@ -14,11 +14,13 @@
 //! 通过 `safe::validate_abs_path` —— 服务器返回的数据按不可信输入处理。
 
 mod docker;
+mod k8s;
 mod model;
 mod nginx;
 mod systemd;
 
 pub use docker::docker_instance_from_inspect;
+pub use k8s::parse_kube_pods;
 pub use model::{is_config_path, is_host_project_path, DeploymentInstance};
 pub use nginx::{parse_nginx_effective, parse_ss_listen, NginxSiteBlock};
 pub use systemd::{extract_exec_paths, parse_systemd_show, systemd_instance};
@@ -45,7 +47,7 @@ pub async fn collect_instances(
         }
     }
     if profile.deployment.systemd == Some(true) {
-        match systemd::collect_systemd(session_id, mgr).await {
+        match systemd::collect_systemd(session_id, mgr, warnings).await {
             Ok(mut list) => out.append(&mut list),
             Err(error) => warnings.push(format!("systemd 实例收集失败：{error}")),
         }
@@ -54,6 +56,15 @@ pub async fn collect_instances(
         match nginx::collect_nginx(session_id, mgr, warnings).await {
             Ok(mut list) => out.append(&mut list),
             Err(error) => warnings.push(format!("Nginx 实例收集失败：{error}")),
+        }
+    }
+    // Kubernetes：kubectl 装了才问集群。注意这与 docker 收集器**不冲突** ——
+    // k8s 用 docker/containerd 承载 Pod，所以同一台机器上两者都会产出实例，
+    // 分别代表"集群视角的 Pod"与"节点上的容器"，靠 `runtime` 字段区分。
+    if profile.deployment.kubernetes == Some(true) {
+        match k8s::collect_k8s(session_id, mgr, warnings).await {
+            Ok(mut list) => out.append(&mut list),
+            Err(error) => warnings.push(format!("Kubernetes 工作负载收集失败：{error}")),
         }
     }
     out

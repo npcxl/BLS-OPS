@@ -269,6 +269,32 @@ fn journal_filters_by_priority() {
 }
 
 #[test]
+fn docker_format_templates_are_quoted() {
+    // Regression: `--format` templates contain `|`. Unquoted, the remote shell
+    // reads it as a pipe and tries to run `{{.Names}}` as a command, which
+    // fails with exit 127 and loses the whole container listing.
+    for capability in [
+        Capability::DockerPs,
+        Capability::DockerImages,
+        Capability::DockerStats,
+    ] {
+        let command = capability.command().expect("command");
+        let format_at = command
+            .find("--format ")
+            .unwrap_or_else(|| panic!("缺少 --format：{command}"));
+        let template = command[format_at + "--format ".len()..].trim();
+        assert!(
+            template.starts_with('\'') && template.ends_with('\''),
+            "--format 模板必须被单引号包住，否则 | 会被当成管道符：{command}"
+        );
+        assert!(
+            template.contains('|'),
+            "这个断言只针对带管道分隔符的模板：{command}"
+        );
+    }
+}
+
+#[test]
 fn docker_remove_forces_the_container() {
     let command = Capability::ContainerAction {
         action: ContainerAction::Remove,

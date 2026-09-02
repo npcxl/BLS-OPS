@@ -41,12 +41,15 @@ const CMD_LIST_SERVICES: &str =
     "systemctl list-units --type=service --all --no-legend --no-pager --plain";
 const CMD_LIST_UNIT_FILES: &str = "systemctl list-unit-files --type=service --no-legend --no-pager";
 const CMD_JOURNAL_DISK: &str = "journalctl --disk-usage";
+// These mirror `safe::Capability`'s Docker constants exactly, quotes included:
+// the `--format` template must stay a single quoted argument, otherwise the
+// shell reads `|` as a pipe (see the regression test in `safe::tests`).
 const CMD_DOCKER_PS: &str =
-    "docker ps -a --no-trunc --format {{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}";
+    "docker ps -a --no-trunc --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}'";
 const CMD_DOCKER_IMAGES: &str =
-    "docker images --format {{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedSince}}";
+    "docker images --format '{{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedSince}}'";
 const CMD_DOCKER_STATS: &str =
-    "docker stats --no-stream --format {{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}";
+    "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}'";
 const CMD_NGINX_VERSION: &str = "nginx -v";
 const CMD_NGINX_TEST: &str = "nginx -t";
 const CMD_NGINX_RELOAD: &str = "nginx -s reload";

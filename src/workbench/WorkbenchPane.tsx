@@ -29,7 +29,10 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-app" onMouseDown={() => focusPane(pane.id)}>
       <WorkspaceTabs pane={pane} />
       <div className="relative min-h-0 flex-1">
-        {pane.tabs.length === 0 ? (
+        {/* No active tab also covers "the selection was cleared because the
+            user switched to a module with nothing open" — otherwise the pane
+            would render every tab as hidden and show a blank area. */}
+        {pane.tabs.length === 0 || !pane.tabs.some((tab) => tab.id === pane.activeTabId) ? (
           <EmptyPaneState paneId={pane.id} />
         ) : (
           pane.tabs.map((tab) => {

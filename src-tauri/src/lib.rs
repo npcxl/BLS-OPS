@@ -23,6 +23,9 @@ pub mod project_discovery;
 pub mod remote;
 /// The security boundary: every management command is built here (P3-2.4).
 pub mod safe;
+/// 服务识别目录与宿主路径归属判定（P3 只读判定的单一事实来源：
+/// 镜像 / 单元 / 端口 → 服务，路径 → 系统目录还是项目根）。纯判定，零 I/O。
+pub mod service_catalog;
 /// Public so the integration tests in `tests/` can drive the real SSH layer.
 pub mod ssh;
 mod state;
@@ -111,6 +114,8 @@ pub fn run() {
             commands::sftp_touch,
             commands::sftp_read_file,
             commands::sftp_write_file,
+            commands::sftp_read_binary,
+            commands::sftp_download_file,
             // directory size (on-demand, background)
             commands::directory_size_start,
             commands::directory_size_cancel,

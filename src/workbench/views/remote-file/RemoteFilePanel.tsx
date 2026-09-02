@@ -15,6 +15,8 @@ import {
   ClipboardCopy,
   CornerDownLeft,
   Copy,
+  Download,
+  Eye,
   FilePlus2,
   FolderPlus,
   Loader2,
@@ -29,7 +31,9 @@ import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
+import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
 import { useDirSizeStore } from "@/stores/dir-size-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
@@ -54,6 +58,12 @@ const MAX_WIDTH = 560;
  */
 const FileEditorModal = lazy(() => import("@/workbench/views/FileEditorModal"));
 
+/**
+ * The universal preview (and its parsers) is code-split too: opening a text
+ * file must not pull in the PDF renderer, and vice versa.
+ */
+const FilePreviewModal = lazy(() => import("@/workbench/views/preview/FilePreviewModal"));
+
 export interface RemoteFilePanelProps {
   /** Owning SSH session. Each session opens its own SFTP client. */
   sessionId: string;
@@ -63,6 +73,18 @@ export interface RemoteFilePanelProps {
    * The panel resolves the raw argument against its own cwd.
    */
   follow: { nonce: number; arg: string };
+  /**
+   * 挂载时直接落地的路径（P3 项目发现的"查看项目文件"）。与 `reveal` 的区别：
+   * 这是**首次打开**的位置，放在这里才不会和"打开 home 目录"的初始化逻辑
+   * 抢着写导航栈（两者都是异步的，谁后完成谁生效）。
+   */
+  initialPath?: string;
+  /**
+   * 后续跳转请求：`path` 可以是目录也可以是文件。目录直接打开；文件则打开
+   * 其所在目录并**选中**它，让"查看 docker-compose.yml / nginx.conf"这类
+   * 入口一步到位。`nonce` 变化即触发（同一个路径可能被重复请求）。
+   */
+  reveal?: { nonce: number; path: string };
   onClose: () => void;
 }
 
@@ -75,7 +97,14 @@ export interface RemoteFilePanelProps {
  * double-click editing of text/code files (SQL, conf, JS, Java, …) with
  * syntax highlighting.
  */
-export function RemoteFilePanel({ sessionId, connected, follow, onClose }: RemoteFilePanelProps) {
+export function RemoteFilePanel({
+  sessionId,
+  connected,
+  follow,
+  initialPath,
+  reveal,
+  onClose,
+}: RemoteFilePanelProps) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   /** Canonical navigation history: back/forward + current location. */
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -86,6 +115,7 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const menu = useContextMenu();
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
   // Non-blocking notice (used for unsupported types) — auto-dismisses after 4s.
   const [notice, setNotice] = useTransientNotice();
   const [dragging, setDraggingState] = useState(false);
@@ -130,7 +160,36 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     [sessionId],
   );
 
-  // Open SFTP and land in the home directory when the session comes up.
+  /**
+   * 跳到指定路径：目录直接打开；文件则打开它所在的目录并**选中**，
+   * 让"查看 docker-compose.yml / nginx.conf"这类入口一步到位。
+   * 路径不存在或无权限时退到父目录，把错误留给 `load` 如实呈现。
+   */
+  const revealInto = useCallback(
+    async (target: string, cancelled: boolean) => {
+      try {
+        const entry = await opsApi.sftpStat(sessionId, target);
+        if (cancelled) return;
+        if (entry.kind === "directory") {
+          await load(target);
+          if (!cancelled) setSelected(null);
+        } else {
+          await load(parentOf(target));
+          if (!cancelled) setSelected(target);
+        }
+      } catch {
+        const parent = parentOf(target);
+        if (parent !== target) await load(parent);
+      }
+    },
+    [load, sessionId],
+  );
+
+  // Open SFTP and land in the home directory when the session comes up —
+  // unless the caller asked for a specific starting point (`initialPath`), in
+  // which case we go straight there. Doing this in one effect (rather than
+  // racing a separate "jump" effect) is what keeps the two async listings from
+  // overwriting each other's navigation stack.
   useEffect(() => {
     if (!connected) {
       setStatus({ state: "disconnected" });
@@ -145,6 +204,13 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         const homePath = await opsApi.sftpOpen(sessionId);
         if (cancelled) return;
         setHome(homePath);
+
+        const target = initialPath?.trim();
+        if (target) {
+          await revealInto(target, cancelled);
+          return;
+        }
+
         setNav({ stack: [homePath], index: 0 });
         const result = await opsApi.sftpListDir(sessionId, homePath);
         if (cancelled) return;
@@ -157,6 +223,8 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     return () => {
       cancelled = true;
     };
+    // `initialPath` 只在挂载时生效（后续跳转走 `reveal`），故意不入依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, sessionId]);
 
   // Follow `cd` typed in the terminal. Nonce 0 is the initial state, not a
@@ -184,6 +252,19 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     // `cwd`/`nav` intentionally excluded: respond to each nonce exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followNonce]);
+
+  // Subsequent jump requests from another view (项目发现的"查看 Docker 配置"/
+  // "查看 Nginx 配置")。挂载时的首次落地由 `initialPath` 负责。
+  const revealNonce = reveal?.nonce ?? 0;
+  const revealPath = reveal?.path;
+  useEffect(() => {
+    if (revealNonce === 0 || !revealPath || !connected) return;
+    // 首次落地已由 `initialPath` 在挂载时完成，不重复加载同一路径。
+    if (revealNonce === 1 && initialPath === revealPath) return;
+    void revealInto(revealPath, false);
+    // `revealInto`/`connected` 有意不入依赖：每个 nonce 只响应一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealNonce, revealPath]);
 
   const navigate = useCallback(
     (path: string) => {
@@ -225,12 +306,14 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         navigate(entry.path);
         return;
       }
-      // Text/code files open in the editor; other types explain themselves.
+      // Text/code files open straight in the editor — editing is the useful
+      // action there. Everything else goes to the preview, which renders what
+      // it can and explains what it cannot.
       if (isEditableKind(entry.name)) {
         setEditor({ path: entry.path, name: entry.name, language: fileKind(entry.name).language });
         return;
       }
-      setNotice(`“${entry.name}”是${fileKind(entry.name).label}，暂不支持在应用内打开。`);
+      setPreview({ path: entry.path, name: entry.name, size: entry.size });
     },
     [navigate],
   );
@@ -253,6 +336,23 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
 
   const removeEntry = (entry: RemoteFileEntry) => {
     setDeleteTarget(entry);
+  };
+
+  /**
+   * Saves a remote file to a local path picked in the native save dialog.
+   * Streaming happens in the backend, so a multi-GB file never lands in the
+   * WebView's memory.
+   */
+  const downloadEntry = async (entry: RemoteFileEntry) => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const destination = await save({ title: `下载 ${entry.name}`, defaultPath: entry.name });
+      if (!destination) return;
+      const written = await opsApi.sftpDownloadFile(sessionId, entry.path, destination);
+      setNotice(`已下载“${entry.name}”（${formatSize(written)}）`);
+    } catch (cause) {
+      setStatus({ state: "error", message: toErrorMessage(cause) });
+    }
   };
 
   const confirmRemove = () => {
@@ -479,6 +579,22 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
     { id: "open", label: "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
   ];
+  if (!isDir) {
+    items.push(
+      {
+        id: "preview",
+        label: "预览",
+        icon: Eye,
+        onSelect: () => setPreview({ path: entry.path, name: entry.name, size: entry.size }),
+      },
+      {
+        id: "download",
+        label: "下载到本地…",
+        icon: Download,
+        onSelect: () => void downloadEntry(entry),
+      },
+    );
+  }
   if (isDir) {
     items.push({ id: "sep-size", separator: true });
     if (computing) {
@@ -657,6 +773,26 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
               {selectedEntry.name}
             </span>
             <PanelButton label="打开" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
+            {selectedEntry.kind !== "directory" && (
+              <>
+                <PanelButton
+                  label="预览"
+                  icon={Eye}
+                  onClick={() =>
+                    setPreview({
+                      path: selectedEntry.path,
+                      name: selectedEntry.name,
+                      size: selectedEntry.size,
+                    })
+                  }
+                />
+                <PanelButton
+                  label="下载到本地"
+                  icon={Download}
+                  onClick={() => void downloadEntry(selectedEntry)}
+                />
+              </>
+            )}
             <PanelButton label="重命名" icon={Pencil} onClick={() => renameEntry(selectedEntry)} />
             <PanelButton label="创建副本" icon={Copy} onClick={() => copyEntry(selectedEntry)} />
             <PanelButton
@@ -815,6 +951,30 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
             onClose={() => setEditor(null)}
             onSaved={() => {
               if (cwd) void load(cwd);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {preview && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50">
+              <Loader2 size={18} className="animate-spin text-fg-subtle" />
+            </div>
+          }
+        >
+          <FilePreviewModal
+            sessionId={sessionId}
+            target={preview}
+            onClose={() => setPreview(null)}
+            onEdit={(next) => {
+              setPreview(null);
+              setEditor({
+                path: next.path,
+                name: next.name,
+                language: fileKind(next.name).language,
+              });
             }}
           />
         </Suspense>

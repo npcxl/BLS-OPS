@@ -43,13 +43,27 @@ const PROJECT_MARKER_PREDICATE: &str = "\
 -name .git -o -name src -o -name app -o -name .github -o -name systemd \
 \\) \\)";
 
-const DOCKER_PS: &str = "docker ps -a --no-trunc --format {{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}";
+// NOTE: these `--format` templates are **quoted**. They contain `|`, which the
+// remote shell would otherwise read as a pipe — `docker ps … --format {{.ID}}|
+// {{.Names}}` would pipe the listing into a command called `{{.Names}}` and
+// fail with "command not found" (exit 127). Single quotes keep the whole
+// Go template as one literal argument.
+const DOCKER_PS: &str =
+    "docker ps -a --no-trunc --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}'";
 const DOCKER_IMAGES: &str =
-    "docker images --format {{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedSince}}";
+    "docker images --format '{{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedSince}}'";
 const DOCKER_STATS: &str =
-    "docker stats --no-stream --format {{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}";
+    "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}'";
 const NGINX_LIST_SITES: &str =
     "sh -c 'ls -1 /etc/nginx/sites-available 2>/dev/null; echo ---AVAILABLE---; ls -1 /etc/nginx/conf.d 2>/dev/null; echo ---CONFD---; ls -1 /etc/nginx/sites-enabled 2>/dev/null; echo ---ENABLED---'";
+
+// Kubernetes。两条都是**只读**命令，且带 `-o custom-columns` 固定列，不依赖
+// jq 之类的额外工具。列名前缀（CUSTOM-CONNECTION 之类）由 kubectl 自动生成，
+// 解析侧只按空白切分取值，不认表头。
+// `--no-headers` 省掉表头；`2>/dev/null` 让"连不上集群"表现为非零退出，
+// 而不是把报错文本喂给解析器。
+const KUBE_NODES: &str = "kubectl get nodes --no-headers 2>/dev/null";
+const KUBE_PODS: &str = "kubectl get pods --all-namespaces --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,IMAGES:.spec.containers[*].image 2>/dev/null";
 
 /// Directories an Nginx capability may touch.
 const NGINX_ROOTS: &[&str] = &["/etc/nginx", "/usr/local/nginx/conf"];
@@ -180,6 +194,12 @@ pub enum Capability {
     ProcCwd {
         pid: u32,
     },
+    /// `kubectl get nodes --no-headers`：确认 kubectl **真的连得上**一个集群。
+    /// 只装了 kubectl 客户端不等于这台机器在集群里，所以收集前必须先问一句。
+    KubeNodes,
+    /// `kubectl get pods --all-namespaces` 的自定义列：
+    /// 命名空间 / Pod / 状态 / 镜像列表。用于枚举 k8s 工作负载。
+    KubePods,
 
     // Files / deployments
     /// Reads a text file (log tailing, config viewing).
@@ -572,6 +592,9 @@ impl Capability {
                 }
                 format!("readlink -f /proc/{pid}/cwd")
             }
+
+            Capability::KubeNodes => KUBE_NODES.to_string(),
+            Capability::KubePods => KUBE_PODS.to_string(),
 
             // -- First-layer capability probe ---------------------------------
             // One fixed invocation that yields OS/arch/kernel/user/init/security/cgroup.

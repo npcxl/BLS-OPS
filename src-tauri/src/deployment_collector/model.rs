@@ -3,18 +3,35 @@
 use serde::{Deserialize, Serialize};
 
 use crate::safe::validate_abs_path;
+use crate::service_catalog::{DetectedService, InstanceRuntime};
 
-/// 一个真实存在的部署实例（容器 / systemd 服务 / Nginx 站点）。
+/// 一个真实存在的部署实例（容器 / systemd 服务 / Nginx 站点 / k8s 工作负载）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentInstance {
-    /// 稳定 ID：`docker:<容器ID>` / `systemd:<单元名>` / `nginx:<站点名>`。
+    /// 稳定 ID：`docker:<容器ID>` / `systemd:<单元名>` / `nginx:<站点名>` /
+    /// `k8s:<命名空间>/<Pod>/<容器>`。
     pub id: String,
-    /// 部署方式：`docker` | `systemd` | `nginx`。
+    /// 部署方式：`docker` | `systemd` | `nginx` | `k8s`。
     pub kind: String,
-    /// 展示名：容器名 / 单元名 / server_name。
+    /// 展示名：容器名 / 单元名 / server_name / Pod 名。
     pub name: String,
     /// 运行状态（原样来自服务器）。
     pub status: String,
+    /// **实例跑在哪里** —— 宿主机进程、Docker 容器还是 Kubernetes 里的 Pod。
+    /// 一台机器上三者可以并存（`docker ps` 会同时看到普通容器和 k8s 的 Pod 容器），
+    /// 只有这个字段能说清楚归属。
+    pub runtime: InstanceRuntime,
+    /// 容器镜像（仅容器 / k8s 实例有；宿主机进程为 `None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// 识别出的服务（MySQL / Redis / Nginx / …）。**识别不出就是 `None`** ——
+    /// 绝不把认不出来的东西猜成某个具体服务。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<DetectedService>,
+    /// 是否为**操作系统自带**（sshd / cron / containerd / kubelet …）。
+    /// 这类实例不是用户部署的东西，不参与项目发现。
+    #[serde(default)]
+    pub system_owned: bool,
     /// 实例对外端口（容器宿主映射端口 / systemd 监听未知为空 / Nginx listen）。
     pub ports: Vec<u16>,
     /// 宿主机上的工作目录（绝不包含容器内路径）。
@@ -27,6 +44,19 @@ pub struct DeploymentInstance {
     pub source_known: bool,
     /// 人读摘要：Compose 项目/服务、镜像、ExecStart、代理目标等。
     pub detail: String,
+}
+
+impl DeploymentInstance {
+    /// 快速判断：这个实例是不是"用户部署的业务应用"（而不是数据库 / 缓存 /
+    /// 监控 / 操作系统组件）。
+    pub fn is_business_workload(&self) -> bool {
+        !self.system_owned
+            && !self
+                .service
+                .as_ref()
+                .map(|service| service.group.is_infrastructure())
+                .unwrap_or(false)
+    }
 }
 
 /// 宿主机上"像业务目录"的根。systemd 服务的 WorkingDirectory / ExecStart 只有

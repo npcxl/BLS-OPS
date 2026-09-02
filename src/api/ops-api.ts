@@ -27,6 +27,7 @@ import {
 import { type SshConnectResult } from "@/api/types/ssh";
 import {
   type DirectorySizeResult,
+  type RemoteBinaryContent,
   type RemoteFileEntry,
   type SftpListResult,
 } from "@/api/types/sftp";
@@ -83,6 +84,7 @@ export {
   DIRECTORY_SIZE_EVENT,
   type DirectorySizeResult,
   type DirectorySizeStatus,
+  type RemoteBinaryContent,
   type RemoteFileEntry,
   type SftpListResult,
 } from "@/api/types/sftp";
@@ -122,12 +124,16 @@ export {
   projectSteps,
   type AdapterReadiness,
   type CandidateCategory,
+  type CandidateInstance,
   type ConfidenceLevel,
   type DeploymentInstance,
   type DeploymentReadiness,
   type DeploymentRecord,
+  type DetectedService,
+  type InstanceRuntime,
   type ProjectCandidate,
   type ProjectEvidence,
+  type ProjectKind,
   type ProjectModule,
   type ProjectPenalty,
   type ProjectRecord,
@@ -139,6 +145,7 @@ export {
   type ScanProgress,
   type ScanState,
   type ServerCapabilityProfile,
+  type ServiceGroup,
 } from "@/api/types/project";
 
 function message(cause: unknown): string {
@@ -281,6 +288,16 @@ export const opsApi = {
   sftpWriteFile: (sessionId: string, path: string, content: string) =>
     invoke<void>("sftp_write_file", { sessionId, path, content }),
   sftpClose: (sessionId: string) => invoke<void>("sftp_close", { sessionId }),
+  /** Reads any remote file as base64 bytes for the in-app preview. */
+  sftpReadBinary: (sessionId: string, path: string, maxLen?: number) =>
+    invoke<RemoteBinaryContent>("sftp_read_binary", {
+      sessionId,
+      path,
+      maxLen: maxLen ?? null,
+    }),
+  /** Streams a remote file to a local path (preview dialog's 下载 action). */
+  sftpDownloadFile: (sessionId: string, path: string, localPath: string) =>
+    invoke<number>("sftp_download_file", { sessionId, path, localPath }),
 
   // Monitoring — read-only Linux metrics. `monitor_snapshot` is the one the
   // page polls: every headline metric in a single round trip.

@@ -29,6 +29,10 @@ export default defineConfig(async () => ({
           if (id.includes("@codemirror") || id.includes("@uiw") || id.includes("codemirror")) {
             return "editor";
           }
+          // Same reasoning for the file preview: pdf.js is ~900 KB and only
+          // ever used by the lazy preview modal. Its worker is a separate
+          // emitted asset (imported with `?url`), so it is not affected here.
+          if (id.includes("pdfjs-dist") || id.includes("fflate")) return "preview";
           if (id.includes("react-dom") || id.includes("/react/") || id.includes("/react-dom/")) {
             return "react";
           }

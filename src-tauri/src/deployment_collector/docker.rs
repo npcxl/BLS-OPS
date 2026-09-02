@@ -5,6 +5,7 @@ use serde_json::Value;
 use super::model::{is_config_path, is_host_project_path, push_unique, DeploymentInstance};
 use crate::remote::run_on_linux;
 use crate::safe::Capability;
+use crate::service_catalog::{identify_image, parse_k8s_container_name, InstanceRuntime};
 use crate::ssh::SshSessionManager;
 
 /// 每批 inspect 的容器上限（`safe::Capability::DockerInspectMany` 的校验上限）。
@@ -141,12 +142,39 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
         }
     }
 
+    // **归属判定**：容器名以 `k8s_` 开头说明它其实是 Kubernetes 的 Pod 容器，
+    // 只是恰好由 docker/containerd 运行。同一台机器上 `docker ps` 会同时列出
+    // 普通容器和 k8s 工作负载，容器名是唯一能区分二者的依据（除非再跑 kubectl）。
+    let k8s = parse_k8s_container_name(&name);
+    let runtime = if k8s.is_some() {
+        InstanceRuntime::Kubernetes
+    } else {
+        InstanceRuntime::Container
+    };
+
     let mut detail = format!("镜像 {image}");
+    if let Some(k8s) = &k8s {
+        // Pod 沙箱（pause）容器没有业务进程，明确标注，避免被当成服务。
+        if k8s.is_sandbox {
+            detail = format!(
+                "Kubernetes Pod {}/{} · 沙箱容器 · {detail}",
+                k8s.namespace, k8s.pod
+            );
+        } else {
+            detail = format!(
+                "Kubernetes {}/{} · 容器 {} · {detail}",
+                k8s.namespace, k8s.pod, k8s.container
+            );
+        }
+    }
     if let (Some(project), Some(service)) = (&compose_project, &compose_service) {
         detail = format!("Compose 项目 {project} · 服务 {service} · {detail}");
     } else if let Some(project) = &compose_project {
         detail = format!("Compose 项目 {project} · {detail}");
     }
+
+    // 识别镜像跑的是什么服务：MySQL / Redis / Nginx …。识别不出就是 None。
+    let service = identify_image(image).map(|identity| identity.detected());
 
     // 源码已知 = 有任一宿主候选路径；否则就是"运行实例，源码未知"。
     let source_known = !source_paths.is_empty();
@@ -155,6 +183,11 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
         kind: "docker".into(),
         name,
         status,
+        runtime,
+        image: Some(image.to_string()),
+        service,
+        // k8s 的 pause 沙箱容器属于集群基础设施，不是用户部署的东西。
+        system_owned: k8s.as_ref().map(|k| k.is_sandbox).unwrap_or(false),
         ports,
         working_directories,
         config_files: config_files

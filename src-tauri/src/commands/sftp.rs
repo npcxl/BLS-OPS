@@ -126,6 +126,51 @@ pub async fn sftp_close(state: State<'_, AppState>, session_id: String) -> Resul
         .map_err(|error| error.to_string())
 }
 
+/// Reads any remote file as base64 bytes for the in-app preview (images, PDFs,
+/// Office documents, archives — everything, not just text).
+#[tauri::command]
+pub async fn sftp_read_binary(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    max_len: Option<u64>,
+) -> Result<crate::ssh::RemoteBinaryContent, String> {
+    // 20 MB covers a spreadsheet or a photo with room to spare; bigger files
+    // are still downloadable, they just are not rendered in the window.
+    const DEFAULT_MAX: u64 = 20 * 1024 * 1024;
+    let content = state
+        .ssh
+        .sftp_read_binary(&session_id, &path, max_len.unwrap_or(DEFAULT_MAX))
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(&state, "sftp_read_binary", None, None, &path);
+    Ok(content)
+}
+
+/// Saves a remote file to a local path (the preview dialog's "下载" action).
+/// The caller gets the destination from the native save dialog.
+#[tauri::command]
+pub async fn sftp_download_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    local_path: String,
+) -> Result<u64, String> {
+    let written = state
+        .ssh
+        .sftp_download_file(&session_id, &path, &local_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "sftp_download_file",
+        None,
+        None,
+        &format!("{path} → {local_path}"),
+    );
+    Ok(written)
+}
+
 /// Uploads local files/directories (paths handed over by a drag & drop) into
 /// `remote_dir`. Emits `sftp-upload-{session_id}` once per finished file so
 /// the UI can show progress without polling.

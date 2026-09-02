@@ -5,11 +5,102 @@
 export type ConfidenceLevel = "high" | "likely" | "possible";
 export interface ProjectEvidence { id: string; kind: string; source: string; summary: string; weight: number; verified_at: string; sensitive: boolean; }
 export interface ProjectPenalty { kind: string; summary: string; weight: number; }
-export type RuntimeKind = "process" | "systemd" | "docker" | "nginx";
-export interface RuntimeLink { kind: RuntimeKind; name: string; status?: string; ports: number[]; source: string; }
+export type RuntimeKind = "process" | "systemd" | "docker" | "nginx" | "k8s";
+
+/** 实例跑在哪里 —— 宿主机进程 / Docker 容器 / Kubernetes Pod。 */
+export type InstanceRuntime = "host" | "container" | "kubernetes";
+
+/**
+ * 识别出的服务（MySQL / Redis / Nginx …）。
+ *
+ * `group` 决定它算不算"业务应用"：`application` 之外的一律是基础设施
+ * （数据库、缓存、网关、监控、CI …），它们是依赖而不是要部署的项目。
+ */
+export interface DetectedService {
+  id: string;
+  label: string;
+  group: ServiceGroup;
+}
+
+export type ServiceGroup =
+  | "application"
+  | "database"
+  | "cache"
+  | "messaging"
+  | "search"
+  | "gateway"
+  | "storage"
+  | "coordination"
+  | "observability"
+  | "devops"
+  | "infrastructure";
+
+/** 候选项目性质：业务应用 / 基础设施 / 未确定。 */
+export type ProjectKind = "application" | "infrastructure" | "unknown";
+
+export interface RuntimeLink {
+  kind: RuntimeKind;
+  name: string;
+  status?: string;
+  ports: number[];
+  source: string;
+  /** 实例跑在哪里。缺省视为 `host`（历史数据的语义）。 */
+  runtime?: InstanceRuntime;
+  /** 识别出的服务；`undefined` = 没认出来，不是"业务应用"。 */
+  service?: DetectedService;
+}
+
+/**
+ * 候选关联到的一个部署实例。UI 用它提供"查看项目文件 / Docker 配置 /
+ * Nginx 配置 / unit 文件"的跳转入口。
+ */
+export interface CandidateInstance {
+  id: string;
+  /** docker / systemd / nginx / k8s */
+  kind: string;
+  name: string;
+  status: string;
+  runtime: InstanceRuntime;
+  image?: string;
+  service?: DetectedService;
+  ports: number[];
+  /**
+   * 宿主机上的配置文件。镜像运行的实例**没有**宿主机配置文件，此时为空 ——
+   * 前端要如实说"没有配置文件"，而不是给一个假入口。
+   */
+  config_files: string[];
+  working_directories: string[];
+  detail: string;
+}
+
 export interface ProjectModule { id: string; name: string; path: string; project_type: string; deployable: boolean; children: ProjectModule[]; }
 export interface DeploymentReadiness { score: number; blockers: string[]; warnings: string[]; confirmed_facts: string[]; unknown_facts: string[]; }
-export interface ProjectCandidate { id: string; server_id: string; name: string; path: string; project_type: string; score: number; confidence: ConfidenceLevel; category: CandidateCategory; evidence: ProjectEvidence[]; penalties: ProjectPenalty[]; runtime_links: RuntimeLink[]; modules: ProjectModule[]; detected_ports: number[]; required_environment_names: string[]; blockers: string[]; warnings: string[]; readiness: DeploymentReadiness; updated_at: string; }
+export interface ProjectCandidate {
+  id: string;
+  server_id: string;
+  name: string;
+  path: string;
+  project_type: string;
+  score: number;
+  confidence: ConfidenceLevel;
+  category: CandidateCategory;
+  /** 业务应用 / 基础设施 / 未确定。MySQL、Redis、Nginx 是依赖，不是项目。 */
+  project_kind?: ProjectKind;
+  /** 关联到的部署实例（含配置文件路径，供跳转查看）。 */
+  deploy_instances?: CandidateInstance[];
+  /** 所有关联实例的配置文件汇总。 */
+  config_files?: string[];
+  evidence: ProjectEvidence[];
+  penalties: ProjectPenalty[];
+  runtime_links: RuntimeLink[];
+  modules: ProjectModule[];
+  detected_ports: number[];
+  required_environment_names: string[];
+  blockers: string[];
+  warnings: string[];
+  readiness: DeploymentReadiness;
+  updated_at: string;
+}
 export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
 export interface ScanProgress { phase: string; progress: number; checked_directories: number; discovered_candidates: number; current_path: string | null; warnings: number; }
 export interface ProjectScanStatus { id: string; server_id: string; state: ScanState; progress: ScanProgress; error: string | null; started_at: number; finished_at: number | null; }
@@ -71,6 +162,14 @@ export interface DeploymentInstance {
   kind: string;
   name: string;
   status: string;
+  /** 实例跑在哪里：宿主机 / 容器 / Kubernetes。 */
+  runtime: InstanceRuntime;
+  /** 容器镜像（仅容器与 k8s 实例有）。 */
+  image?: string;
+  /** 识别出的服务；`undefined` = 没认出来。 */
+  service?: DetectedService;
+  /** true = 操作系统自带（sshd / cron / containerd / k8s 沙箱容器）。 */
+  system_owned: boolean;
   ports: number[];
   working_directories: string[];
   config_files: string[];

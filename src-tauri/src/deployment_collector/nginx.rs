@@ -6,6 +6,12 @@ use std::collections::BTreeMap;
 use super::model::{is_host_project_path, push_unique, DeploymentInstance};
 use crate::remote::run_on_linux;
 use crate::safe::Capability;
+use crate::service_catalog::{identify_unit, InstanceRuntime};
+
+/// 宿主机 Nginx 站点的服务身份（复用目录表，避免两处各写一份"nginx"）。
+fn identify_nginx() -> Option<crate::service_catalog::ServiceIdentity> {
+    identify_unit("nginx.service")
+}
 use crate::ssh::SshSessionManager;
 
 /// 最多关联多少个代理后端端口（每次关联至少一次 `ss` + 一次 cwd 读取）。
@@ -78,6 +84,12 @@ pub(crate) async fn collect_nginx(
             kind: "nginx".into(),
             name: site.name.clone(),
             status: "configured".into(),
+            // `nginx -T` 读的是**宿主机** nginx 的生效配置。跑在容器里的 nginx
+            // 走 docker 收集器识别（`runtime = container`），两者不会混淆。
+            runtime: InstanceRuntime::Host,
+            image: None,
+            service: identify_nginx().map(|identity| identity.detected()),
+            system_owned: false,
             ports: site.listen_ports.clone(),
             working_directories,
             config_files: site.config_file.iter().cloned().collect(),

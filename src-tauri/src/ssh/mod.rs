@@ -30,7 +30,7 @@ pub use host_key::{evaluate_host_key, HostKeyVerdict};
 pub use manager::SshSessionManager;
 pub use model::{
     parse_ssh_target, ConnectOutcome, ConnectTarget, CredentialSecrets, Endpoint, ExecOutput,
-    HostKeyInfo, RemoteFileContent, RemoteFileEntry, DEFAULT_COMMAND_TIMEOUT,
+    HostKeyInfo, RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_KEEPALIVE_SECS, KIND_DIRECTORY, KIND_FILE, KIND_OTHER, KIND_SYMLINK, SFTP_SUBSYSTEM,
 };
 pub use paths::{format_size_human, natural_cmp, posix_join, posix_normalize};

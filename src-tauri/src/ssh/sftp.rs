@@ -15,15 +15,22 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use anyhow::{anyhow, Result};
+use base64::Engine as _;
 use russh_sftp::client::{fs::DirEntry, SftpSession};
 use russh_sftp::protocol::{FileAttributes, FileType, StatusCode as SftpStatusCode};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 
 use super::manager::SshSessionManager;
 use super::model::{
-    RemoteFileContent, RemoteFileEntry, KIND_DIRECTORY, KIND_FILE, KIND_OTHER, KIND_SYMLINK,
+    RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, KIND_DIRECTORY, KIND_FILE, KIND_OTHER,
+    KIND_SYMLINK,
 };
 use super::paths::{base_name, format_size_human, parent_of, posix_join, posix_normalize};
+
+/// Hard ceiling on a preview payload. The frontend asks for far less (a text
+/// file, an image, a spreadsheet); this only stops a caller from hauling a
+/// multi-GB file through the IPC layer by accident.
+pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maps SFTP client errors onto user-facing messages, calling out permission
 /// problems explicitly so the UI can present them distinctly.
@@ -482,6 +489,86 @@ impl SshSessionManager {
         Ok(())
     }
 
+    /// Reads any remote file as raw bytes for the in-app preview.
+    ///
+    /// Deliberately not limited to text: images, PDFs, Office files and
+    /// archives all come back as base64. The budget is a guard rail on the IPC
+    /// payload — a 4 GB log would never survive JSON — and `truncated` tells
+    /// the caller the bytes are a prefix, so the UI can say so instead of
+    /// rendering a half-file as if it were whole.
+    pub async fn sftp_read_binary(
+        &self,
+        session_id: &str,
+        path: &str,
+        max_len: u64,
+    ) -> Result<RemoteBinaryContent> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
+        let meta = sftp
+            .symlink_metadata(&canonical)
+            .await
+            .map_err(sftp_error)?;
+        if meta.file_type() == FileType::Dir {
+            return Err(anyhow!("这是一个文件夹，无法预览"));
+        }
+        let size = meta.len();
+        let budget = max_len.clamp(1, MAX_PREVIEW_BYTES);
+        let take = (size.min(budget)) as usize;
+
+        let mut file = sftp.open(&canonical).await.map_err(sftp_error)?;
+        let mut bytes = Vec::with_capacity(take);
+        // `take` bounds the read: the remote file is never pulled in whole just
+        // to be thrown away when it is over budget.
+        let mut limited = (&mut file).take(take as u64);
+        tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes)
+            .await
+            .map_err(|error| anyhow!("读取文件失败：{error}"))?;
+
+        Ok(RemoteBinaryContent {
+            mime: guess_mime(&canonical),
+            path: canonical,
+            size,
+            data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            truncated: size > budget,
+        })
+    }
+
+    /// Downloads a remote file to a local path chosen by the user.
+    ///
+    /// Streamed through `tokio::io::copy` so a multi-GB file never lands in
+    /// memory. Returns the byte count actually written.
+    pub async fn sftp_download_file(
+        &self,
+        session_id: &str,
+        path: &str,
+        local_path: &str,
+    ) -> Result<u64> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
+        let meta = sftp
+            .symlink_metadata(&canonical)
+            .await
+            .map_err(sftp_error)?;
+        if meta.file_type() == FileType::Dir {
+            return Err(anyhow!("暂不支持下载整个文件夹"));
+        }
+
+        let mut remote = sftp.open(&canonical).await.map_err(sftp_error)?;
+        let mut local = tokio::fs::File::create(local_path)
+            .await
+            .map_err(|error| anyhow!("无法创建本地文件：{error}"))?;
+        let written = tokio::io::copy(&mut remote, &mut local)
+            .await
+            .map_err(|error| anyhow!("下载失败：{error}"))?;
+        local
+            .shutdown()
+            .await
+            .map_err(|error| anyhow!("写入本地文件失败：{error}"))?;
+        Ok(written)
+    }
+
     /// Uploads local files or directories into `remote_dir`.
     ///
     /// Local paths are the one place `PathBuf` is correct — they are on this
@@ -508,4 +595,73 @@ impl SshSessionManager {
         }
         Ok(uploaded)
     }
+}
+
+/// Best-effort MIME type from a file name.
+///
+/// Extension only — the content is never sniffed, because sniffing would mean
+/// reading the file a second time. `application/octet-stream` is the honest
+/// answer for anything unknown; the preview layer falls back to a hex view
+/// (and says so) rather than guessing a renderer.
+pub(crate) fn guess_mime(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let ext = match name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => ext,
+        _ => return "application/octet-stream".to_string(),
+    };
+    let mime = match ext {
+        // images
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        "tif" | "tiff" => "image/tiff",
+        // documents
+        "pdf" => "application/pdf",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "rtf" => "application/rtf",
+        // data / text
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "md" | "markdown" => "text/markdown",
+        "txt" | "log" | "conf" | "cfg" | "ini" | "env" | "properties" | "yml" | "yaml" | "toml" => {
+            "text/plain"
+        }
+        // media
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        // archives
+        "zip" => "application/zip",
+        "jar" | "war" | "ear" => "application/java-archive",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "bz2" => "application/x-bzip2",
+        "xz" => "application/x-xz",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        _ => "application/octet-stream",
+    };
+    mime.to_string()
 }

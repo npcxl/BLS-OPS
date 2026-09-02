@@ -14,6 +14,24 @@ export interface RemoteFileEntry {
   hidden: boolean;
 }
 
+/**
+ * Payload of `sftp_read_binary`: the raw bytes of any remote file, base64
+ * encoded, used by the file preview. Not limited to text — images, PDFs,
+ * Office files and archives all travel through here.
+ */
+export interface RemoteBinaryContent {
+  /** Canonical remote path the bytes came from. */
+  path: string;
+  /** Full remote size, even when the payload was truncated. */
+  size: number;
+  /** MIME type guessed from the file name by the backend. */
+  mime: string;
+  /** Base64 of the returned bytes. */
+  data: string;
+  /** True when the file exceeded the requested budget. */
+  truncated: boolean;
+}
+
 export interface SftpListResult {
   /** The canonical path that was actually read (server-resolved). */
   path: string;

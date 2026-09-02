@@ -6,7 +6,8 @@ use super::model::{
     is_app_path, is_config_path, is_host_project_path, push_unique, DeploymentInstance,
 };
 use crate::remote::run_on_linux;
-use crate::safe::Capability;
+use crate::safe::{validate_unit, Capability};
+use crate::service_catalog::{identify_unit, is_os_unit, is_system_unit_path, InstanceRuntime};
 use crate::ssh::SshSessionManager;
 
 /// 单次 `systemctl show` 的单元上限（`safe::Capability::SystemdShowUnits` 的上限）。
@@ -17,15 +18,35 @@ const MAX_UNITS: usize = 200;
 pub(crate) async fn collect_systemd(
     session_id: &str,
     mgr: &SshSessionManager,
+    warnings: &mut Vec<String>,
 ) -> anyhow::Result<Vec<DeploymentInstance>> {
     // 第一步：列出全部 service 单元。
     let listing = run_on_linux(mgr, session_id, &Capability::ListServices).await?;
     let units = crate::systemd::parse_list_units(&listing);
+
+    // systemd escapes some names (`systemd\x2dfsck@dev-sda1.service`, where the
+    // backslash is part of an escape sequence). Those are not business services,
+    // and a single one would otherwise fail the whole batched `systemctl show`
+    // — losing every unit on the machine. Drop them here and say how many, so
+    // the rest of the collection still produces evidence.
+    let mut skipped = 0usize;
     let names: Vec<String> = units
         .iter()
         .take(MAX_UNITS)
         .map(|u| u.unit.clone())
+        .filter(|name| {
+            let ok = validate_unit(name).is_ok();
+            if !ok {
+                skipped += 1;
+            }
+            ok
+        })
         .collect();
+    if skipped > 0 {
+        warnings.push(format!(
+            "已跳过 {skipped} 个名称含转义字符的 systemd 单元（非业务服务）"
+        ));
+    }
     let mut instances = Vec::new();
 
     // 第二步：批量 show（白名单校验单元名）。
@@ -100,6 +121,14 @@ pub fn systemd_instance(
         .map(String::as_str)
         .unwrap_or("");
 
+    // **操作系统自带的单元直接排除**。sshd / cron / dbus / containerd / kubelet
+    // 这类服务即使 WorkingDirectory 落在业务根下，也不是用户部署的项目 ——
+    // 它们列出来只会淹没真正的业务服务。
+    let system_owned = is_os_unit(unit) || is_system_unit_path(fragment);
+    if system_owned {
+        return None;
+    }
+
     let exec_paths = extract_exec_paths(exec_start);
     let business = is_app_path(working_directory) || exec_paths.iter().any(|p| is_app_path(p));
     if !business {
@@ -141,6 +170,12 @@ pub fn systemd_instance(
         kind: "systemd".into(),
         name: unit.to_string(),
         status: format!("{active}/{sub}"),
+        // 直接跑在宿主机上 —— 不是容器、也不是 k8s。
+        runtime: InstanceRuntime::Host,
+        image: None,
+        // 单元名能说明跑的是什么（`mysql.service` / `redis.service` / `nginx.service`）。
+        service: identify_unit(unit).map(|identity| identity.detected()),
+        system_owned: false,
         ports: Vec::new(), // systemd show 不提供监听端口；由证据阶段补充
         working_directories,
         config_files,

@@ -3,21 +3,21 @@ import { ShieldCheck } from "lucide-react";
 /** A labelled key/value list used across the project graphs. */
 export function Detail({ title, items }: { title: string; items: string[] }) {
   return (
-    <div className="mt-2">
-      <div className="mb-1 flex items-center gap-1 font-medium text-fg">
-        <ShieldCheck size={12} className="text-fg-subtle" />
+    <div>
+      <div className="mb-1.5 flex items-center gap-1 text-10 font-semibold tracking-[0.06em] text-fg-subtle uppercase">
+        <ShieldCheck size={12} className="text-fg-muted" />
         {title}
       </div>
       {items.length ? (
-        <ul className="space-y-0.5 text-fg-muted">
+        <ul className="space-y-0.5 text-11 text-fg-muted">
           {items.map((item) => (
-            <li key={item} className="truncate">
+            <li key={item} className="truncate" title={item}>
               {item}
             </li>
           ))}
         </ul>
       ) : (
-        <div className="text-fg-subtle">暂无</div>
+        <div className="text-11 text-fg-subtle">暂无</div>
       )}
     </div>
   );

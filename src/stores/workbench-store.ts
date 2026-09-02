@@ -36,11 +36,23 @@ function findLeafWithTab(root: WorkbenchPane, tabId: string): WorkbenchPane | nu
   return null;
 }
 
-/** The leaf pane holding a terminal for this server, if any. */
-function findLeafWithServer(root: WorkbenchPane, serverId: string): WorkbenchPane | null {
-  if (root.tabs.some((tab) => tab.serverId === serverId)) return root;
+/**
+ * The leaf pane holding a tab **of this type** for this server, if any.
+ *
+ * The tab type is part of the match on purpose: several modules open a tab for
+ * the same server (a `project` tab and a `terminal` tab both carry that
+ * server's id). Matching on `serverId` alone made the terminal sidebar focus
+ * the *project* tab — the user picked a server under 终端 and got the project
+ * view back.
+ */
+function findLeafWithServer(
+  root: WorkbenchPane,
+  serverId: string,
+  tabType: WorkspaceTabType,
+): WorkbenchPane | null {
+  if (root.tabs.some((tab) => tab.serverId === serverId && tab.type === tabType)) return root;
   for (const child of root.children ?? []) {
-    const found = findLeafWithServer(child, serverId);
+    const found = findLeafWithServer(child, serverId, tabType);
     if (found) return found;
   }
   return null;
@@ -307,14 +319,22 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
 
   openOrFocusServerTab: (tab) =>
     set((state) => {
-      // A terminal for this server may live in any pane; prefer the focused
-      // pane's tab, then any other. Reusing it keeps the SSH session (and the
-      // file panel's directory state) exactly as the user left it.
-      const pane = findLeafWithServer(state.rootPane, tab.serverId);
+      // A tab of this kind for this server may live in any pane; prefer the
+      // focused pane's tab, then any other. Reusing it keeps the session (and
+      // the file panel's directory state) exactly as the user left it.
+      // The tab *type* is part of the match: a `project` tab for the same
+      // server must never be reused as a terminal.
+      const nextTab = normalizeTab(tab);
+      // `tab.serverId` is required by this action's signature; `normalizeTab`'s
+      // copy widens it back to optional, so match on the caller's value.
+      const pane = findLeafWithServer(state.rootPane, tab.serverId, nextTab.type);
       if (pane) {
-        const existing = pane.tabs.find((item) => item.serverId === tab.serverId);
+        const existing = pane.tabs.find(
+          (item) => item.serverId === tab.serverId && item.type === nextTab.type,
+        );
         if (existing) {
           return {
+            activeModule: TAB_TYPE_TO_MODULE[existing.type] ?? state.activeModule,
             rootPane: replacePane(state.rootPane, pane.id, { ...pane, activeTabId: existing.id }),
             focusedPaneId: pane.id,
           };
@@ -325,8 +345,8 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
       const targetPaneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
       const target = findPane(state.rootPane, targetPaneId);
       if (!target || !isLeafPane(target)) return state;
-      const nextTab = normalizeTab(tab);
       return {
+        activeModule: TAB_TYPE_TO_MODULE[nextTab.type] ?? state.activeModule,
         rootPane: replacePane(state.rootPane, targetPaneId, {
           ...target,
           tabs: [...target.tabs, nextTab],
@@ -338,9 +358,33 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
 
   openModuleTab: (module) =>
     set((state) => {
-      // 终端/服务器 render in the left context sidebar — just switch the module.
+      // 终端/服务器 render in the left context sidebar — switch the module and
+      // surface one of its own tabs.
+      //
+      // The tab switch matters: `activeModule` only drives the left sidebar and
+      // the rail highlight, while the right side renders `activeTabId`. Without
+      // it, switching from 项目 to 终端 left 项目's tab on screen — the sidebar
+      // changed but the content did not.
       if (module === "ssh" || module === "servers") {
-        return { activeModule: module };
+        const paneId0 = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+        const pane0 = findPane(state.rootPane, paneId0);
+        if (!pane0 || !isLeafPane(pane0)) return { activeModule: module };
+        const own = pane0.tabs.find((tab) => TAB_TYPE_TO_MODULE[tab.type] === module);
+        // No tab of this module is open: clear the selection so the pane shows
+        // its empty state (pick a server on the left) instead of leaving
+        // another module's tab — 项目, say — on screen under the 终端 rail.
+        if (!own) {
+          return {
+            activeModule: module,
+            rootPane: replacePane(state.rootPane, paneId0, { ...pane0, activeTabId: null }),
+            focusedPaneId: paneId0,
+          };
+        }
+        return {
+          activeModule: module,
+          rootPane: replacePane(state.rootPane, paneId0, { ...pane0, activeTabId: own.id }),
+          focusedPaneId: paneId0,
+        };
       }
 
       const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;

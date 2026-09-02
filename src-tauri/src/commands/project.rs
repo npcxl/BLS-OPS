@@ -156,6 +156,27 @@ pub async fn project_scan_start(
     let app_handle = app.clone();
     let sid = session_id.clone();
     let server = server_id.clone();
+    // 扫描开始前把该服务器上既有的人工复核结论读入内存，让"确认/忽略"
+    // 在重扫后依然生效，而不是每次都被打回待确认。
+    let review_map: std::collections::HashMap<String, crate::project_discovery::ReviewState> = {
+        match state.db.open().ok().and_then(|conn| {
+            crate::db::list_project_reviews(&conn, &server)
+                .ok()
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|r| {
+                            (
+                                r.path.clone(),
+                                crate::project_discovery::ReviewState::from_db_str(&r.review),
+                            )
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                })
+        }) {
+            Some(map) => map,
+            None => std::collections::HashMap::new(),
+        }
+    };
     tauri::async_runtime::spawn(async move {
         let result = async {
             // ---- 阶段 1（0→15%）：能力识别前置 ----
@@ -324,6 +345,10 @@ pub async fn project_scan_start(
                     modules: Vec::new(),
                     env_names: Vec::new(),
                     ports: Vec::new(),
+                    review: review_map
+                        .get(&path)
+                        .copied()
+                        .unwrap_or(crate::project_discovery::ReviewState::Pending),
                 };
                 if let Some(candidate) = crate::project_discovery::score_candidate(
                     input,
@@ -333,22 +358,6 @@ pub async fn project_scan_start(
                 }
             }
             let candidates = crate::project_discovery::merge_candidates(candidates);
-
-            // ---- 第四层：部署可行性图谱 ----
-            // 评估每个已注册适配器在当前服务器能力下的准备度（P3.8）。
-            // 项目是否"需要"某方式在 P3 仅做占位（证据尚未归集到具体适配器），
-            // 这里以"服务器是否具备该能力"作为就绪与否的依据，绝不猜测。
-            let deployment_readiness: Vec<crate::deployment_adapter::AdapterReadiness> =
-                crate::deployment_adapter::DeploymentAdapter::all()
-                    .iter()
-                    .map(|id| {
-                        let adapter = crate::deployment_adapter::DeploymentAdapter { id: *id };
-                        // 在 P3 阶段，无法从候选项精确反推"项目是否需要"，故统一按
-                        // 服务器能力是否具备评估；需要明确需求的判定由 P4 完成。
-                        let required = adapter.is_applicable(&profile);
-                        adapter.assess_readiness(&profile, required)
-                    })
-                    .collect();
 
             set_progress(
                 &registry,
@@ -371,7 +380,6 @@ pub async fn project_scan_start(
                 incremental: incremental.unwrap_or(false),
                 capability: Some(profile),
                 instances,
-                deployment_readiness,
             };
             registry
                 .results
@@ -446,4 +454,82 @@ pub async fn capability_profile(
     crate::capability_probe::probe_capabilities(&session_id, &state.ssh)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 写入一条人工复核结论（"确认项目"或"忽略目录"）。结论按 `(server_id, path)`
+/// 存进数据库，下次扫描沿用 —— 重扫不会把已确认的/已忽略的目录打回待确认。
+#[tauri::command]
+pub async fn project_review_set(
+    state: State<'_, AppState>,
+    server_id: String,
+    path: String,
+    review: crate::project_discovery::ReviewState,
+    name: Option<String>,
+    project_type: Option<String>,
+    note: Option<String>,
+) -> Result<crate::db::ProjectReviewRecord, String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    let now = crate::db::AppDb::now();
+    let record = crate::db::ProjectReviewRecord {
+        server_id: server_id.clone(),
+        path: path.clone(),
+        review: review.to_db_str().to_string(),
+        name: name.unwrap_or_default(),
+        project_type: project_type.unwrap_or_default(),
+        note: note.unwrap_or_default(),
+        created_at: now,
+        updated_at: now,
+    };
+    crate::db::upsert_project_review(&conn, &record).map_err(|e| e.to_string())?;
+    Ok(record)
+}
+
+/// 列出某台服务器上全部人工复核结论，供前端在扫描前后展示"已确认/已忽略"。
+#[tauri::command]
+pub async fn project_review_list(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<Vec<crate::db::ProjectReviewRecord>, String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    crate::db::list_project_reviews(&conn, &server_id).map_err(|e| e.to_string())
+}
+
+/// 针对**一个具体项目**做部署准备检查（源码完整性 / 构建 / 启动 / 端口 /
+/// 环境变量 / 依赖服务 / 网关 / 回滚）。基础设施（MySQL、Redis、Nginx 站点）
+/// 会被直接判定为 Blocked，因为它不是要部署的业务项目。
+///
+/// 复用最近一次扫描结果里的 `ServerCapabilityProfile` 与项目候选，因此无需
+/// 重新连接服务器；找不到对应项目时返回错误，由前端提示先扫描。
+#[tauri::command]
+pub async fn project_readiness_check(
+    state: State<'_, AppState>,
+    server_id: String,
+    scan_id: String,
+    candidate_path: String,
+) -> Result<crate::project_readiness::ProjectReadinessReport, String> {
+    let results = state.project_scans.results.lock().await;
+    let scan = results
+        .get(&scan_id)
+        .ok_or_else(|| "找不到对应的扫描结果，请先重新扫描".to_string())?;
+    if scan.server_id != server_id {
+        return Err("扫描结果不属于该服务器".to_string());
+    }
+    let profile = scan
+        .capability
+        .as_ref()
+        .ok_or_else(|| "扫描未覆盖服务器能力信息，请重新扫描".to_string())?;
+    let candidate = scan
+        .candidates
+        .iter()
+        .find(|c| c.path == candidate_path)
+        .ok_or_else(|| "候选列表里没有该项目，请重新扫描".to_string())?;
+    Ok(crate::project_readiness::assess_project_readiness(
+        &candidate.path,
+        &candidate.markers,
+        &candidate.detected_ports,
+        &candidate.deploy_instances,
+        &candidate.project_type,
+        candidate.project_kind,
+        profile,
+    ))
 }

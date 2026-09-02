@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -95,6 +95,34 @@ CREATE INDEX IF NOT EXISTS idx_deployments_project
 
 /// The P3 tables on their own, for `migrate()`.
 pub const P3_SCHEMA_SQL: &str = p3_schema_sql!();
+
+/// 人工复核结论表（P3 用户流程收敛）：用户的"确认项目 / 忽略目录"必须跨扫描
+/// 保留，否则每次重扫都要重新处理一遍不确定项。
+///
+/// 一个 (server_id, path) 只有一条记录，重复复核用 UPSERT 覆盖。
+macro_rules! project_reviews_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS project_reviews (
+    server_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    review TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    project_type TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (server_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_reviews_server
+    ON project_reviews (server_id, review);
+"#
+    };
+}
+
+/// The review table on its own, for `migrate()`.
+pub const PROJECT_REVIEWS_SCHEMA_SQL: &str = project_reviews_schema_sql!();
 
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
@@ -192,7 +220,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     user_agent TEXT
 );
 "#,
-    p3_schema_sql!()
+    p3_schema_sql!(),
+    project_reviews_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -236,6 +265,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // here: an upgraded database ends up byte-identical in shape.
         conn.execute_batch(P3_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 3u32)?;
+    }
+    if version < 4 {
+        // Project review decisions (确认项目 / 忽略目录) must survive a rescan.
+        conn.execute_batch(PROJECT_REVIEWS_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 4u32)?;
     }
     Ok(())
 }

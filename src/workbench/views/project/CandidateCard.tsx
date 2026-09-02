@@ -2,13 +2,15 @@ import { useState } from "react";
 import {
   Check,
   ChevronRight,
+  EyeOff,
   FileCode2,
   FolderOpen,
   FolderSearch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
-import type { ProjectCandidate } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
+import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
 import { Detail } from "./Detail";
 import {
   PortChips,
@@ -22,12 +24,22 @@ import {
 export function CandidateCard({
   candidate,
   onOpenPath,
+  serverId,
+  review,
+  onReview,
 }: {
   candidate: ProjectCandidate;
   /** 在右侧文件面板打开某个路径（目录或文件）。 */
   onOpenPath: (path: string) => void;
+  /** 服务器 ID，写复核结论用。 */
+  serverId: string;
+  /** 当前复核结论（由父组件从扫描结果 / 本地状态合并而来）。 */
+  review: ReviewState;
+  /** 用户确认 / 忽略后回调，父组件据此刷新列表。 */
+  onReview: (path: string, state: ReviewState) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState<ReviewState | null>(null);
   const running = candidate.runtime_links.length > 0;
   const confidence =
     candidate.confidence === "high"
@@ -42,6 +54,22 @@ export function CandidateCard({
     : Array.from(new Set(instances.flatMap((instance) => instance.ports))).sort(
         (a, b) => a - b,
       );
+
+  const submitReview = async (state: ReviewState) => {
+    setBusy(state);
+    try {
+      await opsApi.projectReviewSet(
+        serverId,
+        candidate.path,
+        state,
+        candidate.name,
+        candidate.project_type,
+      );
+      onReview(candidate.path, state);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <article className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-shadow hover:shadow-[0_2px_6px_rgb(15_23_42/0.07)]">
@@ -76,6 +104,16 @@ export function CandidateCard({
               {candidate.category === "deployed" ? "已部署" : "仅源码"}
             </span>
             {running && <span className="text-10 text-success">正在运行</span>}
+            {review === "confirmed" && (
+              <span className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success">
+                已确认
+              </span>
+            )}
+            {review === "ignored" && (
+              <span className="rounded bg-surface-3 px-1.5 py-0.5 text-10 text-fg-subtle">
+                已忽略
+              </span>
+            )}
           </div>
           <div className="mt-1 truncate font-mono text-11 text-fg-muted" title={candidate.path}>
             {candidate.path}
@@ -151,16 +189,38 @@ export function CandidateCard({
             </div>
           </div>
           <div className="mt-4 flex items-center gap-1 border-t border-line pt-3">
-            <Button variant="secondary" size="xs">
-              <Check size={11} />
-              确认项目
-            </Button>
-            <Button variant="ghost" size="xs">
-              忽略目录
-            </Button>
-            <Button variant="ghost" size="xs">
-              合并 / 拆分
-            </Button>
+            {review !== "confirmed" && (
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={busy !== null}
+                onClick={() => void submitReview("confirmed")}
+              >
+                <Check size={11} />
+                {busy === "confirmed" ? "保存中…" : "确认项目"}
+              </Button>
+            )}
+            {review !== "ignored" && (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={busy !== null}
+                onClick={() => void submitReview("ignored")}
+              >
+                <EyeOff size={11} />
+                {busy === "ignored" ? "保存中…" : "忽略目录"}
+              </Button>
+            )}
+            {(review === "confirmed" || review === "ignored") && (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={busy !== null}
+                onClick={() => void submitReview("pending")}
+              >
+                撤销结论
+              </Button>
+            )}
           </div>
         </div>
       )}

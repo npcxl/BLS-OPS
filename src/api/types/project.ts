@@ -99,6 +99,8 @@ export interface ProjectCandidate {
   blockers: string[];
   warnings: string[];
   readiness: DeploymentReadiness;
+  /** 人工复核结论（确认/忽略），从数据库读出随候选返回。 */
+  review?: ReviewState;
   updated_at: string;
 }
 export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
@@ -149,11 +151,22 @@ export interface ServerCapabilityProfile {
   deployment: DeploymentCapabilities;
   warnings: string[];
 }
-export type ReadinessVerdict = "ready" | "needs_install" | "conflict" | "unconfirmed";
-export interface AdapterReadiness {
-  adapter: string;
-  verdict: ReadinessVerdict;
+
+// -- 人工复核结论（确认项目 / 忽略目录，持久化到数据库） -------------------
+
+/** 复核状态：待处理 / 已确认 / 已忽略。与后端 `ReviewState` 一一对应。 */
+export type ReviewState = "pending" | "confirmed" | "ignored";
+
+/** 一条人工复核结论：按 (server_id, path) 存库，下次扫描沿用。 */
+export interface ProjectReviewRecord {
+  server_id: string;
+  path: string;
+  review: ReviewState;
+  name: string;
+  project_type: string;
   note: string;
+  created_at: number;
+  updated_at: number;
 }
 
 /** 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。 */
@@ -193,8 +206,27 @@ export interface ProjectScanResult {
   capability: ServerCapabilityProfile | null;
   /** 第一轮产物：部署实例列表（含"源码未知"的实例）。 */
   instances: DeploymentInstance[];
-  /** 第三张图谱：部署可行性（每个已注册适配器的准备度）。 */
-  deployment_readiness: AdapterReadiness[];
+}
+
+// -- 项目级部署准备检查（针对单个项目，替代全局可行性图谱） ----------------
+
+/** 单项检查的三种结论：已就绪 / 未确认（证据不足）/ 阻塞。 */
+export type CheckState = "ready" | "unknown" | "blocked";
+export interface ReadinessCheck {
+  id: string;
+  label: string;
+  state: CheckState;
+  detail: string;
+}
+/** 三选一结论：可生成方案 / 需确认 / 阻塞。 */
+export type ReadinessConclusion = "ready" | "needs_confirm" | "blocked";
+export interface ProjectReadinessReport {
+  path: string;
+  verdict: ReadinessConclusion;
+  checks: ReadinessCheck[];
+  /** 推荐的部署方式（基础设施项目为 null）。 */
+  recommended: { method: string; reason: string } | null;
+  open_questions: string[];
 }
 
 // -- Projects & deployments (legacy P5 foundation) -------------------------

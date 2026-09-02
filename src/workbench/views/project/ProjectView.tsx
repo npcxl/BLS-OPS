@@ -4,40 +4,34 @@ import { Button } from "@/components/ui/button";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
 import { cn } from "@/lib/cn";
-import {
-  ModuleEmpty,
-  ModuleFrame,
-} from "@/workbench/views/module-frame";
+import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
+import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { ScanProgress } from "./ScanProgress";
-import { InstanceList } from "./InstanceList";
-import { CandidateCard } from "./CandidateCard";
-import { CapabilityGraph, ReadinessGraph, RuntimeComposition } from "./graphs";
-
-const FILTERS = [
-  { id: "all", label: "全部" },
-  { id: "application", label: "业务应用" },
-  { id: "infrastructure", label: "基础设施" },
-  { id: "deployed", label: "已部署" },
-  { id: "source_only", label: "仅源码" },
-  { id: "high", label: "高置信度" },
-] as const;
-
-type FilterId = (typeof FILTERS)[number]["id"];
-
-const STEPS = ["发现项目", "确认模块", "检查部署环境", "生成方案（P4）"];
+import { TabApplications } from "./tabs/TabApplications";
+import { TabNeedsConfirm } from "./tabs/TabNeedsConfirm";
+import { TabUnlinked } from "./tabs/TabUnlinked";
+import { TabServerEnv } from "./tabs/TabServerEnv";
 
 /** 项目视图里没有配对的终端，文件面板不需要跟随 `cd`。引用必须稳定。 */
 const NO_FOLLOW = { nonce: 0, arg: "" };
 
+type TabId = "applications" | "needs_confirm" | "unlinked" | "server_env";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "applications", label: "项目" },
+  { id: "needs_confirm", label: "待确认" },
+  { id: "unlinked", label: "未关联服务" },
+  { id: "server_env", label: "服务器环境" },
+];
+
 /** P3 is intentionally discovery-only. Deployment records remain available to P5, but are not exposed here. */
 export function ProjectView({ tab }: { tab: WorkspaceTab }) {
   const session = useCommandSession(tab);
-  const [filter, setFilter] = useState<FilterId>("all");
+  const [activeTab, setActiveTab] = useState<TabId>("applications");
   // 右侧文件面板：点"查看项目文件 / Docker 配置 / Nginx 配置"时打开到对应路径。
-  // `firstPath` 是面板挂载时的落点（避免与"打开 home 目录"抢导航栈）；
-  // `nonce` 每次自增，同一个路径可以被重复请求。
+  // `firstPath` 是面板挂载时的落点；`nonce` 每次自增，同一个路径可以被重复请求。
   const [panel, setPanel] = useState<{
     nonce: number;
     firstPath: string;
@@ -55,34 +49,32 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     () => ({ nonce: panel?.nonce ?? 0, path: panel?.path ?? "" }),
     [panel],
   );
-  // Start/poll/cancel/cleanup of a discovery run lives in the hook (阶段 D).
+  // Start/poll/cancel/cleanup of a discovery run lives in the hook.
   const { scan, result, loading, error, discover, cancel } = useScanTask(
     tab.serverId,
     session.sessionId,
     session.ready,
   );
-  const candidates =
-    result?.candidates.filter((candidate) => {
-      switch (filter) {
-        case "high":
-          return candidate.confidence === "high";
-        case "deployed":
-          return candidate.category === "deployed";
-        case "source_only":
-          return candidate.category === "source_only";
-        // MySQL / Redis / Nginx 这类是依赖，单独一屏看，不跟业务项目混排。
-        case "infrastructure":
-          return candidate.project_kind === "infrastructure";
-        case "application":
-          return candidate.project_kind !== "infrastructure";
-        default:
-          return true;
-      }
-    }) ?? [];
 
-  // 扫描中只保留"主按钮 + 进度卡片"两处动画；刷新按钮在扫描期间禁用，
-  // 不再各自转一个 spinner。
-  const currentStep = result ? 3 : loading ? 1 : 1;
+  // 用户在卡片上"确认 / 忽略"后，本地覆盖扫描结果里的 review，避免每次都重扫。
+  // 后端扫描时也会从数据库读回 review，所以重扫后这里的状态仍一致。
+  const [reviews, setReviews] = useState<Record<string, ReviewState>>({});
+  const handleReview = useCallback((path: string, state: ReviewState) => {
+    setReviews((current) => ({ ...current, [path]: state }));
+  }, []);
+
+  const candidates = result?.candidates ?? [];
+  const needsConfirm = candidates.filter(
+    (c) => c.review !== "confirmed" && c.review !== "ignored",
+  );
+  const unlinked = result?.instances.filter((i) => !i.source_known) ?? [];
+
+  const tabBadges: Record<TabId, number> = {
+    applications: candidates.filter((c) => c.review !== "ignored").length,
+    needs_confirm: needsConfirm.filter((c) => c.review !== "confirmed").length,
+    unlinked: unlinked.length,
+    server_env: result?.instances.length ?? 0,
+  };
 
   return (
     <ModuleFrame
@@ -116,122 +108,108 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
         </>
       }
     >
-      {/* 主区（候选列表）与右侧文件面板并排：点"查看项目文件 / Docker 配置 /
-          Nginx 配置"时面板直接落到对应目录并选中目标文件。 */}
       <div className="flex h-full min-h-0">
-        <div className="ops-scroll min-w-0 flex-1 overflow-y-scroll overflow-x-hidden">
-          <div className="mx-auto flex w-full max-w-[880px] flex-col gap-5 p-5">
-        {/* 流水线标注 — 一行小字加当前步骤，不再是一整条彩色胶囊 */}
-        <div className="flex items-center gap-2 text-10 text-fg-subtle">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-1 px-2 py-0.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-            第 {currentStep} 步 · {STEPS[currentStep - 1]}
-          </span>
-          <span className="hidden min-w-0 truncate sm:inline">
-            {STEPS.join(" → ")}
-          </span>
-          <span className="ml-auto shrink-0 text-fg-muted">
-            只读扫描 · 不修改服务器文件
-          </span>
-        </div>
+        <div className="ops-scroll flex min-w-0 flex-1 flex-col overflow-hidden">
+          {/* 扫描状态横幅：异常 / 断开由 ModuleFrame 统一处理，这里只留进度条 */}
+          {error && (
+            <div className="mx-5 mt-4 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
+              {error}
+            </div>
+          )}
+          {loading && scan && (
+            <div className="mx-5 mt-4">
+              <ScanProgress scan={scan} onCancel={() => void cancel()} />
+            </div>
+          )}
 
-        {error && (
-          <div className="rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-            {error}
-          </div>
-        )}
-
-        {/* 空状态：未开始 / 正在发起（scan 尚未返回）都停留在这里，避免闪烁空白 */}
-        {!result && (!loading || !scan) && (
-          <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-            <ModuleEmpty
-              icon={FolderSearch}
-              title={loading ? "正在准备扫描…" : "发现服务器项目"}
-              hint="先识别服务器的操作系统与已安装能力，再据此启用对应的收集器（systemd、Docker、Nginx、PM2 等均按需），最后结合 Git、进程、端口与配置线索定位项目。整个过程只读，不会执行部署。"
-            />
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={!session.ready || loading}
-              onClick={() => void discover()}
-            >
-              {loading ? "扫描中…" : "开始发现"}
-            </Button>
-          </div>
-        )}
-
-        {loading && scan && (
-          <ScanProgress scan={scan} onCancel={() => void cancel()} />
-        )}
-
-        {result && (
-          <>
-            {result.capability && (
-              <CapabilityGraph profile={result.capability} />
-            )}
-
-            {/* 运行形态：宿主机 / 容器 / k8s 各占多少，避免"装了 docker 就
-                以为 Nginx 在宿主机上"这类误判 */}
-            <RuntimeComposition instances={result.instances} />
-
-            {/* 证据图谱标题 + 分段筛选（macOS segmented control） */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
-                项目证据图谱
-                <span className="ml-1.5 text-10 font-normal text-fg-muted normal-case">
-                  {candidates.length} 个候选
-                </span>
-              </span>
-              <div className="flex rounded-[8px] bg-surface-2 p-[2px]">
-                {FILTERS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setFilter(item.id)}
+          {/* 4 个 tab：项目 / 待确认 / 未关联服务 / 服务器环境 */}
+          <div className="flex items-center gap-1 border-b border-line px-4 pt-3">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className={cn(
+                  "relative flex items-center gap-1.5 px-3 py-2 text-12 transition-colors",
+                  activeTab === item.id
+                    ? "font-medium text-fg"
+                    : "text-fg-muted hover:text-fg",
+                )}
+              >
+                {item.label}
+                {tabBadges[item.id] > 0 && (
+                  <span
                     className={cn(
-                      "h-[22px] rounded-[6px] px-2.5 text-11 transition-colors",
-                      filter === item.id
-                        ? "bg-surface-3 text-fg shadow-sm"
-                        : "text-fg-muted hover:text-fg",
+                      "rounded-full px-1.5 text-10",
+                      activeTab === item.id
+                        ? "bg-accent/15 text-accent"
+                        : "bg-surface-3 text-fg-subtle",
                     )}
                   >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+                    {tabBadges[item.id]}
+                  </span>
+                )}
+                {activeTab === item.id && (
+                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />
+                )}
+              </button>
+            ))}
+          </div>
 
-            <InstanceList instances={result.instances} />
-
-            {candidates.length === 0 ? (
-              <ModuleEmpty
-                icon={FolderSearch}
-                title="没有符合筛选条件的候选"
-                hint="可以切换筛选条件，或重新执行增量扫描。"
-              />
-            ) : (
-              <div className="flex flex-col gap-2">
-                {candidates.map((candidate) => (
-                  <CandidateCard
-                    key={candidate.id}
-                    candidate={candidate}
-                    onOpenPath={openPath}
+          <div className="ops-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden">
+            <div className="mx-auto flex w-full max-w-[880px] flex-col gap-4 p-5">
+              {!result && !loading && (
+                <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
+                  <ModuleEmpty
+                    icon={FolderSearch}
+                    title="发现服务器项目"
+                    hint="先识别服务器的操作系统与已安装能力，再据此启用对应的收集器（systemd、Docker、Nginx、PM2 等均按需），最后结合 Git、进程、端口与配置线索定位项目。整个过程只读，不会执行部署。"
                   />
-                ))}
-              </div>
-            )}
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!session.ready}
+                    onClick={() => void discover()}
+                  >
+                    开始发现
+                  </Button>
+                </div>
+              )}
 
-            {result.deployment_readiness.length > 0 && (
-              <ReadinessGraph items={result.deployment_readiness} />
-            )}
+              {result && activeTab === "applications" && (
+                <TabApplications
+                  candidates={candidates}
+                  serverId={tab.serverId ?? ""}
+                  reviews={reviews}
+                  onOpenPath={openPath}
+                  onReview={handleReview}
+                />
+              )}
+              {result && activeTab === "needs_confirm" && (
+                <TabNeedsConfirm
+                  candidates={needsConfirm}
+                  serverId={tab.serverId ?? ""}
+                  reviews={reviews}
+                  onOpenPath={openPath}
+                  onReview={handleReview}
+                />
+              )}
+              {result && activeTab === "unlinked" && (
+                <TabUnlinked instances={unlinked} onOpenPath={openPath} />
+              )}
+              {result && activeTab === "server_env" && (
+                <TabServerEnv
+                  profile={result.capability}
+                  instances={result.instances}
+                />
+              )}
 
-            {result.warnings.length > 0 && (
-              <p className="text-11 text-warning">
-                扫描警告：{result.warnings.join("；")}
-              </p>
-            )}
-          </>
-        )}
+              {result && result.warnings.length > 0 && (
+                <p className="text-11 text-warning">
+                  扫描警告：{result.warnings.join("；")}
+                </p>
+              )}
+            </div>
           </div>
         </div>
 
@@ -248,4 +226,9 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
       </div>
     </ModuleFrame>
   );
+}
+
+// 占位：保留候选排序工具，供 tab 复用。
+export function sortCandidates(list: ProjectCandidate[]): ProjectCandidate[] {
+  return [...list].sort((a, b) => b.score - a.score);
 }

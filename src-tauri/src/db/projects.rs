@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use super::model::{DeploymentRecord, ProjectRecord};
 use super::schema::AppDb;
@@ -100,6 +101,83 @@ pub fn delete_project_cascade(conn: &Connection, id: &str) -> Result<i64> {
     conn.execute("DELETE FROM deployments WHERE project_id = ?1", [id])?;
     conn.execute("DELETE FROM projects WHERE id = ?1", [id])?;
     Ok(deployments)
+}
+
+// -- project reviews ---------------------------------------------------------
+
+/// One人工复核结论: 用户说"这是我的项目"或"这不是项目"的结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectReviewRecord {
+    pub server_id: String,
+    pub path: String,
+    /// `confirmed` | `ignored` | `pending`
+    pub review: String,
+    pub name: String,
+    pub project_type: String,
+    pub note: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+fn review_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectReviewRecord> {
+    Ok(ProjectReviewRecord {
+        server_id: row.get("server_id")?,
+        path: row.get("path")?,
+        review: row.get("review")?,
+        name: row.get("name")?,
+        project_type: row.get("project_type")?,
+        note: row.get("note")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+/// 某台服务器上所有的人工复核结论。扫描时据此给候选打标。
+pub fn list_project_reviews(
+    conn: &Connection,
+    server_id: &str,
+) -> Result<Vec<ProjectReviewRecord>> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM project_reviews WHERE server_id = ?1 ORDER BY path ASC")?;
+    let rows = stmt.query_map([server_id], review_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 写入（或覆盖）一条复核结论。同一个 (server, path) 只保留最新结论，
+/// 因此"取消忽略"就是把它写回 `pending`。
+pub fn upsert_project_review(conn: &Connection, record: &ProjectReviewRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO project_reviews (server_id, path, review, name, project_type, note, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(server_id, path) DO UPDATE SET
+            review=excluded.review,
+            name=excluded.name,
+            project_type=excluded.project_type,
+            note=excluded.note,
+            updated_at=excluded.updated_at
+        "#,
+        params![
+            record.server_id,
+            record.path,
+            record.review,
+            record.name,
+            record.project_type,
+            record.note,
+            record.created_at,
+            record.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 删除一条复核结论（回到"未处理"）。
+pub fn delete_project_review(conn: &Connection, server_id: &str, path: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "DELETE FROM project_reviews WHERE server_id = ?1 AND path = ?2",
+        params![server_id, path],
+    )?;
+    Ok(changed > 0)
 }
 
 // -- deployments -------------------------------------------------------------

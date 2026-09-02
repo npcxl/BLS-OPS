@@ -87,6 +87,51 @@ pub enum ProjectKind {
     Unknown,
 }
 
+/// 用户对一个候选目录的人工复核结论。
+///
+/// 与 `ProjectKind`（系统识别出的性质）是两件事：这个是**人**说了算，并且
+/// 会存进数据库、下次扫描沿用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    /// 还没处理。
+    #[default]
+    Pending,
+    /// 用户确认"这是我的项目"。
+    Confirmed,
+    /// 用户标记为"不是项目"，之后不再出现在候选里。
+    Ignored,
+}
+
+impl ReviewState {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReviewState::Pending => "待处理",
+            ReviewState::Confirmed => "已确认",
+            ReviewState::Ignored => "已忽略",
+        }
+    }
+
+    /// 从数据库里的文本形态（`pending`/`confirmed`/`ignored`）还原枚举。
+    /// 未知值回退到 `Pending`，保证旧数据或损坏行不会导致整次扫描失败。
+    pub fn from_db_str(value: &str) -> Self {
+        match value {
+            "confirmed" => ReviewState::Confirmed,
+            "ignored" => ReviewState::Ignored,
+            _ => ReviewState::Pending,
+        }
+    }
+
+    /// 存进数据库时使用的文本形态（与 `from_db_str` 互逆）。
+    pub fn to_db_str(self) -> &'static str {
+        match self {
+            ReviewState::Pending => "pending",
+            ReviewState::Confirmed => "confirmed",
+            ReviewState::Ignored => "ignored",
+        }
+    }
+}
+
 impl ProjectKind {
     pub fn label(self) -> &'static str {
         match self {
@@ -179,9 +224,16 @@ pub struct ProjectCandidate {
     /// 关联到的部署实例（含配置文件路径，供 UI 跳转查看）。
     #[serde(default)]
     pub deploy_instances: Vec<CandidateInstance>,
+    /// 目录下命中的项目标志（小写）。**项目级部署准备检查的依据** —— 有没有
+    /// Dockerfile / compose / 构建清单都看它，前端和后端都不猜。
+    #[serde(default)]
+    pub markers: Vec<String>,
     /// 所有关联实例的配置文件汇总（去重、有序）。
     #[serde(default)]
     pub config_files: Vec<String>,
+    /// 人工复核结论。用户点"确认项目"或"忽略目录"后写入数据库，下次扫描沿用。
+    #[serde(default)]
+    pub review: ReviewState,
     pub evidence: Vec<ProjectEvidence>,
     pub penalties: Vec<ProjectPenalty>,
     pub runtime_links: Vec<RuntimeLink>,
@@ -235,12 +287,10 @@ pub struct ProjectScanResult {
     /// 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。
     /// `source_known == false` 的实例即"只有运行实例，源码未知"。
     pub instances: Vec<crate::deployment_collector::DeploymentInstance>,
-    /// 第三张图谱：每个已注册部署适配器的准备度评估（部署可行性图谱）。
-    pub deployment_readiness: Vec<crate::deployment_adapter::AdapterReadiness>,
 }
 
 impl ProjectScanResult {
-    /// 便捷构造：能力图谱、实例与可行性图谱默认为空。
+    /// 便捷构造：能力图谱与实例默认为空。
     pub fn with(
         scan_id: String,
         server_id: String,
@@ -258,7 +308,6 @@ impl ProjectScanResult {
             incremental,
             capability: None,
             instances: Vec::new(),
-            deployment_readiness: Vec::new(),
         }
     }
 }
@@ -273,6 +322,8 @@ pub struct CandidateInput {
     pub runtime_links: Vec<RuntimeLink>,
     /// 与 `runtime_links` 一一对应的部署实例（含配置文件路径）。
     pub instances: Vec<CandidateInstance>,
+    /// 该目录此前的人工复核结论（从数据库读出）。被忽略的目录不再进候选列表。
+    pub review: ReviewState,
     pub modules: Vec<ProjectModule>,
     pub env_names: Vec<String>,
     pub ports: Vec<u16>,
@@ -304,7 +355,12 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     // `/usr/local/lib/python3/.../package.json` 这类属于发行版的东西，列出来
     // 只会淹没真正的业务代码。判定规则集中在 `service_catalog`，与"什么算
     // 依赖目录"共用同一张表。
-    if let Err(reason) = is_plausible_project_root(&input.path) {
+    if is_plausible_project_root(&input.path).is_err() {
+        return None;
+    }
+    // 用户明确说过"这不是项目"的目录，不再出现在候选里 —— 复核结论必须跨扫描
+    // 生效，否则每次重扫都要重新处理一遍同样的噪声。
+    if input.review == ReviewState::Ignored {
         return None;
     }
     let mut evidence = Vec::new();
@@ -516,7 +572,13 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         },
         project_kind,
         deploy_instances: input.instances,
+        markers: {
+            let mut sorted: Vec<String> = markers.iter().cloned().collect();
+            sorted.sort();
+            sorted
+        },
         config_files,
+        review: input.review,
         evidence,
         penalties,
         runtime_links: input.runtime_links,
@@ -650,6 +712,9 @@ pub struct ScanRegistry {
     pub results: Arc<Mutex<HashMap<String, ProjectScanResult>>>,
     pub active_by_server: Arc<Mutex<HashMap<String, String>>>,
     pub cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// 每台服务器最近一次**成功**的扫描结果。项目级部署准备检查按
+    /// (server_id, path) 从这里取候选，不必重新扫一遍。
+    pub last_by_server: Arc<Mutex<HashMap<String, ProjectScanResult>>>,
 }
 impl ScanRegistry {
     pub async fn start(&self, status: ProjectScanStatus) -> Result<Arc<AtomicBool>, String> {
@@ -674,6 +739,33 @@ impl ScanRegistry {
             false
         }
     }
+    /// 记录该服务器最近一次成功结果，供项目级部署准备检查复用。
+    pub async fn remember(&self, server: &str, result: ProjectScanResult) {
+        self.last_by_server
+            .lock()
+            .await
+            .insert(server.to_string(), result);
+    }
+
+    /// 取该服务器最近一次成功扫描中某个路径的候选。
+    pub async fn candidate_for(
+        &self,
+        server: &str,
+        path: &str,
+    ) -> Option<(
+        ProjectCandidate,
+        crate::capability_probe::ServerCapabilityProfile,
+    )> {
+        let results = self.last_by_server.lock().await;
+        let result = results.get(server)?;
+        let candidate = result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.path == path)?
+            .clone();
+        Some((candidate, result.capability.clone()?))
+    }
+
     pub async fn finish(&self, id: &str, server: &str, state: ScanState, error: Option<String>) {
         self.active_by_server.lock().await.remove(server);
         self.cancel.lock().await.remove(id);
@@ -707,6 +799,7 @@ mod tests {
             modules: Vec::new(),
             env_names: Vec::new(),
             ports: Vec::new(),
+            review: ReviewState::Pending,
         }
     }
 

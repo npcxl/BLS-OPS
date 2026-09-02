@@ -1,6 +1,5 @@
 import { cn } from "@/lib/cn";
 import type {
-  AdapterReadiness,
   DeploymentInstance,
   ServerCapabilityProfile,
 } from "@/api/ops-api";
@@ -115,50 +114,6 @@ export function CapabilityGraph({ profile }: { profile: ServerCapabilityProfile 
             未安装（不启用收集器，避免无意义报错）：{missing.join("、")}
           </div>
         )}
-      </div>
-    </section>
-  );
-}
-
-const READINESS_LABEL: Record<string, string> = {
-  ready: "可直接部署",
-  needs_install: "需安装",
-  conflict: "冲突",
-  unconfirmed: "无法确认",
-};
-
-export function ReadinessGraph({ items }: { items: AdapterReadiness[] }) {
-  const verdictClass = (v: string) =>
-    v === "ready"
-      ? "bg-success/12 text-success"
-      : v === "needs_install"
-        ? "bg-warning/12 text-warning"
-        : v === "conflict"
-          ? "bg-danger/12 text-danger"
-          : "bg-surface-3 text-fg-subtle";
-
-  return (
-    <section className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
-      <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-3">
-        <span className="rounded-full bg-accent/12 px-2 py-0.5 text-10 font-medium text-accent">
-          部署可行性图谱
-        </span>
-      </div>
-      <div className="grid gap-1.5 p-4 sm:grid-cols-2 lg:grid-cols-3">
-        {items.map((item) => (
-          <div
-            key={item.adapter}
-            className="flex items-center justify-between gap-2 rounded-[8px] border border-line bg-surface-2 px-3 py-2"
-          >
-            <span className="truncate text-11 text-fg">{item.adapter}</span>
-            <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-10", verdictClass(item.verdict))}>
-              {READINESS_LABEL[item.verdict] ?? item.verdict}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="border-t border-line px-4 py-2 text-10 text-fg-subtle">
-        未确认的部署方式不会猜测为支持；需安装的方式由 P4 决定是否处理。
       </div>
     </section>
   );

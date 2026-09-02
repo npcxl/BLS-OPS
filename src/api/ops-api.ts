@@ -58,8 +58,11 @@ import {
 import {
   type DeploymentRecord,
   type ProjectRecord,
+  type ProjectReadinessReport,
+  type ProjectReviewRecord,
   type ProjectScanResult,
   type ProjectScanStatus,
+  type ReviewState,
 } from "@/api/types/project";
 
 // -- Domain types (re-exported; previously defined in this file) ------------
@@ -122,7 +125,6 @@ export {
   DEPLOY_STATUSES,
   deployStatusLabel,
   projectSteps,
-  type AdapterReadiness,
   type CandidateCategory,
   type CandidateInstance,
   type ConfidenceLevel,
@@ -139,7 +141,11 @@ export {
   type ProjectRecord,
   type ProjectScanResult,
   type ProjectScanStatus,
-  type ReadinessVerdict,
+  type ProjectReadinessReport,
+  type ProjectReviewRecord,
+  type ReadinessCheck,
+  type ReadinessConclusion,
+  type ReviewState,
   type RuntimeKind,
   type RuntimeLink,
   type ScanProgress,
@@ -319,6 +325,33 @@ export const opsApi = {
     invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
   projectScanResult: (scanId: string) =>
     invoke<ProjectScanResult | null>("project_scan_result", { scanId }),
+  /** 写入一条人工复核结论（确认项目 / 忽略目录），按 (serverId, path) 存库。 */
+  projectReviewSet: (
+    serverId: string,
+    path: string,
+    review: ReviewState,
+    name?: string,
+    projectType?: string,
+    note?: string,
+  ) =>
+    invoke<ProjectReviewRecord>("project_review_set", {
+      serverId,
+      path,
+      review,
+      name,
+      projectType,
+      note,
+    }),
+  /** 列出某台服务器上全部人工复核结论。 */
+  projectReviewList: (serverId: string) =>
+    invoke<ProjectReviewRecord[]>("project_review_list", { serverId }),
+  /** 针对单个项目做部署准备检查（项目级，替代全局可行性图谱）。 */
+  projectReadinessCheck: (serverId: string, scanId: string, candidatePath: string) =>
+    invoke<ProjectReadinessReport>("project_readiness_check", {
+      serverId,
+      scanId,
+      candidatePath,
+    }),
 
   // -- Services (systemd) ---------------------------------------------------
   serviceList: (sessionId: string) => invoke<ServiceUnit[]>("service_list", { sessionId }),

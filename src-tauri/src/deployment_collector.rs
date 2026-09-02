@@ -260,7 +260,7 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
         working_directories,
         config_files: config_files
             .into_iter()
-            .filter(|p| is_host_project_path(p))
+            .filter(|p| is_config_path(p))
             .collect(),
         source_paths,
         source_known,
@@ -270,6 +270,7 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
 
 /// 宿主项目路径判定：必须是能通过 `validate_abs_path` 的绝对路径，
 /// 且不在运行时目录黑名单下。服务器返回的任何字符串都先过这一关。
+/// 仅用于**源码/工作目录**候选；配置文件见 [`is_config_path`]。
 pub fn is_host_project_path(path: &str) -> bool {
     if path.is_empty() || !path.starts_with('/') {
         return false;
@@ -281,6 +282,14 @@ pub fn is_host_project_path(path: &str) -> bool {
         return false;
     }
     validate_abs_path(path, "实例路径").is_ok()
+}
+
+/// 配置文件路径判定：只要求是合法的绝对路径（fragment、compose 文件、
+/// 环境文件都在 /etc 下很常见，不受挂载黑名单约束）。
+pub fn is_config_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.starts_with('/')
+        && validate_abs_path(path, "配置路径").is_ok()
 }
 
 fn push_unique(list: &mut Vec<String>, value: String) {
@@ -401,14 +410,14 @@ pub fn systemd_instance(
     }
 
     let mut config_files: Vec<String> = Vec::new();
-    if is_host_project_path(fragment) {
+    if is_config_path(fragment) {
         config_files.push(fragment.to_string());
     }
     for token in env_files.split_whitespace() {
         // `EnvironmentFiles=/srv/app/.env (ignore_errors=no)` —— 取以 / 开头的
         // 去掉括号注记后的路径 token。
         let token = token.trim_start_matches('(');
-        if is_host_project_path(token) {
+        if is_config_path(token) {
             config_files.push(token.to_string());
         }
     }

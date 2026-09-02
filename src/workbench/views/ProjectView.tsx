@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Box,
   Check,
   ChevronDown,
+  CircleAlert,
   FolderSearch,
+  Globe,
   Loader2,
   Pause,
+  Server,
   ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +18,7 @@ import {
   opsApi,
   toErrorMessage,
   type AdapterReadiness,
+  type DeploymentInstance,
   type ProjectCandidate,
   type ProjectScanResult,
   type ProjectScanStatus,
@@ -34,7 +39,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
   const [result, setResult] = useState<ProjectScanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "high" | "running">("all");
+  const [filter, setFilter] = useState<"all" | "deployed" | "source_only" | "high">("all");
   const timerRef = useRef<number | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -156,7 +161,8 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
       (candidate) =>
         filter === "all" ||
         (filter === "high" && candidate.confidence === "high") ||
-        (filter === "running" && candidate.runtime_links.length > 0),
+        (filter === "deployed" && candidate.category === "deployed") ||
+        (filter === "source_only" && candidate.category === "source_only"),
     ) ?? [];
 
   return (
@@ -237,20 +243,28 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                 全部
               </Button>
               <Button
+                variant={filter === "deployed" ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setFilter("deployed")}
+              >
+                已部署项目
+              </Button>
+              <Button
+                variant={filter === "source_only" ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setFilter("source_only")}
+              >
+                未部署源码
+              </Button>
+              <Button
                 variant={filter === "high" ? "secondary" : "ghost"}
                 size="xs"
                 onClick={() => setFilter("high")}
               >
                 高置信度
               </Button>
-              <Button
-                variant={filter === "running" ? "secondary" : "ghost"}
-                size="xs"
-                onClick={() => setFilter("running")}
-              >
-                正在运行
-              </Button>
             </div>
+            <InstanceList instances={result.instances} />
             {candidates.length === 0 ? (
               <ModuleEmpty
                 icon={FolderSearch}
@@ -325,6 +339,78 @@ function ScanProgress({
   );
 }
 
+/** 部署方式 → 图标与展示名。 */
+const KIND_META: Record<string, { icon: typeof Box; label: string }> = {
+  docker: { icon: Box, label: "Docker" },
+  systemd: { icon: Server, label: "systemd" },
+  nginx: { icon: Globe, label: "Nginx" },
+};
+
+/**
+ * 第一轮部署实例清单：真实容器 / 服务 / 站点。`source_known === false` 的
+ * 实例明确标为"源码未知"，绝不猜测路径。
+ */
+function InstanceList({ instances }: { instances: DeploymentInstance[] }) {
+  if (instances.length === 0) return null;
+  const unknown = instances.filter((instance) => !instance.source_known).length;
+  return (
+    <section className="rounded-[10px] border border-line bg-surface-1">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+        <span className="text-11 font-medium text-fg">部署实例</span>
+        <span className="text-10 text-fg-subtle">
+          {instances.length} 个实例 · {unknown} 个源码未知
+        </span>
+      </div>
+      <div className="divide-y divide-line">
+        {instances.map((instance) => {
+          const meta = KIND_META[instance.kind];
+          const Icon = meta?.icon ?? Box;
+          return (
+            <div key={instance.id} className="flex items-start gap-2.5 px-3 py-2">
+              <Icon size={14} className="mt-0.5 shrink-0 text-accent" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <strong className="truncate text-12 text-fg">{instance.name}</strong>
+                  <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
+                    {meta?.label ?? instance.kind}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-0.5 text-10",
+                      instance.source_known
+                        ? "bg-success/12 text-success"
+                        : "bg-warning/12 text-warning",
+                    )}
+                  >
+                    {instance.source_known ? "已关联源码" : "源码未知"}
+                  </span>
+                  <span className="text-10 text-fg-subtle">{instance.status}</span>
+                  {instance.ports.length > 0 && (
+                    <span className="text-10 text-fg-subtle">
+                      端口 {instance.ports.join(", ")}
+                    </span>
+                  )}
+                </div>
+                {instance.source_paths.length > 0 && (
+                  <div className="mt-0.5 truncate font-mono text-10 text-fg-subtle" title={instance.source_paths.join("\n")}>
+                    {instance.source_paths.join("  ·  ")}
+                  </div>
+                )}
+                <div className="mt-0.5 truncate text-10 text-fg-subtle" title={instance.detail}>
+                  {instance.detail}
+                </div>
+              </div>
+              {!instance.source_known && (
+                <CircleAlert size={13} className="mt-0.5 shrink-0 text-warning" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function CandidateCard({ candidate }: { candidate: ProjectCandidate }) {
   const [expanded, setExpanded] = useState(false);
   const running = candidate.runtime_links.length > 0;
@@ -356,6 +442,16 @@ function CandidateCard({ candidate }: { candidate: ProjectCandidate }) {
               )}
             >
               {confidence} · {candidate.score} 分
+            </span>
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-10",
+                candidate.category === "deployed"
+                  ? "bg-accent/12 text-accent"
+                  : "bg-surface-2 text-fg-subtle",
+              )}
+            >
+              {candidate.category === "deployed" ? "已部署" : "仅源码"}
             </span>
             {running && <span className="text-10 text-success">正在运行</span>}
           </div>

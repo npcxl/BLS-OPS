@@ -445,7 +445,7 @@ export type RuntimeKind = "process" | "systemd" | "docker" | "nginx";
 export interface RuntimeLink { kind: RuntimeKind; name: string; status?: string; ports: number[]; source: string; }
 export interface ProjectModule { id: string; name: string; path: string; project_type: string; deployable: boolean; children: ProjectModule[]; }
 export interface DeploymentReadiness { score: number; blockers: string[]; warnings: string[]; confirmed_facts: string[]; unknown_facts: string[]; }
-export interface ProjectCandidate { id: string; server_id: string; name: string; path: string; project_type: string; score: number; confidence: ConfidenceLevel; evidence: ProjectEvidence[]; penalties: ProjectPenalty[]; runtime_links: RuntimeLink[]; modules: ProjectModule[]; detected_ports: number[]; required_environment_names: string[]; blockers: string[]; warnings: string[]; readiness: DeploymentReadiness; updated_at: string; }
+export interface ProjectCandidate { id: string; server_id: string; name: string; path: string; project_type: string; score: number; confidence: ConfidenceLevel; category: CandidateCategory; evidence: ProjectEvidence[]; penalties: ProjectPenalty[]; runtime_links: RuntimeLink[]; modules: ProjectModule[]; detected_ports: number[]; required_environment_names: string[]; blockers: string[]; warnings: string[]; readiness: DeploymentReadiness; updated_at: string; }
 export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
 export interface ScanProgress { phase: string; progress: number; checked_directories: number; discovered_candidates: number; current_path: string | null; warnings: number; }
 export interface ProjectScanStatus { id: string; server_id: string; state: ScanState; progress: ScanProgress; error: string | null; started_at: number; finished_at: number | null; }
@@ -500,6 +500,24 @@ export interface AdapterReadiness {
   note: string;
 }
 
+/** 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。 */
+export interface DeploymentInstance {
+  id: string;
+  kind: string;
+  name: string;
+  status: string;
+  ports: number[];
+  working_directories: string[];
+  config_files: string[];
+  source_paths: string[];
+  /** false = 只有运行实例，源码未知（后端绝不伪造路径）。 */
+  source_known: boolean;
+  detail: string;
+}
+
+/** 候选项目分类：已部署（关联实例）或仅源码。 */
+export type CandidateCategory = "deployed" | "source_only";
+
 export interface ProjectScanResult {
   scan_id: string;
   server_id: string;
@@ -509,6 +527,8 @@ export interface ProjectScanResult {
   incremental: boolean;
   /** 第一/二层产物：服务器能力图谱。 */
   capability: ServerCapabilityProfile | null;
+  /** 第一轮产物：部署实例列表（含"源码未知"的实例）。 */
+  instances: DeploymentInstance[];
   /** 第三张图谱：部署可行性（每个已注册适配器的准备度）。 */
   deployment_readiness: AdapterReadiness[];
 }

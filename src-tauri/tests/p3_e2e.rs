@@ -137,7 +137,8 @@ impl OpsHandler {
             ),
             // `status` must be matched before the generic "systemctl <verb>"
             // arm below, which would otherwise treat "status" as an action.
-            _ if command.starts_with("systemctl status -- ") => (
+            // The real command is `systemctl status --no-pager -- <unit>`.
+            _ if command.starts_with("systemctl status") => (
                 concat!(
                     "● nginx.service - A high performance web server\n",
                     "     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)\n",

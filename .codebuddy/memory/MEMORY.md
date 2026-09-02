@@ -35,7 +35,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 - 流程：P3.1 OS/权限/磁盘/安全 → P3.2 运行时/构建/包管理 → P3.3 部署方式与服务能力（包管理/systemd/容器/网关/中间件）→ P3.4 按真实能力启用收集器（未安装的组件绝不跑其探测命令）→ P3.5~7 端口反查→受控文件扫描→证据合并评分 → P3.8 部署准备度 → P3.9 用户确认输出给 P4。
 - 适配器注册制：`DeploymentAdapter { id, displayName, supportedSystems, detect(), collectEvidence(), assessReadiness(), supportedOperations(), rollbackCapabilities() }`，第一批含静态文件/二进制/JAR/Node/Python/systemd/PM2/Supervisor/Docker/Compose/Podman/Nginx/Apache/Caddy/K8s。未知服务显示"暂无匹配适配器"，禁止猜测。
 - 三张图谱：服务器能力图谱、项目证据图谱、部署可行性图谱。
-- 代码处置：只读探测保留在 P3；docker build/stop、systemd 操作、nginx reload、部署/文件修改/回滚移入 P4；`docker_prune` 禁用（违背软删除）。`project_discovery.rs` 是证据+确定性评分+只读方向，只需补能力识别前置+收集器按需启用。
+- 代码处置：只读探测保留在 P3；docker build/stop、systemd 操作、nginx reload、部署/文件修改/回滚移入 P4；`docker_prune` 禁用（违背软删除）。**项目发现已是"部署实例优先"**（2026-09-02 重构）：能力识别 → `deployment_collector.rs` 按能力枚举真实实例（docker inspect 提取 Compose/Mounts/端口；systemctl show 提取 WorkingDirectory/ExecStart；nginx -T + ss→/proc/PID/cwd）→ 实例路径定向 marker 扫描 → 固定根补充扫描（`ProjectMarkerScan`，只搜项目标志不枚举普通文件）。旧的 find 全量 2 万文件命令已删。实例无宿主线索时 `source_known=false`（"源码未知"），绝不伪造路径；`ProjectCandidate.category` = deployed/source_only。
 - 安全边界：`src-tauri/src/safe.rs` 的 `Capability` 枚举是唯一"动作→命令字符串"翻译点，禁止别处拼命令；前端只传结构化标识；校验在网络 I/O 之前（`remote::run_on_linux`，先 `capability.command()?` 再 OS 探测）。部署步骤三重校验（白名单+禁 shell 操作符+路径在 deploy_path 内），`deployment_execute` 只收 projectId 且步骤从 DB 读后重校验。改服务端状态必须有 ConfirmDialog；Nginx 先 `nginx -t` 再 reload。「不可用」≠「空」，要给原因。
 - e2e：`tests/p3_e2e.rs` 记录每条命令并断言被拒参数一条都没发出。
 

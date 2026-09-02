@@ -47,11 +47,33 @@ export function ContextSidebar() {
   );
 
   if (isServerListModule(activeModule)) {
-    // Session-driven modules (日志 / 服务 / 容器 / 网关 / 项目) operate on a
-    // chosen server, so the left rail shows the server list — same as the
-    // terminal/server module — and clicking a server loads that module for it.
+    // Session-driven modules (日志 / 服务 / 项目) operate on a chosen server, so
+    // the left rail shows the same server list as the terminal — same blur, header
+    // buttons and rows — and clicking a server loads that module bound to it.
     if (collapsed) return <div className="w-0 shrink-0" aria-hidden="true" />;
-    return <ModuleServerSidebar module={activeModule} />;
+    return (
+      <aside
+        className="relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1/60 backdrop-blur-xl"
+        style={{ width }}
+        aria-label={`${activeModule} 服务器列表`}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ModuleServerSidebar module={activeModule} />
+        </div>
+
+        {/* resize handle */}
+        <div
+          className={cn(
+            "absolute right-0 top-0 flex h-full w-[5px] cursor-col-resize items-center justify-center",
+            dragging ? "bg-accent/25" : "hover:bg-accent/15",
+          )}
+          onMouseDown={onResizeStart}
+          onDoubleClick={() => setWidth(280)}
+        >
+          <GripVertical size={12} className="text-fg-subtle" />
+        </div>
+      </aside>
+    );
   }
 
   if (activeModule !== "ssh") return null;

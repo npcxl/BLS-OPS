@@ -21,6 +21,47 @@ pub enum ConfidenceLevel {
     Possible,
 }
 
+/// 最终发现结论（证据等级），界面按它输出，**不只用分数**。
+///
+/// 分数只用于内部排序。`confidence`/`score` 是"扫描器有多确信这是个项目"，
+/// 而这里是"给用户看的结论"。两者的关键区别：
+/// - 用户**人工确认**后统一为 `Confirmed`，优先级最高，评分不再覆盖它；
+/// - 有完整项目清单但没运行关联 → `NeedsConfirm`（待确认项目）；
+/// - 只有清单/目录特征但证据链不完整 → `PossibleDir`（可能目录）；
+/// - 只有运行实例、没有任何宿主源码线索 → `RunningService`（运行服务）。
+///
+/// 规则表见 `derive_status`，与 `score_candidate` 内部的分数阈值解耦。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryStatus {
+    /// 用户已人工确认：最高优先级，不再显示"可能项目"。
+    Confirmed,
+    /// 项目清单 + 精确运行实例关联 / Git 根 + 源码结构 / Compose·systemd 工作目录。
+    HighConfidence,
+    /// 有完整项目清单但没运行关联；或有精确运行目录但缺源码清单。
+    NeedsConfirm,
+    /// 只有 Nginx root、静态文件或弱目录特征，证据不足以认定项目。
+    PossibleDir,
+    /// 只有容器/进程、没有宿主源码路径。
+    RunningService,
+    /// 既不是项目，也不是运行服务（仅 Docker/Nginx 已安装信息、数据/缓存/日志目录）。
+    NotProject,
+}
+
+impl DiscoveryStatus {
+    /// 展示用中文标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            DiscoveryStatus::Confirmed => "已确认",
+            DiscoveryStatus::HighConfidence => "高可信",
+            DiscoveryStatus::NeedsConfirm => "待确认",
+            DiscoveryStatus::PossibleDir => "可能目录",
+            DiscoveryStatus::RunningService => "运行服务",
+            DiscoveryStatus::NotProject => "非项目",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectEvidence {
     pub id: String,
@@ -215,6 +256,8 @@ pub struct ProjectCandidate {
     pub project_type: String,
     pub score: u8,
     pub confidence: ConfidenceLevel,
+    /// 最终发现结论（证据等级），界面按它输出，不只用分数。确认覆盖一切。
+    pub status: DiscoveryStatus,
     /// 已部署（关联实例）或仅源码。
     pub category: CandidateCategory,
     /// 业务应用 / 基础设施 / 未确定。MySQL、Redis、Nginx 这类是**依赖**而不是
@@ -533,21 +576,37 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     };
     let project_type = detect_type(&markers);
     let readiness = readiness(&markers, &input.runtime_links, &input.env_names);
-    // **业务应用 vs 基础设施**：只要任一关联实例被认成中间件（MySQL / Redis /
-    // Nginx / 监控 …），这个候选就是"跑在这台机器上的依赖"，不是要部署的项目。
-    // 一个都没认出来时保持 `Unknown`，不谎称是业务应用。
-    let identified: Vec<_> = input
+    // **项目性质由源码身份决定，运行方式由实例决定，依赖由服务关联决定**。
+    // 一个订单系统关联了 Docker + Nginx + MySQL + Redis，它的性质依然是
+    // "业务应用" —— 不能因为它关联了 MySQL/Redis 就被归为基础设施。
+    // 判定规则：
+    //   - 自身有构建清单（package.json / pom.xml / Cargo.toml …）→ 业务应用；
+    //   - 没有清单、但关联实例被认成中间件（且不是项目本身）→ 基础设施；
+    //   - 其余 → 未确定（绝不谎称业务应用）。
+    let has_manifest = identity
+        .iter()
+        .any(|m| is_build_manifest(m));
+    let infra_links = input
         .runtime_links
         .iter()
-        .filter(|link| link.service.is_some())
-        .collect();
-    let project_kind = if identified.is_empty() {
-        ProjectKind::Unknown
-    } else if identified.iter().any(|link| link.is_infrastructure()) {
+        .filter(|link| link.is_infrastructure())
+        .count();
+    let project_kind = if has_manifest {
+        ProjectKind::Application
+    } else if infra_links > 0 {
         ProjectKind::Infrastructure
     } else {
-        ProjectKind::Application
+        ProjectKind::Unknown
     };
+    // **最终结论（证据等级）**：评分只用于内部排序，界面按 `status` 输出。
+    // 用户人工确认优先级最高，一旦确认就不再是"可能项目"。
+    let status = derive_status(
+        input.review,
+        has_manifest,
+        input.runtime_links.is_empty(),
+        source_count > 0,
+        project_kind,
+    );
     // 配置文件汇总：UI 的"查看 Docker 配置 / Nginx 配置"就靠它跳转。
     let mut config_files: Vec<String> = Vec::new();
     for instance in &input.instances {
@@ -565,6 +624,7 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         project_type,
         score,
         confidence,
+        status,
         category: if input.runtime_links.is_empty() {
             CandidateCategory::SourceOnly
         } else {
@@ -595,6 +655,70 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
 /// .NET 的工程文件按后缀识别（`Foo.sln` / `Foo.csproj` / `Foo.fsproj`）。
 fn is_dotnet_project_file(name: &str) -> bool {
     name.ends_with(".sln") || name.ends_with(".csproj") || name.ends_with(".fsproj")
+}
+
+/// 是否为**构建清单**（能证明"这是一个项目"的源码身份文件）。
+///
+/// 注意：`dockerfile` / `compose.yml` 这类部署清单不算构建清单 —— 一个
+/// 只有 `docker-compose.yml` 的目录可能是某个服务的部署描述，不一定是源代码
+/// 项目。构建清单专指 `package.json` / `pom.xml` / `Cargo.toml` 这类"有源码要
+/// 构建"的信号。
+fn is_build_manifest(marker: &str) -> bool {
+    matches!(
+        marker,
+        "package.json"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "cargo.toml"
+            | "go.mod"
+            | "pyproject.toml"
+            | "setup.py"
+            | "requirements.txt"
+            | "composer.json"
+    ) || is_dotnet_project_file(marker)
+}
+
+/// 根据证据推导最终发现结论（证据等级）。评分只用于排序，这里才是界面结论。
+///
+/// 规则（与用户验收表对齐）：
+/// - 用户已确认 → `Confirmed`（最高优先级，评分不可覆盖）。
+/// - 有构建清单 + 精确运行实例关联 → `HighConfidence`。
+/// - 有构建清单（或 Git 根 + 源码结构）→ `NeedsConfirm`（待确认项目）。
+/// - 无构建清单但有运行关联，且没有宿主源码清单 → `RunningService`（运行服务）。
+/// - 无构建清单且自身是基础设施（数据/缓存目录）→ `NotProject`（非项目）。
+/// - 其余只有目录/静态文件特征的 → `PossibleDir`（可能目录）。
+fn derive_status(
+    review: ReviewState,
+    has_manifest: bool,
+    no_runtime_link: bool,
+    has_source: bool,
+    project_kind: ProjectKind,
+) -> DiscoveryStatus {
+    // 人工确认优先级最高：一旦确认，它不再是"可能项目"。
+    if review == ReviewState::Confirmed {
+        return DiscoveryStatus::Confirmed;
+    }
+    if !has_manifest {
+        if !no_runtime_link {
+            // 只有容器/进程、没有宿主源码清单。
+            return DiscoveryStatus::RunningService;
+        }
+        if project_kind == ProjectKind::Infrastructure {
+            // MySQL / Redis 数据目录、缓存、日志、构建产物等。
+            return DiscoveryStatus::NotProject;
+        }
+        return DiscoveryStatus::PossibleDir;
+    }
+    if !no_runtime_link {
+        return DiscoveryStatus::HighConfidence;
+    }
+    // 有构建清单；Git 根 + 源码结构也算高可信，否则待确认。
+    if has_source {
+        DiscoveryStatus::HighConfidence
+    } else {
+        DiscoveryStatus::NeedsConfirm
+    }
 }
 
 fn detect_type(m: &HashSet<String>) -> String {
@@ -925,15 +1049,17 @@ mod tests {
         assert_eq!(candidate.project_kind, ProjectKind::Infrastructure);
     }
 
-    /// 认不出服务时保持"未确定" —— 绝不把不认识的东西说成业务应用。
+    /// 项目性质由**源码身份**决定：有 package.json 就是业务应用，不会因为
+    /// 关联的实例认不出服务就降级成"未确定"。
     #[test]
-    fn an_unidentified_instance_stays_unknown() {
+    fn source_identity_decides_project_kind() {
         let mut linked = input("/opt/app", &["package.json"]);
         linked
             .runtime_links
             .push(link_with_service("order-api", None));
         let candidate = score_candidate(linked, "0").expect("业务目录必须保留");
-        assert_eq!(candidate.project_kind, ProjectKind::Unknown);
+        assert_eq!(candidate.project_kind, ProjectKind::Application);
+        assert_eq!(candidate.status, DiscoveryStatus::HighConfidence);
     }
 
     /// 操作系统自带目录下的 package.json 不是项目。

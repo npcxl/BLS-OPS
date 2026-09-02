@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, KeyRound, Monitor, Moon, Plus, ShieldCheck, Sun, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import {
   CREDENTIAL_TYPES,
@@ -169,20 +170,20 @@ export function SettingsContextSidebar() {
                 const Icon = option.icon;
                 const active = themeMode === option.id;
                 return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    aria-label={option.label}
-                    title={option.label}
-                    className={cn(
-                      "flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[6px] text-11 transition-colors",
-                      active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
-                    )}
-                    onClick={() => setThemeMode(option.id)}
-                  >
-                    <Icon size={13} strokeWidth={1.75} className="shrink-0" />
-                    <span className="truncate">{option.short}</span>
-                  </button>
+                  <Tooltip key={option.id} label={option.label}>
+                    <button
+                      type="button"
+                      aria-label={option.label}
+                      className={cn(
+                        "flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[6px] text-11 transition-colors",
+                        active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
+                      )}
+                      onClick={() => setThemeMode(option.id)}
+                    >
+                      <Icon size={13} strokeWidth={1.75} className="shrink-0" />
+                      <span className="truncate">{option.short}</span>
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -194,15 +195,17 @@ export function SettingsContextSidebar() {
         title="凭据"
         hint="密钥只写入系统凭据管理器，数据库仅保存引用，保存后无法在界面再次查看。"
         action={
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-6 px-1.5"
-            aria-label="新增凭据"
-            onClick={() => setEditing(emptyCredential())}
-          >
-            <Plus size={13} />
-          </Button>
+          <Tooltip label="新增凭据">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-6 px-1.5"
+              aria-label="新增凭据"
+              onClick={() => setEditing(emptyCredential())}
+            >
+              <Plus size={13} />
+            </Button>
+          </Tooltip>
         }
       >
         <ListGroup>
@@ -231,14 +234,16 @@ export function SettingsContextSidebar() {
                   </span>
                   <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
                 </button>
-                <button
-                  type="button"
-                  aria-label={`删除凭据 ${credential.name}`}
-                  className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-                  onClick={() => void remove(credential)}
-                >
-                  <Trash2 size={12} />
-                </button>
+                <Tooltip label={`删除凭据 ${credential.name}`} side="left">
+                  <button
+                    type="button"
+                    aria-label={`删除凭据 ${credential.name}`}
+                    className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
+                    onClick={() => void remove(credential)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </Tooltip>
               </div>
             ))
           )}

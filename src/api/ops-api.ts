@@ -142,6 +142,7 @@ export {
   type ProjectScanResult,
   type ProjectScanStatus,
   type ProjectReadinessReport,
+  type DiscoveryStatus,
   type ProjectReviewRecord,
   type ReadinessCheck,
   type ReadinessConclusion,
@@ -352,6 +353,9 @@ export const opsApi = {
       scanId,
       candidatePath,
     }),
+  /** 打开"服务器项目"时立即返回上次扫描快照，不依赖实时连接。 */
+  projectInventoryLoad: (serverId: string) =>
+    invoke<ProjectScanResult | null>("project_inventory_load", { serverId }),
 
   // -- Services (systemd) ---------------------------------------------------
   serviceList: (sessionId: string) => invoke<ServiceUnit[]>("service_list", { sessionId }),

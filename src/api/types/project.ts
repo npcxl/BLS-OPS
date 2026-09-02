@@ -3,6 +3,23 @@
 // -- Project discovery ------------------------------------------------------
 
 export type ConfidenceLevel = "high" | "likely" | "possible";
+
+/**
+ * 最终发现结论（证据等级），界面按它输出，不只用分数。
+ * - `confirmed`：用户已人工确认（最高优先级，评分不再覆盖）。
+ * - `high_confidence`：清单 + 精确运行实例关联 / Git 根 + 源码结构 / Compose·systemd 工作目录。
+ * - `needs_confirm`：有完整项目清单但没运行关联；或有精确运行目录但缺源码清单。
+ * - `possible_dir`：只有 Nginx root、静态文件或弱目录特征。
+ * - `running_service`：只有容器/进程、没有宿主源码路径。
+ * - `not_project`：仅 Docker/Nginx 已安装信息、数据/缓存/日志目录。
+ */
+export type DiscoveryStatus =
+  | "confirmed"
+  | "high_confidence"
+  | "needs_confirm"
+  | "possible_dir"
+  | "running_service"
+  | "not_project";
 export interface ProjectEvidence { id: string; kind: string; source: string; summary: string; weight: number; verified_at: string; sensitive: boolean; }
 export interface ProjectPenalty { kind: string; summary: string; weight: number; }
 export type RuntimeKind = "process" | "systemd" | "docker" | "nginx" | "k8s";
@@ -83,6 +100,8 @@ export interface ProjectCandidate {
   project_type: string;
   score: number;
   confidence: ConfidenceLevel;
+  /** 最终发现结论（证据等级），界面按它输出，确认覆盖一切。 */
+  status: DiscoveryStatus;
   category: CandidateCategory;
   /** 业务应用 / 基础设施 / 未确定。MySQL、Redis、Nginx 是依赖，不是项目。 */
   project_kind?: ProjectKind;

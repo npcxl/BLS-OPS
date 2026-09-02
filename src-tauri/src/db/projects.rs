@@ -180,6 +180,59 @@ pub fn delete_project_review(conn: &Connection, server_id: &str, path: &str) -> 
     Ok(changed > 0)
 }
 
+// -- project inventory cache ------------------------------------------------
+
+/// 某台服务器最近一次扫描的快照缓存（JSON 负载 + 时间戳）。
+#[derive(Debug, Clone)]
+pub struct ProjectInventoryCache {
+    pub server_id: String,
+    pub payload: String,
+    pub completed_at: i64,
+    pub updated_at: i64,
+}
+
+/// 读取某台服务器的快照缓存（没有则 `None`）。前端打开"服务器项目"时立即展示，
+/// 后台再增量复核覆盖。
+pub fn get_project_inventory(
+    conn: &Connection,
+    server_id: &str,
+) -> Result<Option<ProjectInventoryCache>> {
+    let mut stmt = conn.prepare(
+        "SELECT server_id, payload, completed_at, updated_at FROM project_inventory WHERE server_id = ?1",
+    )?;
+    let mut rows = stmt.query_map([server_id], |row| {
+        Ok(ProjectInventoryCache {
+            server_id: row.get("server_id")?,
+            payload: row.get("payload")?,
+            completed_at: row.get("completed_at")?,
+            updated_at: row.get("updated_at")?,
+        })
+    })?;
+    Ok(rows.next().transpose()?)
+}
+
+/// 写入（覆盖）某台服务器的快照缓存。整段扫描结果以 JSON 存储，后端解析即可。
+pub fn upsert_project_inventory(
+    conn: &Connection,
+    server_id: &str,
+    payload: &str,
+    completed_at: i64,
+) -> Result<()> {
+    let now = AppDb::now();
+    conn.execute(
+        r#"
+        INSERT INTO project_inventory (server_id, payload, completed_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(server_id) DO UPDATE SET
+            payload=excluded.payload,
+            completed_at=excluded.completed_at,
+            updated_at=excluded.updated_at
+        "#,
+        params![server_id, payload, completed_at, now],
+    )?;
+    Ok(())
+}
+
 // -- deployments -------------------------------------------------------------
 
 pub fn insert_deployment(conn: &Connection, deployment: &DeploymentRecord) -> Result<()> {

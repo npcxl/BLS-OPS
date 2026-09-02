@@ -1,9 +1,10 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FolderSearch, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
 import { cn } from "@/lib/cn";
+import { opsApi } from "@/api/ops-api";
 import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
@@ -11,19 +12,21 @@ import type { WorkspaceTab } from "@/workbench/types";
 import { ScanProgress } from "./ScanProgress";
 import { TabApplications } from "./tabs/TabApplications";
 import { TabNeedsConfirm } from "./tabs/TabNeedsConfirm";
-import { TabUnlinked } from "./tabs/TabUnlinked";
-import { TabServerEnv } from "./tabs/TabServerEnv";
+import { TabRuntime } from "./tabs/TabRuntime";
+import { TabInfrastructure } from "./tabs/TabInfrastructure";
+import { TabBasicInfo } from "./tabs/TabBasicInfo";
 
 /** 项目视图里没有配对的终端，文件面板不需要跟随 `cd`。引用必须稳定。 */
 const NO_FOLLOW = { nonce: 0, arg: "" };
 
-type TabId = "applications" | "needs_confirm" | "unlinked" | "server_env";
+type TabId = "applications" | "needs_confirm" | "runtime" | "infrastructure" | "basic_info";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "applications", label: "项目" },
   { id: "needs_confirm", label: "待确认" },
-  { id: "unlinked", label: "未关联服务" },
-  { id: "server_env", label: "服务器环境" },
+  { id: "runtime", label: "运行服务" },
+  { id: "infrastructure", label: "基础设施" },
+  { id: "basic_info", label: "基本信息" },
 ];
 
 /** P3 is intentionally discovery-only. Deployment records remain available to P5, but are not exposed here. */
@@ -50,11 +53,16 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     [panel],
   );
   // Start/poll/cancel/cleanup of a discovery run lives in the hook.
-  const { scan, result, loading, error, discover, cancel } = useScanTask(
+  const { scan, result, loading, error, discover, cancel, loadSnapshot } = useScanTask(
     tab.serverId,
     session.sessionId,
     session.ready,
   );
+
+  // 进入页面立即回填上次扫描快照（确认过的项目立即可见），后台再增量复核。
+  useEffect(() => {
+    if (session.ready && tab.serverId) void loadSnapshot();
+  }, [session.ready, tab.serverId, loadSnapshot]);
 
   // 用户在卡片上"确认 / 忽略"后，本地覆盖扫描结果里的 review，避免每次都重扫。
   // 后端扫描时也会从数据库读回 review，所以重扫后这里的状态仍一致。
@@ -63,17 +71,69 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     setReviews((current) => ({ ...current, [path]: state }));
   }, []);
 
-  const candidates = result?.candidates ?? [];
-  const needsConfirm = candidates.filter(
-    (c) => c.review !== "confirmed" && c.review !== "ignored",
+  // 从数据库回填人工复核结论（确认 / 忽略），否则重扫或重进页面后本地
+  // `reviews` 被清空、而快照候选里的 review 仍是扫描时的旧值，导致"已确认"
+  // 的项目消失。DB 是权威来源，且与用户即时点击一致，挂载/切换服务器时同步一次。
+  useEffect(() => {
+    if (!tab.serverId) return;
+    let alive = true;
+    void opsApi.projectReviewList(tab.serverId).then(
+      (records) => {
+        if (!alive) return;
+        setReviews((current) => {
+          const next = { ...current };
+          for (const r of records) next[r.path] = r.review as ReviewState;
+          return next;
+        });
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [tab.serverId]);
+
+  // 统一数据源：所有 tab 与数量徽标都从这份"已合并用户复核结论"的候选里取，
+  // 避免确认/忽略后某个徽标不同步。
+  const resolved = useMemo<ProjectCandidate[]>(() => {
+    const list = result?.candidates ?? [];
+    return list.map((c) => ({ ...c, review: (reviews[c.path] ?? c.review) ?? "pending" }));
+  }, [result, reviews]);
+
+  const instances = result?.instances ?? [];
+
+  // 项目 tab：用户已确认 + 高可信的业务项目（排除基础设施、排除已忽略）。
+  // 关键：人工确认覆盖一切证据等级（"我已确认的项目"必须出现在这里，
+  // 即使它的自动 status 只是 needs_confirm / possible_dir）。
+  const applications = useMemo(
+    () =>
+      resolved.filter(
+        (c) =>
+          c.review !== "ignored" &&
+          c.project_kind !== "infrastructure" &&
+          (c.review === "confirmed" || c.status === "high_confidence"),
+      ),
+    [resolved],
   );
-  const unlinked = result?.instances.filter((i) => !i.source_known) ?? [];
+  // 待确认 tab：用户尚未拍板（非确认、非忽略）的目录。
+  const needsConfirm = useMemo(
+    () => resolved.filter((c) => c.review !== "confirmed" && c.review !== "ignored"),
+    [resolved],
+  );
+  // 运行服务 tab：全部运行实例（容器 / systemd / PM2 / Pod）。
+  const runtimeInstances = useMemo(() => instances, [instances]);
+  // 基础设施 tab：被识别成依赖（数据库/缓存/网关…）且非系统自带的实例。
+  const infraInstances = useMemo(
+    () => instances.filter((i) => !i.system_owned && i.service?.group !== "application"),
+    [instances],
+  );
 
   const tabBadges: Record<TabId, number> = {
-    applications: candidates.filter((c) => c.review !== "ignored").length,
-    needs_confirm: needsConfirm.filter((c) => c.review !== "confirmed").length,
-    unlinked: unlinked.length,
-    server_env: result?.instances.length ?? 0,
+    applications: applications.length,
+    needs_confirm: needsConfirm.length,
+    runtime: runtimeInstances.length,
+    infrastructure: infraInstances.length,
+    basic_info: 0,
   };
 
   return (
@@ -122,7 +182,15 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
             </div>
           )}
 
-          {/* 4 个 tab：项目 / 待确认 / 未关联服务 / 服务器环境 */}
+          {/* 显示的是上次扫描缓存、后台仍在复核：明确标注，避免用户误以为这是最终结果。 */}
+          {result?.incremental && !loading && (
+            <div className="mx-5 mt-4 flex items-center gap-2 rounded-[8px] border border-line bg-surface-2/60 px-3 py-2 text-11 text-fg-subtle">
+              <Loader2 size={12} className="animate-spin" />
+              已加载上次发现结果，后台复核进行中…
+            </div>
+          )}
+
+          {/* 5 个 tab：项目 / 待确认 / 运行服务 / 基础设施 / 基本信息 */}
           <div className="flex items-center gap-1 border-b border-line px-4 pt-3">
             {TABS.map((item) => (
               <button
@@ -178,7 +246,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
 
               {result && activeTab === "applications" && (
                 <TabApplications
-                  candidates={candidates}
+                  candidates={applications}
                   serverId={tab.serverId ?? ""}
                   reviews={reviews}
                   onOpenPath={openPath}
@@ -194,14 +262,14 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                   onReview={handleReview}
                 />
               )}
-              {result && activeTab === "unlinked" && (
-                <TabUnlinked instances={unlinked} onOpenPath={openPath} />
+              {result && activeTab === "runtime" && (
+                <TabRuntime instances={runtimeInstances} onOpenPath={openPath} />
               )}
-              {result && activeTab === "server_env" && (
-                <TabServerEnv
-                  profile={result.capability}
-                  instances={result.instances}
-                />
+              {result && activeTab === "infrastructure" && (
+                <TabInfrastructure instances={infraInstances} onOpenPath={openPath} />
+              )}
+              {result && activeTab === "basic_info" && (
+                <TabBasicInfo profile={result.capability} />
               )}
 
               {result && result.warnings.length > 0 && (
@@ -226,9 +294,4 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
       </div>
     </ModuleFrame>
   );
-}
-
-// 占位：保留候选排序工具，供 tab 复用。
-export function sortCandidates(list: ProjectCandidate[]): ProjectCandidate[] {
-  return [...list].sort((a, b) => b.score - a.score);
 }

@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -136,6 +137,24 @@ export function RemoteFilePanel({
 
   const cwd = nav.index >= 0 && nav.index < nav.stack.length ? nav.stack[nav.index] : null;
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
+
+  /**
+   * 当选中文件且文件名很长时，隐藏左侧路径面包屑，避免面包屑与文件名、操作
+   * 按钮互相挤压。判定依据是文件名自身的渲染宽度（`scrollWidth`，不受 `max-w`
+   * 截断影响），超过阈值即视为"很长"。面板宽度变化（拖动分隔条）时重新评估，
+   * 用 `useLayoutEffect` 在绘制前定夺，避免先显示再跳变。
+   */
+  const [hideCrumbs, setHideCrumbs] = useState(false);
+  const selectedNameRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!selectedEntry) {
+      setHideCrumbs(false);
+      return;
+    }
+    const el = selectedNameRef.current;
+    if (!el) return;
+    setHideCrumbs(el.scrollWidth > 150);
+  }, [selectedEntry, width]);
 
   const load = useCallback(
     async (path: string) => {
@@ -743,7 +762,12 @@ export function RemoteFilePanel({
       </div>
 
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-11">
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto",
+            hideCrumbs && "hidden",
+          )}
+        >
           {cwd ? (
             crumbs.map((crumb, index) => (
               <span key={crumb.path} className="flex shrink-0 items-center gap-0.5">
@@ -768,10 +792,20 @@ export function RemoteFilePanel({
         {/* Selected-row actions live in this row (not as an inserted strip) so
             clicking a file never shifts the list below. */}
         {selectedEntry && (
-          <div className="flex shrink-0 items-center gap-0.5">
-            <span className="max-w-[120px] truncate text-fg-subtle" title={selectedEntry.path}>
+          <div
+            className={cn(
+              "flex items-center gap-0.5",
+              hideCrumbs ? "min-w-0 flex-1" : "shrink-0",
+            )}
+          >
+            <span
+              ref={selectedNameRef}
+              className="min-w-0 flex-1 truncate text-fg-subtle"
+              title={selectedEntry.path}
+            >
               {selectedEntry.name}
             </span>
+            <div className="flex shrink-0 items-center gap-0.5">
             <PanelButton label="打开" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
             {selectedEntry.kind !== "directory" && (
               <>
@@ -801,6 +835,7 @@ export function RemoteFilePanel({
               onClick={() => removeEntry(selectedEntry)}
               className="hover:text-danger"
             />
+            </div>
           </div>
         )}
       </div>

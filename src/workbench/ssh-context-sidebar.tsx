@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Check, ChevronsLeft, FolderPlus, Pencil, Plug, Plus, RefreshCw, ScrollText, SquareCheckBig, Star, Trash2, X } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/mac-button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
@@ -21,7 +22,7 @@ const MANAGE_LABELS: Record<ManageKind, string> = {
   logs: "日志",
 };
 
-function SectionTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
+export function SectionTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <div className="flex h-7 shrink-0 items-center justify-between px-2.5">
       <span className="text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">{children}</span>
@@ -30,7 +31,7 @@ function SectionTitle({ children, actions }: { children: React.ReactNode; action
   );
 }
 
-function ServerRow({
+export function ServerRow({
   server,
   onOpen,
   onMonitor,
@@ -85,7 +86,7 @@ function ServerRow({
 }
 
 /** Collapsible group header with inline rename and delete. */
-function GroupHeader({
+export function GroupHeader({
   label,
   count,
   group,
@@ -306,47 +307,25 @@ export function SshContextSidebar() {
         <SectionTitle
           actions={
             <div className="flex items-center gap-0.5">
-              <Button
-                variant="ghost"
+              <IconButton icon={RefreshCw} size="xs" className="h-5 w-5 px-0" tip="刷新服务器" onClick={() => void load()} />
+              <IconButton
+                icon={ChevronsLeft}
                 size="xs"
                 className="h-5 w-5 px-0"
-                aria-label="刷新服务器"
-                title="刷新服务器"
-                onClick={() => void load()}
-              >
-                <RefreshCw size={12} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="xs"
-                className="h-5 w-5 px-0"
-                aria-label="收起侧边栏"
-                title="收起侧边栏"
+                tip="收起侧边栏"
                 onClick={() => setSidebarCollapsed(true)}
-              >
-                <ChevronsLeft size={12} />
-              </Button>
-              <Button
-                variant="ghost"
+              />
+              <IconButton icon={Plus} size="xs" className="h-5 px-1" tip="新增服务器" onClick={() => setEditing(emptyServer())} />
+              <IconButton
+                icon={FolderPlus}
                 size="xs"
                 className="h-5 px-1"
-                aria-label="新增服务器"
-                onClick={() => setEditing(emptyServer())}
-              >
-                <Plus size={12} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="xs"
-                className="h-5 px-1"
-                aria-label="新增分组"
+                tip="新增分组"
                 onClick={() => {
                   setCreatingGroup(true);
                   requestAnimationFrame(() => newGroupRef.current?.focus());
                 }}
-              >
-                <FolderPlus size={12} />
-              </Button>
+              />
             </div>
           }
         >
@@ -456,7 +435,7 @@ export function SshContextSidebar() {
   );
 }
 
-function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => void }) {
+export function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => void }) {
   const credentials = useDomainStore((s) => s.credentials);
   const groups = useDomainStore((s) => s.groups);
   const servers = useDomainStore((s) => s.servers);
@@ -554,7 +533,7 @@ function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => 
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
             关闭
           </Button>
-          <MacButton  disabled={submit.pending} onClick={() => void save()}>
+          <MacButton variant="primary" disabled={submit.pending} onClick={() => void save()}>
             {submit.pending ? "保存中…" : "保存 Ctrl+S"}
           </MacButton>
         </>

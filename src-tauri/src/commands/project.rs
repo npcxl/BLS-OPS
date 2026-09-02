@@ -154,6 +154,7 @@ pub async fn project_scan_start(
     let registry = state.project_scans.clone();
     let ssh = state.ssh.clone();
     let app_handle = app.clone();
+    let db = state.db.clone();
     let sid = session_id.clone();
     let server = server_id.clone();
     // 扫描开始前把该服务器上既有的人工复核结论读入内存，让"确认/忽略"
@@ -386,6 +387,19 @@ pub async fn project_scan_start(
                 .lock()
                 .await
                 .insert(id.clone(), result.clone());
+            // 扫描完成即把快照写入数据库，让下次打开"服务器项目"能立即展示，
+            // 不必等后台重新扫描。整段结果以 JSON 存储，前端直接复用类型。
+            if let Ok(conn) = db.open() {
+                if let Ok(payload) = serde_json::to_string(&result) {
+                    let completed_at = result.completed_at;
+                    let _ = crate::db::upsert_project_inventory(
+                        &conn,
+                        &server,
+                        &payload,
+                        completed_at,
+                    );
+                }
+            }
             let _ = app_handle.emit(&format!("project-scan-result-{id}"), &result);
             Ok::<(), String>(())
         }
@@ -492,6 +506,24 @@ pub async fn project_review_list(
 ) -> Result<Vec<crate::db::ProjectReviewRecord>, String> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     crate::db::list_project_reviews(&conn, &server_id).map_err(|e| e.to_string())
+}
+
+/// 立即返回某台服务器**上次扫描的快照**（候选 + 实例 + 能力），不依赖实时连接。
+/// 前端打开"服务器项目"时先展示这份缓存，再在后台跑增量扫描原位覆盖 —— 避免
+/// 页面先空白、再整体刷新。没有缓存时返回 `None`，前端照常走"开始发现"流程。
+#[tauri::command]
+pub async fn project_inventory_load(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<Option<crate::project_discovery::ProjectScanResult>, String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    let cached = crate::db::get_project_inventory(&conn, &server_id).map_err(|e| e.to_string())?;
+    match cached {
+        Some(cache) => serde_json::from_str(&cache.payload)
+            .map(Some)
+            .map_err(|e| format!("快照解析失败：{e}")),
+        None => Ok(None),
+    }
 }
 
 /// 针对**一个具体项目**做部署准备检查（源码完整性 / 构建 / 启动 / 端口 /

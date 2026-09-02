@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
-import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
+import type { DiscoveryStatus, ProjectCandidate, ReviewState } from "@/api/ops-api";
 import { Detail } from "./Detail";
 import {
   PortChips,
@@ -20,6 +20,23 @@ import {
   configFileLabel,
   instanceKindMeta,
 } from "./badges";
+
+/**
+ * 候选状态徽标：优先级为「已确认 > 高可信 > 待确认 > 可能目录」。
+ * 一旦人工确认，它就是确认资产，不再回退成"可能项目" —— 分数只是内部证据，
+ * 不能覆盖人的结论。
+ */
+const STATUS_META: Record<
+  DiscoveryStatus,
+  { label: string; tone: string }
+> = {
+  confirmed: { label: "已确认", tone: "bg-success/12 text-success" },
+  high_confidence: { label: "高可信", tone: "bg-accent/12 text-accent" },
+  needs_confirm: { label: "待确认", tone: "bg-warning/12 text-warning" },
+  possible_dir: { label: "可能目录", tone: "bg-surface-2 text-fg-subtle" },
+  running_service: { label: "运行服务", tone: "bg-[#6366f1]/12 text-[#4338ca]" },
+  not_project: { label: "非项目", tone: "bg-surface-3 text-fg-subtle" },
+};
 
 export function CandidateCard({
   candidate,
@@ -39,14 +56,11 @@ export function CandidateCard({
   onReview: (path: string, state: ReviewState) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [showDeploy, setShowDeploy] = useState(false);
   const [busy, setBusy] = useState<ReviewState | null>(null);
   const running = candidate.runtime_links.length > 0;
-  const confidence =
-    candidate.confidence === "high"
-      ? "高置信度"
-      : candidate.confidence === "likely"
-        ? "待确认"
-        : "可能项目";
+  const status = candidate.status;
+  const statusMeta = STATUS_META[status] ?? STATUS_META.possible_dir;
   const instances = candidate.deploy_instances ?? [];
   // 候选自身端口为空时（systemd 不报端口），用关联实例的端口补齐展示。
   const ports = candidate.detected_ports.length
@@ -73,26 +87,26 @@ export function CandidateCard({
 
   return (
     <article className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-shadow hover:shadow-[0_2px_6px_rgb(15_23_42/0.07)]">
-      <button
-        type="button"
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover/60"
-        onClick={() => setExpanded((value) => !value)}
-      >
+      <div className="flex w-full items-center gap-3 px-4 py-3 text-left">
         <FolderSearch size={16} className="shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <strong className="truncate text-13 text-fg">{candidate.name}</strong>
             <ProjectKindBadge kind={candidate.project_kind} />
-            <span
-              className={cn(
-                "rounded px-1.5 py-0.5 text-10",
-                candidate.confidence === "high"
-                  ? "bg-success/12 text-success"
-                  : "bg-warning/12 text-warning",
-              )}
-            >
-              {confidence} · {candidate.score} 分
+            {/* 发现结论（证据等级）：确认覆盖一切，分数不再暴露在标题。 */}
+            <span className={cn("rounded px-1.5 py-0.5 text-10", statusMeta.tone)}>
+              {statusMeta.label}
             </span>
+            {review === "confirmed" && (
+              <span className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success">
+                已确认
+              </span>
+            )}
+            {review === "ignored" && (
+              <span className="rounded bg-surface-3 px-1.5 py-0.5 text-10 text-fg-subtle">
+                已忽略
+              </span>
+            )}
             <span
               className={cn(
                 "rounded px-1.5 py-0.5 text-10",
@@ -104,14 +118,9 @@ export function CandidateCard({
               {candidate.category === "deployed" ? "已部署" : "仅源码"}
             </span>
             {running && <span className="text-10 text-success">正在运行</span>}
-            {review === "confirmed" && (
-              <span className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success">
-                已确认
-              </span>
-            )}
-            {review === "ignored" && (
-              <span className="rounded bg-surface-3 px-1.5 py-0.5 text-10 text-fg-subtle">
-                已忽略
+            {candidate.status === "confirmed" && instances.length > 0 && (
+              <span className="text-10 text-fg-subtle">
+                · {instances.map((i) => instanceKindMeta(i.kind).label).join("/")}
               </span>
             )}
           </div>
@@ -138,25 +147,54 @@ export function CandidateCard({
             </span>
           </div>
         </div>
-        <ChevronRight
-          size={14}
-          className={cn(
-            "shrink-0 text-fg-subtle transition-transform",
-            expanded && "rotate-90",
-          )}
-        />
-      </button>
+      </div>
+
+      {/* 部署文件：默认收起，点「部署文件」才展开；展开后右下角有「证据详情」 */}
+      <div className="border-t border-line">
+        <button
+          type="button"
+          className="flex w-full items-center gap-1.5 px-4 py-2 text-11 text-fg-subtle transition-colors hover:bg-surface-hover/60 hover:text-fg"
+          onClick={() => setShowDeploy((value) => !value)}
+        >
+          <ChevronRight
+            size={12}
+            className={cn("transition-transform", showDeploy && "rotate-90")}
+          />
+          部署文件
+        </button>
+        {showDeploy && (
+          <div className="px-4 pb-3 pt-1">
+            <DeploymentFiles
+              candidate={candidate}
+              instances={instances}
+              onOpenPath={onOpenPath}
+            />
+            {/* 证据详情：部署文件右下角的小展开按钮，点开才显示评分 / 判定依据等 */}
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => setExpanded((value) => !value)}
+              >
+                <ChevronRight
+                  size={12}
+                  className={cn("transition-transform", expanded && "rotate-90")}
+                />
+                {expanded ? "收起证据详情" : "证据详情"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {expanded && (
         <div className="border-t border-line px-4 py-3 text-11">
-          {/* 部署文件：直接跳到项目目录或具体配置文件 */}
-          <DeploymentFiles
-            candidate={candidate}
-            instances={instances}
-            onOpenPath={onOpenPath}
-          />
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          {/* 证据 / 评分细节：默认收起，点展开才看，避免卡片一打开就一堆数字 */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Detail
+              title={`发现结论：${statusMeta.label}（评分 ${candidate.score}）`}
+              items={[`项目类型：${candidate.project_type}`, `模块数：${candidate.modules.length}`]}
+            />
             <Detail
               title="判定依据"
               items={candidate.evidence.map(

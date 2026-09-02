@@ -124,6 +124,24 @@ CREATE INDEX IF NOT EXISTS idx_project_reviews_server
 /// The review table on its own, for `migrate()`.
 pub const PROJECT_REVIEWS_SCHEMA_SQL: &str = project_reviews_schema_sql!();
 
+/// 项目扫描快照缓存：每台服务器保留最近一次成功扫描的结果（候选 + 实例 + 能力），
+/// 让前端打开"服务器项目"时立即展示，后台再增量复核。整段以 JSON 存储。
+macro_rules! project_inventory_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS project_inventory (
+    server_id TEXT PRIMARY KEY NOT NULL,
+    payload TEXT NOT NULL,
+    completed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+"#
+    };
+}
+
+/// The inventory cache table on its own, for `migrate()`.
+pub const PROJECT_INVENTORY_SCHEMA_SQL: &str = project_inventory_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -221,7 +239,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
 );
 "#,
     p3_schema_sql!(),
-    project_reviews_schema_sql!()
+    project_reviews_schema_sql!(),
+    project_inventory_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -270,6 +289,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // Project review decisions (确认项目 / 忽略目录) must survive a rescan.
         conn.execute_batch(PROJECT_REVIEWS_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 4u32)?;
+    }
+    if version < 5 {
+        // 上一次扫描的快照缓存：用户再次打开"服务器项目"时立即展示，不必等
+        // 后台重新扫描完成。每台服务器至多保留一份（整段 JSON）。
+        conn.execute_batch(PROJECT_INVENTORY_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 5u32)?;
     }
     Ok(())
 }

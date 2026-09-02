@@ -1,19 +1,22 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, Clock, FolderOpen, Plug, Server, Star, Trash2 } from "lucide-react";
+import { Clock, Plus, Server as ServerIcon, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
-import { parseSshTarget, type CredentialRecord } from "@/api/ops-api";
+import { type CredentialRecord, type ServerRecord } from "@/api/ops-api";
 import { emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { cn } from "@/lib/cn";
+import { ServerForm } from "@/workbench/ssh-context-sidebar";
 
 /** Workbench Home — spec §28. All data comes from SQLite; nothing is mocked. */
 
 /** macOS-style grouped list — a rounded panel whose rows are divided. */
 function ListPanel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+    <div className="overflow-hidden rounded-[12px] border border-line bg-surface-1/70 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
       <div className="divide-y divide-line/60">{children}</div>
     </div>
   );
@@ -31,12 +34,12 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex flex-col gap-2.5">
       <div className="flex h-6 items-center justify-between">
-        <h2 className="text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
+        <h2 className="flex items-center gap-1.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
           {title}
           {typeof count === "number" && (
-            <span className="ml-1.5 rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
+            <span className="rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-10 font-medium text-fg-muted">
               {count}
             </span>
           )}
@@ -49,7 +52,7 @@ function Section({
 }
 
 function relativeTime(timestamp?: number | null): string {
-  if (!timestamp) return "未知时间";
+  if (!timestamp) return "从未连接";
   const diff = Date.now() - timestamp;
   if (diff < 60_000) return "刚刚";
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
@@ -59,9 +62,9 @@ function relativeTime(timestamp?: number | null): string {
 }
 
 export function WorkbenchHome() {
-  const [qc, setQc] = useState("");
-  const [parseError, setParseError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ username: string; host: string; port: number } | null>(null);
+  const [editing, setEditing] = useState<ServerRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
 
   const openTab = useWorkbenchStore((s) => s.openTab);
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
@@ -79,7 +82,7 @@ export function WorkbenchHome() {
         seen.add(session.server_id);
         return true;
       })
-      .slice(0, 8);
+      .slice(0, 5);
   }, [sessions]);
 
   const openServer = (serverId: string, name: string, host: string, port: number) =>
@@ -92,191 +95,127 @@ export function WorkbenchHome() {
       sessionId: crypto.randomUUID(),
     });
 
-  const startQuickConnect = () => {
-    const parsed = parseSshTarget(qc);
-    if (!parsed) {
-      setParseError("格式应为 user@host[:port]，例如 root@10.0.0.11:22");
-      return;
-    }
-    setParseError(null);
-    setDraft(parsed);
-  };
-
   return (
     <div className="h-full overflow-y-auto bg-app" data-selectable>
-      <div className="mx-auto flex max-w-[760px] flex-col gap-6 p-6">
+      <div className="mx-auto flex max-w-[860px] flex-col gap-7 p-7">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-fg">工作台</h1>
-          <p className="mt-1 text-12 text-fg-muted">本地 SSH 运维控制台 — 服务器、终端、凭据。</p>
+          <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">工作台</h1>
+          <p className="mt-1 text-12 text-fg-muted">本地 SSH 运维控制台</p>
         </div>
 
-        <Section title="快速连接">
-          <div className="flex items-center gap-1.5">
-            <div className="relative flex min-w-0 flex-1 items-center">
-              <Plug size={13} className="absolute left-2.5 text-fg-subtle" />
-              <input
-                value={qc}
-                onChange={(event) => {
-                  setQc(event.target.value);
-                  setParseError(null);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") startQuickConnect();
-                }}
-                placeholder="user@host:22 — 快速连接"
-                spellCheck={false}
-                className="h-[34px] w-full rounded-[8px] border border-line bg-surface-1/70 pl-8 pr-2 text-13 text-fg outline-none placeholder:text-fg-subtle shadow-[inset_0_1px_0_rgb(255_255_255/0.45)] focus:border-accent"
-              />
-            </div>
-            <Button variant="primary" size="lg" disabled={!qc.trim()} onClick={startQuickConnect}>
-              <ArrowRight size={14} />
-              连接
-            </Button>
-          </div>
-          {parseError && <ErrorText>{parseError}</ErrorText>}
-        </Section>
-
-        <Section
-          title="最近会话"
-          count={recent.length}
-          actions={
-            servers.length === 0 ? (
-              <Button variant="ghost" size="xs" onClick={() => useWorkbenchStore.getState().setModule("ssh")}>
-                去新增服务器
-              </Button>
-            ) : undefined
-          }
-        >
-          {recent.length === 0 ? (
-            <p className="text-12 text-fg-subtle">还没有连接记录。连接一次后会出现在这里。</p>
-          ) : (
-            <ListPanel>
-              {recent.map((session) => (
+        {servers.length === 0 ? (
+          <EmptyServers onAdd={() => setEditing(emptyServer())} />
+        ) : (
+          <>
+            <Section
+              title="最近会话"
+              count={recent.length}
+              actions={
                 <button
-                  key={session.id}
                   type="button"
-                  className="flex h-10 w-full items-center gap-2.5 px-2.5 text-left transition-colors hover:bg-surface-hover/60"
-                  onClick={() =>
-                    openServer(
-                      session.server_id,
-                      session.server_name,
-                      session.server_host,
-                      session.server_port,
-                    )
-                  }
+                  className="text-11 text-fg-subtle transition-colors hover:text-accent"
+                  onClick={() => useWorkbenchStore.getState().setModule("ssh")}
                 >
-                  <span
-                    className={cn(
-                      "h-[7px] w-[7px] shrink-0 rounded-full",
-                      session.status === "connected" && !session.disconnected_at
-                        ? "bg-success"
-                        : "bg-fg-subtle",
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-13 text-fg">
-                    {session.server_name}
-                    <span className="ml-2 text-11 text-fg-subtle">
-                      {session.username}@{session.server_host}:{session.server_port}
-                    </span>
-                  </span>
-                  {session.error_message && (
-                    <span className="shrink-0 truncate text-11 text-danger">{session.error_message}</span>
-                  )}
-                  <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
-                    <Clock size={12} />
-                    {relativeTime(session.connected_at ?? session.disconnected_at)}
-                  </span>
+                  全部服务器 →
                 </button>
-              ))}
-            </ListPanel>
-          )}
-        </Section>
-
-        <Section title="收藏" count={favorites.length}>
-          {favorites.length === 0 ? (
-            <p className="text-12 text-fg-subtle">还没有收藏。在服务器列表中点击星标即可收藏。</p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {favorites.map((server) => (
-                <button
-                  key={server.id}
-                  type="button"
-                  className="flex h-[30px] items-center gap-1.5 rounded-[9px] border border-line bg-surface-1/70 px-2.5 text-12 text-fg shadow-[0_1px_2px_rgb(15_23_42/0.05)] transition-colors hover:border-line-strong hover:bg-surface-hover hover:shadow-[0_2px_6px_rgb(15_23_42/0.08)]"
-                  onClick={() => openServer(server.id, server.name, server.host, server.port)}
-                >
-                  <Star size={12} className="fill-current text-accent" />
-                  {server.name}
-                  <span className="text-11 text-fg-subtle">
-                    {server.username}@{server.host}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </Section>
-
-        <Section
-          title="服务器"
-          count={servers.length}
-          actions={
-            <Button variant="ghost" size="xs" onClick={() => useWorkbenchStore.getState().setModule("ssh")}>
-              管理
-            </Button>
-          }
-        >
-          {servers.length === 0 ? (
-            <p className="text-12 text-fg-subtle">还没有服务器。请在左侧终端面板中新增。</p>
-          ) : (
-            <ListPanel>
-              {servers.slice(0, 8).map((server) => (
-                <div
-                  key={server.id}
-                  className="group flex h-10 w-full items-center gap-2.5 px-2.5 transition-colors hover:bg-surface-hover/60"
-                >
-                  <Server size={13} className="shrink-0 text-fg-subtle" />
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 truncate text-left text-13 text-fg"
-                    onClick={() => openServer(server.id, server.name, server.host, server.port)}
-                  >
-                    {server.name}
-                    <span className="ml-2 text-11 text-fg-subtle">
-                      {server.username}@{server.host}:{server.port}
-                    </span>
-                  </button>
-                  <span className="shrink-0 text-11 text-fg-subtle">
-                    {server.last_connected_at ? relativeTime(server.last_connected_at) : "从未连接"}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={server.favorite ? `取消收藏 ${server.name}` : `收藏 ${server.name}`}
-                    className="shrink-0 rounded p-1 text-fg-subtle hover:text-accent"
-                    onClick={() => void setFavorite(server.id, !server.favorite)}
-                  >
-                    <Star size={13} className={server.favorite ? "fill-current text-accent" : ""} />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`删除 ${server.name}`}
-                    className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-                    onClick={() => {
-                      if (window.confirm(`删除服务器“${server.name}”会同时删除它的会话与命令历史，确定继续？`)) {
-                        void deleteServer(server.id);
+              }
+            >
+              {recent.length === 0 ? (
+                <p className="text-12 text-fg-subtle">还没有连接记录。连接一次后会出现在这里。</p>
+              ) : (
+                <ListPanel>
+                  {recent.map((session) => (
+                    <button
+                      key={session.id}
+                      type="button"
+                      className="flex h-11 w-full items-center gap-2.5 px-3 text-left transition-colors hover:bg-surface-hover/60"
+                      onClick={() =>
+                        openServer(session.server_id, session.server_name, session.server_host, session.server_port)
                       }
-                    }}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              ))}
-            </ListPanel>
-          )}
-        </Section>
+                    >
+                      <span
+                        className={cn(
+                          "h-[7px] w-[7px] shrink-0 rounded-full",
+                          session.status === "connected" && !session.disconnected_at ? "bg-success" : "bg-fg-subtle",
+                        )}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-13 text-fg">
+                        {session.server_name}
+                        <span className="ml-2 text-11 text-fg-subtle">
+                          {session.username}@{session.server_host}:{session.server_port}
+                        </span>
+                      </span>
+                      {session.error_message && (
+                        <span className="shrink-0 truncate text-11 text-danger">{session.error_message}</span>
+                      )}
+                      <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
+                        <Clock size={12} />
+                        {relativeTime(session.connected_at ?? session.disconnected_at)}
+                      </span>
+                    </button>
+                  ))}
+                </ListPanel>
+              )}
+            </Section>
 
-        <div className="flex items-center gap-2 text-11 text-fg-subtle">
-          <FolderOpen size={12} />
-          数据来自本地 SQLite，凭据密钥仅保存在系统凭据管理器中。
-        </div>
+            <Section
+              title="收藏"
+              count={favorites.length}
+              actions={
+                <button
+                  type="button"
+                  className="text-11 text-fg-subtle transition-colors hover:text-accent"
+                  onClick={() => useWorkbenchStore.getState().setModule("ssh")}
+                >
+                  管理 →
+                </button>
+              }
+            >
+              {favorites.length === 0 ? (
+                <p className="text-12 text-fg-subtle">在服务器列表中点击星标即可收藏。</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {favorites.map((server) => (
+                    <button
+                      key={server.id}
+                      type="button"
+                      className="flex h-[32px] items-center gap-1.5 rounded-[9px] border border-line bg-surface-1/70 px-3 text-12 text-fg shadow-[0_1px_2px_rgb(15_23_42/0.05)] transition-colors hover:border-line-strong hover:bg-surface-hover hover:shadow-[0_2px_6px_rgb(15_23_42/0.08)]"
+                      onClick={() => openServer(server.id, server.name, server.host, server.port)}
+                    >
+                      <Star size={12} className="fill-current text-accent" />
+                      {server.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Section>
+
+            <Section
+              title="服务器"
+              count={servers.length}
+              actions={
+                <Tooltip label="新增服务器">
+                  <Button variant="ghost" size="xs" className="h-6 px-2" onClick={() => setEditing(emptyServer())}>
+                    <Plus size={13} />
+                    新增
+                  </Button>
+                </Tooltip>
+              }
+            >
+              <ListPanel>
+                {servers.map((server) => (
+                  <ServerHomeRow
+                    key={server.id}
+                    server={server}
+                    onOpen={() => openServer(server.id, server.name, server.host, server.port)}
+                    onToggleFavorite={() => void setFavorite(server.id, !server.favorite)}
+                    onDelete={() => setDeleteTarget(server)}
+                  />
+                ))}
+              </ListPanel>
+            </Section>
+          </>
+        )}
       </div>
 
       {draft && (
@@ -294,8 +233,6 @@ export function WorkbenchHome() {
                 serverId,
                 quickTarget: serverId ? undefined : `${username}@${host}:${port}`,
                 credentialId: auth.credentialId,
-                // A one-time password is passed straight through for this
-                // connection only; it is never persisted by Rust.
                 oneTimePassword: auth.password,
                 sessionId: crypto.randomUUID(),
               });
@@ -303,16 +240,8 @@ export function WorkbenchHome() {
               const name = host;
               void useDomainStore
                 .getState()
-                .saveServer({
-                  ...emptyServer(),
-                  name,
-                  host,
-                  port,
-                  username,
-                  credential_id: auth.credentialId ?? null,
-                })
+                .saveServer({ ...emptyServer(), name, host, port, username, credential_id: auth.credentialId ?? null })
                 .then((saved) => {
-                  setQc("");
                   open(saved.id);
                 })
                 .catch(() => open());
@@ -323,6 +252,74 @@ export function WorkbenchHome() {
           }}
         />
       )}
+
+      {editing && <ServerForm server={editing} onClose={() => setEditing(null)} />}
+      {deleteTarget && (
+        <ConfirmDialog
+          open
+          title="删除服务器"
+          description={`删除“${deleteTarget.name}”会同时删除它的会话与命令历史。此操作不可撤销。`}
+          confirmLabel="确认删除"
+          danger
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => void deleteServer(deleteTarget.id).then(() => setDeleteTarget(null))}
+        />
+      )}
+    </div>
+  );
+}
+
+function ServerHomeRow({
+  server,
+  onOpen,
+  onToggleFavorite,
+  onDelete,
+}: {
+  server: ServerRecord;
+  onOpen: () => void;
+  onToggleFavorite: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="group flex h-11 w-full items-center gap-2.5 px-3 transition-colors hover:bg-surface-hover/60">
+      <ServerIcon size={14} className="shrink-0 text-fg-subtle" />
+      <button type="button" className="min-w-0 flex-1 truncate text-left text-13 text-fg" onClick={onOpen}>
+        {server.name}
+        <span className="ml-2 text-11 text-fg-subtle">
+          {server.username}@{server.host}:{server.port}
+        </span>
+      </button>
+      <span className="shrink-0 text-11 text-fg-subtle">{relativeTime(server.last_connected_at)}</span>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <Tooltip label={server.favorite ? "取消收藏" : "收藏"} side="left">
+          <Button variant="ghost" size="xs" className="h-6 w-6 px-0" aria-label="收藏" onClick={onToggleFavorite}>
+            <Star size={13} className={server.favorite ? "fill-current text-accent" : ""} />
+          </Button>
+        </Tooltip>
+        <Tooltip label="删除" side="left">
+          <Button variant="ghost" size="xs" className="h-6 w-6 px-0 hover:text-danger" aria-label="删除" onClick={onDelete}>
+            <Trash2 size={13} />
+          </Button>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
+function EmptyServers({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-line bg-surface-1/50 px-6 py-14 text-center">
+      <span className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-fg-subtle">
+        <ServerIcon size={22} />
+      </span>
+      <div>
+        <p className="text-14 font-medium text-fg">还没有服务器</p>
+        <p className="mt-1 text-12 text-fg-subtle">新增一台服务器即可开始连接与管理。</p>
+      </div>
+      <Button variant="primary" size="sm" onClick={onAdd}>
+        <Plus size={13} />
+        新增服务器
+      </Button>
     </div>
   );
 }
@@ -349,7 +346,6 @@ function QuickConnectDialog({
   const [saveAsServer, setSaveAsServer] = useState(true);
   const submit = useSubmit();
 
-  // Either a saved credential or a one-time password — never both.
   const usingOneTimePassword = credentialId === "";
 
   const connect = () =>
@@ -383,11 +379,7 @@ function QuickConnectDialog({
       <div className="flex flex-col gap-3">
         {credentials.length > 0 && (
           <Field label="已保存凭据" hint="选择“一次性密码”可不依赖任何已保存凭据">
-            <select
-              className={selectClass}
-              value={credentialId}
-              onChange={(event) => setCredentialId(event.target.value)}
-            >
+            <select className={selectClass} value={credentialId} onChange={(event) => setCredentialId(event.target.value)}>
               <option value="">使用一次性密码（不保存）</option>
               {credentials.map((credential: CredentialRecord) => (
                 <option key={credential.id} value={credential.id}>
@@ -423,11 +415,7 @@ function QuickConnectDialog({
         )}
 
         <label className="flex items-center gap-2 text-12 text-fg-muted">
-          <input
-            type="checkbox"
-            checked={saveAsServer}
-            onChange={(event) => setSaveAsServer(event.target.checked)}
-          />
+          <input type="checkbox" checked={saveAsServer} onChange={(event) => setSaveAsServer(event.target.checked)} />
           保存为服务器（下次可从列表直接连接）
         </label>
         {usingOneTimePassword && saveAsServer && (
@@ -441,3 +429,5 @@ function QuickConnectDialog({
     </Modal>
   );
 }
+
+// ServerForm 复用 ssh-context-sidebar 的导出，避免重复实现。

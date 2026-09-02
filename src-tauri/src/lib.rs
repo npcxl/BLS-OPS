@@ -151,6 +151,7 @@ pub fn run() {
             commands::project_review_set,
             commands::project_review_list,
             commands::project_readiness_check,
+            commands::project_inventory_load,
             // legacy project records retained as P5 foundation
             commands::project_list,
             commands::project_get,

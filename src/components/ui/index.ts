@@ -16,6 +16,7 @@ export type {
   MacWindowControlsProps,
 } from "./mac-controls";
 export { LoadingState, Spinner } from "./loading";
+export { Tooltip } from "./tooltip";
 export { DangerNotice, StatusBadge, StatusNotice, SuccessNotice, WarningNotice } from "./status";
 export type { MacButtonProps } from "./mac-button";
 export type { LoadingStateProps } from "./loading";

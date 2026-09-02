@@ -174,6 +174,21 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
     activeStateRef.current = null;
   }, []);
 
+  /**
+   * 立即回填上次扫描的快照缓存，让用户一进页面就看到结果，不必等重扫。
+   * 标记 `incremental: true` 让视图知道这是缓存、后台复核仍在进行；
+   * 真正的扫描会覆盖这份结果。
+   */
+  const loadSnapshot = useCallback(async () => {
+    if (!serverId) return;
+    try {
+      const cached = await opsApi.projectInventoryLoad(serverId);
+      if (cached) setResult({ ...cached, incremental: true });
+    } catch (cause) {
+      console.warn("[useScanTask] 读取项目快照缓存失败", cause);
+    }
+  }, [serverId]);
+
   // 清理只在**卸载**或**服务器/会话切换**时执行。依赖里绝不能有 `scan`：
   // 轮询每次 setScan 都会改变它，从而把正在运行的扫描取消掉。
   useEffect(
@@ -196,5 +211,5 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
     [serverId, sessionId, stopPolling, detach, cancelActive],
   );
 
-  return { scan, result, loading, error, discover, cancel };
+  return { scan, result, loading, error, discover, cancel, loadSnapshot };
 }

@@ -462,13 +462,49 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     if (!connected) useDirSizeStore.getState().forgetSession(sessionId);
   }, [connected, sessionId]);
 
+  const sizeQueueRef = useRef<string[]>([]);
+  const sizeRunningRef = useRef(0);
+  const sizeQueuedRef = useRef(new Set<string>());
+  const sizePumpRef = useRef<() => void>(() => undefined);
+
   const computeDirSize = useCallback(
-    (path: string) => {
-      if (!path) return;
-      void opsApi.directorySizeStart(sessionId, path);
+    (path: string, force = false) => {
+      if (!path || sizeQueuedRef.current.has(path)) return;
+      if (force) {
+        useDirSizeStore.getState().apply({
+          sessionId,
+          path,
+          sizeBytes: 0,
+          fileCount: 0,
+          directoryCount: 0,
+          skippedCount: 0,
+          status: "pending",
+          complete: false,
+          calculatedAt: Date.now(),
+        });
+      }
+      sizeQueuedRef.current.add(path);
+      sizeQueueRef.current.push(path);
+      sizePumpRef.current();
     },
     [sessionId],
   );
+
+  sizePumpRef.current = () => {
+    while (sizeRunningRef.current < 2 && sizeQueueRef.current.length > 0) {
+      const path = sizeQueueRef.current.shift();
+      if (!path) continue;
+      sizeRunningRef.current += 1;
+      void opsApi.directorySizeStart(sessionId, path, undefined, false)
+        .then((initial) => useDirSizeStore.getState().apply(initial))
+        .catch((cause) => setStatus({ state: "error", message: toErrorMessage(cause) }))
+        .finally(() => {
+          sizeRunningRef.current -= 1;
+          sizeQueuedRef.current.delete(path);
+          sizePumpRef.current();
+        });
+    }
+  };
   const cancelDirSize = useCallback(
     (path: string) => {
       if (!path) return;
@@ -479,9 +515,11 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
 
   /** Computes the size of every directory visible in the current listing. */
   const computeAllDirSizes = useCallback(() => {
-    for (const entry of entries) {
-      if (entry.kind === "directory") computeDirSize(entry.path);
+    const directories = entries.filter((entry) => entry.kind === "directory");
+    if (directories.some((entry) => entry.path === "/" || entry.path === "/var")) {
+      if (!window.confirm("当前批量计算包含较大的系统目录，可能增加服务器磁盘 I/O。确定继续吗？")) return;
     }
+    for (const entry of directories) computeDirSize(entry.path);
   }, [entries, computeDirSize]);
 
   useEffect(() => {
@@ -632,7 +670,7 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         id: "size-compute",
         label: dirSize?.complete ? "重新计算大小" : "计算文件夹大小",
         icon: Calculator,
-        onSelect: () => computeDirSize(entry.path),
+        onSelect: () => computeDirSize(entry.path, dirSize?.complete === true),
       });
     }
     items.push({ id: "sep1", separator: true });

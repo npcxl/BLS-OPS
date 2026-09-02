@@ -13,7 +13,6 @@ import {
   Loader2,
   PlugZap,
   RefreshCw,
-  Server as ServerIcon,
   TriangleAlert,
   WifiOff,
 } from "lucide-react";
@@ -92,22 +91,6 @@ export function ServerPicker({ tabId }: { tabId: string }) {
   );
 }
 
-const PHASE_TONE: Record<string, string> = {
-  connected: "bg-success",
-  connecting: "bg-warning",
-  error: "bg-danger",
-  closed: "bg-danger",
-  idle: "bg-fg-subtle",
-};
-
-const PHASE_LABEL: Record<string, string> = {
-  connected: "已连接",
-  connecting: "连接中",
-  error: "连接失败",
-  closed: "已断开",
-  idle: "未连接",
-};
-
 export function ModuleFrame({
   tab,
   session,
@@ -181,19 +164,13 @@ export function ModuleFrame({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app">
-      {/* One compact header row: icon + toolbar (filters/actions) + connection
-          state. The server name itself lives on the tab, so we don't repeat it
-          here — this row is purely the module's controls. */}
+      {/* One compact header row: icon + toolbar (filters/actions). The server
+          name itself lives on the tab, so we don't repeat it here — this row
+          is purely the module's controls. Connection problems surface via the
+          banner below, not a permanent status badge. */}
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <Glyph size={13} className="shrink-0 text-fg-subtle" />
         {toolbar && <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div>}
-        <span className="ml-2 flex shrink-0 items-center gap-1.5 text-11 text-fg-subtle">
-          <span
-            className={cn("h-[6px] w-[6px] shrink-0 rounded-full", PHASE_TONE[session.phase] ?? "bg-fg-subtle")}
-          />
-          {session.phase === "connected" && <ServerIcon size={11} className="text-fg-subtle" />}
-          <span>{PHASE_LABEL[session.phase] ?? session.phase}</span>
-        </span>
       </div>
 
       {banner()}

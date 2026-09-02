@@ -36,6 +36,7 @@ pub const DIR_SIZE_EVENT: &str = "directory-size-update";
 
 /// Lifecycle of a single directory-size computation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DirectorySizeStatus {
     /// Queued, work has not started yet.
     Pending,
@@ -151,6 +152,13 @@ pub struct DirectorySizeRegistry {
 
 impl DirectorySizeRegistry {
     pub fn forget_session(&self, session_id: &str) {
+        let tasks = self.tasks.lock().unwrap();
+        for ((sid, _), task) in tasks.iter() {
+            if sid == session_id {
+                let _ = task.cancel.send(true);
+            }
+        }
+        drop(tasks);
         self.tasks
             .lock()
             .unwrap()
@@ -181,16 +189,20 @@ impl DirectorySizeRegistry {
         session_id: String,
         path: String,
         timeout: Duration,
-    ) {
+        force: bool,
+    ) -> DirectorySizeResult {
         let key = (session_id.clone(), path.clone());
-        {
+        if force {
+            if let Some(existing) = self.tasks.lock().unwrap().remove(&key) {
+                let _ = existing.cancel.send(true);
+            }
+        } else {
             let tasks = self.tasks.lock().unwrap();
             if let Some(existing) = tasks.get(&key) {
-                // Replay the current state so a refresh or a re-open sees it.
                 if let Some(emit) = &emit {
                     emit(existing.snapshot());
                 }
-                return;
+                return existing.snapshot();
             }
         }
 
@@ -200,6 +212,10 @@ impl DirectorySizeRegistry {
             state: Mutex::new(DirectorySizeResult::computing(&session_id, &path)),
         });
         self.tasks.lock().unwrap().insert(key, task.clone());
+        let initial = task.snapshot();
+        if let Some(emit) = &emit {
+            emit(initial.clone());
+        }
 
         let registry = Arc::clone(self);
         registry.set_emit(emit.clone());
@@ -213,6 +229,7 @@ impl DirectorySizeRegistry {
             // Leave the finished task in the map so `cached`/`status` can replay
             // it; it is only evicted when the session is forgotten.
         });
+        initial
     }
 
     /// Asks a running computation to stop. The task decides how to honour it
@@ -240,7 +257,7 @@ impl DirectorySizeRegistry {
 
     /// Detects the remote `du` flavour once per session, caching the outcome
     /// (including "none"). The probe is one cheap `du --version` (GNU only) and
-    /// a `du -sb` smoke test that tolerates a non-zero exit.
+    /// a small-file `du -sb` smoke test that tolerates a non-zero exit.
     async fn detect_flavor(
         &self,
         manager: &SshSessionManager,
@@ -269,7 +286,7 @@ impl DirectorySizeRegistry {
             match manager
                 .exec(
                     session_id,
-                    "du -sb -- / 2>/dev/null | head -n1",
+                    "du -sb -- /etc/hostname 2>/dev/null | head -n1",
                     Duration::from_secs(5),
                 )
                 .await

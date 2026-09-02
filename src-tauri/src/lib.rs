@@ -4,6 +4,8 @@ mod commands;
 mod db;
 /// Fourth-layer deployment adapter registry.
 pub mod deployment_adapter;
+/// Round 1 of project discovery: enumerate real deployment instances.
+pub mod deployment_collector;
 /// On-demand directory-size calculation (SFTP `du` / recursive walk).
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).

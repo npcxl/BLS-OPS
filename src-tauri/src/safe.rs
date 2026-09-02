@@ -126,6 +126,33 @@ pub fn is_within(path: &str, root: &str) -> bool {
     path.starts_with(&format!("{root}/"))
 }
 
+/// Validates the directory list for the targeted marker scan.
+///
+/// Every path comes from remote instance output (Docker mounts, systemd unit
+/// properties, nginx roots), so it is treated as untrusted input: absolute,
+/// no control characters, no `.`/`..` segments, character whitelist as
+/// [`validate_abs_path`], and bounded in count and length. Duplicates are
+/// collapsed so one `find` invocation covers them.
+pub fn validate_remote_paths(values: &[String]) -> Result<Vec<String>> {
+    if values.is_empty() {
+        return Err(anyhow!("扫描路径列表不能为空"));
+    }
+    if values.len() > 64 {
+        return Err(anyhow!("单次扫描路径过多（最多 64 个）"));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let path = validate_abs_path(value, "扫描路径")?;
+        if path.matches('/').count() > 64 {
+            return Err(anyhow!("扫描路径过深：{value}"));
+        }
+        if !out.iter().any(|existing| existing == path) {
+            out.push(path.to_string());
+        }
+    }
+    Ok(out)
+}
+
 // -- Specific identifiers ----------------------------------------------------
 
 /// systemd unit types we allow acting on.
@@ -393,6 +420,12 @@ pub enum Capability {
     DockerInspect {
         container: String,
     },
+    /// `docker inspect` for a batch of containers (≤ 20 per call), one JSON
+    /// object per line. Used by the deployment-instance collector to deep-query
+    /// every container listed by `docker ps`.
+    DockerInspectMany {
+        containers: Vec<String>,
+    },
     ContainerAction {
         action: ContainerAction,
         container: String,
@@ -422,9 +455,33 @@ pub enum Capability {
         enable: bool,
     },
 
-    // Project discovery (read-only, bounded inventory commands)
-    ProjectInventory,
-    ProjectRuntimeInventory,
+    // Project discovery — deployment-instance-first (read-only).
+    //
+    // 第一轮"部署实例优先发现"：先由 `deployment_collector` 枚举真实部署实例
+    // （Docker/systemd/Nginx，仅当能力探测确认安装后才执行其命令），再对实例给出
+    // 的候选路径做**定向** marker 扫描（`ProjectDirMarkers`）。第二轮用固定根目录
+    // 的 marker-only 扫描（`ProjectMarkerScan`）补充"已上传但未部署"的源码。
+    // 任何命令都不再全量枚举普通文件。
+    /// 第二轮补充扫描：只在固定源码根目录中查找项目标志文件，不枚举普通文件。
+    ProjectMarkerScan,
+    /// 第一轮定向扫描：对部署实例给出的候选目录做 marker-only find。
+    /// 路径必须是已校验的绝对路径（来自服务器上真实实例的输出）。
+    ProjectDirMarkers {
+        paths: Vec<String>,
+    },
+    /// `systemctl show` 一批服务单元（仅 systemd 能力确认后执行）。
+    /// 输出 Id/FragmentPath/WorkingDirectory/ExecStart/EnvironmentFiles。
+    SystemdShowUnits {
+        units: Vec<String>,
+    },
+    /// `nginx -T`：读取生效配置（仅 nginx 能力确认后执行）。
+    NginxEffectiveConfig,
+    /// `ss -tlnp`：监听端口 → PID 关联（Nginx proxy_pass 反查进程 cwd）。
+    ListenSockets,
+    /// `readlink -f /proc/<pid>/cwd`：把监听端口解析到项目目录。
+    ProcCwd {
+        pid: u32,
+    },
 
     // Files / deployments
     /// Reads a text file (log tailing, config viewing).
@@ -673,6 +730,9 @@ impl ContainerAction {
 const LIST_SERVICES: &str =
     "systemctl list-units --type=service --all --no-legend --no-pager --plain";
 const LIST_UNIT_FILES: &str = "systemctl list-unit-files --type=service --no-legend --no-pager";
+/// find 谓词：只匹配项目标志（清单/部署文件），以及 `.git`/`src`/`app` 目录。
+/// 两次 marker 扫描（固定根目录与定向目录）共用，保证评分语义一致。
+const PROJECT_MARKER_PREDICATE: &str = "\\( -type f \\( -name pom.xml -o -name build.gradle -o -name build.gradle.kts -o -name package.json -o -name Cargo.toml -o -name go.mod -o -name pyproject.toml -o -name composer.json -o -name Dockerfile -o -name docker-compose.yml -o -name compose.yaml -o -name compose.yml -o -name Procfile -o -name nginx.conf \\) -o -type d \\( -name .git -o -name src -o -name app \\) \\)";
 const DOCKER_PS: &str = "docker ps -a --no-trunc --format {{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}";
 const DOCKER_IMAGES: &str =
     "docker images --format {{.ID}}|{{.Repository}}|{{.Tag}}|{{.Size}}|{{.CreatedSince}}";
@@ -700,6 +760,11 @@ impl Capability {
             Capability::SystemPrune => Duration::from_secs(120),
             Capability::NginxTest | Capability::NginxReload => Duration::from_secs(30),
             Capability::DeployStep { .. } => Duration::from_secs(300),
+            // 定向 marker 扫描的目录数少、深度浅，但大目录仍可能慢于默认超时。
+            Capability::ProjectMarkerScan | Capability::ProjectDirMarkers { .. } => {
+                Duration::from_secs(45)
+            }
+            Capability::NginxEffectiveConfig => Duration::from_secs(20),
             _ => super::remote::DEFAULT_TIMEOUT,
         }
     }
@@ -776,14 +841,52 @@ impl Capability {
             Capability::JournalDiskUsage => "journalctl --disk-usage".to_string(),
 
             // -- Project discovery ------------------------------------------
-            // Commands are fixed and bounded; their output is parsed as metadata only.
-            Capability::ProjectInventory => "find /home /root /srv /opt /var/www /data /app /apps /workspace /usr/local -xdev -maxdepth 6 -type f -printf '%h\\t%f\\n' 2>/dev/null | head -n 20000".to_string(),
-            // Runtime inventory is capability-agnostic: it collects process and
-            // systemd evidence that never depends on Docker/Nginx. Docker and
-            // Nginx evidence is gathered separately, *only* after `probe_capabilities`
-            // has confirmed those tools are installed — so we never emit a
-            // `docker ps` / `nginx -T` against a server that lacks them.
-            Capability::ProjectRuntimeInventory => "ps -eo pid=,cwd=,args= 2>/dev/null | head -n 2000; systemctl show --all --no-pager -p Id -p WorkingDirectory -p ExecStart 2>/dev/null | head -n 5000".to_string(),
+            // Commands are fixed and bounded; their output is parsed as metadata
+            // only. Both scans look for project markers exclusively — plain
+            // files are never enumerated.
+            Capability::ProjectMarkerScan => format!(
+                "find /home /srv /opt /var/www /data -xdev -maxdepth 6 {} -printf '%h\\t%f\\n' 2>/dev/null | head -n 20000",
+                PROJECT_MARKER_PREDICATE
+            ),
+            Capability::ProjectDirMarkers { paths } => {
+                let paths = validate_remote_paths(paths)?;
+                let list = paths
+                    .iter()
+                    .map(|path| quoted(path))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!(
+                    "find {list} -xdev -maxdepth 4 {} -printf '%h\\t%f\\n' 2>/dev/null | head -n 5000",
+                    PROJECT_MARKER_PREDICATE
+                )
+            }
+            Capability::SystemdShowUnits { units } => {
+                if units.is_empty() {
+                    return Err(anyhow!("单元列表不能为空"));
+                }
+                if units.len() > 40 {
+                    return Err(anyhow!("单次 systemctl show 不能超过 40 个单元"));
+                }
+                let mut list = String::new();
+                for unit in units {
+                    let quoted_unit = quoted(validate_unit(unit)?);
+                    if !list.is_empty() {
+                        list.push(' ');
+                    }
+                    list.push_str(&quoted_unit);
+                }
+                format!(
+                    "systemctl show --no-pager -p Id -p FragmentPath -p WorkingDirectory -p ExecStart -p EnvironmentFiles -- {list}"
+                )
+            }
+            Capability::NginxEffectiveConfig => "nginx -T 2>&1".to_string(),
+            Capability::ListenSockets => "ss -tlnp 2>/dev/null | head -n 500".to_string(),
+            Capability::ProcCwd { pid } => {
+                if *pid == 0 {
+                    return Err(anyhow!("PID 必须大于 0"));
+                }
+                format!("readlink -f /proc/{pid}/cwd")
+            }
 
             // -- First-layer capability probe ---------------------------------
             // One fixed invocation that yields OS/arch/kernel/user/init/security/cgroup.
@@ -805,6 +908,24 @@ impl Capability {
                 "docker inspect --format '{{{{json .}}}}' -- {}",
                 quoted(validate_container(container)?)
             ),
+
+            Capability::DockerInspectMany { containers } => {
+                if containers.is_empty() {
+                    return Err(anyhow!("容器列表不能为空"));
+                }
+                if containers.len() > 20 {
+                    return Err(anyhow!("单次 docker inspect 不能超过 20 个容器"));
+                }
+                let mut list = String::new();
+                for container in containers {
+                    let quoted_container = quoted(validate_container(container)?);
+                    if !list.is_empty() {
+                        list.push(' ');
+                    }
+                    list.push_str(&quoted_container);
+                }
+                format!("docker inspect --format '{{{{json .}}}}' -- {list}")
+            }
 
             Capability::ContainerAction { action, container } => {
                 let verb = action.verb();

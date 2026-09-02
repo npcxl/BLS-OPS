@@ -110,6 +110,10 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                 error: status.error,
                 progress: status.progress,
               });
+              if (status.error) {
+                console.error("[ProjectView] 后端扫描错误", status.error);
+                setError(status.error);
+              }
               window.clearInterval(poll);
               const found = await opsApi.projectScanResult(started.id);
               console.log("[ProjectView] project_scan_result 返回", found);

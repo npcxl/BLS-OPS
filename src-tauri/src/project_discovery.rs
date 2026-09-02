@@ -68,6 +68,16 @@ pub struct DeploymentReadiness {
     pub confirmed_facts: Vec<String>,
     pub unknown_facts: Vec<String>,
 }
+/// 候选项目的发现类别（部署实例优先流程的产物分桶）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateCategory {
+    /// 已部署：与真实部署实例（容器/服务/站点）建立了运行时关联。
+    Deployed,
+    /// 仅源码：有项目标志文件，但没有关联到任何运行实例。
+    SourceOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectCandidate {
     pub id: String,
@@ -77,6 +87,8 @@ pub struct ProjectCandidate {
     pub project_type: String,
     pub score: u8,
     pub confidence: ConfidenceLevel,
+    /// 已部署（关联实例）或仅源码。
+    pub category: CandidateCategory,
     pub evidence: Vec<ProjectEvidence>,
     pub penalties: Vec<ProjectPenalty>,
     pub runtime_links: Vec<RuntimeLink>,
@@ -127,12 +139,15 @@ pub struct ProjectScanResult {
     /// 第一/二层产物：服务器能力图谱。扫描先做能力前置识别，再按需启用收集器。
     /// 未做能力识别（旧路径或被取消）时为 `None`。
     pub capability: Option<crate::capability_probe::ServerCapabilityProfile>,
+    /// 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。
+    /// `source_known == false` 的实例即"只有运行实例，源码未知"。
+    pub instances: Vec<crate::deployment_collector::DeploymentInstance>,
     /// 第三张图谱：每个已注册部署适配器的准备度评估（部署可行性图谱）。
     pub deployment_readiness: Vec<crate::deployment_adapter::AdapterReadiness>,
 }
 
 impl ProjectScanResult {
-    /// 便捷构造：能力图谱与可行性图谱默认为空。
+    /// 便捷构造：能力图谱、实例与可行性图谱默认为空。
     pub fn with(
         scan_id: String,
         server_id: String,
@@ -149,6 +164,7 @@ impl ProjectScanResult {
             completed_at,
             incremental,
             capability: None,
+            instances: Vec::new(),
             deployment_readiness: Vec::new(),
         }
     }
@@ -341,6 +357,11 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         project_type,
         score,
         confidence,
+        category: if input.runtime_links.is_empty() {
+            CandidateCategory::SourceOnly
+        } else {
+            CandidateCategory::Deployed
+        },
         evidence,
         penalties,
         runtime_links: input.runtime_links,
@@ -486,11 +507,12 @@ impl ScanRegistry {
             false
         }
     }
-    pub async fn finish(&self, id: &str, server: &str, state: ScanState) {
+    pub async fn finish(&self, id: &str, server: &str, state: ScanState, error: Option<String>) {
         self.active_by_server.lock().await.remove(server);
         self.cancel.lock().await.remove(id);
         if let Some(s) = self.tasks.lock().await.get_mut(id) {
             s.state = state;
+            s.error = error;
             s.finished_at = Some(chrono_like_now());
         }
     }

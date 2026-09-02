@@ -1157,6 +1157,7 @@ async fn directory_size_uses_du_and_caches_the_result() {
         "s1".to_string(),
         path.to_string(),
         Duration::from_secs(10),
+        false,
     );
 
     // Wait for the computation to reach a terminal state.
@@ -1206,6 +1207,7 @@ async fn directory_size_du_preferred_path_resolves_to_completed() {
         "s1".to_string(),
         path.to_string(),
         Duration::from_secs(10),
+        false,
     );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

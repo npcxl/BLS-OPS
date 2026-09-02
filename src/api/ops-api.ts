@@ -861,11 +861,12 @@ export const opsApi = {
    * Progress and the final result arrive via the `directory-size-update`
    * event; a second call for the same path replays the current state.
    */
-  directorySizeStart: (sessionId: string, path: string, timeoutMs?: number) =>
-    invoke<void>("directory_size_start", {
+  directorySizeStart: (sessionId: string, path: string, timeoutMs?: number, force = false) =>
+    invoke<DirectorySizeResult>("directory_size_start", {
       sessionId,
       path,
       timeoutMs: timeoutMs ?? null,
+      force,
     }),
   /** Asks a running computation to stop. */
   directorySizeCancel: (sessionId: string, path: string) =>

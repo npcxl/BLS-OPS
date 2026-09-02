@@ -10,7 +10,6 @@ import {
   RocketIcon,
   UnorderedListIcon,
   SparklesIcon,
-  SlidersHorizontalIcon,
 } from "@/components/its-hover";
 import type { ComponentType } from "react";
 
@@ -28,8 +27,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: "ssh", label: "终端", icon: TerminalIcon },
-  { id: "servers", label: "服务器", icon: WorldIcon },
-  { id: "services", label: "服务", icon: SlidersHorizontalIcon },
+  { id: "services", label: "服务", icon: WorldIcon },
   { id: "logs", label: "日志", icon: FileDescriptionIcon },
   { id: "files", label: "文件", icon: FileDescriptionIcon },
   { id: "projects", label: "项目", icon: Stack3Icon },

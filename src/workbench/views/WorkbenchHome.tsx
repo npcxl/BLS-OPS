@@ -65,7 +65,6 @@ export function WorkbenchHome() {
 
   const openTab = useWorkbenchStore((s) => s.openTab);
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
-  const openModuleTab = useWorkbenchStore((s) => s.openModuleTab);
   const servers = useDomainStore((s) => s.servers);
   const sessions = useDomainStore((s) => s.sessions);
   const deleteServer = useDomainStore((s) => s.deleteServer);
@@ -142,7 +141,7 @@ export function WorkbenchHome() {
           count={recent.length}
           actions={
             servers.length === 0 ? (
-              <Button variant="ghost" size="xs" onClick={() => openModuleTab("servers")}>
+              <Button variant="ghost" size="xs" onClick={() => useWorkbenchStore.getState().setModule("ssh")}>
                 去新增服务器
               </Button>
             ) : undefined
@@ -220,13 +219,13 @@ export function WorkbenchHome() {
           title="服务器"
           count={servers.length}
           actions={
-            <Button variant="ghost" size="xs" onClick={() => openModuleTab("servers")}>
+            <Button variant="ghost" size="xs" onClick={() => useWorkbenchStore.getState().setModule("ssh")}>
               管理
             </Button>
           }
         >
           {servers.length === 0 ? (
-            <p className="text-12 text-fg-subtle">还没有服务器。请在左侧“终端 → 服务器列表”中新增。</p>
+            <p className="text-12 text-fg-subtle">还没有服务器。请在左侧终端面板中新增。</p>
           ) : (
             <ListPanel>
               {servers.slice(0, 8).map((server) => (

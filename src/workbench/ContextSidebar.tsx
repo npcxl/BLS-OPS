@@ -7,11 +7,10 @@ import { ModuleServerSidebar, isServerListModule } from "./module-server-sidebar
 
 const MODULE_TITLES: Record<string, string> = {
   ssh: "终端",
-  servers: "服务器",
 };
 
 /**
- * Context Sidebar — left panel for the 终端/服务器 modules (server list).
+ * Context Sidebar — left panel for the terminal module (server list).
  * Other modules render as centered ModulePage tabs instead, so this returns
  * null when they are active.
  */
@@ -55,7 +54,7 @@ export function ContextSidebar() {
     return <ModuleServerSidebar module={activeModule} />;
   }
 
-  if (activeModule !== "ssh" && activeModule !== "servers") return null;
+  if (activeModule !== "ssh") return null;
 
   if (collapsed) {
     return <div className="w-0 shrink-0" aria-hidden="true" />;
@@ -65,7 +64,7 @@ export function ContextSidebar() {
     <aside
       className="relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1/60 backdrop-blur-xl"
       style={{ width }}
-      aria-label={MODULE_TITLES[activeModule]}
+      aria-label={MODULE_TITLES.ssh}
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
         <SshContextSidebar />

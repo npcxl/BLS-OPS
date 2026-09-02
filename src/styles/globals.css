@@ -50,19 +50,6 @@
     -webkit-user-select: text;
   }
 
-  /* xterm needs its helper textarea to stay focusable and selectable so it can
-     receive keyboard input; the global `user-select: none` on body must not
-     suppress it (otherwise the terminal appears focused but ignores keystrokes). */
-  .xterm,
-  .xterm *,
-  .xterm-helper-textarea {
-    user-select: text !important;
-    -webkit-user-select: text !important;
-  }
-  .xterm-helper-textarea {
-    pointer-events: auto !important;
-  }
-
   input,
   textarea {
     cursor: text;

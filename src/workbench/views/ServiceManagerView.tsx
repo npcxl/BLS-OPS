@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Play, RotateCw, Square, SquareCheck, SquareMinus } from "lucide-react";
+import { Copy, Play, RotateCw, Square, SquareCheck, SquareMinus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -249,8 +249,18 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
       }
     >
       {error && (
-        <div className="mx-3 mt-3 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          {error}
+        <div className="mx-3 mt-3 flex items-start gap-2 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
+          <span className="min-w-0 flex-1 break-words">{error}</span>
+          <button
+            type="button"
+            aria-label="复制错误信息"
+            title="复制错误信息"
+            className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
+            onClick={() => void navigator.clipboard.writeText(error)}
+          >
+            <Copy size={12} />
+            复制
+          </button>
         </div>
       )}
 
@@ -375,12 +385,28 @@ function DetailSheet({
   onClose: () => void;
   onReload: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyDetail = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-app/80 backdrop-blur-sm">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
         <span className="text-12 font-semibold text-fg">{unit}</span>
         <span className="text-11 text-fg-subtle">systemctl status</span>
         <div className="ml-auto flex items-center gap-1">
+          <Button variant="ghost" size="xs" onClick={() => void copyDetail()}>
+            <Copy size={12} />
+            {copied ? "已复制" : "复制信息"}
+          </Button>
           <Button variant="ghost" size="xs" onClick={onReload}>
             刷新列表
           </Button>

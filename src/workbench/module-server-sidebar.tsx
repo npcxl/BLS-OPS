@@ -71,7 +71,7 @@ export function ModuleServerSidebar({ module }: { module: NavModule }) {
     <div className="flex h-full w-[210px] shrink-0 flex-col border-r border-line bg-app">
       <div className="flex h-8 shrink-0 items-center gap-1.5 px-2.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
         {Icon && <Icon size={13} strokeWidth={2} />}
-        服务器
+        终端
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
         {servers.length === 0 ? (

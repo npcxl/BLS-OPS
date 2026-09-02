@@ -22,7 +22,6 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
-import { classifyCommand, OutputDecorator } from "@/lib/table-highlight";
 import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 
@@ -265,8 +264,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       cursorBlink: true,
       fontSize: 13,
       scrollback: 5000,
-      scrollSensitivity: 1,
-      fastScrollSensitivity: 3,
       theme: terminalTheme(isDark),
     });
     const fit = new FitAddon();
@@ -282,16 +279,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
-    const decorator = new OutputDecorator();
-
     const dataSubscription = instance.onData((data) => {
       // Recover whole commands from the raw stream; arrow keys, Ctrl+C, pastes
       // and line continuations are handled by the editor.
       const commands = lineEditorRef.current?.feed(data) ?? [];
       for (const command of commands) {
-        // A command that produces tabular output arms the decorator so its
-        // following output block is colorized (docker ps, ls -l, df, ps, ...).
-        decorator.setActiveCommand(classifyCommand(command));
         if (tab.serverId || tab.quickTarget) {
           void opsApi
             .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
@@ -330,12 +322,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const output = event.payload;
       if (isCommandNotFoundOutput(output)) {
         instance.write(`\x1b[31m命令无效：${output}\x1b[0m`);
-        return;
-      }
-      // Buffer the stream and write only complete lines, colored for tabular
-      // commands. A trailing partial line stays buffered until the next chunk.
-      for (const line of decorator.push(output)) {
-        instance.write(line + "\n");
+      } else {
+        instance.write(output);
       }
     });
 
@@ -372,14 +360,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       dataSubscription.dispose();
       selectionSubscription.dispose();
       if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
-      // Flush any buffered partial output line so it isn't lost on teardown.
-      for (const line of decorator.flush()) {
-        try {
-          instance.write(line + "\n");
-        } catch {
-          /* terminal already disposing */
-        }
-      }
       void unlistenOutput.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());
       void opsApi.sshDisconnect(sessionId).catch(() => undefined);
@@ -462,8 +442,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   return (
     <div className="flex h-full min-h-0 flex-row bg-app">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* The tab strip already shows the title, host and a connection dot, so
-          the terminal itself gets no header of its own. */}
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
         <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
         <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
@@ -514,6 +492,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
           <WifiOff size={12} />
           <span className="min-w-0 flex-1 truncate">{error}</span>
+          <button
+            type="button"
+            aria-label="复制错误信息"
+            title="复制错误信息"
+            className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
+            onClick={() => void navigator.clipboard.writeText(error)}
+          >
+            <Copy size={12} />
+            复制
+          </button>
           <Button variant="ghost" size="xs" onClick={() => void connect()}>
             重试
           </Button>
@@ -521,12 +509,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       )}
 
       <div className="relative flex min-h-0 flex-1" onMouseDown={() => setSelectionMenu(null)}>
-        <div
-          ref={containerRef}
-          className="min-h-0 min-w-0 flex-1 overflow-hidden bg-app p-2"
-          data-selectable
-          onMouseDown={() => terminalRef.current?.focus()}
-        />
+        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-app p-2" data-selectable />
         {selectionMenu && (
           <div
             className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"

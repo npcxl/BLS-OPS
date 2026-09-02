@@ -89,7 +89,7 @@ pub struct ProjectCandidate {
     pub updated_at: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", tag = "state")]
+#[serde(rename_all = "snake_case")]
 pub enum ScanState {
     Queued,
     Running,

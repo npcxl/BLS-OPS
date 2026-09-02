@@ -126,13 +126,6 @@ export function Workbench() {
       ...managerActions,
       ...recentActions,
       {
-        id: "manage-servers",
-        title: "管理服务器",
-        category: "服务器",
-        description: "打开服务器列表",
-        onSelect: () => openModuleTab("servers"),
-      },
-      {
         id: "manage-credentials",
         title: "管理凭据",
         category: "设置",

@@ -741,10 +741,10 @@ impl Capability {
             }
 
             Capability::ServiceStatus { unit } => {
-                // Options must precede the unit; anything after `--` is parsed
-                // as another unit name by systemctl.
+                // Keep the portable systemctl form: status accepts options
+                // after the verb, while `--` terminates unit-name parsing.
                 format!(
-                    "systemctl --no-pager status -- {}",
+                    "systemctl status --no-pager -- {}",
                     quoted(validate_unit(unit)?)
                 )
             }
@@ -1121,7 +1121,7 @@ mod tests {
         }
         .command()
         .unwrap();
-        assert_eq!(command, "systemctl --no-pager status -- 'nginx.service'");
+        assert_eq!(command, "systemctl status --no-pager -- 'nginx.service'");
     }
 
     #[test]

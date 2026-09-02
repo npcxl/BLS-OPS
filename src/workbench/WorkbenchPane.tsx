@@ -39,11 +39,11 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
                 key={tab.id}
                 className={cn("absolute inset-0", active ? "block" : "hidden")}
                 aria-hidden={active ? undefined : true}
-                // Keep focusable elements in inactive (hidden) tabs out of the
-                // tab order and away from assistive tech — otherwise a lingering
-                // focus inside an aria-hidden container throws a11y warnings and
-                // can interfere with the active terminal's focus.
-                {...(!active ? { inert: "" as unknown as boolean } : {})}
+                // `inert` keeps focusable elements (buttons, xterm's helper
+                // textarea) inside inactive (hidden) tabs out of the tab order.
+                // Without it a lingering focus inside an aria-hidden container
+                // can hijack keyboard input from the active terminal.
+                inert={!active}
               >
                 <TabContent tab={tab} />
               </div>

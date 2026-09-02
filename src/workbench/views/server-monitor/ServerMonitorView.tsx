@@ -17,7 +17,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { opsApi, toErrorMessage, type DiskMetrics, type NetworkMetrics, type ProcessInfo } from "@/api/ops-api";
+import { opsApi, toErrorMessage, type DiskMetrics } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -26,291 +26,23 @@ import {
   useMonitorStore,
   totalThroughput,
   type MonitorEntry,
-  type MonitorSample,
 } from "@/stores/monitor-store";
 import { ToolbarStat, ToolbarStatus } from "@/workbench/views/module-frame";
-import type { WorkbenchPane, WorkspaceTab } from "@/workbench/types";
+import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
-
-const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
-
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), BYTE_UNITS.length - 1);
-  const value = bytes / 1024 ** exponent;
-  const digits = exponent === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(digits)} ${BYTE_UNITS[exponent]}`;
-}
-
-export function formatSpeed(bytesPerSecond: number): string {
-  return `${formatBytes(bytesPerSecond)}/s`;
-}
-
-export function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
-  const days = Math.floor(seconds / 86_400);
-  const hours = Math.floor((seconds % 86_400) / 3_600);
-  const minutes = Math.floor((seconds % 3_600) / 60);
-  if (days > 0) return `${days} 天 ${hours} 小时`;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  return `${minutes} 分`;
-}
+import { formatBytes, formatSpeed, formatUptime } from "@/lib/format";
+import { sshClosedEvent } from "@/lib/events";
+import { TrendChart } from "./TrendChart";
+import { MetricCard } from "./MetricCard";
+import { DiskTable, NetworkTable, ProcessTable } from "./tables";
+import { MonitorPicker } from "./MonitorPicker";
+import { isTabVisibleInPanes, usePageVisible } from "./hooks";
 
 function formatClock(timestamp: number | null): string {
   if (!timestamp) return "尚未采集";
   return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });
 }
 
-/** True when `tabId` is the visible tab of any pane (tabs stay mounted when hidden). */
-function isTabVisibleInPanes(tabId: string, pane: WorkbenchPane): boolean {
-  if (!pane.children || pane.children.length === 0) return pane.activeTabId === tabId;
-  return pane.children.some((child) => isTabVisibleInPanes(tabId, child));
-}
-
-/** Polling stops when the window is hidden — no point measuring a hidden page. */
-function usePageVisible(): boolean {
-  const [visible, setVisible] = useState(() => !document.hidden);
-  useEffect(() => {
-    const onChange = () => setVisible(!document.hidden);
-    document.addEventListener("visibilitychange", onChange);
-    return () => document.removeEventListener("visibilitychange", onChange);
-  }, []);
-  return visible;
-}
-
-// ---------------------------------------------------------------------------
-// Charts
-// ---------------------------------------------------------------------------
-
-/**
- * A 30-minute sparkline. Every point is a real measurement; with fewer than
- * two points there is nothing to draw and the chart says so instead of
- * inventing a curve.
- */
-function TrendChart({
-  title,
-  value,
-  detail,
-  points,
-  pick,
-  max,
-  tone,
-}: {
-  title: string;
-  value: string;
-  detail: string;
-  points: MonitorSample[];
-  pick: (point: MonitorSample) => number;
-  max: number;
-  tone: string;
-}) {
-  const values = useMemo(() => points.map(pick), [pick, points]);
-  const width = 100;
-  const height = 34;
-  const ceiling = Math.max(max, ...values, 0.0001);
-  const step = values.length > 1 ? width / (values.length - 1) : width;
-  const coords = values.map((value, index) => {
-    const x = values.length > 1 ? index * step : width;
-    const y = height - (Math.min(Math.max(value, 0), ceiling) / ceiling) * height;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
-
-  return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1 rounded-[10px] border border-line bg-surface-1 px-3 py-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-11 text-fg-subtle">{title}</span>
-        <span className="font-mono text-12 text-fg">{value}</span>
-      </div>
-      <div className="h-[34px] w-full">
-        {values.length < 2 ? (
-          <div className="flex h-full items-center text-10 text-fg-subtle">等待第二次采集…</div>
-        ) : (
-          <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className={cn("h-full w-full", tone)}>
-            <polygon
-              points={`0,${height} ${coords.join(" ")} ${width},${height}`}
-              fill="currentColor"
-              opacity={0.14}
-            />
-            <polyline
-              points={coords.join(" ")}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        )}
-      </div>
-      <div className="flex items-center justify-between text-10 text-fg-subtle">
-        <span>最近 30 分钟</span>
-        <span>{detail}</span>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Metric cards
-// ---------------------------------------------------------------------------
-
-function usageTone(percent: number): string {
-  if (percent >= 90) return "bg-danger";
-  if (percent >= 75) return "bg-warning";
-  return "bg-accent";
-}
-
-function MetricCard({
-  icon: Icon,
-  label,
-  value,
-  unit,
-  detail,
-  percent,
-}: {
-  icon: React.ElementType;
-  label: string;
-  value: string;
-  unit?: string;
-  detail: string;
-  percent?: number;
-}) {
-  return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-[12px] border border-line bg-surface-1 p-3">
-      <div className="flex items-center gap-1.5 text-fg-subtle">
-        <Icon size={13} strokeWidth={1.75} />
-        <span className="text-11">{label}</span>
-      </div>
-      <div className="flex items-baseline gap-1">
-        <span className="font-mono text-20 text-fg">{value}</span>
-        {unit && <span className="text-11 text-fg-subtle">{unit}</span>}
-      </div>
-      {percent !== undefined && (
-        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-3">
-          <div
-            className={cn("h-full rounded-full transition-[width] duration-300 ease-out", usageTone(percent))}
-            style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
-          />
-        </div>
-      )}
-      <span className="truncate text-11 text-fg-subtle">{detail}</span>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Detail tabs
-// ---------------------------------------------------------------------------
-
-function DiskTable({ disks }: { disks: DiskMetrics[] }) {
-  if (disks.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到任何文件系统（可能该主机不支持，或命令失败）。</p>;
-  }
-  return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
-        <tr>
-          {["挂载点", "设备", "类型", "容量", "已用", "可用", "使用率"].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {disks.map((disk) => (
-          <tr key={`${disk.device}-${disk.mount_point}`} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{disk.mount_point}</td>
-            <td className="px-3 py-1.5 font-mono text-fg-muted">{disk.device}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{disk.filesystem}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.total)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.used)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.available)}</td>
-            <td className="px-3 py-1.5">
-              <div className="flex items-center gap-1.5">
-                <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-3">
-                  <div
-                    className={cn("h-full rounded-full", usageTone(disk.usage_percent))}
-                    style={{ width: `${Math.min(100, Math.max(0, disk.usage_percent))}%` }}
-                  />
-                </div>
-                <span className="font-mono text-fg">{disk.usage_percent.toFixed(1)}%</span>
-              </div>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function NetworkTable({ network }: { network: NetworkMetrics[] }) {
-  if (network.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到任何网络接口（已排除回环接口 lo）。</p>;
-  }
-  return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
-        <tr>
-          {["接口", "累计接收", "累计发送", "下载速度", "上传速度"].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {network.map((nic) => (
-          <tr key={nic.interface} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{nic.interface}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(nic.received_bytes)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(nic.transmitted_bytes)}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{formatSpeed(nic.receive_speed)}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{formatSpeed(nic.transmit_speed)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function ProcessTable({ processes }: { processes: ProcessInfo[] }) {
-  if (processes.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到进程列表。</p>;
-  }
-  return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
-        <tr>
-          {["PID", "用户", "CPU", "内存", "状态", "启动时间", "命令"].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {processes.map((process) => (
-          <tr key={process.pid} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{process.pid}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{process.user}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{process.cpu_percent.toFixed(1)}%</td>
-            <td className="px-3 py-1.5 font-mono text-fg-muted">{process.memory_percent.toFixed(1)}%</td>
-            <td className="px-3 py-1.5 text-fg-muted">{process.status}</td>
-            <td className="px-3 py-1.5 whitespace-nowrap text-fg-muted">{process.started_at}</td>
-            <td className="max-w-0 truncate px-3 py-1.5 font-mono text-fg-muted" title={process.command}>
-              {process.command}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// View
 // ---------------------------------------------------------------------------
 
 type DetailTab = "disk" | "network" | "process";
@@ -452,7 +184,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     useMonitorStore.getState().setPhase(tab.id, "connecting", { error: null });
 
     // A dropped connection stops the page immediately.
-    const unlistenClosed = listen<string>(`ssh-closed-${sessionId}`, () => {
+    const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
       if (disposed) return;
       setStatus(sessionId, "closed");
       useMonitorStore.getState().setPhase(tab.id, "closed", { error: "SSH 连接已断开，监控已停止" });
@@ -802,48 +534,6 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-/** Shown when a monitor tab has no server attached yet. */
-function MonitorPicker({ tabId, servers }: { tabId: string; servers: { id: string; name: string; username: string; host: string; port: number }[] }) {
-  const updateTab = useWorkbenchStore((s) => s.updateTab);
-  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
-
-  const attach = (server: { id: string; name: string; host: string; port: number }) =>
-    updateTab(tabId, {
-      title: `${server.name} · 监控`,
-      subtitle: `${server.host}:${server.port}`,
-      serverId: server.id,
-      sessionId: crypto.randomUUID(),
-    });
-
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-app">
-      <p className="text-13 text-fg-muted">选择一个服务器以开始监控</p>
-      {servers.length === 0 ? (
-        <p className="text-12 text-fg-subtle">左侧“服务器”中还没有任何条目，请先新增服务器。</p>
-      ) : (
-        <div className="flex max-h-[50vh] w-72 flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
-          {servers.map((server) => (
-            <button
-              key={server.id}
-              type="button"
-              className="flex flex-col items-start gap-0.5 border-b border-line px-3 py-2 text-left last:border-b-0 hover:bg-surface-hover"
-              onClick={() => attach(server)}
-            >
-              <span className="text-12 text-fg">{server.name}</span>
-              <span className="text-11 text-fg-subtle">
-                {server.username}@{server.host}:{server.port}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        关闭此标签
-      </Button>
     </div>
   );
 }

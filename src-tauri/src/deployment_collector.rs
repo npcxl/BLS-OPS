@@ -287,9 +287,7 @@ pub fn is_host_project_path(path: &str) -> bool {
 /// 配置文件路径判定：只要求是合法的绝对路径（fragment、compose 文件、
 /// 环境文件都在 /etc 下很常见，不受挂载黑名单约束）。
 pub fn is_config_path(path: &str) -> bool {
-    !path.is_empty()
-        && path.starts_with('/')
-        && validate_abs_path(path, "配置路径").is_ok()
+    !path.is_empty() && path.starts_with('/') && validate_abs_path(path, "配置路径").is_ok()
 }
 
 fn push_unique(list: &mut Vec<String>, value: String) {

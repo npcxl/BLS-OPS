@@ -16,14 +16,18 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import { opsApi, toErrorMessage, type ServerRecord } from "@/api/ops-api";
+import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { RemoteFilePanel } from "@/workbench/views/RemoteFilePanel";
+import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import type { WorkspaceTab } from "@/workbench/types";
-import { cn } from "@/lib/cn";
+import { sshClosedEvent, sshOutputEvent } from "@/lib/events";
+import { terminalTheme } from "./theme";
+import { ToolbarIcon } from "./ToolbarIcon";
+import { CommandHistoryPanel } from "./CommandHistoryPanel";
+import { TerminalPicker } from "./TerminalPicker";
 
 const KEEPALIVE_MS = 30_000;
 /** Consecutive failed probes before the session is declared dead. */
@@ -35,88 +39,6 @@ function isCommandNotFoundOutput(output: string): boolean {
 }
 
 type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
-
-/** xterm palette matching the app theme (light-first, follows system). */
-function terminalTheme(dark: boolean): Record<string, string> {
-  return dark
-    ? {
-        background: "#0d1117",
-        foreground: "#c9d1d9",
-        cursor: "#5b9cff",
-        cursorAccent: "#0d1117",
-        selectionBackground: "rgba(91,156,255,0.35)",
-        black: "#16181d",
-        red: "#f26057",
-        green: "#4fd186",
-        yellow: "#f0bb4e",
-        blue: "#5b9cff",
-        magenta: "#b39dff",
-        cyan: "#6bd5e1",
-        white: "#c7d0dc",
-        brightBlack: "#6b7380",
-        brightRed: "#ff7b72",
-        brightGreen: "#7ee2a8",
-        brightYellow: "#ffd484",
-        brightBlue: "#9ecbff",
-        brightMagenta: "#d2c5ff",
-        brightCyan: "#9be8f0",
-        brightWhite: "#eceef2",
-      }
-    : {
-        background: "#f4f7fc",
-        foreground: "#1f2329",
-        cursor: "#3175f1",
-        cursorAccent: "#ffffff",
-        selectionBackground: "rgba(49,117,241,0.25)",
-        black: "#24292f",
-        red: "#cf222e",
-        green: "#1a7f37",
-        yellow: "#9a6700",
-        blue: "#0969da",
-        magenta: "#8250df",
-        cyan: "#1b7c83",
-        white: "#6e7781",
-        brightBlack: "#57606a",
-        brightRed: "#d1242f",
-        brightGreen: "#116329",
-        brightYellow: "#7d4e00",
-        brightBlue: "#0a68cf",
-        brightMagenta: "#6639ba",
-        brightCyan: "#126d73",
-        brightWhite: "#24292f",
-      };
-}
-
-function ToolbarIcon({
-  label,
-  icon: Icon,
-  active,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  icon: React.ElementType;
-  active?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "flex h-7 w-7 items-center justify-center rounded-[8px] border border-transparent text-fg-muted transition-colors duration-150 ease-out hover:border-line hover:bg-surface-2 hover:text-fg",
-        active && "border-line bg-surface-active text-accent shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]",
-        disabled && "pointer-events-none opacity-40",
-      )}
-    >
-      <Icon size={13} strokeWidth={1.75} />
-    </button>
-  );
-}
 
 /** Real interactive SSH terminal: input, output, resize, reconnect, keepalive. */
 export function TerminalView({ tab }: { tab: WorkspaceTab }) {
@@ -317,7 +239,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     resizeObserver.observe(containerRef.current);
 
     let disposed = false;
-    const unlistenOutput = listen<string>(`ssh-output-${sessionId}`, (event) => {
+    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
       if (disposed) return;
       const output = event.payload;
       if (isCommandNotFoundOutput(output)) {
@@ -345,7 +267,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         });
       }, SELECTION_MENU_DELAY_MS);
     });
-    const unlistenClosed = listen<string>(`ssh-closed-${sessionId}`, () => {
+    const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
       if (disposed) return;
       setPhase((current) => (current === "connected" ? "closed" : current));
       setStatus(sessionId, "closed");
@@ -549,103 +471,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           onClose={() => setFilesOpen(false)}
         />
       )}
-    </div>
-  );
-}
-
-/**
- * Commands recorded for this session, falling back to earlier sessions on the
- * same server. Clicking one sends it to the shell.
- */
-function CommandHistoryPanel({
-  sessionId,
-  serverId,
-  onPick,
-}: {
-  sessionId: string;
-  serverId?: string;
-  onPick: (command: string) => void;
-}) {
-  const [items, setItems] = useState<{ id: string; command: string; timestamp: number }[]>([]);
-
-  useEffect(() => {
-    void opsApi
-      .listHistory(200)
-      .then((rows) =>
-        setItems(
-          rows
-            .filter((row) => row.session_id === sessionId || (!!serverId && row.server_id === serverId))
-            .map((row) => ({ id: row.id, command: row.command, timestamp: row.timestamp })),
-        ),
-      )
-      .catch(() => setItems([]));
-  }, [serverId, sessionId]);
-
-  return (
-    <aside className="flex w-56 shrink-0 flex-col border-l border-line bg-surface-1">
-      <div className="flex h-7 shrink-0 items-center justify-between px-2.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
-        命令历史
-        <span>{items.length}</span>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {items.length === 0 ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">在此终端执行的命令会记录下来</p>
-        ) : (
-          items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              title={`${item.command}\n${new Date(item.timestamp).toLocaleString()}`}
-              className="block w-full truncate px-2.5 py-1 text-left text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
-              onClick={() => onPick(item.command)}
-            >
-              {item.command}
-            </button>
-          ))
-        )}
-      </div>
-    </aside>
-  );
-}
-
-/** Shown when a terminal tab has no connection target yet. */
-function TerminalPicker({ tabId, servers }: { tabId: string; servers: ServerRecord[] }) {
-  const updateTab = useWorkbenchStore((s) => s.updateTab);
-  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
-
-  const attach = (server: ServerRecord) =>
-    updateTab(tabId, {
-      title: server.name,
-      subtitle: `${server.host}:${server.port}`,
-      serverId: server.id,
-      sessionId: crypto.randomUUID(),
-    });
-
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-app">
-      <p className="text-13 text-fg-muted">选择一个服务器以开始 SSH 会话</p>
-      {servers.length === 0 ? (
-        <p className="text-12 text-fg-subtle">左侧“服务器”中还没有任何条目，请先新增服务器。</p>
-      ) : (
-        <div className="flex max-h-[50vh] w-72 flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
-          {servers.map((server) => (
-            <button
-              key={server.id}
-              type="button"
-              className="flex flex-col items-start gap-0.5 border-b border-line px-3 py-2 text-left last:border-b-0 hover:bg-surface-hover"
-              onClick={() => attach(server)}
-            >
-              <span className="text-12 text-fg">{server.name}</span>
-              <span className="text-11 text-fg-subtle">
-                {server.username}@{server.host}:{server.port}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        关闭此标签
-      </Button>
     </div>
   );
 }

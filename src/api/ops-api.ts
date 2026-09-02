@@ -1,636 +1,145 @@
+/**
+ * The single bridge between the WebView and the Tauri backend.
+ *
+ * During the modularisation pass (docs/模块化重构分析.md §阶段 B) the domain
+ * types moved to `src/api/types/*.ts` grouped by domain. They are re-exported
+ * here unchanged so every existing `from "@/api/ops-api"` import keeps
+ * working. New code may import from either place; keep the re-exports in sync
+ * when adding types.
+ */
 import { invoke } from "@tauri-apps/api/core";
 
-export interface ServerRecord {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
-  username: string;
-  credential_id?: string | null;
-  group_id?: string | null;
-  tags: string[];
-  proxy_jump_id?: string | null;
-  favorite: boolean;
-  last_connected_at?: number | null;
-  status: string;
-  created_at: number;
-  updated_at: number;
-}
+import {
+  type CascadeResult,
+  type CredentialDeleteResult,
+  type CredentialRecord,
+  type KnownHostRecord,
+  type ServerGroupRecord,
+  type ServerRecord,
+} from "@/api/types/servers";
+import {
+  type AppInfo,
+  type AuditLogRecord,
+  type CommandHistoryRecord,
+  type SessionRecord,
+  type SessionStats,
+} from "@/api/types/sessions";
+import { type SshConnectResult } from "@/api/types/ssh";
+import {
+  type DirectorySizeResult,
+  type RemoteFileEntry,
+  type SftpListResult,
+} from "@/api/types/sftp";
+import {
+  type CpuMetrics,
+  type DiskMetrics,
+  type MemoryMetrics,
+  type MonitorSnapshot,
+  type NetworkMetrics,
+  type ProcessInfo,
+  type SystemInfo,
+} from "@/api/types/monitor";
+import {
+  type JournalDiskUsage,
+  type JournalEntry,
+  type ServiceActionName,
+  type ServiceUnit,
+} from "@/api/types/services";
+import {
+  type ContainerActionName,
+  type DockerSnapshot,
+} from "@/api/types/containers";
+import {
+  type NginxSaveResult,
+  type NginxSite,
+  type NginxTestResult,
+} from "@/api/types/gateway";
+import {
+  type DeploymentRecord,
+  type ProjectRecord,
+  type ProjectScanResult,
+  type ProjectScanStatus,
+} from "@/api/types/project";
 
-export interface ServerGroupRecord {
-  
-  id: string;
-  name: string;
-  sort_order: number;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface CredentialRecord {
-  id: string;
-  name: string;
-  credential_type: "password" | "private_key" | string;
-  username: string;
-  /** Keyring reference only — the secret itself never leaves Rust. */
-  secret_ref?: string | null;
-  passphrase_ref?: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface KnownHostRecord {
-  id: string;
-  host: string;
-  port: number;
-  fingerprint: string;
-  fingerprint_type: string;
-  status: string;
-  first_seen_at: number;
-  last_seen_at: number;
-}
-
-export interface SessionRecord {
-  id: string;
-  server_id: string;
-  server_name: string;
-  server_host: string;
-  server_port: number;
-  username: string;
-  status: string;
-  connected_at?: number | null;
-  disconnected_at?: number | null;
-  error_message?: string | null;
-  keep_alive_interval: number;
-  reconnect_policy: string;
-  terminal_rows?: number | null;
-  terminal_cols?: number | null;
-  terminal_pty?: boolean | null;
-  sftp_enabled: boolean;
-  port_forwards_json: string;
-}
-
-export interface CommandHistoryRecord {
-  id: string;
-  session_id: string;
-  server_id: string;
-  server_name: string;
-  command: string;
-  timestamp: number;
-  exit_code?: number | null;
-  source: string;
-  output?: string | null;
-}
-
-export interface AuditLogRecord {
-  id: string;
-  action: string;
-  timestamp: number;
-  user_id?: string | null;
-  server_id?: string | null;
-  server_name?: string | null;
-  project_id?: string | null;
-  project_name?: string | null;
-  details_json: string;
-  ip_address?: string | null;
-  user_agent?: string | null;
-}
-
-export interface CascadeResult {
-  sessions: number;
-  history: number;
-}
-
-export interface CredentialDeleteResult {
-  deleted: boolean;
-  references: number;
-}
-
-export interface SessionStats {
-  active: number;
-  keepalive_secs: number;
-}
-
-export interface AppInfo {
-  app_name: string;
-  version: string;
-  db_path: string;
-  schema_version: number;
-  keepalive_secs: number;
-  os: string;
-  arch: string;
-}
-
-/**
- * Result of a connect attempt.
- *
- * `host` / `port` are the final destination (what the tab shows).
- * `challenge_host` / `challenge_port` are the endpoint whose key must be
- * trusted — with ProxyJump that is a jump host. The fingerprint MUST be saved
- * under the challenge endpoint; saving it under `host` loops forever on a
- * two-hop connection.
- */
-/** One entry of a remote directory listing, read over the SFTP subsystem. */
-export interface RemoteFileEntry {
-  name: string;
-  /** Absolute remote POSIX path. */
-  path: string;
-  /** `directory` | `file` | `symlink` | `other`. */
-  kind: string;
-  size: number;
-  modified_at?: number | null;
-  /** `rwxr-xr-x` style, as reported by the server. */
-  permissions?: string | null;
-  hidden: boolean;
-}
-
-export interface SftpListResult {
-  /** The canonical path that was actually read (server-resolved). */
-  path: string;
-  entries: RemoteFileEntry[];
-}
-
-/** Lifecycle of a single directory-size computation. */
-export type DirectorySizeStatus =
-  | "pending"
-  | "computing"
-  | "completed"
-  | "partial"
-  | "permission_denied"
-  | "cancelled"
-  | "timed_out"
-  | "session_gone"
-  | "failed";
-
-/**
- * Result of an on-demand directory-size computation. Pushed over the
- * `directory-size-update` event as it progresses, and returned by
- * `directorySizeStatus`. Folders do not report a size via SFTP (only their
- * own metadata, ~4096 B), so this is the only honest way to learn a folder's
- * total content size.
- */
-export interface DirectorySizeResult {
-  sessionId: string;
-  path: string;
-  /** Total bytes of regular files under `path` (symlink targets excluded). */
-  sizeBytes: number;
-  fileCount: number;
-  directoryCount: number;
-  /** Entries skipped because of an error (permission denied, unreadable, …). */
-  skippedCount: number;
-  status: DirectorySizeStatus;
-  /** `true` once the computation has reached a terminal state. */
-  complete: boolean;
-  calculatedAt: number;
-}
-
-/** Tauri event name carrying `DirectorySizeResult` updates. */
-export const DIRECTORY_SIZE_EVENT = "directory-size-update";
-
-export type SshConnectResult =
-  | {
-      status: "connected";
-      session_id: string;
-      host: string;
-      port: number;
-      fingerprint: string;
-      fingerprint_type: string;
-    }
-  | {
-      status: "host_key_unknown";
-      session_id: string;
-      /** Endpoint to trust — the jump host when ProxyJump is in play. */
-      challenge_host: string;
-      challenge_port: number;
-      /** Final destination, for display only. */
-      host: string;
-      port: number;
-      fingerprint: string;
-      fingerprint_type: string;
-    }
-  | {
-      status: "host_key_changed";
-      session_id: string;
-      /** Endpoint to re-trust — the jump host when ProxyJump is in play. */
-      challenge_host: string;
-      challenge_port: number;
-      /** Final destination, for display only. */
-      host: string;
-      port: number;
-      fingerprint: string;
-      fingerprint_type: string;
-      known_fingerprint: string;
-    };
-
-// ---------------------------------------------------------------------------
-// Server monitoring — read-only Linux metrics over the live session.
-//
-// The commands run on the server are a fixed table inside Rust: these calls
-// take only a `session_id`, so the WebView can never pass a shell string.
-// ---------------------------------------------------------------------------
-
-export interface SystemInfo {
-  hostname: string;
-  os_name: string;
-  os_version: string;
-  kernel: string;
-  architecture: string;
-  uptime_seconds: number;
-}
-
-export interface CpuMetrics {
-  usage_percent: number;
-  load_1: number;
-  load_5: number;
-  load_15: number;
-  logical_cores: number;
-}
-
-/** Memory and swap, in bytes. */
-export interface MemoryMetrics {
-  total: number;
-  used: number;
-  available: number;
-  swap_total: number;
-  swap_used: number;
-  usage_percent: number;
-}
-
-export interface DiskMetrics {
-  device: string;
-  mount_point: string;
-  filesystem: string;
-  total: number;
-  used: number;
-  available: number;
-  usage_percent: number;
-}
-
-export interface NetworkMetrics {
-  interface: string;
-  received_bytes: number;
-  transmitted_bytes: number;
-  /** Bytes per second, measured against the previous sample. */
-  receive_speed: number;
-  transmit_speed: number;
-}
-
-export interface ProcessInfo {
-  pid: number;
-  user: string;
-  cpu_percent: number;
-  memory_percent: number;
-  status: string;
-  started_at: string;
-  /** Executable name only (`ps … comm`). Startup arguments never leave the server. */
-  command: string;
-}
-
-export interface MonitorSnapshot {
-  session_id: string;
-  /** Unix seconds of the collection. */
-  collected_at: number;
-  /** `false` when the remote OS is not Linux — no metrics are invented. */
-  supported: boolean;
-  unsupported_reason: string | null;
-  system: SystemInfo;
-  cpu: CpuMetrics;
-  memory: MemoryMetrics;
-  disks: DiskMetrics[];
-  network: NetworkMetrics[];
-  processes: ProcessInfo[];
-}
-
-// ---------------------------------------------------------------------------
-// P3 — service / log / container / gateway management, projects & deployments
-//
-// These calls never accept a command string. They take a `sessionId` plus
-// structured identifiers, and Rust turns those into fixed commands after
-// validating every parameter (see `src-tauri/src/safe.rs`).
-// ---------------------------------------------------------------------------
-
-// -- systemd ----------------------------------------------------------------
-
-export interface ServiceUnit {
-  /** Unit name, e.g. `nginx.service`. */
-  unit: string;
-  load: string;
-  active: string;
-  sub: string;
-  description: string;
-  /**
-   * Enabled at boot. `null` when systemd reports a state with no on/off
-   * meaning (`static`, `indirect`, `masked`) — never a guessed `false`.
-   */
-  enabled: boolean | null;
-  enabled_state: string | null;
-}
-
-export type ServiceActionName =
-  | "start"
-  | "stop"
-  | "restart"
-  | "reload"
-  | "enable"
-  | "disable";
-
-// -- journald ---------------------------------------------------------------
-
-export interface JournalEntry {
-  /** ISO 8601 in UTC. */
-  timestamp: string;
-  unit: string;
-  /** syslog priority, 0 (emerg) … 7 (debug). */
-  priority: number;
-  message: string;
-}
-
-export interface JournalDiskUsage {
-  raw: string;
-  bytes: number | null;
-}
-
-/** Maximum syslog priority to include. `null` means "everything". */
-export const JOURNAL_PRIORITIES = [
-  { value: null, label: "全部级别" },
-  { value: 0, label: "紧急" },
-  { value: 1, label: "警报" },
-  { value: 2, label: "严重" },
-  { value: 3, label: "错误" },
-  { value: 4, label: "警告" },
-  { value: 5, label: "通知" },
-  { value: 6, label: "信息" },
-  { value: 7, label: "调试" },
-] as const;
-
-/** Chinese label for a journald priority. */
-export function priorityLabel(priority: number): string {
-  return JOURNAL_PRIORITIES.find((item) => item.value === priority)?.label ?? "其他";
-}
-
-// -- Docker -----------------------------------------------------------------
-
-export interface ContainerInfo {
-  id: string;
-  short_id: string;
-  name: string;
-  image: string;
-  status: string;
-  state: string;
-  ports: string;
-  created_at: string;
-}
-
-export interface ImageInfo {
-  id: string;
-  short_id: string;
-  repository: string;
-  tag: string;
-  size: string;
-  created_since: string;
-  display_name: string;
-}
-
-export interface ContainerStats {
-  name: string;
-  cpu_percent: number;
-  memory_usage: string;
-  memory_percent: number;
-  net_io: string;
-  block_io: string;
-}
-
-export interface DockerSnapshot {
-  available: boolean;
-  containers: ContainerInfo[];
-  images: ImageInfo[];
-  stats: ContainerStats[];
-  /** Set when Docker is missing or the daemon is unreachable. */
-  unavailable_reason: string | null;
-}
-
-export type ContainerActionName = "start" | "stop" | "restart" | "remove";
-
-// -- Nginx ------------------------------------------------------------------
-
-export type NginxSource = "sites_available" | "conf_d";
-
-export interface NginxSite {
-  name: string;
-  enabled: boolean;
-  path: string;
-  source: NginxSource;
-  server_names: string[];
-  listen_ports: number[];
-  is_default: boolean;
-}
-
-export interface NginxTestResult {
-  success: boolean;
-  output: string;
-}
-
-export interface NginxSaveResult {
-  saved: boolean;
-  test: NginxTestResult;
-  reloaded: boolean;
-  backup_path: string | null;
-}
-
-// -- Project discovery ------------------------------------------------------
-
-export type ConfidenceLevel = "high" | "likely" | "possible";
-export interface ProjectEvidence { id: string; kind: string; source: string; summary: string; weight: number; verified_at: string; sensitive: boolean; }
-export interface ProjectPenalty { kind: string; summary: string; weight: number; }
-export type RuntimeKind = "process" | "systemd" | "docker" | "nginx";
-export interface RuntimeLink { kind: RuntimeKind; name: string; status?: string; ports: number[]; source: string; }
-export interface ProjectModule { id: string; name: string; path: string; project_type: string; deployable: boolean; children: ProjectModule[]; }
-export interface DeploymentReadiness { score: number; blockers: string[]; warnings: string[]; confirmed_facts: string[]; unknown_facts: string[]; }
-export interface ProjectCandidate { id: string; server_id: string; name: string; path: string; project_type: string; score: number; confidence: ConfidenceLevel; category: CandidateCategory; evidence: ProjectEvidence[]; penalties: ProjectPenalty[]; runtime_links: RuntimeLink[]; modules: ProjectModule[]; detected_ports: number[]; required_environment_names: string[]; blockers: string[]; warnings: string[]; readiness: DeploymentReadiness; updated_at: string; }
-export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";
-export interface ScanProgress { phase: string; progress: number; checked_directories: number; discovered_candidates: number; current_path: string | null; warnings: number; }
-export interface ProjectScanStatus { id: string; server_id: string; state: ScanState; progress: ScanProgress; error: string | null; started_at: number; finished_at: number | null; }
-
-// -- P3 server capability graph (first/second layer) ----------------------
-export interface SystemProfile {
-  family: string;
-  os: string;
-  arch: string;
-  kernel: string;
-  init_system: string;
-  user: string;
-  sudo: boolean | null;
-  package_manager: string;
-  security_module: string;
-  cgroup_version: string;
-}
-export interface RuntimeProfile {
-  java: string | null; node: string | null; python: string | null; go: string | null;
-  rust: string | null; php: string | null; dotnet: string | null; ruby: string | null;
-}
-export interface VersionManagerProfile {
-  nvm: string | null; fnm: string | null; pyenv: string | null; uv: string | null;
-  sdkman: string | null; rustup: string | null;
-}
-export interface BuildToolProfile {
-  maven: string | null; gradle: string | null; npm: string | null; pnpm: string | null;
-  yarn: string | null; cargo: string | null; pip: string | null; poetry: string | null; composer: string | null;
-}
-export interface DeploymentCapabilities {
-  systemd: boolean | null; openrc: boolean | null; supervisor: boolean | null; pm2: boolean | null;
-  runit: boolean | null; windows_service: boolean | null;
-  docker: boolean | null; docker_compose: boolean | null; podman: boolean | null; containerd: boolean | null;
-  kubernetes: boolean | null; k3s: boolean | null; helm: boolean | null; nomad: boolean | null;
-  nginx: boolean | null; apache: boolean | null; caddy: boolean | null; traefik: boolean | null;
-  haproxy: boolean | null; iis: boolean | null;
-  mysql: boolean | null; postgresql: boolean | null; redis: boolean | null; mongodb: boolean | null;
-  elasticsearch: boolean | null; rabbitmq: boolean | null; kafka: boolean | null;
-}
-export interface ServerCapabilityProfile {
-  system: SystemProfile;
-  runtimes: RuntimeProfile;
-  version_managers: VersionManagerProfile;
-  build_tools: BuildToolProfile;
-  deployment: DeploymentCapabilities;
-  warnings: string[];
-}
-export type ReadinessVerdict = "ready" | "needs_install" | "conflict" | "unconfirmed";
-export interface AdapterReadiness {
-  adapter: string;
-  verdict: ReadinessVerdict;
-  note: string;
-}
-
-/** 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。 */
-export interface DeploymentInstance {
-  id: string;
-  kind: string;
-  name: string;
-  status: string;
-  ports: number[];
-  working_directories: string[];
-  config_files: string[];
-  source_paths: string[];
-  /** false = 只有运行实例，源码未知（后端绝不伪造路径）。 */
-  source_known: boolean;
-  detail: string;
-}
-
-/** 候选项目分类：已部署（关联实例）或仅源码。 */
-export type CandidateCategory = "deployed" | "source_only";
-
-export interface ProjectScanResult {
-  scan_id: string;
-  server_id: string;
-  candidates: ProjectCandidate[];
-  warnings: string[];
-  completed_at: number;
-  incremental: boolean;
-  /** 第一/二层产物：服务器能力图谱。 */
-  capability: ServerCapabilityProfile | null;
-  /** 第一轮产物：部署实例列表（含"源码未知"的实例）。 */
-  instances: DeploymentInstance[];
-  /** 第三张图谱：部署可行性（每个已注册适配器的准备度）。 */
-  deployment_readiness: AdapterReadiness[];
-}
-
-// -- Projects & deployments (legacy P5 foundation) -------------------------
-
-export interface ProjectRecord {
-  id: string;
-  name: string;
-  description: string;
-  server_id: string;
-  repo_url: string;
-  branch: string;
-  /** Absolute directory on the server; steps may not write outside it. */
-  deploy_path: string;
-  /** JSON array of deployment steps, each validated by Rust before saving. */
-  commands_json: string;
-  status: string;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface DeploymentRecord {
-  id: string;
-  project_id: string;
-  project_name: string;
-  server_id: string;
-  server_name: string;
-  status: string;
-  trigger_source: string;
-  branch: string;
-  commit_sha: string;
-  started_at: number | null;
-  finished_at: number | null;
-  duration_ms: number | null;
-  log: string;
-  error_message: string | null;
-  created_at: number;
-}
-
-export const DEPLOY_STATUSES = {
-  running: { label: "进行中", tone: "text-accent" },
-  success: { label: "成功", tone: "text-success" },
-  failed: { label: "失败", tone: "text-danger" },
-} as const;
-
-export function deployStatusLabel(status: string): string {
-  return DEPLOY_STATUSES[status as keyof typeof DEPLOY_STATUSES]?.label ?? status;
-}
-
-/** Parses the stored JSON steps. Returns `[]` when the record is malformed. */
-export function projectSteps(project: ProjectRecord): string[] {
-  try {
-    const parsed: unknown = JSON.parse(project.commands_json);
-    return Array.isArray(parsed) ? parsed.filter((step): step is string => typeof step === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export const CREDENTIAL_TYPES = [
-  { value: "password", label: "密码" },
-  { value: "private_key", label: "私钥" },
-] as const;
-
-/** `user@host[:port]` — mirrors `ssh::parse_ssh_target` in Rust. */
-export function parseSshTarget(
-  input: string,
-  defaultPort = 22,
-): { username: string; host: string; port: number } | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  const at = trimmed.lastIndexOf("@");
-  if (at <= 0) return null;
-  const username = trimmed.slice(0, at).trim();
-  const rest = trimmed.slice(at + 1);
-  if (!username || !rest) return null;
-
-  let host = rest;
-  let port = defaultPort;
-
-  const bracket = rest.lastIndexOf("]:");
-  if (bracket >= 0) {
-    host = rest.slice(0, bracket).replace(/^\[/, "");
-    port = Number(rest.slice(bracket + 2));
-  } else if (rest.split(":").length - 1 > 1) {
-    host = rest;
-  } else {
-    const colon = rest.lastIndexOf(":");
-    if (colon > 0) {
-      const candidate = rest.slice(colon + 1);
-      if (candidate && /^\d+$/.test(candidate)) {
-        host = rest.slice(0, colon);
-        port = Number(candidate);
-      }
-    }
-  }
-
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
-  return { username, host, port };
-}
+// -- Domain types (re-exported; previously defined in this file) ------------
+export {
+  CREDENTIAL_TYPES,
+  type CascadeResult,
+  type CredentialDeleteResult,
+  type CredentialRecord,
+  type KnownHostRecord,
+  type ServerGroupRecord,
+  type ServerRecord,
+} from "@/api/types/servers";
+export {
+  type AppInfo,
+  type AuditLogRecord,
+  type CommandHistoryRecord,
+  type SessionRecord,
+  type SessionStats,
+} from "@/api/types/sessions";
+export { parseSshTarget, type SshConnectResult } from "@/api/types/ssh";
+export {
+  DIRECTORY_SIZE_EVENT,
+  type DirectorySizeResult,
+  type DirectorySizeStatus,
+  type RemoteFileEntry,
+  type SftpListResult,
+} from "@/api/types/sftp";
+export {
+  type CpuMetrics,
+  type DiskMetrics,
+  type MemoryMetrics,
+  type MonitorSnapshot,
+  type NetworkMetrics,
+  type ProcessInfo,
+  type SystemInfo,
+} from "@/api/types/monitor";
+export {
+  JOURNAL_PRIORITIES,
+  priorityLabel,
+  type JournalDiskUsage,
+  type JournalEntry,
+  type ServiceActionName,
+  type ServiceUnit,
+} from "@/api/types/services";
+export {
+  type ContainerActionName,
+  type ContainerInfo,
+  type ContainerStats,
+  type DockerSnapshot,
+  type ImageInfo,
+} from "@/api/types/containers";
+export {
+  type NginxSaveResult,
+  type NginxSite,
+  type NginxSource,
+  type NginxTestResult,
+} from "@/api/types/gateway";
+export {
+  DEPLOY_STATUSES,
+  deployStatusLabel,
+  projectSteps,
+  type AdapterReadiness,
+  type CandidateCategory,
+  type ConfidenceLevel,
+  type DeploymentInstance,
+  type DeploymentReadiness,
+  type DeploymentRecord,
+  type ProjectCandidate,
+  type ProjectEvidence,
+  type ProjectModule,
+  type ProjectPenalty,
+  type ProjectRecord,
+  type ProjectScanResult,
+  type ProjectScanStatus,
+  type ReadinessVerdict,
+  type RuntimeKind,
+  type RuntimeLink,
+  type ScanProgress,
+  type ScanState,
+  type ServerCapabilityProfile,
+} from "@/api/types/project";
 
 function message(cause: unknown): string {
   if (cause instanceof Error) return cause.message;

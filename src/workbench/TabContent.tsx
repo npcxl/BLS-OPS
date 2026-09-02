@@ -11,11 +11,13 @@ import { PlaceholderView } from "@/workbench/views/PlaceholderView";
  * (and therefore app start) small; the chunk is fetched on first use.
  */
 const TerminalView = lazy(() =>
-  import("@/workbench/views/TerminalView").then((module) => ({ default: module.TerminalView })),
+  import("@/workbench/views/terminal/TerminalView").then((module) => ({
+    default: module.TerminalView,
+  })),
 );
 
 const ServerMonitorView = lazy(() =>
-  import("@/workbench/views/ServerMonitorView").then((module) => ({
+  import("@/workbench/views/server-monitor/ServerMonitorView").then((module) => ({
     default: module.ServerMonitorView,
   })),
 );
@@ -34,7 +36,7 @@ const LogCenterView = lazy(() =>
 );
 
 const ProjectView = lazy(() =>
-  import("@/workbench/views/ProjectView").then((module) => ({
+  import("@/workbench/views/project/ProjectView").then((module) => ({
     default: module.ProjectView,
   })),
 );

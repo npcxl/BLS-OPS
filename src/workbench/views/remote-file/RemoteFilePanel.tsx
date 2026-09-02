@@ -1,7 +1,6 @@
 import {
   Suspense,
   lazy,
-  memo,
   useCallback,
   useEffect,
   useRef,
@@ -28,13 +27,22 @@ import {
 } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { Button } from "@/components/ui/button";
-import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
-import { opsApi, toErrorMessage, type DirectorySizeResult, type RemoteFileEntry } from "@/api/ops-api";
+import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
-import { useSubmit } from "@/hooks/use-submit";
 import { cn } from "@/lib/cn";
 import { useDirSizeStore } from "@/stores/dir-size-store";
+import { FileRow } from "./FileRow";
+import { NamePromptModal } from "./NamePromptModal";
+import { PanelButton } from "./PanelButton";
+import { useAutoDismiss, useDirSizeQueue, useTransientNotice } from "./use-dir-size-queue";
+import {
+  joinPath,
+  parentOf,
+  validateName,
+  type EditorTarget,
+  type NameDialog,
+  type PanelStatus,
+} from "./utils";
 
 const DEFAULT_WIDTH = 320;
 const MIN_WIDTH = 240;
@@ -46,144 +54,26 @@ const MAX_WIDTH = 560;
  */
 const FileEditorModal = lazy(() => import("@/workbench/views/FileEditorModal"));
 
-/** Pure POSIX path ops — remote paths never follow the local OS's rules. */
-export function parentOf(path: string): string {
-  const cut = path.lastIndexOf("/");
-  if (cut <= 0) return "/";
-  return path.slice(0, cut);
-}
-
-/** Lexically joins + resolves `.` / `..` (used for `cd` following). */
-function joinPath(base: string, target: string): string {
-  const raw = target.startsWith("/") ? target : `${base}/${target}`;
-  const parts: string[] = [];
-  for (const component of raw.split("/")) {
-    if (component === "" || component === ".") continue;
-    if (component === "..") parts.pop();
-    else parts.push(component);
-  }
-  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = "B";
-  for (const next of units) {
-    if (value < 1024) break;
-    value /= 1024;
-    unit = next;
-  }
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${unit}`;
-}
-
-function formatTime(seconds?: number | null): string {
-  if (!seconds) return "—";
-  return new Date(seconds * 1000).toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
-  pending: "排队中",
-  computing: "计算中…",
-  completed: "已完成",
-  partial: "部分统计",
-  permission_denied: "权限不足",
-  cancelled: "已取消",
-  timed_out: "计算超时",
-  session_gone: "连接已断开",
-  failed: "计算失败",
-};
-
-/**
- * Renders the second line for a directory row from its size result.
- *
- * Folders never report a content size over SFTP (only their own ~4096 B
- * metadata). Before the user asks for the size — or if the probe failed for a
- * benign reason (no `du`, session gone) — we keep the second line as a plain
- * "文件夹" so the row doesn't look broken. While computing we show progress;
- * once done we show "1.26 GB · 12,586 个文件" and warn when some entries were
- * skipped. Genuinely terminal errors (permission denied, timed out, cancelled,
- * failed) are surfaced so the user knows why no size is shown.
- */
-function dirSizeSummary(result: DirectorySizeResult | undefined): string {
-  if (!result) return "文件夹";
-  switch (result.status) {
-    case "computing":
-    case "pending":
-      return "计算中…";
-    case "completed":
-      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件`;
-    case "partial":
-      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件 · 部分统计`;
-    case "permission_denied":
-    case "timed_out":
-    case "cancelled":
-    case "failed":
-    case "session_gone":
-      return `文件夹 · ${DIR_SIZE_STATUS_LABEL[result.status] ?? result.status}`;
-    default:
-      return "文件夹";
-  }
-}
-
-function formatCount(count: number): string {
-  return count.toLocaleString();
-}
-
-type PanelStatus =
-  | { state: "idle" }
-  | { state: "loading" }
-  | { state: "ready" }
-  | { state: "empty" }
-  | { state: "error"; message: string }
-  | { state: "disconnected" };
-
-export interface FilePanelFollow {
-  nonce: number;
-  /** Raw argument of the `cd` command: "", "~", "-", "..", "/x", "dir". */
-  arg: string;
-}
-
-interface RemoteFilePanelProps {
+export interface RemoteFilePanelProps {
+  /** Owning SSH session. Each session opens its own SFTP client. */
   sessionId: string;
   connected: boolean;
-  /** Shell-to-panel sync: bumps whenever the user types `cd …`. */
-  follow: FilePanelFollow;
+  /**
+   * Terminal follow state: bumped on every `cd` typed in the paired terminal.
+   * The panel resolves the raw argument against its own cwd.
+   */
+  follow: { nonce: number; arg: string };
   onClose: () => void;
 }
 
-/** Name prompt for the create/rename dialogs (replaces window.prompt). */
-type NameDialog = {
-  title: string;
-  label: string;
-  initial: string;
-  submitLabel: string;
-  /** Validates the typed name; returns an error message or null. */
-  validate: (name: string) => string | null;
-  onConfirm: (name: string) => Promise<unknown>;
-};
-
-/** The in-app editor target, when open. */
-type EditorTarget = { path: string; name: string; language?: ReturnType<typeof fileKind>["language"] };
-
 /**
- * Remote file browser for one SSH session.
+ * Remote file panel backed by SFTP.
  *
- * Data comes exclusively from the SFTP subsystem of this session's connection —
- * never from shell commands, never from mock data. The panel is keyed by
- * session id, so tabs never see each other's directory state.
- *
- * Operations: browse, rename, copy, delete (recursive, confirmed), mkdir,
- * create file, upload (toolbar button or drag & drop into the current
- * directory), and double-click editing of text/code files (SQL, conf, JS,
- * Java, …) with syntax highlighting.
+ * Directory listing and navigation, drag & drop and picker uploads, delete /
+ * rename / copy / new folder / new file, on-demand directory sizes (via the
+ * `dirsize` module, because SFTP cannot report folder content sizes), and
+ * double-click editing of text/code files (SQL, conf, JS, Java, …) with
+ * syntax highlighting.
  */
 export function RemoteFilePanel({ sessionId, connected, follow, onClose }: RemoteFilePanelProps) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
@@ -196,7 +86,8 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   const menu = useContextMenu();
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Non-blocking notice (used for unsupported types) — auto-dismisses after 4s.
+  const [notice, setNotice] = useTransientNotice();
   const [dragging, setDraggingState] = useState(false);
   const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -344,13 +235,6 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
     [navigate],
   );
 
-  // Non-blocking notice (used for unsupported types) — auto-dismisses.
-  useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 4000);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-
   // -- file operations -------------------------------------------------------
 
   const runAndRefresh = useCallback(
@@ -453,80 +337,19 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
   /** The panel element, used to hit-test OS drag events. */
   const panelRef = useRef<HTMLElement>(null);
 
-  // Subscribe to directory-size updates once per mount; stale results for
-  // this session are cleared when the connection drops.
-  useEffect(() => {
-    void useDirSizeStore.getState().ensureListening();
-  }, []);
+  // Directory-size queue (max 2 concurrent) — logic lives in the hook.
+  const { computeDirSize, cancelDirSize, computeAllDirSizes } = useDirSizeQueue(
+    sessionId,
+    entries,
+    (message) => setStatus({ state: "error", message }),
+  );
+
+  // Stale results for this session are cleared when the connection drops.
   useEffect(() => {
     if (!connected) useDirSizeStore.getState().forgetSession(sessionId);
   }, [connected, sessionId]);
 
-  const sizeQueueRef = useRef<string[]>([]);
-  const sizeRunningRef = useRef(0);
-  const sizeQueuedRef = useRef(new Set<string>());
-  const sizePumpRef = useRef<() => void>(() => undefined);
-
-  const computeDirSize = useCallback(
-    (path: string, force = false) => {
-      if (!path || sizeQueuedRef.current.has(path)) return;
-      if (force) {
-        useDirSizeStore.getState().apply({
-          sessionId,
-          path,
-          sizeBytes: 0,
-          fileCount: 0,
-          directoryCount: 0,
-          skippedCount: 0,
-          status: "pending",
-          complete: false,
-          calculatedAt: Date.now(),
-        });
-      }
-      sizeQueuedRef.current.add(path);
-      sizeQueueRef.current.push(path);
-      sizePumpRef.current();
-    },
-    [sessionId],
-  );
-
-  sizePumpRef.current = () => {
-    while (sizeRunningRef.current < 2 && sizeQueueRef.current.length > 0) {
-      const path = sizeQueueRef.current.shift();
-      if (!path) continue;
-      sizeRunningRef.current += 1;
-      void opsApi.directorySizeStart(sessionId, path, undefined, false)
-        .then((initial) => useDirSizeStore.getState().apply(initial))
-        .catch((cause) => setStatus({ state: "error", message: toErrorMessage(cause) }))
-        .finally(() => {
-          sizeRunningRef.current -= 1;
-          sizeQueuedRef.current.delete(path);
-          sizePumpRef.current();
-        });
-    }
-  };
-  const cancelDirSize = useCallback(
-    (path: string) => {
-      if (!path) return;
-      void opsApi.directorySizeCancel(sessionId, path);
-    },
-    [sessionId],
-  );
-
-  /** Computes the size of every directory visible in the current listing. */
-  const computeAllDirSizes = useCallback(() => {
-    const directories = entries.filter((entry) => entry.kind === "directory");
-    if (directories.some((entry) => entry.path === "/" || entry.path === "/var")) {
-      if (!window.confirm("当前批量计算包含较大的系统目录，可能增加服务器磁盘 I/O。确定继续吗？")) return;
-    }
-    for (const entry of directories) computeDirSize(entry.path);
-  }, [entries, computeDirSize]);
-
-  useEffect(() => {
-    if (!uploadNotice) return;
-    const timer = window.setTimeout(() => setUploadNotice(null), 4500);
-    return () => window.clearTimeout(timer);
-  }, [uploadNotice]);
+  useAutoDismiss(uploadNotice, () => setUploadNotice(null), 4500);
 
   // Upload from a click: opens the OS file picker, because drag & drop is not
   // discoverable and does not work at all for keyboard-only users. The native
@@ -997,209 +820,5 @@ export function RemoteFilePanel({ sessionId, connected, follow, onClose }: Remot
         </Suspense>
       )}
     </aside>
-  );
-}
-
-/**
- * One row of the listing. Memoised because the list can hold thousands of
- * entries: hovering, selecting and right-clicking must not re-render all of
- * them. Every callback it receives is stable.
- */
-const FileRow = memo(function FileRow({
-  sessionId,
-  entry,
-  selected,
-  onSelect,
-  onOpen,
-  onContextMenu,
-}: {
-  sessionId: string;
-  entry: RemoteFileEntry;
-  selected: boolean;
-  onSelect: (entry: RemoteFileEntry) => void;
-  onOpen: (entry: RemoteFileEntry) => void;
-  onContextMenu: (event: ReactMouseEvent, entry: RemoteFileEntry) => void;
-}) {
-  // Subscribe only to this directory's size result: a size event for another
-  // path must not re-render this row.
-  const dirSize = useDirSizeStore((state) =>
-    entry.kind === "directory" ? state.get(sessionId, entry.path) : undefined,
-  );
-
-  return (
-    <button
-      type="button"
-      data-kind={entry.kind}
-      className={cn(
-        "group flex w-full items-center gap-2 px-3 py-1.5 text-left",
-        selected ? "bg-accent/15" : "hover:bg-surface-hover/70",
-      )}
-      onClick={() => onSelect(entry)}
-      onDoubleClick={() => onOpen(entry)}
-      onContextMenu={(event) => onContextMenu(event, entry)}
-    >
-      <EntryIcon entry={entry} />
-      <span className="min-w-0 flex-1">
-        <span
-          className={cn(
-            "block truncate text-12",
-            entry.kind === "directory" ? "text-fg" : "text-fg-muted",
-          )}
-          title={entry.path}
-        >
-          {entry.name}
-          {entry.kind === "symlink" && <span className="ml-1 text-fg-subtle">→</span>}
-        </span>
-        <span className="block truncate text-10 text-fg-subtle">
-          {entry.kind === "directory"
-            ? dirSizeSummary(dirSize)
-            : `${formatSize(entry.size)} · ${formatTime(entry.modified_at)}`}
-        </span>
-      </span>
-      {entry.kind === "directory" && (
-        <CornerDownLeft
-          size={11}
-          className="shrink-0 text-fg-subtle opacity-0 group-hover:opacity-100"
-        />
-      )}
-    </button>
-  );
-});
-
-/** Rejects empty names and anything containing a path separator. */
-function validateName(name: string): string | null {
-  const trimmed = name.trim();
-  if (!trimmed) return "名称不能为空";
-  if (trimmed.includes("/")) return "名称不能包含 /";
-  if (trimmed === "." || trimmed === "..") return "名称不能是 . 或 ..";
-  return null;
-}
-
-/**
- * Modal wrapper for NameDialog. `onConfirm` runs on submit; `onSaved` fires
- * only after a successful action (so the panel can refresh), `onClose` on any
- * dismissal.
- */
-function NamePromptModal({
-  dialog,
-  onClose,
-  onSaved,
-}: {
-  dialog: NameDialog;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const submit = useSubmit();
-  const [value, setValue] = useState(dialog.initial);
-  const trimmed = value.trim();
-  const validationError = trimmed ? dialog.validate(trimmed) : null;
-
-  const confirm = () =>
-    submit.run(async () => {
-      await dialog.onConfirm(trimmed);
-      onSaved();
-    });
-
-  return (
-    <Modal
-      open
-      width={380}
-      title={dialog.title}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
-            取消
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={submit.pending || !trimmed || Boolean(validationError)}
-            onClick={() => void confirm()}
-          >
-            {submit.pending ? "处理中…" : dialog.submitLabel}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-2.5">
-        <Field label={dialog.label}>
-          <input
-            autoFocus
-            className={fieldClass}
-            value={value}
-            spellCheck={false}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !validationError) void confirm();
-            }}
-          />
-        </Field>
-        {validationError && <ErrorText>{validationError}</ErrorText>}
-        <ErrorText>{submit.error}</ErrorText>
-      </div>
-    </Modal>
-  );
-}
-
-function PanelButton({
-  label,
-  icon: Icon,
-  disabled,
-  className,
-  onClick,
-}: {
-  label: string;
-  icon: React.ElementType;
-  disabled?: boolean;
-  className?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "flex h-6 w-6 items-center justify-center rounded-[5px] text-fg-muted hover:bg-surface-hover hover:text-fg",
-        disabled && "pointer-events-none opacity-40",
-        className,
-      )}
-    >
-      <Icon size={13} strokeWidth={1.75} />
-    </button>
-  );
-}
-
-function EntryIcon({ entry }: { entry: RemoteFileEntry }) {
-  if (entry.kind === "directory") {
-    return <FolderGlyph />;
-  }
-  const kind = fileKind(entry.name);
-  const Icon = kind.icon;
-  return (
-    <span title={kind.label} className="shrink-0">
-      <Icon size={14} strokeWidth={1.75} className={kind.color} />
-    </span>
-  );
-}
-
-function FolderGlyph() {
-  // Colored like the editor icons but distinctly folder-shaped.
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-[14px] w-[14px] shrink-0 text-sky-400"
-      aria-hidden
-    >
-      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    </svg>
   );
 }

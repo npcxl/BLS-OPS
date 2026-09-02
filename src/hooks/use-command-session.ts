@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { sshClosedEvent } from "@/lib/events";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { WorkspaceTab } from "@/workbench/types";
@@ -165,7 +166,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
     // A dropped transport must stop the page immediately: commands sent to a
     // dead session fail one by one, which looks like a broken module rather
     // than a broken connection.
-    const unlisten = listen<string>(`ssh-closed-${sessionId}`, () => {
+    const unlisten = listen<string>(sshClosedEvent(sessionId), () => {
       if (disposed) return;
       setStatus(sessionId, "closed");
       setPhase("closed");

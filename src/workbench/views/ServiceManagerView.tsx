@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
+import { servicesChangedEvent } from "@/lib/events";
 import { opsApi, toErrorMessage, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
 import { useCommandSession } from "@/hooks/use-command-session";
 import {
@@ -94,7 +95,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
 
   // An action changes server state, so the list must reload afterwards.
   useEffect(() => {
-    const unlisten = listen<string>(`services-changed-${session.sessionId}`, () => {
+    const unlisten = listen<string>(servicesChangedEvent(session.sessionId), () => {
       void load();
     });
     return () => void unlisten.then((fn) => fn());

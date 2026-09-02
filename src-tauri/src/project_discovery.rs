@@ -219,22 +219,37 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         })
     };
     let mut sums = BTreeMap::<&str, i32>::new();
-    let identity: Vec<&str> = [
+    // 标志在入口处已全部转为小写，下面的匹配表必须同样小写 —— 一旦写出
+    // "Cargo.toml" 这类大小写形式，规则将永远匹配不到（历史上真实发生过）。
+    let mut identity: Vec<String> = [
         ".git",
         "package.json",
         "pom.xml",
         "build.gradle",
         "build.gradle.kts",
-        "Cargo.toml",
+        "cargo.toml",
         "go.mod",
         "pyproject.toml",
+        "setup.py",
+        "requirements.txt",
         "composer.json",
-        ".sln",
-        ".csproj",
+        "dockerfile",
+        "docker-compose.yml",
+        "compose.yml",
+        "compose.yaml",
+        "procfile",
     ]
     .into_iter()
     .filter(|m| markers.contains(*m))
+    .map(str::to_string)
     .collect();
+    // .sln / .csproj / .fsproj 的前缀是任意的项目名，只能按**后缀**识别，
+    // 不能拿固定文件名去比。
+    for marker in &markers {
+        if is_dotnet_project_file(marker) && !identity.iter().any(|known| known == marker) {
+            identity.push(marker.clone());
+        }
+    }
     if !identity.is_empty() {
         add(
             "project_identity",
@@ -251,7 +266,7 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         "index.js",
         "main.go",
         "main.py",
-        "Application.java",
+        "application.java",
     ];
     let source_count = source_markers
         .iter()
@@ -268,12 +283,13 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         sums.insert("source", w);
     }
     let deploy_markers = [
-        "Dockerfile",
+        "dockerfile",
         "docker-compose.yml",
         "compose.yml",
+        "compose.yaml",
         "systemd",
         "nginx.conf",
-        "Procfile",
+        "procfile",
     ];
     let deploy_count = deploy_markers
         .iter()
@@ -292,9 +308,9 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         "package-lock.json",
         "pnpm-lock.yaml",
         "yarn.lock",
-        "Cargo.lock",
+        "cargo.lock",
         "poetry.lock",
-        "README.md",
+        "readme.md",
         ".env.example",
         ".github",
     ]
@@ -308,8 +324,9 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     }
     for link in &input.runtime_links {
         let w = match link.kind {
-            RuntimeKind::Process | RuntimeKind::Systemd => 15,
-            _ => 10,
+            // 运行中的进程/服务是最强的"这是个真项目"证据。
+            RuntimeKind::Process | RuntimeKind::Systemd => 25,
+            _ => 20,
         };
         add(
             "runtime",
@@ -339,7 +356,16 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     let positive: i32 = sums.values().sum::<i32>().min(100);
     let penalty: i32 = penalties.iter().map(|p| p.weight).sum();
     let score = (positive - penalty).clamp(0, 100) as u8;
-    if score < 35 {
+    // 过滤规则不是"总分低于某个阈值就丢"。旧的 `score < 35` 会把
+    // `package.json + src`（20 + 8 = 28）这种再正常不过的项目直接丢弃。
+    // 现在的规则是证据驱动的三条：
+    //   1. 既没有项目标志、也没有部署实例关联的目录不是项目 —— 例如一个孤零零
+    //      的 `src` 目录，或只有锁文件/README 的目录。
+    //   2. 有项目标志就必须保留。只有 `package.json` 的目录也是项目，只是证据
+    //      少，以低置信度（Possible）展示，而不是直接消失。
+    //   3. 被部署实例明确关联（WorkingDirectory / 挂载 / 站点根目录）的目录，
+    //      即使标志很少也不过滤：正在运行的实例本身就是最强证据。
+    if identity.is_empty() && input.runtime_links.is_empty() {
         return None;
     }
     let confidence = match score {
@@ -375,6 +401,11 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     })
 }
 
+/// .NET 的工程文件按后缀识别（`Foo.sln` / `Foo.csproj` / `Foo.fsproj`）。
+fn is_dotnet_project_file(name: &str) -> bool {
+    name.ends_with(".sln") || name.ends_with(".csproj") || name.ends_with(".fsproj")
+}
+
 fn detect_type(m: &HashSet<String>) -> String {
     if m.contains("pom.xml") {
         "Java Maven"
@@ -382,17 +413,20 @@ fn detect_type(m: &HashSet<String>) -> String {
         "Java Gradle"
     } else if m.contains("package.json") {
         "Node.js"
-    } else if m.contains("pyproject.toml") {
+    } else if m.contains("pyproject.toml")
+        || m.contains("setup.py")
+        || m.contains("requirements.txt")
+    {
         "Python"
     } else if m.contains("go.mod") {
         "Go"
-    } else if m.contains("Cargo.toml") {
+    } else if m.contains("cargo.toml") {
         "Rust"
     } else if m.contains("composer.json") {
         "PHP"
-    } else if m.contains(".csproj") || m.contains(".sln") {
+    } else if m.iter().any(|name| is_dotnet_project_file(name)) {
         ".NET"
-    } else if m.contains("Dockerfile") || m.contains("compose.yml") {
+    } else if m.contains("dockerfile") || m.contains("compose.yml") || m.contains("compose.yaml") {
         "Docker"
     } else {
         "未知项目"
@@ -406,8 +440,12 @@ fn readiness(m: &HashSet<String>, links: &[RuntimeLink], env: &[String]) -> Depl
     let mut unknown = Vec::new();
     if m.contains("package.json")
         || m.contains("pom.xml")
-        || m.contains("Cargo.toml")
+        || m.contains("build.gradle")
+        || m.contains("cargo.toml")
         || m.contains("go.mod")
+        || m.contains("pyproject.toml")
+        || m.contains("composer.json")
+        || m.iter().any(|name| is_dotnet_project_file(name))
     {
         confirmed.push("存在构建清单".into());
     } else {
@@ -417,7 +455,7 @@ fn readiness(m: &HashSet<String>, links: &[RuntimeLink], env: &[String]) -> Depl
         "package-lock.json",
         "pnpm-lock.yaml",
         "yarn.lock",
-        "Cargo.lock",
+        "cargo.lock",
     ]
     .iter()
     .any(|x| m.contains(*x))
@@ -522,4 +560,105 @@ pub fn chrono_like_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(path: &str, markers: &[&str]) -> CandidateInput {
+        CandidateInput {
+            path: path.to_string(),
+            name: path.rsplit('/').next().unwrap_or("项目").to_string(),
+            server_id: "srv-1".to_string(),
+            markers: markers.iter().map(|m| m.to_string()).collect(),
+            source: "test".to_string(),
+            runtime_links: Vec::new(),
+            modules: Vec::new(),
+            env_names: Vec::new(),
+            ports: Vec::new(),
+        }
+    }
+
+    /// 目录名里带 node_modules / target 这类依赖目录的，永远不是项目根目录。
+    #[test]
+    fn dependency_directories_are_never_candidates() {
+        assert!(score_candidate(
+            input("/srv/app/node_modules/left-pad", &["package.json"]),
+            "0"
+        )
+        .is_none());
+        assert!(score_candidate(input("/srv/app/target/debug", &["cargo.toml"]), "0").is_none());
+    }
+
+    /// 一个普通的 Node 项目（package.json + src，没有 .git、没有部署配置）
+    /// 必须留下来当"待确认"，不能被总分阈值直接过滤掉。
+    #[test]
+    fn a_plain_node_project_survives_scoring() {
+        let candidate = score_candidate(input("/srv/api", &["package.json", "src"]), "0")
+            .expect("普通 Node 项目不能被丢弃");
+        assert_eq!(candidate.project_type, "Node.js");
+        assert_eq!(candidate.confidence, ConfidenceLevel::Possible);
+        assert!(candidate.score >= 20, "score = {}", candidate.score);
+    }
+
+    /// 只有一个 package.json 的目录也是项目：低置信度展示，而不是消失。
+    #[test]
+    fn a_lone_manifest_is_a_low_confidence_candidate() {
+        let candidate =
+            score_candidate(input("/srv/bare", &["package.json"]), "0").expect("单个清单也应展示");
+        assert_eq!(candidate.confidence, ConfidenceLevel::Possible);
+    }
+
+    /// 标志在入口被统一转小写，规则表必须同样小写 —— 否则 "Cargo.toml" 这类
+    /// 磁盘上的真实大小写永远匹配不到。
+    #[test]
+    fn markers_match_regardless_of_the_case_on_disk() {
+        let candidate = score_candidate(
+            input("/srv/rust-app", &["Cargo.toml", "Cargo.lock", "src"]),
+            "0",
+        )
+        .expect("大小写混合的标志必须能匹配");
+        assert_eq!(candidate.project_type, "Rust");
+        // Cargo.lock 属于"完整性"证据，说明小写规则生效了。
+        assert!(
+            candidate.evidence.iter().any(|e| e.kind == "integrity"),
+            "{:?}",
+            candidate.evidence
+        );
+    }
+
+    /// .sln / .csproj 的前缀是项目名称，只能按后缀识别。
+    #[test]
+    fn dotnet_projects_are_recognised_by_suffix() {
+        for marker in ["MyApp.sln", "MyApp.csproj", "MyApp.fsproj"] {
+            let candidate = score_candidate(input("/srv/dotnet", &[marker]), "0")
+                .unwrap_or_else(|| panic!("{marker} 必须被识别"));
+            assert_eq!(candidate.project_type, ".NET");
+        }
+    }
+
+    /// 只有目录名而没有项目标志、也没有运行实例的，不是项目。
+    #[test]
+    fn a_bare_source_directory_is_not_a_project() {
+        assert!(score_candidate(input("/var/tmp/src", &["src", "app"]), "0").is_none());
+        assert!(score_candidate(input("/var/tmp/docs", &["readme.md"]), "0").is_none());
+    }
+
+    /// 被部署实例明确关联的目录（WorkingDirectory / 挂载）即使标志很少也不能
+    /// 被过滤：正在运行的实例本身就是最强证据。
+    #[test]
+    fn deployment_linked_directories_are_never_filtered_out() {
+        let mut linked = input("/opt/deployed", &["src"]);
+        linked.runtime_links.push(RuntimeLink {
+            kind: RuntimeKind::Systemd,
+            name: "my-app.service".into(),
+            status: Some("active".into()),
+            ports: vec![8080],
+            source: "deployment_instance".into(),
+        });
+        let candidate = score_candidate(linked, "0").expect("被实例关联的目录必须保留");
+        assert_eq!(candidate.category, CandidateCategory::Deployed);
+        assert!(candidate.score >= 25, "score = {}", candidate.score);
+    }
 }

@@ -12,10 +12,10 @@ use tokio::sync::Mutex;
 use super::model::{CpuSample, NetSample};
 
 /// The previous reading for one session.
-struct SampleCache {
-    cpu: CpuSample,
-    net: HashMap<String, NetSample>,
-    at: tokio::time::Instant,
+pub(crate) struct SampleCache {
+    pub(crate) cpu: CpuSample,
+    pub(crate) net: HashMap<String, NetSample>,
+    pub(crate) at: tokio::time::Instant,
 }
 
 /// Per-session rate baselines.

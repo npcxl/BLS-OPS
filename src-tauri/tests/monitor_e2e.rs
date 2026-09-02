@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ops_workbench_lib::dirsize::{DirectorySizeRegistry, DirectorySizeStatus};
+use ops_workbench_lib::dirsize::{
+    DirectorySizeRegistry, DirectorySizeStatus, MAX_CONCURRENT_SCANS,
+};
 use ops_workbench_lib::monitor::{self, MonitorRegistry};
 use ops_workbench_lib::ssh::{
     ConnectOutcome, ConnectTarget, CredentialSecrets, SshSessionManager, DEFAULT_COMMAND_TIMEOUT,
@@ -77,6 +79,10 @@ struct MonitorServer {
     /// When set, `du` answers "command not found" so the client exercises its
     /// SFTP recursive fallback instead of the preferred fast path.
     du_disabled: Arc<AtomicBool>,
+    /// How long every `du` invocation stalls before answering. Zero in almost
+    /// every test; the size-queue concurrency test needs a slow `du` to observe
+    /// how many scans the backend runs at once.
+    du_delay: Duration,
 }
 
 impl server::Server for MonitorServer {
@@ -93,6 +99,7 @@ impl server::Server for MonitorServer {
             net_step: self.net_step.clone(),
             kill_switch: self.kill_switch.clone(),
             du_disabled: self.du_disabled.clone(),
+            du_delay: self.du_delay,
         }
     }
 }
@@ -109,6 +116,8 @@ struct MonitorHandler {
     net_step: Arc<AtomicU64>,
     kill_switch: Arc<AtomicBool>,
     du_disabled: Arc<AtomicBool>,
+    /// See [`MonitorServer::du_delay`].
+    du_delay: Duration,
 }
 
 impl MonitorHandler {
@@ -293,6 +302,11 @@ impl Handler for MonitorHandler {
         }
 
         let command = String::from_utf8_lossy(data).trim().to_string();
+        // A deliberately slow `du`: the size queue's concurrency limit is only
+        // observable while scans are actually in flight.
+        if command.starts_with("du -s") && !self.du_delay.is_zero() {
+            tokio::time::sleep(self.du_delay).await;
+        }
         let (stdout, code) = match self.fixture(&command) {
             Some(body) => (body, 0),
             None => (format!("sh: {command}: command not found\n"), 127),
@@ -396,6 +410,21 @@ async fn spawn_monitor_server(
     Arc<AtomicBool>,
     Arc<AtomicBool>,
 ) {
+    spawn_monitor_server_with(profile, allow_tunnels, Duration::ZERO).await
+}
+
+/// Same as [`spawn_monitor_server`], but every `du` invocation stalls for
+/// `du_delay` — needed by the size-queue concurrency test.
+async fn spawn_monitor_server_with(
+    profile: Profile,
+    allow_tunnels: bool,
+    du_delay: Duration,
+) -> (
+    SocketAddr,
+    server::RunningServerHandle,
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+) {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("generate host key");
 
     let mut config = server::Config::default();
@@ -417,6 +446,7 @@ async fn spawn_monitor_server(
         net_step: Arc::new(AtomicU64::new(0)),
         kill_switch: Arc::new(AtomicBool::new(false)),
         du_disabled: Arc::new(AtomicBool::new(false)),
+        du_delay,
     };
     let kill_switch = server.kill_switch.clone();
     let du_disabled = server.du_disabled.clone();
@@ -1225,6 +1255,164 @@ async fn directory_size_du_preferred_path_resolves_to_completed() {
     let result = result.expect("the directory size must finish");
     assert_eq!(result.status, DirectorySizeStatus::Completed, "{result:?}");
     assert_eq!(result.size_bytes, expected);
+
+    handle.shutdown("done".to_string());
+}
+
+/// The real concurrency limit lives in the backend, not in the frontend queue:
+/// `directory_size_start` only *starts* a background scan and returns at once,
+/// so a frontend-side counter can never throttle what runs on the server. This
+/// proves the per-session gate: with a deliberately slow `du`, five queued
+/// directories never scan more than `MAX_CONCURRENT_SCANS` at a time, every one
+/// of them starts out `pending`, and all of them still finish.
+#[tokio::test]
+async fn directory_size_never_scans_more_than_two_directories_at_once() {
+    let (addr, handle, _kill, _du) =
+        spawn_monitor_server_with(linux("web-03"), false, Duration::from_millis(400)).await;
+    let manager = SshSessionManager::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let registry = Arc::new(DirectorySizeRegistry::default());
+    let paths: Vec<String> = (0..5).map(|i| format!("/var/www/site{i}")).collect();
+    for path in &paths {
+        let initial = registry.start(
+            None,
+            Arc::new(manager.clone()),
+            "s1".to_string(),
+            path.clone(),
+            Duration::from_secs(30),
+            false,
+        );
+        // A brand-new task is queued, not yet walking anything.
+        assert_eq!(
+            initial.status,
+            DirectorySizeStatus::Pending,
+            "新任务必须先排队"
+        );
+        assert!(!initial.complete);
+    }
+
+    let mut peak = 0usize;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        let busy = paths
+            .iter()
+            .filter(|path| {
+                matches!(
+                    registry.status("s1", path).map(|snapshot| snapshot.status),
+                    Some(DirectorySizeStatus::Computing)
+                )
+            })
+            .count();
+        peak = peak.max(busy);
+        let finished = paths.iter().all(|path| {
+            registry
+                .status("s1", path)
+                .map(|snapshot| snapshot.complete)
+                .unwrap_or(false)
+        });
+        if finished {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(
+        peak <= MAX_CONCURRENT_SCANS,
+        "同一会话的并发扫描数不能超过 {MAX_CONCURRENT_SCANS}，实测峰值 {peak}"
+    );
+    assert!(peak >= 1, "队列必须真的跑起来（峰值 {peak}）");
+    for path in &paths {
+        let snapshot = registry
+            .status("s1", path)
+            .unwrap_or_else(|| panic!("{path} 必须留下结果"));
+        assert!(snapshot.complete, "{path} 必须走到终态，实际 {snapshot:?}");
+        assert_eq!(
+            snapshot.status,
+            DirectorySizeStatus::Completed,
+            "{path}: {snapshot:?}"
+        );
+        assert_eq!(snapshot.size_bytes, fake_dir_bytes(path));
+    }
+
+    handle.shutdown("done".to_string());
+}
+
+/// Cancelling a queued computation must not leave a result behind that looks
+/// finished — and it must not hold the gate hostage either: the directory
+/// queued behind it still gets its turn.
+#[tokio::test]
+async fn cancelling_a_queued_directory_size_reports_cancelled() {
+    let (addr, handle, _kill, _du) =
+        spawn_monitor_server_with(linux("web-04"), false, Duration::from_millis(400)).await;
+    let manager = SshSessionManager::default();
+    connect_for_monitoring(&manager, "s1", None, addr.port()).await;
+
+    let registry = Arc::new(DirectorySizeRegistry::default());
+    // Two slow scans occupy the gate; the third is guaranteed to be queued.
+    for path in ["/var/www/first", "/var/www/second"] {
+        registry.start(
+            None,
+            Arc::new(manager.clone()),
+            "s1".to_string(),
+            path.to_string(),
+            Duration::from_secs(30),
+            false,
+        );
+    }
+    let queued = "/var/www/queued";
+    registry.start(
+        None,
+        Arc::new(manager.clone()),
+        "s1".to_string(),
+        queued.to_string(),
+        Duration::from_secs(30),
+        false,
+    );
+    // Wait until the third one is genuinely waiting for a slot.
+    let mut saw_pending = false;
+    let gate_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < gate_deadline {
+        if matches!(
+            registry.status("s1", queued).map(|s| s.status),
+            Some(DirectorySizeStatus::Pending)
+        ) {
+            saw_pending = true;
+        }
+        let others_busy = ["/var/www/first", "/var/www/second"].iter().all(|path| {
+            matches!(
+                registry.status("s1", path).map(|s| s.status),
+                Some(DirectorySizeStatus::Computing)
+            )
+        });
+        if saw_pending && others_busy {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(saw_pending, "第三个任务必须先在队列里等着");
+
+    registry.cancel("s1", queued);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut outcome = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(snapshot) = registry.status("s1", queued) {
+            if snapshot.complete {
+                outcome = Some(snapshot);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let outcome = outcome.expect("被取消的任务也必须走到终态");
+    assert_eq!(
+        outcome.status,
+        DirectorySizeStatus::Cancelled,
+        "取消后不能报 completed：{outcome:?}"
+    );
+    assert_eq!(outcome.size_bytes, 0, "取消后不能留下尺寸：{outcome:?}");
 
     handle.shutdown("done".to_string());
 }

@@ -9,7 +9,18 @@ import { opsApi, toErrorMessage, type ProjectScanResult, type ProjectScanStatus 
  *
  * Moved verbatim from the `ProjectView` container (阶段 D) — the view now only
  * renders state; all transport lives here.
+ *
+ * Lifecycle rule (很重要): **`scan` 状态更新绝不能触发取消**。轮询每 700ms
+ * 执行一次 `setScan(status)`，如果把 `scan` 放进 cleanup 的依赖数组，React 会在
+ * 每次状态更新时先跑上一次 effect 的 cleanup，于是刚启动的扫描在第一次轮询时
+ * 就被 `projectScanCancel` 取消 —— 用户永远拿不到完整结果。因此当前扫描 ID 存
+ * 在 `activeScanIdRef`，cleanup 只在**卸载**或**服务器/会话切换**时执行。
  */
+
+/** 仍在后端的扫描状态（需要被取消/继续轮询的状态）。 */
+const isActiveState = (state: string | undefined) =>
+  state === "running" || state === "queued";
+
 export function useScanTask(serverId: string | undefined, sessionId: string, ready: boolean) {
   const [scan, setScan] = useState<ProjectScanStatus | null>(null);
   const [result, setResult] = useState<ProjectScanResult | null>(null);
@@ -17,6 +28,36 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
+  /** 本次视图"拥有"的扫描 ID；只有 `discover` 会写它。 */
+  const activeScanIdRef = useRef<string | null>(null);
+  /** 该扫描的最新后端状态，供卸载/切换时判断是否需要取消。 */
+  const activeStateRef = useRef<string | null>(null);
+  const targetKeyRef = useRef(`${serverId ?? ""}::${sessionId}`);
+
+  const stopPolling = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const detach = useCallback(() => {
+    unlistenRef.current?.();
+    unlistenRef.current = null;
+  }, []);
+
+  /** 取消我们拥有的、且后端仍在跑的扫描。 */
+  const cancelActive = useCallback(() => {
+    const id = activeScanIdRef.current;
+    const state = activeStateRef.current;
+    activeScanIdRef.current = null;
+    activeStateRef.current = null;
+    // 已结束（completed/cancelled/failed）的扫描不需要取消。
+    if (!id || !isActiveState(state ?? undefined)) return;
+    void opsApi.projectScanCancel(id).catch((cause) => {
+      console.error("[useScanTask] 取消扫描失败", cause);
+    });
+  }, []);
 
   const discover = useCallback(
     async (incremental = false) => {
@@ -35,6 +76,11 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
         setError("SSH 会话未连接，请先连接服务器");
         return;
       }
+      // 新一轮开始前，先收掉上一轮留下来的轮询/监听（不取消：下面由
+      // cancelActive 决定），避免两个 interval 同时写状态。
+      stopPolling();
+      detach();
+      cancelActive();
       setLoading(true);
       setError(null);
       setResult(null);
@@ -46,7 +92,16 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
         });
         const started = await opsApi.projectScanStart(sessionId, serverId, incremental);
         console.log("[ProjectView] project_scan_start 返回", started);
+        activeScanIdRef.current = started.id;
+        activeStateRef.current = started.state;
         setScan(started);
+
+        const settle = () => {
+          stopPolling();
+          detach();
+          setLoading(false);
+        };
+
         console.log("[ProjectView] 监听扫描结果事件", {
           eventName: projectScanResultEvent(started.id),
         });
@@ -54,7 +109,6 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
           projectScanResultEvent(started.id),
           (event) => {
             console.log("[ProjectView] 收到扫描结果事件", event.payload);
-            unlistenRef.current = null;
             setResult(event.payload);
             setScan((current) =>
               current
@@ -65,17 +119,19 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
                   }
                 : current,
             );
-            setLoading(false);
-            unlisten();
+            activeStateRef.current = "completed";
+            settle();
           },
         );
         unlistenRef.current = unlisten;
         const poll = window.setInterval(async () => {
-          timerRef.current = poll;
           try {
             const status = await opsApi.projectScanStatus(started.id);
             console.log("[ProjectView] project_scan_status 返回", status);
-            if (status) setScan(status);
+            if (status) {
+              activeStateRef.current = status.state;
+              setScan(status);
+            }
             if (status && ["completed", "cancelled", "failed"].includes(status.state)) {
               console.log("[ProjectView] 扫描已结束", {
                 state: status.state,
@@ -86,43 +142,58 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
                 console.error("[ProjectView] 后端扫描错误", status.error);
                 setError(status.error);
               }
-              window.clearInterval(poll);
+              settle();
               const found = await opsApi.projectScanResult(started.id);
               console.log("[ProjectView] project_scan_result 返回", found);
               if (found) setResult(found);
-              setLoading(false);
-              unlisten();
             }
           } catch (cause) {
             console.error("[ProjectView] 查询扫描状态失败", cause);
-            window.clearInterval(poll);
+            settle();
             setError(toErrorMessage(cause));
-            setLoading(false);
-            unlisten();
           }
         }, 700);
+        timerRef.current = poll;
       } catch (cause) {
         console.error("[ProjectView] 启动项目发现失败", cause);
         setError(toErrorMessage(cause));
         setLoading(false);
       }
     },
-    [ready, sessionId, serverId],
+    [ready, sessionId, serverId, stopPolling, detach, cancelActive],
   );
 
+  /** 用户手动点击"取消扫描"——这是唯一主动取消后端的入口。 */
   const cancel = useCallback(async () => {
-    if (scan) await opsApi.projectScanCancel(scan.id);
-  }, [scan]);
+    const id = activeScanIdRef.current;
+    if (!id) return;
+    await opsApi.projectScanCancel(id).catch((cause) => {
+      console.error("[useScanTask] 取消扫描失败", cause);
+    });
+    activeScanIdRef.current = null;
+    activeStateRef.current = null;
+  }, []);
 
-  // Leaving the view stops polling, unsubscribes, and cancels an in-flight scan.
+  // 清理只在**卸载**或**服务器/会话切换**时执行。依赖里绝不能有 `scan`：
+  // 轮询每次 setScan 都会改变它，从而把正在运行的扫描取消掉。
   useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearInterval(timerRef.current);
-      unlistenRef.current?.();
-      if (scan && ["running", "queued"].includes(scan.state))
-        void opsApi.projectScanCancel(scan.id);
+    () => {
+      const key = `${serverId ?? ""}::${sessionId}`;
+      if (targetKeyRef.current !== key) {
+        // 换了服务器/会话：旧结果不再描述屏幕上的内容。
+        targetKeyRef.current = key;
+        setScan(null);
+        setResult(null);
+        setError(null);
+        setLoading(false);
+      }
+      return () => {
+        stopPolling();
+        detach();
+        cancelActive();
+      };
     },
-    [scan],
+    [serverId, sessionId, stopPolling, detach, cancelActive],
   );
 
   return { scan, result, loading, error, discover, cancel };

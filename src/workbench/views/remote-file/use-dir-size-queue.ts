@@ -6,16 +6,27 @@ import type { RemoteFileEntry } from "@/api/ops-api";
 /**
  * On-demand directory-size queue for one SFTP session.
  *
- * Moved verbatim from the `RemoteFilePanel` container (阶段 D). At most two
- * computations run concurrently; extra requests wait in a FIFO queue. Errors
+ * Moved verbatim from the `RemoteFilePanel` container (阶段 D). Errors
  * surface through `onError` (the panel shows them in its status area).
+ *
+ * 并发上限的说明：`directory_size_start` 只是"启动后台任务并立刻返回初始状态"，
+ * 前端等不到真正算完，所以这里的计数**只用于节流 IPC 调用**，真实的并发限制
+ * （每个 SSH 会话同时最多 2 个 du/SFTP）由 Rust 后端用 Semaphore 保证。排队中
+ * 的任务后端会以 `pending` 状态上报，前端据此显示"排队中"。
  */
+
+/** 队列项：`force` 决定后端是否丢弃旧缓存重新扫描。 */
+interface SizeQueueItem {
+  path: string;
+  force: boolean;
+}
+
 export function useDirSizeQueue(
   sessionId: string,
   entries: RemoteFileEntry[],
   onError: (message: string) => void,
 ) {
-  const sizeQueueRef = useRef<string[]>([]);
+  const sizeQueueRef = useRef<SizeQueueItem[]>([]);
   const sizeRunningRef = useRef(0);
   const sizeQueuedRef = useRef(new Set<string>());
   const sizePumpRef = useRef<() => void>(() => undefined);
@@ -37,7 +48,7 @@ export function useDirSizeQueue(
         });
       }
       sizeQueuedRef.current.add(path);
-      sizeQueueRef.current.push(path);
+      sizeQueueRef.current.push({ path, force });
       sizePumpRef.current();
     },
     [sessionId],
@@ -45,16 +56,17 @@ export function useDirSizeQueue(
 
   sizePumpRef.current = () => {
     while (sizeRunningRef.current < 2 && sizeQueueRef.current.length > 0) {
-      const path = sizeQueueRef.current.shift();
-      if (!path) continue;
+      const item = sizeQueueRef.current.shift();
+      if (!item) continue;
       sizeRunningRef.current += 1;
       void opsApi
-        .directorySizeStart(sessionId, path, undefined, false)
+        // `force` 必须一路传到后端，否则"重新计算大小"只会拿回旧缓存。
+        .directorySizeStart(sessionId, item.path, undefined, item.force)
         .then((initial) => useDirSizeStore.getState().apply(initial))
         .catch((cause) => onError(toErrorMessage(cause)))
         .finally(() => {
           sizeRunningRef.current -= 1;
-          sizeQueuedRef.current.delete(path);
+          sizeQueuedRef.current.delete(item.path);
           sizePumpRef.current();
         });
     }

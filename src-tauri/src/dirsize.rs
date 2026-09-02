@@ -21,9 +21,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 
 use crate::ssh::{self, SshSessionManager};
+
+/// 每个 SSH 会话同时允许的 `du` / SFTP 遍历数量。
+///
+/// 真正的并发上限必须在后端：`directory_size_start` 只是"启动后台任务并立刻
+/// 返回"，前端队列再怎么节流也只能控制 IPC 调用速度，控制不了后台扫描。没有
+/// 这道闸，一次"计算全部"就会在同一条 SSH 连接上同时跑几十个 `du`。
+pub const MAX_CONCURRENT_SCANS: usize = 2;
 
 /// Pushed to the frontend as a computation progresses. The command layer owns
 /// the `tauri::AppHandle` and turns this into a Tauri event; keeping that here
@@ -84,6 +91,21 @@ impl DirectorySizeResult {
             .unwrap_or(0)
     }
 
+    /// 已排队，正在等同一会话的并发名额（前端显示"排队中"）。
+    fn pending(session_id: &str, path: &str) -> Self {
+        DirectorySizeResult {
+            session_id: session_id.to_string(),
+            path: path.to_string(),
+            size_bytes: 0,
+            file_count: 0,
+            directory_count: 0,
+            skipped_count: 0,
+            status: DirectorySizeStatus::Pending,
+            complete: false,
+            calculated_at: Self::now(),
+        }
+    }
+
     fn computing(session_id: &str, path: &str) -> Self {
         DirectorySizeResult {
             session_id: session_id.to_string(),
@@ -116,6 +138,33 @@ enum DuFlavor {
     Kibibytes,
 }
 
+/// Outcome of one `du` invocation.
+///
+/// 必须把"取消"和"`du` 不可用"分开：前者不能再回退到 SFTP（用户已经叫停了），
+/// 后者才需要走递归遍历。
+enum DuRun {
+    /// `du` 给出了可用的结论（completed / partial / permission_denied）。
+    Done(DirectorySizeResult),
+    /// 用户取消了：结果作废，直接报 cancelled。
+    Cancelled(DirectorySizeResult),
+    /// `du` 没有产出可用数字，回退到 SFTP 递归。
+    Unavailable,
+}
+
+/// Resolves as soon as `cancel` flips to `true`; also resolves (rather than
+/// hanging) if the sender is dropped, letting the caller re-check the flag.
+async fn wait_cancel(cancel: &watch::Receiver<bool>) {
+    let mut rx = cancel.clone();
+    loop {
+        if *rx.borrow() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// One in-flight (or finished) computation.
 struct DirectorySizeTask {
     cancel: watch::Sender<bool>,
@@ -139,12 +188,15 @@ impl DirectorySizeTask {
     }
 }
 
-/// Per-session directory-size state: in-flight tasks (one per path) plus the
-/// cached `du` flavour probe.
+/// Per-session directory-size state: in-flight tasks (one per path), the
+/// cached `du` flavour probe, and the per-session concurrency gate.
 #[derive(Default)]
 pub struct DirectorySizeRegistry {
     tasks: Mutex<HashMap<(String, String), Arc<DirectorySizeTask>>>,
     du_flavor: Mutex<HashMap<String, Option<DuFlavor>>>,
+    /// 每个会话一个信号量：同时最多 [`MAX_CONCURRENT_SCANS`] 个后台扫描。
+    /// 会话断开时随 `forget_session` 一起丢弃。
+    gates: Mutex<HashMap<String, Arc<Semaphore>>>,
     /// Emit closure, stashed on first `start`, used to push updates to the
     /// frontend. `None` only in tests, where the result is still cached.
     emit: Mutex<Option<EmitFn>>,
@@ -164,6 +216,18 @@ impl DirectorySizeRegistry {
             .unwrap()
             .retain(|(sid, _), _| sid != session_id);
         self.du_flavor.lock().unwrap().remove(session_id);
+        // 丢弃旧信号量：仍在等待的任务会因取消信号退出，之后新会话拿到全新的闸。
+        self.gates.lock().unwrap().remove(session_id);
+    }
+
+    /// The session's concurrency gate, created on first use.
+    fn gate(&self, session_id: &str) -> Arc<Semaphore> {
+        self.gates
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SCANS)))
+            .clone()
     }
 
     /// Returns the cached result if a computation already finished for this
@@ -209,7 +273,8 @@ impl DirectorySizeRegistry {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = Arc::new(DirectorySizeTask {
             cancel: cancel_tx,
-            state: Mutex::new(DirectorySizeResult::computing(&session_id, &path)),
+            // 新任务一律从 `pending` 开始：拿到并发名额后才会变成 `computing`。
+            state: Mutex::new(DirectorySizeResult::pending(&session_id, &path)),
         });
         self.tasks.lock().unwrap().insert(key, task.clone());
         let initial = task.snapshot();
@@ -220,12 +285,45 @@ impl DirectorySizeRegistry {
         let registry = Arc::clone(self);
         registry.set_emit(emit.clone());
         tauri::async_runtime::spawn(async move {
-            let flavor = registry.detect_flavor(&manager, &session_id).await;
-            let emit = registry.emit_fn();
-            let result = registry
-                .compute(&manager, &session_id, &path, flavor, timeout, &cancel_rx)
-                .await;
-            task.update(&emit, result);
+            let task_handle = Arc::clone(&task);
+            let result = async {
+                // 等名额期间也响应取消：排队中的任务不该占着位置。
+                if *cancel_rx.borrow() {
+                    return DirectorySizeResult::pending(&session_id, &path)
+                        .terminal(DirectorySizeStatus::Cancelled);
+                }
+                let gate = registry.gate(&session_id);
+                let permit = tokio::select! {
+                    acquired = gate.acquire_owned() => match acquired {
+                        Ok(permit) => permit,
+                        Err(_) => return DirectorySizeResult::pending(&session_id, &path)
+                            .terminal(DirectorySizeStatus::Failed),
+                    },
+                    _ = wait_cancel(&cancel_rx) => {
+                        return DirectorySizeResult::pending(&session_id, &path)
+                            .terminal(DirectorySizeStatus::Cancelled);
+                    }
+                };
+                if *cancel_rx.borrow() {
+                    drop(permit);
+                    return DirectorySizeResult::pending(&session_id, &path)
+                        .terminal(DirectorySizeStatus::Cancelled);
+                }
+                // 拿到名额 → 真的在算了。
+                task.update(
+                    &registry.emit_fn(),
+                    DirectorySizeResult::computing(&session_id, &path),
+                );
+                let flavor = registry.detect_flavor(&manager, &session_id).await;
+                let outcome = registry
+                    .compute(&manager, &session_id, &path, flavor, timeout, &cancel_rx)
+                    .await;
+                // 计算/失败/取消后释放名额，等着的下一个任务才能进来。
+                drop(permit);
+                outcome
+            }
+            .await;
+            task_handle.update(&registry.emit_fn(), result);
             // Leave the finished task in the map so `cached`/`status` can replay
             // it; it is only evicted when the session is forgotten.
         });
@@ -313,26 +411,22 @@ impl DirectorySizeRegistry {
         timeout: Duration,
         cancel: &watch::Receiver<bool>,
     ) -> DirectorySizeResult {
-        let task = self
-            .tasks
-            .lock()
-            .unwrap()
-            .get(&(session_id.to_string(), path.to_string()))
-            .cloned();
-        // The emit closure (if any) is only used to push progress events; its
-        // absence — e.g. in tests — never fails a computation, the result is
-        // still cached and reachable via `status`.
-        let app = self.emit_fn();
-
         // Try `du` first.
         if let Some(flavor) = flavor {
             match self
-                .compute_du(manager, session_id, path, flavor, timeout)
+                .compute_du(manager, session_id, path, flavor, timeout, cancel)
                 .await
             {
-                Ok(result) => return result,
-                Err(_) => { /* fall through to SFTP */ }
+                // 拿到数字（completed / partial / permission_denied）或明确取消，
+                // 都不再回退到 SFTP。
+                DuRun::Done(result) | DuRun::Cancelled(result) => return result,
+                DuRun::Unavailable => { /* fall through to SFTP */ }
             }
+        }
+
+        if *cancel.borrow() {
+            return DirectorySizeResult::computing(session_id, path)
+                .terminal(DirectorySizeStatus::Cancelled);
         }
 
         // SFTP recursive fallback.
@@ -342,11 +436,9 @@ impl DirectorySizeRegistry {
         {
             Ok(result) => result,
             Err(status) => {
+                // 失败/取消/超时/根目录读不到：不留下任何"看起来算完了"的数字。
                 let mut base = DirectorySizeResult::computing(session_id, path);
                 base.size_bytes = 0;
-                if let Some(task) = task {
-                    task.update(&app, base.clone());
-                }
                 base.terminal(status)
             }
         }
@@ -366,6 +458,10 @@ impl DirectorySizeRegistry {
     }
 
     /// Runs `du` and parses the single summary line.
+    ///
+    /// `du` 是一次性的 exec，中途无法被打断，因此取消只在**前后**检查：
+    /// 开始前已取消就直接返回 `Cancelled`；运行结束后若已被取消，则**丢弃
+    /// 结果**并返回 `Cancelled`（绝不能报 completed）。
     async fn compute_du(
         &self,
         manager: &SshSessionManager,
@@ -373,30 +469,56 @@ impl DirectorySizeRegistry {
         path: &str,
         flavor: DuFlavor,
         timeout: Duration,
-    ) -> Result<DirectorySizeResult, ()> {
+        cancel: &watch::Receiver<bool>,
+    ) -> DuRun {
+        if *cancel.borrow() {
+            return DuRun::Cancelled(
+                DirectorySizeResult::computing(session_id, path)
+                    .terminal(DirectorySizeStatus::Cancelled),
+            );
+        }
         let cmd = match flavor {
             DuFlavor::Bytes => format!("du -sb -- {}", shell_quote(path)),
             DuFlavor::Kibibytes => format!("du -sk -- {}", shell_quote(path)),
         };
-        let output = manager
-            .exec(session_id, &cmd, timeout)
-            .await
-            .map_err(|_| ())?;
-        // `du` may print to stderr for unreadable subdirs but still exit 0 on
-        // GNU; only a completely empty stdout means it produced nothing.
+        let output = match manager.exec(session_id, &cmd, timeout).await {
+            Ok(output) => output,
+            Err(_) => return DuRun::Unavailable,
+        };
+        // 取消信号可能在 `du` 运行期间到达：此时结果已经没有意义，必须丢掉。
+        if *cancel.borrow() {
+            return DuRun::Cancelled(
+                DirectorySizeResult::computing(session_id, path)
+                    .terminal(DirectorySizeStatus::Cancelled),
+            );
+        }
+        // `du` 遇到读不到的子目录会往 stderr 写警告（GNU 仍然退出 0），所以
+        // "有数字"不等于"算全了"。
         let (size_bytes, _line) = match flavor {
-            DuFlavor::Bytes => parse_du_bytes(&output.stdout).ok_or(()),
-            DuFlavor::Kibibytes => parse_du_kibibytes(&output.stdout).ok_or(()),
-        }?;
+            DuFlavor::Bytes => match parse_du_bytes(&output.stdout) {
+                Some(parsed) => parsed,
+                None => return DuRun::Unavailable,
+            },
+            DuFlavor::Kibibytes => match parse_du_kibibytes(&output.stdout) {
+                Some(parsed) => parsed,
+                None => return DuRun::Unavailable,
+            },
+        };
+        // stderr 里一行就是一处没读到的目录 —— 这是"跳过了多少"的估计值。
+        let skipped = output
+            .stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count() as u64;
 
         let mut result = DirectorySizeResult::computing(session_id, path);
         result.size_bytes = size_bytes;
-        // `du` is a single summary line; the file/dir split is not part of its
-        // contract here, so we leave counts at 0 and report completion. When
-        // stderr carried permission warnings we still mark partial only if the
-        // run truly skipped (GNU prints them but keeps going).
-        result.skipped_count = if output.stderr.is_empty() { 0 } else { 0 };
-        Ok(result.terminal(DirectorySizeStatus::Completed))
+        result.skipped_count = skipped;
+        DuRun::Done(result.terminal(classify_du(
+            size_bytes,
+            skipped,
+            matches!(output.exit_code, Some(0)),
+        )))
     }
 
     /// Recursive SFTP walk with cancellation and no symlink following.
@@ -514,6 +636,23 @@ fn record_entry(result: &mut DirectorySizeResult, kind: &str, size: u64) -> bool
     }
 }
 
+/// Decides what one `du` run is worth.
+///
+/// `du` 遇到读不到的子目录时仍会退出 0 并给出合计，只是往 stderr 写警告 ——
+/// 所以"有数字"不等于"算全了"：跳过任何条目都必须报 `partial`，一个字节都没
+/// 读到又伴随报错才是 `permission_denied`。**绝不把不完整的结果报成 completed。**
+fn classify_du(size_bytes: u64, skipped: u64, clean_exit: bool) -> DirectorySizeStatus {
+    let degraded = skipped > 0 || !clean_exit;
+    match (size_bytes, degraded) {
+        // 空目录（真的一字节都没有、也没有报错）算完整。
+        (0, false) => DirectorySizeStatus::Completed,
+        // 一点都没读到，还报错了：是进不去，不是"空目录"。
+        (0, true) => DirectorySizeStatus::PermissionDenied,
+        (_, true) => DirectorySizeStatus::Partial,
+        (_, false) => DirectorySizeStatus::Completed,
+    }
+}
+
 /// Parses a `du -sb` line: `<bytes>\t<path>`.
 fn parse_du_bytes(line: &str) -> Option<(u64, &str)> {
     let line = line.lines().next()?;
@@ -567,6 +706,32 @@ mod tests {
     fn shell_quote_escapes_inner_quotes() {
         assert_eq!(shell_quote("/a/b"), "'/a/b'");
         assert_eq!(shell_quote("/a'b"), "'/a'\\''b'");
+    }
+
+    #[test]
+    fn a_queued_task_is_pending_and_not_complete() {
+        let queued = DirectorySizeResult::pending("s", "/x");
+        assert_eq!(queued.status, DirectorySizeStatus::Pending);
+        assert!(!queued.complete, "排队中不能算完成");
+    }
+
+    #[test]
+    fn du_warnings_are_never_reported_as_completed() {
+        // 干净的一跑（含真正的空目录）才算完整。
+        assert_eq!(classify_du(0, 0, true), DirectorySizeStatus::Completed);
+        assert_eq!(classify_du(4_096, 0, true), DirectorySizeStatus::Completed);
+        // 有数字但跳过了一部分 → partial，绝不 completed。
+        assert_eq!(classify_du(4_096, 3, true), DirectorySizeStatus::Partial);
+        assert_eq!(classify_du(4_096, 0, false), DirectorySizeStatus::Partial);
+        // 一点都没读到并且报错 → 权限不足，不是"0 字节已完成"。
+        assert_eq!(
+            classify_du(0, 2, true),
+            DirectorySizeStatus::PermissionDenied
+        );
+        assert_eq!(
+            classify_du(0, 0, false),
+            DirectorySizeStatus::PermissionDenied
+        );
     }
 
     #[test]

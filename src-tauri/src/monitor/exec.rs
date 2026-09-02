@@ -99,10 +99,7 @@ pub(crate) fn result_for(
 }
 
 /// Rejects anything that is not Linux, with a message the UI can show as-is.
-pub(crate) async fn require_linux(
-    manager: &SshSessionManager,
-    session_id: &str,
-) -> Result<()> {
+pub(crate) async fn require_linux(manager: &SshSessionManager, session_id: &str) -> Result<()> {
     let (system, _, _) = parse_uname(&run(manager, session_id, super::model::CMD_UNAME).await?);
     if system.eq_ignore_ascii_case(SUPPORTED_OS) {
         Ok(())

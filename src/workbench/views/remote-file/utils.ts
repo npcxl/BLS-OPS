@@ -47,8 +47,11 @@ export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
 export function dirSizeSummary(result: DirectorySizeResult | undefined): string {
   if (!result) return "文件夹";
   switch (result.status) {
-    case "computing":
+    // 后端的并发闸（每会话 2 个）会把排队中的任务报成 `pending`，
+    // 与真正在跑的 `computing` 区分开，用户才能看出"在排队"还是"在算"。
     case "pending":
+      return "排队中…";
+    case "computing":
       return "计算中…";
     case "completed":
       return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件`;

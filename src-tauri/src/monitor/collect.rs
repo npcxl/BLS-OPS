@@ -9,10 +9,10 @@ use crate::ssh::SshSessionManager;
 
 use super::exec::{require_linux, result_for, run, run_all, run_first, unsupported_message};
 use super::model::{
-    BASELINE_DELAY, CMD_CPU, CMD_DISKS, CMD_HOSTNAME, CMD_LOADAVG, CMD_MEMORY, CMD_NETWORK,
-    CMD_OS_RELEASE, CMD_PROCESSES, CMD_UNAME, CMD_UPTIME, PROCESS_LIMIT, SUPPORTED_OS, CpuMetrics,
-    CpuSample, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetSample, NetworkMetrics, ProcessInfo,
-    Rates, SystemInfo,
+    CpuMetrics, CpuSample, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetSample, NetworkMetrics,
+    ProcessInfo, Rates, SystemInfo, BASELINE_DELAY, CMD_CPU, CMD_DISKS, CMD_HOSTNAME, CMD_LOADAVG,
+    CMD_MEMORY, CMD_NETWORK, CMD_OS_RELEASE, CMD_PROCESSES, CMD_UNAME, CMD_UPTIME, PROCESS_LIMIT,
+    SUPPORTED_OS,
 };
 use super::parse::{
     cpu_usage_percent, network_metrics, parse_cpu_stat, parse_disk_usage, parse_loadavg,
@@ -28,7 +28,7 @@ fn now_secs() -> i64 {
 }
 
 /// A snapshot that says "we cannot monitor this" instead of showing zeroes.
-fn unsupported_snapshot(session_id: &str, system: &str) -> MonitorSnapshot {
+pub(crate) fn unsupported_snapshot(session_id: &str, system: &str) -> MonitorSnapshot {
     let label = if system.is_empty() {
         "未知系统"
     } else {
@@ -181,7 +181,7 @@ pub async fn collect_memory(
 pub async fn collect_disks(
     manager: &SshSessionManager,
     session_id: &str,
-) -> Result<Vec<super::model::DiskMetrics>> {
+) -> Result<Vec<DiskMetrics>> {
     require_linux(manager, session_id).await?;
     Ok(parse_disk_usage(
         &run(manager, session_id, CMD_DISKS).await?,
@@ -193,7 +193,7 @@ pub async fn collect_network(
     manager: &SshSessionManager,
     registry: &MonitorRegistry,
     session_id: &str,
-) -> Result<Vec<super::model::NetworkMetrics>> {
+) -> Result<Vec<NetworkMetrics>> {
     require_linux(manager, session_id).await?;
 
     let sample = parse_net_dev(&run(manager, session_id, CMD_NETWORK).await?);
@@ -206,10 +206,10 @@ pub async fn collect_network(
 pub async fn collect_processes(
     manager: &SshSessionManager,
     session_id: &str,
-) -> Result<Vec<super::model::ProcessInfo>> {
+) -> Result<Vec<ProcessInfo>> {
     require_linux(manager, session_id).await?;
     let output = run(manager, session_id, CMD_PROCESSES).await?;
-    Ok(parse_processes(&output, super::model::PROCESS_LIMIT))
+    Ok(parse_processes(&output, PROCESS_LIMIT))
 }
 
 /// Everything the monitoring page shows, in one round trip.
@@ -220,11 +220,7 @@ pub async fn collect_snapshot(
     manager: &SshSessionManager,
     registry: &MonitorRegistry,
     session_id: &str,
-) -> Result<super::model::MonitorSnapshot> {
-    use super::model::{
-        CpuMetrics, MonitorSnapshot, PROCESS_LIMIT, SystemInfo,
-    };
-
+) -> Result<MonitorSnapshot> {
     let (system, kernel, architecture) = parse_uname(&run(manager, session_id, CMD_UNAME).await?);
     if !system.eq_ignore_ascii_case(SUPPORTED_OS) {
         return Ok(unsupported_snapshot(session_id, &system));

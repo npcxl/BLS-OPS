@@ -35,6 +35,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 - 流程：P3.1 OS/权限/磁盘/安全 → P3.2 运行时/构建/包管理 → P3.3 部署方式与服务能力（包管理/systemd/容器/网关/中间件）→ P3.4 按真实能力启用收集器（未安装的组件绝不跑其探测命令）→ P3.5~7 端口反查→受控文件扫描→证据合并评分 → P3.8 部署准备度 → P3.9 用户确认输出给 P4。
 - 适配器注册制：`DeploymentAdapter { id, displayName, supportedSystems, detect(), collectEvidence(), assessReadiness(), supportedOperations(), rollbackCapabilities() }`，第一批含静态文件/二进制/JAR/Node/Python/systemd/PM2/Supervisor/Docker/Compose/Podman/Nginx/Apache/Caddy/K8s。未知服务显示"暂无匹配适配器"，禁止猜测。
 - 三张图谱：服务器能力图谱、项目证据图谱、部署可行性图谱。
+- **评分规则（2026-09-02 定稿，勿回退到单一阈值）**：marker 在 `score_candidate` 入口统一转小写，所有规则表/`detect_type`/`readiness` 必须全部小写；`.sln/.csproj/.fsproj` 按**后缀**识别。过滤=证据驱动三条，不是 `score < 35`：① 无项目标志且无实例关联 → 丢弃；② 有标志就保留（只 `package.json` 也以 Possible 展示）；③ 实例关联的目录不过滤。运行时关联权重 25（进程/systemd）/20（容器、网关）。
 - 代码处置：只读探测保留在 P3；docker build/stop、systemd 操作、nginx reload、部署/文件修改/回滚移入 P4；`docker_prune` 禁用（违背软删除）。**项目发现已是"部署实例优先"**（2026-09-02 重构）：能力识别 → `deployment_collector.rs` 按能力枚举真实实例（docker inspect 提取 Compose/Mounts/端口；systemctl show 提取 WorkingDirectory/ExecStart；nginx -T + ss→/proc/PID/cwd）→ 实例路径定向 marker 扫描 → 固定根补充扫描（`ProjectMarkerScan`，只搜项目标志不枚举普通文件）。旧的 find 全量 2 万文件命令已删。实例无宿主线索时 `source_known=false`（"源码未知"），绝不伪造路径；`ProjectCandidate.category` = deployed/source_only。
 - 安全边界：`src-tauri/src/safe.rs` 的 `Capability` 枚举是唯一"动作→命令字符串"翻译点，禁止别处拼命令；前端只传结构化标识；校验在网络 I/O 之前（`remote::run_on_linux`，先 `capability.command()?` 再 OS 探测）。部署步骤三重校验（白名单+禁 shell 操作符+路径在 deploy_path 内），`deployment_execute` 只收 projectId 且步骤从 DB 读后重校验。改服务端状态必须有 ConfirmDialog；Nginx 先 `nginx -t` 再 reload。「不可用」≠「空」，要给原因。
 - e2e：`tests/p3_e2e.rs` 记录每条命令并断言被拒参数一条都没发出。
@@ -58,7 +59,8 @@ cargo build && ./target/debug/ops-workbench.exe   # 冒烟：窗口标题 BLS-OP
 - CI 无状态检查先查 commit 是否已 push（GitHub 只对已推送 commit 跑 workflow）。
 - `tests/ssh_e2e.rs` 用 russh server 起进程内真实 SSH 服务端（`lib.rs` 的 `ssh` 模块为此 `pub`）。坑：`Handler::data` 对 direct-tcpip 隧道通道也触发，必须用 `HashSet<ChannelId>` 跳过隧道通道回显。
 
-## 已知历史问题
+## 已知历史问题（2026-09-02 更新）
+- **（已于 2026-09-02 收尾）ssh / safe 模块拆分**：`ssh.rs → ssh/`、`safe.rs → safe/` 都已完成，旧文件删除（git 里记为 `D`，可 `git checkout` 恢复）。拆分期间 `ssh.rs` 与 `ssh/mod.rs` 并存会让 rustc 报 **E0761**，整个 crate 编译不了；此时不要删旧文件（拆分方会收尾），验证自己的改动可临时把 `src/ssh/` 改名 → 跑测试 → 改回。拆分方已把我改过的 `PROJECT_MARKER_PREDICATE` 原样带进 `safe/capability.rs`，说明拆分基于磁盘当前内容，不会丢改动。
 - Windows `0xc0000139`：Cargo.lock 无 openssl-sys/libgit2-sys 等外部 DLL 依赖（SSH 走 rustls/ring，SQLite bundled）；复现先查 PATH 第三方 OpenSSL/Git DLL 冲突。
 - **xterm IME 被破坏的根因（2026-09-01）**：`globals.css` 里 `.xterm *` 加 `user-select` 会破坏 IME composition 层级（中文直接上屏）。**结论：`globals.css` 禁止给 `.xterm`/`.xterm *` 加任何 user-select 规则**。键盘问题先查 CSS user-select/pointer-events/inert，别改 TerminalView。
 - **终端"输不了"的元凶（2026-09-01 确诊）**：非活动 tab 的隐藏按钮锁住焦点（`absolute inset-0` + `aria-hidden` 容器吞键盘）。修复：`WorkbenchPane` 非活动 tab 加 `inert={!active}`（React 19 boolean 写法；**严禁 `inert=""`**，会被当 false 并告警）。诊断：`document.activeElement` 应为 `xterm-helper-textarea`。

@@ -212,8 +212,14 @@ pub enum ExecKind {
     ServiceRestart,
     /// 需要 `params.unit`。
     ServiceReload,
-    /// 需要 `params.unit`（可选：不传则查全系统）。
-    Journal,
+    /// 需要 `params.unit`（指定服务的日志，如 `journalctl -u <unit>`）。
+    ///
+    /// 与 [`ExecKind::JournalSystem`] 分开：`journalctl -p err`（全系统）不需要
+    /// 单元名，两者混在一个变体里会让 `required_params` 返回空数组，前端就
+    /// 不知道这条命令还缺服务名。
+    JournalUnit,
+    /// 全系统日志（`journalctl -p err`）：不需要 `unit`。
+    JournalSystem,
     NginxVersion,
     NginxTest,
     NginxEffectiveConfig,
@@ -252,9 +258,34 @@ impl ExecKind {
             | ExecKind::ServiceRestart
             | ExecKind::ServiceReload => &["unit"],
             ExecKind::GitStatus => &["path"],
+            ExecKind::JournalUnit => &["unit"],
+            // 全系统日志不需要单元名。
+            ExecKind::JournalSystem => &[],
             _ => &[],
         }
     }
+}
+
+/// 展示语法里的占位符（`journalctl -u <unit>` → `["unit"]`）。
+///
+/// **终端填充的唯一事实来源**：语法里还有占位符就说明这条命令不能直接写进
+/// shell —— 必须先替换成真值（`<unit>` 会被 bash 当成输入重定向）。
+/// 与 `required_params`（执行侧）分开：执行走白名单拼命令，填充走这里。
+pub fn placeholders_in(syntax: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = syntax;
+    while let Some(start) = rest.find('<') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('>') else {
+            break;
+        };
+        let name = after[..end].trim();
+        if !name.is_empty() {
+            out.push(name.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 /// 从结构化参数组装执行动作（**唯一**的知识 → Capability 组装点）。
@@ -302,8 +333,12 @@ pub fn build_exec(
         ExecKind::ServiceReload => KnowledgeExec::ServiceReload {
             unit: need(&params.unit, "unit")?,
         },
-        ExecKind::Journal => KnowledgeExec::Journal {
-            unit: params.unit.clone().filter(|u| !u.trim().is_empty()),
+        ExecKind::JournalUnit => KnowledgeExec::Journal {
+            unit: Some(need(&params.unit, "unit")?),
+            lines: params.lines.unwrap_or(200).clamp(1, 2000),
+        },
+        ExecKind::JournalSystem => KnowledgeExec::Journal {
+            unit: None,
             lines: params.lines.unwrap_or(200).clamp(1, 2000),
         },
         ExecKind::NginxVersion => KnowledgeExec::NginxVersion,
@@ -467,6 +502,9 @@ pub struct CommandSearchHit {
     pub requires: Vec<String>,
     /// 执行前必须由用户提供的参数名（`container` / `unit` / `path`）。
     pub required_params: Vec<String>,
+    /// 展示语法里未替换的占位符（`journalctl -u <unit>` → `["unit"]`）。
+    /// **非空 = 禁止直接写进 shell**，必须先替换成真值。
+    pub placeholders: Vec<String>,
     /// 是否可直接执行。
     pub can_execute: bool,
     /// 是否已收藏。

@@ -86,9 +86,15 @@ export function TerminalSuggest({
             )}
           >
             <code className="shrink-0 font-mono text-11 text-fg">{hit.syntax}</code>
-            <span className={cn("shrink-0 rounded px-1 py-0.5 text-9", RISK_META[hit.risk].tone)}>
-              {RISK_META[hit.risk].label}
-            </span>
+            {/* 只在需要警示时显示标签（只读是默认情况，不占位置）；
+                高/删除类第一批不入库，这里只可能是 low / medium。 */}
+            {hit.risk !== "read_only" && (
+              <span
+                className={cn("shrink-0 rounded px-1 py-0.5 text-9", RISK_META[hit.risk].tone)}
+              >
+                {RISK_META[hit.risk].label}
+              </span>
+            )}
             <span className="min-w-0 flex-1 truncate text-10 text-fg-subtle" title={hit.title}>
               {hit.title}
             </span>

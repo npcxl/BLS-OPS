@@ -88,6 +88,7 @@ fn to_hit(entry: &CommandKnowledge, score: f64, ctx: &SearchContext) -> CommandS
             .iter()
             .map(|name| name.to_string())
             .collect(),
+        placeholders: super::model::placeholders_in(entry.syntax),
         can_execute: entry.executable_now(),
         favorite: ctx.favorites.iter().any(|id| id == entry.id),
         score,

@@ -39,6 +39,12 @@ export interface CommandSearchHit {
   requires: string[];
   /** 执行前必须提供的参数名（container / unit / path）。 */
   required_params: string[];
+  /**
+   * 展示语法里未替换的占位符（`journalctl -u <unit>` → `["unit"]`）。
+   * **非空 = 禁止直接写进 shell**：`<unit>` 会被 bash 当成输入重定向，
+   * 必须先替换成服务器上真实存在的取值。
+   */
+  placeholders: string[];
   /** 是否可直接执行。 */
   can_execute: boolean;
   /** 是否已收藏。 */

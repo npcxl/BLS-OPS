@@ -23,7 +23,14 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
-import { completionKeys } from "@/workbench/views/command-center/complete";
+import {
+  canAutoFill,
+  completionKeys,
+  fillPlaceholder,
+  hasUnresolvedPlaceholder,
+  placeholdersIn,
+} from "@/workbench/views/command-center/complete";
+import { ParamPicker } from "./ParamPicker";
 import type { CommandSearchHit } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { sshClosedEvent, sshOutputEvent } from "@/lib/events";
@@ -89,6 +96,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [dismissedDraft, setDismissedDraft] = useState<string | null>(null);
   /** 提示面板锚点：光标单元格右下角（px，相对终端定位容器）。 */
   const [suggestAnchor, setSuggestAnchor] = useState<SuggestAnchor | null>(null);
+  /**
+   * 二级参数选择：候选语法含 `<unit>`/`<容器>` 时打开，从服务器拉真实取值。
+   * 选中后替换一个占位符；还有占位符就继续选，全替换完才写入 shell。
+   */
+  const [paramPicker, setParamPicker] = useState<{
+    hit: CommandSearchHit;
+    syntax: string;
+    draft: string;
+  } | null>(null);
+  /** 参数相关的可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
+  const [paramHint, setParamHint] = useState<string | null>(null);
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
   /**
@@ -171,28 +189,89 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }, []);
 
   /**
-   * Writes a knowledge-base command into the remote shell's current line.
+   * 把一段文本写进远程 shell 的当前行（**唯一**的写入口）。
    *
-   * We only send keystrokes — the remote shell remains the line editor — and
-   * feed the same keys through LineEditor so our draft stays in sync
-   * (`sshInput` does not pass back through `onData`).
+   * 这里是"未解析占位符绝不进 shell"的**最后一道拦截**：`<unit>` 之类
+   * 一旦漏到这里，bash 会当成输入重定向而报 `No such file or directory`。
+   * 拦截失败时不写任何东西，并给出可见提示（绝不静默）。
+   */
+  const writeToShell = useCallback(
+    (text: string): boolean => {
+      if (hasUnresolvedPlaceholder(text)) {
+        setParamHint(`命令里还有未替换的参数（${text}），请先选择具体值`);
+        return false;
+      }
+      void opsApi.sshInput(sessionId, text).catch(() => undefined);
+      return true;
+    },
+    [sessionId],
+  );
+
+  /**
+   * 接受候选：
    *
-   * 填入**不执行**：填入后记录 dismissedDraft = 填入后的草稿，面板关闭；
-   * 第二次 Enter 时 hits 已空，按键穿透给 shell 正常执行。
+   * - 语法**不含**占位符 → 直接补全（不执行，第二次 Enter 才发给 shell）；
+   * - 语法**含**占位符 → 打开二级参数选择器挑真值，替换后再写；
+   *   认不出种类的占位符（`<时间>` 之类，无数据源）不写、也不开选择器。
    */
   const applySuggestion = useCallback(
     (hit: CommandSearchHit) => {
       const editor = lineEditorRef.current;
       if (!editor) return;
-      const keys = completionKeys(editor.current, hit.syntax);
-      void opsApi.sshInput(sessionId, keys).catch(() => undefined);
+      const draft = editor.current;
+
+      // 占位符以后端 `hit.placeholders` 为准（语法解析在 Rust 侧），
+      // 前端的空数组只会出现在旧快照上 —— 此时退回前端解析，宁可多拦。
+      const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
+      if (hasPlaceholder) {
+        if (!canAutoFill(hit.syntax)) {
+          setParamHint("该命令含需要手填的参数，已为你填入命令主体，请自行补全");
+          return;
+        }
+        setParamPicker({ hit, syntax: hit.syntax, draft });
+        setDismissedDraft(draft);
+        return;
+      }
+
+      const keys = completionKeys(draft, hit.syntax);
+      // 理论上不会为 null（无占位符），仍守住：写不进去就不写。
+      if (keys === null) return;
+      if (!writeToShell(keys)) return;
       editor.feed(keys);
       const next = editor.current;
       setDraft(next);
       setDismissedDraft(next);
       updateSuggestAnchor();
     },
-    [sessionId, updateSuggestAnchor],
+    [updateSuggestAnchor, writeToShell],
+  );
+
+  /** 二级选择器选中一个值：替换当前占位符，还有占位符就继续选，否则写入 shell。 */
+  const applyParamValue = useCallback(
+    (value: string) => {
+      const picker = paramPicker;
+      const editor = lineEditorRef.current;
+      if (!picker || !editor) return;
+      const next = placeholdersIn(picker.syntax)[0];
+      if (!next) return;
+      const filled = fillPlaceholder(picker.syntax, next.token, value);
+      const remaining = placeholdersIn(filled);
+      if (remaining.length > 0) {
+        setParamPicker({ ...picker, syntax: filled });
+        return;
+      }
+      // 全部占位符都已替换：整条写入（不再走 completionKeys 的差分逻辑），
+      // 填入不执行 —— 第二次 Enter 才发给 shell。
+      const keys = completionKeys(picker.draft, filled);
+      setParamPicker(null);
+      if (keys === null || !writeToShell(keys)) return;
+      editor.feed(keys);
+      const line = editor.current;
+      setDraft(line);
+      setDismissedDraft(line);
+      updateSuggestAnchor();
+    },
+    [paramPicker, updateSuggestAnchor, writeToShell],
   );
 
   /**
@@ -205,14 +284,20 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * terminal — created once — always calls the latest handler.
    */
   const keyHandlerRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
+  const paramPickerRef = paramPicker;
   // No dep array on purpose: the terminal is created once, so the handler has
   // to be refreshed after every render to see the current suggestions/draft.
   useEffect(() => {
     keyHandlerRef.current = (event) => {
       if (event.ctrlKey && event.code === "Space") {
-        setSuggestOpen((open) => !open);
+        // 二级选择器打开时先关它（它有自己的 window 级监听）。
+        if (paramPicker) setParamPicker(null);
+        else setSuggestOpen((open) => !open);
         return true;
       }
+      // 二级选择器打开期间：按键交给它（window 捕获阶段），本层不参与，
+      // 否则 ↑↓/Enter 会被两层各处理一次。
+      if (paramPickerRef) return false;
       if (event.isComposing || event.keyCode === 229) return false;
       const { hits, activeIndex, setActiveIndex } = suggestions;
       const action = resolveSuggestKey(
@@ -452,13 +537,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       }
       selectionMenuTimerRef.current = window.setTimeout(() => {
         const container = containerRef.current;
-        if (!container || !instance.hasSelection()) return;
+        // 菜单渲染在 wrapper（relative 定位父元素）里，坐标必须以 wrapper 为基准。
+        const wrapper = suggestWrapperRef.current;
+        if (!container || !wrapper || !instance.hasSelection()) return;
         // 菜单贴着**选区末端**（最后一个选中单元格的右下方），不是写死的顶部居中。
-        // 选区端点用 getSelectionPosition 取，取不到（旧版 xterm）退回终端中上位置。
         const screen = container.querySelector<HTMLElement>(".xterm-screen");
         const cols = instance.cols;
         const rows = instance.rows;
         const pos = instance.getSelectionPosition?.();
+        const containerRect = container.getBoundingClientRect();
+        const wrapperRect = wrapper.getBoundingClientRect();
         let x: number;
         let y: number;
         if (screen && cols > 0 && rows > 0 && pos) {
@@ -467,18 +555,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           const cellHeight = rect.height / rows;
           // start/end 是缓冲坐标（含回滚偏移）；可视行 = bufferY - viewportY。
           const viewportY = instance.buffer.active.viewportY;
-          const endColumn = pos.end.x + 1; // 0 基 → 光标右缘
+          const endColumn = pos.end.x + 1; // 0 基 → 选中文字右缘
           const endRow = pos.end.y - viewportY + 1; // 选中行下一行上缘
-          const containerRect = container.getBoundingClientRect();
-          x = containerRect.left - containerRect.left + endColumn * cellWidth;
-          y = containerRect.top - containerRect.top + endRow * cellHeight;
+          x = containerRect.left - wrapperRect.left + endColumn * cellWidth;
+          y = containerRect.top - wrapperRect.top + endRow * cellHeight;
           // 越界保护：末端滚出视口（选区跨屏）时退回顶部居中。
           if (endRow < 0 || endRow > rows) {
-            x = Math.max(12, containerRect.width / 2);
+            x = Math.max(12, wrapperRect.width / 2);
             y = 12;
           }
         } else {
-          x = Math.max(12, container.clientWidth / 2);
+          x = Math.max(12, wrapperRect.width / 2);
           y = 12;
         }
         setSelectionMenu({ x, y, text });
@@ -684,7 +771,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             onPick={(command) => void opsApi.sshInput(sessionId, `${command}\n`)}
           />
         )}
-        {suggestionsEnabled && (
+        {suggestionsEnabled && !paramPicker && (
           <TerminalSuggest
             hits={suggestions.hits}
             activeIndex={suggestions.activeIndex}
@@ -692,6 +779,30 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             onApply={applySuggestion}
             anchor={suggestAnchor}
           />
+        )}
+        {paramPicker && (
+          <ParamPicker
+            sessionId={sessionId}
+            syntax={paramPicker.syntax}
+            onPick={applyParamValue}
+            onCancel={() => {
+              setParamPicker(null);
+              updateSuggestAnchor();
+            }}
+            anchor={suggestAnchor}
+          />
+        )}
+        {paramHint && (
+          <div className="absolute bottom-1.5 left-1.5 right-1.5 z-30 flex items-center gap-2 rounded-[8px] border border-warning/40 bg-warning/12 px-2.5 py-1.5 text-11 text-warning">
+            <span className="min-w-0 flex-1 truncate">{paramHint}</span>
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 text-11 text-warning/80 hover:text-warning"
+              onClick={() => setParamHint(null)}
+            >
+              知道了
+            </button>
+          </div>
         )}
       </div>
 

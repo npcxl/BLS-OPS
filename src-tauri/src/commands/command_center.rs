@@ -115,6 +115,74 @@ fn probe_tool_by_name(name: &str) -> Option<ProbeTool> {
     Some(tool)
 }
 
+/// 二级参数补全：从**服务器实时**取真实取值，用于把展示语法里的
+/// `<unit>` / `<容器>` / `<路径>` 替换成具体值。
+///
+/// 这是"占位符绝不进 shell"的数据来源端：终端选中 `journalctl -u <unit>`
+/// 后打开选择器，这里返回服务器上真的存在的服务单元名，用户选完才生成
+/// `journalctl -u nginx.service -n 200 --no-pager`。
+///
+/// 取值全部走既有白名单能力（`Capability::ListServices` / `DockerPs` /
+/// SFTP 列目录），本函数不拼任何 shell 文本。
+#[tauri::command]
+pub async fn command_param_values(
+    state: State<'_, AppState>,
+    session_id: String,
+    param: String,
+) -> Result<Vec<String>, String> {
+    if !state.ssh.is_connected(&session_id).await {
+        return Err("SSH 会话不存在或已断开，请先连接服务器".into());
+    }
+    match param.as_str() {
+        // systemd 服务单元：`systemctl list-units --type=service --all`。
+        "unit" => {
+            let output = run_capability(&state.ssh, &session_id, &Capability::ListServices)
+                .await
+                .map_err(|e| e.to_string())?;
+            let units = crate::systemd::parse_list_units(&output);
+            let mut names: Vec<String> = units.into_iter().map(|unit| unit.unit).collect();
+            names.sort();
+            names.dedup();
+            Ok(names)
+        }
+        // Docker 容器名：`docker ps -a`。
+        "container" => {
+            let output = run_capability(&state.ssh, &session_id, &Capability::DockerPs)
+                .await
+                .map_err(|e| e.to_string())?;
+            let containers = docker::parse_ps(&output);
+            let mut names: Vec<String> = containers
+                .into_iter()
+                .map(|container| container.name)
+                .filter(|name| !name.trim().is_empty())
+                .collect();
+            names.sort();
+            names.dedup();
+            Ok(names)
+        }
+        // 远程目录：复用 SFTP 列目录（只读）。
+        "path" => {
+            let (current, entries) = state
+                .ssh
+                .sftp_list_dir(&session_id, None)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut dirs: Vec<String> = entries
+                .into_iter()
+                .filter(|entry| entry.kind == "directory")
+                .map(|entry| entry.path)
+                .collect();
+            dirs.sort();
+            dirs.dedup();
+            // 当前目录本身也是合法取值（相对路径场景）。
+            let mut out = vec![current];
+            out.extend(dirs);
+            Ok(out)
+        }
+        _ => Err(format!("不支持的参数类型：{param}")),
+    }
+}
+
 /// 执行一条知识库命令。
 ///
 /// 只读命令直接执行；medium（restart / reload 等）要求前端先展示

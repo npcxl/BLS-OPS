@@ -372,6 +372,13 @@ export const opsApi = {
     invoke<boolean>("command_toggle_favorite", { knowledgeId }),
   commandFavorites: () => invoke<string[]>("command_favorites"),
   commandCatalogMeta: () => invoke<CommandCatalogMeta>("command_catalog_meta"),
+  /**
+   * 二级参数补全的真实取值：`unit` = 服务器上的 systemd 服务单元，
+   * `container` = Docker 容器名，`path` = 远程目录。
+   * 用于把 `<unit>` 这类占位符替换成真值 —— 占位符绝不能原样进 shell。
+   */
+  commandParamValues: (sessionId: string, param: "unit" | "container" | "path") =>
+    invoke<string[]>("command_param_values", { sessionId, param }),
 
   // -- Project discovery ----------------------------------------------------
   projectScanStart: (sessionId: string, serverId: string, incremental = false) =>
@@ -407,7 +414,6 @@ export const opsApi = {
   /** 列出某台服务器上全部持久化已确认项目（含完整快照与扫描状态）。 */
   projectConfirmedList: (serverId: string) =>
     invoke<ConfirmedProject[]>("confirmed_projects_list", { serverId }),
-  /** 人工合并/拆分项目：parentPath 为 null 表示把 childPath 拆分回独立目录。 */
   projectMergeSet: (serverId: string, childPath: string, parentPath: string | null) =>
     invoke<void>("project_merge_set", {
       serverId,

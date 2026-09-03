@@ -59,6 +59,7 @@ function hit(overrides: Partial<CommandSearchHit> = {}): CommandSearchHit {
     output_adapter: "docker-container-table",
     requires: ["docker"],
     required_params: [],
+    placeholders: [],
     can_execute: true,
     favorite: false,
     score: 100,

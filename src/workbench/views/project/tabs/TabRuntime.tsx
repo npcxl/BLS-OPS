@@ -1,33 +1,30 @@
 import { useMemo, useState } from "react";
-import { Box, Boxes, Container, Server, Ship } from "lucide-react";
+import { Boxes, CircleDashed } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
-import type { DeploymentInstance, InstanceRuntime } from "@/api/ops-api";
+import type { DeploymentInstance } from "@/api/ops-api";
 import {
   PortChips,
   RuntimeBadge,
   ServiceBadge,
   instanceKindMeta,
 } from "../badges";
+import { COMPONENT_ROLE_LABELS, instanceRole } from "../classify";
 
-type Filter = "all" | "linked" | "unlinked" | "stopped";
+type Filter = "all" | "linked" | "unlinked" | "unclassified" | "stopped";
 
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "linked", label: "已关联" },
-  { id: "unlinked", label: "未关联" },
+  { id: "all", label: "全部应用" },
+  { id: "linked", label: "已关联项目" },
+  { id: "unlinked", label: "未关联项目" },
+  { id: "unclassified", label: "待归类" },
   { id: "stopped", label: "已停止" },
 ];
 
-const RUNTIME_ICON: Record<InstanceRuntime, typeof Box> = {
-  host: Server,
-  container: Container,
-  kubernetes: Ship,
-};
-
 /**
- * 运行服务 tab：服务器上真实在跑的实例 —— Docker 容器、systemd、PM2、Kubernetes Pod。
- * 这与"项目"是两层东西：容器是运行形态，项目是源码身份；一个项目可能跑出多个容器。
+ * 应用服务 tab：只展示后端判定为 `application` 的运行实例
+ * （Node/Java/Go 业务进程、项目专属容器等），外加"待归类"实例供筛选查看。
+ * MySQL/Redis 这类基础设施在「基础设施」tab —— 两个 tab 互斥，不会重复。
  */
 export function TabRuntime({
   instances,
@@ -38,19 +35,27 @@ export function TabRuntime({
 }) {
   const [filter, setFilter] = useState<Filter>("all");
 
+  // 已关联项目 = 后端回填的 linked_project_ids 非空；待归类 = workload_role 缺证据。
   const counts = useMemo(() => {
-    const linked = instances.filter((i) => i.source_known).length;
-    const unlinked = instances.filter((i) => !i.source_known).length;
+    const linked = instances.filter((i) => i.linked_project_ids.length > 0).length;
+    const unlinked = instances.filter(
+      (i) => i.linked_project_ids.length === 0 && instanceRole(i) === "application",
+    ).length;
+    const unclassified = instances.filter((i) => instanceRole(i) === "unknown").length;
     const stopped = instances.filter((i) => i.status && i.status !== "running").length;
-    return { all: instances.length, linked, unlinked, stopped };
+    return { all: instances.length, linked, unlinked, unclassified, stopped };
   }, [instances]);
 
   const visible = useMemo(() => {
     switch (filter) {
       case "linked":
-        return instances.filter((i) => i.source_known);
+        return instances.filter((i) => i.linked_project_ids.length > 0);
       case "unlinked":
-        return instances.filter((i) => !i.source_known);
+        return instances.filter(
+          (i) => i.linked_project_ids.length === 0 && instanceRole(i) === "application",
+        );
+      case "unclassified":
+        return instances.filter((i) => instanceRole(i) === "unknown");
       case "stopped":
         return instances.filter((i) => i.status && i.status !== "running");
       default:
@@ -62,8 +67,8 @@ export function TabRuntime({
     return (
       <ModuleEmpty
         icon={Boxes}
-        title="没有发现运行实例"
-        hint="扫描会探测 Docker、systemd、PM2、Kubernetes 等真实实例。没有探测到时说明这台服务器当前没有以这些方式运行的服务。"
+        title="没有应用服务"
+        hint="这里只列出后端判定为业务应用的运行实例（Node/Java/Go 进程、项目专属容器等）。MySQL、Redis 这类依赖在「基础设施」tab；未识别的实例标记为待归类，绝不冒充业务应用。"
       />
     );
   }
@@ -95,8 +100,9 @@ export function TabRuntime({
         <div className="flex flex-col gap-2">
           {visible.map((instance) => {
             const meta = instanceKindMeta(instance.kind);
-            const Icon = RUNTIME_ICON[instance.runtime] ?? meta.icon;
+            const unclassified = instanceRole(instance) === "unknown";
             const stopped = instance.status && instance.status !== "running";
+            const componentLabel = COMPONENT_ROLE_LABELS[instance.component_role];
             return (
               <article
                 key={instance.id}
@@ -106,13 +112,27 @@ export function TabRuntime({
                 )}
               >
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <Icon size={15} className="shrink-0 text-accent" />
                   <strong className="text-13 text-fg">{instance.name}</strong>
                   <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
                     {meta.label}
                   </span>
                   <RuntimeBadge runtime={instance.runtime} />
                   <ServiceBadge service={instance.service} />
+                  {/* 待归类必须显式标记，绝不与业务应用混为一谈。 */}
+                  {unclassified && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning"
+                      title="证据不足，暂时无法判断是业务应用；后端绝不默认归为基础设施"
+                    >
+                      <CircleDashed size={9} />
+                      待归类
+                    </span>
+                  )}
+                  {!unclassified && componentLabel && instance.component_role !== "unknown" && (
+                    <span className="rounded bg-accent/12 px-1.5 py-0.5 text-10 text-accent">
+                      {componentLabel}
+                    </span>
+                  )}
                   {instance.status && (
                     <span
                       className={cn(
@@ -123,14 +143,9 @@ export function TabRuntime({
                       {instance.status}
                     </span>
                   )}
-                  {!instance.source_known && !instance.system_owned && (
+                  {!instance.source_known && !unclassified && (
                     <span className="rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning">
                       源码未知
-                    </span>
-                  )}
-                  {instance.system_owned && (
-                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle">
-                      系统自带
                     </span>
                   )}
                 </div>

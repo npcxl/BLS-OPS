@@ -11,7 +11,6 @@ export type WorkspaceTabType =
   | "server"
   /** Read-only Linux monitoring for one server — runs on its own session. */
   | "monitor"
-  | "file"
   /** P3 management modules. Each opens its own non-interactive session. */
   | "service"
   | "logs"
@@ -62,7 +61,6 @@ export type NavModule =
   | "services"
   /** journald 日志中心 — per-server, session-driven. */
   | "logs"
-  | "files"
   | "projects"
   | "deploy"
   | "tasks"

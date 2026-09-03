@@ -10,11 +10,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
-import type { DiscoveryStatus, ProjectCandidate, ReviewState } from "@/api/ops-api";
+import type {
+  ConfirmedScanState,
+  DiscoveryStatus,
+  ProjectCandidate,
+  ReviewState,
+} from "@/api/ops-api";
 import { Detail } from "./Detail";
 import {
   PortChips,
-  ProjectKindBadge,
   RuntimeBadge,
   ServiceBadge,
   configFileLabel,
@@ -38,29 +42,71 @@ const STATUS_META: Record<
   not_project: { label: "非项目", tone: "bg-surface-3 text-fg-subtle" },
 };
 
+/**
+ * 已确认项目跨扫描的持久化状态。仅在「项目」tab 的卡片上出现；
+ * 待确认 / 本次新发现的高可信候选没有这部分信息。
+ */
+export interface ScanInfo {
+  /** 本次扫描对该已确认项目的态度：active / missing / inaccessible / changed。 */
+  scanState?: ConfirmedScanState;
+  /** 系统重新将其分类为基础设施，但用户曾确认是业务项目 → 需复核。 */
+  kindChanged?: boolean;
+  /** 本次扫描未再发现该路径（快照仍在，仅供展示）。 */
+  confirmedMissing?: boolean;
+}
+
+/** 已确认项目的持久化状态徽标：覆盖在「已确认」之上，提示跨扫描变化。 */
+const SCAN_STATE_META: Record<
+  ConfirmedScanState,
+  { label: string; tone: string }
+> = {
+  active: { label: "本次已发现", tone: "bg-success/12 text-success" },
+  missing: { label: "本次未发现", tone: "bg-warning/14 text-warning" },
+  inaccessible: { label: "服务器不可访问", tone: "bg-danger/14 text-danger" },
+  changed: { label: "信息有变化", tone: "bg-accent/14 text-accent" },
+};
+
 export function CandidateCard({
   candidate,
   onOpenPath,
+  onClosePath,
   serverId,
   review,
   onReview,
+  scanInfo,
 }: {
   candidate: ProjectCandidate;
   /** 在右侧文件面板打开某个路径（目录或文件）。 */
   onOpenPath: (path: string) => void;
+  /** 收起右侧文件面板（与「打开项目目录」成对，点开后再点收起）。 */
+  onClosePath: () => void;
   /** 服务器 ID，写复核结论用。 */
   serverId: string;
   /** 当前复核结论（由父组件从扫描结果 / 本地状态合并而来）。 */
   review: ReviewState;
   /** 用户确认 / 忽略后回调，父组件据此刷新列表。 */
   onReview: (path: string, state: ReviewState) => void;
+  /** 已确认项目的跨扫描持久化状态；非确认卡片不传。 */
+  scanInfo?: ScanInfo;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
   const [busy, setBusy] = useState<ReviewState | null>(null);
   const running = candidate.runtime_links.length > 0;
-  const status = candidate.status;
-  const statusMeta = STATUS_META[status] ?? STATUS_META.possible_dir;
+  // 最终展示状态 = 人工结论优先覆盖算法结论（candidate.status 只是算法发现结论）。
+  // 重扫后后端会把 status 改回 confirmed，人工 review 与它合并成**一枚**标签，
+  // 绝不渲染两枚"已确认"。
+  const displayStatus: DiscoveryStatus | "ignored" =
+    review === "confirmed"
+      ? "confirmed"
+      : review === "ignored"
+        ? "ignored"
+        : candidate.status;
+  const statusMeta =
+    displayStatus === "ignored"
+      ? { label: "已忽略", tone: "bg-surface-3 text-fg-subtle" }
+      : (STATUS_META[displayStatus] ?? STATUS_META.possible_dir);
   const instances = candidate.deploy_instances ?? [];
   // 候选自身端口为空时（systemd 不报端口），用关联实例的端口补齐展示。
   const ports = candidate.detected_ports.length
@@ -72,12 +118,17 @@ export function CandidateCard({
   const submitReview = async (state: ReviewState) => {
     setBusy(state);
     try {
+      // 确认项目时随附当前候选完整快照，后端据此持久化，后续扫描即使没再
+      // 发现该路径也能继续保留已确认项目。忽略/撤销不需要快照。
+      const payload = state === "confirmed" ? JSON.stringify(candidate) : undefined;
       await opsApi.projectReviewSet(
         serverId,
         candidate.path,
         state,
         candidate.name,
         candidate.project_type,
+        undefined,
+        payload,
       );
       onReview(candidate.path, state);
     } finally {
@@ -92,19 +143,32 @@ export function CandidateCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <strong className="truncate text-13 text-fg">{candidate.name}</strong>
-            <ProjectKindBadge kind={candidate.project_kind} />
-            {/* 发现结论（证据等级）：确认覆盖一切，分数不再暴露在标题。 */}
+            {/* 主状态标签（唯一一枚）：人工结论优先覆盖算法结论。
+                project_kind 不再上卡片：能进项目/待确认列表的都是业务项目候选，
+                基础设施改判场景已由「信息有变化」徽标提示复核。 */}
             <span className={cn("rounded px-1.5 py-0.5 text-10", statusMeta.tone)}>
               {statusMeta.label}
             </span>
-            {review === "confirmed" && (
-              <span className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success">
-                已确认
+            {/* 已确认项目的跨扫描状态：本次是否又被发现、信息是否变化、服务器是否不可访问。
+                这些只在 review === "confirmed" 且 scanInfo 存在时才有意义（来自持久化快照）。 */}
+            {review === "confirmed" && scanInfo?.scanState && (
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-10",
+                  SCAN_STATE_META[scanInfo.scanState].tone,
+                )}
+              >
+                {SCAN_STATE_META[scanInfo.scanState].label}
               </span>
             )}
-            {review === "ignored" && (
-              <span className="rounded bg-surface-3 px-1.5 py-0.5 text-10 text-fg-subtle">
-                已忽略
+            {review === "confirmed" && scanInfo?.kindChanged && (
+              <span className="rounded bg-warning/14 px-1.5 py-0.5 text-10 text-warning">
+                信息有变化
+              </span>
+            )}
+            {review === "confirmed" && scanInfo?.confirmedMissing && (
+              <span className="rounded bg-warning/14 px-1.5 py-0.5 text-10 text-warning">
+                本次未发现
               </span>
             )}
             <span
@@ -168,6 +232,16 @@ export function CandidateCard({
               candidate={candidate}
               instances={instances}
               onOpenPath={onOpenPath}
+              open={deployOpen}
+              onToggle={() => {
+                if (deployOpen) {
+                  onClosePath();
+                  setDeployOpen(false);
+                } else {
+                  onOpenPath(candidate.path);
+                  setDeployOpen(true);
+                }
+              }}
             />
             {/* 证据详情：部署文件右下角的小展开按钮，点开才显示评分 / 判定依据等 */}
             <div className="mt-2 flex justify-end">
@@ -277,10 +351,16 @@ function DeploymentFiles({
   candidate,
   instances,
   onOpenPath,
+  open,
+  onToggle,
 }: {
   candidate: ProjectCandidate;
   instances: NonNullable<ProjectCandidate["deploy_instances"]>;
   onOpenPath: (path: string) => void;
+  /** 文件面板是否已打开该项目目录，用于按钮文案切换。 */
+  open: boolean;
+  /** 点按钮：开则收起面板，关则打开。 */
+  onToggle: () => void;
 }) {
   if (instances.length === 0) {
     return (
@@ -290,11 +370,11 @@ function DeploymentFiles({
           <Button
             variant="secondary"
             size="xs"
-            onClick={() => onOpenPath(candidate.path)}
+            onClick={onToggle}
             title={`在文件面板打开 ${candidate.path}`}
           >
             <FolderOpen size={11} />
-            查看项目文件
+            {open ? "关闭项目目录" : "查看项目文件"}
           </Button>
         </div>
       </div>
@@ -310,11 +390,11 @@ function DeploymentFiles({
         <Button
           variant="secondary"
           size="xs"
-          onClick={() => onOpenPath(candidate.path)}
+          onClick={onToggle}
           title={`在文件面板打开 ${candidate.path}`}
         >
           <FolderOpen size={11} />
-          打开项目目录
+          {open ? "关闭项目目录" : "打开项目目录"}
         </Button>
       </div>
       <div className="space-y-2">

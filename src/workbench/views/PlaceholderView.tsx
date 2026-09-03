@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Activity, Boxes, FileText, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Workflow } from "lucide-react";
+import { Activity, Boxes, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Workflow } from "lucide-react";
 import type { WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
 
 /** Generic placeholder for tab types that land in later phases. */
@@ -13,7 +13,6 @@ const META: Record<WorkspaceTabType, { icon: LucideIcon; phase: string }> = {
   service: { icon: SquareCheckBig, phase: "阶段 3" },
   logs: { icon: ScrollText, phase: "阶段 3" },
   project: { icon: Boxes, phase: "阶段 3" },
-  file: { icon: FileText, phase: "阶段 3" },
   workflow: { icon: Workflow, phase: "阶段 6" },
   deployment: { icon: Rocket, phase: "阶段 6" },
 };

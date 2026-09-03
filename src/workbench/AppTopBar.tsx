@@ -1,5 +1,4 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ChevronsLeft } from "lucide-react";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 
@@ -8,7 +7,6 @@ import { cn } from "@/lib/cn";
 const MODULE_TITLES: Record<string, string> = {
   ssh: "终端",
   servers: "服务器",
-  files: "文件",
   projects: "项目",
   deploy: "部署",
   tasks: "任务",
@@ -45,8 +43,6 @@ function WindowButton({ kind }: { kind: "close" | "minimize" | "maximize" }) {
 
 export function AppTopBar() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
-  const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
-  const setCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
 
   return (
     <header
@@ -56,7 +52,7 @@ export function AppTopBar() {
       <WindowButton kind="close" />
       <WindowButton kind="minimize" />
       <WindowButton kind="maximize" />
-      <button
+      {/* <button
         type="button"
         aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
         title={collapsed ? "展开侧边栏" : "收起侧边栏"}
@@ -65,7 +61,7 @@ export function AppTopBar() {
         data-tauri-drag-region="false"
       >
         <ChevronsLeft size={10} className={collapsed ? "rotate-180" : ""} />
-      </button>
+      </button> */}
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
         {MODULE_TITLES[activeModule] ?? "BLS-OPS"}
       </span>

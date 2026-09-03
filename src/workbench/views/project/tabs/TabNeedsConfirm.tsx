@@ -13,12 +13,14 @@ export function TabNeedsConfirm({
   serverId,
   reviews,
   onOpenPath,
+  onClosePath,
   onReview,
 }: {
   candidates: ProjectCandidate[];
   serverId: string;
   reviews: Record<string, ReviewState>;
   onOpenPath: (path: string) => void;
+  onClosePath: () => void;
   onReview: (path: string, state: ReviewState) => void;
 }) {
   const list = useMemo(
@@ -54,6 +56,7 @@ export function TabNeedsConfirm({
           serverId={serverId}
           review={(reviews[candidate.path] ?? candidate.review) ?? "pending"}
           onOpenPath={onOpenPath}
+          onClosePath={onClosePath}
           onReview={onReview}
         />
       ))}

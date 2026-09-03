@@ -24,7 +24,6 @@ const MODULE_TITLE: Record<NavModule, string> = {
   servers: "服务器",
   services: "服务",
   logs: "日志",
-  files: "文件",
   projects: "项目",
   deploy: "部署",
   tasks: "任务",

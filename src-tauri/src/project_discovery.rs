@@ -13,6 +13,38 @@ use tokio::sync::Mutex;
 
 use crate::service_catalog::{is_plausible_project_root, DetectedService, InstanceRuntime};
 
+/// 统一规范化项目路径，确保 review / inventory / confirmed_projects 使用同一把
+/// 钥匙，避免 `/opt/app` 与 `/opt/app/` 被当成两个项目：
+///
+/// - 去掉末尾斜杠（根目录 `/` 除外）；
+/// - 合并连续的斜杠（`/opt//app` → `/opt/app`）；
+/// - 保留前导 `/`，不做 realpath（服务器侧 realpath 需联网，在扫描命令里完成，
+///   这里只保证本地字符串一致）。
+pub fn canonicalize_project_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut prev_slash = false;
+    for ch in trimmed.chars() {
+        if ch == '/' {
+            if prev_slash {
+                continue; // 跳过重复斜杠
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+        out.push(ch);
+    }
+    // 去掉末尾斜杠（根目录 / 除外）
+    while out.len() > 1 && out.ends_with('/') {
+        out.pop();
+    }
+    if out.is_empty() {
+        return "/".to_string();
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfidenceLevel {
@@ -330,6 +362,10 @@ pub struct ProjectScanResult {
     /// 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。
     /// `source_known == false` 的实例即"只有运行实例，源码未知"。
     pub instances: Vec<crate::deployment_collector::DeploymentInstance>,
+    /// Nginx 网关路由（server block）：网关实例与路由分离后的产物，
+    /// 项目详情的"访问入口"用它展示。旧快照无此字段（serde default）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gateway_routes: Vec<crate::deployment_collector::GatewayRoute>,
 }
 
 impl ProjectScanResult {
@@ -351,6 +387,7 @@ impl ProjectScanResult {
             incremental,
             capability: None,
             instances: Vec::new(),
+            gateway_routes: Vec::new(),
         }
     }
 }
@@ -583,9 +620,7 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
     //   - 自身有构建清单（package.json / pom.xml / Cargo.toml …）→ 业务应用；
     //   - 没有清单、但关联实例被认成中间件（且不是项目本身）→ 基础设施；
     //   - 其余 → 未确定（绝不谎称业务应用）。
-    let has_manifest = identity
-        .iter()
-        .any(|m| is_build_manifest(m));
+    let has_manifest = identity.iter().any(|m| is_build_manifest(m));
     let infra_links = input
         .runtime_links
         .iter()

@@ -12,7 +12,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  Calculator,
   ClipboardCopy,
   CornerDownLeft,
   Copy,
@@ -26,7 +25,6 @@ import {
   RefreshCw,
   Trash2,
   Upload,
-  XCircle,
 } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -457,11 +455,28 @@ export function RemoteFilePanel({
   const panelRef = useRef<HTMLElement>(null);
 
   // Directory-size queue (max 2 concurrent) — logic lives in the hook.
-  const { computeDirSize, cancelDirSize, computeAllDirSizes } = useDirSizeQueue(
+  const { computeDirSize } = useDirSizeQueue(
     sessionId,
-    entries,
     (message) => setStatus({ state: "error", message }),
   );
+
+  /**
+   * 每次列出目录就自动计算列表里每个子文件夹的大小，结果通过
+   * `directory-size-update` 事件回填 store，行内直接渲染。
+   *
+   * - 后端按 (session, path) 缓存已完成结果：重复进入同一目录只会回放缓存，
+   *   不会重复跑 `du`，这里跳过已完成的条目进一步省掉无谓 IPC。
+   * - 真正的并发限制在 Rust 端（每会话 2 个），超出的任务报 `pending`，
+   *   行内显示"排队中"。
+   */
+  useEffect(() => {
+    for (const entry of entries) {
+      if (entry.kind !== "directory") continue;
+      const cached = useDirSizeStore.getState().get(sessionId, entry.path);
+      if (cached?.complete) continue;
+      computeDirSize(entry.path);
+    }
+  }, [entries, sessionId, computeDirSize]);
 
   // Stale results for this session are cleared when the connection drops.
   useEffect(() => {
@@ -590,53 +605,31 @@ export function RemoteFilePanel({
   const contextTargetRef = useRef<RemoteFileEntry | null>(null);
 
   const entryMenu = menu.onContextMenu(() => {
-  const entry = contextTargetRef.current;
-  if (!entry) return [];
-  const isDir = entry.kind === "directory";
-  const dirSize = isDir ? useDirSizeStore.getState().get(sessionId, entry.path) : undefined;
-  const computing = dirSize?.status === "computing" || dirSize?.status === "pending";
-  const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
-    { id: "open", label: "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
-  ];
-  if (!isDir) {
-    items.push(
-      {
-        id: "preview",
-        label: "预览",
-        icon: Eye,
-        onSelect: () => setPreview({ path: entry.path, name: entry.name, size: entry.size }),
-      },
-      {
-        id: "download",
-        label: "下载到本地…",
-        icon: Download,
-        onSelect: () => void downloadEntry(entry),
-      },
-    );
-  }
-  if (isDir) {
-    items.push({ id: "sep-size", separator: true });
-    if (computing) {
-      items.push({
-        id: "size-cancel",
-        label: "停止计算大小",
-        icon: XCircle,
-        onSelect: () => cancelDirSize(entry.path),
-      });
-    } else {
-      items.push({
-        id: "size-compute",
-        label: dirSize?.complete ? "重新计算大小" : "计算文件夹大小",
-        icon: Calculator,
-        onSelect: () => computeDirSize(entry.path, dirSize?.complete === true),
-      });
+    const entry = contextTargetRef.current;
+    if (!entry) return [];
+    const isDir = entry.kind === "directory";
+    const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
+      { id: "open", label: "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
+    ];
+    if (!isDir) {
+      items.push(
+        {
+          id: "preview",
+          label: "预览",
+          icon: Eye,
+          onSelect: () => setPreview({ path: entry.path, name: entry.name, size: entry.size }),
+        },
+        {
+          id: "download",
+          label: "下载到本地…",
+          icon: Download,
+          onSelect: () => void downloadEntry(entry),
+        },
+      );
     }
     items.push({ id: "sep1", separator: true });
-  } else {
-    items.push({ id: "sep1", separator: true });
-  }
-  return [
-    ...items,
+    return [
+      ...items,
       { id: "rename", label: "重命名", icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
       { id: "duplicate", label: "创建副本", icon: Copy, onSelect: () => copyEntry(entry) },
       {
@@ -679,14 +672,6 @@ export function RemoteFilePanel({
       { id: "touch", label: "新建文件", icon: FilePlus2, disabled: !cwd, onSelect: createFile },
       { id: "sep2", separator: true },
       { id: "refresh", label: "刷新", icon: RefreshCw, disabled: !cwd, onSelect: refresh },
-      { id: "sep3", separator: true },
-      {
-        id: "size-all",
-        label: "计算当前目录文件夹大小",
-        icon: Calculator,
-        disabled: !cwd,
-        onSelect: computeAllDirSizes,
-      },
     ];
   });
 
@@ -751,12 +736,6 @@ export function RemoteFilePanel({
           disabled={!cwd || picking}
           className={picking ? "animate-spin" : undefined}
           onClick={() => void pickFilesToUpload()}
-        />
-        <PanelButton
-          label="计算当前目录文件夹大小"
-          icon={Calculator}
-          disabled={!cwd}
-          onClick={computeAllDirSizes}
         />
         <PanelButton label="折叠面板" icon={Pause} onClick={onClose} />
       </div>

@@ -180,6 +180,140 @@ pub fn delete_project_review(conn: &Connection, server_id: &str, path: &str) -> 
     Ok(changed > 0)
 }
 
+// -- confirmed projects (持久化已确认项目资产) --------------------------------
+
+/// 一条已确认项目的完整快照。即使后续扫描没有再次发现该路径，项目也必须继续
+/// 存在，直到用户主动取消确认（写回 review=pending）或软删除（`deleted_at`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmedProjectRecord {
+    pub id: String,
+    pub server_id: String,
+    /// 统一规范化后的路径（末尾斜杠去掉、重复斜杠合并）。review / inventory /
+    /// confirmed 全部使用它，避免 `/opt/app` 与 `/opt/app/` 被当成两个项目。
+    pub canonical_path: String,
+    pub name: String,
+    pub project_type: String,
+    /// `ProjectCandidate` 的完整 JSON 快照（含 deploy_instances / markers / 证据）。
+    pub candidate_payload: String,
+    /// active | missing | inaccessible | changed。
+    pub scan_state: String,
+    pub confirmed_at: i64,
+    pub updated_at: i64,
+    pub last_seen_at: i64,
+    pub missing_since: Option<i64>,
+    pub deleted_at: Option<i64>,
+}
+
+fn confirmed_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConfirmedProjectRecord> {
+    Ok(ConfirmedProjectRecord {
+        id: row.get("id")?,
+        server_id: row.get("server_id")?,
+        canonical_path: row.get("canonical_path")?,
+        name: row.get("name")?,
+        project_type: row.get("project_type")?,
+        candidate_payload: row.get("candidate_payload")?,
+        scan_state: row.get("scan_state")?,
+        confirmed_at: row.get("confirmed_at")?,
+        updated_at: row.get("updated_at")?,
+        last_seen_at: row.get("last_seen_at")?,
+        missing_since: row.get("missing_since")?,
+        deleted_at: row.get("deleted_at")?,
+    })
+}
+
+/// 某台服务器上所有未软删除的已确认项目（按 canonical_path 升序）。
+pub fn list_confirmed_projects(
+    conn: &Connection,
+    server_id: &str,
+) -> Result<Vec<ConfirmedProjectRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM confirmed_projects WHERE server_id = ?1 AND deleted_at IS NULL ORDER BY canonical_path ASC",
+    )?;
+    let rows = stmt.query_map([server_id], confirmed_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 按 (server_id, canonical_path) 取出唯一的已确认项目（含已软删除的）。
+pub fn get_confirmed_project(
+    conn: &Connection,
+    server_id: &str,
+    canonical_path: &str,
+) -> Result<Option<ConfirmedProjectRecord>> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM confirmed_projects WHERE server_id = ?1 AND canonical_path = ?2")?;
+    let mut rows = stmt.query_map(params![server_id, canonical_path], confirmed_from_row)?;
+    Ok(rows.next().transpose()?)
+}
+
+/// 写入（或覆盖）一条已确认项目。同一个 (server_id, canonical_path) 只保留最新，
+/// 因此"重新确认"会刷新快照与状态。软删除的项目被重新确认时会被复活。
+pub fn upsert_confirmed_project(conn: &Connection, record: &ConfirmedProjectRecord) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO confirmed_projects
+            (id, server_id, canonical_path, name, project_type, candidate_payload,
+             scan_state, confirmed_at, updated_at, last_seen_at, missing_since, deleted_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ON CONFLICT(server_id, canonical_path) DO UPDATE SET
+            name=excluded.name,
+            project_type=excluded.project_type,
+            candidate_payload=excluded.candidate_payload,
+            scan_state=excluded.scan_state,
+            confirmed_at=excluded.confirmed_at,
+            updated_at=excluded.updated_at,
+            last_seen_at=excluded.last_seen_at,
+            missing_since=excluded.missing_since,
+            deleted_at=excluded.deleted_at
+        "#,
+        params![
+            record.id,
+            record.server_id,
+            record.canonical_path,
+            record.name,
+            record.project_type,
+            record.candidate_payload,
+            record.scan_state,
+            record.confirmed_at,
+            record.updated_at,
+            record.last_seen_at,
+            record.missing_since,
+            record.deleted_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// 软删除一条已确认项目（用户主动取消确认）。保留行以便审计，但不再出现在列表。
+pub fn soft_delete_confirmed_project(
+    conn: &Connection,
+    server_id: &str,
+    canonical_path: &str,
+    deleted_at: i64,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE confirmed_projects SET deleted_at = ?3, updated_at = ?3 WHERE server_id = ?1 AND canonical_path = ?2 AND deleted_at IS NULL",
+        params![server_id, canonical_path, deleted_at],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 更新已确认项目的扫描状态（active / missing / inaccessible / changed）与
+/// last_seen_at / missing_since，不动快照本身。
+pub fn update_confirmed_scan_state(
+    conn: &Connection,
+    server_id: &str,
+    canonical_path: &str,
+    scan_state: &str,
+    last_seen_at: i64,
+    missing_since: Option<i64>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE confirmed_projects SET scan_state = ?3, last_seen_at = ?4, missing_since = ?5, updated_at = ?4 WHERE server_id = ?1 AND canonical_path = ?2 AND deleted_at IS NULL",
+        params![server_id, canonical_path, scan_state, last_seen_at, missing_since],
+    )?;
+    Ok(changed > 0)
+}
+
 // -- project inventory cache ------------------------------------------------
 
 /// 某台服务器最近一次扫描的快照缓存（JSON 负载 + 时间戳）。

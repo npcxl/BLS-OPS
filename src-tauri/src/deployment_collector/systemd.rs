@@ -7,7 +7,10 @@ use super::model::{
 };
 use crate::remote::run_on_linux;
 use crate::safe::{validate_unit, Capability};
-use crate::service_catalog::{identify_unit, is_os_unit, is_system_unit_path, InstanceRuntime};
+use crate::service_catalog::{
+    identify_executable, identify_runtime_tech, identify_unit, is_os_unit, is_system_unit_path,
+    InstanceRuntime,
+};
 use crate::ssh::SshSessionManager;
 
 /// 单次 `systemctl show` 的单元上限（`safe::Capability::SystemdShowUnits` 的上限）。
@@ -27,26 +30,14 @@ pub(crate) async fn collect_systemd(
     // systemd escapes some names (`systemd\x2dfsck@dev-sda1.service`, where the
     // backslash is part of an escape sequence). Those are not business services,
     // and a single one would otherwise fail the whole batched `systemctl show`
-    // — losing every unit on the machine. Drop them here and say how many, so
-    // the rest of the collection still produces evidence.
-    let mut skipped = 0usize;
+    // — losing every unit on the machine. Drop them silently: the surviving
+    // units still produce all the evidence the scan needs.
     let names: Vec<String> = units
         .iter()
         .take(MAX_UNITS)
         .map(|u| u.unit.clone())
-        .filter(|name| {
-            let ok = validate_unit(name).is_ok();
-            if !ok {
-                skipped += 1;
-            }
-            ok
-        })
+        .filter(|name| validate_unit(name).is_ok())
         .collect();
-    if skipped > 0 {
-        warnings.push(format!(
-            "已跳过 {skipped} 个名称含转义字符的 systemd 单元（非业务服务）"
-        ));
-    }
     let mut instances = Vec::new();
 
     // 第二步：批量 show（白名单校验单元名）。
@@ -165,6 +156,22 @@ pub fn systemd_instance(
     }
 
     let source_known = !source_paths.is_empty();
+    // 服务识别：单元名优先（`mysql.service` / `redis-server.service`），
+    // 其次 ExecStart 的可执行 basename（`/usr/bin/redis-server` → Redis）。
+    // 都识别不出时，再尝试语言运行时表（pm2 / node / java …）。
+    let identity = identify_unit(unit)
+        .or_else(|| exec_paths.iter().find_map(|path| identify_executable(path)));
+    let technology = identity
+        .as_ref()
+        .map(|i| crate::service_catalog::DetectedTechnology {
+            id: i.id.to_string(),
+            label: i.label.to_string(),
+        })
+        .or_else(|| {
+            exec_paths
+                .iter()
+                .find_map(|path| identify_runtime_tech(path))
+        });
     Some(DeploymentInstance {
         id: format!("systemd:{unit}"),
         kind: "systemd".into(),
@@ -173,8 +180,7 @@ pub fn systemd_instance(
         // 直接跑在宿主机上 —— 不是容器、也不是 k8s。
         runtime: InstanceRuntime::Host,
         image: None,
-        // 单元名能说明跑的是什么（`mysql.service` / `redis.service` / `nginx.service`）。
-        service: identify_unit(unit).map(|identity| identity.detected()),
+        service: identity.map(|identity| identity.detected()),
         system_owned: false,
         ports: Vec::new(), // systemd show 不提供监听端口；由证据阶段补充
         working_directories,
@@ -186,6 +192,8 @@ pub fn systemd_instance(
         } else {
             format!("单元 {unit} · {exec_start}")
         },
+        technology,
+        ..Default::default()
     })
 }
 

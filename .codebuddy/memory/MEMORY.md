@@ -41,6 +41,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 - 代码处置：只读探测保留在 P3；docker build/stop、systemd 操作、nginx reload、部署/文件修改/回滚移入 P4；`docker_prune` 禁用（违背软删除）。**项目发现已是"部署实例优先"**（2026-09-02 重构）：能力识别 → `deployment_collector.rs` 按能力枚举真实实例（docker inspect 提取 Compose/Mounts/端口；systemctl show 提取 WorkingDirectory/ExecStart；nginx -T + ss→/proc/PID/cwd）→ 实例路径定向 marker 扫描 → 固定根补充扫描（`ProjectMarkerScan`，只搜项目标志不枚举普通文件）。旧的 find 全量 2 万文件命令已删。实例无宿主线索时 `source_known=false`（"源码未知"），绝不伪造路径；`ProjectCandidate.category` = deployed/source_only。
 - 安全边界：`src-tauri/src/safe.rs` 的 `Capability` 枚举是唯一"动作→命令字符串"翻译点，禁止别处拼命令；前端只传结构化标识；校验在网络 I/O 之前（`remote::run_on_linux`，先 `capability.command()?` 再 OS 探测）。部署步骤三重校验（白名单+禁 shell 操作符+路径在 deploy_path 内），`deployment_execute` 只收 projectId 且步骤从 DB 读后重校验。改服务端状态必须有 ConfirmDialog；Nginx 先 `nginx -t` 再 reload。「不可用」≠「空」，要给原因。
 - e2e：`tests/p3_e2e.rs` 记录每条命令并断言被拒参数一条都没发出。
+- **已确认项目持久化（2026-09-02 完成）**：已确认项目消失问题的根治方案。`confirmed_projects` 表（唯一索引 `(server_id, canonical_path)`，软删除用 `deleted_at`）存完整 `ProjectCandidate` JSON 快照（`candidate_payload`）+ `scan_state`（active/missing/inaccessible/changed）。用户点"确认项目"时 `project_review_set` 随附 `candidate_payload`（前端 `JSON.stringify(candidate)`）写入该表；取消确认/忽略则软删除。扫描完成块对每条已确认项目按 `found_paths` 重算 `scan_state`（发现=active，没发现=missing，保留 `missing_since`），**绝不删除行**。路径统一走 `project_discovery::canonicalize_project_path`（`/opt/app/`、`/opt//app` 都归一为 `/opt/app`，根目录 `/` 除外）。前端 `ProjectView.applications` 合并 `confirmedProjects`（来自 `confirmed_projects_list`）与扫描候选，已确认优先级最高（即使被算法重分类为 infrastructure 也保留并标 `kindChanged`），`CandidateCard` 用 `scanInfo` 渲染状态徽标（本次已发现/本次未发现/信息有变化）。`useScanTask` 刷新不再 `setResult(null)`，挂载自动 `discover(true)` 且 StrictMode 用 `autoRanRef` 防双跑。后端测试在 `src-tauri/src/db/tests.rs`（8 个 cargo 单测覆盖确认保留/缺失标记/重分类保留/路径归一/扫描开始与失败不丢/重启保留/仅取消确认才移除）。
 
 ## 技术要点
 - SSH 用 `russh 0.63`，默认 `check_server_key` 拒绝所有键，必须实现；KeepAlive 用 `client::Config.keepalive_interval` + `Handle::send_keepalive`。
@@ -53,7 +54,7 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 pnpm build                                   # tsc + vite build
 cd src-tauri && cargo fmt --all -- --check   # CI 有门禁
 cd src-tauri && cargo check --all-targets
-cd src-tauri && cargo test --all-targets     # 26 单元 + 10 端到端
+cd src-tauri && cargo test --all-targets     # 27 db 单元 + e2e（含 8 个 confirmed_projects 测试）
 cargo build && ./target/debug/ops-workbench.exe   # 冒烟：窗口标题 BLS-OPS
 ```
 

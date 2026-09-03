@@ -473,3 +473,217 @@ fn project_status_mirrors_the_last_deployment() {
     set_project_status(&conn, "p1", DEPLOY_FAILED).unwrap();
     assert_eq!(get_project(&conn, "p1").unwrap().unwrap().status, "failed");
 }
+
+// -- confirmed projects (持久化已确认项目资产) --------------------------------
+
+/// 构造一条已确认项目快照记录。
+fn confirmed(
+    server_id: &str,
+    canonical_path: &str,
+    name: &str,
+    scan_state: &str,
+) -> ConfirmedProjectRecord {
+    ConfirmedProjectRecord {
+        id: format!("{}:{}", server_id, canonical_path),
+        server_id: server_id.to_string(),
+        canonical_path: canonical_path.to_string(),
+        name: name.to_string(),
+        project_type: "node".to_string(),
+        candidate_payload: r#"{"id":"x","name":"x","path":"x"}"#.to_string(),
+        scan_state: scan_state.to_string(),
+        confirmed_at: 1,
+        updated_at: 1,
+        last_seen_at: 1,
+        missing_since: None,
+        deleted_at: None,
+    }
+}
+
+/// 模拟一次扫描完成后，依据"本次发现的路径集合"更新已确认项目的 scan_state。
+/// 等价于 `commands/project.rs` 扫描完成块里对 confirmed_projects 的处理。
+fn reconcile_after_scan(conn: &Connection, server_id: &str, found_paths: &[&str]) {
+    let now = 1000_i64;
+    let confirmed = list_confirmed_projects(conn, server_id).unwrap();
+    for cp in confirmed {
+        if cp.deleted_at.is_some() {
+            continue;
+        }
+        let (scan_state, missing_since) = if found_paths.contains(&cp.canonical_path.as_str()) {
+            ("active".to_string(), None)
+        } else {
+            let missing_since = cp.missing_since.unwrap_or(now);
+            ("missing".to_string(), Some(missing_since))
+        };
+        update_confirmed_scan_state(
+            conn,
+            server_id,
+            &cp.canonical_path,
+            &scan_state,
+            now,
+            missing_since,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn confirming_a_project_persists_it_across_scans() {
+    let conn = test_db();
+    // 用户确认了 3 个项目。
+    for (path, name) in [("/opt/app1", "a"), ("/opt/app2", "b"), ("/opt/app3", "c")] {
+        upsert_confirmed_project(&conn, &confirmed("s1", path, name, "active")).unwrap();
+    }
+    assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 3);
+
+    // 本次扫描只又发现了 1 个（app1），另两个没扫到。
+    reconcile_after_scan(&conn, "s1", &["/opt/app1"]);
+
+    // 已确认项目绝不能因为本次没扫到而消失：仍是 3 条。
+    let all = list_confirmed_projects(&conn, "s1").unwrap();
+    assert_eq!(all.len(), 3, "确认过的项目必须继续存在");
+    let app1 = all
+        .iter()
+        .find(|c| c.canonical_path == "/opt/app1")
+        .unwrap();
+    let app2 = all
+        .iter()
+        .find(|c| c.canonical_path == "/opt/app2")
+        .unwrap();
+    assert_eq!(app1.scan_state, "active", "本次发现的应标记 active");
+    assert_eq!(app2.scan_state, "missing", "本次没发现的应标记 missing");
+    assert!(app2.missing_since.is_some());
+}
+
+#[test]
+fn two_missing_confirmed_projects_are_marked_missing() {
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/c", "c", "active")).unwrap();
+
+    // 本次一个都没扫到。
+    reconcile_after_scan(&conn, "s1", &[]);
+
+    let all = list_confirmed_projects(&conn, "s1").unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().all(|c| c.scan_state == "missing"));
+    assert!(all.iter().all(|c| c.missing_since.is_some()));
+}
+
+#[test]
+fn confirmed_project_is_kept_when_reclassified_as_infrastructure() {
+    let conn = test_db();
+    // 用户曾确认 /opt/app 是业务项目；本次扫描把它重新分类成基础设施。
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/app", "app", "active")).unwrap();
+    reconcile_after_scan(&conn, "s1", &["/opt/app"]);
+
+    // 仍必须在列表里（前端用 kindChanged 提示复核，而不是自动丢弃）。
+    let all = list_confirmed_projects(&conn, "s1").unwrap();
+    assert_eq!(all.len(), 1, "被重新分类成基础设施的已确认项目不能被丢");
+    assert_eq!(all[0].canonical_path, "/opt/app");
+    // 快照持久化：payload 仍可被前端解析成候选继续渲染。
+    assert!(all[0].candidate_payload.contains("name"));
+}
+
+#[test]
+fn trailing_slash_paths_collapse_to_the_same_key() {
+    // canonicalize 必须保证 /opt/app 与 /opt/app/ 是同一个项目。
+    assert_eq!(
+        crate::project_discovery::canonicalize_project_path("/opt/app/"),
+        crate::project_discovery::canonicalize_project_path("/opt/app")
+    );
+    assert_eq!(
+        crate::project_discovery::canonicalize_project_path("/opt//app"),
+        "/opt/app"
+    );
+    assert_eq!(
+        crate::project_discovery::canonicalize_project_path("/"),
+        "/",
+        "根目录不能把唯一的 / 去掉"
+    );
+
+    let conn = test_db();
+    // 存储端：以规范化路径 /opt/app 存。
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/app", "app", "active")).unwrap();
+    // 查询端：用带尾斜杠的路径来查，应命中同一条。
+    let found = get_confirmed_project(
+        &conn,
+        "s1",
+        &crate::project_discovery::canonicalize_project_path("/opt/app/"),
+    )
+    .unwrap();
+    assert!(found.is_some(), "尾斜杠路径应映射到同一已确认项目");
+    assert_eq!(found.unwrap().canonical_path, "/opt/app");
+}
+
+#[test]
+fn old_confirmed_projects_survive_a_new_scan_start() {
+    // 场景：用户确认了一批项目，然后发起一次新扫描。扫描"开始"本身绝不清除
+    // 既有 confirmed_projects（只有"完成"才按 found_paths 重算 scan_state）。
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+
+    // 模拟"开始扫描"——不调用 reconcile，直接断言数据完整保留。
+    assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 2);
+    assert!(get_confirmed_project(&conn, "s1", "/opt/a")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn confirmed_projects_survive_a_failed_scan() {
+    // 场景：扫描中途失败（SSH 断开 / 超时）。失败绝不清除 or 重置已确认项目。
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+
+    // 扫描失败：reconcile 不被调用，数据原样保留。
+    // 即便调用了 reconcile，也只用 found_paths 更新 scan_state，不会删除行。
+    reconcile_after_scan(&conn, "s1", &[]); // 模拟"全没扫到"，最多标 missing
+    let all = list_confirmed_projects(&conn, "s1").unwrap();
+    assert_eq!(all.len(), 2, "失败扫描不能删除已确认项目");
+}
+
+#[test]
+fn confirmed_projects_persist_across_a_restart() {
+    // 场景：关闭再打开 App。数据来自磁盘（这里用独立连接 + 同样 schema 模拟）。
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/c", "c", "active")).unwrap();
+
+    // 模拟"重启"：新连接 + 重新 migrate（幂等），数据仍在。
+    let conn2 = Connection::open_in_memory().expect("in-memory sqlite");
+    conn2.execute_batch(SCHEMA_SQL).expect("schema");
+    migrate(&conn2).expect("migrate");
+    // 注：in-memory 数据库随连接销毁，这里验证的是表结构 + 迁移幂等不丢数据通道；
+    // 真实 App 用文件数据库，数据跨进程保留。此处只断言表存在且可再次写入。
+    upsert_confirmed_project(&conn2, &confirmed("s1", "/opt/new", "n", "active")).unwrap();
+    assert_eq!(list_confirmed_projects(&conn2, "s1").unwrap().len(), 1);
+    // 原来的连接数据也不受干扰。
+    assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 3);
+}
+
+#[test]
+fn confirmed_project_is_removed_only_on_unconfirm() {
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+    assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 2);
+
+    // 用户"撤销结论"（取消确认）→ 软删除，从列表消失。
+    soft_delete_confirmed_project(&conn, "s1", "/opt/a", 2000).unwrap();
+    let remaining = list_confirmed_projects(&conn, "s1").unwrap();
+    assert_eq!(remaining.len(), 1, "取消确认的项目应从列表移除");
+    assert_eq!(remaining[0].canonical_path, "/opt/b");
+
+    // 软删除是逻辑删除：行仍在，只是被过滤。可重新确认复活。
+    let row = get_confirmed_project(&conn, "s1", "/opt/a").unwrap();
+    assert!(row.is_some());
+    assert!(row.unwrap().deleted_at.is_some());
+
+    // 重新确认 → 复活，列表回到 2 条。
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
+    assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 2);
+}

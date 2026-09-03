@@ -83,7 +83,8 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
       cancelActive();
       setLoading(true);
       setError(null);
-      setResult(null);
+      // 注意：不再 setResult(null)。扫描过程中保留旧项目列表，显示"正在复核"，
+      // 新结果返回后按 canonical_path 原位合并，避免旧项目在扫描期间整体消失。
       try {
         console.log("[ProjectView] 调用 project_scan_start", {
           sessionId,
@@ -178,7 +179,11 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
    * 立即回填上次扫描的快照缓存，让用户一进页面就看到结果，不必等重扫。
    * 标记 `incremental: true` 让视图知道这是缓存、后台复核仍在进行；
    * 真正的扫描会覆盖这份结果。
+   *
+   * 快照加载完成后，若 SSH 已连接，自动跑一次增量扫描（discover(true)）在后台
+   * 复核。用 `autoRanRef` 防 React StrictMode 双调用导致重复扫描。
    */
+  const autoRanRef = useRef(false);
   const loadSnapshot = useCallback(async () => {
     if (!serverId) return;
     try {
@@ -187,7 +192,11 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
     } catch (cause) {
       console.warn("[useScanTask] 读取项目快照缓存失败", cause);
     }
-  }, [serverId]);
+    if (ready && serverId && !autoRanRef.current) {
+      autoRanRef.current = true;
+      void discover(true);
+    }
+  }, [serverId, ready, discover]);
 
   // 清理只在**卸载**或**服务器/会话切换**时执行。依赖里绝不能有 `scan`：
   // 轮询每次 setScan 都会改变它，从而把正在运行的扫描取消掉。
@@ -201,6 +210,8 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
         setResult(null);
         setError(null);
         setLoading(false);
+        // 新服务器允许重新触发一次后台自动复核。
+        autoRanRef.current = false;
       }
       return () => {
         stopPolling();

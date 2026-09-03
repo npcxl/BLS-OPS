@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -141,6 +141,46 @@ CREATE TABLE IF NOT EXISTS project_inventory (
 
 /// The inventory cache table on its own, for `migrate()`.
 pub const PROJECT_INVENTORY_SCHEMA_SQL: &str = project_inventory_schema_sql!();
+
+/// 已确认项目资产表（修复"已确认项目消失"的核心）。
+///
+/// 与 `project_reviews`（只存确认/忽略结论）不同，这里**保存完整候选项目快照**，
+/// 即使后续扫描没有再次发现该路径，项目也必须继续存在，直到用户主动取消确认
+/// 或软删除。`canonical_path` 是统一规范化后的路径，review / candidate /
+/// inventory 全部使用它，避免 `/opt/app` 与 `/opt/app/` 被当成两个项目。
+///
+/// `scan_state` 记录最近一次扫描对该项目的态度：active（本次发现）/ missing
+/// （本次未发现，保留快照）/ inaccessible（服务器暂不可访问）/ changed（分类或
+/// 关键信息有变化，待复核）。`missing_since` 记录首次未发现的时间。
+macro_rules! confirmed_projects_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS confirmed_projects (
+    id TEXT PRIMARY KEY NOT NULL,
+    server_id TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    project_type TEXT NOT NULL DEFAULT '',
+    candidate_payload TEXT NOT NULL,
+    scan_state TEXT NOT NULL DEFAULT 'active',
+    confirmed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    missing_since INTEGER,
+    deleted_at INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_confirmed_projects_server_path
+    ON confirmed_projects (server_id, canonical_path);
+
+CREATE INDEX IF NOT EXISTS idx_confirmed_projects_server
+    ON confirmed_projects (server_id, deleted_at);
+"#
+    };
+}
+
+/// The confirmed-projects table on its own, for `migrate()`.
+pub const CONFIRMED_PROJECTS_SCHEMA_SQL: &str = confirmed_projects_schema_sql!();
 
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
@@ -240,7 +280,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
 "#,
     p3_schema_sql!(),
     project_reviews_schema_sql!(),
-    project_inventory_schema_sql!()
+    project_inventory_schema_sql!(),
+    confirmed_projects_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -295,6 +336,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 后台重新扫描完成。每台服务器至多保留一份（整段 JSON）。
         conn.execute_batch(PROJECT_INVENTORY_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 5u32)?;
+    }
+    if version < 6 {
+        // 已确认项目资产表：保存完整候选项目快照，即使后续扫描没再发现该路径
+        // 也必须继续存在（修复"已确认项目消失"）。唯一键 (server_id, canonical_path)。
+        conn.execute_batch(CONFIRMED_PROJECTS_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 6u32)?;
     }
     Ok(())
 }

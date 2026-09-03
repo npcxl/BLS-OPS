@@ -56,6 +56,7 @@ import {
   type NginxTestResult,
 } from "@/api/types/gateway";
 import {
+  type ConfirmedProject,
   type DeploymentRecord,
   type ProjectRecord,
   type ProjectReadinessReport,
@@ -125,6 +126,11 @@ export {
   DEPLOY_STATUSES,
   deployStatusLabel,
   projectSteps,
+  type ClassificationConfidence,
+  type ClassificationEvidence,
+  type ComponentRole,
+  type ConfirmedProject,
+  type ConfirmedScanState,
   type CandidateCategory,
   type CandidateInstance,
   type ConfidenceLevel,
@@ -132,6 +138,10 @@ export {
   type DeploymentReadiness,
   type DeploymentRecord,
   type DetectedService,
+  type DetectedTechnology,
+  type GatewayRoute,
+  type InfrastructureCategory,
+  type InstanceOwnership,
   type InstanceRuntime,
   type ProjectCandidate,
   type ProjectEvidence,
@@ -153,6 +163,7 @@ export {
   type ScanState,
   type ServerCapabilityProfile,
   type ServiceGroup,
+  type WorkloadRole,
 } from "@/api/types/project";
 
 function message(cause: unknown): string {
@@ -326,7 +337,9 @@ export const opsApi = {
     invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
   projectScanResult: (scanId: string) =>
     invoke<ProjectScanResult | null>("project_scan_result", { scanId }),
-  /** 写入一条人工复核结论（确认项目 / 忽略目录），按 (serverId, path) 存库。 */
+  /** 写入一条人工复核结论（确认项目 / 忽略目录），按 (serverId, path) 存库。
+   *  确认时必须随附当前 `ProjectCandidate` 的完整快照，以便后续扫描即使没再
+   *  发现该路径也能继续保留项目。 */
   projectReviewSet: (
     serverId: string,
     path: string,
@@ -334,6 +347,7 @@ export const opsApi = {
     name?: string,
     projectType?: string,
     note?: string,
+    candidatePayload?: string,
   ) =>
     invoke<ProjectReviewRecord>("project_review_set", {
       serverId,
@@ -342,10 +356,14 @@ export const opsApi = {
       name,
       projectType,
       note,
+      candidatePayload,
     }),
   /** 列出某台服务器上全部人工复核结论。 */
   projectReviewList: (serverId: string) =>
     invoke<ProjectReviewRecord[]>("project_review_list", { serverId }),
+  /** 列出某台服务器上全部持久化已确认项目（含完整快照与扫描状态）。 */
+  projectConfirmedList: (serverId: string) =>
+    invoke<ConfirmedProject[]>("confirmed_projects_list", { serverId }),
   /** 针对单个项目做部署准备检查（项目级，替代全局可行性图谱）。 */
   projectReadinessCheck: (serverId: string, scanId: string, candidatePath: string) =>
     invoke<ProjectReadinessReport>("project_readiness_check", {

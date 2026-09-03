@@ -29,7 +29,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: "ssh", label: "终端", icon: TerminalIcon },
   { id: "services", label: "服务", icon: WorldIcon },
   { id: "logs", label: "日志", icon: FileDescriptionIcon },
-  { id: "files", label: "文件", icon: FileDescriptionIcon },
   { id: "projects", label: "项目", icon: Stack3Icon },
   { id: "deploy", label: "部署", icon: RocketIcon },
   { id: "tasks", label: "任务", icon: UnorderedListIcon },

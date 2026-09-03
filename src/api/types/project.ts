@@ -50,7 +50,62 @@ export type ServiceGroup =
   | "coordination"
   | "observability"
   | "devops"
-  | "infrastructure";
+  | "infrastructure"
+  | "security"
+  | "ai_runtime";
+
+/** 顶层互斥业务角色：应用服务 / 基础设施 / 系统组件 / 待归类。后端判定，前端只展示。 */
+export type WorkloadRole = "application" | "infrastructure" | "system" | "unknown";
+
+/** 基础设施的稳定类别（只枚举类别，不枚举具体产品）。 */
+export type InfrastructureCategory =
+  | "database"
+  | "cache"
+  | "object_storage"
+  | "messaging"
+  | "search"
+  | "gateway"
+  | "coordination"
+  | "observability"
+  | "devops"
+  | "container_platform"
+  | "security"
+  | "ai_runtime"
+  | "unknown";
+
+/** 实例在业务架构里承担的组件角色。 */
+export type ComponentRole =
+  | "frontend"
+  | "backend"
+  | "worker"
+  | "scheduled_job"
+  | "database"
+  | "cache"
+  | "object_storage"
+  | "message_queue"
+  | "search"
+  | "gateway"
+  | "observability"
+  | "ai_inference"
+  | "unknown";
+
+/** 识别出的具体技术产品（字符串 ID，新增产品无需改核心枚举）。 */
+export interface DetectedTechnology {
+  id: string;
+  label: string;
+}
+
+/** 实例归属：共享基础设施 / 项目专属 / 未知。 */
+export type InstanceOwnership = "shared" | "project_scoped" | "unknown";
+
+/** 分类所依据的一条证据。 */
+export interface ClassificationEvidence {
+  source: string;
+  detail: string;
+}
+
+/** 分类置信度。 */
+export type ClassificationConfidence = "high" | "medium" | "low";
 
 /** 候选项目性质：业务应用 / 基础设施 / 未确定。 */
 export type ProjectKind = "application" | "infrastructure" | "unknown";
@@ -188,6 +243,31 @@ export interface ProjectReviewRecord {
   updated_at: number;
 }
 
+/** 扫描对某已确认项目的态度（持久化，跨扫描保留）。 */
+export type ConfirmedScanState = "active" | "missing" | "inaccessible" | "changed";
+
+/**
+ * 持久化的已确认项目资产：即使最新扫描没有再次发现某个路径也要继续存在。
+ * `candidate_payload` 是 `ProjectCandidate` 的 JSON 快照，前端解析后当候选渲染。
+ */
+export interface ConfirmedProject {
+  id: string;
+  server_id: string;
+  /** 统一规范化后的路径（末尾斜杠去掉、重复斜杠合并）。 */
+  canonical_path: string;
+  name: string;
+  project_type: string;
+  /** `ProjectCandidate` 的完整 JSON 快照。 */
+  candidate_payload: string;
+  scan_state: ConfirmedScanState;
+  confirmed_at: number;
+  updated_at: number;
+  last_seen_at: number;
+  missing_since: number | null;
+  /** 解析后的候选快照（前端填充，便于渲染）。 */
+  candidate?: ProjectCandidate;
+}
+
 /** 第一轮产物：服务器上真实存在的部署实例（容器/服务/站点）。 */
 export interface DeploymentInstance {
   id: string;
@@ -198,7 +278,7 @@ export interface DeploymentInstance {
   runtime: InstanceRuntime;
   /** 容器镜像（仅容器与 k8s 实例有）。 */
   image?: string;
-  /** 识别出的服务；`undefined` = 没认出来。 */
+  /** 识别出的服务；`undefined` = 没认出来。仅用于 UI 徽标，分类看 workload_role。 */
   service?: DetectedService;
   /** true = 操作系统自带（sshd / cron / containerd / k8s 沙箱容器）。 */
   system_owned: boolean;
@@ -209,6 +289,38 @@ export interface DeploymentInstance {
   /** false = 只有运行实例，源码未知（后端绝不伪造路径）。 */
   source_known: boolean;
   detail: string;
+  /** 顶层互斥分类：应用服务 / 基础设施 / 系统组件 / 待归类。后端判定。 */
+  workload_role: WorkloadRole;
+  /** 基础设施类别（仅 workload_role=infrastructure 时有值）。 */
+  infrastructure_category?: InfrastructureCategory;
+  /** 组件角色（frontend / backend / database / …）。 */
+  component_role: ComponentRole;
+  /** 识别出的具体技术产品（mysql / node / ollama…）。 */
+  technology?: DetectedTechnology;
+  /** 共享基础设施 / 项目专属 / 未知。 */
+  ownership: InstanceOwnership;
+  /** 关联的项目路径。 */
+  linked_project_ids: string[];
+  /** 分类依据。 */
+  classification_evidence: ClassificationEvidence[];
+  /** 分类置信度。 */
+  classification_confidence: ClassificationConfidence;
+}
+
+/** Nginx 网关路由（server block）。网关实例与路由分离，路由在项目详情展示。 */
+export interface GatewayRoute {
+  id: string;
+  /** 所属网关实例 ID（nginx:gateway）。 */
+  gateway_instance_id: string;
+  server_names: string[];
+  listen_ports: number[];
+  /** 静态站点 root（可关联前端项目）。 */
+  root?: string;
+  /** proxy_pass 目标（原样 URL）。 */
+  proxy_targets: string[];
+  config_file?: string;
+  /** 关联的项目路径。 */
+  linked_project_id?: string;
 }
 
 /** 候选项目分类：已部署（关联实例）或仅源码。 */
@@ -225,6 +337,8 @@ export interface ProjectScanResult {
   capability: ServerCapabilityProfile | null;
   /** 第一轮产物：部署实例列表（含"源码未知"的实例）。 */
   instances: DeploymentInstance[];
+  /** Nginx 网关路由（网关实例与路由分离后的产物；旧快照无此字段）。 */
+  gateway_routes?: GatewayRoute[];
 }
 
 // -- 项目级部署准备检查（针对单个项目，替代全局可行性图谱） ----------------

@@ -1,0 +1,163 @@
+/**
+ * 顶层实例分类纯函数：应用服务 / 基础设施 / 待归类 / 系统组件 四个**互斥**集合。
+ *
+ * 分类判断一律以后端 `workload_role` 为准（React 只展示后端结果）；
+ * 旧快照缺失该字段时按 `unknown`（待归类）处理，绝不默认归基础设施。
+ */
+import type { DeploymentInstance, InfrastructureCategory } from "@/api/ops-api";
+
+export interface PartitionedInstances {
+  /** workload_role = application */
+  applications: DeploymentInstance[];
+  /** workload_role = infrastructure */
+  infrastructure: DeploymentInstance[];
+  /** workload_role = unknown（待归类） */
+  unclassified: DeploymentInstance[];
+  /** workload_role = system（默认不进任何顶层 Tab） */
+  system: DeploymentInstance[];
+}
+
+/** 实例的顶层角色；旧快照缺字段按待归类处理。 */
+export function instanceRole(instance: DeploymentInstance): NonNullable<DeploymentInstance["workload_role"]> {
+  return instance.workload_role ?? "unknown";
+}
+
+/** 把实例划分成四个互斥集合：同一个 id 只会落在一个集合里。 */
+export function partitionInstances(instances: DeploymentInstance[]): PartitionedInstances {
+  const partitioned: PartitionedInstances = {
+    applications: [],
+    infrastructure: [],
+    unclassified: [],
+    system: [],
+  };
+  for (const instance of instances) {
+    switch (instanceRole(instance)) {
+      case "application":
+        partitioned.applications.push(instance);
+        break;
+      case "infrastructure":
+        partitioned.infrastructure.push(instance);
+        break;
+      case "system":
+        partitioned.system.push(instance);
+        break;
+      default:
+        partitioned.unclassified.push(instance);
+        break;
+    }
+  }
+  return partitioned;
+}
+
+/** 开发期断言：同一个实例不允许同时出现在应用服务与基础设施。 */
+export function findDuplicateIds(partitioned: PartitionedInstances): string[] {
+  return partitioned.applications
+    .filter((app) => partitioned.infrastructure.some((infra) => infra.id === app.id))
+    .map((instance) => instance.id);
+}
+
+// ---------------------------------------------------------------------------
+// 基础设施分组
+// ---------------------------------------------------------------------------
+
+/** 基础设施分组展示顺序与中文标签（与后端 InfrastructureCategory 对齐）。 */
+export const INFRA_CATEGORY_LABELS: Record<InfrastructureCategory, string> = {
+  database: "数据库",
+  cache: "缓存",
+  object_storage: "对象存储",
+  messaging: "消息与流处理",
+  search: "搜索与索引",
+  gateway: "网关与代理",
+  coordination: "配置与协调",
+  observability: "可观测性",
+  devops: "研发运维",
+  container_platform: "容器平台",
+  security: "安全与身份",
+  ai_runtime: "AI 推理",
+  unknown: "其他",
+};
+
+export const INFRA_CATEGORY_ORDER: InfrastructureCategory[] = [
+  "database",
+  "cache",
+  "object_storage",
+  "messaging",
+  "search",
+  "gateway",
+  "coordination",
+  "observability",
+  "devops",
+  "container_platform",
+  "security",
+  "ai_runtime",
+  "unknown",
+];
+
+export interface InfrastructureGroup {
+  category: InfrastructureCategory;
+  label: string;
+  instances: DeploymentInstance[];
+}
+
+/** 按 infrastructure_category 分组；只返回非空组，顺序稳定。 */
+export function groupInfrastructure(instances: DeploymentInstance[]): InfrastructureGroup[] {
+  const byCategory = new Map<InfrastructureCategory, DeploymentInstance[]>();
+  for (const instance of instances) {
+    const category = instance.infrastructure_category ?? "unknown";
+    const bucket = byCategory.get(category);
+    if (bucket) {
+      bucket.push(instance);
+    } else {
+      byCategory.set(category, [instance]);
+    }
+  }
+  return INFRA_CATEGORY_ORDER.filter((category) => byCategory.has(category)).map((category) => ({
+    category,
+    label: INFRA_CATEGORY_LABELS[category],
+    instances: byCategory.get(category) ?? [],
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// 标签
+// ---------------------------------------------------------------------------
+
+export const WORKLOAD_ROLE_LABELS: Record<NonNullable<DeploymentInstance["workload_role"]>, string> = {
+  application: "应用服务",
+  infrastructure: "基础设施",
+  system: "系统组件",
+  unknown: "待归类",
+};
+
+export const COMPONENT_ROLE_LABELS: Record<string, string> = {
+  frontend: "前端",
+  backend: "后端",
+  worker: "后台任务",
+  scheduled_job: "定时任务",
+  database: "数据库",
+  cache: "缓存",
+  object_storage: "对象存储",
+  message_queue: "消息队列",
+  search: "搜索引擎",
+  gateway: "网关",
+  observability: "可观测性",
+  ai_inference: "AI 推理",
+  unknown: "角色未知",
+};
+
+export const OWNERSHIP_LABELS: Record<string, string> = {
+  shared: "共享",
+  project_scoped: "项目专属",
+  unknown: "归属未知",
+};
+
+export const CONFIDENCE_LABELS: Record<string, string> = {
+  high: "置信度高",
+  medium: "置信度中",
+  low: "置信度低",
+};
+
+/** 卡片展示的产品名：technology → service → 实例名，绝不编造。 */
+export function instanceProductLabel(instance: DeploymentInstance): string {
+  return instance.technology?.label ?? instance.service?.label ?? instance.name;
+}

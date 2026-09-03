@@ -5,7 +5,9 @@ use serde_json::Value;
 use super::model::{is_config_path, is_host_project_path, push_unique, DeploymentInstance};
 use crate::remote::run_on_linux;
 use crate::safe::Capability;
-use crate::service_catalog::{identify_image, parse_k8s_container_name, InstanceRuntime};
+use crate::service_catalog::{
+    identify_image, identify_runtime_tech, parse_k8s_container_name, InstanceRuntime,
+};
 use crate::ssh::SshSessionManager;
 
 /// 每批 inspect 的容器上限（`safe::Capability::DockerInspectMany` 的校验上限）。
@@ -174,7 +176,16 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
     }
 
     // 识别镜像跑的是什么服务：MySQL / Redis / Nginx …。识别不出就是 None。
-    let service = identify_image(image).map(|identity| identity.detected());
+    // 具体技术（technology）与服务身份同步填充；目录识别不出时再试一次
+    // 语言运行时表（node/java/… 是业务运行时，不是基础设施）。
+    let identity = identify_image(image);
+    let service = identity.clone().map(|i| i.detected());
+    let technology = identity
+        .map(|i| crate::service_catalog::DetectedTechnology {
+            id: i.id.to_string(),
+            label: i.label.to_string(),
+        })
+        .or_else(|| identify_runtime_tech(image));
 
     // 源码已知 = 有任一宿主候选路径；否则就是"运行实例，源码未知"。
     let source_known = !source_paths.is_empty();
@@ -186,8 +197,12 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
         runtime,
         image: Some(image.to_string()),
         service,
-        // k8s 的 pause 沙箱容器属于集群基础设施，不是用户部署的东西。
-        system_owned: k8s.as_ref().map(|k| k.is_sandbox).unwrap_or(false),
+        // k8s 的 pause 沙箱容器属于集群基础设施，不是用户部署的东西；
+        // `kube-system` 命名空间里的 Pod 容器同样是集群自身组件。
+        system_owned: k8s
+            .as_ref()
+            .map(|k| k.is_sandbox || k.namespace == "kube-system")
+            .unwrap_or(false),
         ports,
         working_directories,
         config_files: config_files
@@ -197,5 +212,7 @@ pub fn docker_instance_from_inspect(value: &Value) -> Option<DeploymentInstance>
         source_paths,
         source_known,
         detail,
+        technology,
+        ..Default::default()
     })
 }

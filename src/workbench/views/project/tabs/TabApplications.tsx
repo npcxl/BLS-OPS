@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { FolderSearch } from "lucide-react";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
-import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
+import type { ReviewState } from "@/api/ops-api";
+import type { DisplayCandidate } from "@/workbench/views/project/ProjectView";
 import { CandidateCard } from "../CandidateCard";
 
 /** 主 tab：业务项目 + 待确认项目，按评分降序。已忽略的目录不出现。 */
@@ -10,12 +11,14 @@ export function TabApplications({
   serverId,
   reviews,
   onOpenPath,
+  onClosePath,
   onReview,
 }: {
-  candidates: ProjectCandidate[];
+  candidates: DisplayCandidate[];
   serverId: string;
   reviews: Record<string, ReviewState>;
   onOpenPath: (path: string) => void;
+  onClosePath: () => void;
   onReview: (path: string, state: ReviewState) => void;
 }) {
   const list = useMemo(
@@ -45,7 +48,13 @@ export function TabApplications({
           serverId={serverId}
           review={(reviews[candidate.path] ?? candidate.review) ?? "pending"}
           onOpenPath={onOpenPath}
+          onClosePath={onClosePath}
           onReview={onReview}
+          scanInfo={{
+            scanState: candidate.scanState,
+            kindChanged: candidate.kindChanged,
+            confirmedMissing: candidate.confirmedMissing,
+          }}
         />
       ))}
     </div>

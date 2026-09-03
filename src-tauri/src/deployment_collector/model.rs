@@ -3,17 +3,20 @@
 use serde::{Deserialize, Serialize};
 
 use crate::safe::validate_abs_path;
-use crate::service_catalog::{DetectedService, InstanceRuntime};
+use crate::service_catalog::{
+    ClassificationConfidence, ClassificationEvidence, ComponentRole, DetectedService,
+    DetectedTechnology, InfrastructureCategory, InstanceOwnership, InstanceRuntime, WorkloadRole,
+};
 
-/// 一个真实存在的部署实例（容器 / systemd 服务 / Nginx 站点 / k8s 工作负载）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// 一个真实存在的部署实例（容器 / systemd 服务 / Nginx 网关 / k8s 工作负载）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentInstance {
-    /// 稳定 ID：`docker:<容器ID>` / `systemd:<单元名>` / `nginx:<站点名>` /
+    /// 稳定 ID：`docker:<容器ID>` / `systemd:<单元名>` / `nginx:gateway` /
     /// `k8s:<命名空间>/<Pod>/<容器>`。
     pub id: String,
     /// 部署方式：`docker` | `systemd` | `nginx` | `k8s`。
     pub kind: String,
-    /// 展示名：容器名 / 单元名 / server_name / Pod 名。
+    /// 展示名：容器名 / 单元名 / 网关名 / Pod 名。
     pub name: String,
     /// 运行状态（原样来自服务器）。
     pub status: String,
@@ -44,19 +47,77 @@ pub struct DeploymentInstance {
     pub source_known: bool,
     /// 人读摘要：Compose 项目/服务、镜像、ExecStart、代理目标等。
     pub detail: String,
+    // ---- 分类字段（2026-09 修订；全部 serde default，旧 project_inventory 快照兼容）----
+    /// 顶层互斥分类：应用服务 / 基础设施 / 系统组件 / 待归类。
+    /// React 只展示，不参与判断。
+    #[serde(default)]
+    pub workload_role: WorkloadRole,
+    /// 基础设施类别（仅 `workload_role=infrastructure` 时有值）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infrastructure_category: Option<InfrastructureCategory>,
+    /// 组件角色（frontend / backend / database / …）。
+    #[serde(default)]
+    pub component_role: ComponentRole,
+    /// 识别出的具体技术产品（`mysql` / `node` / `ollama`…，字符串 ID）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technology: Option<DetectedTechnology>,
+    /// 共享基础设施 / 项目专属 / 未知。
+    #[serde(default)]
+    pub ownership: InstanceOwnership,
+    /// 关联的项目路径（评分期双向回填）。
+    #[serde(default)]
+    pub linked_project_ids: Vec<String>,
+    /// 分类依据（每条结论都能说出理由）。
+    #[serde(default)]
+    pub classification_evidence: Vec<ClassificationEvidence>,
+    /// 分类的置信度。
+    #[serde(default)]
+    pub classification_confidence: ClassificationConfidence,
 }
 
 impl DeploymentInstance {
     /// 快速判断：这个实例是不是"用户部署的业务应用"（而不是数据库 / 缓存 /
     /// 监控 / 操作系统组件）。
+    ///
+    /// **只用 `workload_role` 判断**；`service.group` 只是 UI 配色。
     pub fn is_business_workload(&self) -> bool {
-        !self.system_owned
-            && !self
-                .service
-                .as_ref()
-                .map(|service| service.group.is_infrastructure())
-                .unwrap_or(false)
+        !self.system_owned && matches!(self.workload_role, WorkloadRole::Application)
     }
+}
+
+/// Nginx 的一个站点路由（server block）。
+///
+/// **网关实例与路由分离**：Nginx daemon/容器是一个运行实例（顶层只出现一次，
+/// 归基础设施"网关与代理"组）；每个 server block 是一条 [`GatewayRoute`]，
+/// 在项目详情里作为"访问入口"展示 —— 绝不允许每个域名都变成一个
+/// "基础设施服务"实例。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GatewayRoute {
+    /// 稳定 ID：`route:<server_name>`。
+    pub id: String,
+    /// 所属网关实例的 ID（`nginx:gateway`）。
+    pub gateway_instance_id: String,
+    /// server_name（域名）列表。
+    #[serde(default)]
+    pub server_names: Vec<String>,
+    /// listen 端口。
+    #[serde(default)]
+    pub listen_ports: Vec<u16>,
+    /// 静态站点 root（可关联前端项目）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// proxy_pass 目标（原样保留 URL）。
+    #[serde(default)]
+    pub proxy_targets: Vec<String>,
+    /// 配置文件（宿主机路径）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<String>,
+    /// 评分期回填：这条路由属于哪个项目（路径）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_project_id: Option<String>,
+    /// 定向扫描与项目关联用的宿主路径（静态 root + 代理后端 cwd）。
+    #[serde(default)]
+    pub linked_paths: Vec<String>,
 }
 
 /// 宿主机上"像业务目录"的根。systemd 服务的 WorkingDirectory / ExecStart 只有

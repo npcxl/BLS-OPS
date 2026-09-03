@@ -2,7 +2,7 @@
 //!
 //! 流程（修订方案）：先由能力图谱（`capability_probe`）决定启用哪些收集器 ——
 //! 只有探测确认安装的组件才会执行其命令；每个收集器枚举服务器上**真实存在**
-//! 的部署实例（容器 / systemd 服务 / Nginx 站点），深入查询单个实例提取
+//! 的部署实例（容器 / systemd 服务 / Nginx 网关），深入查询单个实例提取
 //! ID、路径、端口与配置，输出 [`DeploymentInstance`] 供定向 marker 扫描反查
 //! 源码目录。
 //!
@@ -21,40 +21,55 @@ mod systemd;
 
 pub use docker::docker_instance_from_inspect;
 pub use k8s::parse_kube_pods;
-pub use model::{is_config_path, is_host_project_path, DeploymentInstance};
-pub use nginx::{parse_nginx_effective, parse_ss_listen, NginxSiteBlock};
+pub use model::{is_config_path, is_host_project_path, DeploymentInstance, GatewayRoute};
+pub use nginx::{build_gateway, parse_nginx_effective, parse_ss_listen, NginxSiteBlock};
 pub use systemd::{extract_exec_paths, parse_systemd_show, systemd_instance};
 
 use crate::capability_probe::ServerCapabilityProfile;
 use crate::ssh::SshSessionManager;
+use crate::workload_class::classify_instance;
+
+/// 一次收集的全部产出：部署实例 + Nginx 网关路由。
+#[derive(Debug, Default)]
+pub struct CollectedDeployments {
+    pub instances: Vec<DeploymentInstance>,
+    pub gateway_routes: Vec<GatewayRoute>,
+}
 
 /// 按能力图谱收集所有真实部署实例。
 ///
 /// 未安装（`Some(false)`）或无法判定（`None`）的组件**不会**执行任何命令。
 /// 单个收集器失败只记 warning，不影响其它收集器 —— 部分证据好过没有证据，
 /// 但失败原因必须如实呈现。
+///
+/// 收集完成后立即做**收集期分类**（系统组件 / 明确基础设施 / 待归类）；
+/// 项目证据相关的升级（待归类 → 应用服务、项目专属 Nginx 前端容器）在
+/// 定向扫描之后由 `workload_class::apply_project_evidence` 回填。
 pub async fn collect_instances(
     session_id: &str,
     mgr: &SshSessionManager,
     profile: &ServerCapabilityProfile,
     warnings: &mut Vec<String>,
-) -> Vec<DeploymentInstance> {
-    let mut out = Vec::new();
+) -> CollectedDeployments {
+    let mut out = CollectedDeployments::default();
     if profile.deployment.docker == Some(true) {
         match docker::collect_docker(session_id, mgr).await {
-            Ok(mut list) => out.append(&mut list),
+            Ok(mut list) => out.instances.append(&mut list),
             Err(error) => warnings.push(format!("Docker 实例收集失败：{error}")),
         }
     }
     if profile.deployment.systemd == Some(true) {
         match systemd::collect_systemd(session_id, mgr, warnings).await {
-            Ok(mut list) => out.append(&mut list),
+            Ok(mut list) => out.instances.append(&mut list),
             Err(error) => warnings.push(format!("systemd 实例收集失败：{error}")),
         }
     }
     if profile.deployment.nginx == Some(true) {
         match nginx::collect_nginx(session_id, mgr, warnings).await {
-            Ok(mut list) => out.append(&mut list),
+            Ok((mut list, mut routes)) => {
+                out.instances.append(&mut list);
+                out.gateway_routes.append(&mut routes);
+            }
             Err(error) => warnings.push(format!("Nginx 实例收集失败：{error}")),
         }
     }
@@ -63,9 +78,12 @@ pub async fn collect_instances(
     // 分别代表"集群视角的 Pod"与"节点上的容器"，靠 `runtime` 字段区分。
     if profile.deployment.kubernetes == Some(true) {
         match k8s::collect_k8s(session_id, mgr, warnings).await {
-            Ok(mut list) => out.append(&mut list),
+            Ok(mut list) => out.instances.append(&mut list),
             Err(error) => warnings.push(format!("Kubernetes 工作负载收集失败：{error}")),
         }
+    }
+    for instance in out.instances.iter_mut() {
+        classify_instance(instance);
     }
     out
 }

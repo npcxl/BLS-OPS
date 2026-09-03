@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { useDirSizeStore } from "@/stores/dir-size-store";
-import type { RemoteFileEntry } from "@/api/ops-api";
 
 /**
  * On-demand directory-size queue for one SFTP session.
@@ -13,6 +12,9 @@ import type { RemoteFileEntry } from "@/api/ops-api";
  * 前端等不到真正算完，所以这里的计数**只用于节流 IPC 调用**，真实的并发限制
  * （每个 SSH 会话同时最多 2 个 du/SFTP）由 Rust 后端用 Semaphore 保证。排队中
  * 的任务后端会以 `pending` 状态上报，前端据此显示"排队中"。
+ *
+ * 大小计算由面板在**每次列目录时自动发起**（见 `RemoteFilePanel` 的
+ * 自动计算 effect），不再有手动按钮；这里只负责排队与错误上报。
  */
 
 /** 队列项：`force` 决定后端是否丢弃旧缓存重新扫描。 */
@@ -21,11 +23,7 @@ interface SizeQueueItem {
   force: boolean;
 }
 
-export function useDirSizeQueue(
-  sessionId: string,
-  entries: RemoteFileEntry[],
-  onError: (message: string) => void,
-) {
+export function useDirSizeQueue(sessionId: string, onError: (message: string) => void) {
   const sizeQueueRef = useRef<SizeQueueItem[]>([]);
   const sizeRunningRef = useRef(0);
   const sizeQueuedRef = useRef(new Set<string>());
@@ -60,7 +58,7 @@ export function useDirSizeQueue(
       if (!item) continue;
       sizeRunningRef.current += 1;
       void opsApi
-        // `force` 必须一路传到后端，否则"重新计算大小"只会拿回旧缓存。
+        // `force` 必须一路传到后端，否则重新计算只会拿回旧缓存。
         .directorySizeStart(sessionId, item.path, undefined, item.force)
         .then((initial) => useDirSizeStore.getState().apply(initial))
         .catch((cause) => onError(toErrorMessage(cause)))
@@ -80,21 +78,12 @@ export function useDirSizeQueue(
     [sessionId],
   );
 
-  /** Computes the size of every directory visible in the current listing. */
-  const computeAllDirSizes = useCallback(() => {
-    const directories = entries.filter((entry) => entry.kind === "directory");
-    if (directories.some((entry) => entry.path === "/" || entry.path === "/var")) {
-      if (!window.confirm("当前批量计算包含较大的系统目录，可能增加服务器磁盘 I/O。确定继续吗？")) return;
-    }
-    for (const entry of directories) computeDirSize(entry.path);
-  }, [entries, computeDirSize]);
-
   // Subscribe to directory-size updates once per mount.
   useEffect(() => {
     void useDirSizeStore.getState().ensureListening();
   }, []);
 
-  return { computeDirSize, cancelDirSize, computeAllDirSizes };
+  return { computeDirSize, cancelDirSize };
 }
 
 /** Panel-local upload notice with auto-dismiss timing. */

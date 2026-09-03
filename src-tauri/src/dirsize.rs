@@ -2,10 +2,10 @@
 //!
 //! SFTP only reports a directory's own metadata size (commonly 4096 B), never
 //! the total of its contents — so a file browser that lists folders next to
-//! files cannot show how big a folder is without actually walking it. We do
-//! that *on demand* (right-click → "compute size"), never automatically when
-//! listing a directory, because a recursive scan of a large tree is slow and
-//! hammers the server's disk.
+//! files cannot show how big a folder is without actually walking it. The file
+//! panel triggers a scan for every visible subdirectory each time it lists a
+//! folder (自动计算，无手动按钮)；本模块对此的唯一保护是每会话最多
+//! [`MAX_CONCURRENT_SCANS`] 个并发扫描、超时与取消信号。
 //!
 //! Strategy, best first:
 //! 1. `du` when the remote has it — GNU `du -sb` (bytes) or BusyBox/BSD
@@ -13,8 +13,8 @@
 //! 2. SFTP recursive walk as a fallback (no `du`, or `du` failed). Slower, but
 //!    it streams progress and honours a cancel signal at every step.
 //!
-//! Either way the result is cached by `session_id + path` so refreshing the
-//! directory view does not recompute it.
+//! Either way the result is cached by `session_id + path` so re-entering the
+//! directory replays the cached numbers instead of recomputing them.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

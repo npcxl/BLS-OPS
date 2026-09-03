@@ -94,21 +94,22 @@ export function ServerPicker({ tabId }: { tabId: string }) {
 export function ModuleFrame({
   tab,
   session,
-  icon: Icon,
+  icon,
   toolbar,
   toolbar2,
   children,
 }: {
   tab: { id: string; title: string; subtitle?: string };
   session: CommandSession;
-  icon: ReactNode | React.ElementType;
+  /** Optional leading glyph in the header row. Omit for a plain toolbar. */
+  icon?: ReactNode | React.ElementType;
   /** Primary actions on the first (top) row: refresh, follow, status sum-up. */
   toolbar?: ReactNode;
   /** Secondary row (filter bar) shown beneath the first row when present. */
   toolbar2?: ReactNode;
   children: ReactNode;
 }) {
-  const Glyph = Icon as React.ElementType;
+  const Glyph = icon as React.ElementType | undefined;
   const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
   if (!session.hasTarget) {
@@ -169,7 +170,7 @@ export function ModuleFrame({
           is purely the module's controls. Connection problems surface via the
           banner below, not a permanent status badge. */}
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
-        <Glyph size={13} className="shrink-0 text-fg-subtle" />
+        {Glyph && <Glyph size={13} className="shrink-0 text-fg-subtle" />}
         {toolbar && <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div>}
       </div>
 

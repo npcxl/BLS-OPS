@@ -204,16 +204,11 @@ pub async fn project_scan_start(
                 warnings.len() as u32,
             )
             .await;
-            let instances =
+            let collected =
                 crate::deployment_collector::collect_instances(&sid, &ssh, &profile, &mut warnings)
                     .await;
-            let known = instances.iter().filter(|i| i.source_known).count();
-            warnings.push(format!(
-                "发现 {} 个部署实例（{} 个可关联源码，{} 个源码未知）",
-                instances.len(),
-                known,
-                instances.len() - known
-            ));
+            let mut instances = collected.instances;
+            let mut gateway_routes = collected.gateway_routes;
             set_progress(
                 &registry,
                 &id,
@@ -313,6 +308,10 @@ pub async fn project_scan_start(
             .await;
 
             // ---- 阶段 5（85→100%）：评分、合并与图谱 ----
+            // 项目证据回填：待归类实例因源码目录命中项目标志升级为应用服务；
+            // 只服务单个项目的 Nginx 升级为项目专属前端容器。MySQL/Redis 等
+            // 已确认基础设施不因路径线索翻转。
+            crate::workload_class::apply_project_evidence(&mut instances, &markers_by_path);
             let total = markers_by_path.len().max(1) as u32;
             let mut candidates = Vec::new();
             for (index, (path, markers)) in markers_by_path.into_iter().enumerate() {
@@ -358,7 +357,18 @@ pub async fn project_scan_start(
                     candidates.push(candidate);
                 }
             }
-            let candidates = crate::project_discovery::merge_candidates(candidates);
+            let mut candidates = crate::project_discovery::merge_candidates(candidates);
+            // 统一路径：扫描产出的候选路径也走 canonicalize，保证与 review /
+            // confirmed_projects 使用同一把钥匙（/opt/app 与 /opt/app/ 同键）。
+            for c in candidates.iter_mut() {
+                let canon = crate::project_discovery::canonicalize_project_path(&c.path);
+                c.id = format!("{}:{}", c.server_id, canon.clone());
+                c.path = canon;
+            }
+            // 项目 ↔ 实例/网关路由 双向关联（用 canonical path 作稳定钥匙）。
+            let project_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
+            crate::workload_class::link_projects(&mut instances, &project_paths);
+            crate::workload_class::link_gateway_routes(&mut gateway_routes, &project_paths);
 
             set_progress(
                 &registry,
@@ -381,25 +391,53 @@ pub async fn project_scan_start(
                 incremental: incremental.unwrap_or(false),
                 capability: Some(profile),
                 instances,
+                gateway_routes,
             };
+
+            // 把本次发现的候选路径收集成 canonical 集合，用于判定已确认项目
+            // 是否"本次被发现"。未发现的已确认项目必须保留，只把状态标成 missing。
+            if let Ok(conn) = db.open() {
+                let now = crate::db::AppDb::now();
+                let found_paths: std::collections::HashSet<String> =
+                    result.candidates.iter().map(|c| c.path.clone()).collect();
+                if let Ok(confirmed) = crate::db::list_confirmed_projects(&conn, &server) {
+                    for cp in confirmed {
+                        if cp.deleted_at.is_some() {
+                            continue;
+                        }
+                        let (scan_state, missing_since) =
+                            if found_paths.contains(&cp.canonical_path) {
+                                ("active".to_string(), None)
+                            } else {
+                                let missing_since = cp.missing_since.unwrap_or(now);
+                                ("missing".to_string(), Some(missing_since))
+                            };
+                        let _ = crate::db::update_confirmed_scan_state(
+                            &conn,
+                            &server,
+                            &cp.canonical_path,
+                            &scan_state,
+                            now,
+                            missing_since,
+                        );
+                    }
+                }
+                // 扫描完成即把快照写入数据库，让下次打开"服务器项目"能立即展示，
+                // 不必等后台重新扫描。整段结果以 JSON 存储，前端直接复用类型。
+                if let Ok(payload) = serde_json::to_string(&result) {
+                    let _ = crate::db::upsert_project_inventory(
+                        &conn,
+                        &server,
+                        &payload,
+                        result.completed_at,
+                    );
+                }
+            }
             registry
                 .results
                 .lock()
                 .await
                 .insert(id.clone(), result.clone());
-            // 扫描完成即把快照写入数据库，让下次打开"服务器项目"能立即展示，
-            // 不必等后台重新扫描。整段结果以 JSON 存储，前端直接复用类型。
-            if let Ok(conn) = db.open() {
-                if let Ok(payload) = serde_json::to_string(&result) {
-                    let completed_at = result.completed_at;
-                    let _ = crate::db::upsert_project_inventory(
-                        &conn,
-                        &server,
-                        &payload,
-                        completed_at,
-                    );
-                }
-            }
             let _ = app_handle.emit(&format!("project-scan-result-{id}"), &result);
             Ok::<(), String>(())
         }
@@ -472,6 +510,10 @@ pub async fn capability_profile(
 
 /// 写入一条人工复核结论（"确认项目"或"忽略目录"）。结论按 `(server_id, path)`
 /// 存进数据库，下次扫描沿用 —— 重扫不会把已确认的/已忽略的目录打回待确认。
+///
+/// 当用户**确认**一个项目时，必须同时把当前 `ProjectCandidate` 的完整快照写进
+/// `confirmed_projects`：即使后续扫描没有再次发现该路径，项目也必须继续存在。
+/// `candidate_payload` 是序列化的 `ProjectCandidate`（前端在点击确认时随同传入）。
 #[tauri::command]
 pub async fn project_review_set(
     state: State<'_, AppState>,
@@ -481,20 +523,51 @@ pub async fn project_review_set(
     name: Option<String>,
     project_type: Option<String>,
     note: Option<String>,
+    candidate_payload: Option<String>,
 ) -> Result<crate::db::ProjectReviewRecord, String> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     let now = crate::db::AppDb::now();
+    let canonical = crate::project_discovery::canonicalize_project_path(&path);
     let record = crate::db::ProjectReviewRecord {
         server_id: server_id.clone(),
-        path: path.clone(),
+        path: canonical.clone(),
         review: review.to_db_str().to_string(),
-        name: name.unwrap_or_default(),
-        project_type: project_type.unwrap_or_default(),
+        name: name.clone().unwrap_or_default(),
+        project_type: project_type.clone().unwrap_or_default(),
         note: note.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
     crate::db::upsert_project_review(&conn, &record).map_err(|e| e.to_string())?;
+
+    // 确认 → 写入/更新已确认项目资产；取消确认（pending）或忽略 → 软删除。
+    match review {
+        crate::project_discovery::ReviewState::Confirmed => {
+            let payload = candidate_payload.unwrap_or_else(|| "{}".to_string());
+            let existing = crate::db::get_confirmed_project(&conn, &server_id, &canonical)
+                .map_err(|e| e.to_string())?;
+            let confirmed_at = existing.as_ref().map(|e| e.confirmed_at).unwrap_or(now);
+            let record_cp = crate::db::ConfirmedProjectRecord {
+                id: format!("{}:{}", server_id, canonical),
+                server_id: server_id.clone(),
+                canonical_path: canonical.clone(),
+                name: name.clone().unwrap_or_default(),
+                project_type: project_type.clone().unwrap_or_default(),
+                candidate_payload: payload,
+                scan_state: "active".to_string(),
+                confirmed_at,
+                updated_at: now,
+                last_seen_at: now,
+                missing_since: None,
+                deleted_at: None,
+            };
+            crate::db::upsert_confirmed_project(&conn, &record_cp).map_err(|e| e.to_string())?;
+        }
+        crate::project_discovery::ReviewState::Pending
+        | crate::project_discovery::ReviewState::Ignored => {
+            let _ = crate::db::soft_delete_confirmed_project(&conn, &server_id, &canonical, now);
+        }
+    }
     Ok(record)
 }
 
@@ -506,6 +579,19 @@ pub async fn project_review_list(
 ) -> Result<Vec<crate::db::ProjectReviewRecord>, String> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     crate::db::list_project_reviews(&conn, &server_id).map_err(|e| e.to_string())
+}
+
+/// 持久化的已确认项目资产：即使最新扫描没有再次发现某个路径，也要继续存在。
+/// 返回完整记录（含 `candidate_payload` JSON 快照）与扫描状态
+/// （active / missing / inaccessible / changed），前端据此把"已确认"项目与
+/// "本次新发现"的高可信候选合并成「项目」列表。
+#[tauri::command]
+pub async fn confirmed_projects_list(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<Vec<crate::db::ConfirmedProjectRecord>, String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    crate::db::list_confirmed_projects(&conn, &server_id).map_err(|e| e.to_string())
 }
 
 /// 立即返回某台服务器**上次扫描的快照**（候选 + 实例 + 能力），不依赖实时连接。

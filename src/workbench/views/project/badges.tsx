@@ -4,7 +4,6 @@ import type {
   CandidateInstance,
   DetectedService,
   InstanceRuntime,
-  ProjectKind,
   ServiceGroup,
 } from "@/api/ops-api";
 
@@ -25,6 +24,8 @@ const GROUP_TONE: Record<ServiceGroup, { chip: string; label: string }> = {
   observability: { chip: "bg-[#a855f7]/12 text-[#7e22ce]", label: "可观测性" },
   devops: { chip: "bg-[#0ea5e9]/12 text-[#0369a1]", label: "研发运维平台" },
   infrastructure: { chip: "bg-surface-2 text-fg-subtle", label: "容器基础设施" },
+  security: { chip: "bg-[#64748b]/12 text-[#475569]", label: "安全与身份" },
+  ai_runtime: { chip: "bg-[#ec4899]/12 text-[#be185d]", label: "AI 推理" },
 };
 
 export function serviceGroupLabel(group: ServiceGroup): string {
@@ -186,29 +187,6 @@ export function RuntimeBadge({
       <Icon size={9} />
       {meta.label}
     </span>
-  );
-}
-
-/**
- * 候选性质：业务应用 / 基础设施 / 未确定。
- *
- * MySQL、Redis、Nginx 是**依赖**不是项目 —— 必须能和业务代码区分开，
- * 否则"要不要部署"的清单里会混进一堆中间件。
- */
-export function ProjectKindBadge({ kind }: { kind?: ProjectKind }) {
-  if (!kind || kind === "unknown") return null;
-  if (kind === "infrastructure") {
-    return (
-      <span
-        className="rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning"
-        title="这是服务器上的依赖（数据库 / 缓存 / 网关等），不是要部署的业务项目"
-      >
-        基础设施
-      </span>
-    );
-  }
-  return (
-    <span className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success">业务应用</span>
   );
 }
 

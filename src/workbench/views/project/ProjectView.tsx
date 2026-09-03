@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FolderSearch, Loader2, RefreshCw } from "lucide-react";
+import { Boxes, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
@@ -7,14 +7,30 @@ import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
 import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
-import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
+import type {
+  ConfirmedProject,
+  ConfirmedScanState,
+  ProjectCandidate,
+  ReviewState,
+} from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
+
+/** 渲染用候选：在 ProjectCandidate 之上附加"已确认项目"的持久化状态。 */
+export type DisplayCandidate = ProjectCandidate & {
+  /** 该已确认项目本次扫描的态度：active / missing / inaccessible / changed。 */
+  scanState?: ConfirmedScanState;
+  /** 系统重新将其分类为基础设施，但用户曾确认是业务项目 → 需复核。 */
+  kindChanged?: boolean;
+  /** 本次扫描未再发现该路径（快照仍在，仅供展示）。 */
+  confirmedMissing?: boolean;
+};
 import { ScanProgress } from "./ScanProgress";
 import { TabApplications } from "./tabs/TabApplications";
 import { TabNeedsConfirm } from "./tabs/TabNeedsConfirm";
 import { TabRuntime } from "./tabs/TabRuntime";
 import { TabInfrastructure } from "./tabs/TabInfrastructure";
 import { TabBasicInfo } from "./tabs/TabBasicInfo";
+import { findDuplicateIds, partitionInstances } from "./classify";
 
 /** 项目视图里没有配对的终端，文件面板不需要跟随 `cd`。引用必须稳定。 */
 const NO_FOLLOW = { nonce: 0, arg: "" };
@@ -24,7 +40,7 @@ type TabId = "applications" | "needs_confirm" | "runtime" | "infrastructure" | "
 const TABS: { id: TabId; label: string }[] = [
   { id: "applications", label: "项目" },
   { id: "needs_confirm", label: "待确认" },
-  { id: "runtime", label: "运行服务" },
+  { id: "runtime", label: "应用服务" },
   { id: "infrastructure", label: "基础设施" },
   { id: "basic_info", label: "基本信息" },
 ];
@@ -71,20 +87,28 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     setReviews((current) => ({ ...current, [path]: state }));
   }, []);
 
-  // 从数据库回填人工复核结论（确认 / 忽略），否则重扫或重进页面后本地
-  // `reviews` 被清空、而快照候选里的 review 仍是扫描时的旧值，导致"已确认"
-  // 的项目消失。DB 是权威来源，且与用户即时点击一致，挂载/切换服务器时同步一次。
+  // 持久化已确认项目：即使最新扫描没再发现该路径也必须继续存在。挂载/切换
+  // 服务器时从 confirmed_projects 表加载完整快照。
+  const [confirmedProjects, setConfirmedProjects] = useState<ConfirmedProject[]>([]);
   useEffect(() => {
-    if (!tab.serverId) return;
+    if (!tab.serverId) {
+      setConfirmedProjects([]);
+      return;
+    }
     let alive = true;
-    void opsApi.projectReviewList(tab.serverId).then(
+    void opsApi.projectConfirmedList(tab.serverId).then(
       (records) => {
         if (!alive) return;
-        setReviews((current) => {
-          const next = { ...current };
-          for (const r of records) next[r.path] = r.review as ReviewState;
-          return next;
+        // 解析候选快照，并给每个条目一个稳定的 display 候选。
+        const parsed = records.map((r) => {
+          try {
+            r.candidate = JSON.parse(r.candidate_payload) as ProjectCandidate;
+          } catch {
+            r.candidate = undefined;
+          }
+          return r;
         });
+        setConfirmedProjects(parsed);
       },
       () => {},
     );
@@ -102,31 +126,80 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
 
   const instances = result?.instances ?? [];
 
-  // 项目 tab：用户已确认 + 高可信的业务项目（排除基础设施、排除已忽略）。
-  // 关键：人工确认覆盖一切证据等级（"我已确认的项目"必须出现在这里，
-  // 即使它的自动 status 只是 needs_confirm / possible_dir）。
-  const applications = useMemo(
-    () =>
-      resolved.filter(
-        (c) =>
-          c.review !== "ignored" &&
-          c.project_kind !== "infrastructure" &&
-          (c.review === "confirmed" || c.status === "high_confidence"),
-      ),
-    [resolved],
-  );
+  // 「项目」列表 = 持久化已确认项目 + 本次扫描的高可信候选，按 canonical_path 合并。
+  // 人工确认优先级最高：只要 review === "confirmed" 就进「项目」，即使被算法重新
+  // 分类为 infrastructure 也先保留（标记 kindChanged 提示复核），不允许自动消失。
+  const applications = useMemo<DisplayCandidate[]>(() => {
+    const out: DisplayCandidate[] = [];
+    const usedPaths = new Set<string>();
+
+    // 1) 持久化已确认项目：无论本次是否扫到，都先加入。
+    for (const cp of confirmedProjects) {
+      const scanned = resolved.find((c) => c.path === cp.canonical_path);
+      if (scanned) {
+        usedPaths.add(scanned.path);
+        const kindChanged =
+          scanned.project_kind === "infrastructure" &&
+          cp.candidate?.project_kind !== "infrastructure";
+        out.push({
+          ...scanned,
+          review: "confirmed",
+          scanState: "active",
+          kindChanged,
+          confirmedMissing: false,
+        });
+      } else {
+        // 本次未扫到：保留快照，状态取 DB 的 scan_state（missing / inaccessible）。
+        if (cp.candidate) {
+          out.push({
+            ...cp.candidate,
+            review: "confirmed",
+            scanState: cp.scan_state,
+            kindChanged: false,
+            confirmedMissing: cp.scan_state !== "active",
+          });
+        }
+      }
+    }
+
+    // 2) 本次扫描的高可信候选（未被已确认项目占用的路径）。
+    for (const c of resolved) {
+      if (usedPaths.has(c.path)) continue;
+      if (c.review === "ignored") continue;
+      if (c.review === "confirmed") {
+        out.push({ ...c, scanState: "active" });
+        continue;
+      }
+      if (c.project_kind === "infrastructure") continue;
+      if (c.status === "high_confidence") out.push({ ...c });
+    }
+
+    return out;
+  }, [confirmedProjects, resolved]);
+
   // 待确认 tab：用户尚未拍板（非确认、非忽略）的目录。
   const needsConfirm = useMemo(
     () => resolved.filter((c) => c.review !== "confirmed" && c.review !== "ignored"),
     [resolved],
   );
-  // 运行服务 tab：全部运行实例（容器 / systemd / PM2 / Pod）。
-  const runtimeInstances = useMemo(() => instances, [instances]);
-  // 基础设施 tab：被识别成依赖（数据库/缓存/网关…）且非系统自带的实例。
-  const infraInstances = useMemo(
-    () => instances.filter((i) => !i.system_owned && i.service?.group !== "application"),
-    [instances],
+  // 顶层互斥划分：应用服务 / 基础设施 / 待归类 / 系统组件。
+  // 分类以后端 workload_role 为准；MySQL/Redis/MinIO 只出现在基础设施，
+  // 待归类绝不进基础设施。系统组件默认隐藏。
+  const partitioned = useMemo(() => partitionInstances(instances), [instances]);
+  if (import.meta.env.DEV) {
+    const duplicatedIds = findDuplicateIds(partitioned);
+    if (duplicatedIds.length > 0) {
+      // 从数据模型上保证互斥；这里只是兜底告警，不能替代后端约束。
+      console.error("实例分类重复", duplicatedIds);
+    }
+  }
+  // 应用服务 tab：业务应用 + 待归类（待归类作为 tab 内筛选项查看）。
+  const runtimeInstances = useMemo(
+    () => [...partitioned.applications, ...partitioned.unclassified],
+    [partitioned],
   );
+  // 基础设施 tab：只收 workload_role === infrastructure 的实例。
+  const infraInstances = partitioned.infrastructure;
 
   const tabBadges: Record<TabId, number> = {
     applications: applications.length,
@@ -140,32 +213,20 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     <ModuleFrame
       tab={tab}
       session={session}
-      icon={FolderSearch}
       toolbar={
-        <>
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={loading}
-            onClick={() => void discover(true)}
-          >
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={loading}
+          onClick={() => void discover()}
+        >
+          {loading ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
             <RefreshCw size={12} />
-            刷新
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={!session.ready || loading}
-            onClick={() => void discover()}
-          >
-            {loading ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <FolderSearch size={13} />
-            )}
-            {loading ? "扫描中…" : "发现服务器项目"}
-          </Button>
-        </>
+          )}
+          刷新
+        </Button>
       }
     >
       <div className="flex h-full min-h-0">
@@ -190,7 +251,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
             </div>
           )}
 
-          {/* 5 个 tab：项目 / 待确认 / 运行服务 / 基础设施 / 基本信息 */}
+          {/* 5 个 tab：项目 / 待确认 / 应用服务 / 基础设施 / 基本信息 */}
           <div className="flex items-center gap-1 border-b border-line px-4 pt-3">
             {TABS.map((item) => (
               <button
@@ -227,21 +288,11 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
           <div className="ops-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden">
             <div className="mx-auto flex w-full max-w-[880px] flex-col gap-4 p-5">
               {!result && !loading && (
-                <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
-                  <ModuleEmpty
-                    icon={FolderSearch}
-                    title="发现服务器项目"
-                    hint="先识别服务器的操作系统与已安装能力，再据此启用对应的收集器（systemd、Docker、Nginx、PM2 等均按需），最后结合 Git、进程、端口与配置线索定位项目。整个过程只读，不会执行部署。"
-                  />
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={!session.ready}
-                    onClick={() => void discover()}
-                  >
-                    开始发现
-                  </Button>
-                </div>
+                <ModuleEmpty
+                  icon={Boxes}
+                  title="发现服务器项目"
+                  hint="先识别服务器的操作系统与已安装能力，再据此启用对应的收集器（systemd、Docker、Nginx、PM2 等均按需），最后结合 Git、进程、端口与配置线索定位项目。整个过程只读，不会执行部署。点击上方「刷新」开始。"
+                />
               )}
 
               {result && activeTab === "applications" && (
@@ -250,6 +301,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                   serverId={tab.serverId ?? ""}
                   reviews={reviews}
                   onOpenPath={openPath}
+                  onClosePath={closePanel}
                   onReview={handleReview}
                 />
               )}
@@ -259,6 +311,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                   serverId={tab.serverId ?? ""}
                   reviews={reviews}
                   onOpenPath={openPath}
+                  onClosePath={closePanel}
                   onReview={handleReview}
                 />
               )}
@@ -273,7 +326,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
               )}
 
               {result && result.warnings.length > 0 && (
-                <p className="text-11 text-warning">
+                <p className="text-center text-11 text-warning">
                   扫描警告：{result.warnings.join("；")}
                 </p>
               )}

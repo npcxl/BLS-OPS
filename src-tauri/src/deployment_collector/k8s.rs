@@ -20,7 +20,7 @@
 use super::model::{push_unique, DeploymentInstance};
 use crate::remote::run_on_linux;
 use crate::safe::Capability;
-use crate::service_catalog::{identify_image, InstanceRuntime};
+use crate::service_catalog::{identify_image, identify_runtime_tech, InstanceRuntime};
 use crate::ssh::SshSessionManager;
 
 /// 一次最多收录多少个 Pod（集群可以很大，这里只服务于"这台机器上有什么"）。
@@ -42,8 +42,9 @@ pub(crate) async fn collect_k8s(
     warnings: &mut Vec<String>,
 ) -> anyhow::Result<Vec<DeploymentInstance>> {
     // 第一步：确认 kubectl 真能连上集群。装了客户端 ≠ 在集群里。
-    let nodes = match run_on_linux(mgr, session_id, &Capability::KubeNodes).await {
-        Ok(output) if !output.trim().is_empty() => output,
+    // （只需要"非空输出"这个判定，节点数不必展示给用户。）
+    match run_on_linux(mgr, session_id, &Capability::KubeNodes).await {
+        Ok(output) if !output.trim().is_empty() => {}
         Ok(_) => {
             warnings.push(
                 "kubectl 已安装但查询不到节点：未连接到 Kubernetes 集群，跳过 k8s 工作负载收集"
@@ -58,19 +59,12 @@ pub(crate) async fn collect_k8s(
             return Ok(Vec::new());
         }
     };
-    let node_count = nodes.lines().filter(|line| !line.trim().is_empty()).count();
 
     // 第二步：枚举所有命名空间下的 Pod。
     let listing = run_on_linux(mgr, session_id, &Capability::KubePods).await?;
     let mut instances = Vec::new();
     for row in parse_kube_pods(&listing).take(MAX_PODS) {
         instances.push(pod_instance(&row));
-    }
-    if !instances.is_empty() {
-        warnings.push(format!(
-            "已从 Kubernetes 集群（{node_count} 个节点）收录 {} 个 Pod",
-            instances.len()
-        ));
     }
     Ok(instances)
 }
@@ -151,6 +145,19 @@ pub fn pod_instance(row: &KubePodRow) -> DeploymentInstance {
         push_unique(&mut images, image.clone());
     }
 
+    // 具体技术：优先服务身份，其次运行时表（业务镜像 node/java…）。
+    let technology = service
+        .as_ref()
+        .map(|s| crate::service_catalog::DetectedTechnology {
+            id: s.id.clone(),
+            label: s.label.clone(),
+        })
+        .or_else(|| {
+            row.images
+                .iter()
+                .find_map(|image| identify_runtime_tech(image))
+        });
+
     DeploymentInstance {
         id: format!("k8s:{}/{}", row.namespace, row.pod),
         kind: "k8s".into(),
@@ -167,6 +174,8 @@ pub fn pod_instance(row: &KubePodRow) -> DeploymentInstance {
         source_paths: Vec::new(),
         source_known: false,
         detail,
+        technology,
+        ..Default::default()
     }
 }
 

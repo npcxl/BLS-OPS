@@ -7,7 +7,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type CSSProperties,
   type FocusEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
@@ -55,13 +54,6 @@ const OPPOSITE_SIDE: Record<TooltipSide, TooltipSide> = {
   bottom: "top",
   left: "right",
   right: "left",
-};
-
-const ARROW_CLASS: Record<TooltipSide, string> = {
-  top: "-bottom-[4px] border-r border-b border-line/90",
-  bottom: "-top-[4px] border-l border-t border-line/90",
-  left: "-right-[4px] border-r border-t border-line/90",
-  right: "-left-[4px] border-l border-b border-line/90",
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -324,12 +316,6 @@ export function Tooltip({
       scheduleClose();
     },
   });
-
-  const arrowStyle: CSSProperties | undefined = position
-    ? position.side === "top" || position.side === "bottom"
-      ? { left: position.arrowOffset }
-      : { top: position.arrowOffset }
-    : undefined;
 
   return (
     <>

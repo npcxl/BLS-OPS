@@ -37,12 +37,15 @@ export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
  * Renders the second line for a directory row from its size result.
  *
  * Folders never report a content size over SFTP (only their own ~4096 B
- * metadata). Before the user asks for the size — or if the probe failed for a
- * benign reason (no `du`, session gone) — we keep the second line as a plain
+ * metadata). Before the size is known — or if the probe failed for a benign
+ * reason (no `du`, session gone) — we keep the second line as a plain
  * "文件夹" so the row doesn't look broken. While computing we show progress;
  * once done we show "1.26 GB · 12,586 个文件" and warn when some entries were
  * skipped. Genuinely terminal errors (permission denied, timed out, cancelled,
  * failed) are surfaced so the user knows why no size is shown.
+ *
+ * 文件计数只有 SFTP 递归回退才有（`du` 只报字节数）：结果里 `file_count` 为 0
+ * 时只渲染大小，绝不显示误导性的"0 个文件"。
  */
 export function dirSizeSummary(result: DirectorySizeResult | undefined): string {
   if (!result) return "文件夹";
@@ -54,9 +57,12 @@ export function dirSizeSummary(result: DirectorySizeResult | undefined): string 
     case "computing":
       return "计算中…";
     case "completed":
-      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件`;
-    case "partial":
-      return `${formatSize(result.sizeBytes)} · ${formatCount(result.fileCount)} 个文件 · 部分统计`;
+    case "partial": {
+      const parts = [formatSize(result.sizeBytes)];
+      if (result.fileCount > 0) parts.push(`${formatCount(result.fileCount)} 个文件`);
+      if (result.status === "partial") parts.push("部分统计");
+      return parts.join(" · ");
+    }
     case "permission_denied":
     case "timed_out":
     case "cancelled":

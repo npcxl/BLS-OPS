@@ -33,6 +33,9 @@ pub mod ssh;
 mod state;
 /// systemd service management (P3-1.1).
 pub mod systemd;
+/// 实例业务分类器：应用服务 / 基础设施 / 系统组件 / 待归类 四个互斥集合。
+/// 只在后端做判定，React 只展示结果。纯逻辑，零 I/O。
+pub mod workload_class;
 
 use tauri::Manager;
 
@@ -152,6 +155,7 @@ pub fn run() {
             commands::project_review_list,
             commands::project_readiness_check,
             commands::project_inventory_load,
+            commands::confirmed_projects_list,
             // legacy project records retained as P5 foundation
             commands::project_list,
             commands::project_get,

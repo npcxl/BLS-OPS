@@ -22,12 +22,16 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
+import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
+import { completionKeys } from "@/workbench/views/command-center/complete";
+import type { CommandSearchHit } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { sshClosedEvent, sshOutputEvent } from "@/lib/events";
 import { terminalTheme } from "./theme";
 import { ToolbarIcon } from "./ToolbarIcon";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
+import { TerminalSuggest } from "./TerminalSuggest";
 
 const KEEPALIVE_MS = 30_000;
 /** Consecutive failed probes before the session is declared dead. */
@@ -66,6 +70,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [follow, setFollow] = useState<{ nonce: number; arg: string }>({ nonce: 0, arg: "" });
   const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const selectionMenuTimerRef = useRef<number | null>(null);
+  /**
+   * 正在输入的命令行（由 LineEditor 从按键流还原）。驱动命令提示 —— 与
+   * 命令中心共用 `useCommandSuggestions`，因此输入 `docker p` 的行为一致。
+   */
+  const [draft, setDraft] = useState("");
+  /** Ctrl+Space 可临时关闭提示（有人就是不喜欢）。 */
+  const [suggestOpen, setSuggestOpen] = useState(true);
+  /**
+   * 是否处于 alternate screen（vim / top / less …）。这些程序自己接管整屏，
+   * 此时任何提示都是噪音，且"当前行"也不再是 shell 命令行。
+   */
+  const [inAlternate, setInAlternate] = useState(false);
 
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const updateTab = useWorkbenchStore((s) => s.updateTab);
@@ -81,6 +97,66 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // recorded as history. Created once per session.
   const lineEditorRef = useRef<LineEditor | null>(null);
   if (!lineEditorRef.current) lineEditorRef.current = new LineEditor();
+
+  // Command suggestions share the knowledge base with the command centre.
+  // Retrieval is local — it needs no connection — but suggestions only make
+  // sense while a shell is actually waiting for input.
+  const suggestionsEnabled =
+    phase === "connected" && !inAlternate && suggestOpen && draft.trim().length > 0;
+  const suggestions = useCommandSuggestions(draft, { enabled: suggestionsEnabled, limit: 8 });
+
+  /**
+   * Writes a knowledge-base command into the remote shell's current line.
+   *
+   * We only send keystrokes — the remote shell remains the line editor — and
+   * feed the same keys through LineEditor so our draft stays in sync
+   * (`sshInput` does not pass back through `onData`).
+   */
+  const applySuggestion = useCallback(
+    (hit: CommandSearchHit) => {
+      const editor = lineEditorRef.current;
+      if (!editor) return;
+      const keys = completionKeys(editor.current, hit.syntax);
+      void opsApi.sshInput(sessionId, keys).catch(() => undefined);
+      editor.feed(keys);
+      setDraft(editor.current);
+    },
+    [sessionId],
+  );
+
+  /**
+   * Alt-combos and Ctrl+Space are claimed by the suggestion layer; every other
+   * key must reach the shell untouched (arrow keys are shell history, Tab is
+   * remote completion). Held in a ref so the terminal — created once — always
+   * calls the latest handler without being torn down.
+   */
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
+  // No dep array on purpose: the terminal is created once, so the handler has
+  // to be refreshed after every render to see the current suggestions.
+  useEffect(() => {
+    keyHandlerRef.current = (event) => {
+      if (event.ctrlKey && event.code === "Space") {
+        setSuggestOpen((open) => !open);
+        return true;
+      }
+      const { hits, activeIndex, setActiveIndex } = suggestions;
+      if (hits.length === 0) return false;
+      if (event.altKey && event.key === "ArrowDown") {
+        setActiveIndex(Math.min(activeIndex + 1, hits.length - 1));
+        return true;
+      }
+      if (event.altKey && event.key === "ArrowUp") {
+        setActiveIndex(Math.max(activeIndex - 1, 0));
+        return true;
+      }
+      if (event.altKey && event.key === "Enter") {
+        const hit = hits[activeIndex];
+        if (hit) applySuggestion(hit);
+        return true;
+      }
+      return false;
+    };
+  });
 
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
@@ -201,10 +277,26 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
+    // Claim only the suggestion keys; everything else reaches the shell.
+    instance.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      return !keyHandlerRef.current(event);
+    });
+
     const dataSubscription = instance.onData((data) => {
+      // Full-screen programs (vim, top, less) take over the screen: the
+      // "current line" is no longer a shell command, so suggestions are noise.
+      // Sampled on input — entering them always involves a keystroke.
+      const alternate = instance.buffer.active.type !== "normal";
+      setInAlternate(alternate);
+
       // Recover whole commands from the raw stream; arrow keys, Ctrl+C, pastes
       // and line continuations are handled by the editor.
       const commands = lineEditorRef.current?.feed(data) ?? [];
+      if (alternate) {
+        void opsApi.sshInput(sessionId, data).catch(() => undefined);
+        return;
+      }
       for (const command of commands) {
         if (tab.serverId || tab.quickTarget) {
           void opsApi
@@ -219,6 +311,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           setFollow((current) => ({ nonce: current.nonce + 1, arg }));
         }
       }
+      // A submitted line (or Ctrl+C, which the editor abandons) clears the
+      // draft, which in turn hides the suggestion layer.
+      setDraft(commands.length > 0 ? "" : (lineEditorRef.current?.current ?? ""));
       void opsApi.sshInput(sessionId, data).catch(() => undefined);
     });
 
@@ -430,8 +525,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         </div>
       )}
 
-      <div className="relative flex min-h-0 flex-1" onMouseDown={() => setSelectionMenu(null)}>
-        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1 p-2" data-selectable />
+      {/* padding 放在包装层：FitAddon 读的是测量元素（containerRef）的
+          border-box 高度且不扣它的 padding —— 若 padding 和 xterm 在同一个
+          div 上，算出的行数会多一行，最后一行被裁掉半个字符。 */}
+      <div className="relative flex min-h-0 flex-1 p-2" onMouseDown={() => setSelectionMenu(null)}>
+        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1" data-selectable />
         {selectionMenu && (
           <div
             className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
@@ -456,6 +554,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             sessionId={sessionId}
             serverId={tab.serverId}
             onPick={(command) => void opsApi.sshInput(sessionId, `${command}\n`)}
+          />
+        )}
+        {suggestionsEnabled && (
+          <TerminalSuggest
+            hits={suggestions.hits}
+            activeIndex={suggestions.activeIndex}
+            onHover={suggestions.setActiveIndex}
+            onApply={applySuggestion}
           />
         )}
       </div>

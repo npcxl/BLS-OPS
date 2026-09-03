@@ -80,6 +80,27 @@ export class LineEditor {
   }
 
   /**
+   * Best-effort cursor position within the tracked line.
+   *
+   * The real cursor lives in the remote shell — we only see the keystrokes —
+   * so this reports the end of the tracked buffer. That is exact for the
+   * common case (typing at the end of the line) and is the only safe
+   * approximation: guessing a mid-line offset from arrow-key escapes would
+   * desynchronise completion and corrupt the command.
+   */
+  get cursor(): number {
+    return this.line.length;
+  }
+
+  /** Drops the in-progress line (after submit, Ctrl+C, or a lost focus). */
+  reset(): void {
+    this.line = "";
+    this.pending = "";
+    this.inPaste = false;
+    this.paste = "";
+  }
+
+  /**
    * Consumes raw terminal input and returns the commands it completed.
    *
    * A paste holding three newlines yields three commands; an aborted line

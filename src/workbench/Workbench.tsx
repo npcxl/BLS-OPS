@@ -6,7 +6,6 @@ import { AppTopBar } from "./AppTopBar";
 import { NavigationRail } from "./NavigationRail";
 import { ContextSidebar } from "./ContextSidebar";
 import { Workspace } from "./Workspace";
-import { StatusBar } from "./StatusBar";
 import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
 import type { WorkspaceTabType } from "./types";
@@ -151,7 +150,6 @@ export function Workbench() {
         <ContextSidebar />
         <Workspace />
       </div>
-      <StatusBar />
       <CommandPalette open={commandPaletteOpen} actions={actions} onClose={() => setCommandPaletteOpen(false)} />
       <HostKeyDialog />
     </div>

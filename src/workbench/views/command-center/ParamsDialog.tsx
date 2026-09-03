@@ -2,7 +2,7 @@ import { useState } from "react";
 import { RISK_META, type CommandParams, type CommandSearchHit } from "@/api/ops-api";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { paramLabel, placeholderFor } from "./params";
+import { paramLabel, placeholderFor } from "./complete";
 
 /**
  * 参数编辑弹窗：需要参数的命令（docker logs <容器> / systemctl status <unit> /

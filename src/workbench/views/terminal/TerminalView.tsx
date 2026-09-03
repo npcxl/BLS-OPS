@@ -32,6 +32,10 @@ import { ToolbarIcon } from "./ToolbarIcon";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
+import {
+  resolveSuggestKey,
+  type SuggestAnchor,
+} from "./terminal-suggest";
 
 const KEEPALIVE_MS = 30_000;
 /** Consecutive failed probes before the session is declared dead. */
@@ -78,6 +82,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** Ctrl+Space 可临时关闭提示（有人就是不喜欢）。 */
   const [suggestOpen, setSuggestOpen] = useState(true);
   /**
+   * 提示面板的"已关闭"草稿：填入候选（→ / Enter / 点击）或 ← / Esc 关闭后
+   * 记录当前草稿，面板暂时不再出现 —— **否则第二次 Enter 会再次命中候选，
+   * 永远无法真正执行**。用户继续输入/删除/修改草稿后（draft 变化）自动恢复。
+   */
+  const [dismissedDraft, setDismissedDraft] = useState<string | null>(null);
+  /** 提示面板锚点：光标单元格右下角（px，相对终端定位容器）。 */
+  const [suggestAnchor, setSuggestAnchor] = useState<SuggestAnchor | null>(null);
+  /** 终端定位容器（提示面板的 absolute 父元素）。 */
+  const suggestWrapperRef = useRef<HTMLDivElement>(null);
+  /**
    * 是否处于 alternate screen（vim / top / less …）。这些程序自己接管整屏，
    * 此时任何提示都是噪音，且"当前行"也不再是 shell 命令行。
    */
@@ -100,10 +114,61 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   // Command suggestions share the knowledge base with the command centre.
   // Retrieval is local — it needs no connection — but suggestions only make
-  // sense while a shell is actually waiting for input.
+  // sense while a shell is actually waiting for input. dismissedDraft =
+  // 填入候选或关闭面板时的草稿：相同就不再检索（见 dismissedDraft 注释）。
   const suggestionsEnabled =
-    phase === "connected" && !inAlternate && suggestOpen && draft.trim().length > 0;
+    phase === "connected" &&
+    !inAlternate &&
+    suggestOpen &&
+    draft.trim().length > 0 &&
+    draft !== dismissedDraft;
   const suggestions = useCommandSuggestions(draft, { enabled: suggestionsEnabled, limit: 8 });
+
+  /**
+   * 重算提示面板锚点：读 xterm 光标单元格（cursorX/cursorY），按 `.xterm-screen`
+   * 的实际尺寸换算成像素，得到光标**右下角**相对定位容器的坐标。
+   *
+   * 全部走 requestAnimationFrame：等 xterm 把本次写入/滚动渲染完再读，否则
+   * 读到的是上一帧的光标位置。输入、输出、滚动、缩放、fit 之后都要调用。
+   */
+  const updateSuggestAnchor = useCallback(() => {
+    requestAnimationFrame(() => {
+      const instance = terminalRef.current;
+      const container = containerRef.current;
+      const wrapper = suggestWrapperRef.current;
+      if (!instance || !container || !wrapper) {
+        setSuggestAnchor(null);
+        return;
+      }
+      const screen = container.querySelector<HTMLElement>(".xterm-screen");
+      const cols = instance.cols;
+      const rows = instance.rows;
+      if (!screen || cols <= 0 || rows <= 0) {
+        setSuggestAnchor(null);
+        return;
+      }
+      const rect = screen.getBoundingClientRect();
+      const cellWidth = rect.width / cols;
+      const cellHeight = rect.height / rows;
+      if (cellWidth <= 0 || cellHeight <= 0) {
+        setSuggestAnchor(null);
+        return;
+      }
+      const cursorX = instance.buffer.active.cursorX;
+      const cursorY = instance.buffer.active.cursorY;
+      // 光标滚出可视区（用户上翻回滚缓冲）时不显示提示。
+      if (cursorY < 0 || cursorY >= rows || cursorX < 0 || cursorX >= cols) {
+        setSuggestAnchor(null);
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const wrapperRect = wrapper.getBoundingClientRect();
+      setSuggestAnchor({
+        x: containerRect.left - wrapperRect.left + (cursorX + 1) * cellWidth,
+        y: containerRect.top - wrapperRect.top + (cursorY + 1) * cellHeight,
+      });
+    });
+  }, []);
 
   /**
    * Writes a knowledge-base command into the remote shell's current line.
@@ -111,6 +176,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * We only send keystrokes — the remote shell remains the line editor — and
    * feed the same keys through LineEditor so our draft stays in sync
    * (`sshInput` does not pass back through `onData`).
+   *
+   * 填入**不执行**：填入后记录 dismissedDraft = 填入后的草稿，面板关闭；
+   * 第二次 Enter 时 hits 已空，按键穿透给 shell 正常执行。
    */
   const applySuggestion = useCallback(
     (hit: CommandSearchHit) => {
@@ -119,42 +187,61 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const keys = completionKeys(editor.current, hit.syntax);
       void opsApi.sshInput(sessionId, keys).catch(() => undefined);
       editor.feed(keys);
-      setDraft(editor.current);
+      const next = editor.current;
+      setDraft(next);
+      setDismissedDraft(next);
+      updateSuggestAnchor();
     },
-    [sessionId],
+    [sessionId, updateSuggestAnchor],
   );
 
   /**
-   * Alt-combos and Ctrl+Space are claimed by the suggestion layer; every other
-   * key must reach the shell untouched (arrow keys are shell history, Tab is
-   * remote completion). Held in a ref so the terminal — created once — always
-   * calls the latest handler without being torn down.
+   * 键盘接管（提示面板打开时，映射见 `terminal-suggest.ts`）：
+   * ↑↓ 选择、→ / Enter 填入（**不执行**）、← / Esc 关闭面板。
+   * 其余按键（含面板关闭后的全部按键）原样交给远程 shell —— 方向键是
+   * shell 历史，Tab 是远程补全。Ctrl+Space 仍是提示开关。
+   *
+   * 输入法组合中（isComposing / keyCode 229）绝不拦截。Held in a ref so the
+   * terminal — created once — always calls the latest handler.
    */
   const keyHandlerRef = useRef<(event: KeyboardEvent) => boolean>(() => false);
   // No dep array on purpose: the terminal is created once, so the handler has
-  // to be refreshed after every render to see the current suggestions.
+  // to be refreshed after every render to see the current suggestions/draft.
   useEffect(() => {
     keyHandlerRef.current = (event) => {
       if (event.ctrlKey && event.code === "Space") {
         setSuggestOpen((open) => !open);
         return true;
       }
+      if (event.isComposing || event.keyCode === 229) return false;
       const { hits, activeIndex, setActiveIndex } = suggestions;
-      if (hits.length === 0) return false;
-      if (event.altKey && event.key === "ArrowDown") {
-        setActiveIndex(Math.min(activeIndex + 1, hits.length - 1));
-        return true;
+      const action = resolveSuggestKey(
+        { key: event.key, isComposing: event.isComposing },
+        hits.length > 0,
+      );
+      switch (action.type) {
+        case "none":
+          return false;
+        case "move": {
+          event.preventDefault();
+          setActiveIndex(
+            Math.min(Math.max(activeIndex + action.delta, 0), hits.length - 1),
+          );
+          return true;
+        }
+        case "accept": {
+          event.preventDefault();
+          const hit = hits[activeIndex];
+          if (hit) applySuggestion(hit);
+          return true;
+        }
+        case "dismiss": {
+          event.preventDefault();
+          // 关闭面板：记录当前草稿，draft 变化前面板不再出现。
+          setDismissedDraft(draft);
+          return true;
+        }
       }
-      if (event.altKey && event.key === "ArrowUp") {
-        setActiveIndex(Math.max(activeIndex - 1, 0));
-        return true;
-      }
-      if (event.altKey && event.key === "Enter") {
-        const hit = hits[activeIndex];
-        if (hit) applySuggestion(hit);
-        return true;
-      }
-      return false;
     };
   });
 
@@ -315,6 +402,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       // draft, which in turn hides the suggestion layer.
       setDraft(commands.length > 0 ? "" : (lineEditorRef.current?.current ?? ""));
       void opsApi.sshInput(sessionId, data).catch(() => undefined);
+      // 输入会移动光标 → 重算提示面板锚点。
+      updateSuggestAnchor();
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -330,8 +419,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (instance.cols > 0 && instance.rows > 0) {
         void opsApi.sshResize(sessionId, instance.cols, instance.rows).catch(() => undefined);
       }
+      // 缩放 / fit 改变单元格尺寸 → 重算锚点。
+      updateSuggestAnchor();
     });
     resizeObserver.observe(containerRef.current);
+
+    // 回滚缓冲滚动改变光标在视口中的行 → 重算锚点（rAF 节流）。
+    const viewport = containerRef.current.querySelector<HTMLElement>(".xterm-viewport");
+    const onViewportScroll = () => updateSuggestAnchor();
+    viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
 
     let disposed = false;
     const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
@@ -342,6 +438,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       } else {
         instance.write(output);
       }
+      // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
+      setInAlternate(instance.buffer.active.type !== "normal");
+      updateSuggestAnchor();
     });
 
     const selectionSubscription = instance.onSelectionChange(() => {
@@ -354,12 +453,35 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       selectionMenuTimerRef.current = window.setTimeout(() => {
         const container = containerRef.current;
         if (!container || !instance.hasSelection()) return;
-        const terminalRect = container.getBoundingClientRect();
-        setSelectionMenu({
-          x: Math.min(terminalRect.width - 12, Math.max(12, terminalRect.width / 2)),
-          y: 12,
-          text,
-        });
+        // 菜单贴着**选区末端**（最后一个选中单元格的右下方），不是写死的顶部居中。
+        // 选区端点用 getSelectionPosition 取，取不到（旧版 xterm）退回终端中上位置。
+        const screen = container.querySelector<HTMLElement>(".xterm-screen");
+        const cols = instance.cols;
+        const rows = instance.rows;
+        const pos = instance.getSelectionPosition?.();
+        let x: number;
+        let y: number;
+        if (screen && cols > 0 && rows > 0 && pos) {
+          const rect = screen.getBoundingClientRect();
+          const cellWidth = rect.width / cols;
+          const cellHeight = rect.height / rows;
+          // start/end 是缓冲坐标（含回滚偏移）；可视行 = bufferY - viewportY。
+          const viewportY = instance.buffer.active.viewportY;
+          const endColumn = pos.end.x + 1; // 0 基 → 光标右缘
+          const endRow = pos.end.y - viewportY + 1; // 选中行下一行上缘
+          const containerRect = container.getBoundingClientRect();
+          x = containerRect.left - containerRect.left + endColumn * cellWidth;
+          y = containerRect.top - containerRect.top + endRow * cellHeight;
+          // 越界保护：末端滚出视口（选区跨屏）时退回顶部居中。
+          if (endRow < 0 || endRow > rows) {
+            x = Math.max(12, containerRect.width / 2);
+            y = 12;
+          }
+        } else {
+          x = Math.max(12, container.clientWidth / 2);
+          y = 12;
+        }
+        setSelectionMenu({ x, y, text });
       }, SELECTION_MENU_DELAY_MS);
     });
     const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
@@ -374,6 +496,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       disposed = true;
       resizeObserver.disconnect();
       themeObserver.disconnect();
+      viewport?.removeEventListener("scroll", onViewportScroll);
       dataSubscription.dispose();
       selectionSubscription.dispose();
       if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
@@ -387,7 +510,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     };
     // Reconnecting on target change is intentional; `connect` is stable per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasTarget, sessionId]);
+  }, [hasTarget, sessionId, updateSuggestAnchor]);
 
   // Keepalive only runs while the session is actually connected. Consecutive
   // failures flip the session to "closed" so the UI stops claiming a live
@@ -527,8 +650,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
       {/* padding 放在包装层：FitAddon 读的是测量元素（containerRef）的
           border-box 高度且不扣它的 padding —— 若 padding 和 xterm 在同一个
-          div 上，算出的行数会多一行，最后一行被裁掉半个字符。 */}
-      <div className="relative flex min-h-0 flex-1 p-2" onMouseDown={() => setSelectionMenu(null)}>
+          div 上，算出的行数会多一行，最后一行被裁掉半个字符。
+          同时是提示面板的定位容器（relative）。 */}
+      <div
+        ref={suggestWrapperRef}
+        className="relative flex min-h-0 flex-1 p-2"
+        onMouseDown={() => setSelectionMenu(null)}
+      >
         <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1" data-selectable />
         {selectionMenu && (
           <div
@@ -562,6 +690,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             activeIndex={suggestions.activeIndex}
             onHover={suggestions.setActiveIndex}
             onApply={applySuggestion}
+            anchor={suggestAnchor}
           />
         )}
       </div>

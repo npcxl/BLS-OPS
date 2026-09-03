@@ -1,0 +1,105 @@
+/**
+ * 终端内联补全（原位提示）的纯逻辑：光标锚点定位算法 + 键盘判定。
+ *
+ * 抽成纯函数是为了可测：定位的翻转规则与按键→动作的映射都在这里，
+ * React 组件只负责测量与渲染。
+ */
+
+/** 光标锚点（px，相对终端定位容器；= 光标单元格的右下角）。 */
+export interface SuggestAnchor {
+  x: number;
+  y: number;
+}
+
+/** 提示面板尺寸（px）。 */
+export interface SuggestBox {
+  width: number;
+  height: number;
+}
+
+/** 定位容器（relative 包装层）的可用尺寸（px）。 */
+export interface SuggestViewport {
+  width: number;
+  height: number;
+}
+
+/** 面板与光标的间隔（px）。 */
+export const SUGGEST_GAP = 6;
+
+/** 面板与容器边缘的最小间距（px）。 */
+const VIEWPORT_MARGIN = 4;
+
+/**
+ * 计算面板位置：默认在光标**右下方**（间隔 6px）；
+ * 右侧放不下 → 向左展开；底部放不下 → 翻到光标上方；
+ * 面板比容器还大 → 贴边（clamp 到 MARGIN）。
+ */
+export function computeSuggestPosition(
+  anchor: SuggestAnchor,
+  panel: SuggestBox,
+  viewport: SuggestViewport,
+  gap: number = SUGGEST_GAP,
+): { left: number; top: number } {
+  let left = anchor.x + gap;
+  if (left + panel.width > viewport.width - VIEWPORT_MARGIN) {
+    left = anchor.x - gap - panel.width;
+  }
+  if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+
+  let top = anchor.y + gap;
+  if (top + panel.height > viewport.height - VIEWPORT_MARGIN) {
+    top = anchor.y - gap - panel.height;
+  }
+  if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+
+  return { left, top };
+}
+
+/** 键盘判定产出的动作。`none` = 不拦截，按键照常发给远程 shell。 */
+export type SuggestKeyAction =
+  | { type: "none" }
+  | { type: "move"; delta: 1 | -1 }
+  | { type: "accept" }
+  | { type: "dismiss" };
+
+export interface SuggestKeyEventInput {
+  key: string;
+  /** 输入法组合中（keydown keyCode 229）：绝不拦截，方向键与 Enter 属于 IME。 */
+  isComposing?: boolean;
+}
+
+/**
+ * 提示面板打开时的按键映射：
+ *
+ * | 按键          | 动作                     |
+ * | ------------- | ------------------------ |
+ * | `↑` / `↓`     | 上下选择候选              |
+ * | `→`           | 填入当前候选（不执行）    |
+ * | `←` / `Esc`   | 关闭面板，恢复 shell 按键 |
+ * | `Enter`       | 填入候选（不执行）        |
+ *
+ * **第一次 Enter 只填入**。填入后视图层记录 dismissedDraft（= 填入后的草稿），
+ * 面板关闭、hasHits 变 false —— 第二次 Enter 在这里落到 `none`，穿透给
+ * shell 正常执行。用户继续输入/删除/修改草稿后才会重新检索。
+ */
+export function resolveSuggestKey(
+  event: SuggestKeyEventInput,
+  hasHits: boolean,
+): SuggestKeyAction {
+  if (event.isComposing) return { type: "none" };
+  if (!hasHits) return { type: "none" };
+  switch (event.key) {
+    case "ArrowDown":
+      return { type: "move", delta: 1 };
+    case "ArrowUp":
+      return { type: "move", delta: -1 };
+    case "ArrowRight":
+    case "Enter":
+      return { type: "accept" };
+    case "ArrowLeft":
+    case "Escape":
+      return { type: "dismiss" };
+    default:
+      return { type: "none" };
+  }
+}

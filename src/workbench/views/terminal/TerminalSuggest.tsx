@@ -1,29 +1,53 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { RISK_META, type CommandSearchHit } from "@/api/ops-api";
+import {
+  computeSuggestPosition,
+  type SuggestAnchor,
+} from "./terminal-suggest";
 
 /**
- * 终端内联命令提示层（P4.2 接入终端）。
+ * 终端内联命令提示层 —— **原位补全**：面板出现在输入光标右下方（间隔 6px），
+ * 右侧放不下向左展开、底部放不下翻到光标上方。
  *
- * 贴在终端底部、贴近正在输入的那一行。它**不劫持**普通方向键与 Tab ——
- * 那些属于远程 shell 的历史与补全；选择用 Alt+↑/↓，填入用 Alt+Enter 或
- * 鼠标点击，Enter 仍然是"交给 shell 执行"。
+ * 键盘交互由 `TerminalView` 的按键层处理（见 `terminal-suggest.ts` 的映射表）；
+ * 这里只负责展示与鼠标点选（mousedown 抢在终端失焦之前完成补全）。
  *
- * 只读展示知识：这里不提供执行按钮，补全只把命令写进当前行，由用户自己
- * 回车 —— 保持"终端是终端"的心智模型。
+ * 填入只把候选写进当前行，**不执行**：第一次 Enter 填入并关闭面板，
+ * 第二次 Enter 才由 shell 正常执行。
  */
 export function TerminalSuggest({
   hits,
   activeIndex,
   onHover,
   onApply,
+  anchor,
 }: {
   hits: CommandSearchHit[];
   activeIndex: number;
   onHover: (index: number) => void;
   onApply: (hit: CommandSearchHit) => void;
+  /** 光标锚点（px，相对定位父元素 = 光标右下角）。null 时不渲染。 */
+  anchor: SuggestAnchor | null;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  // anchor 变化（输入/输出/滚动/缩放/fit 后都会重算）→ 先测量面板再定位，
+  // 翻转规则在纯函数 computeSuggestPosition 里。layout 阶段完成，不闪跳。
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    const parent = (el?.offsetParent ?? null) as HTMLElement | null;
+    if (!el || !parent || !anchor) return;
+    setPos(
+      computeSuggestPosition(
+        anchor,
+        { width: el.offsetWidth, height: el.offsetHeight },
+        { width: parent.clientWidth, height: parent.clientHeight },
+      ),
+    );
+  }, [anchor, hits.length]);
 
   // 高亮项变化时滚动进可视区（提示较多时列表会滚动）。
   useEffect(() => {
@@ -31,11 +55,21 @@ export function TerminalSuggest({
     node?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  if (hits.length === 0) return null;
+  if (hits.length === 0 || !anchor) return null;
 
   return (
-    <div className="pointer-events-auto absolute bottom-1.5 left-1.5 right-1.5 z-20 overflow-hidden rounded-[8px] border border-line bg-surface-1/97 shadow-[0_4px_16px_rgb(15_23_42/0.18)] backdrop-blur-sm">
-      <div ref={listRef} className="max-h-[168px] overflow-y-auto py-0.5">
+    <div
+      ref={panelRef}
+      className="pointer-events-auto absolute z-20 overflow-hidden rounded-[8px] border border-line bg-surface-1 shadow-[0_4px_16px_rgb(15_23_42/0.18)]"
+      style={{
+        left: pos?.left ?? anchor.x,
+        top: pos?.top ?? anchor.y,
+        // 首帧测量完成前隐藏，避免从 (0,0) 闪一下。
+        visibility: pos ? "visible" : "hidden",
+        maxWidth: "min(460px, calc(100% - 8px))",
+      }}
+    >
+      <div ref={listRef} className="max-h-[180px] overflow-y-auto py-0.5">
         {hits.map((hit, index) => (
           <button
             key={hit.id}
@@ -62,7 +96,7 @@ export function TerminalSuggest({
         ))}
       </div>
       <div className="border-t border-line bg-surface-2/60 px-2.5 py-0.5 text-9 text-fg-subtle">
-        Alt+↑↓ 选择 · Alt+Enter 或点击填入 · Ctrl+Space 关闭 · Enter 照常执行
+        ↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行
       </div>
     </div>
   );

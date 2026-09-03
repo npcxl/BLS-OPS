@@ -17,7 +17,7 @@ const UNGROUPED = "__ungrouped__";
 
 /** Modules that, when opened from the rail, show a left server list instead of
  *  a placeholder — picking a server opens that module bound to that server. */
-export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects", "commands"];
+export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects"];
 
 const MODULE_TITLE: Record<NavModule, string> = {
   ssh: "服务器列表",
@@ -88,7 +88,7 @@ export function ModuleServerSidebar({ module }: { module: NavModule }) {
     useWorkbenchStore.getState().openTab({
       id: crypto.randomUUID(),
       type: "monitor",
-      title: `${server.name} · 监控`,
+      title: server.name,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),
@@ -98,7 +98,7 @@ export function ModuleServerSidebar({ module }: { module: NavModule }) {
     useWorkbenchStore.getState().openTab({
       id: crypto.randomUUID(),
       type: kind,
-      title: `${server.name} · ${kind === "service" ? "服务" : "日志"}`,
+      title: server.name,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),

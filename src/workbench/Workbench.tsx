@@ -71,7 +71,7 @@ export function Workbench() {
         openTab({
           id: crypto.randomUUID(),
           type: "monitor",
-          title: `${server.name} · 监控`,
+          title: server.name,
           subtitle: `${server.host}:${server.port}`,
           serverId: server.id,
           sessionId: crypto.randomUUID(),
@@ -91,7 +91,7 @@ export function Workbench() {
           openTab({
             id: crypto.randomUUID(),
             type: kind.tabType,
-            title: `${server.name} · ${kind.label}`,
+            title: server.name,
             subtitle: `${server.host}:${server.port}`,
             serverId: server.id,
             sessionId: crypto.randomUUID(),

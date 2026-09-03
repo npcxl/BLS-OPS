@@ -14,7 +14,7 @@ export function MonitorPicker({
 
   const attach = (server: { id: string; name: string; host: string; port: number }) =>
     updateTab(tabId, {
-      title: `${server.name} · 监控`,
+      title: server.name,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),

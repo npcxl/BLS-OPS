@@ -1,9 +1,65 @@
 import { useEffect, useRef } from "react";
-import { Columns2, Plus, Rows2, X } from "lucide-react";
+import {
+  Activity,
+  House,
+  Plus,
+  Rows2,
+  Columns2,
+  Server,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import {
+  CommandCenterIcon,
+  FileDescriptionIcon,
+  GearIcon,
+  RocketIcon,
+  SparklesIcon,
+  Stack3Icon,
+  TerminalIcon,
+  UnorderedListIcon,
+  WorldIcon,
+} from "@/components/its-hover";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
-import type { WorkbenchPane, WorkspaceTab } from "@/workbench/types";
+import type { NavModule, WorkbenchPane, WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
+
+/** 页签图标 = 左侧菜单同一套（its-hover），保证"页签和菜单图标一致"。 */
+type TabIcon = LucideIcon | typeof TerminalIcon;
+
+const MODULE_ICONS: Record<NavModule, TabIcon> = {
+  ssh: TerminalIcon,
+  servers: Server,
+  services: WorldIcon,
+  logs: FileDescriptionIcon,
+  projects: Stack3Icon,
+  commands: CommandCenterIcon,
+  deploy: RocketIcon,
+  tasks: UnorderedListIcon,
+  ai: SparklesIcon,
+  settings: GearIcon,
+};
+
+function tabIcon(tab: WorkspaceTab): TabIcon {
+  const byType: Partial<Record<WorkspaceTabType, TabIcon>> = {
+    home: House,
+    terminal: TerminalIcon,
+    server: Server,
+    // 监控不在左侧菜单里，用 lucide Activity。
+    monitor: Activity,
+    service: WorldIcon,
+    logs: FileDescriptionIcon,
+    project: Stack3Icon,
+    command_center: CommandCenterIcon,
+    workflow: UnorderedListIcon,
+    deployment: RocketIcon,
+  };
+  if (tab.type === "module") {
+    return tab.module ? MODULE_ICONS[tab.module] : GearIcon;
+  }
+  return byType[tab.type] ?? TerminalIcon;
+}
 
 /**
  * Per-pane tab strip — spec §10, §12.
@@ -111,13 +167,14 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
       >
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;
+          const Icon = tabIcon(tab);
           return (
             <div
               key={tab.id}
               role="tab"
               aria-selected={active}
               className={cn(
-                "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-12 select-none transition-colors duration-100",
+                "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] select-none transition-colors duration-100",
                 active
                   ? "bg-surface-active text-fg shadow-[inset_0_1px_0_rgb(255_255_255/0.55),0_1px_2px_rgb(15_23_42/0.06)]"
                   : "text-fg-muted hover:bg-surface-hover hover:text-fg",
@@ -128,6 +185,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               }}
               onContextMenu={tabMenu(tab)}
             >
+              <Icon size={11} className="shrink-0 opacity-80" />
               <span className="truncate">{tab.title}</span>
               <button
                 type="button"

@@ -459,7 +459,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   return (
     <div className="flex h-full min-h-0 flex-row bg-surface-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-transparent px-2">
+      <div className="flex h-10 shrink-0 items-center gap-1  border-line bg-transparent px-2">
         <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
         <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
         <ToolbarIcon label="水平分栏" icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />

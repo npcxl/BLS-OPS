@@ -113,7 +113,6 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
     <ModuleFrame
       tab={tab}
       session={session}
-      icon={ScrollText}
       toolbar={
         <>
           <RefreshButton busy={loading} onClick={() => void load()} />

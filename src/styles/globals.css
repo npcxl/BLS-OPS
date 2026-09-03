@@ -99,8 +99,9 @@
     scrollbar-width: auto;
     scrollbar-color: rgb(var(--line-strong)) rgb(var(--surface-2) / 0.35);
   }
+  /* 跟随主题的表面色令牌（亮=#FFF，暗=深灰），别写死色值 —— 写死必然坏一个主题。 */
   .xterm-scrollable-element {
-    background-color: #FFFFFF !important;
+    background-color: rgb(var(--surface-1)) !important;
   }
   .xterm .xterm-viewport::-webkit-scrollbar {
     width: 12px;

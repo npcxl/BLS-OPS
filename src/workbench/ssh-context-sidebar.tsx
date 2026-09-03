@@ -17,11 +17,6 @@ const UNGROUPED = "__ungrouped__";
 /** The session-driven management modules reachable from a server. */
 export type ManageKind = "service" | "logs";
 
-const MANAGE_LABELS: Record<ManageKind, string> = {
-  service: "服务",
-  logs: "日志",
-};
-
 export function SectionTitle({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
   return (
     <div className="flex h-7 shrink-0 items-center justify-between px-2.5">
@@ -219,7 +214,7 @@ export function SshContextSidebar() {
     useWorkbenchStore.getState().openTab({
       id: crypto.randomUUID(),
       type: "monitor",
-      title: `${server.name} · 监控`,
+      title: server.name,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),
@@ -233,7 +228,7 @@ export function SshContextSidebar() {
     useWorkbenchStore.getState().openTab({
       id: crypto.randomUUID(),
       type: kind,
-      title: `${server.name} · ${MANAGE_LABELS[kind]}`,
+      title: server.name,
       subtitle: `${server.host}:${server.port}`,
       serverId: server.id,
       sessionId: crypto.randomUUID(),

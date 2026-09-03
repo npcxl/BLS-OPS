@@ -10,7 +10,6 @@ import {
   RocketIcon,
   UnorderedListIcon,
   SparklesIcon,
-  CommandCenterIcon,
 } from "@/components/its-hover";
 import type { ComponentType } from "react";
 
@@ -31,7 +30,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: "services", label: "服务", icon: WorldIcon },
   { id: "logs", label: "日志", icon: FileDescriptionIcon },
   { id: "projects", label: "项目", icon: Stack3Icon },
-  { id: "commands", label: "命令", icon: CommandCenterIcon },
   { id: "deploy", label: "部署", icon: RocketIcon },
   { id: "tasks", label: "任务", icon: UnorderedListIcon },
   { id: "ai", label: "智能助手", icon: SparklesIcon, divider: true },

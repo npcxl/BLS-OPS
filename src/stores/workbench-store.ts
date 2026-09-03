@@ -465,7 +465,7 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
         id: uuid(),
         type: tabType,
         module,
-        title: server ? `${server.name} · ${MODULE_LABELS[module]}` : MODULE_LABELS[module],
+        title: server ? server.name : MODULE_LABELS[module],
         subtitle: server ? `${server.host}:${server.port}` : undefined,
         serverId,
         sessionId: uuid(),

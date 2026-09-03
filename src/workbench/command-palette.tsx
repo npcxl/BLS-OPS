@@ -98,7 +98,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
         className="overlay-enter glass-panel-strong flex max-h-[calc(88vh-1rem)] w-full max-w-[720px] flex-col overflow-hidden rounded-2xl bg-surface-1"
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line/80 px-3">
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3">
           <Search size={14} className="text-fg-subtle" />
           <input
             ref={inputRef}

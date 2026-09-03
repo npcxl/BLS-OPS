@@ -928,10 +928,10 @@ export function RemoteFilePanel({
         </div>
       )}
 
-      <div className="flex h-6 shrink-0 items-center justify-between border-t border-line px-2 text-10 text-fg-subtle">
+      {/* <div className="flex h-6 shrink-0 items-center justify-between border-t border-line px-2 text-10 text-fg-subtle">
         <span className="truncate">{cwd ?? "—"}</span>
         <span className="shrink-0">SFTP</span>
-      </div>
+      </div> */}
 
       {/* Names the row the menu applies to — set by the row's context handler
           and cleared by the background one. */}

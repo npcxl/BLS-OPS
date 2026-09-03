@@ -131,6 +131,58 @@ pub fn df_columns() -> Vec<ColumnDefinition> {
     ]
 }
 
+/// `lsblk`（非 `-J` 文本形态）→ 块设备表格。
+///
+/// 列：NAME MAJ:MIN RM SIZE RO TYPE MOUNTPOINT；挂载点可能含空格，并入最后一列。
+pub fn lsblk_lines(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !line.trim_start().starts_with("NAME"))
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            Some(serde_json::json!({
+                "name": columns.next()?,
+                "maj_min": columns.next()?,
+                "rm": columns.next()?,
+                "size": columns.next()?,
+                "ro": columns.next()?,
+                "type": columns.next()?,
+                "mountpoint": columns.collect::<Vec<_>>().join(" "),
+            }))
+        })
+        .collect()
+}
+
+pub fn lsblk_columns() -> Vec<ColumnDefinition> {
+    vec![
+        ColumnDefinition {
+            key: "name".into(),
+            label: "设备".into(),
+            numeric: false,
+            thresholds: None,
+        },
+        ColumnDefinition {
+            key: "size".into(),
+            label: "容量".into(),
+            numeric: false,
+            thresholds: None,
+        },
+        ColumnDefinition {
+            key: "type".into(),
+            label: "类型".into(),
+            numeric: false,
+            thresholds: None,
+        },
+        ColumnDefinition {
+            key: "mountpoint".into(),
+            label: "挂载点".into(),
+            numeric: false,
+            thresholds: None,
+        },
+    ]
+}
+
 /// `ss -tlnp`：LISTEN 行 → 端口 / 本地地址 / PID / 进程名。
 pub fn ss_lines(stdout: &str) -> Vec<serde_json::Value> {
     stdout

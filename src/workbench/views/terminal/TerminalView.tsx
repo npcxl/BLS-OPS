@@ -6,6 +6,7 @@ import {
   Eraser,
   FolderOpen,
   History,
+  LayoutPanelTop,
   PlugZap,
   Rows2,
   Search,
@@ -31,6 +32,11 @@ import {
   placeholdersIn,
 } from "@/workbench/views/command-center/complete";
 import { ParamPicker } from "./ParamPicker";
+import {
+  TerminalCommandCoordinator,
+  type CapturedResult,
+} from "./TerminalCommandCoordinator";
+import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import type { CommandSearchHit } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { sshClosedEvent, sshOutputEvent } from "@/lib/events";
@@ -107,6 +113,35 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   } | null>(null);
   /** 参数相关的可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   const [paramHint, setParamHint] = useState<string | null>(null);
+  /**
+   * 终端命令的统一输出适配结果（本次会话历史，最新在后）。未识别的命令不会
+   * 产生条目 —— 因此不会弹空面板。
+   */
+  const [commandResults, setCommandResults] = useState<CapturedResult[]>([]);
+  const [activeResultId, setActiveResultId] = useState<string | null>(null);
+  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [drawerClosed, setDrawerClosed] = useState(false);
+  const coordinatorRef = useRef<TerminalCommandCoordinator | null>(null);
+  if (!coordinatorRef.current) {
+    coordinatorRef.current = new TerminalCommandCoordinator({
+      match: (text) => opsApi.commandMatchText(text),
+      adapt: (input) =>
+        opsApi.commandAdaptOutput({
+          knowledgeId: input.knowledgeId,
+          command: input.command,
+          stdout: input.stdout,
+          exitCode: input.exitCode,
+          durationMs: input.durationMs,
+        }),
+      onResult: (result) => {
+        setCommandResults((current) => [...current, result]);
+        setActiveResultId(result.id);
+        setDrawerCollapsed(false);
+        setDrawerClosed(false);
+      },
+    });
+  }
+  useEffect(() => () => coordinatorRef.current?.dispose(), []);
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
   /**
@@ -483,6 +518,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           setFollow((current) => ({ nonce: current.nonce + 1, arg }));
         }
       }
+      // 终端命令结果协调器：识别本次命令，能识别就捕获输出交给统一适配引擎
+      // （只解析，绝不重复执行）。未识别命令完全不介入。
+      for (const command of commands) {
+        coordinatorRef.current?.submit(command);
+      }
       // A submitted line (or Ctrl+C, which the editor abandons) clears the
       // draft, which in turn hides the suggestion layer.
       setDraft(commands.length > 0 ? "" : (lineEditorRef.current?.current ?? ""));
@@ -518,6 +558,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
       if (disposed) return;
       const output = event.payload;
+      // 先喂给协调器（原样累积，不做任何加工），再写进终端。
+      coordinatorRef.current?.onOutput(output);
       if (isCommandNotFoundOutput(output)) {
         instance.write(`\x1b[31m命令无效：${output}\x1b[0m`);
       } else {
@@ -676,6 +718,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
         <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
+        {/* 结构化结果面板：有结果时可在关闭后重新打开（未识别命令无结果 → 不显示） */}
+        {commandResults.length > 0 && (
+          <ToolbarIcon
+            label="结构化结果"
+            icon={LayoutPanelTop}
+            active={!drawerClosed}
+            onClick={() => setDrawerClosed((v) => !v)}
+          />
+        )}
         <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" ? (
           <ToolbarIcon
@@ -806,6 +857,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         )}
       </div>
 
+      {/* 结构化结果抽屉：终端内容原样保留，结果面板挂在下方。
+          未识别命令不产出结果 → 这里不渲染任何东西。 */}
+      {commandResults.length > 0 && !drawerClosed && (
+        <TerminalResultDrawer
+          results={commandResults}
+          activeId={activeResultId}
+          collapsed={drawerCollapsed}
+          onToggleCollapse={() => setDrawerCollapsed((v) => !v)}
+          onSelect={setActiveResultId}
+          onClose={() => setDrawerClosed(true)}
+        />
+      )}
       </div>
 
       {filesOpen && (

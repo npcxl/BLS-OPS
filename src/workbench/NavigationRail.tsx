@@ -70,7 +70,7 @@ export function NavigationRail() {
 
   return (
     <nav
-      className="relative z-30 flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line py-2"
+      className="relative z-30 flex w-[52px] shrink-0 flex-col items-center gap-1  py-2"
       aria-label="Navigation"
     >
       {NAV_ITEMS.map((item) =>

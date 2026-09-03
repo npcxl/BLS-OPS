@@ -12,7 +12,9 @@ use serde::Serialize;
 use tauri::State;
 
 use super::{open_db, record_audit};
-use crate::command_center::{build_exec, builtin_catalog, search, CommandParams, CommandSearchHit};
+use crate::command_center::{
+    build_exec, builtin_catalog, search, CommandKnowledge, CommandParams, CommandSearchHit,
+};
 use crate::docker;
 use crate::remote::run_capability;
 use crate::safe::{Capability, ProbeTool};
@@ -276,6 +278,77 @@ pub async fn command_execute(
     })
 }
 
+/// 命令文本 → 知识库条目（终端手动输入命令的识别入口）。
+///
+/// 只做**确定性匹配**：规范化（去首尾空白、压缩内部空白、转小写）后与条目的
+/// `executable + subcommand` 或 `syntax` 完全相等才算命中。不做模糊匹配 ——
+/// 终端里输错一个字符就应该走原始终端，而不是弹出不相干的结构化面板。
+///
+/// 返回 `None` = 未识别（调用方保持原始终端行为）。
+#[tauri::command]
+pub async fn command_match_text(text: String) -> Result<Option<String>, String> {
+    Ok(match_knowledge(&text).map(|entry| entry.id.to_string()))
+}
+
+/// 规范化的命令文本 → 命中的知识条目。
+fn match_knowledge(text: &str) -> Option<&'static CommandKnowledge> {
+    let normalized = normalize_command(text);
+    if normalized.is_empty() {
+        return None;
+    }
+    builtin_catalog().iter().find(|entry| {
+        // 展示语法可能含占位符（`docker inspect <容器>`）：带占位符的条目
+        // 不能直接与用户输入相等，跳过（真实命令由提示面板填好后再匹配）。
+        let syntax = normalize_command(entry.syntax);
+        let display = normalize_command(&entry.display_command());
+        !syntax.contains('<') && (syntax == normalized || display == normalized)
+    })
+}
+
+fn normalize_command(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_lowercase()
+}
+
+/// **只解析已经产生的输出，绝不再次执行命令。**
+///
+/// 终端里的命令已经跑完了，这里把它的 stdout/stderr/退出码/耗时交给统一
+/// 输出适配引擎，得到 `StructuredCommandResult`。重复执行会让 `docker ps`
+/// 跑两次，修改型命令更是危险 —— 所以这个命令是纯函数，无任何 I/O。
+#[tauri::command]
+pub async fn command_adapt_output(
+    knowledge_id: String,
+    command: String,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    duration_ms: u64,
+) -> Result<crate::output_adapter::StructuredCommandResult, String> {
+    let Some(entry) = builtin_catalog().iter().find(|e| e.id == knowledge_id) else {
+        return Err(format!("知识库中不存在命令 {knowledge_id}"));
+    };
+    let meta = crate::output_adapter::CommandMeta {
+        command,
+        exit_code,
+        duration_ms,
+        truncated: false,
+    };
+    let raw = crate::output_adapter::RawOutput {
+        stdout: stdout.clone(),
+        stderr,
+    };
+    Ok(crate::output_adapter::adapt(
+        entry.output_adapter,
+        &stdout,
+        entry.title,
+        meta,
+        raw,
+    ))
+}
+
 /// 收藏 / 取消收藏，返回切换后的状态。
 #[tauri::command]
 pub async fn command_toggle_favorite(
@@ -358,6 +431,66 @@ fn structure_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 命令文本 → 知识库条目：**确定性匹配**，认不出返回 None。
+    ///
+    /// 终端里输错一个字符就该走原始终端，而不是弹出不相干的结构化面板。
+    #[test]
+    fn matches_command_text_deterministically() {
+        assert_eq!(
+            match_knowledge("docker ps -a").map(|e| e.id),
+            Some("docker.ps.all")
+        );
+        assert_eq!(match_knowledge("free -m").map(|e| e.id), Some("free.m"));
+        assert_eq!(match_knowledge("uptime").map(|e| e.id), Some("uptime"));
+        assert_eq!(match_knowledge("df -hP").map(|e| e.id), Some("df.h"));
+        // 大小写与多余空格不敏感。
+        assert_eq!(
+            match_knowledge("  Docker   PS  -A ").map(|e| e.id),
+            Some("docker.ps.all")
+        );
+        // 未收录 / 拼错 → None（走原始终端）。
+        assert!(match_knowledge("echo hello").is_none());
+        assert!(match_knowledge("docker pss").is_none());
+        assert!(match_knowledge("").is_none());
+        // 含占位符的展示语法不能直接匹配（`docker inspect <容器>` 要填真值）。
+        assert!(match_knowledge("docker inspect <容器>").is_none());
+    }
+
+    /// `command_adapt_output` 是**纯解析**：同样的输出永远得到同样的结果，
+    /// 且不执行任何命令（这里没有任何 I/O 依赖，重复调用结果一致）。
+    #[test]
+    fn adapt_output_is_pure_parsing() {
+        let stdout = "LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=912,fd=6))\n";
+        let first = adapt_output_for_test("port-listener-table", stdout);
+        let second = adapt_output_for_test("port-listener-table", stdout);
+        assert_eq!(first.view, crate::output_adapter::ViewType::Table);
+        assert_eq!(first.rows.len(), 1);
+        assert_eq!(first.rows[0]["port"], "80");
+        // 纯函数：两次调用完全一致（没有隐式状态或重复执行）。
+        assert_eq!(
+            serde_json::to_value(&first).ok(),
+            serde_json::to_value(&second).ok()
+        );
+    }
+
+    /// 测试辅助：直接调用适配逻辑（与 `command_adapt_output` 命令体一致）。
+    fn adapt_output_for_test(
+        adapter: &str,
+        stdout: &str,
+    ) -> crate::output_adapter::StructuredCommandResult {
+        let meta = crate::output_adapter::CommandMeta {
+            command: "test".into(),
+            exit_code: Some(0),
+            duration_ms: 1,
+            truncated: false,
+        };
+        let raw = crate::output_adapter::RawOutput {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+        };
+        crate::output_adapter::adapt(adapter, stdout, "测试", meta, raw)
+    }
 
     /// 未知适配器 → **raw 回落**（不是错误，也不是 None）。
     ///

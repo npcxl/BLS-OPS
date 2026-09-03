@@ -197,6 +197,57 @@ fn parse_failure_falls_back_with_visible_reason() {
 }
 
 #[test]
+fn docker_images_and_stats_adapters_produce_tables() {
+    let registry = AdapterRegistry::builtins();
+
+    let images = "abc123def456|nginx|1.24|187MB|3 weeks ago|nginx:1.24\n";
+    let result = registry.adapt("docker-image-table", images, &ctx("镜像", images));
+    assert_eq!(result.view, ViewType::Table);
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0]["repository"], "nginx");
+    assert_eq!(result.rows[0]["tag"], "1.24");
+
+    let stats = "web|0.15|1.2GiB / 3.8GiB|31.58|1.2kB / 0B|0B / 0B\n";
+    let result = registry.adapt("docker-stats-table", stats, &ctx("资源", stats));
+    assert_eq!(result.view, ViewType::Table);
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0]["name"], "web");
+    assert_eq!(result.rows[0]["cpu_percent"], "0.15");
+    // CPU/内存列带阈值着色配置（前端据此着色）。
+    let cpu = result
+        .columns
+        .iter()
+        .find(|c| c.key == "cpu_percent")
+        .expect("CPU 列");
+    assert!(cpu.numeric && cpu.thresholds.is_some());
+}
+
+#[test]
+fn key_value_adapter_groups_sections() {
+    let registry = AdapterRegistry::builtins();
+    let stdout =
+        "Server Version: 24.0.7\nStorage Driver: overlay2\n[Security Options]\nname: apparmor\n";
+    let result = registry.adapt("key-value", stdout, &ctx("属性", stdout));
+    assert_eq!(result.view, ViewType::KeyValue);
+    // `[Security Options]` 分块 + 分块前的平铺属性 → 两个分区。
+    assert_eq!(result.sections.len(), 2);
+    let total: usize = result.sections.iter().map(|s| s.rows.len()).sum();
+    assert_eq!(total, 3);
+}
+
+#[test]
+fn lsblk_adapter_parses_devices() {
+    let registry = AdapterRegistry::builtins();
+    let stdout =
+        "NAME MAJ:MIN RM SIZE RO TYPE MOUNTPOINT\nsda 8:0 0 50G 0 disk\nsda1 8:1 0 50G 0 part /\n";
+    let result = registry.adapt("lsblk-table", stdout, &ctx("磁盘", stdout));
+    assert_eq!(result.view, ViewType::Table);
+    assert_eq!(result.rows.len(), 2, "表头跳过");
+    assert_eq!(result.rows[0]["name"], "sda");
+    assert_eq!(result.rows[1]["mountpoint"], "/");
+}
+
+#[test]
 fn empty_output_is_a_valid_result_not_an_error() {
     // "没有容器" 是事实，不是错误 —— 不能回落成 raw。
     let registry = AdapterRegistry::builtins();

@@ -179,3 +179,77 @@ export const MUTABILITY_LABELS: Record<Mutability, string> = {
   change: "会修改服务器",
   delete: "会删除数据",
 };
+
+// ── 统一输出协议（与 Rust `output_adapter::model` 对齐）────────────────────
+//
+// 前端只认这套类型：渲染完全按 `view` 分发，不需要知道命令来自 Docker、Nginx
+// 还是普通 Linux 工具。新增命令不必改前端渲染层。
+
+/** 通用 UI 视图类型（有限集合 —— 新增命令不新增视图）。 */
+export type ResultView =
+  | "table"
+  | "key_value"
+  | "metrics"
+  | "log"
+  | "tree"
+  | "json"
+  | "diff"
+  | "progress"
+  | "raw";
+
+/** 数值列的阈值着色。 */
+export interface ResultThresholds {
+  warn: number;
+  danger: number;
+}
+
+export interface ResultColumn {
+  /** 行数据里的字段名。 */
+  key: string;
+  label: string;
+  /** 数值列：等宽数字 + 右对齐 + 阈值着色。 */
+  numeric?: boolean;
+  thresholds?: ResultThresholds;
+}
+
+export interface ResultSummary {
+  label: string;
+  value: string;
+  /** 语义色：success / warning / danger / accent。 */
+  tone?: string;
+}
+
+/** 一个分区（docker info 这类分块输出）。 */
+export interface ResultSection {
+  title: string;
+  view: ResultView;
+  columns?: ResultColumn[];
+  rows: Record<string, unknown>[];
+}
+
+export interface ResultMeta {
+  command: string;
+  exit_code: number | null;
+  duration_ms: number;
+  truncated: boolean;
+}
+
+/** 原始终端输出（**永久保留**）。 */
+export interface ResultRawOutput {
+  stdout: string;
+  stderr: string;
+}
+
+export interface StructuredCommandResult {
+  view: ResultView;
+  title: string;
+  summary: ResultSummary[];
+  columns: ResultColumn[];
+  rows: Record<string, unknown>[];
+  sections: ResultSection[];
+  /** 解析期提示（不是错误），如"输出不是合法 JSON"。 */
+  warnings: string[];
+  meta: ResultMeta;
+  raw: ResultRawOutput;
+  json?: unknown;
+}

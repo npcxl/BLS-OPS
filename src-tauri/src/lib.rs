@@ -144,6 +144,8 @@ pub fn run() {
             commands::command_favorites,
             commands::command_catalog_meta,
             commands::command_param_values,
+            commands::command_match_text,
+            commands::command_adapt_output,
             // docker (P3-1.3)
             commands::docker_snapshot,
             commands::docker_logs,

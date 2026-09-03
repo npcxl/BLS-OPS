@@ -136,6 +136,78 @@ fn register_builtins(registry: &mut AdapterRegistry) {
             json: None,
         }
     });
+    registry.register("docker-image-table", |stdout, _ctx| {
+        let (view, columns, rows) = super::domain::docker::image_table(stdout);
+        AdapterOutcome::Structured {
+            view,
+            summary: vec![SummaryItem {
+                label: "镜像".into(),
+                value: rows.len().to_string(),
+                tone: None,
+            }],
+            columns,
+            rows,
+            sections: Vec::new(),
+            warnings: Vec::new(),
+            json: None,
+        }
+    });
+    registry.register("docker-stats-table", |stdout, _ctx| {
+        let (view, columns, rows) = super::domain::docker::stats_table(stdout);
+        AdapterOutcome::Structured {
+            view,
+            summary: vec![SummaryItem {
+                label: "容器".into(),
+                value: rows.len().to_string(),
+                tone: None,
+            }],
+            columns,
+            rows,
+            sections: Vec::new(),
+            warnings: Vec::new(),
+            json: None,
+        }
+    });
+    registry.register("docker-info", |stdout, _ctx| {
+        // docker info 天然分块（`[Section]`）→ key_value + sections。
+        let sections = super::generic::key_value::parse_key_value_sections(stdout);
+        let total: usize = sections.iter().map(|s| s.rows.len()).sum();
+        if total == 0 {
+            return AdapterOutcome::Fallback {
+                reason: "docker info 输出没有解析出属性".into(),
+            };
+        }
+        // 分块不是独立的 view（视图只有 9 种）：sections 挂在 key_value 视图上。
+        AdapterOutcome::Structured {
+            view: ViewType::KeyValue,
+            summary: vec![SummaryItem {
+                label: "属性".into(),
+                value: total.to_string(),
+                tone: None,
+            }],
+            columns: Vec::new(),
+            rows: Vec::new(),
+            sections,
+            warnings: Vec::new(),
+            json: None,
+        }
+    });
+    registry.register("lsblk-table", |stdout, _ctx| {
+        let rows = super::domain::linux::lsblk_lines(stdout);
+        AdapterOutcome::Structured {
+            view: ViewType::Table,
+            summary: vec![SummaryItem {
+                label: "块设备".into(),
+                value: rows.len().to_string(),
+                tone: None,
+            }],
+            columns: super::domain::linux::lsblk_columns(),
+            rows,
+            sections: Vec::new(),
+            warnings: Vec::new(),
+            json: None,
+        }
+    });
     registry.register("systemd-unit-table", |stdout, _ctx| {
         let (view, columns, rows) = super::domain::systemd::list_units_table(stdout);
         AdapterOutcome::Structured {
@@ -279,8 +351,11 @@ fn register_builtins(registry: &mut AdapterRegistry) {
         }
     });
     registry.register("key-value", |stdout, _ctx| {
-        let rows = super::generic::key_value::parse_key_value_pairs(stdout);
-        if rows.is_empty() {
+        // 有 `[Section]` 分块就用分块（docker info / systemctl show 分组），
+        // 否则平铺 —— 分块不是独立的 view，挂在 key_value 视图的 sections 上。
+        let sections = super::generic::key_value::parse_key_value_sections(stdout);
+        let total: usize = sections.iter().map(|s| s.rows.len()).sum();
+        if total == 0 {
             return AdapterOutcome::Fallback {
                 reason: "没有解析出 key: value 行".into(),
             };
@@ -289,12 +364,12 @@ fn register_builtins(registry: &mut AdapterRegistry) {
             view: ViewType::KeyValue,
             summary: vec![SummaryItem {
                 label: "属性".into(),
-                value: rows.len().to_string(),
+                value: total.to_string(),
                 tone: None,
             }],
             columns: Vec::new(),
-            rows,
-            sections: Vec::new(),
+            rows: Vec::new(),
+            sections,
             warnings: Vec::new(),
             json: None,
         }

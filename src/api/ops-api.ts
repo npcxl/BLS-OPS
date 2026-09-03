@@ -14,6 +14,7 @@ import {
   type CommandExecutionResult,
   type CommandParams,
   type CommandSearchHit,
+  type StructuredCommandResult,
 } from "@/api/types/command";
 import {
   type CascadeResult,
@@ -188,6 +189,11 @@ export {
   type CommandRawOutput,
   type CommandSearchHit,
   type CommandStructuredOutput,
+  type ResultColumn,
+  type ResultSection,
+  type ResultSummary,
+  type ResultView,
+  type StructuredCommandResult,
   type DiskRow,
   type DockerContainerRow,
   type JournalEntryRow,
@@ -372,6 +378,33 @@ export const opsApi = {
     invoke<boolean>("command_toggle_favorite", { knowledgeId }),
   commandFavorites: () => invoke<string[]>("command_favorites"),
   commandCatalogMeta: () => invoke<CommandCatalogMeta>("command_catalog_meta"),
+  /**
+   * 命令文本 → 知识库条目 ID（终端手动输入命令的识别入口）。
+   * 只做确定性匹配（规范化后完全相等），认不出返回 null —— 该命令继续走原始终端。
+   */
+  commandMatchText: (text: string) =>
+    invoke<string | null>("command_match_text", { text }),
+  /**
+   * **只解析已经产生的输出，绝不再次执行命令** —— 终端里的命令已经跑完了，
+   * 这里把它的 stdout/stderr/退出码交给统一适配引擎。重复执行会让 `docker ps`
+   * 跑两次，修改型命令更危险。
+   */
+  commandAdaptOutput: (input: {
+    knowledgeId: string;
+    command: string;
+    stdout: string;
+    stderr?: string;
+    exitCode?: number | null;
+    durationMs: number;
+  }) =>
+    invoke<StructuredCommandResult>("command_adapt_output", {
+      knowledgeId: input.knowledgeId,
+      command: input.command,
+      stdout: input.stdout,
+      stderr: input.stderr ?? "",
+      exitCode: input.exitCode ?? null,
+      durationMs: input.durationMs,
+    }),
   /**
    * 二级参数补全的真实取值：`unit` = 服务器上的 systemd 服务单元，
    * `container` = Docker 容器名，`path` = 远程目录。

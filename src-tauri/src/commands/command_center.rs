@@ -235,14 +235,22 @@ pub async fn command_execute(
     let stdout = run_capability(&state.ssh, &session_id, &capability)
         .await
         .map_err(|error| error.to_string())?;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let command_executed = capability.command().unwrap_or_default();
     let raw = CommandRawOutput {
-        command_executed: capability.command().unwrap_or_default(),
+        command_executed: command_executed.clone(),
         stdout: stdout.clone(),
         // run_capability 只回 stdout；stderr 已并入错误路径。保留字段以稳定前端契约。
         stderr: String::new(),
-        duration_ms: started.elapsed().as_millis() as u64,
+        duration_ms,
     };
-    let structured = structure_output(entry.output_adapter, &stdout);
+    let structured = structure_output(
+        entry.output_adapter,
+        &stdout,
+        entry.title,
+        &command_executed,
+        duration_ms,
+    );
 
     // 使用统计 + 审计（修改型命令必须留痕）。
     {
@@ -319,223 +327,59 @@ pub async fn command_catalog_meta() -> Result<CommandCatalogMeta, String> {
 }
 
 // ---------------------------------------------------------------------------
-// P4.3 输出适配器：原始 stdout → 结构化视图
+// 统一输出适配引擎：原始 stdout → StructuredCommandResult
+//
+// 解析逻辑全部在 `output_adapter` 模块（注册表 + 三层解析器），这里只负责
+// 组装上下文。未注册/解析失败自动回落 raw —— 命令绝不会因为"没有专用 UI"
+// 而不可用。
 // ---------------------------------------------------------------------------
 
-/// 未识别的适配器一律返回 `None`（前端显示原始输出，**不会因为没有
-/// 专用 UI 而失效**）。空输出也算有效结果（"没有容器/服务"是事实）。
-fn structure_output(adapter: &str, stdout: &str) -> Option<serde_json::Value> {
-    match adapter {
-        "docker-container-table" => Some(serde_json::json!({
-            "adapter": adapter,
-            "containers": docker::parse_ps(stdout),
-        })),
-        "systemd-unit-table" => Some(serde_json::json!({
-            "adapter": adapter,
-            "units": crate::systemd::parse_list_units(stdout),
-        })),
-        "journal-log-viewer" => Some(serde_json::json!({
-            "adapter": adapter,
-            "entries": parse_journal_lines(stdout),
-        })),
-        "nginx-config-tree" => {
-            let sites = crate::deployment_collector::parse_nginx_effective(stdout);
-            Some(serde_json::json!({
-                "adapter": adapter,
-                "sites": sites.iter().map(|site| serde_json::json!({
-                    "server_name": site.name,
-                    "listen_ports": site.listen_ports,
-                    "root": site.root,
-                    "proxy_targets": site.proxy_targets,
-                    "config_file": site.config_file,
-                })).collect::<Vec<_>>(),
-            }))
-        }
-        "process-table" => Some(serde_json::json!({
-            "adapter": adapter,
-            "processes": parse_process_lines(stdout),
-        })),
-        "disk-usage-table" => Some(serde_json::json!({
-            "adapter": adapter,
-            "filesystems": parse_df_lines(stdout),
-        })),
-        "port-listener-table" => Some(serde_json::json!({
-            "adapter": adapter,
-            "listeners": parse_ss_lines(stdout),
-        })),
-        _ => None,
-    }
-}
-
-/// `journalctl -o json`：逐行 JSON，抽 timestamp / unit / level / message。
-/// 坏行跳过（半条写入不是日志）。level 是 `PRIORITY` 的数字文本。
-fn parse_journal_lines(stdout: &str) -> Vec<serde_json::Value> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let value: serde_json::Value = serde_json::from_str(line).ok()?;
-            let message = value.get("MESSAGE")?.as_str()?.to_string();
-            let timestamp = value
-                .get("__REALTIME_TIMESTAMP")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let unit = value
-                .get("_SYSTEMD_UNIT")
-                .and_then(|v| v.as_str())
-                .unwrap_or("—")
-                .to_string();
-            let level = value
-                .get("PRIORITY")
-                .and_then(|v| v.as_str())
-                .unwrap_or("6")
-                .to_string();
-            Some(serde_json::json!({
-                "timestamp": timestamp,
-                "unit": unit,
-                "level": level,
-                "message": message,
-            }))
-        })
-        .collect()
-}
-
-/// `ps -eo pid,comm,etimes,pcpu,pmem --no-headers`：5 列，comm 是可执行名
-/// 不含空格，因此 `split_whitespace` 安全；残缺行跳过。
-fn parse_process_lines(stdout: &str) -> Vec<serde_json::Value> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let mut columns = line.split_whitespace();
-            Some(serde_json::json!({
-                "pid": columns.next()?,
-                "comm": columns.next()?,
-                "etimes": columns.next()?,
-                "pcpu": columns.next()?,
-                "pmem": columns.next()?,
-            }))
-        })
-        .collect()
-}
-
-/// `df -hP`：首行表头 + 6 列数据（文件系统/容量/已用/可用/使用%/挂载点）。
-/// 挂载点可能含空格（极少见）：取前 5 列，剩余整体作为挂载点。
-fn parse_df_lines(stdout: &str) -> Vec<serde_json::Value> {
-    stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter(|line| !line.trim_start().starts_with("Filesystem"))
-        .filter_map(|line| {
-            let mut columns = line.split_whitespace();
-            Some(serde_json::json!({
-                "filesystem": columns.next()?,
-                "size": columns.next()?,
-                "used": columns.next()?,
-                "avail": columns.next()?,
-                "use_percent": columns.next()?,
-                "mounted_on": columns.collect::<Vec<_>>().join(" "),
-            }))
-        })
-        .collect()
-}
-
-/// `ss -tlnp`：LISTEN 行 → 端口/PID/进程名。
-fn parse_ss_lines(stdout: &str) -> Vec<serde_json::Value> {
-    stdout
-        .lines()
-        .filter(|line| line.trim_start().starts_with("LISTEN"))
-        .filter_map(|line| {
-            let columns: Vec<&str> = line.split_whitespace().collect();
-            let local = columns.get(3)?;
-            let port = local.rsplit(':').next()?.to_string();
-            let pid = line
-                .split("pid=")
-                .nth(1)
-                .map(|rest| {
-                    rest.chars()
-                        .take_while(char::is_ascii_digit)
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
-            let process = line
-                .split("users:((\"")
-                .nth(1)
-                .and_then(|rest| rest.split('"').next())
-                .unwrap_or("")
-                .to_string();
-            Some(serde_json::json!({
-                "local": local,
-                "port": port,
-                "pid": pid,
-                "process": process,
-            }))
-        })
-        .collect()
+fn structure_output(
+    adapter: &str,
+    stdout: &str,
+    title: &str,
+    command_executed: &str,
+    duration_ms: u64,
+) -> Option<serde_json::Value> {
+    let meta = crate::output_adapter::CommandMeta {
+        command: command_executed.to_string(),
+        exit_code: Some(0),
+        duration_ms,
+        truncated: false,
+    };
+    let raw = crate::output_adapter::RawOutput {
+        stdout: stdout.to_string(),
+        stderr: String::new(),
+    };
+    let result = crate::output_adapter::adapt(adapter, stdout, title, meta, raw);
+    serde_json::to_value(result).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// journalctl JSON 行 → 结构化日志（保留 PRIORITY 级别）。
+    /// 未知适配器 → **raw 回落**（不是错误，也不是 None）。
+    ///
+    /// 旧行为是返回 `None` 让前端显示原始输出；统一协议后返回
+    /// `view = raw` 的结果 —— 用户看到的仍然是原始输出，但元信息与
+    /// 原始 stdout 都在同一个对象里，且回落原因可见。
     #[test]
-    fn parses_journal_lines_with_levels() {
-        let stdout = concat!(
-            r#"{"__REALTIME_TIMESTAMP":"1699000000123456","_SYSTEMD_UNIT":"nginx.service","PRIORITY":"6","MESSAGE":"Started Nginx."}"#,
-            "\n",
-            r#"{"__REALTIME_TIMESTAMP":"1699000001000000","_SYSTEMD_UNIT":"nginx.service","PRIORITY":"3","MESSAGE":"bind() failed"}"#,
-            "\n",
-            "not-json-line\n",
-            r#"{"MESSAGE":"no-timestamp-line"}"#,
-            "\n",
-        );
-        let entries = parse_journal_lines(stdout);
-        assert_eq!(entries.len(), 3, "坏行跳过但保留缺字段的行");
-        assert_eq!(entries[0]["level"], "6");
-        assert_eq!(entries[1]["level"], "3");
-        assert_eq!(entries[1]["message"], "bind() failed");
-        assert_eq!(entries[2]["unit"], "—");
-    }
-
-    /// ps 5 列与 df 6 列（挂载点含空格兜底）。
-    #[test]
-    fn parses_process_and_disk_tables() {
-        let processes = parse_process_lines("1234 nginx 86400 1.2 0.5\n99 bash 10 0.0 0.1\n\n");
-        assert_eq!(processes.len(), 2);
-        assert_eq!(processes[0]["comm"], "nginx");
-        assert_eq!(processes[0]["pid"], "1234");
-
-        let disks = parse_df_lines(
-            "Filesystem Size Used Avail Use% Mounted on\n\
-             /dev/sda1 50G 20G 30G 40% /\n\
-             tmpfs 8G 0 8G 0% /dev/shm\n",
-        );
-        assert_eq!(disks.len(), 2, "表头跳过");
-        assert_eq!(disks[0]["use_percent"], "40%");
-        assert_eq!(disks[0]["mounted_on"], "/");
-
-        assert!(parse_process_lines("").is_empty());
-    }
-
-    /// ss LISTEN 行 → 端口 + 进程；非 LISTEN 行不收。
-    #[test]
-    fn parses_ss_listeners() {
-        let stdout = concat!(
-            "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process\n",
-            "LISTEN 0      128    0.0.0.0:80         0.0.0.0:*          users:((\"nginx\",pid=912,fd=6))\n",
-            "ESTAB  0      0      10.0.0.2:22        10.0.0.1:5000\n",
-        );
-        let listeners = parse_ss_lines(stdout);
-        assert_eq!(listeners.len(), 1);
-        assert_eq!(listeners[0]["port"], "80");
-        assert_eq!(listeners[0]["process"], "nginx");
-        assert_eq!(listeners[0]["pid"], "912");
-    }
-
-    /// 未知适配器回落原始输出（不因无 UI 失效）。
-    #[test]
-    fn unknown_adapter_returns_none() {
-        assert!(structure_output("generic-raw-output", "anything").is_none());
-        assert!(structure_output("made-up", "").is_none());
+    fn unknown_adapter_falls_back_to_raw() {
+        let meta = crate::output_adapter::CommandMeta {
+            command: "echo hi".into(),
+            exit_code: Some(0),
+            duration_ms: 1,
+            truncated: false,
+        };
+        let raw = crate::output_adapter::RawOutput {
+            stdout: "anything".into(),
+            stderr: String::new(),
+        };
+        let result =
+            crate::output_adapter::adapt("generic-raw-output", "anything", "标题", meta, raw);
+        assert_eq!(result.view, crate::output_adapter::ViewType::Raw);
+        assert_eq!(result.raw.stdout, "anything", "原始输出必须完整保留");
+        assert_eq!(result.meta.command, "echo hi");
     }
 }

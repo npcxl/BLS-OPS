@@ -1,214 +1,102 @@
 /**
- * CodeMirror 搜索：自定义查找/替换面板（替换 @codemirror/search 的默认
- * 原生样式面板）。
+ * CodeMirror 搜索：扩展装配 + 查询/匹配工具。
  *
- * - Ctrl+F（searchKeymap）打开本面板：`search({ createPanel })` 只是替换
- *   面板 DOM，快捷键与高亮匹配仍走官方实现；
- * - Enter / Shift+Enter 在匹配间跳转，Esc 关闭；
- * - 实时匹配计数；只读文档自动隐藏替换行；
- * - 样式走设计令牌（tokens.css），深浅色跟随主题。
+ * # 为什么面板不再由 CodeMirror 渲染
+ *
+ * `@codemirror/search` 自带的面板是 DOM 构造的原生样式（灰色整行），既不好
+ * 看也无法复用设计令牌。这里只用它提供的**匹配与命令能力**，面板交给
+ * `CodeSearchBox`（React）渲染成 VSCode 那样的右上角浮动小框：默认只有查找
+ * 行，点箭头才展开替换行。
+ *
+ * 因此：
+ *
+ * - `opsSearch()` 装载 search 扩展（高亮 + 命令），**不**装载它的面板；
+ * - `Mod-f` 由外层容器在**捕获阶段**拦截（`searchKeymap` 挂在编辑器 DOM 上，
+ *   冒泡阶段拦不住），从而永远打不开默认面板；
+ * - 高亮靠 `setSearchQuery`，跳转/替换靠官方 `findNext` / `replaceAll` 等命令，
+ *   语义与默认面板一致，只是外壳换成我们自己画的。
  */
 import type { EditorView } from "@uiw/react-codemirror";
 import {
-  closeSearchPanel,
+  SearchQuery,
   findNext,
   findPrevious,
   replaceAll,
   replaceNext,
   search,
-  SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
 
-/** 打开搜索面板（供工具栏"搜索 Ctrl+F"按钮调用）。 */
-export { closeSearchPanel, openSearchPanel } from "@codemirror/search";
-import { openSearchPanel } from "@codemirror/search";
-
-/** 便捷打开：视图未就绪时静默忽略。 */
-export function openOpsSearch(view: EditorView | null | undefined): void {
-  if (view) openSearchPanel(view);
-}
-
-/** 自定义搜索面板扩展。加入 extensions 后，Ctrl+F 打开的是本面板。 */
+/**
+ * 搜索扩展：高亮、跳转与替换命令（不含默认面板）。
+ *
+ * 返回单个 Extension，方便调用方直接 push 语言扩展而不必解开数组。
+ */
 export function opsSearch() {
-  return search({ createPanel: createOpsSearchPanel });
+  return search();
 }
 
-const MATCH_LIMIT = 999;
-
-/** 统计 `needle` 在 `haystack` 中的出现次数；超过 `limit` 时 `[true, limit]` 提前返回。 */
-function countOccurrences(
-  haystack: string,
-  needle: string,
+/** 构造查询。`replace` 只在执行替换动作时带上。 */
+export function buildQuery(
+  search: string,
   caseSensitive: boolean,
-  limit: number,
-): [boolean, number] {
-  const h = caseSensitive ? haystack : haystack.toLowerCase();
-  const n = caseSensitive ? needle : needle.toLowerCase();
-  let count = 0;
-  let index = 0;
-  while ((index = h.indexOf(n, index)) !== -1) {
-    count += 1;
-    if (count > limit) return [true, limit];
-    index += n.length || 1;
-  }
-  return [false, count];
+  replace?: string,
+): SearchQuery {
+  return new SearchQuery({ search, caseSensitive, replace });
 }
 
-function createOpsSearchPanel(view: EditorView): { dom: HTMLDivElement; top: boolean } {
-  const dom = document.createElement("div");
-  dom.className = "cm-ops-panel";
+/** 把查询写入编辑器（触发高亮）。 */
+export function applyQuery(view: EditorView, query: SearchQuery): void {
+  view.dispatch({ effects: setSearchQuery.of(query) });
+}
 
-  // ---- 第一行：查找 ----
-  const row1 = document.createElement("div");
-  row1.className = "cm-ops-row";
+/** 清除高亮（关闭面板时调用）。 */
+export function clearQuery(view: EditorView): void {
+  view.dispatch({ effects: setSearchQuery.of(buildQuery("", false)) });
+}
 
-  const findInput = document.createElement("input");
-  findInput.className = "cm-ops-field cm-ops-field-find";
-  findInput.name = "search";
-  findInput.placeholder = "查找（Enter 下一个 · Shift+Enter 上一个）";
-  findInput.spellcheck = false;
-  findInput.setAttribute("main-field", "true");
+/** 下一个 / 上一个匹配。 */
+export function gotoMatch(view: EditorView, backward: boolean): void {
+  if (backward) findPrevious(view);
+  else findNext(view);
+}
 
-  const caseBtn = document.createElement("button");
-  caseBtn.type = "button";
-  caseBtn.className = "cm-ops-btn";
-  caseBtn.textContent = "Aa";
-  caseBtn.title = "区分大小写";
+/** 替换当前匹配 / 全部替换。查询必须已带 `replace`。 */
+export function replaceMatch(view: EditorView, all: boolean): void {
+  if (all) replaceAll(view);
+  else replaceNext(view);
+}
 
-  const count = document.createElement("span");
-  count.className = "cm-ops-count";
-
-  const prevBtn = document.createElement("button");
-  prevBtn.type = "button";
-  prevBtn.className = "cm-ops-btn";
-  prevBtn.textContent = "↑";
-  prevBtn.title = "上一个（Shift+Enter）";
-
-  const nextBtn = document.createElement("button");
-  nextBtn.type = "button";
-  nextBtn.className = "cm-ops-btn";
-  nextBtn.textContent = "↓";
-  nextBtn.title = "下一个（Enter）";
-
-  const closeBtn = document.createElement("button");
-  closeBtn.type = "button";
-  closeBtn.className = "cm-ops-btn";
-  closeBtn.textContent = "✕";
-  closeBtn.title = "关闭（Esc）";
-
-  row1.append(findInput, caseBtn, count, prevBtn, nextBtn, closeBtn);
-
-  // ---- 第二行：替换（只读文档隐藏）----
-  let replaceRow: HTMLDivElement | null = null;
-  let replaceInput: HTMLInputElement | null = null;
-  if (!view.state.readOnly) {
-    replaceRow = document.createElement("div");
-    replaceRow.className = "cm-ops-row";
-
-    replaceInput = document.createElement("input");
-    replaceInput.className = "cm-ops-field cm-ops-field-replace";
-    replaceInput.name = "replace";
-    replaceInput.placeholder = "替换为";
-    replaceInput.spellcheck = false;
-
-    const replaceBtn = document.createElement("button");
-    replaceBtn.type = "button";
-    replaceBtn.className = "cm-ops-btn cm-ops-btn-wide";
-    replaceBtn.textContent = "替换";
-    replaceBtn.title = "替换当前匹配（Ctrl+Shift+H）";
-
-    const replaceAllBtn = document.createElement("button");
-    replaceAllBtn.type = "button";
-    replaceAllBtn.className = "cm-ops-btn cm-ops-btn-wide";
-    replaceAllBtn.textContent = "全部替换";
-    replaceAllBtn.title = "替换全部匹配";
-
-    replaceRow.append(replaceInput, replaceBtn, replaceAllBtn);
-    dom.append(row1, replaceRow);
-  } else {
-    dom.append(row1);
+/**
+ * 当前查询的全部匹配区间。
+ *
+ * `getCursor` 返回的是裸 `Iterator`（不带 `Symbol.iterator`），只能手动
+ * `next()` —— 不要用 `for...of` / 展开运算符。
+ */
+export function matchRanges(view: EditorView, query: SearchQuery): { from: number; to: number }[] {
+  if (!query.valid) return [];
+  const ranges: { from: number; to: number }[] = [];
+  const cursor = query.getCursor(view.state);
+  for (let next = cursor.next(); !next.done; next = cursor.next()) {
+    ranges.push(next.value);
   }
+  return ranges;
+}
 
-  let caseSensitive = false;
-
-  const buildQuery = (withReplace: boolean): SearchQuery =>
-    new SearchQuery({
-      search: findInput.value,
-      caseSensitive,
-      replace: withReplace && replaceInput ? replaceInput.value : undefined,
-    });
-
-  // 匹配计数：对全文做纯字符串扫描（大小写按当前开关），封顶显示 999+。
-  const refreshCount = () => {
-    const needle = findInput.value;
-    if (!needle) {
-      count.textContent = "";
-      return;
-    }
-    const haystack = view.state.doc.toString();
-    const [overflow, total] = countOccurrences(haystack, needle, caseSensitive, MATCH_LIMIT);
-    count.textContent = overflow ? `${MATCH_LIMIT}+ 个匹配` : `${total} 个匹配`;
-  };
-
-  const pushQuery = (withReplace: boolean) => {
-    view.dispatch({ effects: setSearchQuery.of(buildQuery(withReplace)) });
-    refreshCount();
-  };
-
-  const jump = (backward: boolean) => {
-    pushQuery(false);
-    (backward ? findPrevious : findNext)(view);
-  };
-
-  // ---- 事件 ----
-  findInput.addEventListener("input", () => pushQuery(false));
-  caseBtn.addEventListener("click", () => {
-    caseSensitive = !caseSensitive;
-    caseBtn.dataset.active = String(caseSensitive);
-    pushQuery(false);
-    findInput.focus();
-  });
-  prevBtn.addEventListener("click", () => jump(true));
-  nextBtn.addEventListener("click", () => jump(false));
-  closeBtn.addEventListener("click", () => closeSearchPanel(view));
-  if (replaceRow && replaceInput) {
-    replaceInput.addEventListener("input", () => pushQuery(true));
-    const replaceBtn = replaceRow.children[1] as HTMLButtonElement;
-    const replaceAllBtn = replaceRow.children[2] as HTMLButtonElement;
-    replaceBtn.addEventListener("click", () => {
-      pushQuery(true);
-      replaceNext(view);
-      refreshCount();
-    });
-    replaceAllBtn.addEventListener("click", () => {
-      pushQuery(true);
-      replaceAll(view);
-      refreshCount();
-    });
-  }
-  for (const input of [findInput, replaceInput]) {
-    input?.addEventListener("keydown", (event) => {
-      const key = event.key;
-      if (key === "Enter") {
-        event.preventDefault();
-        jump(event.shiftKey);
-      } else if (key === "Escape") {
-        event.preventDefault();
-        closeSearchPanel(view);
-      }
-    });
-  }
-
-  // 打开即以当前选中文本作为查找词（与主流编辑器一致）。
-  const selection = view.state.sliceDoc(
-    view.state.selection.main.from,
-    view.state.selection.main.to,
-  );
-  if (selection && selection.length <= 200 && !selection.includes("\n")) {
-    findInput.value = selection;
-    pushQuery(false);
-  }
-
-  return { dom, top: true };
+/**
+ * 当前光标落在第几个匹配上（0 基），`-1` 表示没有匹配。
+ *
+ * 精确命中优先（跳转后光标正好停在匹配起点）；否则取"第一个不早于光标"的
+ * 匹配；光标已在全部匹配之后时回绕到第一个 —— 与 VSCode 的计数行为一致。
+ */
+export function activeMatchIndex(
+  view: EditorView,
+  ranges: { from: number; to: number }[],
+): number {
+  if (ranges.length === 0) return -1;
+  const cursor = view.state.selection.main.from;
+  const exact = ranges.findIndex((range) => range.from === cursor);
+  if (exact >= 0) return exact;
+  const next = ranges.findIndex((range) => range.from > cursor);
+  return next >= 0 ? next : 0;
 }

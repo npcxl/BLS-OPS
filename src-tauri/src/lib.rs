@@ -20,6 +20,7 @@ mod keyring;
 pub mod monitor;
 /// Nginx site and configuration management (P3-1.4).
 pub mod nginx;
+pub mod output_adapter;
 pub mod project_discovery;
 /// 项目级部署准备检查（针对单个项目，而非全局可行性图谱）。纯逻辑，无 I/O。
 pub mod project_readiness;

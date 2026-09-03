@@ -2,19 +2,21 @@ import { useMemo, useRef, useState } from "react";
 import { Search, WrapText } from "lucide-react";
 import CodeMirror, { EditorState, EditorView } from "@uiw/react-codemirror";
 import { Button } from "@/components/ui/button";
+import { CodeSearchBox } from "@/components/ui/code-search-box";
 import { useEditorTheme } from "@/lib/cm-theme";
-import { openOpsSearch, opsSearch } from "@/lib/cm-search";
+import { opsSearch } from "@/lib/cm-search";
 
 /**
  * 只读代码/文本查看器（由 TextPreview 懒加载）。
  *
- * 工具栏：自动换行开关 · Ctrl+F 搜索提示 · 行数统计。
- * 只读：`editable=false` + `readOnly` state；搜索面板据此隐藏替换行。
+ * 工具栏：自动换行开关 · Ctrl+F 搜索 · 行数统计。搜索用与编辑器同一套
+ * VSCode 风格浮动框（只读文档不显示替换）。
  */
 export default function CodeText({ text }: { text: string }) {
   const [wrap, setWrap] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
   const theme = useEditorTheme();
-  const viewRef = useRef<Parameters<typeof openOpsSearch>[0] | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
 
   const extensions = useMemo(
     () => [
@@ -44,19 +46,29 @@ export default function CodeText({ text }: { text: string }) {
         </Button>
         <Button
           size="xs"
-          variant="ghost"
-          onClick={() => openOpsSearch(viewRef.current)}
-          title="查找 · Enter 下一个 · Shift+Enter 上一个 · Esc 关闭"
+          variant={searchOpen ? "secondary" : "ghost"}
+          onClick={() => setSearchOpen((current) => !current)}
+          title="查找（Ctrl+F）"
         >
           <Search size={12} />
-          搜索 Ctrl+F
+          搜索
         </Button>
         <span className="ml-auto text-11 text-fg-subtle">
           {lineCount.toLocaleString()} 行
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden"
+        // 捕获阶段拦截，避免 CodeMirror 的默认搜索面板被打开。
+        onKeyDownCapture={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+            event.preventDefault();
+            event.stopPropagation();
+            setSearchOpen(true);
+          }
+        }}
+      >
         <CodeMirror
           value={text}
           height="100%"
@@ -72,6 +84,9 @@ export default function CodeText({ text }: { text: string }) {
             viewRef.current = view;
           }}
         />
+        {searchOpen && (
+          <CodeSearchBox view={viewRef.current} readOnly onClose={() => setSearchOpen(false)} />
+        )}
       </div>
     </>
   );

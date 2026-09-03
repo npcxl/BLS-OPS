@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Save, Search } from "lucide-react";
+import { Loader2, Save } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
-import { openSearchPanel } from "@codemirror/search";
+import type { EditorView } from "@uiw/react-codemirror";
 import { sql as sqlLang } from "@codemirror/lang-sql";
 import { html as htmlLang } from "@codemirror/lang-html";
 import { javascript } from "@codemirror/lang-javascript";
@@ -11,11 +11,12 @@ import { css as cssLang } from "@codemirror/lang-css";
 import { python as pythonLang } from "@codemirror/lang-python";
 import { markdown as markdownLang } from "@codemirror/lang-markdown";
 import { Button } from "@/components/ui/button";
+import { CodeSearchBox } from "@/components/ui/code-search-box";
 import { ErrorText, Modal } from "@/components/ui/modal";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import type { EditorLanguage } from "@/lib/file-kind";
 import { useEditorTheme } from "@/lib/cm-theme";
-import { openOpsSearch, opsSearch } from "@/lib/cm-search";
+import { opsSearch } from "@/lib/cm-search";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -46,8 +47,10 @@ export default function FileEditorModal({
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** 浮动搜索框开关（Ctrl+F）。 */
+  const [searchOpen, setSearchOpen] = useState(false);
   const theme = useEditorTheme();
-  const viewRef = useRef<Parameters<typeof openSearchPanel>[0] | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,25 +126,23 @@ export default function FileEditorModal({
         {error && <ErrorText>{error}</ErrorText>}
         {content !== null && (
           <div
-            className="overflow-hidden rounded-[6px] border border-line"
+            className="relative overflow-hidden rounded-[6px] border border-line"
             onKeyDown={(event) => {
               if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
                 event.preventDefault();
                 void save();
               }
             }}
+            // Ctrl+F 必须在捕获阶段拦下：searchKeymap 挂在编辑器 DOM 上，
+            // 冒泡阶段拦截时它已经把默认面板打开了。
+            onKeyDownCapture={(event) => {
+              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+                event.preventDefault();
+                event.stopPropagation();
+                setSearchOpen(true);
+              }
+            }}
           >
-            <div className="flex items-center justify-end border-b border-line bg-surface-2 px-2 py-1">
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => openOpsSearch(viewRef.current)}
-                title="查找 / 替换 · Enter 下一个 · Shift+Enter 上一个 · Esc 关闭"
-              >
-                <Search size={12} />
-                搜索 Ctrl+F
-              </Button>
-            </div>
             <CodeMirror
               value={content}
               height="52vh"
@@ -156,6 +157,9 @@ export default function FileEditorModal({
                 setDirty(true);
               }}
             />
+            {searchOpen && (
+              <CodeSearchBox view={viewRef.current} onClose={() => setSearchOpen(false)} />
+            )}
           </div>
         )}
       </div>

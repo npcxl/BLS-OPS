@@ -21,6 +21,11 @@ Tauri 2 + React 19 + Rust 的桌面 SSH 运维工具（Windows 为主）。当�
 - 历史窗口 `maxSamplesFor = ceil(30min / intervalMs)`（2s→900/5s→360/30s→60）。
 - 不支持的 OS：`monitor_snapshot` 返回 `supported:false`+原因+空指标；禁止零值指标。
 
+## Tauri 事件/命令载荷契约（2026-09-03 铁律）
+- **Rust → 前端的事件 payload 与命令返回值，字段必须 camelCase**（`#[serde(rename_all = "camelCase")]`）；前端 TS 类型按 camelCase 写。教训：`DirectorySizeResult` 曾漏掉 rename_all，snake_case 载荷让前端 store 落进 `undefined::path` 坏 key，"接口正常但不渲染"。排查这类问题先 diff 载荷字段名，别只看"事件到了没有"。
+- 枚举**值**保持 snake_case（`permission_denied` 等），与前端联合类型逐字一致；事件与命令必须共用同一份结构，禁止两套格式。
+- 全局事件监听器（如 `directory-size-update`）必须：共享 Promise 防重复注册、成功后才置就绪标志、失败回到可重试态；消费方（面板）等就绪标志再启动会产生瞬时完成事件的操作；另配低频批量只读兜底查询（`directory_size_status_many`，≤20 条/轮）防事件丢失。
+
 ## UI 组件约定
 - 右键菜单统一 `components/ui/context-menu.tsx` 的 `useContextMenu()`；`pointerdown` 不关菜单（防闪），`contextmenu` bubble 阶段靠 `defaultPrevented` 判断新菜单。
 - 破坏性操作统一 `components/ui/confirm-dialog.tsx`，不用 `window.confirm`/手拼 Modal。

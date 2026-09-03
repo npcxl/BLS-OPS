@@ -10,6 +10,7 @@ import {
   RocketIcon,
   UnorderedListIcon,
   SparklesIcon,
+  CommandCenterIcon,
 } from "@/components/its-hover";
 import type { ComponentType } from "react";
 
@@ -30,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "services", label: "服务", icon: WorldIcon },
   { id: "logs", label: "日志", icon: FileDescriptionIcon },
   { id: "projects", label: "项目", icon: Stack3Icon },
+  { id: "commands", label: "命令", icon: CommandCenterIcon },
   { id: "deploy", label: "部署", icon: RocketIcon },
   { id: "tasks", label: "任务", icon: UnorderedListIcon },
   { id: "ai", label: "智能助手", icon: SparklesIcon, divider: true },
@@ -70,7 +72,7 @@ export function NavigationRail() {
 
   return (
     <nav
-      className="relative z-30 flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line bg-surface-1/60 py-2 backdrop-blur-xl"
+      className="relative z-30 flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-line py-2"
       aria-label="Navigation"
     >
       {NAV_ITEMS.map((item) =>

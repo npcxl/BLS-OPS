@@ -14,6 +14,7 @@
 //!   what was removed instead of leaving orphans.
 
 mod audit;
+mod command_center;
 mod credentials;
 mod history;
 mod known_hosts;
@@ -24,6 +25,7 @@ mod servers;
 mod sessions;
 
 pub use audit::*;
+pub use command_center::*;
 pub use credentials::*;
 pub use history::*;
 pub use known_hosts::*;

@@ -26,7 +26,7 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-app" onMouseDown={() => focusPane(pane.id)}>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-1" onMouseDown={() => focusPane(pane.id)}>
       <WorkspaceTabs pane={pane} />
       <div className="relative min-h-0 flex-1">
         {/* No active tab also covers "the selection was cleared because the

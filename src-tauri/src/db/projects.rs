@@ -314,6 +314,150 @@ pub fn update_confirmed_scan_state(
     Ok(changed > 0)
 }
 
+/// 本次扫描对某个路径的判定摘要（`reconcile_confirmed_after_scan` 的输入）。
+#[derive(Debug, Clone)]
+pub struct ScannedCandidateInfo {
+    pub name: String,
+    pub project_type: String,
+    /// 序列化后的 `ProjectKind`（application / infrastructure / unknown）。
+    pub project_kind: String,
+}
+
+/// 一次成功扫描后的已确认项目状态对账（**完整四态流转**）：
+///
+/// - 本次发现且 `name` / `project_type` / 快照 `project_kind` 都没变 → `active`；
+/// - 本次发现但关键信息变了（改名 / 类型变化 / 被重新分类为基础设施）→
+///   `changed`（保留行与快照，等用户复核）；
+/// - 本次没发现 → `missing`，`missing_since` 保留首次时间。
+pub fn reconcile_confirmed_after_scan(
+    conn: &Connection,
+    server_id: &str,
+    found: &std::collections::BTreeMap<String, ScannedCandidateInfo>,
+    now: i64,
+) -> Result<()> {
+    let confirmed = list_confirmed_projects(conn, server_id)?;
+    for cp in confirmed {
+        let (scan_state, missing_since) = match found.get(&cp.canonical_path) {
+            Some(info) => {
+                let kind_changed = snapshot_kind_differs(&cp.candidate_payload, &info.project_kind);
+                let info_changed = info.name != cp.name || info.project_type != cp.project_type;
+                if (info_changed || kind_changed) && !cp.name.is_empty() {
+                    ("changed".to_string(), None)
+                } else {
+                    ("active".to_string(), None)
+                }
+            }
+            None => {
+                let missing_since = cp.missing_since.unwrap_or(now);
+                ("missing".to_string(), Some(missing_since))
+            }
+        };
+        update_confirmed_scan_state(
+            conn,
+            server_id,
+            &cp.canonical_path,
+            &scan_state,
+            now,
+            missing_since,
+        )?;
+    }
+    Ok(())
+}
+
+/// 快照 JSON 里的 `project_kind` 是否与本次扫描的判定不一致（changed 依据之一）。
+/// 旧快照没有该字段时视为一致（不因缺字段误报"信息有变化"）。
+fn snapshot_kind_differs(candidate_payload: &str, current_kind: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate_payload) else {
+        return false;
+    };
+    match value.get("project_kind") {
+        Some(serde_json::Value::String(kind)) => kind != current_kind,
+        // 无字段（旧快照）或 null：不判变化。
+        _ => false,
+    }
+}
+
+/// 扫描**失败**（连接断开 / SSH 错误，不含用户取消）时，把该服务器上仍标记为
+/// `active` 的已确认项目置为 `inaccessible` —— 服务器暂不可访问，无法判断
+/// 项目是否还在，绝不能假装"没变化"。`missing` 行保持不变（此前已确认缺失）。
+pub fn mark_confirmed_inaccessible(conn: &Connection, server_id: &str, now: i64) -> Result<u32> {
+    let changed = conn.execute(
+        "UPDATE confirmed_projects SET scan_state = 'inaccessible', updated_at = ?2 WHERE server_id = ?1 AND scan_state = 'active' AND deleted_at IS NULL",
+        params![server_id, now],
+    )?;
+    Ok(changed as u32)
+}
+
+// -- project merges (人工合并/拆分项目) --------------------------------------
+
+/// 一条人工合并关系：`child_path` 被用户并入 `parent_path`（路径均为 canonical）。
+/// 拆分 = 删除该行。后续扫描回填候选的 `merged_into` 标注，人工决定不被覆盖。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectMergeRecord {
+    pub id: String,
+    pub server_id: String,
+    pub child_path: String,
+    pub parent_path: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+fn merge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectMergeRecord> {
+    Ok(ProjectMergeRecord {
+        id: row.get("id")?,
+        server_id: row.get("server_id")?,
+        child_path: row.get("child_path")?,
+        parent_path: row.get("parent_path")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+/// 某台服务器上的全部人工合并关系（按 child_path 升序）。
+pub fn list_project_merges(conn: &Connection, server_id: &str) -> Result<Vec<ProjectMergeRecord>> {
+    let mut stmt =
+        conn.prepare("SELECT * FROM project_merges WHERE server_id = ?1 ORDER BY child_path ASC")?;
+    let rows = stmt.query_map([server_id], merge_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 写入（或更新）一条人工合并关系：一个子目录只能并入一个父项目，
+/// 重复合并会覆盖旧的父项目（用户改主意是合法操作）。
+pub fn upsert_project_merge(
+    conn: &Connection,
+    server_id: &str,
+    child_path: &str,
+    parent_path: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO project_merges (id, server_id, child_path, parent_path, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+        ON CONFLICT(server_id, child_path) DO UPDATE SET
+            parent_path=excluded.parent_path,
+            updated_at=excluded.updated_at
+        "#,
+        params![
+            format!("{server_id}:{child_path}"),
+            server_id,
+            child_path,
+            parent_path,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+/// 拆分：删除一条人工合并关系，子目录恢复独立。返回是否确有删除。
+pub fn delete_project_merge(conn: &Connection, server_id: &str, child_path: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "DELETE FROM project_merges WHERE server_id = ?1 AND child_path = ?2",
+        params![server_id, child_path],
+    )?;
+    Ok(changed > 0)
+}
+
 // -- project inventory cache ------------------------------------------------
 
 /// 某台服务器最近一次扫描的快照缓存（JSON 负载 + 时间戳）。

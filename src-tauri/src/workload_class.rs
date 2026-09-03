@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use crate::deployment_collector::DeploymentInstance;
 use crate::service_catalog::{
     find_catalog_entry, ClassificationConfidence, ClassificationEvidence, ComponentRole,
-    DetectedTechnology, InfrastructureCategory, InstanceOwnership, WorkloadRole,
+    DetectedTechnology, InfrastructureCategory, InstanceOwnership, InstanceRuntime, WorkloadRole,
 };
 
 /// 分类证据的来源标签常量。
@@ -157,8 +157,13 @@ pub fn apply_project_evidence(
                         format!("源码目录 {} 命中项目标志", hit.path),
                     ));
             }
-            // 共享 Nginx 若只服务于某项目（root/挂载命中项目目录）→ 项目专属前端容器。
-            WorkloadRole::Infrastructure if is_nginx(instance) => {
+            // 项目专属 Nginx 前端容器（Docker/K8s 中明确只服务一个项目的）。
+            // **宿主机 nginx:gateway 永不升级**：它汇总全部站点的 root 与代理后端
+            // cwd，任何一个站点命中项目都不代表网关本身是应用服务；项目与网关的
+            // 关系记录在 GatewayRoute.linked_project_id 上（见 link_gateway_routes）。
+            WorkloadRole::Infrastructure
+                if is_nginx(instance) && is_project_scoped_nginx(instance, markers_by_path) =>
+            {
                 instance.workload_role = WorkloadRole::Application;
                 instance.component_role = ComponentRole::Frontend;
                 instance.ownership = InstanceOwnership::ProjectScoped;
@@ -172,7 +177,7 @@ pub fn apply_project_evidence(
                     .classification_evidence
                     .push(ClassificationEvidence::new(
                         SRC_NGINX_ROOT,
-                        format!("Nginx 提供项目 {} 的站点/构建产物", hit.path),
+                        format!("Nginx 容器只提供项目 {} 的站点/构建产物", hit.path),
                     ));
             }
             // 已确认的基础设施（MySQL/Redis…）不因路径线索翻转。
@@ -267,6 +272,49 @@ fn is_nginx(instance: &DeploymentInstance) -> bool {
             .technology
             .as_ref()
             .is_some_and(|t| t.id == "nginx")
+}
+
+/// 判断一个 Nginx 基础设施实例是否可以升级为**项目专属前端容器**。
+///
+/// 三个条件缺一不可（缺任何一个都保持 infrastructure/gateway/shared）：
+/// 1. **容器运行时**（Docker/K8s）：宿主机 `nginx:gateway` 汇总了所有站点的
+///    root 与代理后端 cwd，只要其中一个站点关联项目，整个共享网关就会被
+///    错误升级 —— 所以宿主机 Nginx 永远是共享网关，项目关系只写在
+///    [`crate::deployment_collector::GatewayRoute`] 上；
+/// 2. **明确的 bind mount / 工作目录证据**（`source_known` + 非空工作目录）：
+///    纯镜像容器没有宿主路径，无从证明它专属某个项目；
+/// 3. **唯一项目关联**：命中的项目标志路径按"相关子树"去重后只剩一个 ——
+///    命中多个不同项目说明它在服务多个站点，仍是共享网关。
+fn is_project_scoped_nginx(
+    instance: &DeploymentInstance,
+    markers_by_path: &BTreeMap<String, Vec<String>>,
+) -> bool {
+    // 条件 1：宿主机网关永不升级。
+    if instance.runtime == InstanceRuntime::Host {
+        return false;
+    }
+    // 条件 2：需要明确的挂载/工作目录证据。
+    if !instance.source_known || instance.working_directories.is_empty() {
+        return false;
+    }
+    // 条件 3：唯一项目关联（按相关子树去重）。
+    let mut distinct_projects: Vec<String> = Vec::new();
+    for candidate_path in instance
+        .source_paths
+        .iter()
+        .chain(instance.working_directories.iter())
+    {
+        let Some((hit_path, _)) = markers_by_path
+            .iter()
+            .find(|(path, markers)| !markers.is_empty() && paths_related(path, candidate_path))
+        else {
+            continue;
+        };
+        if !distinct_projects.iter().any(|p| paths_related(p, hit_path)) {
+            distinct_projects.push(hit_path.clone());
+        }
+    }
+    distinct_projects.len() == 1
 }
 
 /// 平台类实例（docker/k8s 沙箱）的基础设施类别。
@@ -430,8 +478,64 @@ mod tests {
         );
         assert_eq!(instance.ownership, InstanceOwnership::Shared);
 
-        // 项目证据命中后升级为项目专属前端容器。
+        // **宿主机 nginx:gateway 永不升级**：它汇总所有站点的 root 与代理后端
+        // cwd，一个站点命中项目不代表网关本身是应用服务；项目关系记录在
+        // GatewayRoute.linked_project_id 上。
         let evidence = markers(&[("/srv/web", vec!["package.json"])]);
+        apply_project_evidence(std::slice::from_mut(&mut instance), &evidence);
+        assert_eq!(instance.workload_role, WorkloadRole::Infrastructure);
+        assert_eq!(
+            instance.infrastructure_category,
+            Some(InfrastructureCategory::Gateway)
+        );
+        assert_eq!(instance.ownership, InstanceOwnership::Shared);
+    }
+
+    /// 6b. 宿主机 Nginx 服务**多个**项目站点，也必须保持共享网关。
+    #[test]
+    fn host_nginx_with_multiple_project_hits_stays_gateway() {
+        let mut instance = with_image(base_instance("c6b", "docker", "proxy"), "nginx:1.24");
+        instance.working_directories = vec!["/var/www/a".to_string(), "/srv/b".to_string()];
+        instance.source_paths = instance.working_directories.clone();
+        classify_instance(&mut instance);
+        let evidence = markers(&[
+            ("/var/www/a", vec!["package.json"]),
+            ("/srv/b", vec!["pom.xml"]),
+        ]);
+        apply_project_evidence(std::slice::from_mut(&mut instance), &evidence);
+        assert_eq!(instance.workload_role, WorkloadRole::Infrastructure);
+    }
+
+    /// 6c. 容器 Nginx 命中**多个**不同项目 → 仍是共享网关（唯一项目关联不成立）。
+    #[test]
+    fn container_nginx_with_multiple_projects_stays_gateway() {
+        let mut instance = with_image(base_instance("c6c", "docker", "proxy"), "nginx:1.24");
+        instance.runtime = InstanceRuntime::Container;
+        instance.source_known = true;
+        instance.working_directories = vec!["/var/www/a".to_string(), "/srv/b".to_string()];
+        classify_instance(&mut instance);
+        let evidence = markers(&[
+            ("/var/www/a", vec!["package.json"]),
+            ("/srv/b", vec!["pom.xml"]),
+        ]);
+        apply_project_evidence(std::slice::from_mut(&mut instance), &evidence);
+        assert_eq!(instance.workload_role, WorkloadRole::Infrastructure);
+        assert_eq!(instance.ownership, InstanceOwnership::Shared);
+    }
+
+    /// 6d. 容器 Nginx 只服务一个项目（bind mount 指向项目目录）→ 项目专属前端。
+    #[test]
+    fn container_nginx_with_single_project_upgrades() {
+        let mut instance = with_image(base_instance("c6d", "docker", "fe-proxy"), "nginx:1.24");
+        instance.runtime = InstanceRuntime::Container;
+        instance.source_known = true;
+        instance
+            .working_directories
+            .push("/var/www/portal".to_string());
+        instance.source_paths.push("/var/www/portal".to_string());
+        classify_instance(&mut instance);
+        assert_eq!(instance.workload_role, WorkloadRole::Infrastructure);
+        let evidence = markers(&[("/var/www/portal", vec!["package.json"])]);
         apply_project_evidence(std::slice::from_mut(&mut instance), &evidence);
         assert_eq!(instance.workload_role, WorkloadRole::Application);
         assert_eq!(instance.component_role, ComponentRole::Frontend);
@@ -440,6 +544,20 @@ mod tests {
             instance.technology.as_ref().map(|t| t.id.as_str()),
             Some("nginx")
         );
+    }
+
+    /// 6e. 容器 Nginx 没有宿主挂载证据（source_known=false）→ 不升级。
+    #[test]
+    fn container_nginx_without_host_evidence_stays_gateway() {
+        let mut instance = with_image(base_instance("c6e", "docker", "bare-nginx"), "nginx:1.24");
+        instance.runtime = InstanceRuntime::Container;
+        instance.source_known = false;
+        instance.working_directories.clear();
+        instance.source_paths.clear();
+        classify_instance(&mut instance);
+        let evidence = markers(&[("/var/www/portal", vec!["package.json"])]);
+        apply_project_evidence(std::slice::from_mut(&mut instance), &evidence);
+        assert_eq!(instance.workload_role, WorkloadRole::Infrastructure);
     }
 
     /// 7. Node API 关联 package.json → application/backend。
@@ -553,6 +671,8 @@ mod tests {
     #[test]
     fn static_frontend_project_gets_nginx_container_not_fake_node_service() {
         let mut instance = with_image(base_instance("c13", "docker", "web-nginx"), "nginx:1.24");
+        instance.runtime = InstanceRuntime::Container;
+        instance.source_known = true;
         instance
             .working_directories
             .push("/var/www/web".to_string());
@@ -576,6 +696,8 @@ mod tests {
     #[test]
     fn project_scoped_nginx_frontend_container() {
         let mut instance = with_image(base_instance("c14", "docker", "fe-nginx"), "nginx:alpine");
+        instance.runtime = InstanceRuntime::Container;
+        instance.source_known = true;
         instance.working_directories.push("/opt/portal".to_string());
         let evidence = markers(&[("/opt/portal", vec!["package.json"])]);
         classify_instance(&mut instance);

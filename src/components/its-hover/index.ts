@@ -7,3 +7,4 @@ export { default as RocketIcon } from "./rocket-icon";
 export { default as UnorderedListIcon } from "./unordered-list-icon";
 export { default as SparklesIcon } from "./sparkles-icon";
 export { default as SlidersHorizontalIcon } from "./sliders-horizontal-icon";
+export { default as CommandCenterIcon } from "./command-center-icon";

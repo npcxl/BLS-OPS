@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -182,6 +182,36 @@ CREATE INDEX IF NOT EXISTS idx_confirmed_projects_server
 /// The confirmed-projects table on its own, for `migrate()`.
 pub const CONFIRMED_PROJECTS_SCHEMA_SQL: &str = confirmed_projects_schema_sql!();
 
+/// 人工合并/拆分项目关系表（P3 合同：多模块仓库默认合并 + 用户手动合并/拆分）。
+///
+/// 每行表示"child_path 被用户**手动并入** parent_path"。唯一键
+/// `(server_id, child_path)`：一个子目录只能并入一个父项目；拆分 = 删除行。
+/// 后续扫描用该表回填候选的 `merged_into` 标注 —— 人工决定持久化，
+/// 重扫不覆盖。路径全部为 canonical 形式。
+macro_rules! project_merges_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS project_merges (
+    id TEXT PRIMARY KEY NOT NULL,
+    server_id TEXT NOT NULL,
+    child_path TEXT NOT NULL,
+    parent_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_merges_server_child
+    ON project_merges (server_id, child_path);
+
+CREATE INDEX IF NOT EXISTS idx_project_merges_server
+    ON project_merges (server_id, parent_path);
+"#
+    };
+}
+
+/// The project-merges table on its own, for `migrate()`.
+pub const PROJECT_MERGES_SCHEMA_SQL: &str = project_merges_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -281,7 +311,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     p3_schema_sql!(),
     project_reviews_schema_sql!(),
     project_inventory_schema_sql!(),
-    confirmed_projects_schema_sql!()
+    confirmed_projects_schema_sql!(),
+    project_merges_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -342,6 +373,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 也必须继续存在（修复"已确认项目消失"）。唯一键 (server_id, canonical_path)。
         conn.execute_batch(CONFIRMED_PROJECTS_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 6u32)?;
+    }
+    if version < 7 {
+        // P4 命令中心：收藏与使用记录（知识条目本体是编译期常量，不进库）。
+        conn.execute_batch(super::command_center::COMMAND_CENTER_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 7u32)?;
+    }
+    if version < 8 {
+        // 人工合并/拆分项目关系：用户手动把多个目录并成一个项目，或拆分回去。
+        // 结论持久化，后续扫描回填 merged_into 标注，绝不覆盖人工决定。
+        conn.execute_batch(PROJECT_MERGES_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 8u32)?;
     }
     Ok(())
 }

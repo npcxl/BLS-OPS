@@ -12,7 +12,7 @@ export function StatusBar() {
   const knownHosts = useDomainStore((s) => s.knownHosts);
 
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-0 border-t border-line bg-surface-1/60 px-2.5 text-11 text-fg-muted backdrop-blur-xl">
+    <footer className="flex h-6 shrink-0 items-center gap-0 border-t border-line px-2.5 text-11 text-fg-muted">
       <span className="flex items-center gap-1.5">
         <span
           className={cn(

@@ -8,6 +8,7 @@ const MODULE_TITLES: Record<string, string> = {
   ssh: "终端",
   servers: "服务器",
   projects: "项目",
+  commands: "命令",
   deploy: "部署",
   tasks: "任务",
   ai: "智能助手",

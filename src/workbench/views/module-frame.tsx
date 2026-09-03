@@ -49,7 +49,7 @@ export function ServerPicker({ tabId }: { tabId: string }) {
     });
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-app px-6">
+    <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
       <p className="text-13 text-fg-muted">选择一个服务器以开始</p>
       {servers.length === 0 ? (
         <p className="max-w-sm text-center text-12 text-fg-subtle">
@@ -117,7 +117,7 @@ export function ModuleFrame({
     // server list on the left. A full-screen picker here would just duplicate it,
     // so we only point the user at the sidebar and let them close a stray tab.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 bg-app px-6">
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
         <p className="text-13 text-fg-muted">从左侧选择一台服务器</p>
         <p className="max-w-sm text-center text-12 text-fg-subtle">
           日志、容器、网关等模块都运行在具体的服务器上。在左侧列表点选一台，即可在此查看它的内容。
@@ -164,12 +164,12 @@ export function ModuleFrame({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app">
+    <div className="flex h-full min-h-0 flex-col bg-surface-1">
       {/* One compact header row: icon + toolbar (filters/actions). The server
           name itself lives on the tab, so we don't repeat it here — this row
           is purely the module's controls. Connection problems surface via the
           banner below, not a permanent status badge. */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-transparent px-2">
         {Glyph && <Glyph size={13} className="shrink-0 text-fg-subtle" />}
         {toolbar && <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div>}
       </div>
@@ -177,7 +177,7 @@ export function ModuleFrame({
       {banner()}
 
       {toolbar2 && (
-        <div className="flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-surface-1/40 px-2 backdrop-blur-xl">
+        <div className="flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-transparent px-2">
           {toolbar2}
         </div>
       )}

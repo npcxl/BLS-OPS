@@ -6,7 +6,7 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 export function EmptyPaneState({ paneId }: { paneId: string }) {
   const openTab = useWorkbenchStore((s) => s.openTab);
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 bg-app">
+    <div className="flex h-full flex-col items-center justify-center gap-4 bg-surface-1">
       <div className="flex flex-col items-center gap-1.5">
         <div className="flex h-10 w-10 items-center justify-center rounded-control border border-line bg-surface-1 text-fg-subtle">
           <SquareTerminal size={18} strokeWidth={1.75} />

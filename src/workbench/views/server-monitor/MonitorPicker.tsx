@@ -21,7 +21,7 @@ export function MonitorPicker({
     });
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-app">
+    <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1">
       <p className="text-13 text-fg-muted">选择一个服务器以开始监控</p>
       {servers.length === 0 ? (
         <p className="text-12 text-fg-subtle">左侧“服务器”中还没有任何条目，请先新增服务器。</p>

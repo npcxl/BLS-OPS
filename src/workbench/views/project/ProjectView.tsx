@@ -9,21 +9,17 @@ import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import type {
   ConfirmedProject,
-  ConfirmedScanState,
   ProjectCandidate,
   ReviewState,
 } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
-
-/** 渲染用候选：在 ProjectCandidate 之上附加"已确认项目"的持久化状态。 */
-export type DisplayCandidate = ProjectCandidate & {
-  /** 该已确认项目本次扫描的态度：active / missing / inaccessible / changed。 */
-  scanState?: ConfirmedScanState;
-  /** 系统重新将其分类为基础设施，但用户曾确认是业务项目 → 需复核。 */
-  kindChanged?: boolean;
-  /** 本次扫描未再发现该路径（快照仍在，仅供展示）。 */
-  confirmedMissing?: boolean;
-};
+import {
+  mergeApplications,
+  mergedChildrenByParent,
+  removeConfirmedLocally,
+  upsertConfirmedLocally,
+  type DisplayCandidate,
+} from "./merge-applications";
 import { ScanProgress } from "./ScanProgress";
 import { TabApplications } from "./tabs/TabApplications";
 import { TabNeedsConfirm } from "./tabs/TabNeedsConfirm";
@@ -83,103 +79,124 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
   // 用户在卡片上"确认 / 忽略"后，本地覆盖扫描结果里的 review，避免每次都重扫。
   // 后端扫描时也会从数据库读回 review，所以重扫后这里的状态仍一致。
   const [reviews, setReviews] = useState<Record<string, ReviewState>>({});
-  const handleReview = useCallback((path: string, state: ReviewState) => {
-    setReviews((current) => ({ ...current, [path]: state }));
-  }, []);
 
   // 持久化已确认项目：即使最新扫描没再发现该路径也必须继续存在。挂载/切换
   // 服务器时从 confirmed_projects 表加载完整快照。
   const [confirmedProjects, setConfirmedProjects] = useState<ConfirmedProject[]>([]);
+
+  /** 从服务端拉取已确认项目并解析候选快照（挂载 / 确认 / 扫描完成后调用）。 */
+  const refreshConfirmed = useCallback(async () => {
+    if (!tab.serverId) return;
+    try {
+      const records = await opsApi.projectConfirmedList(tab.serverId);
+      const parsed = records.map((r) => {
+        try {
+          r.candidate = JSON.parse(r.candidate_payload) as ProjectCandidate;
+        } catch {
+          r.candidate = undefined;
+        }
+        return r;
+      });
+      setConfirmedProjects(parsed);
+    } catch {
+      // 拉取失败保持现状：本地 upsert 已保证刚确认的项目不消失。
+    }
+  }, [tab.serverId]);
+
   useEffect(() => {
     if (!tab.serverId) {
       setConfirmedProjects([]);
       return;
     }
-    let alive = true;
-    void opsApi.projectConfirmedList(tab.serverId).then(
-      (records) => {
-        if (!alive) return;
-        // 解析候选快照，并给每个条目一个稳定的 display 候选。
-        const parsed = records.map((r) => {
-          try {
-            r.candidate = JSON.parse(r.candidate_payload) as ProjectCandidate;
-          } catch {
-            r.candidate = undefined;
-          }
-          return r;
-        });
-        setConfirmedProjects(parsed);
-      },
-      () => {},
-    );
-    return () => {
-      alive = false;
-    };
-  }, [tab.serverId]);
+    void refreshConfirmed();
+  }, [tab.serverId, refreshConfirmed]);
+
+  // 每次扫描完成后重同步：后端把已确认项目标成 active / missing / changed，
+  // 前端必须拿到最新的 scan_state，否则"本次未发现/信息有变化"徽标不会出现。
+  const scanId = result?.scan_id ?? null;
+  useEffect(() => {
+    if (scanId) void refreshConfirmed();
+  }, [scanId, refreshConfirmed]);
+
+  // 人工合并/拆分的本地覆盖（问题4：后续扫描不得覆盖人工决定）。
+  // path -> 父路径；null 表示已拆分。服务端落库后，扫描快照会带同样的标注，
+  // 这里的本地值只是为了操作后无需重扫立即生效。
+  const [mergeEdits, setMergeEdits] = useState<Record<string, string | null>>({});
+  const handleMerge = useCallback(
+    (childPath: string, parentPath: string | null) => {
+      setMergeEdits((current) => ({ ...current, [childPath]: parentPath }));
+      // 已确认快照同步打标（父候选可能不在扫描结果里）。
+      setConfirmedProjects((current) =>
+        current.map((cp) =>
+          cp.canonical_path === childPath && cp.candidate
+            ? { ...cp, candidate: { ...cp.candidate, merged_into: parentPath ?? undefined } }
+            : cp,
+        ),
+      );
+      void opsApi.projectMergeSet(tab.serverId ?? "", childPath, parentPath);
+    },
+    [tab.serverId],
+  );
 
   // 统一数据源：所有 tab 与数量徽标都从这份"已合并用户复核结论"的候选里取，
-  // 避免确认/忽略后某个徽标不同步。
+  // 避免确认/忽略后某个徽标不同步。人工合并标注本地优先于扫描快照。
   const resolved = useMemo<ProjectCandidate[]>(() => {
     const list = result?.candidates ?? [];
-    return list.map((c) => ({ ...c, review: (reviews[c.path] ?? c.review) ?? "pending" }));
-  }, [result, reviews]);
+    return list.map((c) => ({
+      ...c,
+      review: (reviews[c.path] ?? c.review) ?? "pending",
+      merged_into: c.path in mergeEdits ? (mergeEdits[c.path] ?? undefined) : c.merged_into,
+    }));
+  }, [result, reviews, mergeEdits]);
+
+  /**
+   * 复核结论落库后同步本地状态：
+   * - 确认 → 用当前候选快照本地 upsert 一条 ConfirmedProject（服务端真相在
+   *   project_review_set 里，随后 refreshConfirmed 会覆盖为服务端版本）。
+   *   这修掉了"本页确认 → 立即重扫 → 新扫描没发现它 → 项目在当前页面消失"
+   *   的窗口：不重进页面也能看到。
+   * - 撤销 / 忽略 → 从本地已确认列表移除（服务端已软删除）。
+   */
+  const handleReview = useCallback(
+    (path: string, state: ReviewState) => {
+      setReviews((current) => ({ ...current, [path]: state }));
+      if (state === "confirmed") {
+        const candidate = resolved.find((c) => c.path === path);
+        if (candidate) {
+          setConfirmedProjects((current) =>
+            upsertConfirmedLocally(current, candidate, tab.serverId ?? ""),
+          );
+        }
+      } else {
+        setConfirmedProjects((current) => removeConfirmedLocally(current, path));
+      }
+      // 服务端回读以拿到权威 confirmed_at / 快照（失败无碍，本地版本已正确）。
+      void refreshConfirmed();
+    },
+    [resolved, tab.serverId, refreshConfirmed],
+  );
 
   const instances = result?.instances ?? [];
+  const gatewayRoutes = result?.gateway_routes ?? [];
 
   // 「项目」列表 = 持久化已确认项目 + 本次扫描的高可信候选，按 canonical_path 合并。
   // 人工确认优先级最高：只要 review === "confirmed" 就进「项目」，即使被算法重新
   // 分类为 infrastructure 也先保留（标记 kindChanged 提示复核），不允许自动消失。
-  const applications = useMemo<DisplayCandidate[]>(() => {
-    const out: DisplayCandidate[] = [];
-    const usedPaths = new Set<string>();
-
-    // 1) 持久化已确认项目：无论本次是否扫到，都先加入。
-    for (const cp of confirmedProjects) {
-      const scanned = resolved.find((c) => c.path === cp.canonical_path);
-      if (scanned) {
-        usedPaths.add(scanned.path);
-        const kindChanged =
-          scanned.project_kind === "infrastructure" &&
-          cp.candidate?.project_kind !== "infrastructure";
-        out.push({
-          ...scanned,
-          review: "confirmed",
-          scanState: "active",
-          kindChanged,
-          confirmedMissing: false,
-        });
-      } else {
-        // 本次未扫到：保留快照，状态取 DB 的 scan_state（missing / inaccessible）。
-        if (cp.candidate) {
-          out.push({
-            ...cp.candidate,
-            review: "confirmed",
-            scanState: cp.scan_state,
-            kindChanged: false,
-            confirmedMissing: cp.scan_state !== "active",
-          });
-        }
-      }
-    }
-
-    // 2) 本次扫描的高可信候选（未被已确认项目占用的路径）。
-    for (const c of resolved) {
-      if (usedPaths.has(c.path)) continue;
-      if (c.review === "ignored") continue;
-      if (c.review === "confirmed") {
-        out.push({ ...c, scanState: "active" });
-        continue;
-      }
-      if (c.project_kind === "infrastructure") continue;
-      if (c.status === "high_confidence") out.push({ ...c });
-    }
-
-    return out;
-  }, [confirmedProjects, resolved]);
+  const applications = useMemo<DisplayCandidate[]>(
+    () => mergeApplications(confirmedProjects, resolved),
+    [confirmedProjects, resolved],
+  );
+  // 已并入其他项目的子目录，按父路径分组（父卡片展开时展示）。
+  const mergedChildren = useMemo(() => mergedChildrenByParent(resolved), [resolved]);
 
   // 待确认 tab：用户尚未拍板（非确认、非忽略）的目录。
   const needsConfirm = useMemo(
     () => resolved.filter((c) => c.review !== "confirmed" && c.review !== "ignored"),
+    [resolved],
+  );
+  // 并入目标选择列表：除自身外的全部候选（简单起见含已确认项目）。
+  const mergeTargets = useMemo(
+    () => resolved.filter((c) => c.path).map((c) => ({ path: c.path, name: c.name })),
     [resolved],
   );
   // 顶层互斥划分：应用服务 / 基础设施 / 待归类 / 系统组件。
@@ -303,6 +320,10 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                   onOpenPath={openPath}
                   onClosePath={closePanel}
                   onReview={handleReview}
+                  gatewayRoutes={gatewayRoutes}
+                  mergedChildren={mergedChildren}
+                  mergeTargets={mergeTargets}
+                  onMerge={handleMerge}
                 />
               )}
               {result && activeTab === "needs_confirm" && (
@@ -313,6 +334,10 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                   onOpenPath={openPath}
                   onClosePath={closePanel}
                   onReview={handleReview}
+                  gatewayRoutes={gatewayRoutes}
+                  mergedChildren={mergedChildren}
+                  mergeTargets={mergeTargets}
+                  onMerge={handleMerge}
                 />
               )}
               {result && activeTab === "runtime" && (

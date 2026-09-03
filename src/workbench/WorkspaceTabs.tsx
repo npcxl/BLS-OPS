@@ -102,7 +102,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
     ]);
 
   return (
-    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-transparent px-2">
       <div
         ref={tabStripRef}
         onWheel={onWheel}

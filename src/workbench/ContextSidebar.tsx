@@ -53,7 +53,7 @@ export function ContextSidebar() {
     if (collapsed) return <div className="w-0 shrink-0" aria-hidden="true" />;
     return (
       <aside
-        className="relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1/60 backdrop-blur-xl"
+        className="relative flex shrink-0 flex-col overflow-hidden"
         style={{ width }}
         aria-label={`${activeModule} 服务器列表`}
       >
@@ -84,7 +84,7 @@ export function ContextSidebar() {
 
   return (
     <aside
-      className="relative flex shrink-0 flex-col overflow-hidden border-r border-line bg-surface-1/60 backdrop-blur-xl"
+      className="relative flex shrink-0 flex-col overflow-hidden"
       style={{ width }}
       aria-label={MODULE_TITLES.ssh}
     >

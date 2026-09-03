@@ -41,9 +41,16 @@ const ProjectView = lazy(() =>
   })),
 );
 
+/** P4 命令智能中心 — knowledge base + structured results. */
+const CommandCenterView = lazy(() =>
+  import("@/workbench/views/command-center/CommandCenterView").then((module) => ({
+    default: module.CommandCenterView,
+  })),
+);
+
 function TerminalFallback() {
   return (
-    <div className="flex h-full items-center justify-center bg-app">
+    <div className="flex h-full items-center justify-center bg-surface-1">
       <Loader2 size={16} className="animate-spin text-fg-subtle" />
     </div>
   );
@@ -84,6 +91,12 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <ProjectView tab={tab} />
+        </Suspense>
+      );
+    case "command_center":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <CommandCenterView tab={tab} />
         </Suspense>
       );
     default:

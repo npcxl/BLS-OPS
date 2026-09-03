@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { Loader2, Save } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, Save, Search } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
-import { oneDark } from "@codemirror/theme-one-dark";
+import { openSearchPanel } from "@codemirror/search";
 import { sql as sqlLang } from "@codemirror/lang-sql";
 import { html as htmlLang } from "@codemirror/lang-html";
 import { javascript } from "@codemirror/lang-javascript";
@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { ErrorText, Modal } from "@/components/ui/modal";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import type { EditorLanguage } from "@/lib/file-kind";
-import { useThemeMode } from "@/hooks/use-theme";
+import { useEditorTheme } from "@/lib/cm-theme";
+import { openOpsSearch, opsSearch } from "@/lib/cm-search";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -46,6 +47,7 @@ export default function FileEditorModal({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const theme = useEditorTheme();
+  const viewRef = useRef<Parameters<typeof openSearchPanel>[0] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,12 +131,26 @@ export default function FileEditorModal({
               }
             }}
           >
+            <div className="flex items-center justify-end border-b border-line bg-surface-2 px-2 py-1">
+              <Button
+                size="xs"
+                variant="ghost"
+                onClick={() => openOpsSearch(viewRef.current)}
+                title="查找 / 替换 · Enter 下一个 · Shift+Enter 上一个 · Esc 关闭"
+              >
+                <Search size={12} />
+                搜索 Ctrl+F
+              </Button>
+            </div>
             <CodeMirror
               value={content}
-              height="56vh"
+              height="52vh"
               theme={theme}
               extensions={extensions}
               basicSetup={{ foldGutter: true, highlightActiveLine: true }}
+              onCreateEditor={(view) => {
+                viewRef.current = view;
+              }}
               onChange={(value) => {
                 setContent(value);
                 setDirty(true);
@@ -147,37 +163,41 @@ export default function FileEditorModal({
   );
 }
 
-function useEditorTheme(): "light" | typeof oneDark {
-  const [mode] = useThemeMode();
-  if (mode === "dark") return oneDark;
-  if (mode === "light") return "light";
-  // "system": CodeMirror needs a concrete theme; match the media query once
-  // per render (good enough — the modal re-renders on interactions).
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? oneDark : "light";
-}
-
 function buildExtensions(language?: EditorLanguage) {
-  if (!language) return [];
+  // opsSearch()：Ctrl+F 打开自定义查找/替换面板（替换默认原生样式）。
+  const extensions = [opsSearch()];
+  if (!language) return extensions;
   switch (language) {
     case "sql":
-      return [sqlLang()];
+      extensions.push(sqlLang());
+      break;
     case "html":
-      return [htmlLang()];
+      extensions.push(htmlLang());
+      break;
     case "javascript":
-      return [javascript()];
+      extensions.push(javascript());
+      break;
     case "jsx":
-      return [javascript({ jsx: true, typescript: true })];
+      extensions.push(javascript({ jsx: true, typescript: true }));
+      break;
     case "typescript":
-      return [javascript({ typescript: true })];
+      extensions.push(javascript({ typescript: true }));
+      break;
     case "java":
-      return [javaLang()];
+      extensions.push(javaLang());
+      break;
     case "json":
-      return [jsonLang()];
+      extensions.push(jsonLang());
+      break;
     case "css":
-      return [cssLang()];
+      extensions.push(cssLang());
+      break;
     case "python":
-      return [pythonLang()];
+      extensions.push(pythonLang());
+      break;
     case "markdown":
-      return [markdownLang()];
+      extensions.push(markdownLang());
+      break;
   }
+  return extensions;
 }

@@ -112,6 +112,7 @@ const MODULE_LABELS: Record<NavModule, string> = {
   services: "服务",
   logs: "日志",
   projects: "项目",
+  commands: "命令",
   deploy: "部署",
   tasks: "任务",
   ai: "智能助手",
@@ -128,6 +129,7 @@ const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
   services: "service",
   logs: "logs",
   projects: "project",
+  commands: "command_center",
 };
 
 /**
@@ -144,6 +146,7 @@ const TAB_TYPE_TO_MODULE: Partial<Record<WorkspaceTabType, NavModule>> = {
   service: "services",
   logs: "logs",
   project: "projects",
+  command_center: "commands",
   workflow: "deploy",
   deployment: "deploy",
 };

@@ -264,7 +264,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           : "bg-fg-subtle";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app">
+    <div className="flex h-full min-h-0 flex-col bg-surface-1">
       {/* Host info + connection status */}
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
         <span className={cn("h-[6px] w-[6px] rounded-full", statusTone)} />
@@ -296,7 +296,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
       {/* Toolbar */}
       {/* One row, always: the status text gives up space instead of wrapping
           out of sight behind the fixed 40px height. */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-transparent px-2">
         <Button
           variant="ghost"
           size="xs"

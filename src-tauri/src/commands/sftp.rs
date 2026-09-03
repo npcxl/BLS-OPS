@@ -91,6 +91,19 @@ pub async fn directory_size_status(
     Ok(state.dir_sizes.status(&session_id, &path))
 }
 
+/// Batched read-only status snapshot for the file panel's low-frequency
+/// watchdog (at most 20 paths, deduplicated, empty paths rejected). Reads only
+/// the registry's existing state — never starts a computation, never touches
+/// the SSH session.
+#[tauri::command]
+pub async fn directory_size_status_many(
+    state: State<'_, AppState>,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<DirectorySizeResult>, String> {
+    state.dir_sizes.status_many(&session_id, &paths)
+}
+
 #[tauri::command]
 pub async fn sftp_realpath(
     state: State<'_, AppState>,

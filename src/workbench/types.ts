@@ -15,6 +15,8 @@ export type WorkspaceTabType =
   | "service"
   | "logs"
   | "project"
+  /** P4 命令智能中心 — per-server, session-driven. */
+  | "command_center"
   | "workflow"
   | "deployment";
 
@@ -62,6 +64,8 @@ export type NavModule =
   /** journald 日志中心 — per-server, session-driven. */
   | "logs"
   | "projects"
+  /** P4 命令智能中心 — 命令知识库 + 检索 + 结构化结果。 */
+  | "commands"
   | "deploy"
   | "tasks"
   | "ai"

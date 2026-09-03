@@ -216,6 +216,22 @@ pub enum Capability {
         step: String,
         root: String,
     },
+
+    // P4 command centre — read-only system snapshots (knowledge base exec).
+    /// `ps` with **comm only** — never `args`, which would leak passwords and
+    /// connection strings from other users' command lines into the UI.
+    ProcessList,
+    /// `df -hP` — POSIX output so the columns are stable across distros.
+    DiskFree,
+    /// `free -m` for the memory summary line.
+    MemoryInfo,
+    /// Single-line `uptime` (load average + uptime).
+    UptimeInfo,
+    /// `git -C <path> status --porcelain=v2 -b`. Path is a validated absolute
+    /// path; output is machine-readable, no paging.
+    GitStatus {
+        path: String,
+    },
 }
 
 /// Tools that `probe_capabilities` may detect. Each maps to a fixed command
@@ -544,6 +560,21 @@ impl Capability {
             }
 
             Capability::JournalDiskUsage => "journalctl --disk-usage".to_string(),
+
+            // -- P4 command centre (read-only snapshots) ---------------------
+            Capability::ProcessList => {
+                // comm= executable name only: command lines often contain
+                // passwords / connection strings and must never reach the UI.
+                "ps -eo pid,comm,etimes,pcpu,pmem --no-headers --sort=-pcpu | head -n 80"
+                    .to_string()
+            }
+            Capability::DiskFree => "df -hP".to_string(),
+            Capability::MemoryInfo => "free -m".to_string(),
+            Capability::UptimeInfo => "uptime".to_string(),
+            Capability::GitStatus { path } => format!(
+                "git -C {} status --porcelain=v2 -b --no-renames",
+                quoted(validate_abs_path(path, "path")?)
+            ),
 
             // -- Project discovery ------------------------------------------
             // Commands are fixed and bounded; their output is parsed as metadata

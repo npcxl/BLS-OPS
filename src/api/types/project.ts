@@ -175,6 +175,8 @@ export interface ProjectCandidate {
   readiness: DeploymentReadiness;
   /** 人工复核结论（确认/忽略），从数据库读出随候选返回。 */
   review?: ReviewState;
+  /** 人工合并标注：该目录被并入哪个父项目（扫描/操作后回填；undefined = 独立项目）。 */
+  merged_into?: string;
   updated_at: string;
 }
 export type ScanState = "queued" | "running" | "completed" | "cancelled" | "failed";

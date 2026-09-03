@@ -37,7 +37,12 @@ import { useDirSizeStore } from "@/stores/dir-size-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
-import { useAutoDismiss, useDirSizeQueue, useTransientNotice } from "./use-dir-size-queue";
+import {
+  useAutoDismiss,
+  useDirSizeQueue,
+  useDirSizeWatchdog,
+  useTransientNotice,
+} from "./use-dir-size-queue";
 import {
   joinPath,
   parentOf,
@@ -455,28 +460,36 @@ export function RemoteFilePanel({
   const panelRef = useRef<HTMLElement>(null);
 
   // Directory-size queue (max 2 concurrent) — logic lives in the hook.
-  const { computeDirSize } = useDirSizeQueue(
-    sessionId,
-    (message) => setStatus({ state: "error", message }),
-  );
+  // 错误回调必须引用稳定：useDirSizeQueue 的监听器注册 effect 依赖它。
+  const handleDirSizeError = useCallback((message: string) => {
+    setStatus({ state: "error", message });
+  }, []);
+
+  const { computeDirSize, listenerReady } = useDirSizeQueue(sessionId, handleDirSizeError);
 
   /**
    * 每次列出目录就自动计算列表里每个子文件夹的大小，结果通过
    * `directory-size-update` 事件回填 store，行内直接渲染。
    *
+   * - **必须等 `listenerReady`**：监听器未注册完成就启动计算，小目录的
+   *   completed 事件会在事件到达前发出并丢失，行永远停在"排队中"。
    * - 后端按 (session, path) 缓存已完成结果：重复进入同一目录只会回放缓存，
    *   不会重复跑 `du`，这里跳过已完成的条目进一步省掉无谓 IPC。
    * - 真正的并发限制在 Rust 端（每会话 2 个），超出的任务报 `pending`，
    *   行内显示"排队中"。
    */
   useEffect(() => {
+    if (!connected || !listenerReady) return;
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
       const cached = useDirSizeStore.getState().get(sessionId, entry.path);
       if (cached?.complete) continue;
       computeDirSize(entry.path);
     }
-  }, [entries, sessionId, computeDirSize]);
+  }, [connected, listenerReady, entries, sessionId, computeDirSize]);
+
+  // 低频兜底：事件是主通道；3 秒一次、单轮 ≤20 条的批量查询只捞丢失的事件。
+  useDirSizeWatchdog({ connected, listenerReady, sessionId, entries });
 
   // Stale results for this session are cleared when the connection drops.
   useEffect(() => {

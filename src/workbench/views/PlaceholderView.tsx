@@ -13,6 +13,7 @@ const META: Record<WorkspaceTabType, { icon: LucideIcon; phase: string }> = {
   service: { icon: SquareCheckBig, phase: "阶段 3" },
   logs: { icon: ScrollText, phase: "阶段 3" },
   project: { icon: Boxes, phase: "阶段 3" },
+  command_center: { icon: Boxes, phase: "阶段 4" },
   workflow: { icon: Workflow, phase: "阶段 6" },
   deployment: { icon: Rocket, phase: "阶段 6" },
 };
@@ -21,7 +22,7 @@ export function PlaceholderView({ tab }: { tab: WorkspaceTab }) {
   const meta = META[tab.type];
   const Icon = meta.icon;
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-app">
+    <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1">
       <div className="flex h-12 w-12 items-center justify-center rounded-[10px] border border-line bg-surface-1 text-fg-subtle">
         <Icon size={20} strokeWidth={1.5} />
       </div>

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { CircleHelp } from "lucide-react";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
-import type { ProjectCandidate, ReviewState } from "@/api/ops-api";
+import type { GatewayRoute, ProjectCandidate, ReviewState } from "@/api/ops-api";
 import { CandidateCard } from "../CandidateCard";
 
 /**
@@ -15,6 +15,10 @@ export function TabNeedsConfirm({
   onOpenPath,
   onClosePath,
   onReview,
+  gatewayRoutes,
+  mergedChildren,
+  mergeTargets,
+  onMerge,
 }: {
   candidates: ProjectCandidate[];
   serverId: string;
@@ -22,6 +26,14 @@ export function TabNeedsConfirm({
   onOpenPath: (path: string) => void;
   onClosePath: () => void;
   onReview: (path: string, state: ReviewState) => void;
+  /** Nginx 网关路由：按 linked_project_id 过滤后作为项目"访问入口"展示。 */
+  gatewayRoutes: GatewayRoute[];
+  /** 已人工并入的子目录，按父路径分组。 */
+  mergedChildren: Map<string, string[]>;
+  /** 「并入其他项目」的目标列表（路径 + 名称）。 */
+  mergeTargets: { path: string; name: string }[];
+  /** 合并/拆分回调：parentPath 为 null 表示拆分。 */
+  onMerge: (childPath: string, parentPath: string | null) => void;
 }) {
   const list = useMemo(
     () =>
@@ -58,6 +70,10 @@ export function TabNeedsConfirm({
           onOpenPath={onOpenPath}
           onClosePath={onClosePath}
           onReview={onReview}
+          gatewayRoutes={gatewayRoutes}
+          mergedChildren={mergedChildren.get(candidate.path) ?? []}
+          mergeTargets={mergeTargets}
+          onMerge={onMerge}
         />
       ))}
     </div>

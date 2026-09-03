@@ -26,6 +26,7 @@ const MODULES: Record<NavModule, ModuleSpec> = {
   services: { title: "服务", icon: Server, description: "", sections: [] },
   logs: { title: "日志", icon: ScrollText, description: "", sections: [] },
   projects: { title: "项目", icon: Boxes, description: "项目与分组管理", sections: ["最近项目", "分组", "关联关系"] },
+  commands: { title: "命令", icon: SquareTerminal, description: "Linux 命令智能中心", sections: ["命令知识库", "结构化结果", "原始输出"] },
   deploy: { title: "部署", icon: Rocket, description: "部署目标与工作流", sections: ["目标环境", "工作流", "历史记录"] },
   tasks: { title: "任务", icon: ListTodo, description: "构建与上传任务", sections: ["构建", "上传", "部署", "历史"] },
   ai: { title: "智能助手", icon: Sparkles, description: "AI 辅助运维", sections: ["上下文", "模型提供方", "历史记录"] },
@@ -74,7 +75,7 @@ export function ModulePage({ module }: { module: NavModule }) {
   const spec = MODULES[module];
 
   return (
-    <div className="relative z-0 h-full overflow-y-auto bg-app" data-selectable>
+    <div className="relative z-0 h-full overflow-y-auto bg-surface-1" data-selectable>
       <div className="mx-auto flex max-w-[620px] flex-col gap-5 px-6 py-6">
         <div>
           <h1 className="text-20 font-semibold text-fg">{spec.title}</h1>

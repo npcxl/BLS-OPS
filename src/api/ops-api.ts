@@ -10,6 +10,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import {
+  type CommandCatalogMeta,
+  type CommandExecutionResult,
+  type CommandParams,
+  type CommandSearchHit,
+} from "@/api/types/command";
+import {
   type CascadeResult,
   type CredentialDeleteResult,
   type CredentialRecord,
@@ -172,6 +178,27 @@ function message(cause: unknown): string {
   return String(cause);
 }
 
+export {
+  MUTABILITY_LABELS,
+  RISK_META,
+  type CommandCatalogMeta,
+  type CommandCategory,
+  type CommandExecutionResult,
+  type CommandParams,
+  type CommandRawOutput,
+  type CommandSearchHit,
+  type CommandStructuredOutput,
+  type DiskRow,
+  type DockerContainerRow,
+  type JournalEntryRow,
+  type ListenerRow,
+  type Mutability,
+  type NginxSiteRow,
+  type ProcessRow,
+  type RiskLevel,
+  type SystemdUnitRow,
+} from "@/api/types/command";
+
 export { message as toErrorMessage };
 
 export const opsApi = {
@@ -329,10 +356,26 @@ export const opsApi = {
   monitorSnapshot: (sessionId: string) =>
     invoke<MonitorSnapshot>("monitor_snapshot", { sessionId }),
 
+  // -- Command centre (P4) ----------------------------------------------------
+  commandSearch: (query: string, limit = 12) =>
+    invoke<CommandSearchHit[]>("command_search", { query, limit: limit ?? undefined }),
+  commandExecute: (sessionId: string, knowledgeId: string, params?: CommandParams) =>
+    invoke<CommandExecutionResult>("command_execute", {
+      sessionId,
+      knowledgeId,
+      params: params ?? null,
+    }),
+  /** 探测服务器上真实存在的工具（返回入参的存在子集，用于置灰提示）。 */
+  commandProbeTools: (sessionId: string, tools: string[]) =>
+    invoke<string[]>("command_probe_tools", { sessionId, tools }),
+  commandToggleFavorite: (knowledgeId: string) =>
+    invoke<boolean>("command_toggle_favorite", { knowledgeId }),
+  commandFavorites: () => invoke<string[]>("command_favorites"),
+  commandCatalogMeta: () => invoke<CommandCatalogMeta>("command_catalog_meta"),
+
   // -- Project discovery ----------------------------------------------------
   projectScanStart: (sessionId: string, serverId: string, incremental = false) =>
-    invoke<ProjectScanStatus>("project_scan_start", { sessionId, serverId, incremental }),
-  projectScanCancel: (scanId: string) => invoke<boolean>("project_scan_cancel", { scanId }),
+    invoke<ProjectScanStatus>("project_scan_start", { sessionId, serverId, incremental }),  projectScanCancel: (scanId: string) => invoke<boolean>("project_scan_cancel", { scanId }),
   projectScanStatus: (scanId: string) =>
     invoke<ProjectScanStatus | null>("project_scan_status", { scanId }),
   projectScanResult: (scanId: string) =>
@@ -364,6 +407,13 @@ export const opsApi = {
   /** 列出某台服务器上全部持久化已确认项目（含完整快照与扫描状态）。 */
   projectConfirmedList: (serverId: string) =>
     invoke<ConfirmedProject[]>("confirmed_projects_list", { serverId }),
+  /** 人工合并/拆分项目：parentPath 为 null 表示把 childPath 拆分回独立目录。 */
+  projectMergeSet: (serverId: string, childPath: string, parentPath: string | null) =>
+    invoke<void>("project_merge_set", {
+      serverId,
+      childPath,
+      parentPath: parentPath ?? null,
+    }),
   /** 针对单个项目做部署准备检查（项目级，替代全局可行性图谱）。 */
   projectReadinessCheck: (serverId: string, scanId: string, candidatePath: string) =>
     invoke<ProjectReadinessReport>("project_readiness_check", {
@@ -475,4 +525,12 @@ export const opsApi = {
   /** Current (or last) computation snapshot for a path, or `null`. */
   directorySizeStatus: (sessionId: string, path: string) =>
     invoke<DirectorySizeResult | null>("directory_size_status", { sessionId, path }),
+  /**
+   * Low-frequency watchdog fallback for the file panel: batched read-only
+   * snapshot (max 20 paths) of computations that have not finished yet. Never
+   * starts a computation — the `directory-size-update` event stays the primary
+   * update channel.
+   */
+  directorySizeStatusMany: (sessionId: string, paths: string[]) =>
+    invoke<DirectorySizeResult[]>("directory_size_status_many", { sessionId, paths }),
 };

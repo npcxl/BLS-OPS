@@ -309,6 +309,11 @@ pub struct ProjectCandidate {
     /// 人工复核结论。用户点"确认项目"或"忽略目录"后写入数据库，下次扫描沿用。
     #[serde(default)]
     pub review: ReviewState,
+    /// 人工合并标注：该目录被用户**手动并入**哪个父项目（`project_merges` 表
+    /// 回填；旧快照无此字段）。`Some` 的候选不再单独成行，人工决定优先于扫描，
+    /// 每次扫描都重新标注 —— 绝不因为重扫而覆盖或丢失。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<String>,
     pub evidence: Vec<ProjectEvidence>,
     pub penalties: Vec<ProjectPenalty>,
     pub runtime_links: Vec<RuntimeLink>,
@@ -674,6 +679,7 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         },
         config_files,
         review: input.review,
+        merged_into: None,
         evidence,
         penalties,
         runtime_links: input.runtime_links,
@@ -863,6 +869,23 @@ pub fn merge_candidates(mut candidates: Vec<ProjectCandidate>) -> Vec<ProjectCan
         }
     }
     roots
+}
+
+/// 回填**人工合并**标注：`merges` 是 (child_path, parent_path) 列表（路径均为
+/// canonical）。被并入的子目录保留在候选列表里但打上 `merged_into`，前端不再
+/// 单独成行 —— 人工决定持久化在数据库里，每次扫描重新标注，**绝不覆盖**。
+///
+/// 注意：自动合并（[`merge_candidates`]，嵌套单模块仓库）与人工合并是两层；
+/// 人工合并发生在自动合并与 canonicalize 之后，以 canonical path 为钥匙。
+pub fn apply_manual_merges(candidates: &mut [ProjectCandidate], merges: &[(String, String)]) {
+    if merges.is_empty() {
+        return;
+    }
+    for candidate in candidates.iter_mut() {
+        if let Some((_, parent)) = merges.iter().find(|(child, _)| child == &candidate.path) {
+            candidate.merged_into = Some(parent.clone());
+        }
+    }
 }
 
 #[derive(Clone, Default)]

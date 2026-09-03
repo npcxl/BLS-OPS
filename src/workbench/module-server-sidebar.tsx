@@ -17,7 +17,7 @@ const UNGROUPED = "__ungrouped__";
 
 /** Modules that, when opened from the rail, show a left server list instead of
  *  a placeholder — picking a server opens that module bound to that server. */
-export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects"];
+export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects", "commands"];
 
 const MODULE_TITLE: Record<NavModule, string> = {
   ssh: "服务器列表",
@@ -25,6 +25,7 @@ const MODULE_TITLE: Record<NavModule, string> = {
   services: "服务",
   logs: "日志",
   projects: "项目",
+  commands: "命令",
   deploy: "部署",
   tasks: "任务",
   ai: "智能助手",

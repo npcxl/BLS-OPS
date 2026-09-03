@@ -247,4 +247,82 @@
   .overlay-scrim {
     animation: ops-fade 140ms ease both;
   }
+
+  /* ── CodeMirror 自定义搜索面板（lib/cm-search.ts）── */
+  .cm-ops-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: rgb(var(--surface-2));
+    border-bottom: 1px solid rgb(var(--line));
+  }
+
+  .cm-ops-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cm-ops-field {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    padding: 0 9px;
+    border: 1px solid rgb(var(--line));
+    border-radius: 7px;
+    background: rgb(var(--surface-1));
+    color: rgb(var(--fg));
+    font-size: 12px;
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+
+  .cm-ops-field::placeholder {
+    color: rgb(var(--fg-subtle));
+  }
+
+  .cm-ops-field:focus {
+    border-color: rgb(var(--accent));
+    box-shadow: 0 0 0 2px rgb(var(--accent) / 0.14);
+  }
+
+  .cm-ops-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    min-width: 26px;
+    padding: 0 6px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: rgb(var(--fg-muted));
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 120ms ease, color 120ms ease;
+  }
+
+  .cm-ops-btn:hover {
+    background: rgb(var(--surface-hover));
+    color: rgb(var(--fg));
+  }
+
+  .cm-ops-btn[data-active="true"] {
+    background: rgb(var(--accent-soft));
+    color: rgb(var(--accent));
+  }
+
+  .cm-ops-btn-wide {
+    padding: 0 10px;
+  }
+
+  .cm-ops-count {
+    min-width: 64px;
+    text-align: right;
+    font-size: 11px;
+    color: rgb(var(--fg-subtle));
+    white-space: nowrap;
+  }
 }

@@ -359,12 +359,27 @@ pub async fn project_scan_start(
             }
             let mut candidates = crate::project_discovery::merge_candidates(candidates);
             // 统一路径：扫描产出的候选路径也走 canonicalize，保证与 review /
-            // confirmed_projects 使用同一把钥匙（/opt/app 与 /opt/app/ 同键）。
+            // confirmed_projects / project_merges 使用同一把钥匙（/opt/app 与
+            // /opt/app/ 同键）。
             for c in candidates.iter_mut() {
                 let canon = crate::project_discovery::canonicalize_project_path(&c.path);
                 c.id = format!("{}:{}", c.server_id, canon.clone());
                 c.path = canon;
             }
+            // 人工合并标注（问题4：人工关系持久化、扫描不覆盖）：从 project_merges
+            // 表读出本服务器的合并关系，给被并入的子目录打 merged_into 标记。
+            let manual_merges: Vec<(String, String)> = db
+                .open()
+                .ok()
+                .and_then(|conn| crate::db::list_project_merges(&conn, &server).ok())
+                .map(|records| {
+                    records
+                        .into_iter()
+                        .map(|m| (m.child_path, m.parent_path))
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::project_discovery::apply_manual_merges(&mut candidates, &manual_merges);
             // 项目 ↔ 实例/网关路由 双向关联（用 canonical path 作稳定钥匙）。
             let project_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
             crate::workload_class::link_projects(&mut instances, &project_paths);
@@ -394,34 +409,34 @@ pub async fn project_scan_start(
                 gateway_routes,
             };
 
-            // 把本次发现的候选路径收集成 canonical 集合，用于判定已确认项目
-            // 是否"本次被发现"。未发现的已确认项目必须保留，只把状态标成 missing。
+            // 扫描成功后的已确认项目状态对账（完整四态）：发现且关键信息一致 →
+            // active；发现但改名/类型变化/被重新分类 → changed；没发现 → missing。
+            // 人工合并标注不影响对账（merged_into 只影响前端展示）。
             if let Ok(conn) = db.open() {
                 let now = crate::db::AppDb::now();
-                let found_paths: std::collections::HashSet<String> =
-                    result.candidates.iter().map(|c| c.path.clone()).collect();
-                if let Ok(confirmed) = crate::db::list_confirmed_projects(&conn, &server) {
-                    for cp in confirmed {
-                        if cp.deleted_at.is_some() {
-                            continue;
-                        }
-                        let (scan_state, missing_since) =
-                            if found_paths.contains(&cp.canonical_path) {
-                                ("active".to_string(), None)
-                            } else {
-                                let missing_since = cp.missing_since.unwrap_or(now);
-                                ("missing".to_string(), Some(missing_since))
+                let found: std::collections::BTreeMap<String, crate::db::ScannedCandidateInfo> =
+                    result
+                        .candidates
+                        .iter()
+                        .map(|c| {
+                            let project_kind = match c.project_kind {
+                                crate::project_discovery::ProjectKind::Application => "application",
+                                crate::project_discovery::ProjectKind::Infrastructure => {
+                                    "infrastructure"
+                                }
+                                crate::project_discovery::ProjectKind::Unknown => "unknown",
                             };
-                        let _ = crate::db::update_confirmed_scan_state(
-                            &conn,
-                            &server,
-                            &cp.canonical_path,
-                            &scan_state,
-                            now,
-                            missing_since,
-                        );
-                    }
-                }
+                            (
+                                c.path.clone(),
+                                crate::db::ScannedCandidateInfo {
+                                    name: c.name.clone(),
+                                    project_type: c.project_type.clone(),
+                                    project_kind: project_kind.to_string(),
+                                },
+                            )
+                        })
+                        .collect();
+                let _ = crate::db::reconcile_confirmed_after_scan(&conn, &server, &found, now);
                 // 扫描完成即把快照写入数据库，让下次打开"服务器项目"能立即展示，
                 // 不必等后台重新扫描。整段结果以 JSON 存储，前端直接复用类型。
                 if let Ok(payload) = serde_json::to_string(&result) {
@@ -449,6 +464,15 @@ pub async fn project_scan_start(
         } else {
             crate::project_discovery::ScanState::Failed
         };
+        // 扫描**失败**（连接断开 / SSH 错误，非用户取消）时，把仍为 active 的
+        // 已确认项目标成 inaccessible —— 服务器暂不可访问，无法判断项目是否还在，
+        // 绝不能让旧状态假装"一切正常"。成功路径由 reconcile 全量重算。
+        if final_state == crate::project_discovery::ScanState::Failed {
+            if let Ok(conn) = db.open() {
+                let _ =
+                    crate::db::mark_confirmed_inaccessible(&conn, &server, crate::db::AppDb::now());
+            }
+        }
         let final_error = result.as_ref().err().cloned();
         registry
             .finish(&id, &server, final_state, final_error)
@@ -569,6 +593,51 @@ pub async fn project_review_set(
         }
     }
     Ok(record)
+}
+
+/// 人工合并 / 拆分项目（P3 合同的落地）。
+///
+/// - `parent_path = Some`：把 `child_path` 并入 `parent_path`（一个子目录只能
+///   并入一个父项目，改主意就覆盖）。路径统一 canonicalize，与扫描候选同键。
+/// - `parent_path = None`：拆分 —— 删除合并关系，子目录恢复独立。
+///
+/// 关系持久化在 `project_merges` 表，后续扫描回填候选的 `merged_into` 标注，
+/// **绝不覆盖人工决定**。自动合并（嵌套单模块仓库）仍然照常发生，两层互不干扰。
+#[tauri::command]
+pub async fn project_merge_set(
+    state: State<'_, AppState>,
+    server_id: String,
+    child_path: String,
+    parent_path: Option<String>,
+) -> Result<(), String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    let now = crate::db::AppDb::now();
+    let child = crate::project_discovery::canonicalize_project_path(&child_path);
+    match parent_path {
+        Some(parent) => {
+            let parent = crate::project_discovery::canonicalize_project_path(&parent);
+            if child == parent {
+                return Err("不能把项目并入它自己".to_string());
+            }
+            crate::db::upsert_project_merge(&conn, &server_id, &child, &parent, now)
+                .map_err(|e| e.to_string())?;
+        }
+        None => {
+            crate::db::delete_project_merge(&conn, &server_id, &child)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// 列出某台服务器上全部人工合并关系，供前端展示与排查。
+#[tauri::command]
+pub async fn project_merges_list(
+    state: State<'_, AppState>,
+    server_id: String,
+) -> Result<Vec<crate::db::ProjectMergeRecord>, String> {
+    let conn = state.db.open().map_err(|e| e.to_string())?;
+    crate::db::list_project_merges(&conn, &server_id).map_err(|e| e.to_string())
 }
 
 /// 列出某台服务器上全部人工复核结论，供前端在扫描前后展示"已确认/已忽略"。

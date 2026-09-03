@@ -362,9 +362,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-row bg-app">
+    <div className="flex h-full min-h-0 flex-row bg-surface-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-surface-1/60 px-2 backdrop-blur-xl">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line bg-transparent px-2">
         <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
         <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
         <ToolbarIcon label="水平分栏" icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
@@ -431,7 +431,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       )}
 
       <div className="relative flex min-h-0 flex-1" onMouseDown={() => setSelectionMenu(null)}>
-        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-app p-2" data-selectable />
+        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1 p-2" data-selectable />
         {selectionMenu && (
           <div
             className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"

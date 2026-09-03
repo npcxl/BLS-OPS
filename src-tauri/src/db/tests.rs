@@ -499,31 +499,24 @@ fn confirmed(
     }
 }
 
-/// 模拟一次扫描完成后，依据"本次发现的路径集合"更新已确认项目的 scan_state。
-/// 等价于 `commands/project.rs` 扫描完成块里对 confirmed_projects 的处理。
-fn reconcile_after_scan(conn: &Connection, server_id: &str, found_paths: &[&str]) {
-    let now = 1000_i64;
-    let confirmed = list_confirmed_projects(conn, server_id).unwrap();
-    for cp in confirmed {
-        if cp.deleted_at.is_some() {
-            continue;
-        }
-        let (scan_state, missing_since) = if found_paths.contains(&cp.canonical_path.as_str()) {
-            ("active".to_string(), None)
-        } else {
-            let missing_since = cp.missing_since.unwrap_or(now);
-            ("missing".to_string(), Some(missing_since))
-        };
-        update_confirmed_scan_state(
-            conn,
-            server_id,
-            &cp.canonical_path,
-            &scan_state,
-            now,
-            missing_since,
-        )
-        .unwrap();
-    }
+/// 模拟一次扫描完成：调用**真实的** `reconcile_confirmed_after_scan`（与
+/// `commands/project.rs` 扫描完成块同一实现）。`found` 是 (path, name) 对；
+/// project_type 固定 "node"，与 [`confirmed`] 构造的记录一致，kind 默认 application。
+fn reconcile_after_scan(conn: &Connection, server_id: &str, found: &[(&str, &str)]) {
+    let map = found
+        .iter()
+        .map(|(path, name)| {
+            (
+                (*path).to_string(),
+                ScannedCandidateInfo {
+                    name: (*name).to_string(),
+                    project_type: "node".to_string(),
+                    project_kind: "application".to_string(),
+                },
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    reconcile_confirmed_after_scan(conn, server_id, &map, 1000).unwrap();
 }
 
 #[test]
@@ -536,7 +529,7 @@ fn confirming_a_project_persists_it_across_scans() {
     assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 3);
 
     // 本次扫描只又发现了 1 个（app1），另两个没扫到。
-    reconcile_after_scan(&conn, "s1", &["/opt/app1"]);
+    reconcile_after_scan(&conn, "s1", &[("/opt/app1", "a")]);
 
     // 已确认项目绝不能因为本次没扫到而消失：仍是 3 条。
     let all = list_confirmed_projects(&conn, "s1").unwrap();
@@ -575,12 +568,16 @@ fn confirmed_project_is_kept_when_reclassified_as_infrastructure() {
     let conn = test_db();
     // 用户曾确认 /opt/app 是业务项目；本次扫描把它重新分类成基础设施。
     upsert_confirmed_project(&conn, &confirmed("s1", "/opt/app", "app", "active")).unwrap();
-    reconcile_after_scan(&conn, "s1", &["/opt/app"]);
+    reconcile_after_scan(&conn, "s1", &[("/opt/app", "app")]);
 
     // 仍必须在列表里（前端用 kindChanged 提示复核，而不是自动丢弃）。
     let all = list_confirmed_projects(&conn, "s1").unwrap();
     assert_eq!(all.len(), 1, "被重新分类成基础设施的已确认项目不能被丢");
     assert_eq!(all[0].canonical_path, "/opt/app");
+    assert_eq!(
+        all[0].scan_state, "active",
+        "旧快照无 project_kind 字段不误报 changed"
+    );
     // 快照持久化：payload 仍可被前端解析成候选继续渲染。
     assert!(all[0].candidate_payload.contains("name"));
 }
@@ -632,17 +629,25 @@ fn old_confirmed_projects_survive_a_new_scan_start() {
 }
 
 #[test]
-fn confirmed_projects_survive_a_failed_scan() {
-    // 场景：扫描中途失败（SSH 断开 / 超时）。失败绝不清除 or 重置已确认项目。
+fn failed_scan_marks_active_projects_inaccessible() {
+    // 场景：扫描中途失败（SSH 断开 / 超时）。失败不清除已确认项目，但 active
+    // 必须转为 inaccessible（服务器暂不可访问），missing 行保持不变。
     let conn = test_db();
     upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
-    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/b", "b", "active")).unwrap();
+    let mut missing = confirmed("s1", "/opt/b", "b", "missing");
+    missing.missing_since = Some(500);
+    upsert_confirmed_project(&conn, &missing).unwrap();
 
-    // 扫描失败：reconcile 不被调用，数据原样保留。
-    // 即便调用了 reconcile，也只用 found_paths 更新 scan_state，不会删除行。
-    reconcile_after_scan(&conn, "s1", &[]); // 模拟"全没扫到"，最多标 missing
+    // commands/project.rs 失败路径调用的真实函数。
+    mark_confirmed_inaccessible(&conn, "s1", 2000).unwrap();
+
     let all = list_confirmed_projects(&conn, "s1").unwrap();
     assert_eq!(all.len(), 2, "失败扫描不能删除已确认项目");
+    let a = all.iter().find(|c| c.canonical_path == "/opt/a").unwrap();
+    let b = all.iter().find(|c| c.canonical_path == "/opt/b").unwrap();
+    assert_eq!(a.scan_state, "inaccessible", "active 应转为 inaccessible");
+    assert_eq!(b.scan_state, "missing", "missing 不被失败扫描覆盖");
+    assert_eq!(b.missing_since, Some(500));
 }
 
 #[test]
@@ -686,4 +691,160 @@ fn confirmed_project_is_removed_only_on_unconfirm() {
     // 重新确认 → 复活，列表回到 2 条。
     upsert_confirmed_project(&conn, &confirmed("s1", "/opt/a", "a", "active")).unwrap();
     assert_eq!(list_confirmed_projects(&conn, "s1").unwrap().len(), 2);
+}
+
+#[test]
+fn scan_marks_changed_when_project_type_changes() {
+    // 问题5：项目关键信息（project_type）变化 → changed，而不是假装 active。
+    let conn = test_db();
+    upsert_confirmed_project(&conn, &confirmed("s1", "/opt/app", "app", "active")).unwrap();
+
+    // 本次扫描发现该项目，但类型从 node 变成了 static。
+    let map = [(
+        "/opt/app".to_string(),
+        ScannedCandidateInfo {
+            name: "app".to_string(),
+            project_type: "static".to_string(),
+            project_kind: "application".to_string(),
+        },
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    reconcile_confirmed_after_scan(&conn, "s1", &map, 1000).unwrap();
+
+    let row = get_confirmed_project(&conn, "s1", "/opt/app")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.scan_state, "changed");
+    assert!(row.missing_since.is_none());
+}
+
+#[test]
+fn scan_marks_changed_when_kind_is_reclassified() {
+    // 问题5：快照里 project_kind=application，本次扫描判定 infrastructure →
+    // changed（前端"信息有变化"徽标的数据来源）。
+    let conn = test_db();
+    let mut record = confirmed("s1", "/opt/app", "app", "active");
+    record.candidate_payload =
+        r#"{"id":"x","name":"app","path":"/opt/app","project_kind":"application"}"#.to_string();
+    upsert_confirmed_project(&conn, &record).unwrap();
+
+    // name / project_type 都没变，只有 kind 变了。
+    let map = [(
+        "/opt/app".to_string(),
+        ScannedCandidateInfo {
+            name: "app".to_string(),
+            project_type: "node".to_string(),
+            project_kind: "infrastructure".to_string(),
+        },
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    reconcile_confirmed_after_scan(&conn, "s1", &map, 1000).unwrap();
+
+    let row = get_confirmed_project(&conn, "s1", "/opt/app")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.scan_state, "changed", "kind 重分类必须标 changed");
+
+    // 下次扫描 kind 恢复一致 → 回到 active（状态不是单向门）。
+    let map = [(
+        "/opt/app".to_string(),
+        ScannedCandidateInfo {
+            name: "app".to_string(),
+            project_type: "node".to_string(),
+            project_kind: "application".to_string(),
+        },
+    )]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    reconcile_confirmed_after_scan(&conn, "s1", &map, 2000).unwrap();
+    let row = get_confirmed_project(&conn, "s1", "/opt/app")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.scan_state, "active");
+}
+
+// -- project merges（人工合并/拆分项目） --------------------------------------
+
+#[test]
+fn project_merge_round_trip() {
+    let conn = test_db();
+    // 合并 /opt/child → /opt/parent。
+    upsert_project_merge(&conn, "s1", "/opt/child", "/opt/parent", 1000).unwrap();
+    let merges = list_project_merges(&conn, "s1").unwrap();
+    assert_eq!(merges.len(), 1);
+    assert_eq!(merges[0].child_path, "/opt/child");
+    assert_eq!(merges[0].parent_path, "/opt/parent");
+
+    // 改主意：并到另一个父项目 → 覆盖，不新增行。
+    upsert_project_merge(&conn, "s1", "/opt/child", "/opt/other", 2000).unwrap();
+    let merges = list_project_merges(&conn, "s1").unwrap();
+    assert_eq!(merges.len(), 1, "一个子目录只能并入一个父项目");
+    assert_eq!(merges[0].parent_path, "/opt/other");
+
+    // 关系按服务器隔离。
+    assert!(list_project_merges(&conn, "s2").unwrap().is_empty());
+
+    // 拆分 → 关系删除；重复拆分返回 false（幂等）。
+    assert!(delete_project_merge(&conn, "s1", "/opt/child").unwrap());
+    assert!(list_project_merges(&conn, "s1").unwrap().is_empty());
+    assert!(!delete_project_merge(&conn, "s1", "/opt/child").unwrap());
+}
+
+/// 扫描标注契约：`apply_manual_merges` 只打标不删行 —— 人工决定永不因重扫丢失。
+#[test]
+fn manual_merge_annotation_keeps_candidates() {
+    use crate::project_discovery::{
+        apply_manual_merges, CandidateCategory, ConfidenceLevel, DeploymentReadiness,
+        DiscoveryStatus, ProjectCandidate, ProjectKind, ReviewState,
+    };
+    let candidate = |path: &str, name: &str| ProjectCandidate {
+        id: format!("s1:{path}"),
+        server_id: "s1".into(),
+        name: name.into(),
+        path: path.into(),
+        project_type: "node".into(),
+        score: 90,
+        confidence: ConfidenceLevel::High,
+        status: DiscoveryStatus::HighConfidence,
+        category: CandidateCategory::SourceOnly,
+        project_kind: ProjectKind::Application,
+        deploy_instances: Vec::new(),
+        markers: vec!["package.json".into()],
+        config_files: Vec::new(),
+        review: ReviewState::Pending,
+        merged_into: None,
+        evidence: Vec::new(),
+        penalties: Vec::new(),
+        runtime_links: Vec::new(),
+        modules: Vec::new(),
+        detected_ports: Vec::new(),
+        required_environment_names: Vec::new(),
+        blockers: Vec::new(),
+        warnings: Vec::new(),
+        readiness: DeploymentReadiness {
+            score: 0,
+            blockers: Vec::new(),
+            warnings: Vec::new(),
+            confirmed_facts: Vec::new(),
+            unknown_facts: Vec::new(),
+        },
+        updated_at: "0".into(),
+    };
+    let mut candidates = vec![
+        candidate("/opt/parent", "parent"),
+        candidate("/opt/child", "child"),
+    ];
+    apply_manual_merges(
+        &mut candidates,
+        &[("/opt/child".to_string(), "/opt/parent".to_string())],
+    );
+    assert_eq!(candidates.len(), 2, "标注不删除候选行");
+    assert_eq!(
+        candidates[1].merged_into.as_deref(),
+        Some("/opt/parent"),
+        "子目录必须带上 merged_into 标注"
+    );
+    assert!(candidates[0].merged_into.is_none(), "父项目不受影响");
 }

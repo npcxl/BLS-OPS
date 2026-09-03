@@ -96,7 +96,7 @@ export function WorkbenchHome() {
     });
 
   return (
-    <div className="h-full overflow-y-auto bg-app" data-selectable>
+    <div className="h-full overflow-y-auto bg-surface-1" data-selectable>
       <div className="mx-auto flex max-w-[860px] flex-col gap-7 p-7">
         <div>
           <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">工作台</h1>

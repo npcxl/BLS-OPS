@@ -6,6 +6,9 @@ import {
   FileCode2,
   FolderOpen,
   FolderSearch,
+  GitMerge,
+  Globe,
+  Split,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -13,6 +16,7 @@ import { opsApi } from "@/api/ops-api";
 import type {
   ConfirmedScanState,
   DiscoveryStatus,
+  GatewayRoute,
   ProjectCandidate,
   ReviewState,
 } from "@/api/ops-api";
@@ -74,6 +78,10 @@ export function CandidateCard({
   review,
   onReview,
   scanInfo,
+  gatewayRoutes = [],
+  mergedChildren = [],
+  mergeTargets = [],
+  onMerge,
 }: {
   candidate: ProjectCandidate;
   /** 在右侧文件面板打开某个路径（目录或文件）。 */
@@ -88,11 +96,23 @@ export function CandidateCard({
   onReview: (path: string, state: ReviewState) => void;
   /** 已确认项目的跨扫描持久化状态；非确认卡片不传。 */
   scanInfo?: ScanInfo;
+  /** Nginx 网关路由（后端已按 linked_project_id 关联到项目）。 */
+  gatewayRoutes?: GatewayRoute[];
+  /** 已人工并入本项目的子目录路径。 */
+  mergedChildren?: string[];
+  /** 「并入其他项目」的目标列表。 */
+  mergeTargets?: { path: string; name: string }[];
+  /** 合并 / 拆分回调（parentPath 为 null 表示拆分）。 */
+  onMerge?: (childPath: string, parentPath: string | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
   const [busy, setBusy] = useState<ReviewState | null>(null);
+  const [pickingMerge, setPickingMerge] = useState(false);
+  // 该项目关联到的网关路由（后端评分期已把 linked_project_id 写成项目路径）。
+  const routes = gatewayRoutes.filter((route) => route.linked_project_id === candidate.path);
+  const mergedInto = candidate.merged_into;
   const running = candidate.runtime_links.length > 0;
   // 最终展示状态 = 人工结论优先覆盖算法结论（candidate.status 只是算法发现结论）。
   // 重扫后后端会把 status 改回 confirmed，人工 review 与它合并成**一枚**标签，
@@ -182,6 +202,11 @@ export function CandidateCard({
               {candidate.category === "deployed" ? "已部署" : "仅源码"}
             </span>
             {running && <span className="text-10 text-success">正在运行</span>}
+            {mergedChildren.length > 0 && (
+              <span className="rounded bg-accent/12 px-1.5 py-0.5 text-10 text-accent">
+                已并入 {mergedChildren.length} 个子目录
+              </span>
+            )}
             {candidate.status === "confirmed" && instances.length > 0 && (
               <span className="text-10 text-fg-subtle">
                 · {instances.map((i) => instanceKindMeta(i.kind).label).join("/")}
@@ -263,6 +288,56 @@ export function CandidateCard({
 
       {expanded && (
         <div className="border-t border-line px-4 py-3 text-11">
+          {/* 访问入口：该项目在共享 Nginx 上的域名 / 端口 / 静态 root / 代理目标 /
+              配置文件。路由由后端按 linked_project_id 关联，无路由时不出现在这里。 */}
+          {routes.length > 0 && (
+            <div className="mb-4 rounded-[8px] border border-line bg-surface-2/60 px-3 py-2.5">
+              <div className="mb-2 flex items-center gap-1.5 text-10 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
+                <Globe size={11} />
+                访问入口（Nginx 网关）
+              </div>
+              <div className="space-y-1.5">
+                {routes.map((route) => (
+                  <div
+                    key={route.id}
+                    className="flex flex-wrap items-center gap-x-2 gap-y-1 text-10"
+                  >
+                    <span className="font-medium text-fg">
+                      {route.server_names.length > 0 ? route.server_names.join(" / ") : route.id}
+                    </span>
+                    <PortChips ports={route.listen_ports} empty="" />
+                    {route.root && (
+                      <button
+                        type="button"
+                        className="truncate font-mono text-fg-muted hover:text-fg"
+                        title={`打开 ${route.root}`}
+                        onClick={() => onOpenPath(route.root as string)}
+                      >
+                        root {route.root}
+                      </button>
+                    )}
+                    {route.proxy_targets.map((target) => (
+                      <span key={target} className="font-mono text-fg-subtle">
+                        → {target}
+                      </span>
+                    ))}
+                    {route.config_file && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onOpenPath(route.config_file as string)}
+                        title={`打开 ${route.config_file}`}
+                      >
+                        <FileCode2 size={11} />
+                        {configFileLabel(route.config_file)}
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 证据 / 评分细节：默认收起，点展开才看，避免卡片一打开就一堆数字 */}
           <div className="grid gap-4 lg:grid-cols-2">
             <Detail
@@ -288,6 +363,11 @@ export function CandidateCard({
                 )}
               />
             </div>
+            {mergedChildren.length > 0 && (
+              <div className="space-y-4 lg:col-span-2">
+                <Detail title="已并入的子目录（人工合并）" items={mergedChildren} />
+              </div>
+            )}
             <div className="space-y-4 lg:col-span-2">
               <Detail title="环境变量名称" items={candidate.required_environment_names} />
               <Detail
@@ -333,7 +413,59 @@ export function CandidateCard({
                 撤销结论
               </Button>
             )}
+            {/* 人工合并 / 拆分（问题4）：结论持久化，后续扫描不会覆盖。 */}
+            {onMerge && mergedInto && (
+              <>
+                <span className="ml-1 truncate text-10 text-fg-subtle" title={mergedInto}>
+                  已并入 {mergedInto}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setPickingMerge(false);
+                    onMerge(candidate.path, null);
+                  }}
+                >
+                  <Split size={11} />
+                  拆分
+                </Button>
+              </>
+            )}
+            {onMerge && !mergedInto && (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={busy !== null || mergeTargets.length <= 1}
+                onClick={() => setPickingMerge((value) => !value)}
+              >
+                <GitMerge size={11} />
+                并入其他项目…
+              </Button>
+            )}
           </div>
+          {pickingMerge && !mergedInto && (
+            <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-line pt-2">
+              <span className="text-10 text-fg-subtle">选择要并入的父项目：</span>
+              {mergeTargets
+                .filter((target) => target.path !== candidate.path)
+                .map((target) => (
+                  <Button
+                    key={target.path}
+                    variant="secondary"
+                    size="xs"
+                    title={target.path}
+                    onClick={() => {
+                      setPickingMerge(false);
+                      onMerge?.(candidate.path, target.path);
+                    }}
+                  >
+                    {target.name}
+                  </Button>
+                ))}
+            </div>
+          )}
         </div>
       )}
     </article>

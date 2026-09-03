@@ -5,6 +5,7 @@
 //! `lib.rs`'s `invoke_handler` list is untouched by this refactor.
 
 mod app;
+mod command_center;
 mod containers;
 mod credentials;
 mod deployment;
@@ -19,6 +20,7 @@ mod sftp;
 mod ssh;
 
 pub use app::*;
+pub use command_center::*;
 pub use containers::*;
 pub use credentials::*;
 pub use deployment::*;

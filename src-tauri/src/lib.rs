@@ -1,5 +1,7 @@
 /// First/second-layer server capability recognition — the P3 pipeline start.
 pub mod capability_probe;
+/// P4 Linux 命令智能中心：知识库、检索与安全执行（P4.0–P4.3）。
+pub mod command_center;
 mod commands;
 mod db;
 /// Fourth-layer deployment adapter registry.
@@ -125,6 +127,7 @@ pub fn run() {
             commands::directory_size_start,
             commands::directory_size_cancel,
             commands::directory_size_status,
+            commands::directory_size_status_many,
             // services — systemd (P3-1.1)
             commands::service_list,
             commands::service_action,
@@ -132,6 +135,13 @@ pub fn run() {
             // log centre — journald (P3-1.2)
             commands::journal_query,
             commands::journal_disk_usage,
+            // command centre (P4.0–P4.3)
+            commands::command_search,
+            commands::command_execute,
+            commands::command_probe_tools,
+            commands::command_toggle_favorite,
+            commands::command_favorites,
+            commands::command_catalog_meta,
             // docker (P3-1.3)
             commands::docker_snapshot,
             commands::docker_logs,
@@ -156,6 +166,8 @@ pub fn run() {
             commands::project_readiness_check,
             commands::project_inventory_load,
             commands::confirmed_projects_list,
+            commands::project_merge_set,
+            commands::project_merges_list,
             // legacy project records retained as P5 foundation
             commands::project_list,
             commands::project_get,

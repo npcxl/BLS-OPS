@@ -85,6 +85,7 @@ export interface SuggestKeyEventInput {
  * | ------------- | ------------------------ |
  * | `↑` / `↓`     | 上下选择候选              |
  * | `→`           | 填入当前候选（不执行）    |
+ * | `Tab`         | 补全当前候选（不执行）    |
  * | `←` / `Esc`   | 关闭面板，恢复 shell 按键 |
  * | `Enter`       | 填入候选（不执行）        |
  *
@@ -104,6 +105,7 @@ export function resolveSuggestKey(
     case "ArrowUp":
       return { type: "move", delta: -1 };
     case "ArrowRight":
+    case "Tab":
     case "Enter":
       return { type: "accept" };
     case "ArrowLeft":
@@ -112,4 +114,26 @@ export function resolveSuggestKey(
     default:
       return { type: "none" };
   }
+}
+
+/**
+ * 把"替换范围 + 待插入文本"换算成按键序列。
+ *
+ * 终端没有可编程光标，只能退格 + 输入：先删掉 `[start, cursor)` 之间的字符
+ * （Backspace = `\x7f`），再写入 `insertText`。
+ *
+ * 前提是"光标就在行尾"（终端里由 LineEditor 还原的当前行），这也是本函数
+ * 只回退不前进的原因。
+ */
+export function keysForReplace(
+  line: string,
+  range: { start: number; end: number },
+  insertText: string,
+  cursor: number = line.length,
+): string {
+  const start = Math.max(0, Math.min(range.start, line.length));
+  const end = Math.max(start, Math.min(range.end, line.length));
+  const backspaces = Math.max(0, cursor - start);
+  const forward = Math.max(0, end - cursor);
+  return "\x7f".repeat(backspaces) + insertText + "\x1b[C".repeat(forward);
 }

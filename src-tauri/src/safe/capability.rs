@@ -132,6 +132,14 @@ pub enum Capability {
     DockerInspect {
         container: String,
     },
+    /// `docker ps` 的**结构化**输出：一行一个 JSON 对象，含 labels、端口
+    /// 映射与挂载。环境探测（`env_probe`）用它替代"解析 `docker ps` 文本"——
+    /// 容器名与挂载路径都可能带空格，文本切分不可靠。只读。
+    DockerPsJson,
+    /// 问一句"容器里有没有 nginx 可执行文件"。只读，且只对候选容器执行。
+    ContainerHasNginx {
+        container: String,
+    },
     /// `docker inspect` for a batch of containers (≤ 20 per call), one JSON
     /// object per line. Used by the deployment-instance collector to deep-query
     /// every container listed by `docker ps`.
@@ -647,6 +655,17 @@ impl Capability {
                 "docker inspect --format '{{{{json .}}}}' -- {}",
                 quoted(validate_container(container)?)
             ),
+
+            Capability::DockerPsJson => "docker ps -a --no-trunc --format '{{json .}}'".to_string(),
+
+            Capability::ContainerHasNginx { container } => {
+                // `command -v` 在容器里跑，不需要交互终端；找不到时不报错，
+                // 由调用方按"未知"处理（绝不假装有）。
+                format!(
+                    "docker exec -- {} sh -lc 'command -v -- nginx openresty >/dev/null 2>&1 && echo yes || echo no'",
+                    quoted(validate_container(container)?)
+                )
+            }
 
             Capability::DockerInspectMany { containers } => {
                 if containers.is_empty() {

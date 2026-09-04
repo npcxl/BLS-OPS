@@ -1,40 +1,87 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Play } from "lucide-react";
-import { cn } from "@/lib/cn";
-import { RISK_META, type CommandSearchHit } from "@/api/ops-api";
 import {
-  computeSuggestPosition,
-  type SuggestAnchor,
-} from "./terminal-suggest";
+  Box,
+  Cpu,
+  FileText,
+  Folder,
+  Layers,
+  Network,
+  Play,
+  Settings,
+  Terminal,
+} from "lucide-react";
+import { cn } from "@/lib/cn";
+import { RISK_META } from "@/api/ops-api";
+import { computeSuggestPosition, type SuggestAnchor } from "./terminal-suggest";
+import type { CompletionIcon, CompletionItem } from "./completion/types";
 
 /**
- * 终端内联命令提示层 —— **原位补全**：面板出现在输入光标右下方（间隔 6px），
- * 右侧放不下向左展开、底部放不下翻到光标上方。
+ * 终端内联提示层 —— **原位补全**：面板出现在输入光标右下方（间隔 6px）。
+ *
+ * 渲染层只认 `CompletionItem`：来自知识库、远程目录、Docker 资源、服务、
+ * 进程还是环境生成的命令，在这里长得都一样（图标 + 名称 + 说明 + 高亮）。
+ * 想加一种补全，加一个 Provider 就够了，这个文件不用动。
  *
  * 键盘交互由 `TerminalView` 的按键层处理（见 `terminal-suggest.ts` 的映射表）；
  * 这里只负责展示与鼠标操作（mousedown 抢在终端失焦之前完成）。
- *
- * 两种用法：
- * - 点击候选行 / → / Enter → **只填入**（第一次 Enter 填入并关闭面板，
- *   第二次 Enter 才由 shell 正常执行）；
- * - 点击 ▶ / Ctrl+Enter → 补全后**立即执行**，走唯一提交入口
- *   （受控标记 → 捕获输出 → 渲染快照 → 结果 Tab）。
  */
+
+const ICONS: Record<CompletionIcon, typeof Folder> = {
+  command: Terminal,
+  directory: Folder,
+  file: FileText,
+  container: Box,
+  image: Layers,
+  network: Network,
+  volume: Network,
+  service: Settings,
+  process: Cpu,
+};
+
+/**
+ * 已输入部分高亮：把 label 切成"已输入 / 剩余"两段。
+ *
+ * 高亮长度由 Provider 给出（= 用户实际敲的那段前缀），大小写不敏感的回退
+ * 匹配同样高亮 —— 用户看到的是"我敲的部分"，这正是要高亮的东西。
+ */
+function Highlighted({
+  text,
+  highlight,
+}: {
+  text: string;
+  highlight?: { start: number; length: number };
+}) {
+  if (!highlight || highlight.length <= 0) return <>{text}</>;
+  const start = Math.max(0, Math.min(highlight.start, text.length));
+  const end = Math.max(start, Math.min(highlight.start + highlight.length, text.length));
+  if (end <= start) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, start)}
+      <span className="font-medium text-accent">{text.slice(start, end)}</span>
+      {text.slice(end)}
+    </>
+  );
+}
+
 export function TerminalSuggest({
-  hits,
+  items,
+  notice,
   activeIndex,
   onHover,
   onApply,
   onRun,
   anchor,
 }: {
-  hits: CommandSearchHit[];
+  items: CompletionItem[];
+  /** 底部说明（环境状态 / "没有匹配的远程目录"…）。 */
+  notice?: string | null;
   activeIndex: number;
   onHover: (index: number) => void;
   /** 填入候选（**不执行**）。 */
-  onApply: (hit: CommandSearchHit) => void;
+  onApply: (item: CompletionItem) => void;
   /** 补全后**立即执行**（可选 —— 未提供时只显示"填入"）。 */
-  onRun?: (hit: CommandSearchHit) => void;
+  onRun?: (item: CompletionItem) => void;
   /** 光标锚点（px，相对定位父元素 = 光标右下角）。null 时不渲染。 */
   anchor: SuggestAnchor | null;
 }) {
@@ -42,8 +89,6 @@ export function TerminalSuggest({
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-  // anchor 变化（输入/输出/滚动/缩放/fit 后都会重算）→ 先测量面板再定位，
-  // 翻转规则在纯函数 computeSuggestPosition 里。layout 阶段完成，不闪跳。
   useLayoutEffect(() => {
     const el = panelRef.current;
     const parent = (el?.offsetParent ?? null) as HTMLElement | null;
@@ -55,15 +100,15 @@ export function TerminalSuggest({
         { width: parent.clientWidth, height: parent.clientHeight },
       ),
     );
-  }, [anchor, hits.length]);
+  }, [anchor, items.length, notice]);
 
-  // 高亮项变化时滚动进可视区（提示较多时列表会滚动）。
   useEffect(() => {
     const node = listRef.current?.children[activeIndex] as HTMLElement | undefined;
     node?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  if (hits.length === 0 || !anchor) return null;
+  // 没有任何候选、也没有要说的话 → 不显示面板（避免闪一个空框）。
+  if ((items.length === 0 && !notice) || !anchor) return null;
 
   return (
     <div
@@ -72,63 +117,77 @@ export function TerminalSuggest({
       style={{
         left: pos?.left ?? anchor.x,
         top: pos?.top ?? anchor.y,
-        // 首帧测量完成前隐藏，避免从 (0,0) 闪一下。
         visibility: pos ? "visible" : "hidden",
-        maxWidth: "min(460px, calc(100% - 8px))",
+        maxWidth: "min(520px, calc(100% - 8px))",
       }}
     >
-      <div ref={listRef} className="max-h-[180px] overflow-y-auto py-0.5">
-        {hits.map((hit, index) => (
-          <button
-            key={hit.id}
-            type="button"
-            // mousedown 而非 click：抢在终端失焦之前完成补全。
-            onMouseDown={(event) => {
-              event.preventDefault();
-              onApply(hit);
-            }}
-            onMouseEnter={() => onHover(index)}
-            className={cn(
-              "flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors",
-              index === activeIndex ? "bg-accent/12" : "hover:bg-surface-hover",
-            )}
-          >
-            <code className="shrink-0 font-mono text-11 text-fg">{hit.syntax}</code>
-            {/* 只在需要警示时显示标签（只读是默认情况，不占位置）；
-                高/删除类第一批不入库，这里只可能是 low / medium。 */}
-            {hit.risk !== "read_only" && (
-              <span
-                className={cn("shrink-0 rounded px-1 py-0.5 text-9", RISK_META[hit.risk].tone)}
-              >
-                {RISK_META[hit.risk].label}
-              </span>
-            )}
-            <span className="min-w-0 flex-1 truncate text-10 text-fg-subtle" title={hit.title}>
-              {hit.title}
-            </span>
-            {/* 立即执行：补全 + 提交，走唯一入口（受控标记 + 结果 Tab）。 */}
-            {onRun && (
-              <span
-                role="button"
-                tabIndex={-1}
-                aria-label={`执行 ${hit.syntax}`}
-                title="补全并立即执行"
+      {items.length > 0 && (
+        <div ref={listRef} className="max-h-[180px] overflow-y-auto py-0.5">
+          {items.map((item, index) => {
+            const Icon = ICONS[item.icon];
+            const risk = item.command?.risk;
+            return (
+              <button
+                key={`${item.source}:${item.label}:${index}`}
+                type="button"
+                // mousedown 而非 click：抢在终端失焦之前完成补全。
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  event.stopPropagation();
-                  onRun(hit);
+                  if (item.disabled) return;
+                  onApply(item);
                 }}
-                className="shrink-0 rounded p-0.5 text-fg-subtle hover:bg-accent/15 hover:text-accent"
+                onMouseEnter={() => onHover(index)}
+                className={cn(
+                  "flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors",
+                  index === activeIndex ? "bg-accent/12" : "hover:bg-surface-hover",
+                )}
               >
-                <Play size={11} />
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+                <Icon size={12} className="shrink-0 text-fg-subtle" />
+                <code className="shrink-0 font-mono text-11 text-fg">
+                  <Highlighted text={item.label} highlight={item.highlight} />
+                </code>
+                {/* 只在需要警示时显示标签（只读是默认情况，不占位置）。 */}
+                {risk && risk !== "read_only" && (
+                  <span className={cn("shrink-0 rounded px-1 py-0.5 text-9", RISK_META[risk].tone)}>
+                    {RISK_META[risk].label}
+                  </span>
+                )}
+                <span
+                  className="min-w-0 flex-1 truncate text-10 text-fg-subtle"
+                  title={item.detail}
+                >
+                  {item.detail}
+                </span>
+                {onRun && (
+                  <span
+                    role="button"
+                    tabIndex={-1}
+                    aria-label={`执行 ${item.label}`}
+                    title="补全并立即执行"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (item.disabled) return;
+                      onRun(item);
+                    }}
+                    className="shrink-0 rounded p-0.5 text-fg-subtle hover:bg-accent/15 hover:text-accent"
+                  >
+                    <Play size={11} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="border-t border-line bg-surface-2/60 px-2.5 py-0.5 text-9 text-fg-subtle">
-        ↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行
-        {onRun ? " · ▶ / Ctrl+Enter 直接执行" : ""}
+        {notice ? (
+          <span className="block truncate" title={notice}>
+            {notice}
+          </span>
+        ) : (
+          <>↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行{onRun ? " · ▶ / Ctrl+Enter 直接执行" : ""}</>
+        )}
       </div>
     </div>
   );

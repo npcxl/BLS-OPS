@@ -13,6 +13,8 @@ const win = vi.hoisted(() => ({
   close: vi.fn(),
   minimize: vi.fn(),
   toggleMaximize: vi.fn(),
+  isMaximized: vi.fn(async () => false),
+  onResized: vi.fn(async () => () => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => win }));
 
@@ -24,9 +26,18 @@ import { CONTEXT_SIDEBAR_MODULES } from "./module-server-sidebar";
 
 let holder: HTMLDivElement;
 let root: Root;
+let originalUserAgent: string;
 
 const expandButton = () =>
   document.body.querySelector<HTMLElement>('[aria-label="展开侧边栏"]');
+
+const windowButton = (label: string) =>
+  document.body.querySelector<HTMLElement>(`header [aria-label="${label}"]`);
+
+/** The top bar branches on the host platform, so swap the UA in place. */
+function setUserAgent(ua: string) {
+  Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
+}
 
 async function render(module: NavModule, collapsed: boolean) {
   useWorkbenchStore.setState({ activeModule: module, sidebarCollapsed: collapsed });
@@ -36,6 +47,10 @@ async function render(module: NavModule, collapsed: boolean) {
 }
 
 beforeEach(() => {
+  originalUserAgent = navigator.userAgent;
+  setUserAgent(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36",
+  );
   holder = document.createElement("div");
   document.body.appendChild(holder);
   root = createRoot(holder);
@@ -44,6 +59,10 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   holder.remove();
+  setUserAgent(originalUserAgent);
+  win.close.mockClear();
+  win.minimize.mockClear();
+  win.toggleMaximize.mockClear();
 });
 
 describe("AppTopBar 侧边栏展开入口", () => {
@@ -95,5 +114,47 @@ describe("AppTopBar 侧边栏展开入口", () => {
     // Back to a rail module: the state is global, so the way back is there.
     await render("ssh", true);
     expect(expandButton()).not.toBeNull();
+  });
+});
+
+/**
+ * macOS keeps the native decorations (see src-tauri/tauri.macos.conf.json), so
+ * the traffic lights are real system controls and must never be duplicated by
+ * our own buttons. Everywhere else the window is frameless and the bar owns the
+ * caption buttons.
+ */
+describe("AppTopBar 窗口按钮", () => {
+  it("renders the three caption buttons on Windows", async () => {
+    await render("ssh", false);
+    expect(windowButton("最小化")).not.toBeNull();
+    expect(windowButton("最大化")).not.toBeNull();
+    expect(windowButton("关闭")).not.toBeNull();
+  });
+
+  it("drives the window when they are clicked", async () => {
+    await render("ssh", false);
+    await act(async () => {
+      windowButton("最小化")!.click();
+      windowButton("最大化")!.click();
+      windowButton("关闭")!.click();
+    });
+    expect(win.minimize).toHaveBeenCalledOnce();
+    expect(win.toggleMaximize).toHaveBeenCalledOnce();
+    expect(win.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps them clickable rather than swallowed by the window drag region", async () => {
+    await render("ssh", false);
+    for (const label of ["最小化", "最大化", "关闭"]) {
+      expect(windowButton(label)?.getAttribute("data-tauri-drag-region")).toBe("false");
+    }
+  });
+
+  it("draws none of them on macOS — the native traffic lights are there", async () => {
+    setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15");
+    await render("ssh", false);
+    expect(windowButton("最小化")).toBeNull();
+    expect(windowButton("最大化")).toBeNull();
+    expect(windowButton("关闭")).toBeNull();
   });
 });

@@ -1,9 +1,45 @@
 import { describe, expect, it } from "vitest";
 import {
   computeSuggestPosition,
+  keysForReplace,
   resolveSuggestKey,
   SUGGEST_GAP,
 } from "./terminal-suggest";
+
+const BS = "\x7f"; // Backspace
+
+describe("把统一候选写回 shell（replaceRange → 按键序列）", () => {
+  it("只退掉还没敲完的那一段，再写入候选", () => {
+    // `cd o` + 候选 `opt/` → 退 1 格，写 `opt/`。
+    expect(keysForReplace("cd o", { start: 3, end: 4 }, "opt/")).toBe(`${BS}opt/`);
+  });
+
+  it("写入带空格的路径（转义后的文本原样进 shell）", () => {
+    expect(keysForReplace("cd m", { start: 3, end: 4 }, '"my dir"/')).toBe(`${BS}"my dir"/`);
+  });
+
+  it("目录保留结尾 / ，补全后能继续提示下一层", () => {
+    const keys = keysForReplace("cd ", { start: 3, end: 3 }, "opt/");
+    expect(keys).toBe("opt/");
+    expect(keys.endsWith("/")).toBe(true);
+  });
+
+  it("整行替换（环境生成的命令）不需要退格之外的操作", () => {
+    expect(keysForReplace("nginx", { start: 0, end: 5 }, "docker exec bls-nginx nginx -t")).toBe(
+      `${BS.repeat(5)}docker exec bls-nginx nginx -t`,
+    );
+  });
+
+  it("替换范围被夹到行的合法区间内（不会退过头）", () => {
+    expect(keysForReplace("cd", { start: 99, end: 99 }, "opt/")).toBe("opt/");
+    expect(keysForReplace("cd", { start: -5, end: 99 }, "opt/")).toBe(`${BS.repeat(2)}opt/`);
+  });
+
+  it("空操作（候选与行内内容一致）不产生任何按键", () => {
+    expect(keysForReplace("cd opt/", { start: 6, end: 7 }, "/")).toBe(BS + "/");
+    expect(keysForReplace("cd opt/", { start: 7, end: 7 }, "")).toBe("");
+  });
+});
 
 describe("提示面板定位（原位补全）", () => {
   const viewport = { width: 800, height: 400 };
@@ -107,8 +143,15 @@ describe("提示面板键盘映射（面板打开时接管）", () => {
     });
   });
 
-  it("其他按键不拦截（Tab 是远程补全、字符是输入）", () => {
-    expect(resolveSuggestKey({ key: "Tab" }, true)).toEqual({ type: "none" });
+  it("Tab = 补全选中目录（shell 自带的补全换成「认得远程目录」的那个）", () => {
+    // 面板打开时 Tab 必须被接管：远程的 readline 补全看不见我们拿到的
+    // SFTP 目录列表，让它去补会给出本地视角的结果。
+    expect(resolveSuggestKey({ key: "Tab" }, true)).toEqual({ type: "accept" });
+    // 面板关闭时 Tab 原样交给 shell（不含候选就没有可补全的东西）。
+    expect(resolveSuggestKey({ key: "Tab" }, false)).toEqual({ type: "none" });
+  });
+
+  it("其他按键不拦截（字符是输入）", () => {
     expect(resolveSuggestKey({ key: "a" }, true)).toEqual({ type: "none" });
     expect(resolveSuggestKey({ key: "Backspace" }, true)).toEqual({ type: "none" });
   });

@@ -12,6 +12,8 @@ pub mod deployment_collector;
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
 pub mod docker;
+/// 服务器运行环境探测（Nginx 在宿主机 / Docker / Compose）。纯逻辑 + 只读采集。
+pub mod env_probe;
 /// journald log querying (P3-1.2).
 pub mod journal;
 mod keyring;
@@ -154,6 +156,8 @@ pub fn run() {
             commands::docker_container_action,
             commands::docker_image_remove,
             commands::docker_prune,
+            // server environment probing (read-only, drives terminal suggestions)
+            commands::probe_nginx_environment,
             // nginx (P3-1.4)
             commands::nginx_sites,
             commands::nginx_config,

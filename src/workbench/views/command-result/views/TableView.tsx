@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
+import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { numericTone, type ColumnDefinition, type SummaryItem } from "../model";
 
 const CELL = "px-3 py-1.5 align-top";
@@ -20,6 +21,7 @@ export function TableView({
   summary?: SummaryItem[];
 }) {
   const [filter, setFilter] = useState("");
+  const { status, copy } = useCopyFeedback();
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -34,7 +36,7 @@ export function TableView({
   if (columns.length === 0) return null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-3 py-1.5">
         {summary && summary.length > 0 && (
           <span className="flex items-center gap-2 text-11 text-fg-muted">
@@ -82,13 +84,26 @@ export function TableView({
                       key={column.key}
                       className={cn(
                         CELL,
-                        "max-w-[380px] truncate",
-                        column.numeric ? "text-right tabular-nums" : "font-mono",
+                        "max-w-[380px]",
+                        column.numeric ? "tabular-nums" : "font-mono",
                         tone ?? (column.numeric ? "text-fg-muted" : "text-fg"),
                       )}
                       title={text}
                     >
-                      {text || "—"}
+                      {/* 点击单元格复制该单元格内容（空值复制空串，不给占位符）。 */}
+                      <button
+                        type="button"
+                        data-testid="table-cell"
+                        {...clickCopyProps(() => void copy(text))}
+                        className={cn(
+                          COPYABLE,
+                          "block w-full truncate",
+                          column.numeric && "text-right",
+                        )}
+                        title="点击复制该单元格"
+                      >
+                        {text || "—"}
+                      </button>
                     </td>
                   );
                 })}
@@ -102,6 +117,7 @@ export function TableView({
           </p>
         )}
       </div>
+      <CopyNotice status={status} />
     </div>
   );
 }

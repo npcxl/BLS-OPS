@@ -46,6 +46,15 @@ describe("占位符拦截（安全底线）", () => {
     expect(completionKeys("", "docker ps -a")).toBe("docker ps -a");
   });
 
+  it("候选与已输入内容一致 → 空串（= 填入是空操作，这次回车必须执行）", () => {
+    // 用户手打完整命令后按回车：若"填入"是空操作却仍吞掉回车，命令永远
+    // 发不出去（表现为"结果面板不出现"）。调用方据此改走执行分支。
+    expect(completionKeys("docker ps", "docker ps")).toBe("");
+    expect(completionKeys("systemctl status nginx", "systemctl status nginx")).toBe("");
+    // 有差异就不是空操作
+    expect(completionKeys("docker ps", "docker ps -a")).toBe(" -a");
+  });
+
   it("hasUnresolvedPlaceholder 是发送前的最后一道拦截", () => {
     expect(hasUnresolvedPlaceholder("journalctl -u <unit>")).toBe(true);
     expect(hasUnresolvedPlaceholder("journalctl -u nginx.service")).toBe(false);

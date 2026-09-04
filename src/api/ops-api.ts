@@ -61,6 +61,7 @@ import {
   type NginxSite,
   type NginxTestResult,
 } from "@/api/types/gateway";
+import type { NginxEnvironment } from "@/api/types/environment";
 import {
   type ConfirmedProject,
   type DeploymentRecord,
@@ -128,6 +129,21 @@ export {
   type NginxSource,
   type NginxTestResult,
 } from "@/api/types/gateway";
+export {
+  NGINX_KIND_LABELS,
+  configMounts,
+  describeContainer,
+  publishedPorts,
+  type ComposeRef,
+  type MountInfo,
+  type NginxContainer,
+  type NginxEnvironment,
+  type NginxFlavor,
+  type NginxKind,
+  type PortBinding,
+  type SuggestedCommand,
+  type SuggestedRisk,
+} from "@/api/types/environment";
 export {
   DEPLOY_STATUSES,
   deployStatusLabel,
@@ -495,6 +511,16 @@ export const opsApi = {
   dockerImageRemove: (sessionId: string, image: string) =>
     invoke<string>("docker_image_remove", { sessionId, image }),
   dockerPrune: (sessionId: string) => invoke<string>("docker_prune", { sessionId }),
+
+  // -- Server environment (read-only probing) --------------------------------
+  /**
+   * 探测当前会话所在服务器的 Nginx 运行环境（宿主机 / Docker / Compose /
+   * 多个容器）。只读：只列容器、只在候选容器里问一句有没有 nginx 可执行文件。
+   *
+   * 调用方负责缓存 —— 绝不在用户每敲一个字符时跑一次 `docker ps`。
+   */
+  probeNginxEnvironment: (sessionId: string) =>
+    invoke<NginxEnvironment>("probe_nginx_environment", { sessionId }),
 
   // -- Nginx ----------------------------------------------------------------
   nginxSites: (sessionId: string) => invoke<NginxSite[]>("nginx_sites", { sessionId }),

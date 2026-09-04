@@ -8,6 +8,7 @@ import {
   FolderOpen,
   History,
   PlugZap,
+  RefreshCw,
   Rows2,
   Search,
   Sparkles,
@@ -19,6 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
@@ -26,7 +28,6 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
-import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
 import {
   canAutoFill,
   completionKeys,
@@ -42,7 +43,9 @@ import {
 } from "./TerminalCommandCoordinator";
 import { extractTerminalSnapshot } from "./extract-terminal-snapshot";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
+import { TerminalSelectionMenu } from "./terminal-selection-menu";
 import type { CommandSearchHit } from "@/api/ops-api";
+import type { SuggestedRisk } from "@/api/types/environment";
 import type { WorkspaceTab } from "@/workbench/types";
 import { sshClosedEvent, sshOutputEvent, sshStderrEvent } from "@/lib/events";
 import { terminalTheme } from "./theme";
@@ -60,9 +63,19 @@ import {
 } from "./terminal-font";
 import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
 import {
+  keysForReplace,
   resolveSuggestKey,
   type SuggestAnchor,
 } from "./terminal-suggest";
+import { useTerminalCompletion } from "./use-terminal-completion";
+import { useServerEnvironment, invalidateEnvironmentCache } from "./use-server-environment";
+import { RemoteCwdTracker, CWD_PROBE_LINE, CWD_PROBE_TIMEOUT_MS } from "./remote-cwd";
+import { invalidateDirectoryCache } from "./completion/remote-listing";
+import { invalidateDockerCache } from "./completion/providers/docker-resource";
+import { invalidateServiceCache } from "./completion/providers/service";
+import { invalidateProcessCache } from "./completion/providers/process";
+import { rememberNginxContainer } from "./completion/providers/environment";
+import type { CompletionItem } from "./completion/types";
 
 /** 增强终端开关的持久化键（关着 = 纯终端：没有标记注入、没有结果面板）。 */
 const ENHANCED_TERMINAL_KEY = "bls-ops.terminal.enhanced";
@@ -76,7 +89,23 @@ function isCommandNotFoundOutput(output: string): boolean {
   return /command ['“”']?[^'“”']+['“”']? not found/i.test(output);
 }
 
+/**
+ * 会改变目录结构的命令。执行后远程目录缓存必须失效 ——
+ * 缓存里留着已被 `rm -rf` 删掉的目录，用户就会补出一个不存在的路径。
+ */
+const MUTATES_DIRECTORY =
+  /^\s*(mkdir|rmdir|rm|mv|cp|touch|unlink|ln|install|git\s+clone|tar\s+-?[xj])\b/;
+
 type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
+
+/**
+ * 接受候选（Enter / → / Tab）的结果。
+ *
+ * `noop` 是关键：候选与已输入内容完全一致时，"填入"什么都不会做。此时
+ * 必须把这次回车当成**执行命令**，否则建议面板会一直吞掉回车 —— 命令永远
+ * 发不出去，用户只看到"结果面板没出现"（曾是这个 bug 的根因）。
+ */
+type AcceptOutcome = "filled" | "noop" | "blocked";
 
 /** Real interactive SSH terminal: input, output, resize, reconnect, keepalive. */
 export function TerminalView({ tab }: { tab: WorkspaceTab }) {
@@ -104,6 +133,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [follow, setFollow] = useState<{ nonce: number; arg: string }>({ nonce: 0, arg: "" });
   const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const selectionMenuTimerRef = useRef<number | null>(null);
+  // 终端里的复制（选区菜单 / 复制错误信息）统一走共用模块：有成功失败提示、
+  // 一个计时器、绝不散落 navigator.clipboard。
+  const { status: copyStatus, copy: copyToClipboard } = useCopyFeedback();
   /**
    * 正在输入的命令行（由 LineEditor 从按键流还原）。驱动命令提示 —— 与
    * 命令中心共用 `useCommandSuggestions`，因此输入 `docker p` 的行为一致。
@@ -267,6 +299,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 重运行：按**真实风险**门控（详见文件下方的 rerun —— 依赖唯一提交入口）。 */
   const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
 
+  /**
+   * 补全候选的"补全并立即执行"也要按**真实风险**门控：
+   * `nginx -s reload` / `docker compose restart` 是"需确认"，确认前不写 shell。
+   */
+  const [runConfirm, setRunConfirm] = useState<{ command: string; risk: SuggestedRisk } | null>(
+    null,
+  );
+
   /** 右键 = 顶部工具栏镜像：终端画布上右键可达被滚动/折叠藏起的顶部功能。 */
   const terminalMenu = useContextMenu();
 
@@ -316,17 +356,59 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const lineEditorRef = useRef<LineEditor | null>(null);
   if (!lineEditorRef.current) lineEditorRef.current = new LineEditor();
 
-  // Command suggestions share the knowledge base with the command centre.
-  // Retrieval is local — it needs no connection — but suggestions only make
-  // sense while a shell is actually waiting for input. dismissedDraft =
-  // 填入候选或关闭面板时的草稿：相同就不再检索（见 dismissedDraft 注释）。
+  // 补全统一走 `CompletionProvider`：知识库、远程目录（cd）、Docker 资源、
+  // 服务、进程、环境生成的命令都是同一个 `CompletionItem`。
+  // dismissedDraft = 填入候选或关闭面板时的草稿：相同就不再检索
+  // （见 dismissedDraft 注释）。
   const suggestionsEnabled =
     phase === "connected" &&
     !inAlternate &&
     suggestOpen &&
     draft.trim().length > 0 &&
     draft !== dismissedDraft;
-  const suggestions = useCommandSuggestions(draft, { enabled: suggestionsEnabled, limit: 8 });
+
+  /**
+   * 远程 cwd 追踪：每个 TerminalView 实例一份 → **不同 SSH Tab 天然隔离**。
+   *
+   * 来源优先级：Shell Integration 的 OSC 7 > 跟踪到的 `cd`（且命令真的成功）
+   * > 受控 pwd 探测 > 登录目录。绝不用提示符文本猜。
+   */
+  const cwdTrackerRef = useRef<RemoteCwdTracker | null>(null);
+  if (!cwdTrackerRef.current) cwdTrackerRef.current = new RemoteCwdTracker();
+  const [cwd, setCwd] = useState<string | null>(null);
+  const [remoteHome, setRemoteHome] = useState<string | null>(null);
+  const cwdProbeTimerRef = useRef<number | null>(null);
+  const cwdProbedRef = useRef(false);
+
+  /** 服务器运行环境（Nginx 在宿主机 / Docker / Compose）：连接后异步探测一次。 */
+  const { environment, refresh: refreshEnvironment } = useServerEnvironment(
+    sessionId,
+    phase === "connected" && !inAlternate,
+  );
+
+  /**
+   * 手动刷新：目录 / Docker / 服务 / 进程缓存与环境一起失效并重新探测。
+   *
+   * 只有用户点这里才会重新打 `docker ps` —— 敲字符时一律用缓存（见
+   * `useServerEnvironment` 与 `remote-listing`）。
+   */
+  const refreshEnvironmentCaches = useCallback(() => {
+    invalidateDirectoryCache(sessionId);
+    invalidateDockerCache(sessionId);
+    invalidateServiceCache();
+    invalidateProcessCache();
+    refreshEnvironment();
+  }, [refreshEnvironment, sessionId]);
+
+  const suggestions = useTerminalCompletion({
+    sessionId,
+    line: draft,
+    cursor: draft.length,
+    enabled: suggestionsEnabled,
+    cwd,
+    home: remoteHome,
+    environment,
+  });
 
   /**
    * 重算提示面板锚点：读 xterm 光标单元格（cursorX/cursorY），按 `.xterm-screen`
@@ -398,9 +480,58 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         const arg = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
         setFollow((current) => ({ nonce: current.nonce + 1, arg }));
       }
+      // `cd` 跟踪：先记下"待定目标"，等 OSC 133 D 的真实退出码确认成功才
+      // 真正更新（cd 失败 → 目录没变）。
+      cwdTrackerRef.current?.noteCd(sessionId, command);
+      // 目录结构被改动的命令 → 远程目录缓存立刻失效：给用户看一份"刚才还
+      // 存在、现在已经没了"的候选，比不给补全更糟。
+      if (MUTATES_DIRECTORY.test(command)) invalidateDirectoryCache(sessionId);
     },
     [sessionId, tab.quickTarget, tab.serverId, tab.title],
   );
+
+  /**
+   * 受控 pwd 探测：前两条来源（OSC 7 / 跟踪的 cd）都没答案时才用。
+   *
+   * 让 shell 自己用 OSC 7 把 cwd 报回来（不是我们解析提示符）；整行作为
+   * 注入行交给边界解析器剔除回显 → 终端里不留可见文字，也不生成结果 Tab。
+   * 每个会话最多同时一次，超时后允许下次重试（但绝不循环重试）。
+   */
+  const requestCwdProbe = useCallback(() => {
+    const tracker = cwdTrackerRef.current;
+    if (!tracker || cwdProbedRef.current) return;
+    if (!tracker.needsProbe(sessionId)) return;
+    cwdProbedRef.current = true;
+    boundaryParserRef.current?.expect([CWD_PROBE_LINE]);
+    void opsApi
+      .sshInput(sessionId, `${CWD_PROBE_LINE}\r`)
+      .catch(() => undefined)
+      .finally(() => {
+        if (cwdProbeTimerRef.current !== null) window.clearTimeout(cwdProbeTimerRef.current);
+        cwdProbeTimerRef.current = window.setTimeout(() => {
+          // 超时没等到 OSC 7：放开一次重试机会（用户下次输入 cd 时再探）。
+          cwdProbedRef.current = false;
+        }, CWD_PROBE_TIMEOUT_MS);
+      });
+  }, [sessionId]);
+
+  /**
+   * 受控 pwd 探测的时机。
+   *
+   * **只在命令行是空的时候发**：探测行是写进当前输入行的，用户已经敲了
+   * `cd opt` 再发就会变成 `cd opt printf …` —— 那是在破坏他正在输入的
+   * 命令，宁可不知道 cwd 也不能这么干。
+   *
+   * 因此时机是"连接成功后"与"每次命令行被清空/提交之后"（此时 shell 停在
+   * 干净的提示符上）。探测本身只输出 OSC 7，不留可见文字。
+   */
+  useEffect(() => {
+    if (phase !== "connected") return;
+    if (draft !== "") return;
+    // 连接刚建立时 shell 可能还没画出第一个提示符，稍等一下再问。
+    const timer = window.setTimeout(requestCwdProbe, 800);
+    return () => window.clearTimeout(timer);
+  }, [draft, phase, requestCwdProbe]);
 
   /**
    * **唯一命令提交入口。**
@@ -511,17 +642,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [sessionId],
   );
 
-  /**
-   * 接受候选：
-   *
-   * - 语法**不含**占位符 → 直接补全（不执行，第二次 Enter 才发给 shell）；
-   * - 语法**含**占位符 → 打开二级参数选择器挑真值，替换后再写；
-   *   认不出种类的占位符（`<时间>` 之类，无数据源）不写、也不开选择器。
-   */
-  const applySuggestion = useCallback(
-    (hit: CommandSearchHit) => {
+  /** 知识库候选（含占位符 → 二级选择器）。见下方 `applySuggestion`。 */
+  const applyKnowledgeHit = useCallback(
+    (hit: CommandSearchHit): AcceptOutcome => {
       const editor = lineEditorRef.current;
-      if (!editor) return;
+      if (!editor) return "blocked";
       const draft = editor.current;
 
       // 占位符以后端 `hit.placeholders` 为准（语法解析在 Rust 侧），
@@ -530,25 +655,92 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (hasPlaceholder) {
         if (!canAutoFill(hit.syntax)) {
           setParamHint("该命令含需要手填的参数，已为你填入命令主体，请自行补全");
-          return;
+          return "blocked";
         }
         setParamPicker({ hit, syntax: hit.syntax, draft });
         setDismissedDraft(draft);
-        return;
+        return "blocked";
       }
 
       const keys = completionKeys(draft, hit.syntax);
-      // 理论上不会为 null（无占位符），仍守住：写不进去就不写。
-      if (keys === null) return;
-      if (!writeToShell(keys)) return;
+      // 理论上不会为 null（无占位符），仍守住：写不进去就不写，也不执行。
+      if (keys === null) return "blocked";
+      // **空串 = 候选与已输入内容完全一致**：这次"填入"什么都不会做。
+      // 必须如实上报，让调用方把这次回车当成"执行命令"（否则面板会一直
+      // 吞掉回车 —— 命令永远发不出去，用户只看到结果面板不出现）。
+      if (keys === "") return "noop";
+      if (!writeToShell(keys)) return "blocked";
       editor.feed(keys);
       const next = editor.current;
       setDraft(next);
       setDismissedDraft(next);
       updateSuggestAnchor();
+      return "filled";
     },
     [updateSuggestAnchor, writeToShell],
   );
+
+  /**
+   * 接受候选（**只填入，不执行**），并如实上报结果：
+   *
+   * - `filled` —— 真的往命令行写了东西（第二次回车才执行）；
+   * - `noop` —— **候选与当前命令行完全一致**，这次"填入"什么都不会做。
+   *   调用方必须把这次回车当成"执行命令"，否则面板会一直吞掉回车；
+   * - `blocked` —— 有未替换参数 / 写不进去，本次回车不应执行。
+   *
+   * 统一 `CompletionItem` 的写入口径：
+   * - 知识库候选 → 走原有的占位符 / 二级参数选择流程；
+   * - 容器选择器 → 记住本次会话的选择（下次直接给这个容器的命令）；
+   * - 其余（远程目录、Docker 资源、服务、进程、环境命令）→ 按
+   *   `replaceRange` 退格 + 写入，`insertText` 已转义，可安全进 shell。
+   *
+   * 目录候选**不写 dismissedDraft** —— 补成 `cd opt/` 后要立刻提示 `opt`
+   * 的子目录，否则"继续补全下一层"就断了。
+   */
+  const applySuggestion = useCallback(
+    (item: CompletionItem): AcceptOutcome => {
+      const editor = lineEditorRef.current;
+      if (!editor) return "blocked";
+
+      if (item.hit) {
+        return applyKnowledgeHit(item.hit);
+      }
+      if (item.container) {
+        // 多容器环境：先记住选择，再把容器名写进行里。
+        rememberNginxContainer(sessionId, item.container.name);
+      }
+
+      const keys = keysForReplace(editor.current, item.replaceRange, item.insertText);
+      // 空串 = 替换范围为空且没有要插入的内容（候选与行内已有内容一致）。
+      if (keys === "") return "noop";
+      if (!writeToShell(keys)) return "blocked";
+      editor.feed(keys);
+      const next = editor.current;
+      setDraft(next);
+      // 目录继续提示下一层；其它候选填完就不再打扰（第二次 Enter 才能执行）。
+      if (item.type !== "directory") setDismissedDraft(next);
+      updateSuggestAnchor();
+      return "filled";
+    },
+    [applyKnowledgeHit, sessionId, updateSuggestAnchor, writeToShell],
+  );
+
+  /**
+   * 把当前行**当作回车提交**（走唯一入口 `executeTerminalCommand`）。
+   *
+   * 用于"候选与命令行一致、回车被建议面板接受"的场景：此时用户按回车的
+   * 意图就是执行，不该被吞掉。
+   */
+  const submitCurrentLine = useCallback(() => {
+    const editor = lineEditorRef.current;
+    const command = editor?.current.trim() ?? "";
+    if (!command) return;
+    // 与真实回车一致：`feed("\r")` 提交并清空行编辑器。
+    editor?.feed("\r");
+    setDraft("");
+    noteExecutedCommand(command);
+    executeTerminalCommand(command, "input", { prefix: "\r" });
+  }, [executeTerminalCommand, noteExecutedCommand]);
 
   /**
    * **执行**候选（区别于 `applySuggestion` 的"只填入不执行"）：补全剩余
@@ -557,21 +749,43 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    *
    * 补全字符与回车**一次写入**，不做两次 `sshInput` —— 否则标记行可能插到
    * 命令行中间。
+   *
+   * 风险等级保持真实：环境命令里的 `reload` / `restart` 是"需确认"，
+   * 必须先过确认框；删除类压根不会出现在建议里。
    */
   const runSuggestion = useCallback(
-    (hit: CommandSearchHit) => {
+    (item: CompletionItem) => {
       const editor = lineEditorRef.current;
       if (!editor) return;
-      const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
-      if (hasPlaceholder) {
-        // 还有参数要填 → 走参数选择器流程，绝不带着占位符提交。
-        applySuggestion(hit);
+
+      if (item.hit) {
+        const hit = item.hit;
+        const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
+        if (hasPlaceholder) {
+          // 还有参数要填 → 走参数选择器流程，绝不带着占位符提交。
+          applySuggestion(item);
+          return;
+        }
+        const keys = completionKeys(editor.current, hit.syntax);
+        if (keys === null) return;
+        editor.feed(keys);
+        const line = editor.current;
+        setDraft("");
+        noteExecutedCommand(line);
+        executeTerminalCommand(line, "suggest", { prefix: `${keys}\r` });
+        updateSuggestAnchor();
         return;
       }
-      const keys = completionKeys(editor.current, hit.syntax);
-      if (keys === null) return;
+
+      const keys = keysForReplace(editor.current, item.replaceRange, item.insertText);
       editor.feed(keys);
       const line = editor.current;
+      const risk = item.command?.risk;
+      // 修改运行状态 / 危险操作：先确认，再写 shell（绝不自动执行）。
+      if (risk === "medium" || risk === "high") {
+        setRunConfirm({ command: line, risk });
+        return;
+      }
       setDraft("");
       noteExecutedCommand(line);
       executeTerminalCommand(line, "suggest", { prefix: `${keys}\r` });
@@ -579,6 +793,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     },
     [applySuggestion, executeTerminalCommand, noteExecutedCommand, updateSuggestAnchor],
   );
+
+  /** 确认后真正执行（reload / restart 之类改变运行状态的命令）。 */
+  const confirmRun = () => {
+    const pending = runConfirm;
+    setRunConfirm(null);
+    if (!pending) return;
+    setDraft("");
+    noteExecutedCommand(pending.command);
+    executeTerminalCommand(pending.command, "suggest");
+  };
 
   /** 二级选择器选中一个值：替换当前占位符，还有占位符就继续选，否则写入 shell。 */
   const applyParamValue = useCallback(
@@ -631,7 +855,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       }
       // Ctrl+Enter：补全候选并**立即执行**（走唯一提交入口 → 结果 Tab）。
       if (event.ctrlKey && (event.key === "Enter" || event.code === "Enter")) {
-        const hit = suggestions.hits[suggestions.activeIndex];
+        const hit = suggestions.items[suggestions.activeIndex];
         if (!hit) return false;
         event.preventDefault();
         runSuggestion(hit);
@@ -641,10 +865,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       // 否则 ↑↓/Enter 会被两层各处理一次。
       if (paramPickerRef) return false;
       if (event.isComposing || event.keyCode === 229) return false;
-      const { hits, activeIndex, setActiveIndex } = suggestions;
+      // 补全候选（新 hook 用 `items`；见 use-terminal-completion.ts）。
+      const { items, activeIndex, setActiveIndex } = suggestions;
       const action = resolveSuggestKey(
         { key: event.key, isComposing: event.isComposing },
-        hits.length > 0,
+        items.length > 0,
       );
       switch (action.type) {
         case "none":
@@ -652,14 +877,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         case "move": {
           event.preventDefault();
           setActiveIndex(
-            Math.min(Math.max(activeIndex + action.delta, 0), hits.length - 1),
+            Math.min(Math.max(activeIndex + action.delta, 0), items.length - 1),
           );
           return true;
         }
         case "accept": {
           event.preventDefault();
-          const hit = hits[activeIndex];
-          if (hit) applySuggestion(hit);
+          const hit = items[activeIndex];
+          if (!hit) return true;
+          const outcome = applySuggestion(hit);
+          // 候选与已输入内容一致 → 这次"填入"是空操作，回车**必须**执行
+          // 命令，否则面板会一直吞掉回车（表现为命令没跑、结果面板不出现）。
+          if (outcome === "noop") submitCurrentLine();
           return true;
         }
         case "dismiss": {
@@ -707,6 +936,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         setPhase("connected");
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
         instance?.writeln(`\r\n已连接 ${result.host}:${result.port}（${result.fingerprint_type}）`);
+        // 登录目录：cwd 的兜底答案（`cd ~`、以及还没探测到时用它）。
+        // 只信 SFTP 的 canonicalize 结果 —— 绝不从提示符文本猜。
+        void opsApi
+          .sftpListDir(sessionId, ".")
+          .then((listing) => {
+            const home = listing.path;
+            if (!home) return;
+            setRemoteHome(home);
+            cwdTrackerRef.current?.setHome(sessionId, home);
+            setCwd((current) => current ?? home);
+          })
+          .catch(() => undefined);
         // The one-time password has served its purpose; drop it from tab state
         // so it is not kept in memory or reused for a later reconnect.
         if (tab.oneTimePassword) updateTab(tab.id, { oneTimePassword: undefined });
@@ -883,6 +1124,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           events: [],
           parts: [{ kind: "text", text: output }],
         };
+      // OSC 7（shell 自己上报的 cwd）：扫**原始**输出，不受边界解析的剔除
+      // 影响 —— 这是 cwd 的最可信来源（优先级 1）。
+      const reported = cwdTrackerRef.current?.feedOutput(sessionId, output) ?? null;
+      if (reported) setCwd(reported);
+      // 命令结束（OSC 133 D 带真实退出码）：`cd` 成功才更新 cwd，失败不动。
+      for (const event of parsed.events) {
+        if (event.type === "output_end") {
+          cwdTrackerRef.current?.onCommandEnd(sessionId, event.exitCode);
+          setCwd(cwdTrackerRef.current?.get(sessionId) ?? null);
+        }
+      }
       coordinatorRef.current?.onOutput(parsed.text, parsed.events);
       const notFound = isCommandNotFoundOutput(parsed.text);
       const display = (text: string) => (notFound ? `\x1b[31m命令无效：${text}\x1b[0m` : text);
@@ -976,6 +1228,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       void unlistenClosed.then((fn) => fn());
       void opsApi.sshDisconnect(sessionId).catch(() => undefined);
       removeSession(sessionId);
+      // 会话结束：该服务器上的目录 / Docker / 服务 / 进程缓存与容器选择全部
+      // 失效 —— 重连后环境可能完全不同，留着旧缓存会给出错误的补全。
+      invalidateDirectoryCache(sessionId);
+      invalidateDockerCache(sessionId);
+      invalidateServiceCache();
+      invalidateProcessCache();
+      invalidateEnvironmentCache(sessionId);
+      cwdTrackerRef.current?.forget(sessionId);
+      if (cwdProbeTimerRef.current !== null) window.clearTimeout(cwdProbeTimerRef.current);
       instance.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -1090,6 +1351,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         hint: filesOpen ? "已展开" : undefined,
         onSelect: () => setFilesOpen((v) => !v),
       },
+      {
+        label: "刷新环境",
+        icon: RefreshCw,
+        hint: "重新探测 Docker / Nginx",
+        disabled: phase !== "connected",
+        onSelect: refreshEnvironmentCaches,
+      },
     ];
     items.push({
       label: "增强终端",
@@ -1134,6 +1402,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
         <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
+        {/* 刷新环境：目录 / Docker / 服务 / 进程缓存一起失效并重新探测。
+            只有点这里才会重新跑 `docker ps`，敲字符时一律用缓存。 */}
+        <ToolbarIcon
+          label="刷新环境"
+          icon={RefreshCw}
+          disabled={phase !== "connected"}
+          onClick={refreshEnvironmentCaches}
+        />
         {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
             打开后命令才会生成结果面板（不另设开关：开了就有、关了就什么都没有）。 */}
         <ToolbarIcon
@@ -1209,7 +1485,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             aria-label="复制错误信息"
             title="复制错误信息"
             className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
-            onClick={() => void navigator.clipboard.writeText(error)}
+            onClick={() => void copyToClipboard(error)}
           >
             <Copy size={12} />
             复制
@@ -1236,25 +1512,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           onContextMenu={openToolbarMenu}
         />
         {selectionMenu && (
-          <div
-            // 跟随**选区末端**（x/y 已在 onSelectionChange 里以 wrapper 为基准算好）。
-            style={{ left: selectionMenu.x, top: selectionMenu.y }}
-            className="absolute z-40 flex items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <span className="px-1 text-11 text-fg-subtle">已选择 {selectionMenu.text.length} 个字符</span>
-            <button
-              type="button"
-              className="flex h-6 items-center gap-1 rounded-[6px] px-2 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
-              onClick={() => {
-                void navigator.clipboard.writeText(selectionMenu.text);
-                setSelectionMenu(null);
-              }}
-            >
-              <Copy size={12} />
-              复制
-            </button>
-          </div>
+          <TerminalSelectionMenu
+            x={selectionMenu.x}
+            y={selectionMenu.y}
+            text={selectionMenu.text}
+            containerRef={suggestWrapperRef}
+            onCopy={async (value) => {
+              await copyToClipboard(value);
+              // 复制完就收起浮层（提示由共用模块继续显示）。
+              setSelectionMenu(null);
+            }}
+          />
         )}
         {historyOpen && (
           <CommandHistoryPanel
@@ -1268,7 +1536,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         )}
         {suggestionsEnabled && !paramPicker && (
           <TerminalSuggest
-            hits={suggestions.hits}
+            items={suggestions.items}
+            notice={suggestions.notice}
             activeIndex={suggestions.activeIndex}
             onHover={suggestions.setActiveIndex}
             onApply={applySuggestion}
@@ -1300,6 +1569,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             </button>
           </div>
         )}
+        {/* 复制提示（选区菜单 / 复制错误信息共用）：绝对定位不占布局，1.5s
+            自动消失，不会把终端或结果面板撑大。 */}
+        <CopyNotice status={copyStatus} />
       </div>
 
       {/* 命令结果抽屉：终端内容原样保留，结果面板挂在下方。
@@ -1328,6 +1600,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           confirmLabel="重新运行"
           onConfirm={confirmRerun}
           onCancel={() => setRerunConfirm(null)}
+        />
+      )}
+      {runConfirm && (
+        <ConfirmDialog
+          open
+          title="执行该命令？"
+          description={`该命令会修改服务器运行状态（${
+            RISK_META[runConfirm.risk].label
+          }）：\n${runConfirm.command}`}
+          confirmLabel="执行"
+          onConfirm={confirmRun}
+          onCancel={() => setRunConfirm(null)}
         />
       )}
       </div>

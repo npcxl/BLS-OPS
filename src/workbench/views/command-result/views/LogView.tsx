@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
+import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 
 /**
  * 通用日志流 —— `journalctl` / `tail` / `dmesg` / `docker logs` / nginx 日志
@@ -33,6 +34,7 @@ function formatTime(raw: unknown): string {
 
 export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
   const [severeOnly, setSevereOnly] = useState(false);
+  const { status, copy } = useCopyFeedback();
 
   const visible = useMemo(() => {
     if (!severeOnly) return rows;
@@ -52,7 +54,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
         <span className="text-11 text-fg-muted">{rows.length} 条</span>
         <button
@@ -71,10 +73,23 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
           const level = LEVEL_TONES[String(row.level ?? "6")] ?? LEVEL_TONES["6"];
           const time = formatTime(row.timestamp);
           const unit = String(row.unit ?? "");
+          const message = String(row.message ?? "");
+          // 点击整行复制该行完整内容：时间 + 级别 + 单元 + 消息（与右键菜单
+          // 的"复制该行"保持同一格式，认不出的字段不占位）。
+          const full = [time, level.label, unit && unit !== "—" ? unit : "", message]
+            .filter((part) => part !== "")
+            .join("  ");
           return (
-            <div
+            <button
               key={index}
-              className="flex gap-2 border-b border-line/40 px-3 py-1.5 transition-colors hover:bg-surface-hover/40"
+              type="button"
+              data-testid="log-row"
+              {...clickCopyProps(() => void copy(full))}
+              className={cn(
+                COPYABLE,
+                "flex w-full items-start gap-2 border-b border-line/40 px-3 py-1.5 text-left",
+              )}
+              title="点击复制该行"
             >
               <span className="w-12 shrink-0">
                 <span className={cn("rounded px-1 py-0.5 text-9", level.tone)}>{level.label}</span>
@@ -91,9 +106,9 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
                 </span>
               )}
               <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-11 text-fg-muted">
-                {String(row.message ?? "")}
+                {message}
               </span>
-            </div>
+            </button>
           );
         })}
         {visible.length === 0 && (
@@ -102,6 +117,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
           </p>
         )}
       </div>
+      <CopyNotice status={status} />
     </div>
   );
 }

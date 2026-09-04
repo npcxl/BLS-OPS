@@ -129,4 +129,101 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
     render([]);
     expect(container.textContent).toContain("[]");
   });
+
+  describe("点击复制", () => {
+    it("点击叶子节点 → 复制实际值（字符串不带引号）", async () => {
+      render({ name: "nginx", replicas: 2, enabled: true, note: null });
+      const leaf = (label: string) =>
+        [...container.querySelectorAll('[data-testid="json-node"]')].find((node) =>
+          node.textContent?.startsWith(label),
+        ) as HTMLElement;
+      await act(async () => {
+        leaf('"name"').click();
+      });
+      expect(clipboard.text).toBe("nginx");
+      await act(async () => {
+        leaf('"replicas"').click();
+      });
+      expect(clipboard.text).toBe("2");
+      await act(async () => {
+        leaf('"enabled"').click();
+      });
+      expect(clipboard.text).toBe("true");
+      await act(async () => {
+        leaf('"note"').click();
+      });
+      expect(clipboard.text).toBe("null");
+      expect(container.textContent).toContain("复制成功");
+    });
+
+    it("点击容器仍然展开/折叠，**不复制**", async () => {
+      render(containers);
+      clipboard.text = "";
+      const row = [...container.querySelectorAll('[data-testid="json-node"]')].find((node) =>
+        node.textContent?.startsWith("[0]"),
+      ) as HTMLElement;
+      await act(async () => {
+        row.click();
+      });
+      expect(clipboard.text).toBe(""); // 没有复制
+      expect(container.textContent).not.toContain("running"); // 折叠生效
+      expect(container.textContent).toContain("{…}"); // 容器摘要仍在
+      await act(async () => {
+        row.click();
+      });
+      expect(container.textContent).toContain("running"); // 再点展开
+    });
+
+    it("容器旁边的展开箭头也不复制（只切换）", async () => {
+      render(containers);
+      clipboard.text = "";
+      await act(async () => {
+        byAria("折叠")?.click();
+      });
+      expect(clipboard.text).toBe("");
+      expect(container.textContent).not.toContain("running");
+    });
+
+    it("搜索结果点击复制的是**完整值**，不是截断的展示文本", async () => {
+      const long = `x`.repeat(600);
+      render({ blob: long });
+      act(() => type("blob"));
+      expect(container.textContent).toContain("…"); // 展示被截断
+      await act(async () => {
+        container
+          .querySelector<HTMLElement>('[data-testid="json-search-row"]')
+          ?.click();
+      });
+      expect(clipboard.text).toBe(long); // 复制的是完整值
+    });
+
+    it("文本模式点击内容 → 复制完整 JSON", async () => {
+      render({ a: [1, 2] });
+      act(() => button("文本")?.click());
+      await act(async () => {
+        container.querySelector<HTMLElement>('[data-testid="json-text-copy"]')?.click();
+      });
+      expect(clipboard.text).toBe(JSON.stringify({ a: [1, 2] }, null, 2));
+    });
+
+    it("根为原始值时点击也能复制", async () => {
+      render(42);
+      await act(async () => {
+        container.querySelector<HTMLElement>('[data-testid="json-root-copy"]')?.click();
+      });
+      expect(clipboard.text).toBe("42");
+    });
+
+    it("复制路径 / 复制节点 JSON 两个按钮保持原样", async () => {
+      render({ name: "nginx" });
+      await act(async () => {
+        byTitle("复制路径")?.click();
+      });
+      expect(clipboard.text).toBe("$.name");
+      await act(async () => {
+        byTitle("复制节点 JSON")?.click();
+      });
+      expect(clipboard.text).toBe('"nginx"');
+    });
+  });
 });

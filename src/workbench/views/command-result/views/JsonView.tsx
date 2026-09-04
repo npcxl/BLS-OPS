@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { Check, ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import {
+  COPYABLE,
+  CopyNotice,
+  clickCopyProps,
+  useCopyFeedback,
+} from "@/components/ui/copy-feedback";
 
 /**
  * JSON 查看器 —— **只显示 JSON，绝不再把对象数组自动转表格**（用户裁决）。
@@ -9,18 +14,32 @@ import { copyText } from "@/lib/clipboard";
  * 提供：可折叠 JSON 树（默认展开）、格式化文本模式、搜索、复制节点 /
  * 复制路径 / 复制整段。任何“识别/渲染”失败都不会改动原数据 —— 本组件
  * 只消费一个已解析的 `value`。
+ *
+ * 点击语义：
+ * - **叶子节点** → 复制该节点的实际值（字符串不带引号，与它本来的值一致）；
+ * - **对象 / 数组容器** → 仍然展开 / 折叠，绝不触发复制；
+ * - **搜索结果行** → 复制**完整值**（不是被截断的展示文本）；
+ * - **文本模式** → 点击内容复制完整 JSON。
+ * 复制路径 / 复制节点 JSON 两个按钮保持原样。
  */
 export function JsonView({ value }: { value: unknown }) {
   const [mode, setMode] = useState<"tree" | "text">("tree");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // 复制提示统一走共用 hook（视图内不再自己起定时器）。
+  const { status, copy } = useCopyFeedback();
 
   // value 变化（如模块链切换结果）时重置折叠状态，避免旧路径残留在新数据上。
   useEffect(() => {
     setCollapsed(new Set());
     setQuery("");
   }, [value]);
+
+  // 提示消失时顺带清掉按钮上的“已复制”勾选（不再另设定时器）。
+  useEffect(() => {
+    if (status === "idle") setCopiedKey(null);
+  }, [status]);
 
   const pretty = useMemo(() => prettyJson(value), [value]);
   const containerPaths = useMemo(() => {
@@ -35,10 +54,8 @@ export function JsonView({ value }: { value: unknown }) {
   );
 
   const flashCopied = async (text: string, key: string) => {
-    if (await copyText(text)) {
-      setCopiedKey(key);
-      window.setTimeout(() => setCopiedKey(null), 1200);
-    }
+    setCopiedKey(key);
+    await copy(text);
   };
 
   return (
@@ -125,12 +142,20 @@ export function JsonView({ value }: { value: unknown }) {
       {/* 内容 */}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "text" ? (
-          <pre
-            style={{ fontFamily: "var(--font-command-output)" }}
-            className="w-max whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
+          <button
+            type="button"
+            data-testid="json-text-copy"
+            {...clickCopyProps(() => void copy(pretty))}
+            className={cn(COPYABLE, "block w-full")}
+            title="点击复制完整 JSON"
           >
-            {pretty}
-          </pre>
+            <pre
+              style={{ fontFamily: "var(--font-command-output)" }}
+              className="w-max min-w-full whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
+            >
+              {pretty}
+            </pre>
+          </button>
         ) : normalizedQuery !== "" ? (
           matches && matches.length > 0 ? (
             <div className="px-1 py-1">
@@ -140,6 +165,7 @@ export function JsonView({ value }: { value: unknown }) {
                   entry={entry}
                   copiedKey={copiedKey}
                   onCopy={flashCopied}
+                  copyValue={copy}
                 />
               ))}
             </div>
@@ -153,9 +179,11 @@ export function JsonView({ value }: { value: unknown }) {
             setCollapsed={setCollapsed}
             copiedKey={copiedKey}
             onCopy={flashCopied}
+            copyValue={copy}
           />
         )}
       </div>
+      <CopyNotice status={status} />
     </div>
   );
 }
@@ -177,12 +205,15 @@ function JsonTree({
   setCollapsed,
   copiedKey,
   onCopy,
+  copyValue,
 }: {
   value: unknown;
   collapsed: Set<string>;
   setCollapsed: Dispatch<SetStateAction<Set<string>>>;
   copiedKey: string | null;
   onCopy: (text: string, key: string) => Promise<void>;
+  /** 点击叶子节点时复制它的**实际值**。 */
+  copyValue: (text: string) => Promise<void>;
 }) {
   const rows = useMemo<TreeRow[]>(() => {
     const acc: TreeRow[] = [];
@@ -191,11 +222,18 @@ function JsonTree({
   }, [value, collapsed]);
 
   if (rows.length === 0) {
-    // 根是原始值 / 空容器 → 按格式化 JSON 字面量显示（字符串保留引号）。
+    // 根是原始值 / 空容器 → 按格式化 JSON 字面量显示（字符串保留引号），
+    // 点击即复制它本身。
     return (
-      <div className="px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted">
+      <button
+        type="button"
+        data-testid="json-root-copy"
+        {...clickCopyProps(() => void copyValue(copyTextOf(value)))}
+        className={cn(COPYABLE, "block w-full px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted")}
+        title="点击复制该值"
+      >
         {prettyJson(value)}
-      </div>
+      </button>
     );
   }
 
@@ -204,6 +242,8 @@ function JsonTree({
       {rows.map((row) => {
         const containerValue = row.value;
         const isEmpty = isContainer(containerValue) && isEmptyContainer(containerValue);
+        // 容器（且非空）→ 点击仍然展开/折叠；其余（叶子 / 空容器）→ 点击复制。
+        const canToggle = isContainer(containerValue) && !isEmpty;
         const toggle = () => {
           setCollapsed((prev) => {
             const next = new Set(prev);
@@ -228,9 +268,14 @@ function JsonTree({
 
             <button
               type="button"
-              onClick={toggle}
-              className="flex min-w-0 flex-1 items-baseline gap-0 text-left"
-              disabled={!row.isContainer || isEmpty}
+              data-testid="json-node"
+              // 叶子点击复制值；容器点击展开/折叠（绝不复制）。
+              {...(canToggle ? { onClick: toggle } : clickCopyProps(() => void copyValue(copyTextOf(row.value))))}
+              className={cn(
+                "flex min-w-0 flex-1 items-baseline gap-0 text-left",
+                !canToggle && cn(COPYABLE, "items-baseline"),
+              )}
+              title={canToggle ? undefined : "点击复制该值"}
             >
               <span className="shrink-0 text-fg">{row.keyText}</span>
               <span className="text-fg-subtle">{": "}</span>
@@ -266,6 +311,18 @@ function JsonTree({
       })}
     </div>
   );
+}
+
+/**
+ * 点击复制时写入剪贴板的文本 = 节点的**实际值**：
+ * 字符串不带引号（要 JSON 字面量用"复制节点 JSON"按钮），null → `null`，
+ * 其余按 JSON 序列化（空容器得到 `{}` / `[]`）。
+ */
+function copyTextOf(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "object") return jsonOf(value);
+  return String(value);
 }
 
 function ValueToken({ value }: { value: unknown }) {
@@ -304,7 +361,10 @@ function appendRows(
 
 interface MatchEntry {
   path: string;
+  /** 展示用（可能截断）。 */
   text: string;
+  /** 原始值 —— 点击复制的是它，不是被截断的展示文本。 */
+  value: unknown;
 }
 
 /** 扁平的“叶子行 + 空容器行”，用于搜索命中（每行带完整 JSONPath）。 */
@@ -315,14 +375,14 @@ function collectMatches(value: unknown, query: string, limit = 500): MatchEntry[
     if (!isContainer(v)) {
       const text = jsonOf(v);
       if (path.toLowerCase().includes(query) || text.toLowerCase().includes(query)) {
-        out.push({ path, text: truncate(text, 300) });
+        out.push({ path, text: truncate(text, 300), value: v });
       }
       return;
     }
     if (isEmptyContainer(v)) {
       const text = containerPreview(v);
       if (path.toLowerCase().includes(query) || text.toLowerCase().includes(query)) {
-        out.push({ path, text });
+        out.push({ path, text, value: v });
       }
       return;
     }
@@ -332,13 +392,13 @@ function collectMatches(value: unknown, query: string, limit = 500): MatchEntry[
         const text = jsonOf(child);
         if (childPath.toLowerCase().includes(query) || text.toLowerCase().includes(query)) {
           if (out.length >= limit) return;
-          out.push({ path: childPath, text: truncate(text, 300) });
+          out.push({ path: childPath, text: truncate(text, 300), value: child });
         }
       } else if (isEmptyContainer(child)) {
         const text = containerPreview(child);
         if (childPath.toLowerCase().includes(query) || text.toLowerCase().includes(query)) {
           if (out.length >= limit) return;
-          out.push({ path: childPath, text });
+          out.push({ path: childPath, text, value: child });
         }
       } else {
         walk(child, childPath);
@@ -353,15 +413,26 @@ function SearchResultRow({
   entry,
   copiedKey,
   onCopy,
+  copyValue,
 }: {
   entry: MatchEntry;
   copiedKey: string | null;
   onCopy: (text: string, key: string) => Promise<void>;
+  copyValue: (text: string) => Promise<void>;
 }) {
   return (
     <div className="group flex items-center gap-2 rounded-[5px] px-3 py-1 font-mono text-11 leading-[1.55] hover:bg-surface-2">
-      <span className="min-w-0 flex-1 truncate text-fg">{entry.path}</span>
-      <span className="shrink-0 max-w-[45%] truncate text-fg-subtle">{entry.text}</span>
+      <button
+        type="button"
+        data-testid="json-search-row"
+        // 复制**完整值**（entry.text 只是被截断的展示文本）。
+        {...clickCopyProps(() => void copyValue(copyTextOf(entry.value)))}
+        className={cn(COPYABLE, "flex min-w-0 flex-1 items-center gap-2")}
+        title="点击复制完整值"
+      >
+        <span className="min-w-0 flex-1 truncate text-fg">{entry.path}</span>
+        <span className="shrink-0 max-w-[45%] truncate text-fg-subtle">{entry.text}</span>
+      </button>
       <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"

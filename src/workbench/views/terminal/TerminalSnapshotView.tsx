@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { Check, Copy, FileCode2, FileText, FileJson, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import {
+  COPYABLE,
+  CopyNotice,
+  clickCopyProps,
+  useCopyFeedback,
+} from "@/components/ui/copy-feedback";
 import { JsonView } from "@/workbench/views/command-result/views/JsonView";
 import { RawStreamView } from "@/workbench/views/command-result/views/RawStreamView";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
@@ -17,23 +22,20 @@ import type { CapturedResult } from "./TerminalCommandCoordinator";
  * - `原始流` = 去掉受控标记后的原始 SSH 流（含 ESC 序列），字节级调试视图。
  *
  * - 渲染输出用 `<pre>` + `w-max whitespace-pre`：长行不折行，靠横向滚动看全
- *   （PTY 软换行已在提取时合并，这里不会再二次断行）；
+ *   （PTY 软换行已在提取时合并，这里不会再二次断行）；**逐行可点复制**，
+ *   复制的是该行原文（空格/列宽原样），拖选文字不会误触；
  * - 空输出是有效结果：显示为空（绝不回落 / 绝不假装有内容）；
  * - 快照不可用（`renderedDegraded`）时显示可见的"已降级"提示 —— 降级文本
  *   是对原始流的清洗，不是真正的终端快照，绝不伪装。
  */
 export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
   const [view, setView] = useState<"rendered" | "json" | "raw">("rendered");
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    if (await copyText(result.renderedText ?? "")) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    }
-  };
+  const { status, copy } = useCopyFeedback();
 
   const { boundary, json } = result;
+  const renderedText = result.renderedText ?? "";
+  // 逐行渲染：每行仍在同一条 `<pre whitespace-pre>` 里，不折行、不丢空格。
+  const lines = renderedText.split("\n");
   const exitCode = boundary.exitCode;
   const degraded = result.renderedDegraded;
   const meta: string[] = [];
@@ -103,22 +105,37 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
           <div className="relative h-full min-w-0 bg-surface-1">
             <button
               type="button"
-              onClick={() => void copy()}
+              onClick={() => void copy(renderedText)}
               className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
               title="复制渲染输出"
             >
-              {copied ? <Check size={11} /> : <Copy size={11} />}
-              {copied ? "已复制" : "复制"}
+              {status === "ok" ? <Check size={11} /> : <Copy size={11} />}
+              {status === "ok" ? "已复制" : "复制"}
             </button>
             <div className="h-full overflow-auto">
               <pre
                 // 与 xterm 同一套等宽栈（见 tokens.css --font-command-output）。
                 style={{ fontFamily: "var(--font-command-output)" }}
-                className="w-max whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
+                className="w-max min-w-full whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
               >
-                {result.renderedText ?? ""}
+                {lines.map((line, index) => (
+                  <button
+                    key={index}
+                    type="button"
+                    data-testid="terminal-output-line"
+                    // 原始行内容（空行显示成占位空格，但 data-line 仍是空串）。
+                    data-line={line}
+                    // 复制的是**该行原文**（空行也复制空串，不给空格）。
+                    {...clickCopyProps(() => void copy(line))}
+                    className={cn(COPYABLE, "block w-full min-w-full whitespace-pre")}
+                    title="点击复制该行"
+                  >
+                    {line === "" ? "\u00A0" : line}
+                  </button>
+                ))}
               </pre>
             </div>
+            <CopyNotice status={status} />
           </div>
         ) : view === "json" && json !== null ? (
           <JsonView value={json.value} />

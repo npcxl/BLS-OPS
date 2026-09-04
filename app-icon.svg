@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <!-- Ops Workbench placeholder icon: terminal prompt ">_" inside a window -->
-  <rect width="512" height="512" rx="96" fill="#0b0e13"/>
-  <rect x="16" y="16" width="480" height="480" rx="84" fill="none" stroke="#1a202b" stroke-width="16"/>
-  <path d="M116 168 L180 232 L116 296" fill="none" stroke="#7297ff" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="216" y="212" width="180" height="40" rx="8" fill="#7297ff"/>
-  <path d="M116 336 h280" stroke="#9099a8" stroke-width="36" stroke-linecap="round"/>
-</svg>

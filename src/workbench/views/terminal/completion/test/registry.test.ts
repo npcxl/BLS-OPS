@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+// provider 生成 notice 时用 i18n.t（未命中 key 原样返回）—— 初始化 en 保证插值可用。
+import "@/i18n";
+
 import type { NginxContainer, NginxEnvironment } from "@/api/types/environment";
 import type { RemoteFileEntry } from "@/api/ops-api";
 import { defaultProviders, providerFor, resolveCompletions } from "../registry";
@@ -224,7 +227,7 @@ describe("environment provider", () => {
       parseLine("nginx", 5),
     );
     expect(result.items.map((item) => item.label)).toEqual(["a-nginx", "b-nginx"]);
-    expect(result.notice).toContain("请先选择");
+    expect(result.notice).toContain("select one first");
     // 每条候选都要带上镜像/状态/端口/项目，用户才好选。
     expect(result.items[0].detail).toContain("Up 5 minutes");
   });
@@ -271,7 +274,7 @@ describe("environment provider", () => {
 
   it("explains itself while the environment is still unknown", async () => {
     const result = await provider.complete(ctx("nginx", 5), parseLine("nginx", 5));
-    expect(result.notice).toContain("正在探测");
+    expect(result.notice).toContain("Probing");
   });
 
   it("reports the docker reason when nginx is absent", async () => {

@@ -1,7 +1,9 @@
 import { ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /** A labelled key/value list used across the project graphs. */
 export function Detail({ title, items }: { title: string; items: string[] }) {
+  const { t } = useTranslation();
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-1 text-10 font-semibold tracking-[0.06em] text-fg-subtle uppercase">
@@ -17,7 +19,7 @@ export function Detail({ title, items }: { title: string; items: string[] }) {
           ))}
         </ul>
       ) : (
-        <div className="text-11 text-fg-subtle">暂无</div>
+        <div className="text-11 text-fg-subtle">{t("None")}</div>
       )}
     </div>
   );

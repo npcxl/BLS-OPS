@@ -17,7 +17,9 @@ import {
   WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage, type DiskMetrics } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -39,7 +41,7 @@ import { MonitorPicker } from "./MonitorPicker";
 import { isTabVisibleInPanes, usePageVisible } from "./hooks";
 
 function formatClock(timestamp: number | null): string {
-  if (!timestamp) return "尚未采集";
+  if (!timestamp) return i18n.t("Not collected yet");
   return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });
 }
 
@@ -47,10 +49,11 @@ function formatClock(timestamp: number | null): string {
 
 type DetailTab = "disk" | "network" | "process";
 
-const DETAIL_TABS: { id: DetailTab; label: string; icon: React.ElementType }[] = [
-  { id: "disk", label: "磁盘", icon: HardDrive },
-  { id: "network", label: "网络", icon: Network },
-  { id: "process", label: "进程", icon: ListOrdered },
+/** 明细 tab 名存英文 key，渲染处 t()（模块级常量不能调 hook）。 */
+const DETAIL_TABS: { id: DetailTab; labelKey: string; icon: React.ElementType }[] = [
+  { id: "disk", labelKey: "Disk", icon: HardDrive },
+  { id: "network", labelKey: "Network", icon: Network },
+  { id: "process", labelKey: "Processes", icon: ListOrdered },
 ];
 
 /**
@@ -61,6 +64,7 @@ const DETAIL_TABS: { id: DetailTab; label: string; icon: React.ElementType }[] =
  * simulated — if a value could not be read, its card says so.
  */
 export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
+  const { t } = useTranslation();
   const fallbackSessionRef = useRef<string | null>(null);
   if (!fallbackSessionRef.current) fallbackSessionRef.current = crypto.randomUUID();
   const sessionId = tab.sessionId ?? fallbackSessionRef.current;
@@ -130,9 +134,9 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
       const isJumpHop = challengeLabel !== `${result.host}:${result.port}`;
       const message =
         result.status === "host_key_changed"
-          ? `${challengeLabel} 的主机指纹已变化，请确认后再连接`
-          : `首次连接 ${challengeLabel}，请确认主机指纹`;
-      setStatus(sessionId, "error", { error: "等待主机指纹确认" });
+          ? t("Host fingerprint of {{host}} changed — confirm before connecting", { host: challengeLabel })
+          : t("First connection to {{host}} — confirm the host fingerprint", { host: challengeLabel });
+      setStatus(sessionId, "error", { error: t("Waiting for host fingerprint confirmation") });
       useMonitorStore.getState().setPhase(tab.id, "error", { error: message });
       raiseChallenge({
         sessionId,
@@ -150,7 +154,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           setStatus(sessionId, "closed");
           useMonitorStore
             .getState()
-            .setPhase(tab.id, "closed", { error: "已拒绝该主机指纹，监控已取消" });
+            .setPhase(tab.id, "closed", { error: t("Host fingerprint rejected; monitoring canceled") });
         },
       });
     } catch (cause) {
@@ -165,6 +169,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     register,
     sessionId,
     setStatus,
+    t,
     tab.credentialId,
     tab.id,
     tab.oneTimePassword,
@@ -187,7 +192,9 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
       if (disposed) return;
       setStatus(sessionId, "closed");
-      useMonitorStore.getState().setPhase(tab.id, "closed", { error: "SSH 连接已断开，监控已停止" });
+      useMonitorStore
+        .getState()
+        .setPhase(tab.id, "closed", { error: i18n.t("SSH connection closed; monitoring stopped") });
     });
 
     void connect();
@@ -243,16 +250,16 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
 
   const statusLabel =
     phase === "connected"
-      ? "采集中"
+      ? t("Collecting")
       : phase === "connecting"
-        ? "连接中"
+        ? t("Connecting")
         : phase === "closed"
-          ? "已断开"
+          ? t("Closed")
           : phase === "unsupported"
-            ? "系统不支持"
+            ? t("Unsupported OS")
             : phase === "error"
-              ? "采集失败"
-              : "未连接";
+              ? t("Collection failed")
+              : t("Disconnected");
 
   const statusTone =
     phase === "connected"
@@ -286,10 +293,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           {snapshot && (
             <>
               <span className="text-line-strong">|</span>
-              <span>运行 {formatUptime(snapshot.system.uptime_seconds)}</span>
+              <span>{t("Up {{time}}", { time: formatUptime(snapshot.system.uptime_seconds) })}</span>
             </>
           )}
-          {server?.proxy_jump_id && <span className="shrink-0">经跳板机</span>}
+          {server?.proxy_jump_id && <span className="shrink-0">{t("via jump host")}</span>}
         </span>
       </div>
 
@@ -302,10 +309,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           size="xs"
           disabled={!canCollect}
           onClick={() => setPaused(tab.id, !entry?.paused)}
-          title={entry?.paused ? "继续采集" : "暂停采集"}
+          title={entry?.paused ? t("Resume collection") : t("Pause collection")}
         >
           {entry?.paused ? <Play size={12} /> : <Pause size={12} />}
-          {entry?.paused ? "继续" : "暂停"}
+          {entry?.paused ? t("Resume") : t("Pause")}
         </Button>
         <Button
           variant="ghost"
@@ -314,11 +321,11 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           onClick={() => void refresh(tab.id)}
         >
           <RefreshCw size={12} />
-          刷新
+          {t("Refresh")}
         </Button>
         <div className="mx-1 h-4 w-px bg-line" />
         <label className="flex items-center gap-1 text-11 text-fg-subtle">
-          间隔
+          {t("Interval")}
           <select
             value={intervalMs}
             onChange={(event) => setIntervalMs(tab.id, Number(event.target.value))}
@@ -326,7 +333,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           >
             {MONITOR_INTERVALS.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.label}
+                {t("{{count}}s", { count: option.value / 1000 })}
               </option>
             ))}
           </select>
@@ -339,16 +346,16 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             onClick={() => {
               void opsApi.sshDisconnect(sessionId).catch(() => undefined);
               setStatus(sessionId, "closed");
-              useMonitorStore.getState().setPhase(tab.id, "closed", { error: "已断开连接" });
+              useMonitorStore.getState().setPhase(tab.id, "closed", { error: t("Connection closed") });
             }}
           >
             <Unplug size={12} />
-            断开
+            {t("Disconnect")}
           </Button>
         ) : (
           <Button variant="ghost" size="xs" onClick={() => void connect()}>
             <PlugZap size={12} />
-            重新连接
+            {t("Reconnect")}
           </Button>
         )}
         <ToolbarStatus className="gap-1.5">
@@ -367,8 +374,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
         <div className="flex shrink-0 items-start gap-2 border-b border-warning/30 bg-warning/10 px-3 py-2 text-12 text-fg">
           <TriangleAlert size={13} className="mt-0.5 shrink-0 text-warning" />
           <span className="min-w-0 flex-1">
-            {entry?.unsupportedReason ?? "不支持的操作系统"}
-            <span className="ml-1 text-fg-subtle">BLS-OPS 目前只提供 Linux 服务器的只读监控，采集已停止。</span>
+            {entry?.unsupportedReason ?? t("Unsupported operating system")}
+            <span className="ml-1 text-fg-subtle">
+              {t("BLS-OPS only provides read-only monitoring for Linux servers; collection has stopped.")}
+            </span>
           </span>
         </div>
       )}
@@ -381,23 +390,25 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
       {phase === "closed" && (
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
           <WifiOff size={13} className="shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{entry?.error ?? "SSH 连接已断开，监控已停止"}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {entry?.error ?? t("SSH connection closed; monitoring stopped")}
+          </span>
           <Button variant="ghost" size="xs" onClick={() => void connect()}>
-            重新连接
+            {t("Reconnect")}
           </Button>
         </div>
       )}
       {phase === "connecting" && (
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
           <Activity size={13} className="shrink-0 animate-pulse text-accent" />
-          <span>正在建立监控连接（不分配交互式终端）…</span>
+          <span>{t("Establishing monitoring connection (no interactive terminal allocated)…")}</span>
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {!snapshot && phase !== "unsupported" ? (
           <p className="px-1 py-6 text-12 text-fg-subtle">
-            还没有采集到任何数据。连接成功后会立即开始第一次采集。
+            {t("No data collected yet. The first collection starts right after connecting.")}
           </p>
         ) : (
           <div className="flex flex-col gap-3">
@@ -405,52 +416,64 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
               <MetricCard
                 icon={Cpu}
-                label="CPU 使用率"
+                label={t("CPU usage")}
                 value={cpu ? cpu.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={cpu?.usage_percent}
-                detail={cpu ? `${cpu.logical_cores} 逻辑核心` : "等待采集"}
+                detail={cpu ? t("{{count}} logical cores", { count: cpu.logical_cores }) : t("Waiting for data")}
               />
               <MetricCard
                 icon={MemoryStick}
-                label="内存使用率"
+                label={t("Memory usage")}
                 value={memory ? memory.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={memory?.usage_percent}
                 detail={
                   memory
-                    ? `${formatBytes(memory.used)} / ${formatBytes(memory.total)}${
-                        memory.swap_total > 0 ? ` · 交换 ${formatBytes(memory.swap_used)}` : ""
+                    ? `${t("{{used}} / {{total}}", {
+                        used: formatBytes(memory.used),
+                        total: formatBytes(memory.total),
+                      })}${
+                        memory.swap_total > 0
+                          ? t(" · swap {{size}}", { size: formatBytes(memory.swap_used) })
+                          : ""
                       }`
-                    : "等待采集"
+                    : t("Waiting for data")
                 }
               />
               <MetricCard
                 icon={HardDrive}
-                label="磁盘使用率"
+                label={t("Disk usage")}
                 value={fullestDisk ? fullestDisk.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={fullestDisk?.usage_percent}
                 detail={
                   fullestDisk
-                    ? `最高：${fullestDisk.mount_point} · 共 ${snapshot?.disks.length ?? 0} 个文件系统`
+                    ? t("Highest: {{mount}} · {{count}} filesystems", {
+                        mount: fullestDisk.mount_point,
+                        count: snapshot?.disks.length ?? 0,
+                      })
                     : snapshot
-                      ? "未检测到文件系统"
-                      : "等待采集"
+                      ? t("No filesystems detected")
+                      : t("Waiting for data")
                 }
               />
               <MetricCard
                 icon={Gauge}
-                label="系统负载"
+                label={t("Load average")}
                 value={cpu ? cpu.load_1.toFixed(2) : "—"}
-                unit="1 分钟"
+                unit={t("1 min")}
                 percent={
                   cpu && cpu.logical_cores > 0 ? (cpu.load_1 / cpu.logical_cores) * 100 : undefined
                 }
                 detail={
                   cpu
-                    ? `5 分钟 ${cpu.load_5.toFixed(2)} · 15 分钟 ${cpu.load_15.toFixed(2)} · ${cpu.logical_cores} 核`
-                    : "等待采集"
+                    ? t("5m {{five}} · 15m {{fifteen}} · {{count}} cores", {
+                        five: cpu.load_5.toFixed(2),
+                        fifteen: cpu.load_15.toFixed(2),
+                        count: cpu.logical_cores,
+                      })
+                    : t("Waiting for data")
                 }
               />
             </div>
@@ -458,36 +481,36 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             {/* Trends — 30 minutes */}
             <div className="flex flex-wrap gap-3">
               <TrendChart
-                title="CPU 使用率"
+                title={t("CPU usage")}
                 value={`${(cpu?.usage_percent ?? 0).toFixed(1)}%`}
-                detail={`${entry?.history.length ?? 0} 个采样点`}
+                detail={t("{{count}} samples", { count: entry?.history.length ?? 0 })}
                 points={entry?.history ?? []}
                 pick={(point) => point.cpu}
                 max={100}
                 tone="text-accent"
               />
               <TrendChart
-                title="内存使用率"
+                title={t("Memory usage")}
                 value={`${(memory?.usage_percent ?? 0).toFixed(1)}%`}
-                detail={memory ? `可用 ${formatBytes(memory.available)}` : ""}
+                detail={memory ? t("{{size}} available", { size: formatBytes(memory.available) }) : ""}
                 points={entry?.history ?? []}
                 pick={(point) => point.memory}
                 max={100}
                 tone="text-success"
               />
               <TrendChart
-                title="下载速度"
+                title={t("Download")}
                 value={formatSpeed(throughput.download)}
-                detail="全部非回环接口合计"
+                detail={t("All non-loopback interfaces")}
                 points={entry?.history ?? []}
                 pick={(point) => point.download}
                 max={1}
                 tone="text-ai"
               />
               <TrendChart
-                title="上传速度"
+                title={t("Upload")}
                 value={formatSpeed(throughput.upload)}
-                detail="全部非回环接口合计"
+                detail={t("All non-loopback interfaces")}
                 points={entry?.history ?? []}
                 pick={(point) => point.upload}
                 max={1}
@@ -513,7 +536,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                       )}
                     >
                       <Icon size={12} strokeWidth={1.75} />
-                      {item.label}
+                      {t(item.labelKey)}
                       <span className="text-fg-subtle">
                         {item.id === "disk"
                           ? (snapshot?.disks.length ?? 0)

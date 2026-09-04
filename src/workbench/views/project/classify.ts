@@ -123,38 +123,38 @@ export function groupInfrastructure(instances: DeploymentInstance[]): Infrastruc
 // ---------------------------------------------------------------------------
 
 export const WORKLOAD_ROLE_LABELS: Record<NonNullable<DeploymentInstance["workload_role"]>, string> = {
-  application: "应用服务",
-  infrastructure: "基础设施",
-  system: "系统组件",
-  unknown: "待归类",
+  application: "App services",
+  infrastructure: "Infrastructure",
+  system: "System components",
+  unknown: "Unclassified",
 };
 
 export const COMPONENT_ROLE_LABELS: Record<string, string> = {
-  frontend: "前端",
-  backend: "后端",
-  worker: "后台任务",
-  scheduled_job: "定时任务",
-  database: "数据库",
-  cache: "缓存",
-  object_storage: "对象存储",
-  message_queue: "消息队列",
-  search: "搜索引擎",
-  gateway: "网关",
-  observability: "可观测性",
-  ai_inference: "AI 推理",
-  unknown: "角色未知",
+  frontend: "Frontend",
+  backend: "Backend",
+  worker: "Worker",
+  scheduled_job: "Scheduled job",
+  database: "Database",
+  cache: "Cache",
+  object_storage: "Object storage",
+  message_queue: "Message queue",
+  search: "Search engine",
+  gateway: "Gateway",
+  observability: "Observability",
+  ai_inference: "AI inference",
+  unknown: "Role unknown",
 };
 
 export const OWNERSHIP_LABELS: Record<string, string> = {
-  shared: "共享",
-  project_scoped: "项目专属",
-  unknown: "归属未知",
+  shared: "Shared",
+  project_scoped: "Project-scoped",
+  unknown: "Ownership unknown",
 };
 
 export const CONFIDENCE_LABELS: Record<string, string> = {
-  high: "置信度高",
-  medium: "置信度中",
-  low: "置信度低",
+  high: "Confidence: high",
+  medium: "Confidence: medium",
+  low: "Confidence: low",
 };
 
 /** 卡片展示的产品名：technology → service → 实例名，绝不编造。 */

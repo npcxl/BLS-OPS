@@ -29,7 +29,7 @@ export function PlaceholderView({ tab }: { tab: WorkspaceTab }) {
         <Icon size={20} strokeWidth={1.5} />
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-14 font-medium text-fg">{tab.title}</span>
+        <span className="text-14 font-medium text-fg">{t(tab.title)}</span>
         <span className="rounded-control border border-line bg-surface-1 px-1.5 py-0.5 text-11 text-fg-subtle">
           {t(meta.phase)}
         </span>

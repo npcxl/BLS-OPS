@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    db::AppDb, dirsize::DirectorySizeRegistry, monitor::MonitorRegistry,
+    db::AppDb, dirsize::DirectorySizeRegistry, editor_sync::SyncRegistry, monitor::MonitorRegistry,
     project_discovery::ScanRegistry, ssh::SshSessionManager,
 };
 
@@ -15,6 +15,8 @@ pub struct AppState {
     pub project_scans: ScanRegistry,
     /// On-demand directory-size computations, one per session + path.
     pub dir_sizes: Arc<DirectorySizeRegistry>,
+    /// 本地编辑器同步会话（编辑器保存 → SFTP 回传）。
+    pub editor_syncs: SyncRegistry,
 }
 
 impl AppState {
@@ -25,6 +27,7 @@ impl AppState {
             monitor: MonitorRegistry::default(),
             project_scans: ScanRegistry::default(),
             dir_sizes: Arc::new(DirectorySizeRegistry::default()),
+            editor_syncs: SyncRegistry::default(),
         }
     }
 }

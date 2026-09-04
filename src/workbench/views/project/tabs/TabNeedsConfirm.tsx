@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { CircleHelp } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { GatewayRoute, ProjectCandidate, ReviewState } from "@/api/ops-api";
 import { CandidateCard } from "../CandidateCard";
@@ -35,6 +36,7 @@ export function TabNeedsConfirm({
   /** 合并/拆分回调：parentPath 为 null 表示拆分。 */
   onMerge: (childPath: string, parentPath: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const list = useMemo(
     () =>
       candidates
@@ -50,8 +52,8 @@ export function TabNeedsConfirm({
     return (
       <ModuleEmpty
         icon={CircleHelp}
-        title="没有待确认的目录"
-        hint="所有候选都已被确认或忽略。"
+        title={t("No directories to review")}
+        hint={t("All candidates are confirmed or ignored.")}
       />
     );
   }
@@ -59,7 +61,9 @@ export function TabNeedsConfirm({
   return (
     <div className="flex flex-col gap-2">
       <p className="text-11 text-fg-subtle">
-        以下目录可能是项目，但系统无法 100% 确定。请逐个确认或忽略，结论会保存并在下次扫描沿用。
+        {t(
+          "These directories might be projects, but the system can't be 100% sure. Confirm or ignore each one; decisions are saved and reused on the next scan.",
+        )}
       </p>
       {list.map((candidate) => (
         <CandidateCard

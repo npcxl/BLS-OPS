@@ -10,6 +10,7 @@ import {
   Globe,
   Split,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
@@ -36,14 +37,14 @@ import {
  */
 const STATUS_META: Record<
   DiscoveryStatus,
-  { label: string; tone: string }
+  { labelKey: string; tone: string }
 > = {
-  confirmed: { label: "已确认", tone: "bg-success/12 text-success" },
-  high_confidence: { label: "高可信", tone: "bg-accent/12 text-accent" },
-  needs_confirm: { label: "待确认", tone: "bg-warning/12 text-warning" },
-  possible_dir: { label: "可能目录", tone: "bg-surface-2 text-fg-subtle" },
-  running_service: { label: "运行服务", tone: "bg-[#6366f1]/12 text-[#4338ca]" },
-  not_project: { label: "非项目", tone: "bg-surface-3 text-fg-subtle" },
+  confirmed: { labelKey: "Confirmed", tone: "bg-success/12 text-success" },
+  high_confidence: { labelKey: "High confidence", tone: "bg-accent/12 text-accent" },
+  needs_confirm: { labelKey: "Needs review", tone: "bg-warning/12 text-warning" },
+  possible_dir: { labelKey: "Possible directory", tone: "bg-surface-2 text-fg-subtle" },
+  running_service: { labelKey: "Running service", tone: "bg-[#6366f1]/12 text-[#4338ca]" },
+  not_project: { labelKey: "Not a project", tone: "bg-surface-3 text-fg-subtle" },
 };
 
 /**
@@ -59,15 +60,15 @@ export interface ScanInfo {
   confirmedMissing?: boolean;
 }
 
-/** 已确认项目的持久化状态徽标：覆盖在「已确认」之上，提示跨扫描变化。 */
+/** 已确认项目的持久化状态徽标：覆盖在「已确认」之上，提示跨扫描变化。label 存英文 key。 */
 const SCAN_STATE_META: Record<
   ConfirmedScanState,
-  { label: string; tone: string }
+  { labelKey: string; tone: string }
 > = {
-  active: { label: "本次已发现", tone: "bg-success/12 text-success" },
-  missing: { label: "本次未发现", tone: "bg-warning/14 text-warning" },
-  inaccessible: { label: "服务器不可访问", tone: "bg-danger/14 text-danger" },
-  changed: { label: "信息有变化", tone: "bg-accent/14 text-accent" },
+  active: { labelKey: "Found this scan", tone: "bg-success/12 text-success" },
+  missing: { labelKey: "Not found this scan", tone: "bg-warning/14 text-warning" },
+  inaccessible: { labelKey: "Server unreachable", tone: "bg-danger/14 text-danger" },
+  changed: { labelKey: "Details changed", tone: "bg-accent/14 text-accent" },
 };
 
 export function CandidateCard({
@@ -105,6 +106,7 @@ export function CandidateCard({
   /** 合并 / 拆分回调（parentPath 为 null 表示拆分）。 */
   onMerge?: (childPath: string, parentPath: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
@@ -125,7 +127,7 @@ export function CandidateCard({
         : candidate.status;
   const statusMeta =
     displayStatus === "ignored"
-      ? { label: "已忽略", tone: "bg-surface-3 text-fg-subtle" }
+      ? { labelKey: "Ignored", tone: "bg-surface-3 text-fg-subtle" }
       : (STATUS_META[displayStatus] ?? STATUS_META.possible_dir);
   const instances = candidate.deploy_instances ?? [];
   // 候选自身端口为空时（systemd 不报端口），用关联实例的端口补齐展示。
@@ -167,7 +169,7 @@ export function CandidateCard({
                 project_kind 不再上卡片：能进项目/待确认列表的都是业务项目候选，
                 基础设施改判场景已由「信息有变化」徽标提示复核。 */}
             <span className={cn("rounded px-1.5 py-0.5 text-10", statusMeta.tone)}>
-              {statusMeta.label}
+              {t(statusMeta.labelKey)}
             </span>
             {/* 已确认项目的跨扫描状态：本次是否又被发现、信息是否变化、服务器是否不可访问。
                 这些只在 review === "confirmed" 且 scanInfo 存在时才有意义（来自持久化快照）。 */}
@@ -178,17 +180,17 @@ export function CandidateCard({
                   SCAN_STATE_META[scanInfo.scanState].tone,
                 )}
               >
-                {SCAN_STATE_META[scanInfo.scanState].label}
+                {t(SCAN_STATE_META[scanInfo.scanState].labelKey)}
               </span>
             )}
             {review === "confirmed" && scanInfo?.kindChanged && (
               <span className="rounded bg-warning/14 px-1.5 py-0.5 text-10 text-warning">
-                信息有变化
+                {t("Details changed")}
               </span>
             )}
             {review === "confirmed" && scanInfo?.confirmedMissing && (
               <span className="rounded bg-warning/14 px-1.5 py-0.5 text-10 text-warning">
-                本次未发现
+                {t("Not found this scan")}
               </span>
             )}
             <span
@@ -199,12 +201,12 @@ export function CandidateCard({
                   : "bg-surface-2 text-fg-subtle",
               )}
             >
-              {candidate.category === "deployed" ? "已部署" : "仅源码"}
+              {candidate.category === "deployed" ? t("Deployed") : t("Source only")}
             </span>
-            {running && <span className="text-10 text-success">正在运行</span>}
+            {running && <span className="text-10 text-success">{t("Running")}</span>}
             {mergedChildren.length > 0 && (
               <span className="rounded bg-accent/12 px-1.5 py-0.5 text-10 text-accent">
-                已并入 {mergedChildren.length} 个子目录
+                {t("{{count}} subdirectories merged in", { count: mergedChildren.length })}
               </span>
             )}
             {candidate.status === "confirmed" && instances.length > 0 && (
@@ -231,8 +233,11 @@ export function CandidateCard({
               </span>
             ))}
             <span className="text-10 text-fg-subtle">
-              {candidate.project_type} · {candidate.modules.length} 个模块 · 准备度{" "}
-              {candidate.readiness.score}
+              {t("{{type}} · {{count}} modules · readiness {{score}}", {
+                type: candidate.project_type,
+                count: candidate.modules.length,
+                score: candidate.readiness.score,
+              })}
             </span>
           </div>
         </div>
@@ -249,7 +254,7 @@ export function CandidateCard({
             size={12}
             className={cn("transition-transform", showDeploy && "rotate-90")}
           />
-          部署文件
+          {t("Deploy files")}
         </button>
         {showDeploy && (
           <div className="px-4 pb-3 pt-1">
@@ -279,7 +284,7 @@ export function CandidateCard({
                   size={12}
                   className={cn("transition-transform", expanded && "rotate-90")}
                 />
-                {expanded ? "收起证据详情" : "证据详情"}
+                {expanded ? t("Hide evidence details") : t("Evidence details")}
               </Button>
             </div>
           </div>
@@ -294,7 +299,7 @@ export function CandidateCard({
             <div className="mb-4 rounded-[8px] border border-line bg-surface-2/60 px-3 py-2.5">
               <div className="mb-2 flex items-center gap-1.5 text-10 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
                 <Globe size={11} />
-                访问入口（Nginx 网关）
+                {t("Access entries (Nginx gateway)")}
               </div>
               <div className="space-y-1.5">
                 {routes.map((route) => (
@@ -310,7 +315,7 @@ export function CandidateCard({
                       <button
                         type="button"
                         className="truncate font-mono text-fg-muted hover:text-fg"
-                        title={`打开 ${route.root}`}
+                        title={t("Open {{path}}", { path: route.root as string })}
                         onClick={() => onOpenPath(route.root as string)}
                       >
                         root {route.root}
@@ -326,7 +331,7 @@ export function CandidateCard({
                         variant="ghost"
                         size="xs"
                         onClick={() => onOpenPath(route.config_file as string)}
-                        title={`打开 ${route.config_file}`}
+                        title={t("Open {{path}}", { path: route.config_file as string })}
                       >
                         <FileCode2 size={11} />
                         {configFileLabel(route.config_file)}
@@ -341,40 +346,46 @@ export function CandidateCard({
           {/* 证据 / 评分细节：默认收起，点展开才看，避免卡片一打开就一堆数字 */}
           <div className="grid gap-4 lg:grid-cols-2">
             <Detail
-              title={`发现结论：${statusMeta.label}（评分 ${candidate.score}）`}
-              items={[`项目类型：${candidate.project_type}`, `模块数：${candidate.modules.length}`]}
+              title={t("Verdict: {{status}} (score {{score}})", {
+                status: t(statusMeta.labelKey),
+                score: candidate.score,
+              })}
+              items={[
+                t("Project type: {{type}}", { type: candidate.project_type }),
+                t("Modules: {{count}}", { count: candidate.modules.length }),
+              ]}
             />
             <Detail
-              title="判定依据"
+              title={t("Decision evidence")}
               items={candidate.evidence.map(
                 (item) => `+${item.weight} ${item.summary}（${item.source}）`,
               )}
             />
             <div className="space-y-4">
               <Detail
-                title="扣分与风险"
+                title={t("Penalties & risks")}
                 items={candidate.penalties.map((item) => `-${item.weight} ${item.summary}`)}
               />
               <Detail
-                title="运行关联"
+                title={t("Runtime links")}
                 items={candidate.runtime_links.map(
                   (item) =>
-                    `${item.kind}：${item.name}${item.ports.length ? ` · 端口 ${item.ports.join(", ")}` : ""}${item.service ? ` · ${item.service.label}` : ""}`,
+                    `${item.kind}: ${item.name}${item.ports.length ? t(" · ports {{ports}}", { ports: item.ports.join(", ") }) : ""}${item.service ? ` · ${item.service.label}` : ""}`,
                 )}
               />
             </div>
             {mergedChildren.length > 0 && (
               <div className="space-y-4 lg:col-span-2">
-                <Detail title="已并入的子目录（人工合并）" items={mergedChildren} />
+                <Detail title={t("Subdirectories merged in (manual merge)")} items={mergedChildren} />
               </div>
             )}
             <div className="space-y-4 lg:col-span-2">
-              <Detail title="环境变量名称" items={candidate.required_environment_names} />
+              <Detail title={t("Environment variable names")} items={candidate.required_environment_names} />
               <Detail
-                title="部署准备"
+                title={t("Deployment readiness")}
                 items={[
-                  ...candidate.readiness.blockers.map((item) => `阻塞：${item}`),
-                  ...candidate.readiness.warnings.map((item) => `警告：${item}`),
+                  ...candidate.readiness.blockers.map((item) => t("Blocker: {{item}}", { item })),
+                  ...candidate.readiness.warnings.map((item) => t("Warning: {{item}}", { item })),
                   ...candidate.readiness.confirmed_facts,
                 ]}
               />
@@ -389,7 +400,7 @@ export function CandidateCard({
                 onClick={() => void submitReview("confirmed")}
               >
                 <Check size={11} />
-                {busy === "confirmed" ? "保存中…" : "确认项目"}
+                {busy === "confirmed" ? t("Saving") : t("Confirm project")}
               </Button>
             )}
             {review !== "ignored" && (
@@ -400,7 +411,7 @@ export function CandidateCard({
                 onClick={() => void submitReview("ignored")}
               >
                 <EyeOff size={11} />
-                {busy === "ignored" ? "保存中…" : "忽略目录"}
+                {busy === "ignored" ? t("Saving") : t("Ignore directory")}
               </Button>
             )}
             {(review === "confirmed" || review === "ignored") && (
@@ -410,14 +421,14 @@ export function CandidateCard({
                 disabled={busy !== null}
                 onClick={() => void submitReview("pending")}
               >
-                撤销结论
+                {t("Undo decision")}
               </Button>
             )}
             {/* 人工合并 / 拆分（问题4）：结论持久化，后续扫描不会覆盖。 */}
             {onMerge && mergedInto && (
               <>
                 <span className="ml-1 truncate text-10 text-fg-subtle" title={mergedInto}>
-                  已并入 {mergedInto}
+                  {t("Merged into {{path}}", { path: mergedInto })}
                 </span>
                 <Button
                   variant="ghost"
@@ -429,7 +440,7 @@ export function CandidateCard({
                   }}
                 >
                   <Split size={11} />
-                  拆分
+                  {t("Split")}
                 </Button>
               </>
             )}
@@ -441,13 +452,13 @@ export function CandidateCard({
                 onClick={() => setPickingMerge((value) => !value)}
               >
                 <GitMerge size={11} />
-                并入其他项目…
+                {t("Merge into another project…")}
               </Button>
             )}
           </div>
           {pickingMerge && !mergedInto && (
             <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-line pt-2">
-              <span className="text-10 text-fg-subtle">选择要并入的父项目：</span>
+              <span className="text-10 text-fg-subtle">{t("Pick the parent project to merge into:")}</span>
               {mergeTargets
                 .filter((target) => target.path !== candidate.path)
                 .map((target) => (
@@ -494,19 +505,20 @@ function DeploymentFiles({
   /** 点按钮：开则收起面板，关则打开。 */
   onToggle: () => void;
 }) {
+  const { t } = useTranslation();
   if (instances.length === 0) {
     return (
       <div className="rounded-[8px] border border-line bg-surface-2/60 px-3 py-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-11 text-fg-subtle">仅源码，未关联到运行实例</span>
+          <span className="text-11 text-fg-subtle">{t("Source only — not linked to a running instance")}</span>
           <Button
             variant="secondary"
             size="xs"
             onClick={onToggle}
-            title={`在文件面板打开 ${candidate.path}`}
+            title={t("Open {{path}} in the file panel", { path: candidate.path })}
           >
             <FolderOpen size={11} />
-            {open ? "关闭项目目录" : "查看项目文件"}
+            {open ? t("Close project folder") : t("View project files")}
           </Button>
         </div>
       </div>
@@ -517,16 +529,16 @@ function DeploymentFiles({
     <div className="rounded-[8px] border border-line bg-surface-2/60 px-3 py-2.5">
       <div className="mb-2 flex items-center gap-2">
         <span className="text-10 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
-          部署文件
+          {t("Deploy files")}
         </span>
         <Button
           variant="secondary"
           size="xs"
           onClick={onToggle}
-          title={`在文件面板打开 ${candidate.path}`}
+          title={t("Open {{path}} in the file panel", { path: candidate.path })}
         >
           <FolderOpen size={11} />
-          {open ? "关闭项目目录" : "打开项目目录"}
+          {open ? t("Close project folder") : t("Open project folder")}
         </Button>
       </div>
       <div className="space-y-2">
@@ -550,7 +562,7 @@ function DeploymentFiles({
                     variant="ghost"
                     size="xs"
                     onClick={() => onOpenPath(file)}
-                    title={`打开 ${file}`}
+                    title={t("Open {{path}}", { path: file })}
                   >
                     <FileCode2 size={11} />
                     {configFileLabel(file)}
@@ -561,8 +573,8 @@ function DeploymentFiles({
                 // 如实说，不给假按钮。
                 <span className="text-10 text-fg-subtle">
                   {instance.image
-                    ? "镜像运行，宿主机上没有配置文件"
-                    : "没有可用的配置文件"}
+                    ? t("Runs from an image — no config files on the host")
+                    : t("No config files available")}
                 </span>
               )}
               {instance.working_directories.length > 0 && (

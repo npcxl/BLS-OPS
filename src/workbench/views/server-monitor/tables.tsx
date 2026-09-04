@@ -1,17 +1,31 @@
+import { useTranslation } from "react-i18next";
 import type { DiskMetrics, NetworkMetrics, ProcessInfo } from "@/api/ops-api";
 import { formatBytes, formatSpeed } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { usageTone } from "./MetricCard";
 
 export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
+  const { t } = useTranslation();
   if (disks.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到任何文件系统（可能该主机不支持，或命令失败）。</p>;
+    return (
+      <p className="px-3 py-4 text-12 text-fg-subtle">
+        {t("No filesystems reported (the host may be unsupported, or a command failed).")}
+      </p>
+    );
   }
   return (
     <table className="w-full text-11">
       <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
         <tr>
-          {["挂载点", "设备", "类型", "容量", "已用", "可用", "使用率"].map((head) => (
+          {[
+            t("Mount point"),
+            t("Device"),
+            t("Type"),
+            t("Size"),
+            t("Used"),
+            t("Avail"),
+            t("Usage"),
+          ].map((head) => (
             <th key={head} className="px-3 py-1.5 text-left font-semibold">
               {head}
             </th>
@@ -46,14 +60,25 @@ export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
 }
 
 export function NetworkTable({ network }: { network: NetworkMetrics[] }) {
+  const { t } = useTranslation();
   if (network.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到任何网络接口（已排除回环接口 lo）。</p>;
+    return (
+      <p className="px-3 py-4 text-12 text-fg-subtle">
+        {t("No network interfaces reported (loopback lo excluded).")}
+      </p>
+    );
   }
   return (
     <table className="w-full text-11">
       <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
         <tr>
-          {["接口", "累计接收", "累计发送", "下载速度", "上传速度"].map((head) => (
+          {[
+            t("Interface"),
+            t("Total received"),
+            t("Total sent"),
+            t("Download"),
+            t("Upload"),
+          ].map((head) => (
             <th key={head} className="px-3 py-1.5 text-left font-semibold">
               {head}
             </th>
@@ -76,14 +101,23 @@ export function NetworkTable({ network }: { network: NetworkMetrics[] }) {
 }
 
 export function ProcessTable({ processes }: { processes: ProcessInfo[] }) {
+  const { t } = useTranslation();
   if (processes.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">没有读到进程列表。</p>;
+    return <p className="px-3 py-4 text-12 text-fg-subtle">{t("No process list reported.")}</p>;
   }
   return (
     <table className="w-full text-11">
       <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
         <tr>
-          {["PID", "用户", "CPU", "内存", "状态", "启动时间", "命令"].map((head) => (
+          {[
+            t("PID"),
+            t("User"),
+            t("CPU"),
+            t("Memory"),
+            t("Status"),
+            t("Started"),
+            t("Command"),
+          ].map((head) => (
             <th key={head} className="px-3 py-1.5 text-left font-semibold">
               {head}
             </th>

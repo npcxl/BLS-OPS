@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Boxes, Loader2, RefreshCw } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
@@ -33,16 +34,18 @@ const NO_FOLLOW = { nonce: 0, arg: "" };
 
 type TabId = "applications" | "needs_confirm" | "runtime" | "infrastructure" | "basic_info";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "applications", label: "项目" },
-  { id: "needs_confirm", label: "待确认" },
-  { id: "runtime", label: "应用服务" },
-  { id: "infrastructure", label: "基础设施" },
-  { id: "basic_info", label: "基本信息" },
+/** Tab 名存英文 key，渲染处 t()（模块级常量不能调 hook）。 */
+const TABS: { id: TabId; labelKey: string }[] = [
+  { id: "applications", labelKey: "Projects" },
+  { id: "needs_confirm", labelKey: "Needs review" },
+  { id: "runtime", labelKey: "App services" },
+  { id: "infrastructure", labelKey: "Infrastructure" },
+  { id: "basic_info", labelKey: "Basic info" },
 ];
 
 /** P3 is intentionally discovery-only. Deployment records remain available to P5, but are not exposed here. */
 export function ProjectView({ tab }: { tab: WorkspaceTab }) {
+  const { t } = useTranslation();
   const session = useCommandSession(tab);
   const [activeTab, setActiveTab] = useState<TabId>("applications");
   // 右侧文件面板：点"查看项目文件 / Docker 配置 / Nginx 配置"时打开到对应路径。
@@ -242,7 +245,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
           ) : (
             <RefreshCw size={12} />
           )}
-          刷新
+          {t("Refresh")}
         </Button>
       }
     >
@@ -264,7 +267,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
           {result?.incremental && !loading && (
             <div className="mx-5 mt-4 flex items-center gap-2 rounded-[8px] border border-line bg-surface-2/60 px-3 py-2 text-11 text-fg-subtle">
               <Loader2 size={12} className="animate-spin" />
-              已加载上次发现结果，后台复核进行中…
+              {t("Loaded the last discovery; re-checking in the background…")}
             </div>
           )}
 
@@ -282,7 +285,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                     : "text-fg-muted hover:text-fg",
                 )}
               >
-                {item.label}
+                {t(item.labelKey)}
                 {tabBadges[item.id] > 0 && (
                   <span
                     className={cn(
@@ -307,8 +310,10 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
               {!result && !loading && (
                 <ModuleEmpty
                   icon={Boxes}
-                  title="发现服务器项目"
-                  hint="先识别服务器的操作系统与已安装能力，再据此启用对应的收集器（systemd、Docker、Nginx、PM2 等均按需），最后结合 Git、进程、端口与配置线索定位项目。整个过程只读，不会执行部署。点击上方「刷新」开始。"
+                  title={t("Discover projects on the server")}
+                  hint={t(
+                    "Identify the OS and installed capabilities first, then enable matching collectors (systemd, Docker, Nginx, PM2…) on demand, and locate projects using Git, processes, ports and config clues. Everything is read-only — nothing is deployed. Click Refresh above to start.",
+                  )}
                 />
               )}
 
@@ -352,7 +357,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
 
               {result && result.warnings.length > 0 && (
                 <p className="text-center text-11 text-warning">
-                  扫描警告：{result.warnings.join("；")}
+                  {t("Scan warnings: {{warnings}}", { warnings: result.warnings.join("; ") })}
                 </p>
               )}
             </div>

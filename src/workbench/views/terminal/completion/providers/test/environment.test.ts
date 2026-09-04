@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
+// provider 生成 notice 时用 i18n.t（未命中 key 原样返回）—— 初始化 en 保证插值可用。
+import "@/i18n";
+
 import type { NginxContainer, NginxEnvironment } from "@/api/types/environment";
 import { configMounts, publishedPorts } from "@/api/types/environment";
 import {
@@ -182,7 +185,7 @@ describe("multiple nginx containers", () => {
   it("offers a chooser instead of picking the first container", async () => {
     const result = await complete("nginx", two);
     expect(result.items.map((item) => item.label)).toEqual(["a-nginx", "b-nginx"]);
-    expect(result.notice).toContain("请先选择");
+    expect(result.notice).toContain("select one first");
   });
 
   it("shows image, state, ports and the compose project in the chooser", async () => {
@@ -205,7 +208,7 @@ describe("multiple nginx containers", () => {
     const result = await complete("nginx", env("multiple", [container("b-nginx", "nginx:1.25")]));
     // 记住的容器不在了 → 选择失效，回到"请先选择容器"。
     expect(result.items.map((item) => item.label)).toEqual(["b-nginx"]);
-    expect(result.notice).toContain("已停止或不存在");
+    expect(result.notice).toContain("stopped or no longer exists");
   });
 
   it("drops a remembered choice once that container stops", async () => {
@@ -217,7 +220,7 @@ describe("multiple nginx containers", () => {
         container("b-nginx", "nginx:1.25"),
       ]),
     );
-    expect(result.notice).toContain("已停止或不存在");
+    expect(result.notice).toContain("stopped or no longer exists");
     forgetNginxContainer("s1");
   });
 
@@ -230,7 +233,7 @@ describe("multiple nginx containers", () => {
       true,
     );
     // 另一个会话没有选择 → 仍然要它自己选。
-    expect(second.notice).toContain("请先选择");
+    expect(second.notice).toContain("select one first");
   });
 
   it("remembers the container the user picked", async () => {
@@ -261,7 +264,7 @@ describe("provider wiring", () => {
 
   it("says it is still probing when the environment is unknown", async () => {
     const result = await complete("nginx", null);
-    expect(result.notice).toContain("正在探测");
+    expect(result.notice).toContain("Probing");
   });
 
   it("filters commands by what has been typed", async () => {
@@ -295,11 +298,11 @@ describe("environment summary shown in the hint area", () => {
     });
     const result = await complete("nginx", env("docker", [nginx]));
     const summary = result.notice ?? "";
-    expect(summary).toContain("容器 bls-nginx");
-    expect(summary).toContain("镜像 nginx:alpine");
-    expect(summary).toContain("端口 80、443");
-    expect(summary).toContain("配置 /srv/bls/nginx.conf → /etc/nginx/nginx.conf");
-    expect(summary).toContain("运行中");
+    expect(summary).toContain("Container bls-nginx");
+    expect(summary).toContain("Image nginx:alpine");
+    expect(summary).toContain("Ports 80 / 443");
+    expect(summary).toContain("Config /srv/bls/nginx.conf → /etc/nginx/nginx.conf");
+    expect(summary).toContain("Running");
   });
 });
 

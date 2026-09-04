@@ -197,7 +197,7 @@ describe("cd completion", () => {
     const io = lister();
     const result = await complete("cd ~/", io.list, { home: null });
     expect(io.calls).toEqual([]);
-    expect(result.notice).toContain("还不知道远程家目录");
+    expect(result.notice).toContain("Remote home directory is unknown");
   });
 
   it("surfaces read failures instead of pretending the directory is empty", async () => {

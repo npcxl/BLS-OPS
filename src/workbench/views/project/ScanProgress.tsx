@@ -1,4 +1,5 @@
 import { Loader2, Pause } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { ProjectScanStatus } from "@/api/ops-api";
 
@@ -9,25 +10,27 @@ export function ScanProgress({
   scan: ProjectScanStatus;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-2/70 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <Loader2 size={14} className="animate-spin text-accent" />
           <div className="min-w-0">
-            <div className="text-12 font-medium text-fg">正在扫描服务器项目</div>
+            <div className="text-12 font-medium text-fg">{t("Scanning server projects")}</div>
+            {/* phase 是后端下发的原文，保持原样展示 */}
             <div className="truncate text-10 text-fg-subtle">{scan.progress.phase}</div>
           </div>
         </div>
         <Button variant="ghost" size="xs" onClick={onCancel}>
           <Pause size={11} />
-          取消
+          {t("Cancel")}
         </Button>
       </div>
 
       <div className="space-y-3 px-4 py-3">
         <div className="flex items-center justify-between text-11 text-fg-muted">
-          <span>进度</span>
+          <span>{t("Progress")}</span>
           <span>{scan.progress.progress}%</span>
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
@@ -38,9 +41,9 @@ export function ScanProgress({
         </div>
 
         <div className="grid gap-2 text-11 text-fg-subtle sm:grid-cols-3">
-          <StatChip label="已检查目录" value={scan.progress.checked_directories} />
-          <StatChip label="候选项目" value={scan.progress.discovered_candidates} />
-          <StatChip label="警告" value={scan.progress.warnings} />
+          <StatChip label={t("Directories checked")} value={scan.progress.checked_directories} />
+          <StatChip label={t("Candidate projects")} value={scan.progress.discovered_candidates} />
+          <StatChip label={t("Warnings")} value={scan.progress.warnings} />
         </div>
 
         {scan.progress.current_path && (

@@ -17,11 +17,16 @@ export default {
   "Module: AI": "智能助手",
   "Module: Settings": "设置",
 
-  // 模块短名（命令面板 category / 日志菜单标题等）
+  // 模块短名（workbench-store MODULE_LABELS / 命令面板 category / 日志菜单标题）
   Terminal: "终端",
   Servers: "服务器",
   Services: "服务",
   Logs: "日志",
+  Projects: "项目",
+  Commands: "命令",
+  Deploy: "部署",
+  Tasks: "任务",
+  "AI Assistant": "智能助手",
   Monitor: "监控",
   Settings: "设置",
   Workspace: "工作区",
@@ -131,7 +136,6 @@ export default {
   History: "历史",
   Build: "构建",
   Upload: "上传",
-  Deploy: "部署",
   Context: "上下文",
   "Model providers": "模型提供方",
   "This module is not implemented yet. Development starts after P0 (real SSH terminal, host key verification and credential binding) passes acceptance.":

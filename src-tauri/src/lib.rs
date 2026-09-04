@@ -12,6 +12,8 @@ pub mod deployment_collector;
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
 pub mod docker;
+/// 本地编辑器同步（VS Code/Cursor 等编辑远程文件，保存自动回传服务器）。
+pub mod editor_sync;
 /// 服务器运行环境探测（Nginx 在宿主机 / Docker / Compose）。纯逻辑 + 只读采集。
 pub mod env_probe;
 /// journald log querying (P3-1.2).
@@ -129,6 +131,12 @@ pub fn run() {
             commands::sftp_write_file,
             commands::sftp_read_binary,
             commands::sftp_download_file,
+            // editor sync — open remote files/folders with a local editor
+            // (VS Code / Cursor / …) and push saves back over SFTP
+            commands::editor_list_available,
+            commands::editor_sync_open,
+            commands::editor_sync_close,
+            commands::editor_sync_list,
             // directory size (on-demand, background)
             commands::directory_size_start,
             commands::directory_size_cancel,

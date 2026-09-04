@@ -1,5 +1,7 @@
 import { Box, Container, Globe, Server, Ship } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
+import { i18n } from "@/i18n";
 import type {
   CandidateInstance,
   DetectedService,
@@ -11,32 +13,32 @@ import type {
 // 服务分类配色
 // ---------------------------------------------------------------------------
 
-/** 每一类服务一种颜色，让"数据库 / 缓存 / 网关"在列表里一眼可分。 */
-const GROUP_TONE: Record<ServiceGroup, { chip: string; label: string }> = {
-  application: { chip: "bg-accent/12 text-accent", label: "业务应用" },
-  database: { chip: "bg-[#f59e0b]/12 text-[#b45309]", label: "数据库" },
-  cache: { chip: "bg-[#ef4444]/12 text-[#b91c1c]", label: "缓存" },
-  messaging: { chip: "bg-[#8b5cf6]/12 text-[#6d28d9]", label: "消息队列" },
-  search: { chip: "bg-[#06b6d4]/12 text-[#0e7490]", label: "搜索引擎" },
-  gateway: { chip: "bg-success/12 text-success", label: "网关" },
-  storage: { chip: "bg-[#14b8a6]/12 text-[#0f766e]", label: "对象存储" },
-  coordination: { chip: "bg-[#6366f1]/12 text-[#4338ca]", label: "配置与协调" },
-  observability: { chip: "bg-[#a855f7]/12 text-[#7e22ce]", label: "可观测性" },
-  devops: { chip: "bg-[#0ea5e9]/12 text-[#0369a1]", label: "研发运维平台" },
-  infrastructure: { chip: "bg-surface-2 text-fg-subtle", label: "容器基础设施" },
-  security: { chip: "bg-[#64748b]/12 text-[#475569]", label: "安全与身份" },
-  ai_runtime: { chip: "bg-[#ec4899]/12 text-[#be185d]", label: "AI 推理" },
+/** 每一类服务一种颜色，让"数据库 / 缓存 / 网关"在列表里一眼可分。label 存英文 key，渲染处 t()。 */
+const GROUP_TONE: Record<ServiceGroup, { chip: string; labelKey: string }> = {
+  application: { chip: "bg-accent/12 text-accent", labelKey: "Business app" },
+  database: { chip: "bg-[#f59e0b]/12 text-[#b45309]", labelKey: "Database" },
+  cache: { chip: "bg-[#ef4444]/12 text-[#b91c1c]", labelKey: "Cache" },
+  messaging: { chip: "bg-[#8b5cf6]/12 text-[#6d28d9]", labelKey: "Message queue" },
+  search: { chip: "bg-[#06b6d4]/12 text-[#0e7490]", labelKey: "Search engine" },
+  gateway: { chip: "bg-success/12 text-success", labelKey: "Gateway" },
+  storage: { chip: "bg-[#14b8a6]/12 text-[#0f766e]", labelKey: "Object storage" },
+  coordination: { chip: "bg-[#6366f1]/12 text-[#4338ca]", labelKey: "Config & coordination" },
+  observability: { chip: "bg-[#a855f7]/12 text-[#7e22ce]", labelKey: "Observability" },
+  devops: { chip: "bg-[#0ea5e9]/12 text-[#0369a1]", labelKey: "DevOps platform" },
+  infrastructure: { chip: "bg-surface-2 text-fg-subtle", labelKey: "Container infrastructure" },
+  security: { chip: "bg-[#64748b]/12 text-[#475569]", labelKey: "Security & identity" },
+  ai_runtime: { chip: "bg-[#ec4899]/12 text-[#be185d]", labelKey: "AI runtime" },
 };
 
 export function serviceGroupLabel(group: ServiceGroup): string {
-  return GROUP_TONE[group]?.label ?? group;
+  return i18n.t(GROUP_TONE[group]?.labelKey ?? group);
 }
 
 // ---------------------------------------------------------------------------
 // 端口
 // ---------------------------------------------------------------------------
 
-/** 事实标准的端口 → 服务名。仅用于展示提示，绝不据此判定项目性质。 */
+/** 事实标准的端口 → 服务名。仅用于展示提示，绝不据此判定项目性质。中文文案存英文 key，渲染处 t()。 */
 const WELL_KNOWN_PORTS: Record<number, string> = {
   22: "SSH",
   80: "HTTP",
@@ -50,18 +52,18 @@ const WELL_KNOWN_PORTS: Record<number, string> = {
   11211: "Memcached",
   27017: "MongoDB",
   5672: "RabbitMQ",
-  15672: "RabbitMQ 管理端",
+  15672: "RabbitMQ admin",
   9092: "Kafka",
   2181: "ZooKeeper",
   9200: "Elasticsearch",
   9300: "Elasticsearch",
   2379: "etcd",
   2380: "etcd",
-  8080: "常用应用端口",
-  8000: "常用应用端口",
-  3000: "常用应用端口",
-  5000: "常用应用端口",
-  8888: "常用应用端口",
+  8080: "Common app port",
+  8000: "Common app port",
+  3000: "Common app port",
+  5000: "Common app port",
+  8888: "Common app port",
 };
 
 /** 端口 chip 的配色：已知服务用暖色提醒"这是标准端口"，普通端口保持中性。 */
@@ -104,14 +106,16 @@ function portTone(port: number) {
 export function PortChips({
   ports,
   className,
-  empty = "无监听端口",
+  empty = "No listening ports",
 }: {
   ports: number[];
   className?: string;
+  /** 空态文案（英文 key，渲染处 t()；传空串则不显示）。 */
   empty?: string;
 }) {
+  const { t } = useTranslation();
   if (ports.length === 0) {
-    return <span className="text-10 text-fg-subtle">{empty}</span>;
+    return <span className="text-10 text-fg-subtle">{t(empty)}</span>;
   }
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-1", className)}>
@@ -120,7 +124,7 @@ export function PortChips({
         return (
           <span
             key={port}
-            title={hint ? `${port} — ${hint}` : `端口 ${port}`}
+            title={hint ? t("{{port}} — {{hint}}", { port, hint: t(hint) }) : t("Port {{port}}", { port })}
             className={cn(
               "inline-flex items-center gap-1 rounded-[5px] border px-1.5 py-[1px] font-mono text-10 leading-[15px] tabular-nums",
               portTone(port),
@@ -128,7 +132,7 @@ export function PortChips({
           >
             <span className="h-1 w-1 rounded-full bg-current opacity-60" />
             {port}
-            {hint && <span className="font-sans opacity-75">{hint}</span>}
+            {hint && <span className="font-sans opacity-75">{t(hint)}</span>}
           </span>
         );
       })}
@@ -142,12 +146,13 @@ export function PortChips({
 
 /** 识别出的服务（MySQL / Redis / Nginx …）。认不出就不渲染。 */
 export function ServiceBadge({ service }: { service?: DetectedService }) {
+  const { t } = useTranslation();
   if (!service) return null;
   const tone = GROUP_TONE[service.group] ?? GROUP_TONE.infrastructure;
   return (
     <span
       className={cn("rounded px-1.5 py-0.5 text-10", tone.chip)}
-      title={`识别为 ${service.label}（${tone.label}）`}
+      title={t("Detected as {{service}} ({{group}})", { service: service.label, group: t(tone.labelKey) })}
     >
       {service.label}
     </span>
@@ -156,11 +161,11 @@ export function ServiceBadge({ service }: { service?: DetectedService }) {
 
 const RUNTIME_META: Record<
   InstanceRuntime,
-  { icon: typeof Box; label: string; tone: string }
+  { icon: typeof Box; labelKey: string; tone: string }
 > = {
-  host: { icon: Server, label: "宿主机", tone: "bg-surface-2 text-fg-muted" },
-  container: { icon: Container, label: "Docker 容器", tone: "bg-[#0ea5e9]/12 text-[#0369a1]" },
-  kubernetes: { icon: Ship, label: "Kubernetes", tone: "bg-[#6366f1]/12 text-[#4338ca]" },
+  host: { icon: Server, labelKey: "Host machine", tone: "bg-surface-2 text-fg-muted" },
+  container: { icon: Container, labelKey: "Docker container", tone: "bg-[#0ea5e9]/12 text-[#0369a1]" },
+  kubernetes: { icon: Ship, labelKey: "Kubernetes", tone: "bg-[#6366f1]/12 text-[#4338ca]" },
 };
 
 /**
@@ -174,6 +179,7 @@ export function RuntimeBadge({
   runtime?: InstanceRuntime;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const meta = RUNTIME_META[runtime ?? "host"] ?? RUNTIME_META.host;
   const Icon = meta.icon;
   return (
@@ -185,7 +191,7 @@ export function RuntimeBadge({
       )}
     >
       <Icon size={9} />
-      {meta.label}
+      {t(meta.labelKey)}
     </span>
   );
 }
@@ -214,7 +220,7 @@ export function configFileLabel(path: string): string {
   }
   if (lower === "dockerfile") return "Dockerfile";
   if (lower.includes("nginx") || lower.endsWith(".conf")) {
-    return lower.includes("nginx") ? "Nginx 配置" : name;
+    return lower.includes("nginx") ? i18n.t("Nginx config") : name;
   }
   if (lower.endsWith(".service")) return "systemd unit";
   if (lower === "procfile") return "Procfile";
@@ -225,3 +231,4 @@ export function configFileLabel(path: string): string {
 export function hasConfig(instance: CandidateInstance): boolean {
   return instance.config_files.length > 0;
 }
+ 

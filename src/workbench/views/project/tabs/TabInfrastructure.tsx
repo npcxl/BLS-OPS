@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Database } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { DeploymentInstance } from "@/api/ops-api";
 import { PortChips, RuntimeBadge, ServiceBadge, instanceKindMeta } from "../badges";
@@ -24,14 +25,17 @@ export function TabInfrastructure({
   instances: DeploymentInstance[];
   onOpenPath: (path: string) => void;
 }) {
+  const { t } = useTranslation();
   const groups = useMemo(() => groupInfrastructure(instances), [instances]);
 
   if (instances.length === 0) {
     return (
       <ModuleEmpty
         icon={Database}
-        title="没有发现基础设施实例"
-        hint="扫描到的数据库 / 缓存 / 对象存储 / 消息队列 / 网关等依赖会按类别显示在这里。未识别的实例显示为待归类，绝不默认当作基础设施。"
+        title={t("No infrastructure instances found")}
+        hint={t(
+          "Databases, caches, object storage, message queues, gateways and other dependencies found by the scan appear here by category. Unrecognized instances are marked unclassified — never assumed to be infrastructure.",
+        )}
       />
     );
   }
@@ -45,20 +49,23 @@ export function TabInfrastructure({
         >
           <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-2.5">
             <span className="rounded-full bg-accent/12 px-2 py-0.5 text-10 font-medium text-accent">
-              {group.label}
+              {t(group.label)}
             </span>
-            <span className="text-11 text-fg-subtle">{group.instances.length} 个实例</span>
+            <span className="text-11 text-fg-subtle">
+              {t("{{count}} instances", { count: group.instances.length })}
+            </span>
           </div>
           <div className="divide-y divide-line/70">
             {group.instances.map((instance) => {
               const meta = instanceKindMeta(instance.kind);
               const Icon = meta.icon;
-              const ownership = OWNERSHIP_LABELS[instance.ownership] ?? instance.ownership;
-              const confidence =
+              const ownership = t(OWNERSHIP_LABELS[instance.ownership] ?? instance.ownership);
+              const confidence = t(
                 CONFIDENCE_LABELS[instance.classification_confidence] ??
-                instance.classification_confidence;
+                  instance.classification_confidence,
+              );
               const evidence =
-                instance.classification_evidence.map((e) => e.detail).join("；") ?? "";
+                instance.classification_evidence.map((e) => e.detail).join("; ") ?? "";
               const product = instanceProductLabel(instance);
               const linkedCount = instance.linked_project_ids.length;
               return (
@@ -77,7 +84,7 @@ export function TabInfrastructure({
                     {/* 共享 / 项目专属。 */}
                     <span
                       className={ownershipTone(instance.ownership)}
-                      title="实例归属：多个项目共用，还是只服务某一个项目"
+                      title={t("Instance ownership: shared by multiple projects, or serving a single one")}
                     >
                       {ownership}
                     </span>
@@ -86,7 +93,7 @@ export function TabInfrastructure({
                         className="rounded bg-success/12 px-1.5 py-0.5 text-10 text-success"
                         title={instance.linked_project_ids.join("\n")}
                       >
-                        关联 {linkedCount} 个项目
+                        {t("Linked to {{count}} projects", { count: linkedCount })}
                       </span>
                     )}
                     {instance.status && (
@@ -94,7 +101,7 @@ export function TabInfrastructure({
                     )}
                   </div>
                   <div>
-                    <PortChips ports={instance.ports} empty="无暴露端口" />
+                    <PortChips ports={instance.ports} empty="No exposed ports" />
                   </div>
                   {/* 镜像或 unit：识别证据，一眼看清运行方式。 */}
                   {(instance.image || instance.kind === "systemd") && (
@@ -110,7 +117,7 @@ export function TabInfrastructure({
                           type="button"
                           className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-10 text-fg-muted hover:text-fg"
                           onClick={() => onOpenPath(file)}
-                          title={`打开 ${file}`}
+                          title={t("Open {{path}}", { path: file })}
                         >
                           {file}
                         </button>
@@ -123,7 +130,9 @@ export function TabInfrastructure({
                     </p>
                   )}
                   <p className="text-10 text-fg-subtle/80">
-                    {evidence && <span title={evidence}>分类依据：{evidence}</span>}
+                    {evidence && (
+                      <span title={evidence}>{t("Classification evidence: {{evidence}}", { evidence })}</span>
+                    )}
                     {evidence && " · "}
                     {confidence}
                   </p>

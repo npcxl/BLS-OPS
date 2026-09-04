@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Boxes, CircleDashed } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { DeploymentInstance } from "@/api/ops-api";
@@ -13,12 +14,13 @@ import { COMPONENT_ROLE_LABELS, instanceRole } from "../classify";
 
 type Filter = "all" | "linked" | "unlinked" | "unclassified" | "stopped";
 
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "全部应用" },
-  { id: "linked", label: "已关联项目" },
-  { id: "unlinked", label: "未关联项目" },
-  { id: "unclassified", label: "待归类" },
-  { id: "stopped", label: "已停止" },
+/** 筛选名存英文 key，渲染处 t()（模块级常量不能调 hook）。 */
+const FILTERS: { id: Filter; labelKey: string }[] = [
+  { id: "all", labelKey: "All apps" },
+  { id: "linked", labelKey: "Linked to projects" },
+  { id: "unlinked", labelKey: "Unlinked" },
+  { id: "unclassified", labelKey: "Unclassified" },
+  { id: "stopped", labelKey: "Stopped" },
 ];
 
 /**
@@ -33,6 +35,7 @@ export function TabRuntime({
   instances: DeploymentInstance[];
   onOpenPath: (path: string) => void;
 }) {
+  const { t } = useTranslation();
   const [filter, setFilter] = useState<Filter>("all");
 
   // 已关联项目 = 后端回填的 linked_project_ids 非空；待归类 = workload_role 缺证据。
@@ -67,8 +70,10 @@ export function TabRuntime({
     return (
       <ModuleEmpty
         icon={Boxes}
-        title="没有应用服务"
-        hint="这里只列出后端判定为业务应用的运行实例（Node/Java/Go 进程、项目专属容器等）。MySQL、Redis 这类依赖在「基础设施」tab；未识别的实例标记为待归类，绝不冒充业务应用。"
+        title={t("No app services")}
+        hint={t(
+          "Only running instances the backend classified as business apps are listed here (Node/Java/Go processes, project-scoped containers…). Dependencies like MySQL and Redis live in the Infrastructure tab; unrecognized instances are marked unclassified and never pose as business apps.",
+        )}
       />
     );
   }
@@ -88,21 +93,23 @@ export function TabRuntime({
                 : "bg-surface-2 text-fg-subtle hover:text-fg",
             )}
           >
-            {f.label}
+            {t(f.labelKey)}
             <span className="ml-1 tabular-nums opacity-70">{counts[f.id]}</span>
           </button>
         ))}
       </div>
 
       {visible.length === 0 ? (
-        <p className="text-11 text-fg-subtle">该筛选下没有实例。</p>
+        <p className="text-11 text-fg-subtle">{t("No instances match this filter.")}</p>
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((instance) => {
             const meta = instanceKindMeta(instance.kind);
             const unclassified = instanceRole(instance) === "unknown";
             const stopped = instance.status && instance.status !== "running";
-            const componentLabel = COMPONENT_ROLE_LABELS[instance.component_role];
+            const componentLabel = COMPONENT_ROLE_LABELS[instance.component_role]
+              ? t(COMPONENT_ROLE_LABELS[instance.component_role])
+              : undefined;
             return (
               <article
                 key={instance.id}
@@ -122,10 +129,12 @@ export function TabRuntime({
                   {unclassified && (
                     <span
                       className="inline-flex items-center gap-1 rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning"
-                      title="证据不足，暂时无法判断是业务应用；后端绝不默认归为基础设施"
+                      title={t(
+                        "Not enough evidence to tell whether it's a business app; the backend never defaults to infrastructure",
+                      )}
                     >
                       <CircleDashed size={9} />
-                      待归类
+                      {t("Unclassified")}
                     </span>
                   )}
                   {!unclassified && componentLabel && instance.component_role !== "unknown" && (
@@ -145,25 +154,27 @@ export function TabRuntime({
                   )}
                   {!instance.source_known && !unclassified && (
                     <span className="rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning">
-                      源码未知
+                      {t("Source unknown")}
                     </span>
                   )}
                 </div>
 
                 <div className="mt-1.5">
-                  <PortChips ports={instance.ports} empty="无暴露端口" />
+                  <PortChips ports={instance.ports} empty="No exposed ports" />
                 </div>
 
                 {instance.source_paths.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-2 text-10 text-fg-subtle">
-                    <span className="rounded bg-success/12 px-1.5 py-0.5 text-success">已关联源码</span>
+                    <span className="rounded bg-success/12 px-1.5 py-0.5 text-success">
+                      {t("Source linked")}
+                    </span>
                     {instance.source_paths.map((dir) => (
                       <button
                         key={dir}
                         type="button"
                         className="font-mono text-fg-muted hover:text-fg"
                         onClick={() => onOpenPath(dir)}
-                        title={`在文件面板打开 ${dir}`}
+                        title={t("Open {{path}} in the file panel", { path: dir })}
                       >
                         {dir}
                       </button>
@@ -179,7 +190,7 @@ export function TabRuntime({
                         type="button"
                         className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-10 text-fg-muted hover:text-fg"
                         onClick={() => onOpenPath(file)}
-                        title={`打开 ${file}`}
+                        title={t("Open {{path}}", { path: file })}
                       >
                         {file}
                       </button>

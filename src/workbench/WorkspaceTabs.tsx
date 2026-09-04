@@ -188,7 +188,9 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               onContextMenu={tabMenu(tab)}
             >
               <Icon size={11} className="shrink-0 opacity-80" />
-              <span className="truncate">{tab.title}</span>
+              {/* tab.title 可能是 i18n key（store 的 "Home"/"New Terminal"/模块名），
+                  也可能是动态文案（服务器名）——t() 未命中时原样返回，两边都安全。 */}
+              <span className="truncate">{t(tab.title)}</span>
               <button
                 type="button"
                 aria-label={t("Close {{title}}", { title: tab.title })}

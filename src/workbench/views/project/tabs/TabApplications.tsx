@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { FolderSearch } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { GatewayRoute, ReviewState } from "@/api/ops-api";
 import type { DisplayCandidate } from "@/workbench/views/project/merge-applications";
@@ -33,6 +34,7 @@ export function TabApplications({
   /** 合并/拆分回调：parentPath 为 null 表示拆分。 */
   onMerge: (childPath: string, parentPath: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const list = useMemo(
     () =>
       candidates
@@ -45,8 +47,10 @@ export function TabApplications({
     return (
       <ModuleEmpty
         icon={FolderSearch}
-        title="未发现项目"
-        hint="服务器上暂无可识别的项目目录，或已全部被忽略。可以重新执行扫描，或在「待确认」里查看低置信度目录。"
+        title={t("No projects found")}
+        hint={t(
+          "No recognizable project directories on the server, or all were ignored. Run a scan again, or check low-confidence directories under Needs review.",
+        )}
       />
     );
   }

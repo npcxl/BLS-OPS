@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { ServerCapabilityProfile } from "@/api/ops-api";
 import { Detail } from "./Detail";
 
@@ -6,16 +7,20 @@ import { Detail } from "./Detail";
  * 容器 / 运行实例等运行形态已拆到独立的「运行服务 / 基础设施」tab，不在这里列。
  */
 export function CapabilityGraph({ profile }: { profile: ServerCapabilityProfile }) {
+  const { t } = useTranslation();
   const sys = profile.system;
+  const unknown = t("Unknown");
   const sysFacts = [
-    `操作系统：${sys.os || "未知"}`,
-    `架构：${sys.arch || "未知"}`,
-    `初始化系统：${sys.init_system || "未知"}`,
-    `包管理器：${sys.package_manager || "未知"}`,
-    `当前用户：${sys.user || "未知"}`,
-    `sudo：${sys.sudo === null ? "无法判定" : sys.sudo ? "可用" : "不可用"}`,
-    `安全模块：${sys.security_module || "未知"}`,
-    `cgroup：${sys.cgroup_version || "未知"}`,
+    t("OS: {{value}}", { value: sys.os || unknown }),
+    t("Arch: {{value}}", { value: sys.arch || unknown }),
+    t("Init system: {{value}}", { value: sys.init_system || unknown }),
+    t("Package manager: {{value}}", { value: sys.package_manager || unknown }),
+    t("Current user: {{value}}", { value: sys.user || unknown }),
+    t("sudo: {{value}}", {
+      value: sys.sudo === null ? t("Undetermined") : sys.sudo ? t("Available") : t("Unavailable"),
+    }),
+    t("Security module: {{value}}", { value: sys.security_module || unknown }),
+    t("cgroup: {{value}}", { value: sys.cgroup_version || unknown }),
   ];
   const runtimes = Object.entries(profile.runtimes).filter(([, v]) => v) as [string, string][];
   const buildTools = Object.entries(profile.build_tools).filter(([, v]) => v) as [string, string][];
@@ -28,19 +33,21 @@ export function CapabilityGraph({ profile }: { profile: ServerCapabilityProfile 
     <section className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
       <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-3">
         <span className="rounded-full bg-accent/12 px-2 py-0.5 text-10 font-medium text-accent">
-          服务器能力图谱
+          {t("Server capability profile")}
         </span>
-        <span className="text-11 text-fg-subtle">先识别服务器，再决定启用哪些收集器</span>
+        <span className="text-11 text-fg-subtle">{t("Identify the server first, then decide which collectors to enable")}</span>
       </div>
       <div className="grid gap-3 p-4 lg:grid-cols-2">
-        <Detail title="系统档案" items={sysFacts} />
-        <Detail title="运行时" items={runtimes.map(([k, v]) => `${k} ${v}`)} />
-        {buildTools.length > 0 && <Detail title="构建工具" items={buildTools.map(([k, v]) => `${k} ${v}`)} />}
-        {vm.length > 0 && <Detail title="版本管理器" items={vm.map(([k]) => k)} />}
-        <Detail title="已启用的能力收集器" items={enabled.length ? enabled : ["（无）"]} />
+        <Detail title={t("System profile")} items={sysFacts} />
+        <Detail title={t("Runtimes")} items={runtimes.map(([k, v]) => `${k} ${v}`)} />
+        {buildTools.length > 0 && <Detail title={t("Build tools")} items={buildTools.map(([k, v]) => `${k} ${v}`)} />}
+        {vm.length > 0 && <Detail title={t("Version managers")} items={vm.map(([k]) => k)} />}
+        <Detail title={t("Enabled capability collectors")} items={enabled.length ? enabled : [t("(none)")]} />
         {missing.length > 0 && (
           <div className="rounded-[8px] border border-dashed border-line px-3 py-2 text-10 text-fg-subtle lg:col-span-2">
-            未安装（不启用收集器，避免无意义报错）：{missing.join("、")}
+            {t("Not installed (collectors disabled to avoid pointless errors): {{tools}}", {
+              tools: missing.join(", "),
+            })}
           </div>
         )}
       </div>

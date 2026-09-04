@@ -331,8 +331,8 @@ export function RemoteFilePanel({
       // Text/code files open straight in the editor — editing is the useful
       // action there. Everything else goes to the preview, which renders what
       // it can and explains what it cannot.
-      if (isEditableKind(entry.name)) {
-        setEditor({ path: entry.path, name: entry.name, language: fileKind(entry.name).language });
+      if (isEditableKind(entry)) {
+        setEditor({ path: entry.path, name: entry.name, language: fileKind(entry).language });
         return;
       }
       setPreview({ path: entry.path, name: entry.name, size: entry.size });
@@ -1000,7 +1000,7 @@ export function RemoteFilePanel({
               setEditor({
                 path: next.path,
                 name: next.name,
-                language: fileKind(next.name).language,
+                language: fileKind({ name: next.name, kind: "file" }).language,
               });
             }}
           />

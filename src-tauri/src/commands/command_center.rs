@@ -280,14 +280,21 @@ pub async fn command_execute(
 
 /// 命令文本 → 知识库条目（终端手动输入命令的识别入口）。
 ///
-/// 只做**确定性匹配**：规范化（去首尾空白、压缩内部空白、转小写）后与条目的
-/// `executable + subcommand` 或 `syntax` 完全相等才算命中。不做模糊匹配 ——
-/// 终端里输错一个字符就应该走原始终端，而不是弹出不相干的结构化面板。
+/// 两级匹配，都**只认结构化适配器**（`generic-raw-output` 不值得弹面板）：
 ///
-/// 返回 `None` = 未识别（调用方保持原始终端行为）。
+/// 1. **精确**：规范化（压空白、小写）后与条目 syntax / display 完全相等；
+///    含 `<占位符>` 的条目跳过（要填真值，不能拿展示语法硬套）。
+/// 2. **同命令家族**：精确失败后，可执行名相同、用户第二段是标志
+///    （`-h`/`--xxx`）或与条目子命令首段一致 → 视为同家族
+///    （`df -h`/`df -Th`/`sudo df -h` 都命中 `df.h` 的磁盘表 —— 它们的
+///    输出列结构一致）。绝不跨子命令匹配（`systemctl status` 不会错配成
+///    `list-units` 的表格）。
+///
+/// 返回完整命中（含真实 risk / mutability / can_execute —— 终端结果抽屉
+/// 据此做风险门控，禁止伪装成只读）。`None` = 未识别，走原始终端。
 #[tauri::command]
-pub async fn command_match_text(text: String) -> Result<Option<String>, String> {
-    Ok(match_knowledge(&text).map(|entry| entry.id.to_string()))
+pub async fn command_match_text(text: String) -> Result<Option<CommandSearchHit>, String> {
+    Ok(match_knowledge(&text).map(search::hit_for))
 }
 
 /// 规范化的命令文本 → 命中的知识条目。
@@ -296,12 +303,44 @@ fn match_knowledge(text: &str) -> Option<&'static CommandKnowledge> {
     if normalized.is_empty() {
         return None;
     }
-    builtin_catalog().iter().find(|entry| {
-        // 展示语法可能含占位符（`docker inspect <容器>`）：带占位符的条目
-        // 不能直接与用户输入相等，跳过（真实命令由提示面板填好后再匹配）。
+    let catalog = builtin_catalog();
+    // 面板价值门槛：结构化适配器**或**修改型命令（medium 的面板 = 风险徽标
+    // + 确认 + 审计可见）。只读 + raw（ls / cat 这类知识层）不值得弹面板，
+    // 用户在终端里已经看到了原始输出。
+    let panel_worthy = |entry: &CommandKnowledge| {
+        entry.output_adapter != "generic-raw-output"
+            || entry.mutability != crate::command_center::Mutability::Read
+    };
+
+    // 第一级：精确相等（含 `<占位符>` 的展示语法跳过 —— 用户不会输尖括号）。
+    if let Some(entry) = catalog.iter().find(|entry| {
         let syntax = normalize_command(entry.syntax);
         let display = normalize_command(&entry.display_command());
         !syntax.contains('<') && (syntax == normalized || display == normalized)
+    }) {
+        return panel_worthy(entry).then_some(entry);
+    }
+    // 第二级：同命令家族（可执行名一致）：
+    // - `df -h` / `df -Th` / `sudo df -h`：第二段是**标志** → 同家族
+    //   （df 各变体输出列一致，磁盘表都能解析）；
+    // - `systemctl restart X`：第二段与条目子命令**首段**一致（restart ==
+    //   restart）→ 语义相同，语法里的 `<unit>` 占位符不影响输出结构；
+    // - 裸可执行名（`df` / `free` / `uptime`）→ 该命令第一个合格条目。
+    let mut parts = normalized.split(' ');
+    let exe = parts.next()?;
+    let second = parts.next();
+    catalog.iter().find(|entry| {
+        panel_worthy(entry)
+            && entry.executable.eq_ignore_ascii_case(exe)
+            && match second {
+                None => true,
+                Some(token) if token.starts_with('-') => entry
+                    .subcommand
+                    .split(' ')
+                    .next()
+                    .is_some_and(|head| head.starts_with('-')),
+                Some(token) => entry.subcommand.split(' ').next() == Some(token),
+            }
     })
 }
 
@@ -318,6 +357,9 @@ fn normalize_command(text: &str) -> String {
 /// 终端里的命令已经跑完了，这里把它的 stdout/stderr/退出码/耗时交给统一
 /// 输出适配引擎，得到 `StructuredCommandResult`。重复执行会让 `docker ps`
 /// 跑两次，修改型命令更是危险 —— 所以这个命令是纯函数，无任何 I/O。
+///
+/// `normalized` 是前端清洗后的解析输入（去 ANSI / 回显 / 提示符）；
+/// `raw.stdout` 永远保留**真实终端输出** —— 两份数据严格分开。
 #[tauri::command]
 pub async fn command_adapt_output(
     knowledge_id: String,
@@ -326,6 +368,7 @@ pub async fn command_adapt_output(
     stderr: String,
     exit_code: Option<i32>,
     duration_ms: u64,
+    normalized: Option<String>,
 ) -> Result<crate::output_adapter::StructuredCommandResult, String> {
     let Some(entry) = builtin_catalog().iter().find(|e| e.id == knowledge_id) else {
         return Err(format!("知识库中不存在命令 {knowledge_id}"));
@@ -336,13 +379,14 @@ pub async fn command_adapt_output(
         duration_ms,
         truncated: false,
     };
+    let parse_input = normalized.unwrap_or_else(|| stdout.clone());
     let raw = crate::output_adapter::RawOutput {
         stdout: stdout.clone(),
         stderr,
     };
     Ok(crate::output_adapter::adapt(
         entry.output_adapter,
-        &stdout,
+        &parse_input,
         entry.title,
         meta,
         raw,
@@ -453,8 +497,49 @@ mod tests {
         assert!(match_knowledge("echo hello").is_none());
         assert!(match_knowledge("docker pss").is_none());
         assert!(match_knowledge("").is_none());
-        // 含占位符的展示语法不能直接匹配（`docker inspect <容器>` 要填真值）。
-        assert!(match_knowledge("docker inspect <容器>").is_none());
+        // 字面尖括号输入（现实中不会发生）走家族匹配到 json-viewer ——
+        // 无害：inspect 的输出本来就是 JSON。
+        assert_eq!(
+            match_knowledge("docker inspect <容器>").map(|e| e.id),
+            Some("docker.inspect")
+        );
+    }
+
+    /// 同命令家族：`df -h` / `df -Th` / `df --output` 都命中 `df.h` 的磁盘表 ——
+    /// 它们的输出列结构一致。绝不跨子命令（`systemctl status` 不会错配成
+    /// `list-units` 的表格），且 raw 适配器的条目不参与（不值得弹面板）。
+    #[test]
+    fn flag_variants_match_the_same_family() {
+        for text in ["df -h", "df -Th", "df --output=source,size", "df"] {
+            let entry = match_knowledge(text).expect(text);
+            assert_eq!(entry.id, "df.h", "text={text}");
+            assert_ne!(entry.output_adapter, "generic-raw-output");
+        }
+        // 跨子命令绝不匹配。
+        assert!(match_knowledge("systemctl status nginx.service").is_none());
+        // 家族里没有结构化适配器的命令不匹配（base.du 是 raw）。
+        assert!(match_knowledge("du -sh /var").is_none());
+    }
+
+    /// 匹配返回**完整命中**（真实 risk / mutability / can_execute）——
+    /// 终端结果抽屉据此做风险门控，禁止伪装成只读。
+    #[test]
+    fn match_returns_real_risk_info() {
+        // restart 语法含占位符 → 精确不命中；家族第二段 "restart" 与
+        // systemctl.restart 子命令首段一致 → 命中。
+        let restart =
+            match_knowledge("systemctl restart nginx.service").expect("restart 应通过家族匹配命中");
+        assert_eq!(restart.id, "systemctl.restart");
+        assert_eq!(restart.risk, crate::command_center::RiskLevel::Medium);
+        assert_eq!(
+            restart.mutability,
+            crate::command_center::Mutability::Change
+        );
+        assert!(restart.executable_now());
+
+        let ps = match_knowledge("docker ps -a").expect("docker.ps.all");
+        assert_eq!(ps.risk, crate::command_center::RiskLevel::ReadOnly);
+        assert_eq!(ps.mutability, crate::command_center::Mutability::Read);
     }
 
     /// `command_adapt_output` 是**纯解析**：同样的输出永远得到同样的结果，

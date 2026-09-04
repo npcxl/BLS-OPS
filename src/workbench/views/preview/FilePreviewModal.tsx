@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { Icon } from "@iconify/react";
 import {
   AlertCircle,
   Download,
@@ -11,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
 import { formatSize } from "@/lib/format";
+import { FILE_ICONS } from "@/lib/icons/vscode-file-icons";
 import { base64ToBytes } from "@/lib/preview/base64";
 import { buildPreview, type PreviewResult } from "@/lib/preview";
 import { cn } from "@/lib/cn";
@@ -139,8 +141,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
 
   if (!render) return null;
 
-  const kind = fileKind(target.name);
-  const KindIcon = kind.icon;
+  const kind = fileKind({ name: target.name, kind: "file" });
 
   return createPortal(
     <div
@@ -161,7 +162,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
       >
         <div className="flex shrink-0 items-start gap-2 border-b border-line px-4 py-2.5">
           <span className="mt-0.5 shrink-0">
-            <KindIcon size={15} strokeWidth={1.75} className={kind.color} />
+            <Icon icon={FILE_ICONS[kind.iconKey]} width={15} height={15} aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-13 font-semibold text-fg">{target.name}</h2>
@@ -178,7 +179,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
             {downloading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
             下载
           </Button>
-          {onEdit && isEditableKind(target.name) && (
+          {onEdit && isEditableKind({ name: target.name, kind: "file" }) && (
             <Button size="xs" variant="ghost" onClick={() => onEdit(target)}>
               <Pencil size={12} />
               编辑

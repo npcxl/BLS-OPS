@@ -379,20 +379,22 @@ export const opsApi = {
   commandFavorites: () => invoke<string[]>("command_favorites"),
   commandCatalogMeta: () => invoke<CommandCatalogMeta>("command_catalog_meta"),
   /**
-   * 命令文本 → 知识库条目 ID（终端手动输入命令的识别入口）。
-   * 只做确定性匹配（规范化后完全相等），认不出返回 null —— 该命令继续走原始终端。
+   * 命令文本 → 知识库命中（终端手动输入命令的识别入口）。
+   * 两级匹配（精确 + 同命令家族），认不出返回 null —— 该命令继续走原始终端。
+   * 返回完整命中：终端结果抽屉用真实 risk / mutability / can_execute 做门控。
    */
   commandMatchText: (text: string) =>
-    invoke<string | null>("command_match_text", { text }),
+    invoke<CommandSearchHit | null>("command_match_text", { text }),
   /**
-   * **只解析已经产生的输出，绝不再次执行命令** —— 终端里的命令已经跑完了，
-   * 这里把它的 stdout/stderr/退出码交给统一适配引擎。重复执行会让 `docker ps`
-   * 跑两次，修改型命令更危险。
+   * **只解析已经产生的输出，绝不再次执行命令** —— 终端里的命令已经跑完了。
+   * `normalized` 是前端清洗后的解析输入（去 ANSI/回显/提示符）；
+   * `stdout` 永远保留真实终端输出（两份数据严格分开）。
    */
   commandAdaptOutput: (input: {
     knowledgeId: string;
     command: string;
     stdout: string;
+    normalized?: string;
     stderr?: string;
     exitCode?: number | null;
     durationMs: number;
@@ -401,6 +403,7 @@ export const opsApi = {
       knowledgeId: input.knowledgeId,
       command: input.command,
       stdout: input.stdout,
+      normalized: input.normalized ?? null,
       stderr: input.stderr ?? "",
       exitCode: input.exitCode ?? null,
       durationMs: input.durationMs,

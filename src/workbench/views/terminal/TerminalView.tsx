@@ -17,7 +17,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -130,6 +131,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           knowledgeId: input.knowledgeId,
           command: input.command,
           stdout: input.stdout,
+          normalized: input.normalized,
           exitCode: input.exitCode,
           durationMs: input.durationMs,
         }),
@@ -142,6 +144,47 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     });
   }
   useEffect(() => () => coordinatorRef.current?.dispose(), []);
+
+  /** 重运行：按**真实风险**门控（只读直接跑；修改型必须确认；删除类不提供）。 */
+  const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
+  const rerun = (item: CapturedResult) => {
+    if (!item.canExecute) return;
+    if (item.mutability === "delete") return; // 删除类走 P4.4 软删除流程
+    if (item.mutability === "change") {
+      setRerunConfirm(item);
+      return;
+    }
+    void opsApi.sshInput(sessionId, `${item.command}\n`).catch(() => undefined);
+  };
+  const confirmRerun = () => {
+    const item = rerunConfirm;
+    setRerunConfirm(null);
+    if (item) void opsApi.sshInput(sessionId, `${item.command}\n`).catch(() => undefined);
+  };
+
+  /** 关闭单个结果 Tab：优先选择右侧相邻，没有则选左侧。 */
+  const closeResultTab = (id: string) => {
+    setCommandResults((current) => {
+      const index = current.findIndex((item) => item.id === id);
+      if (index === -1) return current;
+      const next = current.filter((item) => item.id !== id);
+      setActiveResultId((activeId) => {
+        if (activeId !== id) return activeId;
+        // 右侧优先，没有则左侧；全部关完 → null（抽屉隐藏）。
+        return next[index] ? next[index].id : (next[index - 1]?.id ?? null);
+      });
+      return next;
+    });
+  };
+  const closeOtherTabs = (id: string) => {
+    setCommandResults((current) => current.filter((item) => item.id === id));
+    setActiveResultId(id);
+  };
+  const closeAllTabs = () => {
+    setCommandResults([]);
+    setActiveResultId(null);
+    setDrawerClosed(true);
+  };
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
   /**
@@ -867,6 +910,20 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           onToggleCollapse={() => setDrawerCollapsed((v) => !v)}
           onSelect={setActiveResultId}
           onClose={() => setDrawerClosed(true)}
+          onCloseTab={closeResultTab}
+          onCloseOthers={closeOtherTabs}
+          onCloseAll={closeAllTabs}
+          onRerun={rerun}
+        />
+      )}
+      {rerunConfirm && (
+        <ConfirmDialog
+          open
+          title="重新运行该命令？"
+          description={`该命令会修改服务器状态（${RISK_META[rerunConfirm.risk]?.label ?? "需确认"}）：\n${rerunConfirm.command}`}
+          confirmLabel="重新运行"
+          onConfirm={confirmRerun}
+          onCancel={() => setRerunConfirm(null)}
         />
       )}
       </div>

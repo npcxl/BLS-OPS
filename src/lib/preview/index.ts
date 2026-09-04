@@ -82,7 +82,7 @@ export function buildPreview({ name, bytes, size }: PreviewInput): PreviewResult
     return withNote(parseSpreadsheet(bytes, name, extension));
   }
 
-  const category = fileKind(name).category;
+  const category = fileKind({ name, kind: "file" }).category;
   switch (category) {
     case "image":
       return withNote({ kind: "image", bytes, mime: imageMime(extension) });
@@ -98,7 +98,7 @@ export function buildPreview({ name, bytes, size }: PreviewInput): PreviewResult
       return parseDocument(bytes, extension, notes.join(" · ") || undefined);
     case "code":
     case "text":
-      return withNote(readText(bytes, fileKind(name).language));
+      return withNote(readText(bytes, fileKind({ name, kind: "file" }).language));
     case "archive":
       return withNote(parseArchive(bytes, name, extension));
     default:

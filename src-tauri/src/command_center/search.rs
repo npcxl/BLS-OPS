@@ -95,6 +95,11 @@ fn to_hit(entry: &CommandKnowledge, score: f64, ctx: &SearchContext) -> CommandS
     }
 }
 
+/// 不带个性化上下文的命中（终端命令匹配用：只需要 id / 风险 / 适配器）。
+pub fn hit_for(entry: &CommandKnowledge) -> CommandSearchHit {
+    to_hit(entry, 0.0, &SearchContext::default())
+}
+
 fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }

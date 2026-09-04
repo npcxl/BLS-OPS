@@ -10,7 +10,7 @@ use crate::{
     db,
     db::CredentialRecord,
     keyring,
-    ssh::{ConnectTarget, CredentialSecrets},
+    ssh::{ConnectTarget, CredentialSecrets, Utf8StreamDecoder},
     state::AppState,
 };
 
@@ -226,18 +226,27 @@ pub async fn ssh_connect(
         let manager = state.ssh.clone();
         let db_state = state.inner().clone();
         tauri::async_runtime::spawn(async move {
+            // 流式 UTF-8 解码：中文字符常跨两个 SSH 数据块，逐块
+            // `from_utf8_lossy` 会把它变成不可恢复的 `�`。
+            let mut decoder = Utf8StreamDecoder::new();
             while let Some(message) = reader.wait().await {
                 match message {
                     russh::ChannelMsg::Data { data }
                     | russh::ChannelMsg::ExtendedData { data, .. } => {
-                        let _ = app_handle.emit(
-                            &format!("ssh-output-{session_key}"),
-                            String::from_utf8_lossy(&data).into_owned(),
-                        );
+                        let text = decoder.feed(&data);
+                        if text.is_empty() {
+                            continue; // 整块都是未完成的多字节序列
+                        }
+                        let _ = app_handle.emit(&format!("ssh-output-{session_key}"), text);
                     }
                     russh::ChannelMsg::Eof | russh::ChannelMsg::Close { .. } => break,
                     _ => continue,
                 }
+            }
+            // 连接结束：吐出残留字节，避免丢最后一个字符。
+            let tail = decoder.flush();
+            if !tail.is_empty() {
+                let _ = app_handle.emit(&format!("ssh-output-{session_key}"), tail);
             }
             manager.disconnect(&session_key).await;
             db_state.dir_sizes.forget_session(&session_key);

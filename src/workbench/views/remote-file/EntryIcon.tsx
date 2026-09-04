@@ -1,33 +1,21 @@
 import type { RemoteFileEntry } from "@/api/ops-api";
+import { Icon } from "@iconify/react";
 import { fileKind } from "@/lib/file-kind";
+import { FILE_ICONS } from "@/lib/icons/vscode-file-icons";
 
+/**
+ * Row icon for a listing entry.
+ *
+ * `fileKind` only decides *which* icon (a stable key); the glyph itself comes
+ * from the bundled vscode-icons set, rendered fully offline by
+ * @iconify/react — no API requests, so icons are identical on an offline or
+ * air-gapped server.
+ */
 export function EntryIcon({ entry }: { entry: RemoteFileEntry }) {
-  if (entry.kind === "directory") {
-    return <FolderGlyph />;
-  }
-  const kind = fileKind(entry.name);
-  const Icon = kind.icon;
+  const kind = fileKind(entry);
   return (
     <span title={kind.label} className="shrink-0">
-      <Icon size={14} strokeWidth={1.75} className={kind.color} />
+      <Icon icon={FILE_ICONS[kind.iconKey]} width={14} height={14} aria-hidden />
     </span>
-  );
-}
-
-function FolderGlyph() {
-  // Colored like the editor icons but distinctly folder-shaped.
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.75"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-[14px] w-[14px] shrink-0 text-sky-400"
-      aria-hidden
-    >
-      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    </svg>
   );
 }

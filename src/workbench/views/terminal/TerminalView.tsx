@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ChevronDown,
   Columns2,
   Copy,
   Eraser,
   FolderOpen,
   History,
-  LayoutPanelTop,
   PlugZap,
   Rows2,
   Search,
@@ -52,6 +52,12 @@ import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
 import { writeOutputParts } from "./terminal-output-pipeline";
+import {
+  TERMINAL_FONTS,
+  applyTerminalFont,
+  readTerminalFontId,
+  saveTerminalFontId,
+} from "./terminal-font";
 import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
 import {
   resolveSuggestKey,
@@ -155,6 +161,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       /* 隐私模式等场景下写不进去，忽略即可 */
     }
   }, [enhancedTerminal]);
+  /**
+   * **就一个开关**：开 → 命令结果面板随结果自动出现；关 → 纯终端，什么都没有
+   * （结果面板、已存结果全部撤掉）。面板自己的 × 只是临时收起，下一条命令
+   * 的结果会重新展开它 —— 不再需要第二个"显示/隐藏结果"按钮。
+   */
   const toggleEnhancedTerminal = useCallback(() => {
     const next = !enhancedRef.current;
     setEnhancedTerminal(next);
@@ -163,8 +174,31 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setCommandResults([]);
       setActiveResultId(null);
       setDrawerClosed(true);
+    } else {
+      // 重新打开：面板跟着新结果出来（之前只是被 × 收起）。
+      setDrawerClosed(false);
     }
   }, []);
+
+  /**
+   * 终端 / 命令输出字体（用户可选，与结果面板共用同一套栈）。
+   * 切换后要 `fit()` 重排 —— 字宽变了，xterm 的行列数会跟着变。
+   */
+  const [fontId, setFontId] = useState<string>(readTerminalFontId);
+  useEffect(() => {
+    saveTerminalFontId(fontId);
+    applyTerminalFont(fontId);
+    // 已存在的 xterm 实例：改 options 后重排（新建实例时读的是同一变量）。
+    const instance = terminalRef.current;
+    if (instance) {
+      instance.options.fontFamily = document.documentElement.style.getPropertyValue(
+        "--font-terminal",
+      );
+      fitRef.current?.fit();
+      updateSuggestAnchor();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fontId]);
   /**
    * 捕获命令在 xterm 缓冲里的**起始行**（提交时注册一次）。
    *
@@ -1063,15 +1097,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       hint: enhancedTerminal ? "已开启" : undefined,
       onSelect: toggleEnhancedTerminal,
     });
-    // 与 toolbar 一致：只有增强终端开启且产生过结果时才提供"命令结果"开关。
-    if (enhancedTerminal && commandResults.length > 0) {
-      items.push({
-        label: "命令结果",
-        icon: LayoutPanelTop,
-        hint: !drawerClosed ? "已展开" : undefined,
-        onSelect: () => setDrawerClosed((v) => !v),
-      });
-    }
     items.push({ separator: true });
     if (phase === "connected") {
       items.push({
@@ -1110,21 +1135,32 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
         <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
         {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
-            打开后命令才会生成结果 Tab，此时才出现"命令结果"开关。 */}
+            打开后命令才会生成结果面板（不另设开关：开了就有、关了就什么都没有）。 */}
         <ToolbarIcon
           label="增强终端"
           icon={Sparkles}
           active={enhancedTerminal}
           onClick={toggleEnhancedTerminal}
         />
-        {enhancedTerminal && commandResults.length > 0 && (
-          <ToolbarIcon
-            label="命令结果"
-            icon={LayoutPanelTop}
-            active={!drawerClosed}
-            onClick={() => setDrawerClosed((v) => !v)}
-          />
-        )}
+        <div className="mx-1 h-4 w-px bg-line" />
+        {/* 字体：终端与命令输出共用一套栈（不打包字体，没装则回退）。 */}
+        <label className="flex items-center gap-1 text-11 text-fg-muted">
+          字体
+          <span className="relative inline-flex items-center">
+            <select
+              value={fontId}
+              onChange={(event) => setFontId(event.target.value)}
+              className="h-[26px] w-[132px] appearance-none rounded-[7px] border border-line bg-surface-2 pl-2 pr-5 text-11 text-fg outline-none focus:border-accent"
+            >
+              {TERMINAL_FONTS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-fg-subtle" />
+          </span>
+        </label>
         <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" ? (
           <ToolbarIcon

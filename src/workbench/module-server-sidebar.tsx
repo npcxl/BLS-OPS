@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { NavModule } from "@/workbench/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ServerListTree } from "./server-list";
@@ -6,17 +7,18 @@ import { ServerListTree } from "./server-list";
  *  a placeholder — picking a server opens that module bound to that server. */
 export const SERVER_LIST_MODULES: NavModule[] = ["services", "logs", "projects"];
 
+/** 模块标题存 i18n key（natural keys）：模块级常量不能用 hook，渲染处 t()。 */
 const MODULE_TITLE: Record<NavModule, string> = {
-  ssh: "服务器列表",
-  servers: "服务器",
-  services: "服务",
-  logs: "日志",
-  projects: "项目",
-  commands: "命令",
-  deploy: "部署",
-  tasks: "任务",
-  ai: "智能助手",
-  settings: "设置",
+  ssh: "Server list",
+  servers: "Servers",
+  services: "Services",
+  logs: "Logs",
+  projects: "Projects",
+  commands: "Commands",
+  deploy: "Deploy",
+  tasks: "Tasks",
+  ai: "AI assistant",
+  settings: "Settings",
 };
 
 export function isServerListModule(module: NavModule): boolean {
@@ -47,10 +49,11 @@ export function hasContextSidebar(module: NavModule): boolean {
  */
 export function ModuleServerSidebar({ module }: { module: NavModule }) {
   const openModuleTabForServer = useWorkbenchStore((s) => s.openModuleTabForServer);
+  const { t } = useTranslation();
 
   return (
     <ServerListTree
-      title={MODULE_TITLE[module] ?? module}
+      title={t(MODULE_TITLE[module] ?? module)}
       onOpenServer={(server) => openModuleTabForServer(module, server.id)}
     />
   );

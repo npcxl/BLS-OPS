@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Activity,
   FolderInput,
@@ -44,6 +45,7 @@ export const ServerRow = memo(function ServerRow({
   onToggleFavorite,
   onMoveToGroup,
 }: ServerRowProps) {
+  const { t } = useTranslation();
   const menu = useContextMenu();
   const openTab = useWorkbenchStore((s) => s.openTab);
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
@@ -80,51 +82,54 @@ export const ServerRow = memo(function ServerRow({
       sessionId: crypto.randomUUID(),
     });
 
+  const favoriteLabel = server.favorite ? t("Unfavorite") : t("Favorite");
+  const favoriteAriaLabel = server.favorite
+    ? t("Unfavorite {{name}}", { name: server.name })
+    : t("Favorite {{name}}", { name: server.name });
+
   const items: ContextMenuItem[] = [
-    { id: "connect", label: "打开终端", icon: Plug, onSelect: openTerminal },
-    { id: "monitor", label: "打开监控", icon: Activity, onSelect: openMonitor },
+    { id: "connect", label: t("Open terminal"), icon: Plug, onSelect: openTerminal },
+    { id: "monitor", label: t("Open monitor"), icon: Activity, onSelect: openMonitor },
     { id: "sep-manage", separator: true },
     {
       id: "services",
-      label: "服务管家",
+      label: t("Service manager"),
       icon: SquareCheckBig,
       onSelect: () => openManage("service"),
     },
-    { id: "logs", label: "日志中心", icon: ScrollText, onSelect: () => openManage("logs") },
+    { id: "logs", label: t("Log center"), icon: ScrollText, onSelect: () => openManage("logs") },
     { id: "sep-fav", separator: true },
     {
       id: "favorite",
-      label: server.favorite ? "取消收藏" : "收藏",
+      label: favoriteLabel,
       icon: Star,
       onSelect: () => onToggleFavorite(server),
     },
     {
       id: "move",
-      label: "移动到分组",
+      label: t("Move to group"),
       icon: FolderInput,
       // A dedicated command instead of the full edit dialog: moving is the
       // common case and should not require a form round-trip.
       children: [
         {
           id: "move-ungrouped",
-          label: UNGROUPED_LABEL,
-          hint: server.group_id ? undefined : "当前",
+          label: t(UNGROUPED_LABEL),
+          hint: server.group_id ? undefined : t("Current"),
           onSelect: () => onMoveToGroup(server, null),
         },
         ...groups.map((group) => ({
           id: `move-${group.id}`,
           label: group.name,
-          hint: server.group_id === group.id ? "当前" : undefined,
+          hint: server.group_id === group.id ? t("Current") : undefined,
           onSelect: () => onMoveToGroup(server, group.id),
         })),
       ],
     },
-    { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: () => onEdit(server) },
+    { id: "edit", label: t("Edit server"), icon: Pencil, onSelect: () => onEdit(server) },
     { id: "sep-delete", separator: true },
-    { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: () => onDelete(server) },
+    { id: "delete", label: t("Delete server"), icon: Trash2, danger: true, onSelect: () => onDelete(server) },
   ];
-
-  const favoriteLabel = server.favorite ? "取消收藏" : "收藏";
 
   return (
     <div
@@ -142,7 +147,7 @@ export const ServerRow = memo(function ServerRow({
           <span className="truncate text-12 text-fg">{server.name}</span>
           {server.proxy_jump_id && (
             <span className="shrink-0 rounded-[4px] border border-line px-1 text-10 text-fg-subtle">
-              跳板
+              {t("Jump")}
             </span>
           )}
         </span>
@@ -154,7 +159,7 @@ export const ServerRow = memo(function ServerRow({
       <button
         type="button"
         data-testid={`server-favorite-${server.id}`}
-        aria-label={`${favoriteLabel} ${server.name}`}
+        aria-label={favoriteAriaLabel}
         aria-pressed={server.favorite}
         title={favoriteLabel}
         className={cn(

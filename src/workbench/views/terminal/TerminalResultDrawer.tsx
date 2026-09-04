@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { ChevronDown, Copy, History, RotateCw, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
@@ -14,7 +15,7 @@ import { TerminalSnapshotView } from "./TerminalSnapshotView";
  * 终端里手敲的命令不在知识库里是常态（`ls -l` / 自研脚本…）。此时风险未知，
  * 必须**明确显示"未知"**，绝不能悄悄按只读处理（readonly 会绕过确认）。
  */
-const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted" };
+const UNKNOWN_RISK = { label: "Unknown risk", tone: "bg-surface-2 text-fg-muted" };
 
 /**
  * 终端下方的命令结果抽屉 —— 结果是**真正可管理的 Tab**。
@@ -57,6 +58,7 @@ export function TerminalResultDrawer({
   /** 重新运行：父层按真实风险门控（只读直接跑，修改型先确认）。 */
   onRerun: (item: CapturedResult) => void;
 }) {
+  const { t } = useTranslation();
   const active = results.find((item) => item.id === activeId) ?? results[results.length - 1];
   const menu = useContextMenu();
   const activeRef = useRef<CapturedResult | null>(null);
@@ -66,10 +68,10 @@ export function TerminalResultDrawer({
 
   const tabMenu = (item: CapturedResult) =>
     menu.onContextMenu(() => [
-      { id: "view", label: "查看", onSelect: () => onSelect(item.id) },
+      { id: "view", label: t("View"), onSelect: () => onSelect(item.id) },
       {
         id: "rerun",
-        label: "重新运行",
+        label: t("Rerun"),
         icon: RotateCw,
         // 无执行能力（知识层条目）不提供重运行。
         disabled: !item.canExecute,
@@ -77,21 +79,21 @@ export function TerminalResultDrawer({
       },
       {
         id: "copy",
-        label: "复制命令",
+        label: t("Copy command"),
         icon: Copy,
         onSelect: () => void copyText(item.command),
       },
       { id: "sep1", separator: true },
-      { id: "close", label: "关闭", onSelect: () => onCloseTab(item.id) },
+      { id: "close", label: t("Close"), onSelect: () => onCloseTab(item.id) },
       {
         id: "close-others",
-        label: "关闭其他",
+        label: t("Close others"),
         disabled: results.length <= 1,
         onSelect: () => onCloseOthers(item.id),
       },
       {
         id: "close-all",
-        label: "关闭全部",
+        label: t("Close all"),
         onSelect: () => onCloseAll(),
       },
     ]);
@@ -103,7 +105,7 @@ export function TerminalResultDrawer({
           type="button"
           onClick={onToggleCollapse}
           className="flex shrink-0 items-center rounded-[6px] px-1 py-0.5 hover:bg-surface-hover"
-          title={collapsed ? "展开结果面板" : "折叠结果面板"}
+          title={collapsed ? t("Expand results panel") : t("Collapse results panel")}
         >
           <ChevronDown
             size={12}
@@ -119,7 +121,10 @@ export function TerminalResultDrawer({
           {results.map((item) => {
             const isActive = item.id === active.id;
             // 未命中知识库 → 未知风险（可见），绝不默认只读。
+            // RISK_META 的 label 是知识库数据（Rust catalog），前端不翻译；
+            // UNKNOWN_RISK 是前端文案 → 存 key，这里 t()。
             const risk = item.risk ? RISK_META[item.risk] : UNKNOWN_RISK;
+            const riskLabel = item.risk ? risk.label : t(risk.label);
             return (
               <div
                 key={item.id}
@@ -131,8 +136,8 @@ export function TerminalResultDrawer({
                 <button
                   type="button"
                   className="flex min-w-0 items-center gap-1"
-                  title={`${item.command} · ${risk.label} · ${
-                    COMMAND_SOURCE_LABELS[item.source]
+                  title={`${item.command} · ${riskLabel} · ${
+                    t(COMMAND_SOURCE_LABELS[item.source])
                   }`}
                   onClick={() => onSelect(item.id)}
                   onAuxClick={(event) => {
@@ -147,13 +152,13 @@ export function TerminalResultDrawer({
                   {/* 只读是默认情况，不占位置；未知风险必须显示出来。 */}
                   {item.risk !== "read_only" && (
                     <span className={cn("shrink-0 rounded px-1 text-9", risk.tone)}>
-                      {risk.label}
+                      {riskLabel}
                     </span>
                   )}
                 </button>
                 <button
                   type="button"
-                  aria-label={`关闭 ${item.command} 的结果`}
+                  aria-label={t("Close result for {{command}}", { command: item.command })}
                   className={cn(
                     "shrink-0 rounded-[4px] p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg",
                     isActive ? "opacity-70" : "opacity-0 group-hover:opacity-100",
@@ -171,7 +176,7 @@ export function TerminalResultDrawer({
           type="button"
           onClick={onClose}
           className="ml-auto flex shrink-0 items-center gap-0.5 rounded-[6px] px-1 py-0.5 text-10 text-fg-subtle hover:bg-surface-hover hover:text-fg"
-          title="关闭结果面板（结果保留在历史中）"
+          title={t("Close results panel (results are kept in history)")}
         >
           <X size={11} />
         </button>

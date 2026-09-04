@@ -6,6 +6,7 @@
  */
 
 import { opsApi, type ProcessInfo } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { quotePathSegment } from "../path-input";
 import type {
   CompletionContext,
@@ -56,7 +57,9 @@ export function createProcessProvider(): CompletionProvider {
       } catch (cause) {
         return {
           items: [],
-          notice: `读取进程列表失败：${cause instanceof Error ? cause.message : String(cause)}`,
+          notice: i18n.t("Failed to read process list: {{message}}", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
           requestKey,
         };
       }
@@ -66,11 +69,11 @@ export function createProcessProvider(): CompletionProvider {
         const names = [...new Set(processes.map((item) => item.command))]
           .filter((name) => name.startsWith(partial))
           .sort((a, b) => a.localeCompare(b));
-        if (names.length === 0) return { items: [], notice: "没有匹配的进程", requestKey };
+        if (names.length === 0) return { items: [], notice: "No matching processes", requestKey };
         const items: CompletionItem[] = names.map((name, index) => ({
           label: name,
           insertText: quotePathSegment(name, null, false),
-          detail: "进程名",
+          detail: "Process name",
           icon: "process",
           type: "process",
           replaceRange: { start, end: ctx.cursor },
@@ -82,7 +85,7 @@ export function createProcessProvider(): CompletionProvider {
       }
 
       const matched = processes.filter((item) => String(item.pid).startsWith(partial));
-      if (matched.length === 0) return { items: [], notice: "没有匹配的进程", requestKey };
+      if (matched.length === 0) return { items: [], notice: "No matching processes", requestKey };
       const items: CompletionItem[] = matched.map((item, index) => ({
         label: String(item.pid),
         insertText: String(item.pid),

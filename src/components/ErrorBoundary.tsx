@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { i18n } from "@/i18n";
 
 interface Props {
   children: ReactNode;
@@ -29,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   private handleCopy = () => {
     void navigator.clipboard.writeText(
-      `${this.state.error?.message ?? "未知错误"}\n\n${this.state.error?.stack ?? ""}`,
+      `${this.state.error?.message ?? i18n.t("Unknown error")}\n\n${this.state.error?.stack ?? ""}`,
     );
   };
 
@@ -43,9 +44,9 @@ export class ErrorBoundary extends Component<Props, State> {
           <span className="text-lg">!</span>
         </div>
         <div className="flex flex-col gap-1">
-          <h1 className="text-15 font-semibold text-fg">界面出错了</h1>
+          <h1 className="text-15 font-semibold text-fg">{i18n.t("Something went wrong")}</h1>
           <p className="max-w-md text-12 text-fg-subtle">
-            某个组件在运行时崩溃。你可以重试，或复制错误信息反馈给开发者。
+            {i18n.t("A component crashed at runtime. You can retry, or copy the error details to report it.")}
           </p>
         </div>
         <pre className="max-h-48 w-full max-w-lg overflow-auto rounded-[8px] border border-line bg-surface-2 p-3 text-left text-11 text-danger">
@@ -58,14 +59,14 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={this.handleRetry}
             className="flex h-8 items-center rounded-[8px] bg-accent px-4 text-12 font-medium text-white hover:opacity-90"
           >
-            重试
+            {i18n.t("Retry")}
           </button>
           <button
             type="button"
             onClick={this.handleCopy}
             className="flex h-8 items-center rounded-[8px] border border-line bg-surface-1 px-4 text-12 text-fg hover:bg-surface-2"
           >
-            复制错误信息
+            {i18n.t("Copy error details")}
           </button>
         </div>
       </div>

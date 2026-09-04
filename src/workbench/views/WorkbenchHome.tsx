@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
   Clock,
   Copy,
@@ -62,17 +64,19 @@ function Section({
   );
 }
 
-function relativeTime(timestamp?: number | null): string {
-  if (!timestamp) return "从未连接";
+/** 相对时间。插值/通用词复用 common（JustNow/MinutesAgo/…），纯函数接收 t。 */
+function relativeTime(timestamp: number | null | undefined, t: TFunction): string {
+  if (!timestamp) return t("Never connected");
   const diff = Date.now() - timestamp;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
+  if (diff < 60_000) return t("JustNow");
+  if (diff < 3_600_000) return t("MinutesAgo", { count: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t("HoursAgo", { count: Math.floor(diff / 3_600_000) });
+  if (diff < 7 * 86_400_000) return t("DaysAgo", { count: Math.floor(diff / 86_400_000) });
   return new Date(timestamp).toLocaleDateString();
 }
 
 export function WorkbenchHome() {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<{ username: string; host: string; port: number } | null>(null);
   const [editing, setEditing] = useState<ServerRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
@@ -110,8 +114,8 @@ export function WorkbenchHome() {
     <div className="h-full overflow-y-auto bg-surface-1" data-selectable>
       <div className="mx-auto flex max-w-[860px] flex-col gap-7 p-7">
         <div>
-          <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">工作台</h1>
-          <p className="mt-1 text-12 text-fg-muted">本地 SSH 运维控制台</p>
+          <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">{t("Workbench")}</h1>
+          <p className="mt-1 text-12 text-fg-muted">{t("Local SSH operations console")}</p>
         </div>
 
         {servers.length === 0 ? (
@@ -119,7 +123,7 @@ export function WorkbenchHome() {
         ) : (
           <>
             <Section
-              title="最近会话"
+              title={t("Recent sessions")}
               count={recent.length}
               actions={
                 <button
@@ -127,12 +131,14 @@ export function WorkbenchHome() {
                   className="text-11 text-fg-subtle transition-colors hover:text-accent"
                   onClick={() => useWorkbenchStore.getState().setModule("ssh")}
                 >
-                  全部服务器 →
+                  {t("All servers →")}
                 </button>
               }
             >
               {recent.length === 0 ? (
-                <p className="text-12 text-fg-subtle">还没有连接记录。连接一次后会出现在这里。</p>
+                <p className="text-12 text-fg-subtle">
+                  {t("No connection history yet. Sessions appear here after you connect.")}
+                </p>
               ) : (
                 <ListPanel>
                   {recent.map((session) => (
@@ -161,7 +167,7 @@ export function WorkbenchHome() {
                       )}
                       <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
                         <Clock size={12} />
-                        {relativeTime(session.connected_at ?? session.disconnected_at)}
+                        {relativeTime(session.connected_at ?? session.disconnected_at, t)}
                       </span>
                     </button>
                   ))}
@@ -170,7 +176,7 @@ export function WorkbenchHome() {
             </Section>
 
             <Section
-              title="收藏"
+              title={t("Favorites")}
               count={favorites.length}
               actions={
                 <button
@@ -178,12 +184,12 @@ export function WorkbenchHome() {
                   className="text-11 text-fg-subtle transition-colors hover:text-accent"
                   onClick={() => useWorkbenchStore.getState().setModule("ssh")}
                 >
-                  管理 →
+                  {t("Manage →")}
                 </button>
               }
             >
               {favorites.length === 0 ? (
-                <p className="text-12 text-fg-subtle">在服务器列表中点击星标即可收藏。</p>
+                <p className="text-12 text-fg-subtle">{t("Click the star in the server list to favorite a server.")}</p>
               ) : (
                 <div className="flex flex-wrap gap-2">
                   {favorites.map((server) => (
@@ -202,13 +208,13 @@ export function WorkbenchHome() {
             </Section>
 
             <Section
-              title="服务器"
+              title={t("Servers")}
               count={servers.length}
               actions={
-                <Tooltip label="新增服务器">
+                <Tooltip label={t("Add server")}>
                   <Button variant="ghost" size="xs" className="h-6 px-2" onClick={() => setEditing(emptyServer())}>
                     <Plus size={13} />
-                    新增
+                    {t("Add")}
                   </Button>
                 </Tooltip>
               }
@@ -269,9 +275,12 @@ export function WorkbenchHome() {
       {deleteTarget && (
         <ConfirmDialog
           open
-          title="删除服务器"
-          description={`删除“${deleteTarget.name}”会同时删除它的会话与命令历史。此操作不可撤销。`}
-          confirmLabel="确认删除"
+          title={t("Delete server")}
+          description={t(
+            "Deleting \"{{name}}\" will also delete its sessions and command history. This action cannot be undone.",
+            { name: deleteTarget.name },
+          )}
+          confirmLabel={t("Confirm delete")}
           danger
           onCancel={() => setDeleteTarget(null)}
           onConfirm={() => void deleteServer(deleteTarget.id).then(() => setDeleteTarget(null))}
@@ -296,25 +305,26 @@ function ServerHomeRow({
 }) {
   // The card only shows two hover icons; the rest of the actions (编辑, 复制
   // 地址) live in the right-click menu, same as in the server list.
+  const { t } = useTranslation();
   const menu = useContextMenu();
   const items: ContextMenuItem[] = [
-    { id: "open", label: "打开终端", icon: Plug, onSelect: onOpen },
+    { id: "open", label: t("Open terminal"), icon: Plug, onSelect: onOpen },
     {
       id: "favorite",
-      label: server.favorite ? "取消收藏" : "收藏",
+      label: server.favorite ? t("Unfavorite") : t("Favorite"),
       icon: Star,
       onSelect: onToggleFavorite,
     },
     { id: "sep-edit", separator: true },
-    { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: onEdit },
+    { id: "edit", label: t("Edit server"), icon: Pencil, onSelect: onEdit },
     {
       id: "copy-target",
-      label: "复制连接地址",
+      label: t("Copy connection address"),
       icon: Copy,
       onSelect: () => void copyText(`${server.username}@${server.host}:${server.port}`),
     },
     { id: "sep-delete", separator: true },
-    { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: onDelete },
+    { id: "delete", label: t("Delete server"), icon: Trash2, danger: true, onSelect: onDelete },
   ];
 
   return (
@@ -330,15 +340,15 @@ function ServerHomeRow({
           {server.username}@{server.host}:{server.port}
         </span>
       </button>
-      <span className="shrink-0 text-11 text-fg-subtle">{relativeTime(server.last_connected_at)}</span>
+      <span className="shrink-0 text-11 text-fg-subtle">{relativeTime(server.last_connected_at, t)}</span>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <Tooltip label={server.favorite ? "取消收藏" : "收藏"} side="left">
-          <Button variant="ghost" size="xs" className="h-6 w-6 px-0" aria-label="收藏" onClick={onToggleFavorite}>
+        <Tooltip label={server.favorite ? t("Unfavorite") : t("Favorite")} side="left">
+          <Button variant="ghost" size="xs" className="h-6 w-6 px-0" aria-label={t("Favorite")} onClick={onToggleFavorite}>
             <Star size={13} className={server.favorite ? "fill-current text-accent" : ""} />
           </Button>
         </Tooltip>
-        <Tooltip label="删除" side="left">
-          <Button variant="ghost" size="xs" className="h-6 w-6 px-0 hover:text-danger" aria-label="删除" onClick={onDelete}>
+        <Tooltip label={t("Delete")} side="left">
+          <Button variant="ghost" size="xs" className="h-6 w-6 px-0 hover:text-danger" aria-label={t("Delete")} onClick={onDelete}>
             <Trash2 size={13} />
           </Button>
         </Tooltip>
@@ -350,18 +360,19 @@ function ServerHomeRow({
 }
 
 function EmptyServers({ onAdd }: { onAdd: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-line bg-surface-1/50 px-6 py-14 text-center">
       <span className="flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-fg-subtle">
         <ServerIcon size={22} />
       </span>
       <div>
-        <p className="text-14 font-medium text-fg">还没有服务器</p>
-        <p className="mt-1 text-12 text-fg-subtle">新增一台服务器即可开始连接与管理。</p>
+        <p className="text-14 font-medium text-fg">{t("No servers yet")}</p>
+        <p className="mt-1 text-12 text-fg-subtle">{t("Add a server to start connecting and managing.")}</p>
       </div>
       <Button variant="primary" size="sm" onClick={onAdd}>
         <Plus size={13} />
-        新增服务器
+        {t("Add server")}
       </Button>
     </div>
   );
@@ -383,6 +394,7 @@ function QuickConnectDialog({
   onClose: () => void;
   onConnect: (auth: QuickConnectAuth, saveAsServer: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const credentials = useDomainStore((s) => s.credentials);
   const [credentialId, setCredentialId] = useState<string>(credentials[0]?.id ?? "");
   const [password, setPassword] = useState("");
@@ -394,7 +406,7 @@ function QuickConnectDialog({
   const connect = () =>
     submit.run(async () => {
       if (usingOneTimePassword) {
-        if (!password) throw new Error("请输入密码");
+        if (!password) throw new Error(t("Please enter a password"));
         onConnect({ password }, saveAsServer);
         return;
       }
@@ -405,29 +417,32 @@ function QuickConnectDialog({
     <Modal
       open
       width={420}
-      title="连接到主机"
+      title={t("Connect to host")}
       description={`${draft.username}@${draft.host}:${draft.port}`}
       onClose={onClose}
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            取消
+            {t("Cancel")}
           </Button>
           <Button variant="primary" size="sm" disabled={submit.pending} onClick={() => void connect()}>
-            {submit.pending ? "连接中…" : "连接"}
+            {submit.pending ? t("Connecting") : t("Connect")}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-3">
         {credentials.length > 0 && (
-          <Field label="已保存凭据" hint="选择“一次性密码”可不依赖任何已保存凭据">
+          <Field
+            label={t("Saved credentials")}
+            hint={t("Select \"one-time password\" to connect without any saved credentials")}
+          >
             <select className={selectClass} value={credentialId} onChange={(event) => setCredentialId(event.target.value)}>
-              <option value="">使用一次性密码（不保存）</option>
+              <option value="">{t("Use one-time password (not saved)")}</option>
               {credentials.map((credential: CredentialRecord) => (
                 <option key={credential.id} value={credential.id}>
                   {credential.name} · {credential.username} ·{" "}
-                  {credential.credential_type === "private_key" ? "私钥" : "密码"}
+                  {credential.credential_type === "private_key" ? t("Private key") : t("Password")}
                 </option>
               ))}
             </select>
@@ -436,11 +451,11 @@ function QuickConnectDialog({
 
         {usingOneTimePassword && (
           <Field
-            label="一次性密码"
+            label={t("One-time password")}
             hint={
               credentials.length === 0
-                ? "还没有凭据，可先直接用密码连接。密钥不会保存。"
-                : "仅用于本次连接，不会写入系统凭据管理器。"
+                ? t("No credentials yet. You can connect with a password directly; it will not be saved.")
+                : t("Used for this connection only; not written to the system credential manager.")
             }
           >
             <input
@@ -452,18 +467,20 @@ function QuickConnectDialog({
               onKeyDown={(event) => {
                 if (event.key === "Enter") void connect();
               }}
-              placeholder="登录密码"
+              placeholder={t("Login password")}
             />
           </Field>
         )}
 
         <label className="flex items-center gap-2 text-12 text-fg-muted">
           <input type="checkbox" checked={saveAsServer} onChange={(event) => setSaveAsServer(event.target.checked)} />
-          保存为服务器（下次可从列表直接连接）
+          {t("Save as server (connect directly from the list next time)")}
         </label>
         {usingOneTimePassword && saveAsServer && (
           <p className="-mt-1.5 pl-[22px] text-11 leading-relaxed text-fg-subtle">
-            服务器条目会被保存，但不含凭据——下次连接仍需选择凭据或再次输入密码。
+            {t(
+              "The server entry is saved without credentials — pick a credential or type the password again next time.",
+            )}
           </p>
         )}
 

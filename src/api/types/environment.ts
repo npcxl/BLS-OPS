@@ -79,12 +79,13 @@ export interface SuggestedCommand {
   needsContainer?: boolean;
 }
 
+/** Nginx 环境类别 UI 标签 —— label 为英文 key，渲染处 `t(...)`。 */
 export const NGINX_KIND_LABELS: Record<NginxKind, string> = {
-  host: "宿主机 Nginx",
+  host: "Host Nginx",
   docker: "Docker Nginx",
   compose: "Docker Compose Nginx",
-  multiple: "多个 Nginx 容器",
-  none: "未检测到 Nginx",
+  multiple: "Multiple Nginx Containers",
+  none: "No Nginx Detected",
 };
 
 /** 容器一行摘要：名称 · 镜像 · 状态 · 端口 · Compose 项目（选择器用）。 */

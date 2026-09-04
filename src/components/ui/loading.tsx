@@ -1,9 +1,11 @@
 import type { HTMLAttributes, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { LoaderCircle, type LucideProps } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 export function Spinner({ className, ...props }: LucideProps) {
-  return <LoaderCircle aria-label="加载中" className={cn("animate-spin text-fg-subtle", className)} {...props} />;
+  const { t } = useTranslation();
+  return <LoaderCircle aria-label={t("Loading")} className={cn("animate-spin text-fg-subtle", className)} {...props} />;
 }
 
 export interface LoadingStateProps extends HTMLAttributes<HTMLDivElement> {
@@ -11,7 +13,8 @@ export interface LoadingStateProps extends HTMLAttributes<HTMLDivElement> {
   compact?: boolean;
 }
 
-export function LoadingState({ label = "加载中…", compact = false, className, ...props }: LoadingStateProps) {
+export function LoadingState({ label, compact = false, className, ...props }: LoadingStateProps) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
@@ -23,7 +26,7 @@ export function LoadingState({ label = "加载中…", compact = false, classNam
       {...props}
     >
       <Spinner size={14} strokeWidth={1.8} />
-      <span>{label}</span>
+      <span>{label ?? t("Loading")}</span>
     </div>
   );
 }

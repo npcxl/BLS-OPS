@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   Download,
@@ -64,6 +65,7 @@ export interface FilePreviewModalProps {
  * dead end without a reason, and 下载 always works regardless.
  */
 export default function FilePreviewModal({ sessionId, target, onClose, onEdit }: FilePreviewModalProps) {
+  const { t } = useTranslation();
   const { render, exiting } = useExiting(true, 150);
   const [state, setState] = useState<State>({ status: "loading" });
   const [downloading, setDownloading] = useState(false);
@@ -126,14 +128,14 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const destination = await save({
-        title: `下载 ${target.name}`,
+        title: t("Download {{name}}", { name: target.name }),
         defaultPath: target.name,
       });
       if (!destination) return;
       const written = await opsApi.sftpDownloadFile(sessionId, target.path, destination);
-      setToast(`已保存 ${formatSize(written)} → ${destination}`);
+      setToast(t("Saved {{size}} → {{path}}", { size: formatSize(written), path: destination }));
     } catch (cause) {
-      setToast(`下载失败：${toErrorMessage(cause)}`);
+      setToast(t("Download failed: {{message}}", { message: toErrorMessage(cause) }));
     } finally {
       setDownloading(false);
     }
@@ -167,7 +169,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-13 font-semibold text-fg">{target.name}</h2>
             <p className="truncate text-11 text-fg-subtle">
-              {target.path} · {formatSize(target.size)} · {kind.label}
+              {target.path} · {formatSize(target.size)} · {t(kind.label)}
             </p>
           </div>
           <Button
@@ -177,17 +179,17 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
             onClick={() => void download()}
           >
             {downloading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
-            下载
+            {t("Download")}
           </Button>
           {onEdit && isEditableKind({ name: target.name, kind: "file" }) && (
             <Button size="xs" variant="ghost" onClick={() => onEdit(target)}>
               <Pencil size={12} />
-              编辑
+              {t("Edit")}
             </Button>
           )}
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("Close")}
             className="rounded-[5px] p-1 text-fg-subtle hover:bg-surface-hover hover:text-fg"
             onClick={onClose}
           >
@@ -198,7 +200,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
         {state.status === "loading" && (
           <div className="flex flex-1 items-center justify-center gap-2 text-12 text-fg-subtle">
             <Loader2 size={14} className="animate-spin" />
-            正在读取文件…
+            {t("Reading file…")}
           </div>
         )}
 
@@ -207,7 +209,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
             <div className="flex max-w-[460px] flex-col items-center gap-2 text-center">
               <AlertCircle size={20} className="text-danger" />
               <p className="text-12 leading-relaxed text-danger">{state.message}</p>
-              <p className="text-11 text-fg-subtle">可直接下载到本地查看。</p>
+              <p className="text-11 text-fg-subtle">{t("You can download it to view locally.")}</p>
             </div>
           </div>
         )}

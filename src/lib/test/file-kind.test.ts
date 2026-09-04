@@ -115,7 +115,7 @@ describe("fileKind: 名为 .ssh 的文件（本次验收核心）", () => {
 
 describe("fileKind: dotfiles by full name", () => {
   it("keeps the established labels", () => {
-    expect(file(".env").label).toBe("环境变量");
+    expect(file(".env").label).toBe("Environment Variables");
     expect(file("Dockerfile").label).toBe("Dockerfile");
     expect(file("Makefile").label).toBe("Makefile");
     expect(file(".gitignore").iconKey).toBe("git");

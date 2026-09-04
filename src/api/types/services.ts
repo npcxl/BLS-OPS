@@ -1,5 +1,7 @@
 /** systemd units and journald log types. */
 
+import { i18n } from "@/i18n";
+
 // -- systemd ----------------------------------------------------------------
 
 export interface ServiceUnit {
@@ -41,20 +43,21 @@ export interface JournalDiskUsage {
   bytes: number | null;
 }
 
-/** Maximum syslog priority to include. `null` means "everything". */
+/** journald 优先级下拉 —— label 为英文 key，取用时经 `t(...)` 翻译。 */
 export const JOURNAL_PRIORITIES = [
-  { value: null, label: "全部级别" },
-  { value: 0, label: "紧急" },
-  { value: 1, label: "警报" },
-  { value: 2, label: "严重" },
-  { value: 3, label: "错误" },
-  { value: 4, label: "警告" },
-  { value: 5, label: "通知" },
-  { value: 6, label: "信息" },
-  { value: 7, label: "调试" },
+  { value: null, label: "All Levels" },
+  { value: 0, label: "Emergency" },
+  { value: 1, label: "Alert" },
+  { value: 2, label: "Critical" },
+  { value: 3, label: "Error" },
+  { value: 4, label: "Warning" },
+  { value: 5, label: "Notice" },
+  { value: 6, label: "Info" },
+  { value: 7, label: "Debug" },
 ] as const;
 
-/** Chinese label for a journald priority. */
+/** Label for a journald priority (localized). Unknown values fall back to "Other". */
 export function priorityLabel(priority: number): string {
-  return JOURNAL_PRIORITIES.find((item) => item.value === priority)?.label ?? "其他";
+  const found = JOURNAL_PRIORITIES.find((item) => item.value === priority);
+  return found ? i18n.t(found.label) : i18n.t("Other");
 }

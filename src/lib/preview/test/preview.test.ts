@@ -191,8 +191,8 @@ describe("hex", () => {
   });
 
   it("identifies files by magic bytes, not by extension", () => {
-    expect(sniffType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("PNG 图片");
-    expect(sniffType(new Uint8Array([0x25, 0x50, 0x44, 0x46]))).toBe("PDF 文档");
+    expect(sniffType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("PNG Image");
+    expect(sniffType(new Uint8Array([0x25, 0x50, 0x44, 0x46]))).toBe("PDF Document");
     expect(sniffType(new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))).toContain("OLE2");
     expect(sniffType(new Uint8Array([1, 2, 3]))).toBeNull();
   });
@@ -230,13 +230,13 @@ describe("buildPreview", () => {
     const model = buildPreview({ name: "old.xls", mime: "", bytes: new Uint8Array([0xd0, 0xcf, 0x11, 0xe0]) }).model;
     expect(model.kind).toBe("unsupported");
     if (model.kind !== "unsupported") return;
-    expect(model.reason).toContain("旧版 Office");
+    expect(model.reason).toContain("legacy Office");
     expect(model.hint).toBeTruthy();
   });
 
   it("falls back to hex for unrecognised binaries, naming what it detected", () => {
     const model = buildPreview({ name: "mystery.bin", mime: "", bytes: new Uint8Array([0x7f, 0x45, 0x4c, 0x46]) }).model;
-    expect(model).toMatchObject({ kind: "hex", detected: "ELF 可执行文件" });
+    expect(model).toMatchObject({ kind: "hex", detected: "ELF Executable" });
   });
 
   it("shows extension-less text as text", () => {
@@ -246,7 +246,7 @@ describe("buildPreview", () => {
 
   it("reports a truncated payload instead of hiding it", () => {
     const result = buildPreview({ name: "big.log", mime: "", bytes: strToU8("abc"), size: 999 });
-    expect(result.note).toContain("预览只加载了前");
+    expect(result.note).toContain("preview loaded only the first");
   });
 
   it("releases object URLs it created", () => {

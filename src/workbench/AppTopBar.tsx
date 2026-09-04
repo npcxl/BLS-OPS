@@ -1,4 +1,5 @@
 import { PanelLeftOpen } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 import { isMacOS } from "@/lib/platform";
@@ -7,22 +8,24 @@ import { WindowControls } from "./window-controls";
 
 /** macOS Sonoma System Settings — titlebar is just traffic lights; the
  *  current section title appears centered only while hovering the bar. */
+/** 值是 i18n key（模块级常量不能用 hook），渲染处统一 `t(...)`。 */
 const MODULE_TITLES: Record<string, string> = {
-  ssh: "终端",
-  servers: "服务器",
-  services: "服务",
-  logs: "日志",
-  projects: "项目",
-  commands: "命令",
-  deploy: "部署",
-  tasks: "任务",
-  ai: "智能助手",
-  settings: "设置",
+  ssh: "Module: Terminal",
+  servers: "Module: Servers",
+  services: "Module: Services",
+  logs: "Module: Logs",
+  projects: "Module: Projects",
+  commands: "Module: Commands",
+  deploy: "Module: Deploy",
+  tasks: "Module: Tasks",
+  ai: "Module: AI",
+  settings: "Module: Settings",
 };
 
 /** macOS keeps native decorations (see src-tauri/tauri.macos.conf.json): the
  *  traffic lights are real system controls, so the bar draws none of its own. */
 export function AppTopBar() {
+  const { t } = useTranslation();
   const activeModule = useWorkbenchStore((s) => s.activeModule);
   const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
@@ -56,8 +59,8 @@ export function AppTopBar() {
       {canExpand && (
         <button
           type="button"
-          aria-label="展开侧边栏"
-          title="展开侧边栏"
+          aria-label={t("Expand sidebar")}
+          title={t("Expand sidebar")}
           // The whole bar is the window drag region; without this the click
           // is swallowed by the drag handler.
           data-tauri-drag-region="false"
@@ -68,7 +71,7 @@ export function AppTopBar() {
         </button>
       )}
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-        {MODULE_TITLES[activeModule] ?? "BLS-OPS"}
+        {t(MODULE_TITLES[activeModule] ?? "BLS-OPS")}
       </span>
       {!mac && <WindowControls />}
     </header>

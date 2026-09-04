@@ -77,7 +77,6 @@ describe("buildServerSections", () => {
     expect(sections.ungrouped.servers.map((item) => item.name)).toEqual(["s1"]);
     expect(sections.warnings).toHaveLength(1);
     expect(sections.warnings[0]).toContain("ghost");
-    expect(sections.warnings[0]).toContain("s1");
     expect(sections.groups.find((item) => item.id === "g1")?.servers).toHaveLength(0);
   });
 
@@ -88,7 +87,7 @@ describe("buildServerSections", () => {
     );
 
     expect(sections.warnings).toHaveLength(1);
-    expect(sections.warnings[0]).toContain("2 台");
+    expect(sections.warnings[0]).toContain("2 servers");
   });
 
   it("treats an empty-string group_id as 未分组", () => {

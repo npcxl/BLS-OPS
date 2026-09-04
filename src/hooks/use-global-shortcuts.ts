@@ -48,7 +48,7 @@ export function useGlobalShortcuts() {
 
       if (ctrl && !shift && e.key === "t") {
         e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "新建终端" });
+        openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" });
       }
 
       if (ctrl && shift && e.key === "T") {
@@ -95,7 +95,7 @@ export function useGlobalShortcuts() {
 
       if (ctrl && !shift && e.key === "`") {
         e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "终端" });
+        openTab({ id: crypto.randomUUID(), type: "terminal", title: "Terminal" });
       }
     };
 

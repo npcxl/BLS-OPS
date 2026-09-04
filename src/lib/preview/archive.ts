@@ -12,6 +12,8 @@
  */
 import { gunzipSync } from "fflate";
 
+import { i18n } from "@/i18n";
+
 export interface ArchiveEntry {
   name: string;
   /** Uncompressed size, 0 for directories. */
@@ -41,7 +43,10 @@ export function listArchive(bytes: Uint8Array, fileName: string): ArchiveListing
       format: "zip",
       entries: entries.slice(0, MAX_ENTRIES),
       totalSize: entries.reduce((sum, entry) => sum + entry.size, 0),
-      note: entries.length > MAX_ENTRIES ? `仅显示前 ${MAX_ENTRIES} 个条目` : undefined,
+      note:
+        entries.length > MAX_ENTRIES
+          ? i18n.t("Showing only the first {{count}} entries", { count: MAX_ENTRIES.toLocaleString() })
+          : undefined,
     };
   }
 
@@ -56,7 +61,9 @@ export function listArchive(bytes: Uint8Array, fileName: string): ArchiveListing
     };
   }
 
-  throw new UnsupportedArchiveError("暂不支持预览这种压缩格式（仅支持 zip / tar / tar.gz）");
+  throw new UnsupportedArchiveError(
+    i18n.t("Preview is not supported for this archive format (zip / tar / tar.gz only)"),
+  );
 }
 
 function isZip(bytes: Uint8Array): boolean {
@@ -92,7 +99,9 @@ function looksLikeTar(bytes: Uint8Array): boolean {
 function listZip(bytes: Uint8Array): ArchiveEntry[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocd = findEocd(view, bytes.length);
-  if (eocd < 0) throw new UnsupportedArchiveError("无法读取压缩包目录（文件可能已损坏）");
+  if (eocd < 0) {
+    throw new UnsupportedArchiveError(i18n.t("Cannot read the archive directory (the file may be corrupted)"));
+  }
 
   const entryCount = view.getUint16(eocd + 10, true);
   let offset = view.getUint32(eocd + 16, true);

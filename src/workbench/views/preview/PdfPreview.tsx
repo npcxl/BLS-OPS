@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { i18n } from "@/i18n";
 
 type PdfJsModule = typeof import("pdfjs-dist");
 type PdfDocument = import("pdfjs-dist").PDFDocumentProxy;
@@ -18,6 +20,7 @@ type PdfLoadingTask = ReturnType<PdfJsModule["getDocument"]>;
  * still tells the user why, and the 下载 button remains available.
  */
 export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
+  const { t } = useTranslation();
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(1);
@@ -55,7 +58,7 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
         setLoading(false);
       } catch (cause) {
         if (!cancelled) {
-          setError(toMessage(cause, "无法渲染这个 PDF"));
+          setError(toMessage(cause, i18n.t("Cannot render this PDF")));
           setLoading(false);
         }
       }
@@ -95,7 +98,7 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
 
         await pdfPage.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
       } catch (cause) {
-        if (!cancelled && !isCancelledError(cause)) setError(toMessage(cause, "渲染页面失败"));
+        if (!cancelled && !isCancelledError(cause)) setError(toMessage(cause, i18n.t("Failed to render page")));
       }
     })();
 
@@ -139,19 +142,19 @@ export function PdfPreview({ bytes }: { bytes: Uint8Array }) {
           <ChevronRight size={12} />
         </Button>
         <span className="mx-1 h-4 w-px bg-line" />
-        <Button size="xs" variant="ghost" onClick={() => changeZoom(-0.25)} title="缩小">
+        <Button size="xs" variant="ghost" onClick={() => changeZoom(-0.25)} title={t("Zoom out")}>
           <ZoomOut size={12} />
         </Button>
         <span className="w-10 text-center text-11 tabular-nums text-fg-muted">
           {Math.round(zoom * 100)}%
         </span>
-        <Button size="xs" variant="ghost" onClick={() => changeZoom(0.25)} title="放大">
+        <Button size="xs" variant="ghost" onClick={() => changeZoom(0.25)} title={t("Zoom in")}>
           <ZoomIn size={12} />
         </Button>
         {loading && (
           <span className="ml-auto flex items-center gap-1.5 text-11 text-fg-subtle">
             <Loader2 size={12} className="animate-spin" />
-            正在加载 PDF…
+            {t("Loading PDF…")}
           </span>
         )}
       </div>
@@ -186,9 +189,14 @@ function isCancelledError(cause: unknown): boolean {
   return cause instanceof Error && /cancel/i.test(cause.name + cause.message);
 }
 
+/** 兜底错误文案：fallback 由调用方传当前语言文案，这里只补底层错误详情。 */
 function toMessage(cause: unknown, fallback: string): string {
   if (!(cause instanceof Error)) return fallback;
-  if (/password/i.test(cause.message)) return "这个 PDF 已加密，需要密码才能预览。";
-  if (/invalid/i.test(cause.message)) return "这不是有效的 PDF 文件，或文件已损坏。";
-  return `${fallback}：${cause.message}`;
+  if (/password/i.test(cause.message)) {
+    return i18n.t("This PDF is encrypted and needs a password to preview.");
+  }
+  if (/invalid/i.test(cause.message)) {
+    return i18n.t("This is not a valid PDF file, or the file is corrupted.");
+  }
+  return i18n.t("{{message}}: {{detail}}", { message: fallback, detail: cause.message });
 }

@@ -21,8 +21,8 @@ describe("Modal exit animation", () => {
   const renderModal = (open: boolean) => {
     act(() => {
       root.render(
-        <Modal open={open} title="测试弹窗" onClose={() => undefined}>
-          <p>内容</p>
+        <Modal open={open} title="Test modal" onClose={() => undefined}>
+          <p>Content</p>
         </Modal>,
       );
     });

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Loader2, Save } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import type { EditorView } from "@uiw/react-codemirror";
@@ -49,6 +50,7 @@ export default function FileEditorModal({
   const [saving, setSaving] = useState(false);
   /** 浮动搜索框开关（Ctrl+F）。 */
   const [searchOpen, setSearchOpen] = useState(false);
+  const { t } = useTranslation();
   const theme = useEditorTheme();
   const viewRef = useRef<EditorView | null>(null);
 
@@ -59,7 +61,7 @@ export default function FileEditorModal({
         const result = await opsApi.sftpReadFile(sessionId, path);
         if (cancelled) return;
         if (result.binary) {
-          setError("这是二进制文件，无法以文本方式打开。");
+          setError(t("This is a binary file and cannot be opened as text."));
           return;
         }
         setContent(result.content ?? "");
@@ -71,7 +73,7 @@ export default function FileEditorModal({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, path]);
+  }, [sessionId, path, t]);
 
   const extensions = useMemo(() => buildExtensions(language), [language]);
 
@@ -98,20 +100,20 @@ export default function FileEditorModal({
       title={name}
       description={path}
       onClose={() => {
-        if (!dirty || window.confirm("有未保存的修改，确定关闭吗？")) onClose();
+        if (!dirty || window.confirm(t("There are unsaved changes. Close anyway?"))) onClose();
       }}
       footer={
         <>
           <span className="mr-auto text-11 text-fg-subtle">
             {size !== null && `${(size / 1024).toFixed(1)} KB`}
-            {dirty && " · 未保存"}
+            {dirty && ` · ${t("Unsaved")}`}
           </span>
           <Button variant="ghost" size="sm" disabled={saving} onClick={onClose}>
-            {dirty ? "取消" : "关闭"}
+            {dirty ? t("Cancel") : t("Close")}
           </Button>
           <Button variant="primary" size="sm" disabled={saving || content === null} onClick={() => void save()}>
             <Save size={13} />
-            {saving ? "保存中…" : "保存 (Ctrl+S)"}
+            {saving ? t("Saving") : t("Save (Ctrl+S)")}
           </Button>
         </>
       }
@@ -120,7 +122,7 @@ export default function FileEditorModal({
         {content === null && !error && (
           <div className="flex items-center justify-center gap-2 py-10 text-12 text-fg-subtle">
             <Loader2 size={14} className="animate-spin" />
-            正在读取…
+            {t("Reading file…")}
           </div>
         )}
         {error && <ErrorText>{error}</ErrorText>}

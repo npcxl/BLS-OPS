@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, Copy, FileCode2, FileText, FileJson, TriangleAlert } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import {
   COPYABLE,
@@ -29,6 +30,7 @@ import type { CapturedResult } from "./TerminalCommandCoordinator";
  *   是对原始流的清洗，不是真正的终端快照，绝不伪装。
  */
 export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
+  const { t } = useTranslation();
   const [view, setView] = useState<"rendered" | "json" | "raw">("rendered");
   const { status, copy } = useCopyFeedback();
 
@@ -39,9 +41,9 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
   const exitCode = boundary.exitCode;
   const degraded = result.renderedDegraded;
   const meta: string[] = [];
-  if (exitCode !== null) meta.push(`退出码 ${exitCode}`);
+  if (exitCode !== null) meta.push(t("Exit code {{code}}", { code: exitCode }));
   meta.push(`${boundary.durationMs} ms`);
-  meta.push(boundary.endedBy === "marker" ? "受控标记收尾" : "无标记兜底收尾");
+  meta.push(boundary.endedBy === "marker" ? t("Ended by marker") : t("Ended by fallback (no marker)"));
 
   return (
     <div
@@ -62,7 +64,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
             )}
           >
             <FileText size={11} />
-            终端输出
+            {t("Terminal output")}
           </button>
           {json !== null && (
             <button
@@ -86,7 +88,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
             )}
           >
             <FileCode2 size={11} />
-            原始流
+            {t("Raw stream")}
           </button>
         </div>
       </div>
@@ -95,7 +97,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
         <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-10 text-warning">
           <TriangleAlert size={12} />
           <span className="min-w-0 flex-1">
-            渲染快照不可用（起始行被回滚淘汰或无标记兜底），已从原始输出降级 —— 长行软换行无法还原
+            {t("Rendered snapshot unavailable (start line evicted or no-marker fallback); degraded from raw output — soft line wraps cannot be restored")}
           </span>
         </div>
       )}
@@ -107,10 +109,10 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
               type="button"
               onClick={() => void copy(renderedText)}
               className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
-              title="复制渲染输出"
+              title={t("Copy rendered output")}
             >
               {status === "ok" ? <Check size={11} /> : <Copy size={11} />}
-              {status === "ok" ? "已复制" : "复制"}
+              {status === "ok" ? t("Copied") : t("Copy")}
             </button>
             <div className="h-full overflow-auto">
               <pre
@@ -128,7 +130,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
                     // 复制的是**该行原文**（空行也复制空串，不给空格）。
                     {...clickCopyProps(() => void copy(line))}
                     className={cn(COPYABLE, "block w-full min-w-full whitespace-pre")}
-                    title="点击复制该行"
+                    title={t("Click to copy this line")}
                   >
                     {line === "" ? "\u00A0" : line}
                   </button>

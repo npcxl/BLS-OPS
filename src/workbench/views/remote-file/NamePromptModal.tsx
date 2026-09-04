@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { useSubmit } from "@/hooks/use-submit";
@@ -8,6 +9,9 @@ import type { NameDialog } from "./utils";
  * Modal wrapper for NameDialog. `onConfirm` runs on submit; `onSaved` fires
  * only after a successful action (so the panel can refresh), `onClose` on any
  * dismissal.
+ *
+ * `dialog.title/label/submitLabel` 存的是英文 key（构造处无法调 hook），渲染
+ * 处统一 `t(...)`；`initial` 是默认文件名（数据），构造处已按当前语言生成。
  */
 export function NamePromptModal({
   dialog,
@@ -18,6 +22,7 @@ export function NamePromptModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const submit = useSubmit();
   const [value, setValue] = useState(dialog.initial);
   const trimmed = value.trim();
@@ -33,12 +38,12 @@ export function NamePromptModal({
     <Modal
       open
       width={380}
-      title={dialog.title}
+      title={t(dialog.title)}
       onClose={onClose}
       footer={
         <>
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
-            取消
+            {t("Cancel")}
           </Button>
           <Button
             variant="primary"
@@ -46,13 +51,13 @@ export function NamePromptModal({
             disabled={submit.pending || !trimmed || Boolean(validationError)}
             onClick={() => void confirm()}
           >
-            {submit.pending ? "处理中…" : dialog.submitLabel}
+            {submit.pending ? t("Processing") : t(dialog.submitLabel)}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-2.5">
-        <Field label={dialog.label}>
+        <Field label={t(dialog.label)}>
           <input
             autoFocus
             className={fieldClass}

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { Check, ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
+import { i18n } from "@/i18n";
 import {
   COPYABLE,
   CopyNotice,
@@ -23,6 +25,7 @@ import {
  * 复制路径 / 复制节点 JSON 两个按钮保持原样。
  */
 export function JsonView({ value }: { value: unknown }) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<"tree" | "text">("tree");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -72,7 +75,7 @@ export function JsonView({ value }: { value: unknown }) {
             )}
           >
             <FileJson size={11} />
-            树
+            {t("Tree view")}
           </button>
           <button
             type="button"
@@ -83,7 +86,7 @@ export function JsonView({ value }: { value: unknown }) {
             )}
           >
             <FileText size={11} />
-            文本
+            {t("Text")}
           </button>
         </div>
 
@@ -93,7 +96,7 @@ export function JsonView({ value }: { value: unknown }) {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索键 / 值…"
+              placeholder={t("Search keys / values…")}
               className="h-6 w-full rounded-[6px] border border-line bg-surface-1 pl-6 pr-6 text-10 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
             />
             {query !== "" && (
@@ -101,7 +104,7 @@ export function JsonView({ value }: { value: unknown }) {
                 type="button"
                 onClick={() => setQuery("")}
                 className="absolute right-1.5 text-fg-subtle hover:text-fg"
-                aria-label="清空搜索"
+                aria-label={t("Clear search")}
               >
                 <X size={11} />
               </button>
@@ -116,14 +119,14 @@ export function JsonView({ value }: { value: unknown }) {
               onClick={() => setCollapsed(new Set(containerPaths))}
               className="rounded-[5px] px-1.5 py-0.5 text-10 text-fg-subtle hover:bg-surface-2 hover:text-fg"
             >
-              全部折叠
+              {t("Collapse all")}
             </button>
             <button
               type="button"
               onClick={() => setCollapsed(new Set())}
               className="rounded-[5px] px-1.5 py-0.5 text-10 text-fg-subtle hover:bg-surface-2 hover:text-fg"
             >
-              展开全部
+              {t("Expand all")}
             </button>
           </div>
         )}
@@ -132,10 +135,10 @@ export function JsonView({ value }: { value: unknown }) {
           type="button"
           onClick={() => void flashCopied(pretty, "whole")}
           className="flex shrink-0 items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
-          title="复制整段 JSON"
+          title={t("Copy whole JSON")}
         >
           {copiedKey === "whole" ? <Check size={11} /> : <Copy size={11} />}
-          {copiedKey === "whole" ? "已复制" : "复制"}
+          {copiedKey === "whole" ? t("Copied") : t("Copy")}
         </button>
       </div>
 
@@ -147,7 +150,7 @@ export function JsonView({ value }: { value: unknown }) {
             data-testid="json-text-copy"
             {...clickCopyProps(() => void copy(pretty))}
             className={cn(COPYABLE, "block w-full")}
-            title="点击复制完整 JSON"
+            title={t("Click to copy whole JSON")}
           >
             <pre
               style={{ fontFamily: "var(--font-command-output)" }}
@@ -170,7 +173,7 @@ export function JsonView({ value }: { value: unknown }) {
               ))}
             </div>
           ) : (
-            <div className="px-3 py-6 text-center text-10 text-fg-subtle">无匹配结果</div>
+            <div className="px-3 py-6 text-center text-10 text-fg-subtle">{t("No matches")}</div>
           )
         ) : (
           <JsonTree
@@ -215,6 +218,7 @@ function JsonTree({
   /** 点击叶子节点时复制它的**实际值**。 */
   copyValue: (text: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const rows = useMemo<TreeRow[]>(() => {
     const acc: TreeRow[] = [];
     appendRows(value, "$", 0, collapsed, acc);
@@ -230,7 +234,7 @@ function JsonTree({
         data-testid="json-root-copy"
         {...clickCopyProps(() => void copyValue(copyTextOf(value)))}
         className={cn(COPYABLE, "block w-full px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted")}
-        title="点击复制该值"
+        title={t("Click to copy the value")}
       >
         {prettyJson(value)}
       </button>
@@ -260,7 +264,7 @@ function JsonTree({
           >
             <span className="flex w-3.5 shrink-0 items-center justify-center">
               {row.isContainer && !isEmpty ? (
-                <button type="button" onClick={toggle} className="text-fg-subtle hover:text-fg" aria-label={row.collapsed ? "展开" : "折叠"}>
+                <button type="button" onClick={toggle} className="text-fg-subtle hover:text-fg" aria-label={row.collapsed ? t("Expand") : t("Collapse")}>
                   {row.collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
                 </button>
               ) : null}
@@ -275,7 +279,7 @@ function JsonTree({
                 "flex min-w-0 flex-1 items-baseline gap-0 text-left",
                 !canToggle && cn(COPYABLE, "items-baseline"),
               )}
-              title={canToggle ? undefined : "点击复制该值"}
+              title={canToggle ? undefined : t("Click to copy the value")}
             >
               <span className="shrink-0 text-fg">{row.keyText}</span>
               <span className="text-fg-subtle">{": "}</span>
@@ -293,7 +297,7 @@ function JsonTree({
                 type="button"
                 onClick={() => void onCopy(row.path, `path:${row.path}`)}
                 className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
-                title="复制路径"
+                title={t("Copy path")}
               >
                 {copiedKey === `path:${row.path}` ? <Check size={11} /> : <Copy size={11} />}
               </button>
@@ -301,7 +305,7 @@ function JsonTree({
                 type="button"
                 onClick={() => void onCopy(jsonOf(row.value), `value:${row.path}`)}
                 className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
-                title="复制节点 JSON"
+                title={t("Copy node JSON")}
               >
                 {copiedKey === `value:${row.path}` ? <Check size={11} /> : <Copy size={11} />}
               </button>
@@ -420,6 +424,7 @@ function SearchResultRow({
   onCopy: (text: string, key: string) => Promise<void>;
   copyValue: (text: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="group flex items-center gap-2 rounded-[5px] px-3 py-1 font-mono text-11 leading-[1.55] hover:bg-surface-2">
       <button
@@ -428,7 +433,7 @@ function SearchResultRow({
         // 复制**完整值**（entry.text 只是被截断的展示文本）。
         {...clickCopyProps(() => void copyValue(copyTextOf(entry.value)))}
         className={cn(COPYABLE, "flex min-w-0 flex-1 items-center gap-2")}
-        title="点击复制完整值"
+        title={t("Click to copy full value")}
       >
         <span className="min-w-0 flex-1 truncate text-fg">{entry.path}</span>
         <span className="shrink-0 max-w-[45%] truncate text-fg-subtle">{entry.text}</span>
@@ -438,7 +443,7 @@ function SearchResultRow({
           type="button"
           onClick={() => void onCopy(entry.path, `path:${entry.path}`)}
           className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
-          title="复制路径"
+          title={t("Copy path")}
         >
           {copiedKey === `path:${entry.path}` ? <Check size={11} /> : <Copy size={11} />}
         </button>
@@ -461,9 +466,9 @@ function isEmptyContainer(v: JsonContainer): boolean {
   return isArrayContainer(v) ? v.length === 0 : Object.keys(v).length === 0;
 }
 function containerPreview(v: JsonContainer): string {
-  if (isArrayContainer(v)) return v.length === 0 ? "[]" : `[…] ${v.length} 项`;
+  if (isArrayContainer(v)) return v.length === 0 ? "[]" : i18n.t("[…] {{count}} items", { count: v.length });
   const count = Object.keys(v).length;
-  return count === 0 ? "{}" : `{…} ${count} 键`;
+  return count === 0 ? "{}" : i18n.t("{…} {{count}} keys", { count });
 }
 function entriesOf(v: JsonContainer): [string, unknown][] {
   if (isArrayContainer(v)) return v.map((item, index) => [String(index), item]);

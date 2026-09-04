@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Music, VideoOff } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useObjectUrl } from "@/hooks/use-object-url";
 import { formatSize } from "@/lib/format";
 
@@ -20,20 +21,24 @@ export function MediaPreview({
   audio: boolean;
 }) {
   const url = useObjectUrl(bytes, mime);
+  const { t } = useTranslation();
   const [failed, setFailed] = useState(false);
 
   return (
     <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 p-6">
       <div className="flex items-center gap-2 text-12 text-fg-subtle">
         <Music size={14} />
-        {audio ? "音频" : "视频"} · {formatSize(bytes.length)}
+        {audio ? t("Audio") : t("Video")} · {formatSize(bytes.length)}
       </div>
 
       {failed ? (
         <div className="flex flex-col items-center gap-1.5 text-center">
           <VideoOff size={20} className="text-fg-subtle" />
           <p className="max-w-[360px] text-11 leading-relaxed text-fg-muted">
-            当前环境无法播放这种格式（{mime}）。可下载后用本地播放器打开。
+            {t(
+              "This format cannot be played here ({{mime}}). Download it and open with a local player.",
+              { mime },
+            )}
           </p>
         </div>
       ) : audio ? (

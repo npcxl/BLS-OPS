@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { NavModule } from "@/workbench/types";
 import { cn } from "@/lib/cn";
@@ -26,23 +27,25 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "ssh", label: "终端", icon: TerminalIcon },
-  { id: "services", label: "服务", icon: WorldIcon },
-  { id: "logs", label: "日志", icon: FileDescriptionIcon },
-  { id: "projects", label: "项目", icon: Stack3Icon },
-  { id: "deploy", label: "部署", icon: RocketIcon },
-  { id: "tasks", label: "任务", icon: UnorderedListIcon },
-  { id: "ai", label: "智能助手", icon: SparklesIcon, divider: true },
-  { id: "settings", label: "设置", icon: GearIcon },
+  { id: "ssh", label: "Module: Terminal", icon: TerminalIcon },
+  { id: "services", label: "Module: Services", icon: WorldIcon },
+  { id: "logs", label: "Module: Logs", icon: FileDescriptionIcon },
+  { id: "projects", label: "Module: Projects", icon: Stack3Icon },
+  { id: "deploy", label: "Module: Deploy", icon: RocketIcon },
+  { id: "tasks", label: "Module: Tasks", icon: UnorderedListIcon },
+  { id: "ai", label: "Module: AI", icon: SparklesIcon, divider: true },
+  { id: "settings", label: "Module: Settings", icon: GearIcon },
 ];
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
+  const { t } = useTranslation();
   const Icon = item.icon;
+  const label = t(item.label);
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={item.label}
+      aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
         "group relative flex h-10 w-10 items-center justify-center rounded-[10px] outline-none transition-colors",
@@ -58,7 +61,7 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
       />
       <Icon size={19} className="transition-transform duration-200 group-hover:scale-110" color="currentColor" />
       <span className="pointer-events-none absolute left-[calc(100%+6px)] z-50 whitespace-nowrap rounded-[7px] border border-line bg-surface-3 px-2 py-1 text-11 text-fg opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100">
-        {item.label}
+        {label}
       </span>
     </button>
   );

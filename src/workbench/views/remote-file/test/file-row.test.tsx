@@ -75,27 +75,27 @@ describe("FileRow size line", () => {
       entry({ kind: "file", name: "a.tar.gz", path: "/var/www/a.tar.gz", size: 1234 }),
     );
     expect(text).toContain("1.2 KB");
-    expect(text).not.toContain("排队中");
+    expect(text).not.toContain("Queued");
   });
 
-  it("shows plain 文件夹 before a computation exists", () => {
-    expect(rowText(root, holder, entry())).toContain("文件夹");
+  it("shows plain Folder before a computation exists", () => {
+    expect(rowText(root, holder, entry())).toContain("Folder");
   });
 
-  it("shows 排队中 while queued and 计算中 while computing", () => {
+  it("shows Queued while queued and Computing while computing", () => {
     applyResult({ status: "pending", complete: false });
-    expect(rowText(root, holder, entry())).toContain("排队中");
+    expect(rowText(root, holder, entry())).toContain("Queued");
 
     act(() => {
       applyResult({ status: "computing", complete: false, calculatedAt: 110 });
     });
-    expect(rowText(root, holder, entry())).toContain("计算中");
+    expect(rowText(root, holder, entry())).toContain("Computing");
   });
 
   it("flips to the finished size automatically, without a remount", () => {
     applyResult({ status: "computing", complete: false });
     rowText(root, holder, entry());
-    expect(holder.textContent).toContain("计算中");
+    expect(holder.textContent).toContain("Computing");
 
     // The completed event lands in the store; the memoised row must re-render.
     act(() => {
@@ -109,8 +109,8 @@ describe("FileRow size line", () => {
     });
 
     expect(holder.textContent).toContain("6.7 MB");
-    expect(holder.textContent).toContain("128 个文件");
-    expect(holder.textContent).not.toContain("计算中");
+    expect(holder.textContent).toContain("128 files");
+    expect(holder.textContent).not.toContain("Computing");
   });
 
   it("renders an empty directory as 0 B", () => {
@@ -118,16 +118,16 @@ describe("FileRow size line", () => {
     expect(rowText(root, holder, entry())).toContain("0 B");
   });
 
-  it("does not claim 0 个文件 when du reported bytes without a count", () => {
+  it("does not claim 0 files when du reported bytes without a count", () => {
     applyResult({ status: "completed", complete: true, sizeBytes: 7_000_000, fileCount: 0 });
     const text = rowText(root, holder, entry());
     expect(text).toContain("6.7 MB");
-    expect(text).not.toContain("0 个文件");
+    expect(text).not.toContain("0 files");
   });
 
   it("surfaces a permission-denied terminal state", () => {
     applyResult({ status: "permission_denied", complete: true, calculatedAt: 200 });
-    expect(rowText(root, holder, entry())).toContain("权限不足");
+    expect(rowText(root, holder, entry())).toContain("Permission denied");
   });
 
   it("keeps two sessions with the same path apart", () => {

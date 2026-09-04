@@ -7,6 +7,7 @@
  */
 
 import { opsApi, type ServiceUnit } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { quotePathSegment } from "../path-input";
 import type {
   CompletionContext,
@@ -88,18 +89,20 @@ export function createServiceProvider(): CompletionProvider {
       } catch (cause) {
         return {
           items: [],
-          notice: `读取服务列表失败：${cause instanceof Error ? cause.message : String(cause)}`,
+          notice: i18n.t("Failed to read service unit list: {{message}}", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
           requestKey,
         };
       }
       const matched = units.filter((unit) => unit.startsWith(partial));
-      if (matched.length === 0) return { items: [], notice: "没有匹配的服务单元", requestKey };
+      if (matched.length === 0) return { items: [], notice: "No matching service units", requestKey };
 
       const start = ctx.cursor - partial.length;
       const items: CompletionItem[] = matched.map((unit, index) => ({
         label: unit,
         insertText: quotePathSegment(unit, null, false),
-        detail: "systemd 服务单元",
+        detail: "systemd service unit",
         icon: "service",
         type: "service",
         replaceRange: { start, end: ctx.cursor },

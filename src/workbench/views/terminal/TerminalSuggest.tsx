@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { RISK_META } from "@/api/ops-api";
+import { useTranslation } from "react-i18next";
 import { computeSuggestPosition, type SuggestAnchor } from "./terminal-suggest";
 import type { CompletionIcon, CompletionItem } from "./completion/types";
 
@@ -85,6 +86,7 @@ export function TerminalSuggest({
   /** 光标锚点（px，相对定位父元素 = 光标右下角）。null 时不渲染。 */
   anchor: SuggestAnchor | null;
 }) {
+  const { t } = useTranslation();
   const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -154,16 +156,16 @@ export function TerminalSuggest({
                 )}
                 <span
                   className="min-w-0 flex-1 truncate text-10 text-fg-subtle"
-                  title={item.detail}
+                  title={t(item.detail)}
                 >
-                  {item.detail}
+                  {t(item.detail)}
                 </span>
                 {onRun && (
                   <span
                     role="button"
                     tabIndex={-1}
-                    aria-label={`执行 ${item.label}`}
-                    title="补全并立即执行"
+                    aria-label={t("Run {{command}}", { command: item.label })}
+                    title={t("Complete and run")}
                     onMouseDown={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -182,11 +184,13 @@ export function TerminalSuggest({
       )}
       <div className="border-t border-line bg-surface-2/60 px-2.5 py-0.5 text-9 text-fg-subtle">
         {notice ? (
-          <span className="block truncate" title={notice}>
-            {notice}
+          <span className="block truncate" title={t(notice)}>
+            {t(notice)}
           </span>
+        ) : onRun ? (
+          t("↑↓ select · → or Enter to fill · ← to close · Enter again to run · ▶ / Ctrl+Enter to run directly")
         ) : (
-          <>↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行{onRun ? " · ▶ / Ctrl+Enter 直接执行" : ""}</>
+          t("↑↓ select · → or Enter to fill · ← to close · Enter again to run")
         )}
       </div>
     </div>

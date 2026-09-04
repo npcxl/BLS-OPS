@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Search, WrapText } from "lucide-react";
 import CodeMirror, { EditorState, EditorView } from "@uiw/react-codemirror";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { CodeSearchBox } from "@/components/ui/code-search-box";
 import { useEditorTheme } from "@/lib/cm-theme";
@@ -13,6 +14,7 @@ import { opsSearch } from "@/lib/cm-search";
  * VSCode 风格浮动框（只读文档不显示替换）。
  */
 export default function CodeText({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [wrap, setWrap] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const theme = useEditorTheme();
@@ -42,19 +44,19 @@ export default function CodeText({ text }: { text: string }) {
           onClick={() => setWrap((current) => !current)}
         >
           <WrapText size={12} />
-          自动换行
+          {t("Wrap lines")}
         </Button>
         <Button
           size="xs"
           variant={searchOpen ? "secondary" : "ghost"}
           onClick={() => setSearchOpen((current) => !current)}
-          title="查找（Ctrl+F）"
+          title={t("Find (Ctrl+F)")}
         >
           <Search size={12} />
-          搜索
+          {t("Search")}
         </Button>
         <span className="ml-auto text-11 text-fg-subtle">
-          {lineCount.toLocaleString()} 行
+          {t("{{name}} lines", { name: lineCount.toLocaleString() })}
         </span>
       </div>
 

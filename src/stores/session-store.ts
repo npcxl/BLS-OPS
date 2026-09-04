@@ -5,6 +5,7 @@
  * host-key confirmation prompt. Nothing here is seeded with fake numbers.
  */
 import { create } from "zustand";
+import { i18n } from "@/i18n";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 
 export type SessionStatus = "connecting" | "connected" | "error" | "closed";
@@ -104,7 +105,7 @@ export const useSessionStore = create<SessionState>()((set, get) => ({
     if (trust) {
       challenge.retry();
     } else {
-      get().setStatus(challenge.sessionId, "error", { error: "已拒绝该主机指纹，连接已取消" });
+      get().setStatus(challenge.sessionId, "error", { error: i18n.t("Host fingerprint rejected, connection cancelled") });
       challenge.cancel();
     }
   },

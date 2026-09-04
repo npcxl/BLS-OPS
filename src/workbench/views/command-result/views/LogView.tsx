@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useTranslation } from "react-i18next";
 import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 
 /**
@@ -33,6 +34,7 @@ function formatTime(raw: unknown): string {
 }
 
 export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
+  const { t } = useTranslation();
   const [severeOnly, setSevereOnly] = useState(false);
   const { status, copy } = useCopyFeedback();
 
@@ -56,7 +58,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
-        <span className="text-11 text-fg-muted">{rows.length} 条</span>
+        <span className="text-11 text-fg-muted">{t("{{count}} entries", { count: rows.length })}</span>
         <button
           type="button"
           onClick={() => setSevereOnly((current) => !current)}
@@ -65,7 +67,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
             severeOnly ? "bg-danger/12 text-danger" : "text-fg-subtle hover:text-fg",
           )}
         >
-          只看错误与警告（{severeCount}）
+          {t("Errors & warnings only ({{count}})", { count: severeCount })}
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
@@ -89,7 +91,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
                 COPYABLE,
                 "flex w-full items-start gap-2 border-b border-line/40 px-3 py-1.5 text-left",
               )}
-              title="点击复制该行"
+              title={t("Click to copy this line")}
             >
               <span className="w-12 shrink-0">
                 <span className={cn("rounded px-1 py-0.5 text-9", level.tone)}>{level.label}</span>
@@ -113,7 +115,7 @@ export function LogView({ rows }: { rows: Record<string, unknown>[] }) {
         })}
         {visible.length === 0 && (
           <p className="px-3 py-6 text-center text-11 text-fg-subtle">
-            {rows.length === 0 ? "没有日志。" : "没有错误与警告。"}
+            {rows.length === 0 ? t("No log entries.") : t("No errors or warnings.")}
           </p>
         )}
       </div>

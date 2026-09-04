@@ -22,6 +22,7 @@ import {
   describeContainer,
   publishedPorts,
 } from "@/api/types/environment";
+import { i18n } from "@/i18n";
 import { quotePathSegment } from "../path-input";
 import type {
   CompletionContext,
@@ -100,12 +101,13 @@ export function createEnvironmentProvider(
       const env = ctx.environment ?? null;
 
       if (!env) {
-        return { items: [], notice: "正在探测服务器运行环境…", requestKey };
+        return { items: [], notice: "Probing server environment…", requestKey };
       }
       if (env.kind === "none") {
         return {
           items: [],
-          notice: env.dockerReason ?? "这台服务器上没有检测到 Nginx",
+          // dockerReason 来自后端探测（数据驱动，不翻译），fallback 是前端文案 key。
+          notice: env.dockerReason ?? "No Nginx detected on this server",
           requestKey,
         };
       }
@@ -134,8 +136,8 @@ export function createEnvironmentProvider(
         return {
           items,
           notice: dropped
-            ? "之前选择的容器已停止或不存在，请重新选择"
-            : "检测到多个 Nginx 容器，请先选择要操作的容器",
+            ? "Previously selected container has stopped or no longer exists; please select again"
+            : "Multiple Nginx containers detected; select one first",
           requestKey,
         };
       }
@@ -164,7 +166,11 @@ export function createEnvironmentProvider(
       }));
 
       if (items.length === 0) {
-        return { items: [], notice: `没有匹配的 Nginx 命令（${env.kind}）`, requestKey };
+        return {
+          items: [],
+          notice: i18n.t("No matching Nginx commands ({{kind}})", { kind: env.kind }),
+          requestKey,
+        };
       }
 
       const state = container ? describeEnvironment(container) : undefined;
@@ -179,15 +185,31 @@ export function createEnvironmentProvider(
  * 一行里塞不下就按顺序截断 —— 用户要的是"我到底在操作哪个 Nginx"。
  */
 export function describeEnvironment(container: NginxContainer): string {
-  const parts = [`容器 ${container.name}`, `镜像 ${container.image}`];
+  const parts = [
+    i18n.t("Container {{name}}", { name: container.name }),
+    i18n.t("Image {{image}}", { image: container.image }),
+  ];
   const ports = publishedPorts(container);
-  if (ports.length > 0) parts.push(`端口 ${ports.join("、")}`);
+  if (ports.length > 0) parts.push(i18n.t("Ports {{ports}}", { ports: ports.join(" / ") }));
   const mounts = configMounts(container);
   if (mounts.length > 0) {
-    parts.push(`配置 ${mounts[0].source} → ${mounts[0].destination}`);
+    parts.push(
+      i18n.t("Config {{source}} → {{destination}}", {
+        source: mounts[0].source,
+        destination: mounts[0].destination,
+      }),
+    );
   }
-  parts.push(container.running ? "运行中" : container.state);
-  if (container.compose) parts.push(`Compose ${container.compose.project}/${container.compose.service}`);
+  // 运行状态是前端文案（Running 复用 common）；异常 state 来自后端（数据，原样显示）。
+  parts.push(container.running ? i18n.t("Running") : container.state);
+  if (container.compose) {
+    parts.push(
+      i18n.t("Compose {{project}}/{{service}}", {
+        project: container.compose.project,
+        service: container.compose.service,
+      }),
+    );
+  }
   return parts.join(" · ");
 }
 
@@ -220,35 +242,35 @@ export function nginxCommands(
     commands.push(
       {
         id: "compose.ps",
-        title: "查看 Compose 服务状态",
+        title: "View Compose service status",
         command: `docker compose -p ${project} ps ${service}`,
         risk: "read_only",
         note: `等价写法：${equivalent} ps ${service}`,
       },
       {
         id: "compose.logs",
-        title: "查看最近 200 行日志",
+        title: "View last 200 log lines",
         command: `docker compose -p ${project} logs --tail 200 ${service}`,
         risk: "read_only",
         note: `等价写法：${equivalent} logs --tail 200 ${service}`,
       },
       {
         id: "compose.test",
-        title: "校验配置（nginx -t）",
+        title: "Validate config (nginx -t)",
         command: `docker compose -p ${project} exec ${service} nginx -t`,
         risk: "read_only",
         note: null,
       },
       {
         id: "compose.reload",
-        title: "平滑重载配置",
+        title: "Gracefully reload config",
         command: `docker compose -p ${project} exec ${service} nginx -s reload`,
         risk: "medium",
         note: "会改变运行中的服务状态，执行前请确认",
       },
       {
         id: "compose.restart",
-        title: "重启服务",
+        title: "Restart service",
         command: `docker compose -p ${project} restart ${service}`,
         risk: "medium",
         note: "重启会短暂中断连接，执行前请确认",
@@ -258,24 +280,24 @@ export function nginxCommands(
 
   const name = quote(container.name);
   commands.push(
-    { id: "docker.version", title: "查看版本", command: `docker exec ${name} nginx -v`, risk: "read_only", note: null },
-    { id: "docker.test", title: "校验配置", command: `docker exec ${name} nginx -t`, risk: "read_only", note: null },
-    { id: "docker.dump", title: "查看完整配置", command: `docker exec ${name} nginx -T`, risk: "read_only", note: null },
+    { id: "docker.version", title: "View version", command: `docker exec ${name} nginx -v`, risk: "read_only", note: null },
+    { id: "docker.test", title: "Validate config", command: `docker exec ${name} nginx -t`, risk: "read_only", note: null },
+    { id: "docker.dump", title: "View full config", command: `docker exec ${name} nginx -T`, risk: "read_only", note: null },
     {
       id: "docker.reload",
-      title: "平滑重载",
+      title: "Graceful reload",
       command: `docker exec ${name} nginx -s reload`,
       risk: "medium",
       note: "会改变运行中的服务状态，执行前请确认",
     },
-    { id: "docker.logs", title: "查看日志（最近 200 行）", command: `docker logs --tail 200 ${name}`, risk: "read_only", note: null },
-    { id: "docker.logs.follow", title: "实时跟踪日志", command: `docker logs -f ${name}`, risk: "read_only", note: "持续输出，按 Ctrl+C 退出" },
-    { id: "docker.inspect", title: "查看容器详情", command: `docker inspect ${name}`, risk: "read_only", note: null },
-    { id: "docker.exec", title: "进入容器", command: `docker exec -it ${name} sh`, risk: "low", note: "交互式命令，不会生成结果快照" },
-    { id: "docker.port", title: "查看端口映射", command: `docker port ${name}`, risk: "read_only", note: null },
+    { id: "docker.logs", title: "View logs (last 200 lines)", command: `docker logs --tail 200 ${name}`, risk: "read_only", note: null },
+    { id: "docker.logs.follow", title: "Follow logs", command: `docker logs -f ${name}`, risk: "read_only", note: "持续输出，按 Ctrl+C 退出" },
+    { id: "docker.inspect", title: "View container details", command: `docker inspect ${name}`, risk: "read_only", note: null },
+    { id: "docker.exec", title: "Enter container", command: `docker exec -it ${name} sh`, risk: "low", note: "交互式命令，不会生成结果快照" },
+    { id: "docker.port", title: "View port mapping", command: `docker port ${name}`, risk: "read_only", note: null },
     {
       id: "docker.mounts",
-      title: "查看配置挂载",
+      title: "View config mounts",
       command: `docker inspect --format '{{range .Mounts}}{{println .Source}} {{.Destination}}{{end}}' ${name}`,
       risk: "read_only",
       note: null,
@@ -286,13 +308,13 @@ export function nginxCommands(
 
 function hostCommands(): SuggestedCommand[] {
   return [
-    { id: "host.version", title: "查看版本", command: "nginx -v", risk: "read_only", note: null },
-    { id: "host.test", title: "校验配置", command: "nginx -t", risk: "read_only", note: null },
-    { id: "host.dump", title: "查看完整配置", command: "nginx -T", risk: "read_only", note: null },
-    { id: "host.status", title: "查看运行状态", command: "systemctl status nginx", risk: "read_only", note: null },
+    { id: "host.version", title: "View version", command: "nginx -v", risk: "read_only", note: null },
+    { id: "host.test", title: "Validate config", command: "nginx -t", risk: "read_only", note: null },
+    { id: "host.dump", title: "View full config", command: "nginx -T", risk: "read_only", note: null },
+    { id: "host.status", title: "View run status", command: "systemctl status nginx", risk: "read_only", note: null },
     {
       id: "host.reload",
-      title: "平滑重载配置",
+      title: "Gracefully reload config",
       command: "nginx -s reload",
       risk: "medium",
       note: "会改变运行中的服务状态，执行前请确认",

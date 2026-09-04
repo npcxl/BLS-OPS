@@ -11,6 +11,7 @@
  */
 
 import type { RemoteFileEntry } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { analyzePathInput, displayRelativePath, quotePathSegment } from "../path-input";
 import { listDirectory } from "../remote-listing";
 import type {
@@ -50,12 +51,12 @@ export function createRemoteDirectoryProvider(
       if (!input) {
         return {
           items: [],
-          notice: "还不知道当前远程目录，无法补全（等 Shell Integration 上报或执行一次 cd 后即可）",
+          notice: "Remote working directory is unknown; cannot complete (waiting for Shell Integration or run a cd first)",
           requestKey,
         };
       }
       if (input.needsHome) {
-        return { items: [], notice: "还不知道远程家目录，无法补全 ~", requestKey };
+        return { items: [], notice: "Remote home directory is unknown; cannot complete ~", requestKey };
       }
 
       let entries: RemoteFileEntry[];
@@ -64,7 +65,9 @@ export function createRemoteDirectoryProvider(
       } catch (cause) {
         return {
           items: [],
-          notice: `读取远程目录失败：${cause instanceof Error ? cause.message : String(cause)}`,
+          notice: i18n.t("Failed to read remote directory: {{message}}", {
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
           requestKey,
         };
       }
@@ -83,7 +86,7 @@ export function createRemoteDirectoryProvider(
         .sort((a, b) => a.name.localeCompare(b.name));
 
       if (visible.length === 0) {
-        return { items: [], notice: "没有匹配的远程目录", requestKey };
+        return { items: [], notice: "No matching remote directories", requestKey };
       }
 
       const start = ctx.cursor - partial.length;

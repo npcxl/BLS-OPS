@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { FileArchive, Folder, Search } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { formatSize } from "@/lib/format";
 import type { ArchiveEntry, ArchiveFormat } from "@/lib/preview/archive";
 
@@ -19,6 +20,7 @@ export function ArchivePreview({
   totalSize: number;
 }) {
   const [filter, setFilter] = useState("");
+  const { t } = useTranslation();
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -36,15 +38,16 @@ export function ArchivePreview({
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
         <FileArchive size={13} className="shrink-0 text-amber-400" />
         <span className="shrink-0 text-11 text-fg-muted">
-          {format.toUpperCase()} · {entries.length.toLocaleString()} 个条目
-          {directories > 0 && ` （${directories.toLocaleString()} 个文件夹）`}
+          {format.toUpperCase()} · {t("{{name}} entries", { name: entries.length.toLocaleString() })}
+          {directories > 0 &&
+            ` ${t("({{name}} folders)", { name: directories.toLocaleString() })}`}
         </span>
         <div className="ml-auto flex items-center gap-1 rounded-[6px] border border-line px-1.5">
           <Search size={11} className="text-fg-subtle" />
           <input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
-            placeholder="过滤路径…"
+            placeholder={t("Filter paths…")}
             className="h-6 w-[180px] bg-transparent text-11 text-fg outline-none placeholder:text-fg-subtle"
           />
         </div>
@@ -54,8 +57,8 @@ export function ArchivePreview({
         <table className="w-full text-11">
           <thead className="sticky top-0 bg-surface-2">
             <tr>
-              <th className="px-3 py-1.5 text-left font-medium text-fg-subtle">路径</th>
-              <th className="w-24 px-3 py-1.5 text-right font-medium text-fg-subtle">大小</th>
+              <th className="px-3 py-1.5 text-left font-medium text-fg-subtle">{t("Path")}</th>
+              <th className="w-24 px-3 py-1.5 text-right font-medium text-fg-subtle">{t("Size")}</th>
             </tr>
           </thead>
           <tbody>
@@ -80,12 +83,13 @@ export function ArchivePreview({
         </table>
 
         {visible.length === 0 && (
-          <p className="px-3 py-4 text-11 text-fg-subtle">没有匹配 “{filter}” 的条目。</p>
+          <p className="px-3 py-4 text-11 text-fg-subtle">{t('No entries match "{{filter}}"', { filter })}</p>
         )}
       </div>
 
       <div className="flex h-6 shrink-0 items-center border-t border-line px-2 text-10 text-fg-subtle">
-        解压后约 {formatSize(totalSize)} · 仅列出内容，未解压
+        {t("Uncompressed size ≈ {{size}}", { size: formatSize(totalSize) })} ·{" "}
+        {t("Listing only — nothing extracted")}
       </div>
     </div>
   );

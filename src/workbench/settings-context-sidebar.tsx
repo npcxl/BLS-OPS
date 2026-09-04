@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, KeyRound, Monitor, Moon, Plus, ShieldCheck, Sun, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -14,13 +15,18 @@ import {
 import { emptyCredential, useDomainStore } from "@/stores/domain-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
+import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { cn } from "@/lib/cn";
 
-const THEME_OPTIONS: { id: ThemeMode; label: string; short: string; icon: React.ElementType }[] = [
-  { id: "system", label: "跟随系统", short: "系统", icon: Monitor },
-  { id: "light", label: "浅色", short: "浅色", icon: Sun },
-  { id: "dark", label: "深色", short: "深色", icon: Moon },
+/**
+ * 主题选项。label/short 存 **i18n key**（natural keys，英文即键）：
+ * 模块级常量不能用 hook，渲染处统一 `t(...)`。语言切换即重渲染。
+ */
+const THEME_OPTIONS: { id: ThemeMode; labelKey: string; shortKey: string; icon: React.ElementType }[] = [
+  { id: "system", labelKey: "Follow system", shortKey: "System", icon: Monitor },
+  { id: "light", labelKey: "Light", shortKey: "Light", icon: Sun },
+  { id: "dark", labelKey: "Dark", shortKey: "Dark", icon: Moon },
 ];
 
 function Group({
@@ -122,6 +128,8 @@ const loadAuditLogs = () => opsApi.listAuditLogs(200);
 
 /** Settings module sidebar: credentials, known hosts and runtime diagnostics. */
 export function SettingsContextSidebar() {
+  const { t } = useTranslation();
+  const { locale, locales, setLocale } = useLocale();
   const credentials = useDomainStore((s) => s.credentials);
   const refreshCredentials = useDomainStore((s) => s.refreshCredentials);
   const appInfo = useDomainStore((s) => s.appInfo);
@@ -148,8 +156,13 @@ export function SettingsContextSidebar() {
     const references = store.servers.filter((item) => item.credential_id === credential.id).length;
     const message =
       references > 0
-        ? `有 ${references} 台服务器正在使用凭据“${credential.name}”。\n删除后这些服务器会变为“未绑定凭据”，需要重新选择才能连接。\n\n确定继续删除吗？`
-        : `确定删除凭据“${credential.name}”吗？此操作会同时清除系统凭据管理器中的密钥。`;
+        ? t(
+            "{{count}} servers are using credential “{{name}}”.\nAfter deletion they become “no credential” and must be re-selected before connecting.\n\nDelete anyway?",
+            { count: references, name: credential.name },
+          )
+        : t("Delete credential “{{name}}”? The key in the system credential manager is removed too.", {
+            name: credential.name,
+          });
     if (!window.confirm(message)) return;
     try {
       await store.deleteCredential(credential.id, true);
@@ -161,19 +174,19 @@ export function SettingsContextSidebar() {
 
   return (
     <div className="flex flex-col gap-5 p-3 pb-6">
-      <Group title="外观">
+      <Group title={t("Appearance")}>
         <ListGroup>
           <div className="flex items-center justify-between gap-3 px-3 py-2">
-            <span className="shrink-0 text-12 text-fg">主题</span>
+            <span className="shrink-0 text-12 text-fg">{t("Theme")}</span>
             <div className="flex flex-1 justify-end rounded-[8px] border border-line bg-surface-2 p-0.5">
               {THEME_OPTIONS.map((option) => {
                 const Icon = option.icon;
                 const active = themeMode === option.id;
                 return (
-                  <Tooltip key={option.id} label={option.label}>
+                  <Tooltip key={option.id} label={t(option.labelKey)}>
                     <button
                       type="button"
-                      aria-label={option.label}
+                      aria-label={t(option.labelKey)}
                       className={cn(
                         "flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[6px] text-11 transition-colors",
                         active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
@@ -181,26 +194,43 @@ export function SettingsContextSidebar() {
                       onClick={() => setThemeMode(option.id)}
                     >
                       <Icon size={13} strokeWidth={1.75} className="shrink-0" />
-                      <span className="truncate">{option.short}</span>
+                      <span className="truncate">{t(option.shortKey)}</span>
                     </button>
                   </Tooltip>
                 );
               })}
             </div>
           </div>
+          {/* 语言：切换即时生效（i18next 事件广播 → 全部订阅组件重渲染），
+              无需重启。选择器里用各自语言的名字展示，方便任何用户找到它。 */}
+          <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-2">
+            <span className="shrink-0 text-12 text-fg">{t("Language")}</span>
+            <select
+              className={cn(selectClass, "max-w-40")}
+              value={locale}
+              aria-label={t("Language")}
+              onChange={(event) => setLocale(event.target.value as (typeof locales)[number]["code"])}
+            >
+              {locales.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.native}
+                </option>
+              ))}
+            </select>
+          </div>
         </ListGroup>
       </Group>
 
       <Group
-        title="凭据"
-        hint="密钥只写入系统凭据管理器，数据库仅保存引用，保存后无法在界面再次查看。"
+        title={t("Credentials")}
+        hint={t("Keys are only written to the system credential manager; the database keeps a reference only.")}
         action={
-          <Tooltip label="新增凭据">
+          <Tooltip label={t("Add credential")}>
             <Button
               variant="ghost"
               size="xs"
               className="h-6 px-1.5"
-              aria-label="新增凭据"
+              aria-label={t("Add credential")}
               onClick={() => setEditing(emptyCredential())}
             >
               <Plus size={13} />
@@ -210,7 +240,7 @@ export function SettingsContextSidebar() {
       >
         <ListGroup>
           {credentials.length === 0 ? (
-            <EmptyRow>暂无凭据</EmptyRow>
+            <EmptyRow>{t("No credentials yet")}</EmptyRow>
           ) : (
             credentials.map((credential) => (
               <div
@@ -228,16 +258,17 @@ export function SettingsContextSidebar() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-12 text-fg">{credential.name}</span>
                     <span className="block truncate text-11 text-fg-subtle">
-                      {credential.username} · {credential.credential_type === "private_key" ? "私钥" : "密码"} ·{" "}
-                      {credential.secret_ref ? "密钥已保存" : "缺少密钥"}
+                      {credential.username} ·{" "}
+                      {credential.credential_type === "private_key" ? t("Private key") : t("Password")} ·{" "}
+                      {credential.secret_ref ? t("Key saved") : t("Key missing")}
                     </span>
                   </span>
                   <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
                 </button>
-                <Tooltip label={`删除凭据 ${credential.name}`} side="left">
+                <Tooltip label={t("Delete credential {{name}}", { name: credential.name })} side="left">
                   <button
                     type="button"
-                    aria-label={`删除凭据 ${credential.name}`}
+                    aria-label={t("Delete credential {{name}}", { name: credential.name })}
                     className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
                     onClick={() => void remove(credential)}
                   >
@@ -250,18 +281,18 @@ export function SettingsContextSidebar() {
         </ListGroup>
       </Group>
 
-      <Group title="已知主机" hint="首次连接时确认过的服务器指纹会记录在这里。">
+      <Group title={t("Known hosts")} hint={t("Fingerprints you confirmed on first connect are listed here.")}>
         <ListGroup>
           <KnownHostsPanel />
         </ListGroup>
       </Group>
 
-      <Group title="数据">
+      <Group title={t("Data")}>
         <div className="flex flex-col gap-1.5">
           <CollapsibleList
-            title="命令历史"
+            title={t("Command history")}
             load={loadHistory}
-            empty="在终端中执行命令后会出现在这里。"
+            empty={t("Commands you run in the terminal will appear here.")}
             getKey={(row: CommandHistoryRecord) => row.id}
           >
             {(row) => (
@@ -270,16 +301,16 @@ export function SettingsContextSidebar() {
                   {row.command}
                 </code>
                 <span className="block truncate text-10 text-fg-subtle">
-                  {row.server_name || "未关联服务器"} · {new Date(row.timestamp).toLocaleString()}
+                  {row.server_name || t("No server")} · {new Date(row.timestamp).toLocaleString()}
                 </span>
               </div>
             )}
           </CollapsibleList>
 
           <CollapsibleList
-            title="审计日志"
+            title={t("Audit log")}
             load={loadAuditLogs}
-            empty="还没有审计记录。"
+            empty={t("No audit records yet.")}
             getKey={(row: AuditLogRecord) => row.id}
           >
             {(row) => (
@@ -301,15 +332,15 @@ export function SettingsContextSidebar() {
       </Group>
 
       {appInfo && (
-        <Group title="运行环境">
+        <Group title={t("Runtime")}>
           <ListGroup>
             {(
               [
-                ["版本", `v${appInfo.version}`],
+                [t("Version"), `v${appInfo.version}`],
                 ["Schema", `v${appInfo.schema_version}`],
-                ["平台", `${appInfo.os} / ${appInfo.arch}`],
+                [t("Platform"), `${appInfo.os} / ${appInfo.arch}`],
                 ["KeepAlive", `${appInfo.keepalive_secs}s`],
-                ["数据库", appInfo.db_path],
+                [t("Database"), appInfo.db_path],
               ] as [string, string][]
             ).map(([key, value]) => (
               <div key={key} className="flex items-center justify-between gap-3 px-3 py-2">
@@ -335,6 +366,7 @@ function CredentialForm({
   credential: CredentialRecord;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const saveCredential = useDomainStore((s) => s.saveCredential);
   const credentials = useDomainStore((s) => s.credentials);
 
@@ -361,35 +393,35 @@ function CredentialForm({
     <Modal
       open
       width={480}
-      title={isNew ? "新增凭据" : `编辑凭据 — ${credential.name}`}
+      title={isNew ? t("Add credential") : t("Edit credential — {{name}}", { name: credential.name })}
       description={
         isPrivateKey
-          ? "私钥与私钥口令是一组配置：口令为空时按未加密私钥处理。"
-          : "密码会写入系统凭据管理器，保存后无法在界面上再次查看。"
+          ? t("The private key and its passphrase are one configuration; an empty passphrase means an unencrypted key.")
+          : t("The password is written to the system credential manager and cannot be viewed again later.")
       }
       onClose={onClose}
       footer={
         <>
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
-            取消
+            {t("Cancel")}
           </Button>
           <Button variant="primary" size="sm" disabled={submit.pending} onClick={() => void save()}>
-            {submit.pending ? "保存中…" : "保存"}
+            {submit.pending ? t("Saving") : t("Save")}
           </Button>
         </>
       }
     >
       <div className="flex flex-col gap-2.5">
-        <Field label="名称">
+        <Field label={t("Name")}>
           <input
             className={fieldClass}
             value={form.name}
-            placeholder="例如 生产环境 root"
+            placeholder={t("e.g. production root")}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
           />
         </Field>
 
-        <Field label="用户名">
+        <Field label={t("Username")}>
           <input
             className={fieldClass}
             value={form.username}
@@ -397,7 +429,7 @@ function CredentialForm({
           />
         </Field>
 
-        <Field label="类型">
+        <Field label={t("Type")}>
           <select
             className={selectClass}
             value={form.credential_type}
@@ -405,19 +437,19 @@ function CredentialForm({
           >
             {CREDENTIAL_TYPES.map((type) => (
               <option key={type.value} value={type.value}>
-                {type.label}
+                {t(type.label)}
               </option>
             ))}
           </select>
         </Field>
 
         <Field
-          label={isPrivateKey ? "私钥内容" : "密码"}
+          label={isPrivateKey ? t("Private key content") : t("Password")}
           hint={
             !isNew && existing?.secret_ref
               ? isPrivateKey
-                ? "留空表示保留已保存的私钥"
-                : "留空表示保留已保存的密码"
+                ? t("Leave empty to keep the saved private key")
+                : t("Leave empty to keep the saved password")
               : undefined
           }
         >
@@ -429,20 +461,23 @@ function CredentialForm({
               isPrivateKey
                 ? "-----BEGIN OPENSSH PRIVATE KEY-----"
                 : isNew
-                  ? "登录密码（必填）"
-                  : "留空保持不变"
+                  ? t("Login password (required)")
+                  : t("Leave unchanged")
             }
           />
         </Field>
 
         {isPrivateKey && (
-          <Field label="私钥口令" hint="私钥本身加密时才需要；留空表示无口令或保持原口令">
+          <Field
+            label={t("Key passphrase")}
+            hint={t("Only needed when the private key itself is encrypted; leave empty for no passphrase")}
+          >
             <input
               type="password"
               className={fieldClass}
               value={passphrase}
               onChange={(event) => setPassphrase(event.target.value)}
-              placeholder="可留空"
+              placeholder={t("Optional")}
             />
           </Field>
         )}
@@ -450,7 +485,9 @@ function CredentialForm({
         {isNew && (
           <p className="flex items-center gap-1.5 text-11 text-fg-subtle">
             <ShieldCheck size={12} />
-            {isPrivateKey ? "创建私钥凭据时必须粘贴私钥内容。" : "创建密码凭据时必须填写密码。"}
+            {isPrivateKey
+              ? t("Paste the private key content when creating a key credential.")
+              : t("Fill in the password when creating a password credential.")}
           </p>
         )}
 

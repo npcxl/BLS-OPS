@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronsLeft, FolderPlus, Plus, RefreshCw, Star } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/mac-button";
@@ -37,6 +38,7 @@ export function ServerListTree({
   const groups = useDomainStore((s) => s.groups);
   const removeServer = useDomainStore((s) => s.deleteServer);
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
+  const { t } = useTranslation();
 
   const sections = useServerSections();
   const { error, setError, clearError, refresh, toggleFavorite, moveToGroup, createGroup, renameGroup, deleteGroup } =
@@ -89,17 +91,17 @@ export function ServerListTree({
    * has scrolled out of view.
    */
   const headerActions: ContextMenuItem[] = [
-    { id: "refresh", label: "刷新服务器", icon: RefreshCw, onSelect: () => void load() },
+    { id: "refresh", label: t("Refresh servers"), icon: RefreshCw, onSelect: () => void load() },
     {
       id: "add-server",
-      label: "新增服务器",
+      label: t("Add server"),
       icon: Plus,
       onSelect: () => setEditing(emptyServer()),
     },
-    { id: "add-group", label: "新增分组", icon: FolderPlus, onSelect: () => setCreatingGroup(true) },
+    { id: "add-group", label: t("New group"), icon: FolderPlus, onSelect: () => setCreatingGroup(true) },
     {
       id: "collapse",
-      label: "收起侧边栏",
+      label: t("Collapse sidebar"),
       icon: ChevronsLeft,
       onSelect: () => setSidebarCollapsed(true),
     },
@@ -122,32 +124,32 @@ export function ServerListTree({
                 icon={RefreshCw}
                 size="xs"
                 className="h-5 w-5 px-0"
-                aria-label="刷新服务器"
-                tip="刷新服务器"
+                aria-label={t("Refresh servers")}
+                tip={t("Refresh servers")}
                 onClick={() => void load()}
               />
               <IconButton
                 icon={ChevronsLeft}
                 size="xs"
                 className="h-5 w-5 px-0"
-                aria-label="收起侧边栏"
-                tip="收起侧边栏"
+                aria-label={t("Collapse sidebar")}
+                tip={t("Collapse sidebar")}
                 onClick={() => setSidebarCollapsed(true)}
               />
               <IconButton
                 icon={Plus}
                 size="xs"
                 className="h-5 px-1"
-                aria-label="新增服务器"
-                tip="新增服务器"
+                aria-label={t("Add server")}
+                tip={t("Add server")}
                 onClick={() => setEditing(emptyServer())}
               />
               <IconButton
                 icon={FolderPlus}
                 size="xs"
                 className="h-5 px-1"
-                aria-label="新增分组"
-                tip="新增分组"
+                aria-label={t("New group")}
+                tip={t("New group")}
                 onClick={() => setCreatingGroup(true)}
               />
             </div>
@@ -157,11 +159,11 @@ export function ServerListTree({
         </SectionTitle>
 
         {loading ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">正在加载…</p>
+          <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("Loading")}</p>
         ) : (
           <>
             {servers.length === 0 && groups.length === 0 && (
-              <p className="px-2.5 py-2 text-11 text-fg-subtle">暂无服务器，点击 + 新增</p>
+              <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("No servers yet — click + to add one")}</p>
             )}
 
             {/* Shortcut area only: these servers stay in their own group below. */}
@@ -179,7 +181,7 @@ export function ServerListTree({
                     className={cn("shrink-0 transition-transform", !favoritesFolded && "rotate-90")}
                   />
                   <Star size={11} className="shrink-0 text-warning" fill="currentColor" />
-                  <span className="min-w-0 flex-1 truncate text-left">收藏</span>
+                  <span className="min-w-0 flex-1 truncate text-left">{t("Favorites")}</span>
                   <span className="shrink-0">{sections.favorites.length}</span>
                 </button>
                 {!favoritesFolded &&
@@ -267,9 +269,12 @@ export function ServerListTree({
       {deleteTarget && (
         <ConfirmDialog
           open
-          title="删除服务器"
-          description={`删除“${deleteTarget.name}”会同时删除它的会话与命令历史。此操作不可撤销。`}
-          confirmLabel="确认删除"
+          title={t("Delete server")}
+          description={t(
+            'Deleting "{{name}}" also deletes its sessions and command history. This cannot be undone.',
+            { name: deleteTarget.name },
+          )}
+          confirmLabel={t("Delete")}
           danger
           onCancel={() => setDeleteTarget(null)}
           onConfirm={() => void confirmDelete()}
@@ -279,15 +284,19 @@ export function ServerListTree({
       {groupDeleteTarget && (
         <ConfirmDialog
           open
-          title="删除分组"
+          title={t("Delete group")}
           description={
             servers.filter((server) => server.group_id === groupDeleteTarget.id).length > 0
-              ? `分组“${groupDeleteTarget.name}”中有 ${
-                  servers.filter((server) => server.group_id === groupDeleteTarget.id).length
-                } 台服务器。\n删除分组后这些服务器会变为“未分组”，服务器本身不会被删除。\n\n确定删除分组吗？`
-              : `确定删除分组“${groupDeleteTarget.name}”吗？`
+              ? t(
+                  'Group "{{name}}" contains {{count}} servers.\nAfter deleting the group they become "Ungrouped"; the servers themselves are not deleted.\n\nDelete this group?',
+                  {
+                    name: groupDeleteTarget.name,
+                    count: servers.filter((server) => server.group_id === groupDeleteTarget.id).length,
+                  },
+                )
+              : t('Delete group "{{name}}"?', { name: groupDeleteTarget.name })
           }
-          confirmLabel="确认删除"
+          confirmLabel={t("Delete")}
           danger
           onCancel={() => setGroupDeleteTarget(null)}
           onConfirm={() => {

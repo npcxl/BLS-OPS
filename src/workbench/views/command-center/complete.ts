@@ -1,4 +1,5 @@
 import type { CommandParams, CommandSearchHit } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 
 /**
  * 终端内联补全：把知识库命令写进**远程 shell 的当前行**。
@@ -127,14 +128,14 @@ export function needsParams(hit: CommandSearchHit): boolean {
 }
 
 const PARAM_LABELS: Record<string, string> = {
-  container: "容器名",
-  unit: "服务单元名",
-  path: "绝对路径",
+  container: "Container name",
+  unit: "Service unit name",
+  path: "Absolute path",
 };
 
-/** 参数输入框的展示名。 */
+/** 参数输入框的展示名（常量存英文 key，此处 t()；未知 key 原样返回）。 */
 export function paramLabel(name: string): string {
-  return PARAM_LABELS[name] ?? name;
+  return i18n.t(PARAM_LABELS[name] ?? name);
 }
 
 /**

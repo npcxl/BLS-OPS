@@ -22,6 +22,9 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { AppTopBar } from "../AppTopBar";
 import { CONTEXT_SIDEBAR_MODULES } from "../module-server-sidebar";
 
+// 测试跑在默认语言（en）下：同步初始化 i18n，t() 未命中 key 时原样返回 key。
+import "@/i18n";
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let holder: HTMLDivElement;
@@ -29,7 +32,7 @@ let root: Root;
 let originalUserAgent: string;
 
 const expandButton = () =>
-  document.body.querySelector<HTMLElement>('[aria-label="展开侧边栏"]');
+  document.body.querySelector<HTMLElement>('[aria-label="Expand sidebar"]');
 
 const windowButton = (label: string) =>
   document.body.querySelector<HTMLElement>(`header [aria-label="${label}"]`);
@@ -135,17 +138,17 @@ describe("AppTopBar 侧边栏展开入口", () => {
 describe("AppTopBar 窗口按钮", () => {
   it("renders the three caption buttons on Windows", async () => {
     await render("ssh", false);
-    expect(windowButton("最小化")).not.toBeNull();
-    expect(windowButton("最大化")).not.toBeNull();
-    expect(windowButton("关闭")).not.toBeNull();
+    expect(windowButton("Minimize")).not.toBeNull();
+    expect(windowButton("Maximize")).not.toBeNull();
+    expect(windowButton("Close window")).not.toBeNull();
   });
 
   it("drives the window when they are clicked", async () => {
     await render("ssh", false);
     await act(async () => {
-      windowButton("最小化")!.click();
-      windowButton("最大化")!.click();
-      windowButton("关闭")!.click();
+      windowButton("Minimize")!.click();
+      windowButton("Maximize")!.click();
+      windowButton("Close window")!.click();
     });
     expect(win.minimize).toHaveBeenCalledOnce();
     expect(win.toggleMaximize).toHaveBeenCalledOnce();
@@ -154,7 +157,7 @@ describe("AppTopBar 窗口按钮", () => {
 
   it("keeps them clickable rather than swallowed by the window drag region", async () => {
     await render("ssh", false);
-    for (const label of ["最小化", "最大化", "关闭"]) {
+    for (const label of ["Minimize", "Maximize", "Close window"]) {
       expect(windowButton(label)?.getAttribute("data-tauri-drag-region")).toBe("false");
     }
   });
@@ -162,8 +165,8 @@ describe("AppTopBar 窗口按钮", () => {
   it("draws none of them on macOS — the native traffic lights are there", async () => {
     setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15");
     await render("ssh", false);
-    expect(windowButton("最小化")).toBeNull();
-    expect(windowButton("最大化")).toBeNull();
-    expect(windowButton("关闭")).toBeNull();
+    expect(windowButton("Minimize")).toBeNull();
+    expect(windowButton("Maximize")).toBeNull();
+    expect(windowButton("Close window")).toBeNull();
   });
 });

@@ -10,6 +10,7 @@
  * callback — the caller owns it and must call it when the preview closes.
  */
 import { fileKind, type EditorLanguage } from "@/lib/file-kind";
+import { i18n } from "@/i18n";
 
 import {
   listArchive,
@@ -63,7 +64,12 @@ export interface PreviewInput {
 export function buildPreview({ name, bytes, size }: PreviewInput): PreviewResult {
   const notes: string[] = [];
   if (size !== undefined && size > bytes.length) {
-    notes.push(`文件共 ${formatBytes(size)}，预览只加载了前 ${formatBytes(bytes.length)}`);
+    notes.push(
+      i18n.t("File is {{total}}; preview loaded only the first {{loaded}}", {
+        total: formatBytes(size),
+        loaded: formatBytes(bytes.length),
+      }),
+    );
   }
   const noop = () => {};
   const withNote = (model: PreviewModel, extra?: string): PreviewResult => {
@@ -113,7 +119,7 @@ export function buildPreview({ name, bytes, size }: PreviewInput): PreviewResult
     return withNote(
       { kind: "text", text: decoded.slice(0, MAX_TEXT_CHARS) },
       decoded.length > MAX_TEXT_CHARS
-        ? `仅显示前 ${MAX_TEXT_CHARS.toLocaleString()} 个字符`
+        ? i18n.t("Showing only the first {{count}} characters", { count: MAX_TEXT_CHARS.toLocaleString() })
         : undefined,
     );
   }
@@ -131,18 +137,18 @@ function parseSpreadsheet(bytes: Uint8Array, name: string, extension: string): P
   if (extension === "ods") {
     return {
       kind: "unsupported",
-      reason: "OpenDocument 表格（.ods）暂不支持预览",
-      hint: "可下载后用 LibreOffice / WPS 打开",
+      reason: i18n.t("OpenDocument spreadsheets (.ods) are not supported for preview"),
+      hint: i18n.t("Download and open with LibreOffice / WPS"),
     };
   }
   try {
     const { sheets, warning } = parseXlsx(bytes);
     if (sheets.length === 0) {
-      return { kind: "unsupported", reason: warning ?? "这个工作簿里没有可显示的内容" };
+      return { kind: "unsupported", reason: warning ?? i18n.t("Nothing to display in this workbook") };
     }
     return { kind: "sheet", sheets };
   } catch (cause) {
-    return parseFailure(cause, "无法解析这个 Excel 文件");
+    return parseFailure(cause, i18n.t("Failed to parse this Excel file"));
   }
 }
 
@@ -161,13 +167,13 @@ function parseDocument(
     try {
       const { slides, media } = parsePptx(bytes);
       if (slides.length === 0) {
-        return result({ kind: "unsupported", reason: "这个演示文稿没有幻灯片" }, () =>
+        return result({ kind: "unsupported", reason: i18n.t("This presentation has no slides") }, () =>
           media.forEach((store) => store.revoke()),
         );
       }
       return result({ kind: "slides", slides }, () => media.forEach((store) => store.revoke()));
     } catch (cause) {
-      return result(parseFailure(cause, "无法解析这个 PowerPoint 文件"), () => {});
+      return result(parseFailure(cause, i18n.t("Failed to parse this PowerPoint file")), () => {});
     }
   }
   if (extension === "docx") {
@@ -175,13 +181,13 @@ function parseDocument(
       const { blocks, media } = parseDocx(bytes);
       if (blocks.length === 0) {
         return result(
-          { kind: "unsupported", reason: "这个文档没有可显示的正文内容" },
+          { kind: "unsupported", reason: i18n.t("This document has no readable content") },
           () => media.revoke(),
         );
       }
       return result({ kind: "doc", blocks }, () => media.revoke());
     } catch (cause) {
-      return result(parseFailure(cause, "无法解析这个 Word 文档"), () => {});
+      return result(parseFailure(cause, i18n.t("Failed to parse this Word document")), () => {});
     }
   }
   if (extension === "doc" || extension === "ppt") {
@@ -191,8 +197,8 @@ function parseDocument(
     return result(
       {
         kind: "unsupported",
-        reason: `OpenDocument 文档（.${extension}）暂不支持预览`,
-        hint: "可下载后用 LibreOffice / WPS 打开",
+        reason: i18n.t("OpenDocument documents (.{{ext}}) are not supported for preview", { ext: extension }),
+        hint: i18n.t("Download and open with LibreOffice / WPS"),
       },
       () => {},
     );
@@ -204,12 +210,16 @@ function parseArchive(bytes: Uint8Array, name: string, extension: string): Previ
   if (extension === "7z" || extension === "rar" || extension === "bz2" || extension === "xz") {
     return {
       kind: "unsupported",
-      reason: `.${extension} 压缩包暂不支持解析`,
-      hint: "可下载后用本地压缩软件打开",
+      reason: i18n.t(".{{ext}} archives are not supported for parsing", { ext: extension }),
+      hint: i18n.t("Download and open with a local archive tool"),
     };
   }
   if (extension === "iso" || extension === "deb" || extension === "rpm") {
-    return { kind: "unsupported", reason: `.${extension} 文件暂不支持预览`, hint: "可下载后使用" };
+    return {
+      kind: "unsupported",
+      reason: i18n.t(".{{ext}} files are not supported for preview", { ext: extension }),
+      hint: i18n.t("Download to use it locally"),
+    };
   }
   try {
     const listing = listArchive(bytes, name);
@@ -221,9 +231,9 @@ function parseArchive(bytes: Uint8Array, name: string, extension: string): Previ
     };
   } catch (cause) {
     if (cause instanceof UnsupportedArchiveError) {
-      return { kind: "unsupported", reason: cause.message, hint: "可下载后用本地压缩软件打开" };
+      return { kind: "unsupported", reason: cause.message, hint: i18n.t("Download and open with a local archive tool") };
     }
-    return parseFailure(cause, "无法读取这个压缩包");
+    return parseFailure(cause, i18n.t("Failed to read this archive"));
   }
 }
 
@@ -238,14 +248,14 @@ function readText(bytes: Uint8Array, language?: EditorLanguage): PreviewModel {
 
 function parseFailure(cause: unknown, fallback: string): PreviewModel {
   const message = cause instanceof Error ? cause.message : String(cause);
-  return { kind: "unsupported", reason: `${fallback}：${message}` };
+  return { kind: "unsupported", reason: i18n.t("{{fallback}}: {{message}}", { fallback, message }) };
 }
 
 function legacyOffice(extension: string): PreviewModel {
   return {
     kind: "unsupported",
-    reason: `.${extension} 是旧版 Office 二进制格式，无法在应用内解析`,
-    hint: "请下载后用 Office / WPS 打开，或另存为新版 .docx / .xlsx 格式",
+    reason: i18n.t(".{{ext}} is a legacy Office binary format and cannot be parsed in-app", { ext: extension }),
+    hint: i18n.t("Download and open with Office / WPS, or save as the newer .docx / .xlsx format"),
   };
 }
 

@@ -168,20 +168,20 @@ export interface CommandCatalogMeta {
   categories: [string, string, number][];
 }
 
-/** 风险等级的 UI 标签与配色。 */
+/** 风险等级的 UI 标签与配色 —— label 为英文 key，渲染处 `t(...)`。 */
 export const RISK_META: Record<RiskLevel, { label: string; tone: string }> = {
-  read_only: { label: "只读", tone: "bg-success/12 text-success" },
-  low: { label: "低风险", tone: "bg-warning/12 text-warning" },
-  medium: { label: "需确认", tone: "bg-warning/15 text-warning" },
-  high: { label: "高风险", tone: "bg-danger/15 text-danger" },
-  destructive: { label: "删除", tone: "bg-danger/20 text-danger" },
+  read_only: { label: "Read-only", tone: "bg-success/12 text-success" },
+  low: { label: "Low Risk", tone: "bg-warning/12 text-warning" },
+  medium: { label: "Confirmation Required", tone: "bg-warning/15 text-warning" },
+  high: { label: "High Risk", tone: "bg-danger/15 text-danger" },
+  destructive: { label: "Destructive", tone: "bg-danger/20 text-danger" },
 };
 
-/** 可变性标签。 */
+/** 可变性标签 —— label 为英文 key，渲染处 `t(...)`。 */
 export const MUTABILITY_LABELS: Record<Mutability, string> = {
-  read: "读取",
-  change: "会修改服务器",
-  delete: "会删除数据",
+  read: "Read",
+  change: "Modifies the server",
+  delete: "Deletes data",
 };
 
 // ── 统一输出协议（与 Rust `output_adapter::model` 对齐）────────────────────

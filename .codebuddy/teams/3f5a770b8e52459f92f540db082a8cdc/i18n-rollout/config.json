@@ -1,0 +1,55 @@
+{
+  "name": "i18n-rollout",
+  "mainConversationId": "3f5a770b8e52459f92f540db082a8cdc",
+  "workspacePath": "c:/git-bls/BLS-OPS",
+  "createdAt": "2026-09-04T08:56:16.738Z",
+  "options": {
+    "workspacePath": "c:/git-bls/BLS-OPS",
+    "isAutoTeam": false
+  },
+  "isAutoTeam": false,
+  "members": [
+    {
+      "memberId": "i18n-components@i18n-rollout",
+      "name": "i18n-components",
+      "role": "抽取 components 文案",
+      "sessionId": "25b8fd2cda79461fa218fd7e71844651"
+    },
+    {
+      "memberId": "i18n-shell@i18n-rollout",
+      "name": "i18n-shell",
+      "role": "抽取工作台外壳文案",
+      "sessionId": "99f931bf408346f1be6612113f6a3558"
+    },
+    {
+      "memberId": "i18n-servers@i18n-rollout",
+      "name": "i18n-servers",
+      "role": "抽取服务器列表文案",
+      "sessionId": "6304764ff06c46bc875f59bb7493bdaa"
+    },
+    {
+      "memberId": "i18n-terminal@i18n-rollout",
+      "name": "i18n-terminal",
+      "role": "抽取终端文案",
+      "sessionId": "218f402e995c4c9d8241fbcaa401099e"
+    },
+    {
+      "memberId": "i18n-files@i18n-rollout",
+      "name": "i18n-files",
+      "role": "抽取文件与预览文案",
+      "sessionId": "96bfcfcefe5d44149e28a684a1933af7"
+    },
+    {
+      "memberId": "i18n-views@i18n-rollout",
+      "name": "i18n-views",
+      "role": "抽取命令中心与项目文案",
+      "sessionId": "5e888e3997b74a4c8ed6ed94b4223865"
+    },
+    {
+      "memberId": "i18n-libs@i18n-rollout",
+      "name": "i18n-libs",
+      "role": "抽取库层与状态文案",
+      "sessionId": "1d256cfcb8c24e758fb1ea9abfd96fc5"
+    }
+  ]
+}

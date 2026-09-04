@@ -1,18 +1,19 @@
 import { useState } from "react";
 import { Check, Copy, CornerDownLeft, FileCode2, Table2, type LucideIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { RISK_META, type CommandExecutionResult } from "@/api/ops-api";
-import { parseStructuredResult, VIEW_LABELS } from "./model";
+import { parseStructuredResult, RISK_LABEL_KEYS, VIEW_LABELS } from "./model";
 import { CommandResultRenderer } from "./CommandResultRenderer";
 import { RawView } from "./views/RawView";
 
 /**
  * 风险未知（`null`，知识库未命中）时的展示 —— **绝不默认只读**，
- * 否则修改型命令会绕过确认对话框。
+ * 否则修改型命令会绕过确认对话框。label 是英文 key，渲染处 t()。
  */
-const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted" };
+const UNKNOWN_RISK = { labelKey: "Unknown risk", tone: "bg-surface-2 text-fg-muted" };
 
 type PanelTab = "structured" | "raw";
 
@@ -37,8 +38,11 @@ interface ViewOption {
  * 就整块按原始输出渲染**（命令绝不因协议问题失效）。
  */
 export function CommandResultPanel({ result }: { result: CommandExecutionResult }) {
+  const { t } = useTranslation();
   const structured = parseStructuredResult(result.structured);
-  const risk = result.risk ? RISK_META[result.risk] : UNKNOWN_RISK;
+  const risk = result.risk
+    ? { ...RISK_META[result.risk], labelKey: RISK_LABEL_KEYS[result.risk] }
+    : UNKNOWN_RISK;
   const [copied, setCopied] = useState<string | null>(null);
   const menu = useContextMenu();
 
@@ -48,8 +52,8 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
   const [tab, setTab] = useState<PanelTab>(() => (canStructure ? "structured" : "raw"));
 
   const viewOptions: ViewOption[] = [
-    { id: "structured", label: "结构化视图", icon: Table2, visible: canStructure },
-    { id: "raw", label: "原始输出", icon: FileCode2, visible: true },
+    { id: "structured", label: t("Structured view"), icon: Table2, visible: canStructure },
+    { id: "raw", label: t("Raw output"), icon: FileCode2, visible: true },
   ];
   const headerOptions = viewOptions.filter((option) => option.visible);
 
@@ -63,46 +67,46 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
   const items: ContextMenuItem[] = [
     {
       id: "view-structured",
-      label: "结构化视图",
+      label: t("Structured view"),
       icon: Table2,
       // Header hides the button in the same situation; the menu must not offer
       // an action that does nothing, so the entry stays but is disabled.
       disabled: !canStructure,
-      hint: canStructure && tab === "structured" ? "当前" : undefined,
+      hint: canStructure && tab === "structured" ? t("Current") : undefined,
       onSelect: () => setTab("structured"),
     },
     {
       id: "view-raw",
-      label: "原始输出",
+      label: t("Raw output"),
       icon: FileCode2,
-      hint: tab === "raw" ? "当前" : undefined,
+      hint: tab === "raw" ? t("Current") : undefined,
       onSelect: () => setTab("raw"),
     },
     { id: "sep-copy", separator: true },
     {
       id: "copy-stdout",
-      label: copied === "stdout" ? "已复制输出" : "复制原始输出",
+      label: copied === "stdout" ? t("Output copied") : t("Copy raw output"),
       icon: copied === "stdout" ? Check : Copy,
       onSelect: () => void copy("stdout", result.raw.stdout || ""),
     },
     {
       id: "copy-command",
-      label: copied === "command" ? "已复制命令" : "复制实际执行命令",
+      label: copied === "command" ? t("Command copied") : t("Copy executed command"),
       icon: copied === "command" ? Check : CornerDownLeft,
       onSelect: () => void copy("command", result.raw.command_executed),
     },
     {
       id: "copy-all",
-      label: copied === "all" ? "已复制" : "复制完整结果",
+      label: copied === "all" ? t("Copied") : t("Copy full result"),
       icon: copied === "all" ? Check : Copy,
       onSelect: () =>
         void copy(
           "all",
           [
-            `命令：${result.raw.command_executed}`,
-            `耗时：${result.raw.duration_ms} ms`,
+            t("Command: {{command}}", { command: result.raw.command_executed }),
+            t("Duration: {{ms}} ms", { ms: result.raw.duration_ms }),
             "",
-            result.raw.stdout || "（无输出）",
+            result.raw.stdout || t("(no output)"),
             result.raw.stderr ? `\nstderr:\n${result.raw.stderr}` : "",
           ]
             .filter(Boolean)
@@ -119,15 +123,15 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
     >
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-3 py-2">
         <strong className="text-12 text-fg">{result.title}</strong>
-        <span className={cn("rounded px-1.5 py-0.5 text-10", risk.tone)}>{risk.label}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-10", risk.tone)}>{t(risk.labelKey)}</span>
         {structured && (
           <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle">
-            {VIEW_LABELS[structured.view]}
+            {t(VIEW_LABELS[structured.view])}
           </span>
         )}
         <code
           className="min-w-0 flex-1 truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-10 text-fg-muted"
-          title={`实际执行：${result.raw.command_executed}`}
+          title={t("Executed: {{command}}", { command: result.raw.command_executed })}
         >
           {result.raw.command_executed}
         </code>

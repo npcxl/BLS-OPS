@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { sshClosedEvent } from "@/lib/events";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -99,10 +100,10 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
       const isJumpHop = challengeLabel !== `${result.host}:${result.port}`;
       const message =
         result.status === "host_key_changed"
-          ? `${challengeLabel} 的主机指纹已变化，请确认后再连接`
-          : `首次连接 ${challengeLabel}，请确认主机指纹`;
+          ? i18n.t("Host fingerprint of {{host}} has changed. Confirm before connecting", { host: challengeLabel })
+          : i18n.t("First connection to {{host}}. Confirm the host fingerprint", { host: challengeLabel });
 
-      setStatus(sessionId, "error", { error: "等待主机指纹确认" });
+      setStatus(sessionId, "error", { error: i18n.t("Waiting for host fingerprint confirmation") });
       setPhase("error");
       setError(message);
 
@@ -121,7 +122,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
         cancel: () => {
           setStatus(sessionId, "closed");
           setPhase("closed");
-          setError("已拒绝该主机指纹，连接已取消");
+          setError(i18n.t("Host fingerprint rejected, connection cancelled"));
         },
       });
     } catch (cause) {
@@ -170,7 +171,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
       if (disposed) return;
       setStatus(sessionId, "closed");
       setPhase("closed");
-      setError("SSH 连接已断开");
+      setError(i18n.t("SSH connection closed"));
     });
 
     void connect();

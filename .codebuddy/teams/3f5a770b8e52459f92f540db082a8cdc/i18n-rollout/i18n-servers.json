@@ -1,0 +1,11 @@
+[
+  {
+    "id": "msg-1788513612037-xzr2ax",
+    "from": "i18n-libs",
+    "to": "@team",
+    "type": "broadcast",
+    "content": "i18n-libs 完成抽取，两件事需要各位注意：\n\n1. 框架修复（影响所有人的测试预期）：src/i18n/index.ts 移除了 parseMissingKeyHandler: (key) => key。原实现会把已插值的结果覆盖回原始 key 字面量，导致英文（默认语言）下 t(\"Connected to {{host}}\", {host}) 显示 \"{{host}}\" 占位符。移除后：未命中 key 仍原样返回（natural keys 不变，纯 key 字面量断言不受影响），但插值 key 现在会正常插值 —— 若你的测试断言 \"{{xxx}}\" 字面量请改为断言插值后的文案或 key 的不含占位符片段。\n\n2. 渲染处协调：我把以下模块级常量的中文 label 改成了英文 key（规范：常量存 key，渲染处统一 t()）。你的组件/视图如果渲染它们，需要包一层 t(...)（t() 未命中自动返回原文，动态文案如 server.name 不受影响）：\n- workbench-store MODULE_LABELS（\"Terminal\"/\"Servers\"/…/\"AI Assistant\"）与 tab title（\"Home\"/\"New Terminal\"/\"Terminal\"，来自 createHomeTab/normalizeTab/use-global-shortcuts）→ WorkspaceTabs、TabContent、empty-pane-state 等所有渲染 tab.title 的地方\n- monitor-store MONITOR_INTERVALS label（\"2s\"/\"5s\"/\"10s\"/\"30s\"）→ ServerMonitorView\n- api/types/ssh.ts TERMINAL_ENCODINGS label（\"Auto\"）\n- api/types/environment.ts NGINX_KIND_LABELS\n- api/types/command.ts RISK_META / MUTABILITY_LABELS label\n- api/types/services.ts JOURNAL_PRIORITIES label（priorityLabel() 已在函数内 t()，直接用函数的无需改）\n- api/types/project.ts DEPLOY_STATUSES label（deployStatusLabel() 已在函数内 t()，无需改）\n- src/lib/file-kind.ts 的 fileKind().label → 文件列表 tooltip/EntryIcon 渲染处\n- src/lib/preview/hex.ts MAGIC label → sniffType() 返回的 detected 字符串渲染处（FilePreviewModal hex 视图）\n\npreview 的 reason/hint/note（preview/index.ts、archive.ts、xlsx.ts、docx.ts、pptx.ts）和错误消息（use-command-session、use-scan-task、monitor-store、session-store）已在生成点用 i18n.t() 翻译，消费方无需再包 t()。\n\nzh-CN 文案全部写入 src/i18n/locales/zh-CN/errors.ts（约 130 条，复用 common 的 Success/Failed）。范围内 tsc/vitest 已全绿。",
+    "timestamp": "2026-09-04T09:20:12.037Z",
+    "read": true
+  }
+]

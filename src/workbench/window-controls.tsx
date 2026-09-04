@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@iconify/react";
+import { useTranslation } from "react-i18next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/cn";
 import { WINDOW_ICONS } from "@/lib/icons/window-icons";
@@ -12,21 +13,22 @@ import { WINDOW_ICONS } from "@/lib/icons/window-icons";
  */
 export function WindowControls() {
   const maximized = useIsMaximized();
+  const { t } = useTranslation();
 
   return (
     <div className="ml-auto flex items-stretch" data-tauri-drag-region="false">
       <CaptionButton
-        label="最小化"
+        label={t("Minimize")}
         icon={WINDOW_ICONS.minimize}
         onClick={() => void getCurrentWindow().minimize()}
       />
       <CaptionButton
-        label={maximized ? "向下还原" : "最大化"}
+        label={maximized ? t("Restore") : t("Maximize")}
         icon={maximized ? WINDOW_ICONS.restore : WINDOW_ICONS.maximize}
         onClick={() => void getCurrentWindow().toggleMaximize()}
       />
       <CaptionButton
-        label="关闭"
+        label={t("Close window")}
         icon={WINDOW_ICONS.close}
         danger
         onClick={() => void getCurrentWindow().close()}

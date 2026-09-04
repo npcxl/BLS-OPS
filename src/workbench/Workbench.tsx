@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
@@ -10,15 +11,25 @@ import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
 import type { WorkspaceTabType } from "./types";
 
-/** The P3 management modules, as command-palette entries. */
+/** The P3 management modules, as command-palette entries. label/description 存 i18n key。 */
 const MANAGE_KINDS: {
   id: string;
-  label: string;
+  labelKey: string;
   tabType: WorkspaceTabType;
-  description: string;
+  descriptionKey: string;
 }[] = [
-  { id: "service", label: "服务", tabType: "service", description: "systemd 服务：启动、停止、重启、自启" },
-  { id: "logs", label: "日志", tabType: "logs", description: "journalctl 日志查询与过滤" },
+  {
+    id: "service",
+    labelKey: "Services",
+    tabType: "service",
+    descriptionKey: "systemd services: start, stop, restart, enable",
+  },
+  {
+    id: "logs",
+    labelKey: "Logs",
+    tabType: "logs",
+    descriptionKey: "journalctl log query and filtering",
+  },
 ];
 
 /**
@@ -26,6 +37,7 @@ const MANAGE_KINDS: {
  */
 export function Workbench() {
   useGlobalShortcuts();
+  const { t } = useTranslation();
 
   const openTab = useWorkbenchStore((s) => s.openTab);
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
@@ -44,10 +56,10 @@ export function Workbench() {
   const actions = useMemo<PaletteAction[]>(() => {
     const connectActions: PaletteAction[] = servers.map((server) => ({
       id: `connect-${server.id}`,
-      title: `连接 ${server.name}`,
-      category: "终端",
+      title: t("Connect to {{name}}", { name: server.name }),
+      category: t("Terminal"),
       description: `${server.username}@${server.host}:${server.port}`,
-      keywords: ["连接", server.host, server.username, ...server.tags],
+      keywords: ["connect", server.host, server.username, ...server.tags],
       onSelect: () =>
         openOrFocusServerTab({
           id: crypto.randomUUID(),
@@ -63,10 +75,10 @@ export function Workbench() {
     // each one keeps its own history and pause state.
     const monitorActions: PaletteAction[] = servers.map((server) => ({
       id: `monitor-${server.id}`,
-      title: `监控 ${server.name}`,
-      category: "监控",
-      description: `只读指标：CPU、内存、磁盘、网络、进程`,
-      keywords: ["监控", "monitor", server.host, server.name],
+      title: t("Monitor {{name}}", { name: server.name }),
+      category: t("Monitor"),
+      description: t("Read-only metrics: CPU, memory, disk, network, processes"),
+      keywords: ["monitor", server.host, server.name],
       onSelect: () =>
         openTab({
           id: crypto.randomUUID(),
@@ -83,10 +95,10 @@ export function Workbench() {
     const managerActions: PaletteAction[] = servers.flatMap((server) =>
       MANAGE_KINDS.map((kind) => ({
         id: `${kind.id}-${server.id}`,
-        title: `${kind.label} ${server.name}`,
-        category: kind.label,
-        description: kind.description,
-        keywords: [kind.label, kind.id, server.host, server.name],
+        title: t("{{label}} {{name}}", { label: t(kind.labelKey), name: server.name }),
+        category: t(kind.labelKey),
+        description: t(kind.descriptionKey),
+        keywords: [kind.labelKey, kind.id, server.host, server.name],
         onSelect: () =>
           openTab({
             id: crypto.randomUUID(),
@@ -104,10 +116,10 @@ export function Workbench() {
       .slice(0, 5)
       .map((session) => ({
         id: `recent-${session.id}`,
-        title: `重新连接 ${session.server_name}`,
-        category: "最近会话",
+        title: t("Reconnect {{name}}", { name: session.server_name }),
+        category: t("Recent sessions"),
         description: `${session.username}@${session.server_host}:${session.server_port}`,
-        keywords: ["最近", session.server_host],
+        keywords: ["recent", session.server_host],
         onSelect: () =>
           openOrFocusServerTab({
             id: crypto.randomUUID(),
@@ -126,21 +138,21 @@ export function Workbench() {
       ...recentActions,
       {
         id: "manage-credentials",
-        title: "管理凭据",
-        category: "设置",
-        description: "打开凭据与已知主机",
+        title: t("Manage credentials"),
+        category: t("Settings"),
+        description: t("Open credentials and known hosts"),
         onSelect: () => openModuleTab("settings"),
       },
       {
         id: "open-home",
-        title: "回到首页",
-        category: "工作区",
-        description: "打开工作台首页",
+        title: t("Back to home"),
+        category: t("Workspace"),
+        description: t("Open the workbench home"),
         onSelect: () =>
-          openTab({ id: crypto.randomUUID(), type: "home", title: "首页" }),
+          openTab({ id: crypto.randomUUID(), type: "home", title: t("Home") }),
       },
     ];
-  }, [openTab, openModuleTab, servers, sessions]);
+  }, [openTab, openModuleTab, servers, sessions, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-app text-fg">

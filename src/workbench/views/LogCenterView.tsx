@@ -6,6 +6,7 @@
  * records with their real priority; nothing is synthesised.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -45,6 +46,7 @@ function rowTone(priority: number): string {
 }
 
 export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
+  const { t } = useTranslation();
   const session = useCommandSession(tab);
 
   const [entries, setEntries] = useState<JournalEntry[]>([]);
@@ -129,36 +131,36 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
     menu.onContextMenu((): ContextMenuItem[] => {
       const levelLabel = priorityLabel(entry.priority);
       return [
-        { id: "copy-row", label: "复制该行", icon: Copy, onSelect: () => copyRow(entry) },
-        { id: "copy-all", label: `复制全部（${visible.length} 条）`, onSelect: copyAll },
+        { id: "copy-row", label: t("Copy this line"), icon: Copy, onSelect: () => copyRow(entry) },
+        { id: "copy-all", label: t("Copy all ({{count}})", { count: visible.length }), onSelect: copyAll },
         { id: "sep-filter", separator: true },
         {
           id: "filter-priority",
-          label: `只看「${levelLabel}」及以上`,
+          label: t("Show \"{{level}}\" and above", { level: levelLabel }),
           icon: Filter,
           // Re-applying the filter the row already has would be a no-op that
           // looks like a broken menu item.
           disabled: priority === entry.priority,
-          hint: priority === entry.priority ? "当前" : undefined,
+          hint: priority === entry.priority ? t("Current") : undefined,
           onSelect: () => setPriority(entry.priority),
         },
         {
           id: "filter-unit",
-          label: `只看单元 ${entry.unit}`,
+          label: t("Show unit {{unit}}", { unit: entry.unit }),
           disabled: unit.trim() === entry.unit,
-          hint: unit.trim() === entry.unit ? "当前" : undefined,
+          hint: unit.trim() === entry.unit ? t("Current") : undefined,
           onSelect: () => setUnit(entry.unit),
         },
         {
           id: "search-unit",
-          label: "在结果中搜索该消息",
+          label: t("Search this message in results"),
           disabled: entry.message.trim() === "",
           onSelect: () => setSearch(entry.message),
         },
         { id: "sep-clear", separator: true },
         {
           id: "clear-filters",
-          label: "清除筛选",
+          label: t("Clear filters"),
           disabled: priority === null && unit.trim() === "" && search.trim() === "",
           onSelect: () => {
             setPriority(null);
@@ -182,21 +184,21 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
             size="xs"
             className="min-w-0 shrink"
             onClick={() => setFollowTail((value) => !value)}
-            title={followTail ? "停止跟随最新" : "跟随最新"}
+            title={followTail ? t("Stop following latest") : t("Follow latest")}
           >
             <ArrowDownToLine
               size={12}
               className={cn("shrink-0", followTail ? "text-accent" : undefined)}
             />
-            <span className="truncate">{followTail ? "跟随中" : "已停止跟随"}</span>
+            <span className="truncate">{followTail ? t("Following") : t("Not following")}</span>
           </Button>
           <ToolbarStatus>
             {errorCount > 0 && (
-              <ToolbarStat className="text-danger">{errorCount} 条错误及以上</ToolbarStat>
+              <ToolbarStat className="text-danger">{t("{{count}} errors and above", { count: errorCount })}</ToolbarStat>
             )}
-            {usage?.raw && <ToolbarStat>占用 {usage.raw}</ToolbarStat>}
+            {usage?.raw && <ToolbarStat>{t("Disk usage {{usage}}", { usage: usage.raw })}</ToolbarStat>}
             {/* The row count is what the user reads, so it never ellipsizes. */}
-            <ToolbarStat className="shrink-0">{visible.length} 条</ToolbarStat>
+            <ToolbarStat className="shrink-0">{t("{{count}} rows", { count: visible.length })}</ToolbarStat>
           </ToolbarStatus>
         </>
       }
@@ -206,7 +208,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
             value={unit}
             onChange={(event) => setUnit(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && void load()}
-            placeholder="单元名，如 nginx.service"
+            placeholder={t("Unit name, e.g. nginx.service")}
             width="w-52"
             className="font-mono placeholder:font-sans"
           />
@@ -227,7 +229,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
             </select>
           </label>
           <label className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
-            行数
+            {t("Lines")}
             <select
               value={lines}
               onChange={(event) => setLines(Number(event.target.value))}
@@ -243,7 +245,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
           <ToolbarInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="在结果中搜索…"
+            placeholder={t("Search in results…")}
             className="flex-1"
           />
         </>
@@ -258,11 +260,13 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
       {!loading && !error && entries.length === 0 ? (
         <ModuleEmpty
           icon={ScrollText}
-          title="没有读取到日志"
+          title={t("No logs read")}
           hint={
             unit.trim()
-              ? `单元 ${unit.trim()} 没有匹配的记录，或当前用户无权读取 journal。`
-              : "这台机器可能没有 journald，或者当前用户不在 systemd-journal 组中。"
+              ? t("Unit {{unit}} has no matching records, or the current user cannot read the journal.", {
+                  unit: unit.trim(),
+                })
+              : t("This machine may not have journald, or the current user is not in the systemd-journal group.")
           }
         />
       ) : (
@@ -270,10 +274,10 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
           <table className="w-full text-11">
             <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
               <tr>
-                <th className="w-[168px] px-3 py-1.5 text-left font-semibold">时间 (UTC)</th>
-                <th className="w-[56px] px-2 py-1.5 text-left font-semibold">级别</th>
-                <th className="w-[148px] px-2 py-1.5 text-left font-semibold">单元</th>
-                <th className="px-3 py-1.5 text-left font-semibold">消息</th>
+                <th className="w-[168px] px-3 py-1.5 text-left font-semibold">{t("Time (UTC)")}</th>
+                <th className="w-[56px] px-2 py-1.5 text-left font-semibold">{t("Level")}</th>
+                <th className="w-[148px] px-2 py-1.5 text-left font-semibold">{t("Unit")}</th>
+                <th className="px-3 py-1.5 text-left font-semibold">{t("Message")}</th>
               </tr>
             </thead>
             <tbody>
@@ -292,7 +296,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
                   </td>
                   <td className="px-2 py-1.5 font-mono text-fg-muted">{entry.unit}</td>
                   <td className="px-3 py-1.5 whitespace-pre-wrap font-mono text-fg">
-                    {entry.message || "（无消息正文）"}
+                    {entry.message || t("(no message body)")}
                   </td>
                 </tr>
               ))}
@@ -301,22 +305,22 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
           {loading && (
             <div className="flex items-center justify-center gap-2 py-4 text-11 text-fg-subtle">
               <Loader2 size={12} className="animate-spin" />
-              读取中…
+              {t("Reading…")}
             </div>
           )}
           {!loading && visible.length === 0 && search.trim() !== "" && (
             <div className="py-6 text-center text-12 text-fg-subtle">
-              没有匹配“{search.trim()}”的记录
+              {t("No records matching \"{{query}}\"", { query: search.trim() })}
               <Button variant="ghost" size="xs" className="ml-2" onClick={() => void load()}>
                 <RefreshCw size={11} />
-                重新读取
+                {t("Read again")}
               </Button>
             </div>
           )}
         </div>
       )}
 
-      <ContextMenu {...menu.props} title="日志" />
+      <ContextMenu {...menu.props} title={t("Logs")} />
     </ModuleFrame>
   );
 }

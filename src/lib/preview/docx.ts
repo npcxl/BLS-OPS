@@ -9,6 +9,7 @@
  */
 import { strFromU8, unzipSync } from "fflate";
 
+import { i18n } from "@/i18n";
 import { compactBlocks, type DocBlock } from "./blocks";
 import { blipRef, MediaStore } from "./media";
 import { attr, decodeXmlEntities, findTags, nextElement, stripTags } from "./xml";
@@ -24,7 +25,7 @@ const MAX_TABLE_ROWS = 300;
 export function parseDocx(bytes: Uint8Array): DocxModel {
   const zip = unzipSync(bytes);
   const document = zip["word/document.xml"];
-  if (!document) throw new Error("这不是有效的 .docx 文件（缺少 word/document.xml）");
+  if (!document) throw new Error(i18n.t("Not a valid .docx file (missing word/document.xml)"));
 
   const relsPart = zip["word/_rels/document.xml.rels"];
   const media = new MediaStore(zip, relsPart ? strFromU8(relsPart) : null, "word/");

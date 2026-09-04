@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /**
  * 选中文字后浮出的"复制"小菜单。
@@ -73,6 +74,7 @@ export function TerminalSelectionMenu({
   containerRef: React.RefObject<HTMLElement | null>;
   onCopy: (text: string) => void | Promise<void>;
 }) {
+  const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
 
@@ -106,7 +108,7 @@ export function TerminalSelectionMenu({
       onMouseDown={(event) => event.stopPropagation()}
     >
       <span className="truncate px-1 text-11 tabular-nums text-fg-subtle">
-        已选择 {text.length} 个字符
+        {t("{{count}} characters selected", { count: text.length })}
       </span>
       <button
         type="button"
@@ -115,7 +117,7 @@ export function TerminalSelectionMenu({
         className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-2 text-11 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
       >
         <Copy size={12} />
-        复制
+        {t("Copy")}
       </button>
     </div>
   );

@@ -1,0 +1,11 @@
+[
+  {
+    "id": "msg-1788513755414-44ufil",
+    "from": "i18n-components",
+    "to": "i18n-libs",
+    "type": "message",
+    "content": "收到，两项变更已在 src/components 范围内核对完毕，结论：零改动需求，验证全绿。\n\n1. parseMissingKeyHandler 移除：我抽取的 30 个 key 全部是纯 key 字面量（无 {{插值}} 调用），未命中返回 key 的默认行为不受影响；两个测试文件（context-menu 21 + modal 4）断言的均为组件 props 数据而非 t() 输出，无 {{xxx}} 字面量断言。修复后重跑：npx tsc --noEmit 退出码 0，npx vitest run src/components 25/25 全过。\n\n2. 模块级常量协调：我渲染的常量只有自己范围里的 COPY_NOTICE_TEXT（copy-feedback.tsx，已在渲染处 t(COPY_NOTICE_TEXT[status])）。你改的常量列表（MODULE_LABELS / MONITOR_INTERVALS / TERMINAL_ENCODINGS / NGINX_KIND_LABELS / RISK_META / MUTABILITY_LABELS / JOURNAL_PRIORITIES / DEPLOY_STATUSES / fileKind().label / hex MAGIC）在 src/components 内均无消费方，无需处理。\n\n另确认一点供参考：common.ts 里我追加的 key \"Copy failed. Please check clipboard permission\" 含句点，依赖 i18next v21+ 默认 ignoreJSONStructure 的扁平优先查找——zh-CN 扁平命中无问题，但若未来有人显式配 keySeparator 需注意含句点 key 的写法。",
+    "timestamp": "2026-09-04T09:22:35.414Z",
+    "read": true
+  }
+]

@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
 import { placeholdersIn, type ParamKind } from "@/workbench/views/command-center/complete";
 import type { SuggestAnchor } from "./terminal-suggest";
 
+/** 模块级常量只存 key（natural keys），渲染处统一 t()。 */
 const PARAM_TITLES: Record<ParamKind, string> = {
-  unit: "选择服务单元",
-  container: "选择容器",
-  path: "选择目录",
+  unit: "Select service unit",
+  container: "Select container",
+  path: "Select directory",
+};
+
+const PARAM_LOADING_HINTS: Record<ParamKind, string> = {
+  unit: "Loading services on the server…",
+  container: "Loading containers on the server…",
+  path: "Loading directories on the server…",
 };
 
 /**
@@ -32,6 +40,7 @@ export function ParamPicker({
   onCancel: () => void;
   anchor: SuggestAnchor | null;
 }) {
+  const { t } = useTranslation();
   const next = placeholdersIn(syntax)[0];
   const kind = next?.kind ?? null;
   const [values, setValues] = useState<string[]>([]);
@@ -103,7 +112,7 @@ export function ParamPicker({
       style={{ left: anchor.x, top: anchor.y }}
     >
       <div className="flex items-center justify-between gap-2 border-b border-line px-2.5 py-1">
-        <span className="text-10 font-semibold text-fg-muted">{PARAM_TITLES[kind]}</span>
+        <span className="text-10 font-semibold text-fg-muted">{t(PARAM_TITLES[kind])}</span>
         <code className="min-w-0 truncate font-mono text-9 text-fg-subtle" title={syntax}>
           {syntax}
         </code>
@@ -116,7 +125,7 @@ export function ParamPicker({
             setFilter(event.target.value);
             setActiveIndex(0);
           }}
-          placeholder="筛选…"
+          placeholder={t("Filter…")}
           spellCheck={false}
           className="h-[22px] w-full rounded-[5px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
         />
@@ -124,12 +133,12 @@ export function ParamPicker({
       {loading && (
         <div className="flex items-center gap-1.5 px-2.5 py-2 text-11 text-fg-subtle">
           <Loader2 size={11} className="animate-spin" />
-          正在读取服务器上的{kind === "unit" ? "服务" : kind === "container" ? "容器" : "目录"}…
+          {t(PARAM_LOADING_HINTS[kind])}
         </div>
       )}
       {error && <div className="px-2.5 py-2 text-11 text-danger">{error}</div>}
       {!loading && !error && visible.length === 0 && (
-        <div className="px-2.5 py-2 text-11 text-fg-subtle">没有可用的取值</div>
+        <div className="px-2.5 py-2 text-11 text-fg-subtle">{t("No values available")}</div>
       )}
       {!loading && !error && visible.length > 0 && (
         <div className="max-h-[180px] overflow-y-auto py-0.5">
@@ -154,7 +163,7 @@ export function ParamPicker({
         </div>
       )}
       <div className="border-t border-line bg-surface-2/60 px-2.5 py-0.5 text-9 text-fg-subtle">
-        ↑↓ 选择 · Enter 填入 · Esc 取消
+        {t("↑↓ select · Enter to fill · Esc to cancel")}
       </div>
     </div>
   );

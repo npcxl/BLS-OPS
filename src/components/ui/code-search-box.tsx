@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   CaseSensitive,
   ChevronDown,
@@ -43,6 +44,7 @@ export function CodeSearchBox({
   const [total, setTotal] = useState(0);
   const [index, setIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
 
   const searchQuery = useMemo(() => buildQuery(query, caseSensitive), [query, caseSensitive]);
 
@@ -122,7 +124,7 @@ export function CodeSearchBox({
   };
 
   const counter =
-    total === 0 ? (query ? "无结果" : "") : `${(index >= 0 ? index : 0) + 1}/${total}`;
+    total === 0 ? (query ? t("No results") : "") : `${(index >= 0 ? index : 0) + 1}/${total}`;
 
   return (
     <div
@@ -139,7 +141,7 @@ export function CodeSearchBox({
           <button
             type="button"
             onClick={() => setExpanded((current) => !current)}
-            title={expanded ? "收起替换" : "展开替换（Ctrl+H）"}
+            title={expanded ? t("Collapse replace") : t("Expand replace (Ctrl+H)")}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
           >
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -149,7 +151,7 @@ export function CodeSearchBox({
           ref={inputRef}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="查找"
+          placeholder={t("Find")}
           spellCheck={false}
           className={cn(
             "h-7 min-w-0 flex-1 rounded border bg-surface-2 px-2 text-12 text-fg outline-none transition-colors placeholder:text-fg-subtle",
@@ -159,7 +161,7 @@ export function CodeSearchBox({
         <button
           type="button"
           onClick={() => setCaseSensitive((current) => !current)}
-          title="区分大小写"
+          title={t("Match case")}
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
             caseSensitive
@@ -182,7 +184,7 @@ export function CodeSearchBox({
         <button
           type="button"
           onClick={() => step(true)}
-          title="上一个（Shift+Enter）"
+          title={t("Previous (Shift+Enter)")}
           disabled={total === 0}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-40"
         >
@@ -191,7 +193,7 @@ export function CodeSearchBox({
         <button
           type="button"
           onClick={() => step(false)}
-          title="下一个（Enter）"
+          title={t("Next (Enter)")}
           disabled={total === 0}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-40"
         >
@@ -200,7 +202,7 @@ export function CodeSearchBox({
         <button
           type="button"
           onClick={close}
-          title="关闭（Esc）"
+          title={t("Close (Esc)")}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
         >
           <X size={14} />
@@ -214,14 +216,14 @@ export function CodeSearchBox({
           <input
             value={replaceText}
             onChange={(event) => setReplaceText(event.target.value)}
-            placeholder="替换"
+            placeholder={t("Replace")}
             spellCheck={false}
             className="h-7 min-w-0 flex-1 rounded border border-line bg-surface-2 px-2 text-12 text-fg outline-none transition-colors placeholder:text-fg-subtle focus:border-accent"
           />
           <button
             type="button"
             onClick={() => replace(false)}
-            title="替换（Enter 后替换当前匹配）"
+            title={t("Replace (Enter replaces the current match)")}
             disabled={total === 0}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-40"
           >
@@ -230,7 +232,7 @@ export function CodeSearchBox({
           <button
             type="button"
             onClick={() => replace(true)}
-            title="全部替换（Alt+Enter）"
+            title={t("Replace all (Alt+Enter)")}
             disabled={total === 0}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-40"
           >

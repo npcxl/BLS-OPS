@@ -143,26 +143,26 @@ describe("WorkbenchHome 服务器卡片右键菜单", () => {
     await rightClick(card());
 
     expect(labels()).toEqual([
-      "打开终端",
-      "取消收藏",
-      "编辑服务器",
-      "复制连接地址",
-      "删除服务器",
+      "Open terminal",
+      "Unfavorite",
+      "Edit server",
+      "Copy connection address",
+      "Delete server",
     ]);
   });
 
-  it("opens the server form from 编辑服务器", async () => {
+  it("opens the server form from Edit server", async () => {
     await render();
     await rightClick(card());
-    await clickItem("编辑服务器");
+    await clickItem("Edit server");
 
-    expect(document.body.textContent).toContain("编辑服务器 — web-01");
+    expect(document.body.textContent).toContain("Edit server — web-01");
   });
 
   it("copies the connection address", async () => {
     await render();
     await rightClick(card());
-    await clickItem("复制连接地址");
+    await clickItem("Copy connection address");
 
     expect(clipboard.text).toBe("root@web-01.local:22");
   });
@@ -170,16 +170,18 @@ describe("WorkbenchHome 服务器卡片右键菜单", () => {
   it("asks for confirmation before deleting", async () => {
     await render();
     await rightClick(card());
-    await clickItem("删除服务器");
+    await clickItem("Delete server");
 
     // Destructive actions always go through ConfirmDialog.
-    expect(document.body.textContent).toContain("删除“web-01”会同时删除它的会话与命令历史");
+    expect(document.body.textContent).toContain(
+      'Deleting "web-01" will also delete its sessions and command history. This action cannot be undone.',
+    );
   });
 
   it("toggles the favorite through the menu", async () => {
     await render();
     await rightClick(card());
-    await clickItem("取消收藏");
+    await clickItem("Unfavorite");
 
     expect(useDomainStore.getState().servers[0].favorite).toBe(false);
   });

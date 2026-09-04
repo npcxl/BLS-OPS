@@ -7,6 +7,7 @@
  * not in `history`.
  */
 import { create } from "zustand";
+import { i18n } from "@/i18n";
 import { opsApi, toErrorMessage, type MonitorSnapshot } from "@/api/ops-api";
 
 /** Default collection cadence. */
@@ -26,11 +27,12 @@ export function maxSamplesFor(intervalMs: number): number {
   return Math.ceil(MONITOR_HISTORY_WINDOW_MS / intervalMs);
 }
 
+/** 采样间隔选项 —— label 为英文 key，渲染处 `t(...)`。 */
 export const MONITOR_INTERVALS = [
-  { value: 2_000, label: "2 秒" },
-  { value: 5_000, label: "5 秒" },
-  { value: 10_000, label: "10 秒" },
-  { value: 30_000, label: "30 秒" },
+  { value: 2_000, label: "2s" },
+  { value: 5_000, label: "5s" },
+  { value: 10_000, label: "10s" },
+  { value: 30_000, label: "30s" },
 ] as const;
 
 export type MonitorPhase =
@@ -204,7 +206,7 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
         finish({
           phase: "unsupported",
           snapshot,
-          unsupportedReason: snapshot.unsupported_reason ?? "不支持的操作系统",
+          unsupportedReason: snapshot.unsupported_reason ?? i18n.t("Unsupported operating system"),
           error: null,
           lastUpdatedAt: Date.now(),
         });
@@ -236,7 +238,10 @@ export const useMonitorStore = create<MonitorState>()((set, get) => ({
         alive = false;
       }
       if (!alive) {
-        finish({ phase: "closed", error: `SSH 连接已断开，监控已停止：${message}` });
+        finish({
+          phase: "closed",
+          error: i18n.t("SSH connection lost, monitoring stopped: {{message}}", { message }),
+        });
       } else {
         finish({ phase: "error", error: message });
       }

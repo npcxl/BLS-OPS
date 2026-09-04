@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// provider 生成 notice 时用 i18n.t（未命中 key 原样返回）—— 初始化 en 保证插值可用。
+import "@/i18n";
+
 import type { RemoteFileEntry } from "@/api/ops-api";
 import { createRemoteDirectoryProvider } from "../providers/remote-directory";
 import { createFileProvider } from "../providers/file";
@@ -179,7 +182,7 @@ describe("cd completion", () => {
     const io = lister();
     const result = await complete("cd zzz", io.list);
     expect(result.items).toHaveLength(0);
-    expect(result.notice).toBe("没有匹配的远程目录");
+    expect(result.notice).toBe("No matching remote directories");
   });
 
   it("says so when the cwd is unknown — never falls back to the local filesystem", async () => {
@@ -187,7 +190,7 @@ describe("cd completion", () => {
     const result = await complete("cd ", io.list, { cwd: null });
     expect(io.calls).toEqual([]);
     expect(result.items).toHaveLength(0);
-    expect(result.notice).toContain("还不知道当前远程目录");
+    expect(result.notice).toContain("Remote working directory is unknown");
   });
 
   it("asks for the home directory instead of inventing one", async () => {

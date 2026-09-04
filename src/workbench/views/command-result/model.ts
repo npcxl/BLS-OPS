@@ -9,6 +9,7 @@ import type {
   ResultSection,
   ResultSummary,
   ResultView,
+  RiskLevel,
   StructuredCommandResult,
 } from "@/api/ops-api";
 
@@ -68,16 +69,29 @@ export const SUMMARY_TONES: Record<string, string> = {
   accent: "text-accent",
 };
 
-/** 各视图的中文名（Tab 与空状态文案用）。 */
+/** 各视图的中文名 —— 存英文 key，渲染处统一 t()（Tab 与空状态文案用）。 */
 export const VIEW_LABELS: Record<ResultView, string> = {
-  table: "表格",
-  key_value: "属性",
-  metrics: "指标",
-  log: "日志",
-  tree: "树结构",
+  table: "Table",
+  key_value: "Key-value",
+  metrics: "Metrics",
+  log: "Log",
+  tree: "Tree",
   json: "JSON",
-  diff: "差异",
-  progress: "进度",
-  text: "纯文本",
-  raw: "原始输出",
+  diff: "Diff",
+  progress: "Progress",
+  text: "Plain text",
+  raw: "Raw output",
+};
+
+/**
+ * 风险等级 → 展示文案（英文 key）。`RISK_META` 在 `src/api/types`（不在本
+ * 视图层范围），其 label 无法直接走 i18n —— 这里按 Rust 枚举值在前端映射。
+ * 配色仍取 `RISK_META[...].tone`。
+ */
+export const RISK_LABEL_KEYS: Record<RiskLevel, string> = {
+  read_only: "Read only",
+  low: "Low risk",
+  medium: "Needs confirmation",
+  high: "High risk",
+  destructive: "Destructive",
 };

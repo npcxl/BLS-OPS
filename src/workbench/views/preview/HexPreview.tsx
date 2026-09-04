@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { HEX_CHUNK, hexDump } from "@/lib/preview/hex";
+import { useTranslation } from "react-i18next";
 import { formatSize } from "@/lib/format";
 
 /**
@@ -17,6 +18,7 @@ export function HexPreview({
   detected: string | null;
 }) {
   const [shown, setShown] = useState(HEX_CHUNK);
+  const { t } = useTranslation();
 
   useEffect(() => {
     setShown(HEX_CHUNK);
@@ -28,10 +30,13 @@ export function HexPreview({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2 text-11">
-        <span className="text-fg-muted">十六进制</span>
-        {detected && <span className="text-fg-subtle">· 识别为 {detected}</span>}
+        <span className="text-fg-muted">{t("Hex")}</span>
+        {detected && <span className="text-fg-subtle">· {t("Detected as {{name}}", { name: t(detected) })}</span>}
         <span className="ml-auto text-fg-subtle">
-          已显示 {formatSize(Math.min(shown, bytes.length))} / {formatSize(bytes.length)}
+          {t("Showing {{shown}} of {{total}}", {
+            shown: formatSize(Math.min(shown, bytes.length)),
+            total: formatSize(bytes.length),
+          })}
         </span>
       </div>
 
@@ -58,7 +63,7 @@ export function HexPreview({
             className="rounded-[6px] px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
             onClick={() => setShown((current) => current + HEX_CHUNK)}
           >
-            继续显示后 {formatSize(Math.min(HEX_CHUNK, bytes.length - shown))}
+            {t("Show next {{size}}", { size: formatSize(Math.min(HEX_CHUNK, bytes.length - shown)) })}
           </button>
         </div>
       )}

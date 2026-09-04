@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Pencil, Trash2, X } from "lucide-react";
 import type { ServerRecord } from "@/api/types/servers";
 import { cn } from "@/lib/cn";
@@ -34,6 +35,8 @@ export function ServerGroupSectionView({
   onDelete,
   renderRow,
 }: ServerGroupSectionProps) {
+  const { t } = useTranslation();
+
   return (
     <div data-testid={`group-section-${section.id}`}>
       {renaming ? (
@@ -55,13 +58,16 @@ export function ServerGroupSectionView({
               aria-hidden="true"
               className={cn("shrink-0 transition-transform", !folded && "rotate-90")}
             />
-            <span className="min-w-0 flex-1 truncate">{section.name}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {/* 真分组的 name 是用户数据原样显示；未分组段是 i18n key，走 t()。 */}
+              {section.group ? section.name : t(section.name)}
+            </span>
           </button>
           {section.group && (
             <span className="flex shrink-0 items-center opacity-0 group-hover/g:opacity-100">
               <button
                 type="button"
-                aria-label={`重命名分组 ${section.name}`}
+                aria-label={t("Rename group {{name}}", { name: section.name })}
                 className="rounded p-1 hover:text-fg"
                 onClick={onStartRename}
               >
@@ -69,7 +75,7 @@ export function ServerGroupSectionView({
               </button>
               <button
                 type="button"
-                aria-label={`删除分组 ${section.name}`}
+                aria-label={t("Delete group {{name}}", { name: section.name })}
                 className="rounded p-1 hover:text-danger"
                 onClick={onDelete}
               >
@@ -86,7 +92,7 @@ export function ServerGroupSectionView({
 
       {!folded &&
         (section.servers.length === 0 ? (
-          <p className="px-2.5 py-1 text-11 text-fg-subtle">暂无服务器</p>
+          <p className="px-2.5 py-1 text-11 text-fg-subtle">{t("No servers")}</p>
         ) : (
           section.servers.map((server) => (
             <div key={server.id}>{renderRow(server)}</div>
@@ -106,6 +112,7 @@ function GroupRenameInput({
   onCommit: (name: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(label);
 
   const commit = () => {
@@ -118,7 +125,7 @@ function GroupRenameInput({
     <div className="flex items-center gap-1 px-2.5 py-1">
       <input
         autoFocus
-        aria-label={`分组名称 ${label}`}
+        aria-label={t("Group name {{name}}", { name: label })}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
@@ -129,7 +136,7 @@ function GroupRenameInput({
       />
       <button
         type="button"
-        aria-label="保存分组名称"
+        aria-label={t("Save group name")}
         className="rounded p-1 text-fg-subtle hover:text-success"
         onClick={commit}
       >
@@ -137,7 +144,7 @@ function GroupRenameInput({
       </button>
       <button
         type="button"
-        aria-label="取消重命名"
+        aria-label={t("Cancel rename")}
         className="rounded p-1 text-fg-subtle hover:text-fg"
         onClick={onCancel}
       >

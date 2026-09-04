@@ -19,6 +19,7 @@
  */
 import { strFromU8, unzipSync } from "fflate";
 
+import { i18n } from "@/i18n";
 import { attr, decodeXmlEntities, elementText, findTags, stripTags } from "./xml";
 
 export interface SheetTable {
@@ -54,7 +55,7 @@ export function parseXlsx(bytes: Uint8Array): XlsxModel {
   const sheets = listSheets(read("xl/workbook.xml"), read("xl/_rels/workbook.xml.rels"), zip);
 
   if (sheets.length === 0) {
-    return { sheets: [], warning: "这个工作簿里没有找到可读取的工作表。" };
+    return { sheets: [], warning: i18n.t("No readable sheets found in this workbook.") };
   }
 
   return {

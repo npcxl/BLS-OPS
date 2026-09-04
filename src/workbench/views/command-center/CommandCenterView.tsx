@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Search, Star, TerminalSquare } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import {
@@ -13,6 +14,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
 import type { WorkspaceTab } from "@/workbench/types";
+import { RISK_LABEL_KEYS } from "@/workbench/views/command-result/model";
 import { ResultPanel } from "./ResultPanel";
 import { ParamsDialog } from "./ParamsDialog";
 import { buildArgs, needsParams } from "./complete";
@@ -28,6 +30,7 @@ import { executability } from "./executability";
  * ParamsDialog 的 danger 确认）；high/destructive 第一批不收录。
  */
 export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
+  const { t } = useTranslation();
   const session = useCommandSession(tab);
   const [query, setQuery] = useState("");
   const [executing, setExecuting] = useState<string | null>(null);
@@ -154,13 +157,15 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="输入命令前缀或中文场景，如 docker p / 查看所有容器"
+            placeholder={t("Search by command prefix or scenario, e.g. docker p")}
             spellCheck={false}
             className="h-full min-w-0 flex-1 bg-transparent text-12 text-fg outline-none placeholder:text-fg-subtle"
           />
           {searching && <Loader2 size={12} className="animate-spin text-fg-subtle" />}
           {query && !searching && (
-            <span className="text-10 tabular-nums text-fg-subtle">{hits.length} 条</span>
+            <span className="text-10 tabular-nums text-fg-subtle">
+              {t("{{count}} hits", { count: hits.length })}
+            </span>
           )}
         </div>
 
@@ -190,7 +195,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
                       {hit.syntax}
                     </code>
                     <span className={cn("rounded px-1 py-0.5 text-9", RISK_META[hit.risk].tone)}>
-                      {RISK_META[hit.risk].label}
+                      {t(RISK_LABEL_KEYS[hit.risk])}
                     </span>
                     {!state.ok && (
                       <span className="rounded bg-surface-3 px-1 py-0.5 text-9 text-fg-subtle">
@@ -205,7 +210,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
                         event.stopPropagation();
                         suggestions.toggleFavorite(hit);
                       }}
-                      title={hit.favorite ? "取消收藏" : "收藏"}
+                      title={hit.favorite ? t("Unfavorite") : t("Favorite")}
                     >
                       <Star
                         size={11}
@@ -220,9 +225,10 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
               );
             })}
             <div className="border-t border-line px-2.5 py-1 text-9 text-fg-subtle">
-              ↑↓ 选择 · Enter 执行 · Esc 清空
-              {summary.favorites > 0 && ` · 收藏 ${summary.favorites}`}
-              {session.phase !== "connected" && " · 未连接服务器，命令可查但暂不可执行"}
+              {t("↑↓ select · Enter run · Esc clear")}
+              {summary.favorites > 0 && ` · ${t("{{count}} favorites", { count: summary.favorites })}`}
+              {session.phase !== "connected" &&
+                ` · ${t("Not connected to a server — commands are searchable but not executable")}`}
             </div>
           </div>
         )}
@@ -231,8 +237,10 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
       {session.hasTarget && session.phase !== "connected" && (
         <p className="shrink-0 text-11 text-warning">
           {session.phase === "connecting"
-            ? "正在连接服务器…（知识检索不受影响）"
-            : `连接不可用：${session.error ?? "请从左侧选择服务器"}（知识检索不受影响）`}
+            ? t("Connecting to the server… (knowledge search is unaffected)")
+            : t("Connection unavailable: {{reason}} (knowledge search is unaffected)", {
+                reason: session.error ?? t("Pick a server from the left sidebar"),
+              })}
         </p>
       )}
       {error && <p className="shrink-0 text-11 text-danger">{error}</p>}
@@ -243,7 +251,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
         {executing && (
           <div className="flex h-full items-center justify-center gap-2 text-12 text-fg-subtle">
             <Loader2 size={14} className="animate-spin" />
-            正在执行 {executing}…
+            {t("Running {{id}}…", { id: executing })}
           </div>
         )}
         {!executing &&
@@ -252,11 +260,15 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
           ) : (
             <ModuleEmpty
               icon={session.hasTarget ? Search : TerminalSquare}
-              title="还没有执行结果"
+              title={t("No results yet")}
               hint={
                 session.hasTarget
-                  ? "从上方提示中选择一条命令执行；只读命令立即返回，修改类命令会先确认。每次执行的原始输出都会保留在这里。"
-                  : "当前未选择服务器，命令知识仍可检索（输入 docker p 或中文场景试试）。选择左侧服务器后即可执行并查看结构化结果。"
+                  ? t(
+                      "Pick a command from the suggestions above to run. Read-only commands return immediately; mutating commands ask for confirmation first. The raw output of every run is kept here.",
+                    )
+                  : t(
+                      "No server selected — command knowledge is still searchable (try docker p or a scenario). Select a server on the left to run commands and see structured results.",
+                    )
               }
             />
           ))}
@@ -278,9 +290,12 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
         <ConfirmDialog
           open
           danger
-          title={`确认执行「${confirmTarget.title}」`}
-          description={`该命令会修改服务器状态（${confirmTarget.syntax}）。执行后会记录在审计日志中，请确认影响范围。`}
-          confirmLabel="确认执行"
+          title={t('Confirm execution of "{{title}}"', { title: confirmTarget.title })}
+          description={t(
+            "This command modifies server state ({{syntax}}). It will be recorded in the audit log — please review the impact.",
+            { syntax: confirmTarget.syntax },
+          )}
+          confirmLabel={t("Confirm execution")}
           onCancel={() => setConfirmTarget(null)}
           onConfirm={() => {
             const target = confirmTarget;

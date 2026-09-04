@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { copyText } from "@/lib/clipboard";
 
 /**
@@ -29,6 +30,7 @@ export function escapeControlCharacters(text: string): string {
  * 不影响留档与粘贴。
  */
 export function RawStreamView({ stdout, stderr }: { stdout: string; stderr?: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -44,14 +46,14 @@ export function RawStreamView({ stdout, stderr }: { stdout: string; stderr?: str
         type="button"
         onClick={() => void copy()}
         className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
-        title="复制原始输出（不带转义标记）"
+        title={t("Copy raw output (without escape markers)")}
       >
         {copied ? <Check size={11} /> : <Copy size={11} />}
-        {copied ? "已复制" : "复制"}
+        {copied ? t("Copied") : t("Copy")}
       </button>
       <div className="h-full overflow-auto">
         <pre className="w-max whitespace-pre px-3 py-2.5 font-mono text-11 leading-[1.8] text-fg-muted">
-          {escapeControlCharacters(stdout) || "（无输出）"}
+          {escapeControlCharacters(stdout) || t("(no output)")}
         </pre>
       </div>
       {stderr ? (

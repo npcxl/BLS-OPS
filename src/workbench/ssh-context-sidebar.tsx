@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ServerListTree } from "./server-list";
 
@@ -10,10 +11,11 @@ import { ServerListTree } from "./server-list";
  */
 export function SshContextSidebar() {
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
+  const { t } = useTranslation();
 
   return (
     <ServerListTree
-      title="服务器列表"
+      title={t("Server list")}
       onOpenServer={(server) =>
         openOrFocusServerTab({
           id: crypto.randomUUID(),

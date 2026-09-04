@@ -11,11 +11,13 @@
  * Kept free of React and of the store so the ordering rules can be unit-tested
  * directly.
  */
+import { i18n } from "@/i18n";
 import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
 
 /** Synthetic id for servers with no group. Never persisted. */
 export const UNGROUPED_ID = "__ungrouped__";
-export const UNGROUPED_LABEL = "未分组";
+/** i18n key（natural keys）：纯 TS 模块不能 hook，渲染处 t() / i18n.t()。 */
+export const UNGROUPED_LABEL = "Ungrouped";
 
 export interface ServerGroupSection {
   /** Real group id, or {@link UNGROUPED_ID}. */
@@ -88,9 +90,13 @@ export function buildServerSections(
     else perGroup.set(groupId, [server]);
   }
 
-  const warnings = [...missing.entries()].map(
-    ([groupId, names]) =>
-      `分组 ${groupId} 不存在，${names.length} 台服务器（${names.join("、")}）已归入${UNGROUPED_LABEL}`,
+  // 纯 TS 模块没有 hook，用 i18n.t（渲染期间调用拿到当前语言）。
+  // 插值占位只用 {{name}}/{{count}}，服务器名单不再拼进文案。
+  const warnings = [...missing.entries()].map(([groupId, names]) =>
+    i18n.t("Group {{name}} does not exist, {{count}} servers moved to Ungrouped", {
+      name: groupId,
+      count: names.length,
+    }),
   );
 
   return {

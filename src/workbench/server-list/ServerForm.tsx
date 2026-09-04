@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Plug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MacButton } from "@/components/ui/mac-button";
@@ -7,9 +8,11 @@ import { toErrorMessage, type ServerRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSubmit } from "@/hooks/use-submit";
+import { UNGROUPED_LABEL } from "./sections";
 
 /** Full server editor. Shared by every sidebar and the workbench home. */
 export function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => void }) {
+  const { t } = useTranslation();
   const credentials = useDomainStore((s) => s.credentials);
   const groups = useDomainStore((s) => s.groups);
   const servers = useDomainStore((s) => s.servers);
@@ -37,12 +40,13 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           .map((tag) => tag.trim())
           .filter(Boolean),
       });
-      setSaveMessage("已保存");
+      // 存 i18n key，渲染处 t()：语言切换后残留的提示也跟随当前语言。
+      setSaveMessage("Saved");
     });
 
   const runTest = async () => {
     if (isNew) {
-      setTestState({ pending: false, result: "请先保存服务器后再测试连接" });
+      setTestState({ pending: false, result: t("Save the server before testing the connection") });
       return;
     }
     setTestState({ pending: true, result: null });
@@ -51,13 +55,15 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
       if (result.status === "connected") {
         setTestState({
           pending: false,
-          result: `连接成功（${result.fingerprint_type} ${result.fingerprint}）`,
+          result: t("Connected ({{name}})", {
+            name: `${result.fingerprint_type} ${result.fingerprint}`,
+          }),
         });
         return;
       }
       // Surface the same confirmation the terminal would show, so a server can
       // be trusted straight from the form.
-      setTestState({ pending: false, result: "等待主机指纹确认…" });
+      setTestState({ pending: false, result: t("Waiting for host key confirmation…") });
       raiseChallenge({
         sessionId: `probe-${form.id}`,
         kind: result.status === "host_key_changed" ? "changed" : "unknown",
@@ -70,9 +76,10 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         fingerprintType: result.fingerprint_type,
         knownFingerprint: "known_fingerprint" in result ? result.known_fingerprint : undefined,
         retry: () => void runTest(),
-        cancel: () => setTestState({ pending: false, result: "已拒绝该主机指纹" }),
+        cancel: () => setTestState({ pending: false, result: t("Host key rejected") }),
       });
     } catch (cause) {
+      // 后端错误消息原样透传显示，不进语言包。
       setTestState({ pending: false, result: toErrorMessage(cause) });
     }
   };
@@ -98,41 +105,41 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
     <Modal
       open
       width={360}
-      title={isNew ? "新增服务器" : `编辑服务器 — ${server.name || server.host}`}
-      description="凭据密钥保存在系统凭据管理器中，数据库只保存引用。"
+      title={isNew ? t("Add server") : t("Edit server — {{name}}", { name: server.name || server.host })}
+      description={t("Credentials are stored in the system keychain; the database only keeps a reference.")}
       onClose={onClose}
       footer={
         <>
-          {saveMessage && <span className="mr-auto text-11 text-success">{saveMessage}</span>}
+          {saveMessage && <span className="mr-auto text-11 text-success">{t(saveMessage)}</span>}
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
-            关闭
+            {t("Close")}
           </Button>
           <MacButton variant="primary" disabled={submit.pending} onClick={() => void save()}>
-            {submit.pending ? "保存中…" : "保存 Ctrl+S"}
+            {submit.pending ? t("Saving") : t("Save Ctrl+S")}
           </MacButton>
         </>
       }
     >
       <div className="flex flex-col gap-2.5">
-        <Field label="名称">
+        <Field label={t("Name")}>
           <input
             className={fieldClass}
             value={form.name}
-            placeholder="例如 API-01"
+            placeholder={t("e.g. API-01")}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
           />
         </Field>
 
         <div className="grid grid-cols-[1fr_88px] gap-2">
-          <Field label="主机">
+          <Field label={t("Host")}>
             <input
               className={fieldClass}
               value={form.host}
-              placeholder="10.0.0.11 或 example.com"
+              placeholder={t("10.0.0.11 or example.com")}
               onChange={(event) => setForm({ ...form, host: event.target.value })}
             />
           </Field>
-          <Field label="端口">
+          <Field label={t("Port")}>
             <input
               type="number"
               min={1}
@@ -144,7 +151,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           </Field>
         </div>
 
-        <Field label="用户名">
+        <Field label={t("Username")}>
           <input
             className={fieldClass}
             value={form.username}
@@ -153,31 +160,35 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         </Field>
 
         <Field
-          label="凭据"
-          hint={credentials.length === 0 ? "还没有凭据，请在“设置 → 凭据”中创建" : undefined}
+          label={t("Credential")}
+          hint={
+            credentials.length === 0
+              ? t("No credentials yet. Create one in Settings → Credentials")
+              : undefined
+          }
         >
           <select
             className={selectClass}
             value={form.credential_id ?? ""}
             onChange={(event) => setForm({ ...form, credential_id: event.target.value || null })}
           >
-            <option value="">未绑定凭据</option>
+            <option value="">{t("No credential")}</option>
             {credentials.map((credential) => (
               <option key={credential.id} value={credential.id}>
                 {credential.name} · {credential.username} ·{" "}
-                {credential.credential_type === "private_key" ? "私钥" : "密码"}
+                {credential.credential_type === "private_key" ? t("Private key") : t("Password")}
               </option>
             ))}
           </select>
         </Field>
 
-        <Field label="分组">
+        <Field label={t("Group")}>
           <select
             className={selectClass}
             value={form.group_id ?? ""}
             onChange={(event) => setForm({ ...form, group_id: event.target.value || null })}
           >
-            <option value="">未分组</option>
+            <option value="">{t(UNGROUPED_LABEL)}</option>
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
                 {group.name}
@@ -186,7 +197,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           </select>
         </Field>
 
-        <Field label="标签" hint="用逗号分隔">
+        <Field label={t("Tags")} hint={t("Separate with commas")}>
           <input
             className={fieldClass}
             value={tagText}
@@ -195,13 +206,16 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           />
         </Field>
 
-        <Field label="跳板机 (ProxyJump)" hint="留空表示直连；跳板机自身也需要绑定凭据">
+        <Field
+          label={t("Jump host (ProxyJump)")}
+          hint={t("Leave empty for direct connection; the jump host itself also needs a credential")}
+        >
           <select
             className={selectClass}
             value={form.proxy_jump_id ?? ""}
             onChange={(event) => setForm({ ...form, proxy_jump_id: event.target.value || null })}
           >
-            <option value="">直连</option>
+            <option value="">{t("Direct connection")}</option>
             {servers
               .filter((item) => item.id !== form.id)
               .map((item) => (
@@ -215,7 +229,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         <div className="flex items-center gap-2 pt-1">
           <Button variant="outline" size="sm" disabled={testState.pending} onClick={() => void runTest()}>
             <Plug size={12} />
-            {testState.pending ? "测试中…" : "测试连接"}
+            {testState.pending ? t("Testing…") : t("Test connection")}
           </Button>
           {testState.result && (
             <span className="min-w-0 flex-1 truncate text-11 text-fg-muted">{testState.result}</span>

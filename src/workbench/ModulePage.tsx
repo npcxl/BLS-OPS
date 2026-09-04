@@ -1,4 +1,5 @@
 import type { LucideIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Boxes,
   ListTodo,
@@ -21,20 +22,47 @@ interface ModuleSpec {
   sections: string[];
 }
 
+/** title/description/sections 存 i18n key（模块级常量不能用 hook），渲染处 `t(...)`。 */
 const MODULES: Record<NavModule, ModuleSpec> = {
-  ssh: { title: "终端", icon: SquareTerminal, description: "", sections: [] },
-  servers: { title: "服务器", icon: Server, description: "", sections: [] },
-  services: { title: "服务", icon: Server, description: "", sections: [] },
-  logs: { title: "日志", icon: ScrollText, description: "", sections: [] },
-  projects: { title: "项目", icon: Boxes, description: "项目与分组管理", sections: ["最近项目", "分组", "关联关系"] },
-  commands: { title: "命令", icon: SquareTerminal, description: "Linux 命令智能中心", sections: ["命令知识库", "结构化结果", "原始输出"] },
-  deploy: { title: "部署", icon: Rocket, description: "部署目标与工作流", sections: ["目标环境", "工作流", "历史记录"] },
-  tasks: { title: "任务", icon: ListTodo, description: "构建与上传任务", sections: ["构建", "上传", "部署", "历史"] },
-  ai: { title: "智能助手", icon: Sparkles, description: "AI 辅助运维", sections: ["上下文", "模型提供方", "历史记录"] },
-  settings: { title: "设置", icon: Settings, description: "", sections: [] },
+  ssh: { title: "Module: Terminal", icon: SquareTerminal, description: "", sections: [] },
+  servers: { title: "Module: Servers", icon: Server, description: "", sections: [] },
+  services: { title: "Module: Services", icon: Server, description: "", sections: [] },
+  logs: { title: "Module: Logs", icon: ScrollText, description: "", sections: [] },
+  projects: {
+    title: "Module: Projects",
+    icon: Boxes,
+    description: "Projects and group management",
+    sections: ["Recent projects", "Groups", "Relations"],
+  },
+  commands: {
+    title: "Module: Commands",
+    icon: SquareTerminal,
+    description: "Linux command intelligence center",
+    sections: ["Command knowledge base", "Structured results", "Raw output"],
+  },
+  deploy: {
+    title: "Module: Deploy",
+    icon: Rocket,
+    description: "Deployment targets and workflows",
+    sections: ["Target environments", "Workflows", "History"],
+  },
+  tasks: {
+    title: "Module: Tasks",
+    icon: ListTodo,
+    description: "Build and upload tasks",
+    sections: ["Build", "Upload", "Deploy", "History"],
+  },
+  ai: {
+    title: "Module: AI",
+    icon: Sparkles,
+    description: "AI-assisted operations",
+    sections: ["Context", "Model providers", "History"],
+  },
+  settings: { title: "Module: Settings", icon: Settings, description: "", sections: [] },
 };
 
 function ModulePlaceholder({ module }: { module: NavModule }) {
+  const { t } = useTranslation();
   const spec = MODULES[module];
   const Icon = spec.icon;
   return (
@@ -44,19 +72,21 @@ function ModulePlaceholder({ module }: { module: NavModule }) {
           <Icon size={20} strokeWidth={1.75} />
         </div>
         <div>
-          <div className="text-15 font-semibold text-fg">{spec.title}</div>
-          <div className="text-12 text-fg-subtle">{spec.description}</div>
+          <div className="text-15 font-semibold text-fg">{t(spec.title)}</div>
+          <div className="text-12 text-fg-subtle">{spec.description ? t(spec.description) : ""}</div>
         </div>
       </div>
       <div className="overflow-hidden rounded-[12px] border border-line bg-surface-1/70">
         <div className="divide-y divide-line/60">
           {spec.sections.map((section) => (
             <div key={section} className="flex h-9 items-center px-3 text-12 text-fg-subtle">
-              {section}
+              {t(section)}
             </div>
           ))}
           <div className="px-3 py-3 text-11 leading-relaxed text-fg-subtle">
-            本模块尚未实现。在 P0（真实 SSH 终端、Host Key 校验、凭据绑定）验收通过之前不进入开发。
+            {t(
+              "This module is not implemented yet. Development starts after P0 (real SSH terminal, host key verification and credential binding) passes acceptance.",
+            )}
           </div>
         </div>
       </div>
@@ -73,14 +103,15 @@ function ModulePlaceholder({ module }: { module: NavModule }) {
  * to the placeholder only when reached via a plain `type: "module"` tab.
  */
 export function ModulePage({ module }: { module: NavModule }) {
+  const { t } = useTranslation();
   const spec = MODULES[module];
 
   return (
     <div className="relative z-0 h-full overflow-y-auto bg-surface-1" data-selectable>
       <div className="mx-auto flex max-w-[620px] flex-col gap-5 px-6 py-6">
         <div>
-          <h1 className="text-20 font-semibold text-fg">{spec.title}</h1>
-          {spec.description && <p className="mt-0.5 text-12 text-fg-muted">{spec.description}</p>}
+          <h1 className="text-20 font-semibold text-fg">{t(spec.title)}</h1>
+          {spec.description && <p className="mt-0.5 text-12 text-fg-muted">{t(spec.description)}</p>}
         </div>
 
         {module === "ssh" || module === "servers" ? (

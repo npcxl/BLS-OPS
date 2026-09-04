@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { projectScanResultEvent } from "@/lib/events";
+import { i18n } from "@/i18n";
 import { opsApi, toErrorMessage, type ProjectScanResult, type ProjectScanStatus } from "@/api/ops-api";
 
 /**
@@ -73,7 +74,7 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
           sessionId,
           serverId,
         });
-        setError("SSH 会话未连接，请先连接服务器");
+        setError(i18n.t("SSH session not connected. Connect to a server first"));
         return;
       }
       // 新一轮开始前，先收掉上一轮留下来的轮询/监听（不取消：下面由

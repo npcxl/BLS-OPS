@@ -1,6 +1,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// 组件用 useTranslation —— 测试断言英文 key（默认语言 en 下 t(key) 返回 key）。
+import "@/i18n";
 import { TerminalSnapshotView } from "../TerminalSnapshotView";
 import type { CapturedResult } from "../TerminalCommandCoordinator";
 
@@ -92,8 +94,8 @@ describe("TerminalSnapshotView", () => {
 
   it("没有 json → 只有【终端输出】【原始流】两个 Tab", () => {
     render(<TerminalSnapshotView result={result()} />);
-    expect(tab("终端输出")).toBeTruthy();
-    expect(tab("原始流")).toBeTruthy();
+    expect(tab("Terminal output")).toBeTruthy();
+    expect(tab("Raw stream")).toBeTruthy();
     expect(tab("JSON")).toBeUndefined();
   });
 
@@ -120,25 +122,25 @@ describe("TerminalSnapshotView", () => {
 
   it("原始流 Tab：控制字符转义为可见 token，且可复制不含标记", async () => {
     render(<TerminalSnapshotView result={result({ stdout: "a\x1b[?2004l\r\n" })} />);
-    act(() => tab("原始流")?.click());
+    act(() => tab("Raw stream")?.click());
     expect(container.textContent).toContain("<ESC>");
     expect(container.textContent).toContain("<CR>");
     await act(async () => {
-      tab("复制")?.click();
+      tab("Copy")?.click();
     });
     expect(clipboard.text).toBe("a\x1b[?2004l\r\n"); // 复制的是原始字节
   });
 
   it("降级结果：显示可见的降级提示（不伪装成快照）", () => {
     render(<TerminalSnapshotView result={result({ renderedDegraded: true })} />);
-    expect(container.textContent).toContain("渲染快照不可用");
-    expect(container.textContent).toContain("软换行无法还原");
+    expect(container.textContent).toContain("Rendered snapshot unavailable");
+    expect(container.textContent).toContain("soft line wraps cannot be restored");
   });
 
   it("空输出是有效结果：显示为空，不回落、不假装有内容", () => {
     render(<TerminalSnapshotView result={result({ renderedText: "" })} />);
     expect(lines()).toEqual([""]);
-    expect(container.textContent).not.toContain("无输出");
+    expect(container.textContent).not.toContain("No output");
   });
 
   describe("点击复制", () => {
@@ -149,7 +151,7 @@ describe("TerminalSnapshotView", () => {
         line(0).click();
       });
       expect(clipboard.text).toBe(row);
-      expect(container.textContent).toContain("复制成功");
+      expect(container.textContent).toContain("Copied");
     });
 
     it("复制成功后约 1.5 秒自动消失，连续复制重新计时", async () => {
@@ -159,18 +161,18 @@ describe("TerminalSnapshotView", () => {
         await act(async () => {
           line(0).click();
         });
-        expect(notice()).toContain("复制成功");
+        expect(notice()).toContain("Copied");
         await act(async () => {
           vi.advanceTimersByTime(1200);
         });
-        expect(notice()).toContain("复制成功"); // 还没到 1.5s
+        expect(notice()).toContain("Copied"); // 还没到 1.5s
         await act(async () => {
           line(1).click(); // 连续复制 → 重新计时
         });
         await act(async () => {
           vi.advanceTimersByTime(1200);
         });
-        expect(notice()).toContain("复制成功");
+        expect(notice()).toContain("Copied");
         await act(async () => {
           vi.advanceTimersByTime(400);
         });
@@ -189,7 +191,7 @@ describe("TerminalSnapshotView", () => {
         await act(async () => {
           line(0).click();
         });
-        expect(notice()).toContain("复制失败，请检查剪贴板权限");
+        expect(notice()).toContain("Copy failed. Please check clipboard permission");
       } finally {
         failing.mockRestore();
       }
@@ -241,7 +243,7 @@ describe("TerminalSnapshotView", () => {
     it("全量复制按钮仍然可用（不因逐行渲染退化）", async () => {
       render(<TerminalSnapshotView result={result({ renderedText: "a\nb" })} />);
       await act(async () => {
-        tab("复制")?.click();
+        tab("Copy")?.click();
       });
       expect(clipboard.text).toBe("a\nb");
     });

@@ -60,21 +60,21 @@ export function findDuplicateIds(partitioned: PartitionedInstances): string[] {
 // 基础设施分组
 // ---------------------------------------------------------------------------
 
-/** 基础设施分组展示顺序与中文标签（与后端 InfrastructureCategory 对齐）。 */
+/** 基础设施分组展示顺序（与后端 InfrastructureCategory 对齐）；label 存英文 key，渲染处 t()。 */
 export const INFRA_CATEGORY_LABELS: Record<InfrastructureCategory, string> = {
-  database: "数据库",
-  cache: "缓存",
-  object_storage: "对象存储",
-  messaging: "消息与流处理",
-  search: "搜索与索引",
-  gateway: "网关与代理",
-  coordination: "配置与协调",
-  observability: "可观测性",
-  devops: "研发运维",
-  container_platform: "容器平台",
-  security: "安全与身份",
-  ai_runtime: "AI 推理",
-  unknown: "其他",
+  database: "Database",
+  cache: "Cache",
+  object_storage: "Object storage",
+  messaging: "Messaging & streams",
+  search: "Search & indexing",
+  gateway: "Gateway & proxy",
+  coordination: "Config & coordination",
+  observability: "Observability",
+  devops: "DevOps",
+  container_platform: "Container platform",
+  security: "Security & identity",
+  ai_runtime: "AI runtime",
+  unknown: "Other",
 };
 
 export const INFRA_CATEGORY_ORDER: InfrastructureCategory[] = [

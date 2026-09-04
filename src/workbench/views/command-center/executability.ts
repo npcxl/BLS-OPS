@@ -1,4 +1,5 @@
 import type { CommandSearchHit } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 
 /**
  * 执行可行性判定：把"能否检索"与"能否执行"彻底分开。
@@ -20,15 +21,15 @@ export function executability(
   installedTools: Set<string> | null,
 ): Executability {
   if (!hit.can_execute) {
-    return { ok: false, reason: "仅知识展示" };
+    return { ok: false, reason: i18n.t("Knowledge only") };
   }
   if (!connected) {
-    return { ok: false, reason: "未连接服务器" };
+    return { ok: false, reason: i18n.t("Server not connected") };
   }
   if (installedTools !== null) {
     const missing = hit.requires.filter((tool) => !installedTools.has(tool));
     if (missing.length > 0) {
-      return { ok: false, reason: `服务器未安装 ${missing.join("、")}` };
+      return { ok: false, reason: i18n.t("Not installed on server: {{tools}}", { tools: missing.join(", ") }) };
     }
   }
   return { ok: true };

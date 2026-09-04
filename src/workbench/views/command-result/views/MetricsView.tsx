@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { useTranslation } from "react-i18next";
 import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 
 /**
@@ -8,10 +9,11 @@ import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/compone
  * 点击卡片 → 复制"名称 + 数值 + 单位"（三个部分用空格连接）。
  */
 export function MetricsView({ rows }: { rows: Record<string, unknown>[] }) {
+  const { t } = useTranslation();
   const { status, copy } = useCopyFeedback();
 
   if (rows.length === 0) {
-    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">没有指标数据。</p>;
+    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">{t("No metrics.")}</p>;
   }
   return (
     <div className="relative min-h-0 flex-1 overflow-auto p-3">
@@ -31,7 +33,7 @@ export function MetricsView({ rows }: { rows: Record<string, unknown>[] }) {
                 COPYABLE,
                 "block rounded-[8px] border border-line bg-surface-2/60 px-2.5 py-2",
               )}
-              title="点击复制：名称 + 数值 + 单位"
+              title={t("Click to copy: label + value + unit")}
             >
               <span className="block truncate text-10 text-fg-subtle" title={label}>
                 {label}

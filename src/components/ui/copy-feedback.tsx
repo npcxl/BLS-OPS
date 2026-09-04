@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 
@@ -16,9 +17,10 @@ export const COPY_NOTICE_MS = 1500;
 
 export type CopyStatus = "idle" | "ok" | "error";
 
+/** 模块级常量不能调 hook：这里存英文 key（natural keys），渲染处统一 t()。 */
 export const COPY_NOTICE_TEXT: Record<Exclude<CopyStatus, "idle">, string> = {
-  ok: "复制成功",
-  error: "复制失败，请检查剪贴板权限",
+  ok: "Copied",
+  error: "Copy failed. Please check clipboard permission",
 };
 
 /**
@@ -72,6 +74,7 @@ export function useCopyFeedback(timeoutMs: number = COPY_NOTICE_MS) {
  * 父元素需要 `relative`（各结果视图的根容器都已加）。
  */
 export function CopyNotice({ status, className }: { status: CopyStatus; className?: string }) {
+  const { t } = useTranslation();
   return (
     <div
       aria-live="polite"
@@ -91,7 +94,7 @@ export function CopyNotice({ status, className }: { status: CopyStatus; classNam
               : "border-danger/40 bg-surface-1/95 text-danger",
           )}
         >
-          {COPY_NOTICE_TEXT[status]}
+          {t(COPY_NOTICE_TEXT[status])}
         </span>
       ) : null}
     </div>

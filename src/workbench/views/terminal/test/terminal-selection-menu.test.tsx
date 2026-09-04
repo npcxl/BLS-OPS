@@ -2,6 +2,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// 组件用 useTranslation —— 测试断言英文 key（默认语言 en 下 t(key) 返回 key）。
+import "@/i18n";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { TerminalSelectionMenu, clampMenuPosition } from "../terminal-selection-menu";
 
@@ -112,7 +114,7 @@ describe("TerminalSelectionMenu", () => {
     act(() => {
       root.render(<Harness x={10} y={10} text={"x".repeat(5000)} />);
     });
-    expect(menu()?.textContent).toContain("已选择 5000 个字符");
+    expect(menu()?.textContent).toContain("5000 characters selected");
     // 数量变化用等宽数字，避免宽度跳动
     expect(menu()?.querySelector("span")?.className).toContain("tabular-nums");
     expect(menu()?.className).toContain("max-w-[calc(100%-16px)]");
@@ -136,7 +138,7 @@ describe("TerminalSelectionMenu", () => {
     await act(async () => {
       container.querySelector<HTMLElement>('[data-testid="selection-copy"]')?.click();
     });
-    expect(notice()).toBe("复制成功");
+    expect(notice()).toBe("Copied");
   });
 
   it("复制失败 → 显示“复制失败，请检查剪贴板权限”（不假装成功）", async () => {
@@ -150,7 +152,7 @@ describe("TerminalSelectionMenu", () => {
       await act(async () => {
         container.querySelector<HTMLElement>('[data-testid="selection-copy"]')?.click();
       });
-      expect(notice()).toBe("复制失败，请检查剪贴板权限");
+      expect(notice()).toBe("Copy failed. Please check clipboard permission");
     } finally {
       failing.mockRestore();
     }

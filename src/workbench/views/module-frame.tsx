@@ -8,6 +8,7 @@
  * keeps "connection lost" looking the same everywhere.
  */
 import { type InputHTMLAttributes, type ReactNode, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Activity,
   Loader2,
@@ -24,6 +25,7 @@ import type { CommandSession } from "@/hooks/use-command-session";
 
 /** Shown when a module tab has no server attached yet. */
 export function ServerPicker({ tabId }: { tabId: string }) {
+  const { t } = useTranslation();
   const servers = useDomainStore((s) => s.servers);
   const updateTab = useWorkbenchStore((s) => s.updateTab);
   const closeTabById = useWorkbenchStore((s) => s.closeTabById);
@@ -50,22 +52,22 @@ export function ServerPicker({ tabId }: { tabId: string }) {
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
-      <p className="text-13 text-fg-muted">选择一个服务器以开始</p>
+      <p className="text-13 text-fg-muted">{t("Select a server to start")}</p>
       {servers.length === 0 ? (
         <p className="max-w-sm text-center text-12 text-fg-subtle">
-          左侧“服务器”中还没有任何条目，请先新增服务器。
+          {t("No entries under \"Servers\" on the left yet — add a server first.")}
         </p>
       ) : (
         <div className="flex w-80 flex-col gap-2">
           <input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
-            placeholder="搜索服务器…"
+            placeholder={t("Search servers…")}
             className="h-[28px] rounded-[7px] border border-line bg-surface-2 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
           />
           <div className="flex max-h-[45vh] flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
             {visible.length === 0 ? (
-              <p className="px-3 py-4 text-center text-12 text-fg-subtle">没有匹配的服务器</p>
+              <p className="px-3 py-4 text-center text-12 text-fg-subtle">{t("No matching servers")}</p>
             ) : (
               visible.map((server) => (
                 <button
@@ -85,7 +87,7 @@ export function ServerPicker({ tabId }: { tabId: string }) {
         </div>
       )}
       <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        关闭此标签
+        {t("Close this tab")}
       </Button>
     </div>
   );
@@ -109,6 +111,7 @@ export function ModuleFrame({
   toolbar2?: ReactNode;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const Glyph = icon as React.ElementType | undefined;
   const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
@@ -118,12 +121,14 @@ export function ModuleFrame({
     // so we only point the user at the sidebar and let them close a stray tab.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
-        <p className="text-13 text-fg-muted">从左侧选择一台服务器</p>
+        <p className="text-13 text-fg-muted">{t("Pick a server from the left sidebar")}</p>
         <p className="max-w-sm text-center text-12 text-fg-subtle">
-          日志、容器、网关等模块都运行在具体的服务器上。在左侧列表点选一台，即可在此查看它的内容。
+          {t(
+            "Logs, containers, gateways and other modules run on a specific server. Pick one from the left list to view its content here.",
+          )}
         </p>
         <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
-          关闭页签
+          {t("Close tab")}
         </Button>
       </div>
     );
@@ -134,7 +139,7 @@ export function ModuleFrame({
       return (
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
           <Activity size={13} className="shrink-0 animate-pulse text-accent" />
-          <span>正在建立连接（不分配交互式终端）…</span>
+          <span>{t("Establishing connection (no interactive terminal allocated)…")}</span>
         </div>
       );
     }
@@ -142,9 +147,9 @@ export function ModuleFrame({
       return (
         <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
           <TriangleAlert size={13} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 flex-1">{session.error ?? "连接失败"}</span>
+          <span className="min-w-0 flex-1">{session.error ?? t("Connection failed")}</span>
           <Button variant="ghost" size="xs" onClick={session.connect}>
-            重试
+            {t("Retry")}
           </Button>
         </div>
       );
@@ -153,9 +158,9 @@ export function ModuleFrame({
       return (
         <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
           <WifiOff size={13} className="shrink-0" />
-          <span className="min-w-0 flex-1">{session.error ?? "SSH 连接已断开"}</span>
+          <span className="min-w-0 flex-1">{session.error ?? t("SSH connection closed")}</span>
           <Button variant="ghost" size="xs" onClick={session.connect}>
-            重新连接
+            {t("Reconnect")}
           </Button>
         </div>
       );
@@ -269,16 +274,17 @@ export function ToolbarInput({
 export function RefreshButton({
   busy,
   onClick,
-  label = "刷新",
+  label = "Refresh",
 }: {
   busy: boolean;
   onClick: () => void;
   label?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <Button variant="ghost" size="xs" disabled={busy} onClick={onClick}>
       {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-      {label}
+      {t(label)}
     </Button>
   );
 }

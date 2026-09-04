@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { SheetTable } from "@/lib/preview/xlsx";
 import { cn } from "@/lib/cn";
 
@@ -12,6 +13,7 @@ const PAGE = 300;
  * strings — formulas are already resolved to their cached values by the parser.
  */
 export function SheetPreview({ sheets }: { sheets: SheetTable[] }) {
+  const { t } = useTranslation();
   const [index, setIndex] = useState(0);
   const [limit, setLimit] = useState(PAGE);
 
@@ -95,8 +97,10 @@ export function SheetPreview({ sheets }: { sheets: SheetTable[] }) {
               className="rounded-[6px] px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
               onClick={() => setLimit((current) => current + PAGE)}
             >
-              继续显示后 {Math.min(PAGE, sheet.rows.length - body.length)} 行（共{" "}
-              {sheet.rows.length.toLocaleString()} 行）
+              {t("Show next {{count}} rows ({{name}} total)", {
+                count: Math.min(PAGE, sheet.rows.length - body.length),
+                name: sheet.rows.length.toLocaleString(),
+              })}
             </button>
           </div>
         )}
@@ -104,10 +108,15 @@ export function SheetPreview({ sheets }: { sheets: SheetTable[] }) {
 
       <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line px-2 text-10 text-fg-subtle">
         <span>
-          {sheet.rows.length.toLocaleString()} 行 × {(sheet.rows[0]?.length ?? 0).toLocaleString()} 列
+          {t("{{name}} rows × {{cols}} columns", {
+            name: sheet.rows.length.toLocaleString(),
+            cols: (sheet.rows[0]?.length ?? 0).toLocaleString(),
+          })}
         </span>
         {sheet.truncatedRows > 0 && (
-          <span className="text-warning">另有 {sheet.truncatedRows.toLocaleString()} 行未渲染</span>
+          <span className="text-warning">
+            {t("{{name}} more rows not rendered", { name: sheet.truncatedRows.toLocaleString() })}
+          </span>
         )}
       </div>
     </div>

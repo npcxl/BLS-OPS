@@ -17,6 +17,7 @@
  */
 
 import { opsApi } from "@/api/ops-api";
+import { i18n } from "@/i18n";
 import { quotePathSegment } from "../path-input";
 import type {
   CompletionContext,
@@ -164,9 +165,10 @@ export function createDockerResourceProvider(): CompletionProvider {
       } catch (cause) {
         return {
           items: [],
-          notice: `读取 Docker ${labelOf(target.kind)} 列表失败：${
-            cause instanceof Error ? cause.message : String(cause)
-          }`,
+          notice: i18n.t("Failed to read Docker {{kind}} list: {{message}}", {
+            kind: i18n.t(labelOf(target.kind)),
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
           requestKey,
         };
       }
@@ -175,7 +177,11 @@ export function createDockerResourceProvider(): CompletionProvider {
         .filter((name) => name.startsWith(partial))
         .sort((a, b) => a.localeCompare(b));
       if (matched.length === 0) {
-        return { items: [], notice: `没有匹配的 Docker ${labelOf(target.kind)}`, requestKey };
+        return {
+          items: [],
+          notice: i18n.t("No matching Docker {{kind}}", { kind: i18n.t(labelOf(target.kind)) }),
+          requestKey,
+        };
       }
 
       const start = ctx.cursor - partial.length;
@@ -198,14 +204,15 @@ export function createDockerResourceProvider(): CompletionProvider {
   };
 }
 
+/** 资源类型标签：存英文 key（渲染处 t()；i18n.t 内嵌套 t 用于插值句子）。 */
 function labelOf(kind: string): string {
   switch (kind) {
     case "container":
-      return "容器";
+      return "Container";
     case "image":
-      return "镜像";
+      return "Image";
     case "network":
-      return "网络";
+      return "Network";
     default:
       return "Volume";
   }

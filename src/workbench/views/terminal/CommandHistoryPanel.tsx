@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { opsApi } from "@/api/ops-api";
 
 /**
@@ -14,6 +15,7 @@ export function CommandHistoryPanel({
   serverId?: string;
   onPick: (command: string) => void;
 }) {
+  const { t } = useTranslation();
   const [items, setItems] = useState<{ id: string; command: string; timestamp: number }[]>([]);
 
   useEffect(() => {
@@ -32,12 +34,12 @@ export function CommandHistoryPanel({
   return (
     <aside className="flex w-56 shrink-0 flex-col border-l border-line bg-surface-1">
       <div className="flex h-7 shrink-0 items-center justify-between px-2.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
-        命令历史
+        {t("Command History")}
         <span>{items.length}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">在此终端执行的命令会记录下来</p>
+          <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("Commands run in this terminal are recorded here")}</p>
         ) : (
           items.map((item) => (
             <button

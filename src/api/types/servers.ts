@@ -59,7 +59,11 @@ export interface CredentialDeleteResult {
   references: number;
 }
 
+/**
+ * label 存 i18n key（natural keys）：渲染处统一 `t(option.label)`，
+ * 语言切换即重渲染 —— 模块级常量不能用 hook。
+ */
 export const CREDENTIAL_TYPES = [
-  { value: "password", label: "密码" },
-  { value: "private_key", label: "私钥" },
+  { value: "password", label: "Password" },
+  { value: "private_key", label: "Private key" },
 ] as const;

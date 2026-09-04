@@ -104,19 +104,23 @@ function removePane(root: WorkbenchPane, id: string): WorkbenchPane | null {
   return { ...root, children: nextChildren };
 }
 
-const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "首页" });
+const createHomeTab = (): WorkspaceTab => ({ id: uuid(), type: "home", title: "Home" });
 
+/**
+ * 模块导航标签 —— 存英文 key（natural keys），渲染处统一 `t(...)`。
+ * tab title 可能是动态文案（如 server name），`t()` 未命中时原样返回，安全。
+ */
 const MODULE_LABELS: Record<NavModule, string> = {
-  ssh: "终端",
-  servers: "服务器",
-  services: "服务",
-  logs: "日志",
-  projects: "项目",
-  commands: "命令",
-  deploy: "部署",
-  tasks: "任务",
-  ai: "智能助手",
-  settings: "设置",
+  ssh: "Terminal",
+  servers: "Servers",
+  services: "Services",
+  logs: "Logs",
+  projects: "Projects",
+  commands: "Commands",
+  deploy: "Deploy",
+  tasks: "Tasks",
+  ai: "AI Assistant",
+  settings: "Settings",
 };
 
 /**
@@ -207,7 +211,7 @@ interface WorkbenchState {
 }
 
 function normalizeTab(tab: WorkspaceTab): WorkspaceTab {
-  return tab.type === "home" ? { ...tab, title: tab.title || "首页" } : tab;
+  return tab.type === "home" ? { ...tab, title: tab.title || "Home" } : tab;
 }
 
 function createSplitPane(target: WorkbenchPane, direction: SplitDirection, tab: WorkspaceTab): WorkbenchPane {

@@ -1,12 +1,14 @@
 import { useCallback, useRef, useState } from "react";
 import { GripVertical } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 import { SshContextSidebar } from "./ssh-context-sidebar";
 import { ModuleServerSidebar, hasContextSidebar, isServerListModule } from "./module-server-sidebar";
 
+/** 值是 i18n key，渲染处 `t(...)`。 */
 const MODULE_TITLES: Record<string, string> = {
-  ssh: "终端",
+  ssh: "Module: Terminal",
 };
 
 /**
@@ -15,6 +17,7 @@ const MODULE_TITLES: Record<string, string> = {
  * null when they are active.
  */
 export function ContextSidebar() {
+  const { t } = useTranslation();
   const activeModule = useWorkbenchStore((s) => s.activeModule);
   const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
   const width = useWorkbenchStore((s) => s.sidebarWidth);
@@ -59,7 +62,7 @@ export function ContextSidebar() {
       <aside
         className="relative flex shrink-0 flex-col overflow-hidden"
         style={{ width }}
-        aria-label={`${activeModule} 服务器列表`}
+        aria-label={t("{{module}} server list", { module: activeModule })}
       >
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ModuleServerSidebar module={activeModule} />
@@ -88,7 +91,7 @@ export function ContextSidebar() {
     <aside
       className="relative flex shrink-0 flex-col overflow-hidden"
       style={{ width }}
-      aria-label={MODULE_TITLES.ssh}
+      aria-label={t(MODULE_TITLES.ssh)}
     >
       <div className="min-h-0 flex-1 overflow-y-auto">
         <SshContextSidebar />

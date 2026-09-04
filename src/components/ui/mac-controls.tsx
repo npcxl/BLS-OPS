@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, Minus, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -21,10 +22,11 @@ export function MacWindowControls({
   className,
   ...props
 }: MacWindowControlsProps) {
+  const { t } = useTranslation();
   const controls = [
-    { label: labels.close ?? "关闭窗口", icon: X, onClick: onClose, color: "bg-[#ff5f57]" },
-    { label: labels.minimize ?? "最小化窗口", icon: Minus, onClick: onMinimize, color: "bg-[#febc2e]" },
-    { label: labels.maximize ?? "最大化窗口", icon: null, onClick: onMaximize, color: "bg-[#28c840]" },
+    { label: labels.close ?? t("Close window"), icon: X, onClick: onClose, color: "bg-[#ff5f57]" },
+    { label: labels.minimize ?? t("Minimize window"), icon: Minus, onClick: onMinimize, color: "bg-[#febc2e]" },
+    { label: labels.maximize ?? t("Maximize window"), icon: null, onClick: onMaximize, color: "bg-[#28c840]" },
   ];
 
   return (
@@ -159,6 +161,7 @@ export interface MacSearchFieldProps extends InputHTMLAttributes<HTMLInputElemen
 }
 
 export function MacSearchField({ onClear, className, ...props }: MacSearchFieldProps) {
+  const { t } = useTranslation();
   return (
     <div className="relative flex min-w-0 items-center">
       <Search className="pointer-events-none absolute left-2.5 size-3.5 text-fg-subtle" strokeWidth={2} aria-hidden="true" />
@@ -173,7 +176,7 @@ export function MacSearchField({ onClear, className, ...props }: MacSearchFieldP
         {...props}
       />
       {onClear && props.value && (
-        <button type="button" aria-label="清除搜索" className="absolute right-1.5 rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg" onClick={onClear}>
+        <button type="button" aria-label={t("Clear search")} className="absolute right-1.5 rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg" onClick={onClear}>
           <X className="size-3" />
         </button>
       )}

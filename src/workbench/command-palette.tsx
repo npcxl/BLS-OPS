@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { ArrowRight, Search } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -21,6 +22,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
@@ -104,7 +106,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索操作、服务器、任务…"
+            placeholder={t("Search actions, servers, tasks…")}
             className="h-full flex-1 bg-transparent text-13 text-fg outline-none placeholder:text-fg-subtle"
           />
           <span className="rounded-[7px] border border-line bg-surface-2 px-2 py-1 text-11 text-fg-muted shadow-[inset_0_1px_0_rgb(255_255_255/0.45)]">Ctrl+K</span>
@@ -113,7 +115,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
         {/* 列表占满面板剩余高度并内部滚动；↑↓ 导航时当前项自动滚入视野。 */}
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {filtered.length === 0 ? (
-            <div className="px-3 py-8 text-center text-12 text-fg-muted">未找到匹配的命令。</div>
+            <div className="px-3 py-8 text-center text-12 text-fg-muted">{t("No matching commands.")}</div>
           ) : (
             filtered.map((action, index) => (
               <button

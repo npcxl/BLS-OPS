@@ -1,5 +1,7 @@
 /** Project discovery / capability graph / deployment types. */
 
+import { i18n } from "@/i18n";
+
 // -- Project discovery ------------------------------------------------------
 
 export type ConfidenceLevel = "high" | "likely" | "possible";
@@ -400,14 +402,16 @@ export interface DeploymentRecord {
   created_at: number;
 }
 
+/** 部署状态标签 —— label 为英文 key（Success/Failed 复用 common），取用时经 `t(...)`。 */
 export const DEPLOY_STATUSES = {
-  running: { label: "进行中", tone: "text-accent" },
-  success: { label: "成功", tone: "text-success" },
-  failed: { label: "失败", tone: "text-danger" },
+  running: { label: "In Progress", tone: "text-accent" },
+  success: { label: "Success", tone: "text-success" },
+  failed: { label: "Failed", tone: "text-danger" },
 } as const;
 
 export function deployStatusLabel(status: string): string {
-  return DEPLOY_STATUSES[status as keyof typeof DEPLOY_STATUSES]?.label ?? status;
+  const label = DEPLOY_STATUSES[status as keyof typeof DEPLOY_STATUSES]?.label;
+  return label ? i18n.t(label) : status;
 }
 
 /** Parses the stored JSON steps. Returns `[]` when the record is malformed. */

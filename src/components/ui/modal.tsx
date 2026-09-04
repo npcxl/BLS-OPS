@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useExiting } from "@/hooks/use-exiting";
@@ -17,6 +18,7 @@ interface ModalProps {
 /** Centered dialog used for host-key confirmation and entity forms. */
 export function Modal({ open, title, description, width = 360, onClose, footer, children }: ModalProps) {
   const { render, exiting } = useExiting(open, 150);
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (!open) return;
@@ -58,7 +60,7 @@ export function Modal({ open, title, description, width = 360, onClose, footer, 
           {onClose && (
             <button
               type="button"
-              aria-label="关闭"
+              aria-label={t("Close")}
               className="rounded-[5px] p-1 text-fg-subtle hover:bg-surface-hover hover:text-fg"
               onClick={onClose}
             >

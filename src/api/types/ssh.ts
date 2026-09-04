@@ -8,9 +8,9 @@
  */
 export type TerminalEncoding = "auto" | "utf8" | "gb18030" | "big5";
 
-/** 编码下拉框选项（含中文标签，顺序与后端 ALL 一致）。 */
+/** 编码下拉框选项（label 为英文 key，渲染处 `t(...)`；顺序与后端 ALL 一致）。 */
 export const TERMINAL_ENCODINGS: { id: TerminalEncoding; label: string }[] = [
-  { id: "auto", label: "自动" },
+  { id: "auto", label: "Auto" },
   { id: "utf8", label: "UTF-8" },
   { id: "gb18030", label: "GB18030" },
   { id: "big5", label: "Big5" },

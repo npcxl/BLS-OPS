@@ -77,9 +77,9 @@ function pressKey(key: string) {
 }
 
 const simpleItems: ContextMenuItem[] = [
-  { id: "open", label: "打开" },
+  { id: "open", label: "Open" },
   { id: "sep", separator: true },
-  { id: "delete", label: "删除", danger: true },
+  { id: "delete", label: "Delete", danger: true },
 ];
 
 beforeEach(() => {
@@ -101,7 +101,7 @@ describe("ContextMenu", () => {
 
     rightClick("[data-testid=target]");
     expect(menuEl()).not.toBeNull();
-    expect(menuItems().map((item) => item.textContent)).toEqual(["打开", "删除"]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Open", "Delete"]);
   });
 
   it("closes on a left click anywhere outside the menu", () => {
@@ -170,11 +170,11 @@ describe("ContextMenu", () => {
         <div>
           <div
             data-testid="target-a"
-            onContextMenu={first.onContextMenu(() => [{ id: "a", label: "菜单A" }])}
+            onContextMenu={first.onContextMenu(() => [{ id: "a", label: "Menu A" }])}
           />
           <div
             data-testid="target-b"
-            onContextMenu={second.onContextMenu(() => [{ id: "b", label: "菜单B" }])}
+            onContextMenu={second.onContextMenu(() => [{ id: "b", label: "Menu B" }])}
           />
           <ContextMenu {...first.props} />
           <ContextMenu {...second.props} />
@@ -187,17 +187,17 @@ describe("ContextMenu", () => {
 
     rightClick("[data-testid=target-a]");
     expect(menuEls()).toHaveLength(1);
-    expect(menuItems().map((item) => item.textContent)).toEqual(["菜单A"]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Menu A"]);
 
     // 第二个区域的右键必须顶掉第一个菜单，而不是两个并存。
     rightClick("[data-testid=target-b]");
     expect(menuEls()).toHaveLength(1);
-    expect(menuItems().map((item) => item.textContent)).toEqual(["菜单B"]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Menu B"]);
   });
 
   it("runs the item and closes when one is clicked", () => {
     const onSelect = vi.fn();
-    render([{ id: "open", label: "打开", onSelect }]);
+    render([{ id: "open", label: "Open", onSelect }]);
     rightClick("[data-testid=target]");
 
     act(() => {
@@ -210,7 +210,7 @@ describe("ContextMenu", () => {
 
   it("never runs a disabled item", () => {
     const onSelect = vi.fn();
-    render([{ id: "nope", label: "禁用", disabled: true, onSelect }]);
+    render([{ id: "nope", label: "Disabled", disabled: true, onSelect }]);
     rightClick("[data-testid=target]");
 
     act(() => {
@@ -287,13 +287,13 @@ describe("ContextMenu submenu", () => {
     submenuEl() ? Array.from(submenuEl()!.querySelectorAll<HTMLElement>('[role="menuitem"]')) : [];
 
   const childItems: ContextMenuItem[] = [
-    { id: "g0", label: "未分组" },
-    { id: "g1", label: "生产环境" },
+    { id: "g0", label: "Ungrouped" },
+    { id: "g1", label: "Production" },
   ];
   const parentItems: ContextMenuItem[] = [
-    { id: "open", label: "打开终端" },
-    { id: "move", label: "移动到分组", children: childItems },
-    { id: "delete", label: "删除", danger: true },
+    { id: "open", label: "Open terminal" },
+    { id: "move", label: "Move to group", children: childItems },
+    { id: "delete", label: "Delete", danger: true },
   ];
 
   function clickItem(item: HTMLElement) {
@@ -307,7 +307,7 @@ describe("ContextMenu submenu", () => {
     rightClick("[data-testid=target]");
 
     expect(submenuEl()).toBeNull();
-    expect(menuItems().map((item) => item.textContent)).toEqual(["打开终端", "移动到分组", "删除"]);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Open terminal", "Move to group", "Delete"]);
   });
 
   it("opens on click and lists the child items", () => {
@@ -317,7 +317,7 @@ describe("ContextMenu submenu", () => {
     clickItem(menuItems()[1]);
 
     expect(submenuEl()).not.toBeNull();
-    expect(submenuItems().map((item) => item.textContent)).toEqual(["未分组", "生产环境"]);
+    expect(submenuItems().map((item) => item.textContent)).toEqual(["Ungrouped", "Production"]);
     // The root menu must stay open behind it.
     expect(menuEl()).not.toBeNull();
   });
@@ -326,7 +326,7 @@ describe("ContextMenu submenu", () => {
     const onSelect = vi.fn();
     const onParentSelect = vi.fn();
     render([
-      { id: "move", label: "移动到分组", onSelect: onParentSelect, children: [{ id: "g1", label: "生产环境", onSelect }] },
+      { id: "move", label: "Move to group", onSelect: onParentSelect, children: [{ id: "g1", label: "Production", onSelect }] },
     ]);
     rightClick("[data-testid=target]");
 
@@ -357,7 +357,7 @@ describe("ContextMenu submenu", () => {
     render(parentItems);
     rightClick("[data-testid=target]");
 
-    // Down once lands on 打开终端 (no children); the second reaches the parent.
+    // Down once lands on Open terminal (no children); the second reaches the parent.
     pressKey("ArrowDown");
     pressKey("ArrowDown");
     pressKey("ArrowRight");
@@ -371,7 +371,7 @@ describe("ContextMenu submenu", () => {
     const first = vi.fn();
     const second = vi.fn();
     render([
-      { id: "move", label: "移动到分组", children: [{ id: "a", label: "A", onSelect: first }, { id: "b", label: "B", onSelect: second }] },
+      { id: "move", label: "Move to group", children: [{ id: "a", label: "A", onSelect: first }, { id: "b", label: "B", onSelect: second }] },
     ]);
     rightClick("[data-testid=target]");
 

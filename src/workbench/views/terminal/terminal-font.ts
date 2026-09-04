@@ -22,7 +22,7 @@ export const TERMINAL_FONTS: TerminalFontOption[] = [
   },
   {
     id: "sarasa",
-    label: "更纱黑体（中文等宽）",
+    label: "Sarasa Mono SC (CJK)",
     stack: '"Sarasa Mono SC", "Cascadia Mono", Consolas, monospace',
   },
   {
@@ -42,7 +42,7 @@ export const TERMINAL_FONTS: TerminalFontOption[] = [
   },
   {
     id: "system",
-    label: "系统默认等宽",
+    label: "System default mono",
     stack: "monospace",
   },
 ];

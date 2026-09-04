@@ -16,6 +16,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { Terminal, type IMarker } from "@xterm/xterm";
+import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
@@ -375,6 +376,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const updateTab = useWorkbenchStore((s) => s.updateTab);
   const servers = useDomainStore((s) => s.servers);
+  const { t } = useTranslation();
   const register = useSessionStore((s) => s.register);
   const setStatus = useSessionStore((s) => s.setStatus);
   const removeSession = useSessionStore((s) => s.remove);
@@ -593,7 +595,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (!trimmed) return;
       // 未解析占位符绝不进 shell（bash 会当成输入重定向）。
       if (hasUnresolvedPlaceholder(trimmed)) {
-        setParamHint(`命令里还有未替换的参数（${trimmed}），请先选择具体值`);
+        setParamHint(
+          t("The command still has unfilled parameters ({{command}}); please select values for them first", {
+            command: trimmed,
+          }),
+        );
         return;
       }
       const mode: SubmitMode =
@@ -621,7 +627,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         .sshInput(sessionId, prefix + (needsSubmit ? "\r" : "") + plan.write)
         .catch(() => undefined);
     },
-    [releaseCaptureMarker, sessionId],
+    [releaseCaptureMarker, sessionId, t],
   );
 
   /** 重运行：按**真实风险**门控（只读直接跑；修改型 / 未知必须确认；删除类不提供）。 */
@@ -664,13 +670,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const writeToShell = useCallback(
     (text: string): boolean => {
       if (hasUnresolvedPlaceholder(text)) {
-        setParamHint(`命令里还有未替换的参数（${text}），请先选择具体值`);
+        setParamHint(
+          t("The command still has unfilled parameters ({{command}}); please select values for them first", {
+            command: text,
+          }),
+        );
         return false;
       }
       void opsApi.sshInput(sessionId, text).catch(() => undefined);
       return true;
     },
-    [sessionId],
+    [sessionId, t],
   );
 
   /** 知识库候选（含占位符 → 二级选择器）。见下方 `applySuggestion`。 */
@@ -685,7 +695,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
       if (hasPlaceholder) {
         if (!canAutoFill(hit.syntax)) {
-          setParamHint("该命令含需要手填的参数，已为你填入命令主体，请自行补全");
+          setParamHint(
+            t("This command has parameters that must be filled manually; the command body has been filled in, please complete the rest"),
+          );
           return "blocked";
         }
         setParamPicker({ hit, syntax: hit.syntax, draft });
@@ -711,7 +723,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       updateSuggestAnchor();
       return "filled";
     },
-    [updateSuggestAnchor, writeToShell],
+    [t, updateSuggestAnchor, writeToShell],
   );
 
   /**
@@ -1095,10 +1107,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setPhase("error");
       setError(
         result.status === "host_key_changed"
-          ? `${challengeLabel} 的主机指纹已变化，请确认后再连接`
-          : `首次连接 ${challengeLabel}，请确认主机指纹`,
+          ? t("The host fingerprint of {{host}} has changed; please confirm before connecting", { host: challengeLabel })
+          : t("First connection to {{host}}; please confirm the host fingerprint", { host: challengeLabel }),
       );
-      setStatus(sessionId, "error", { error: "等待主机指纹确认" });
+      setStatus(sessionId, "error", { error: t("Waiting for host key confirmation") });
       raiseChallenge({
         sessionId,
         kind: result.status === "host_key_changed" ? "changed" : "unknown",
@@ -1130,6 +1142,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     register,
     sessionId,
     setStatus,
+    t,
     tab.credentialId,
     tab.id,
     tab.oneTimePassword,
@@ -1397,7 +1410,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           failures += 1;
           if (failures < KEEPALIVE_MAX_FAILURES) return;
           window.clearInterval(timer);
-          const message = `连接已断开：${toErrorMessage(cause)}`;
+          const message = t("Connection lost: {{message}}", { message: toErrorMessage(cause) });
           setPhase("closed");
           setError(message);
           setStatus(sessionId, "closed", { error: message });
@@ -1407,7 +1420,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     }, KEEPALIVE_MS);
 
     return () => window.clearInterval(timer);
-  }, [phase, sessionId, setStatus]);
+  }, [phase, sessionId, setStatus, t]);
 
   const runSearch = useCallback(() => {
     const instance = terminalRef.current;
@@ -1455,56 +1468,56 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     containerRef.current?.querySelector("textarea")?.blur();
     const items: ContextMenuItem[] = [
       {
-        label: "查找",
+        label: t("Search"),
         icon: Search,
-        hint: searchOpen ? "已展开" : undefined,
+        hint: searchOpen ? t("Expanded") : undefined,
         onSelect: () => setSearchOpen((v) => !v),
       },
       {
-        label: "垂直分栏",
+        label: t("Split Vertically"),
         icon: Columns2,
         onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal"),
       },
       {
-        label: "水平分栏",
+        label: t("Split Horizontally"),
         icon: Rows2,
         onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical"),
       },
       {
-        label: "清空屏幕",
+        label: t("Clear Screen"),
         icon: Eraser,
         onSelect: () => terminalRef.current?.clear(),
       },
       {
-        label: "命令历史",
+        label: t("Command History"),
         icon: History,
-        hint: historyOpen ? "已展开" : undefined,
+        hint: historyOpen ? t("Expanded") : undefined,
         onSelect: () => setHistoryOpen((v) => !v),
       },
       {
-        label: "远程文件",
+        label: t("Remote Files"),
         icon: FolderOpen,
-        hint: filesOpen ? "已展开" : undefined,
+        hint: filesOpen ? t("Expanded") : undefined,
         onSelect: () => setFilesOpen((v) => !v),
       },
       {
-        label: "刷新环境",
+        label: t("Refresh Environment"),
         icon: RefreshCw,
-        hint: "重新探测 Docker / Nginx",
+        hint: t("Re-probe Docker / Nginx"),
         disabled: phase !== "connected",
         onSelect: refreshEnvironmentCaches,
       },
     ];
     items.push({
-      label: "增强终端",
+      label: t("Enhanced Terminal"),
       icon: Sparkles,
-      hint: enhancedTerminal ? "已开启" : undefined,
+      hint: enhancedTerminal ? t("Enabled") : undefined,
       onSelect: toggleEnhancedTerminal,
     });
     items.push({ separator: true });
     if (phase === "connected") {
       items.push({
-        label: "断开连接",
+        label: t("Disconnect"),
         icon: Unplug,
         danger: true,
         onSelect: () => {
@@ -1515,7 +1528,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       });
     } else {
       items.push({
-        label: "重新连接",
+        label: t("Reconnect"),
         icon: PlugZap,
         disabled: phase === "connecting",
         onSelect: () => void connect(),
@@ -1532,16 +1545,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     <div className="flex h-full min-h-0 flex-row bg-surface-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1  border-line bg-transparent px-2">
-        <ToolbarIcon label="查找" icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
-        <ToolbarIcon label="垂直分栏" icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
-        <ToolbarIcon label="水平分栏" icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
-        <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
-        <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
-        <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
+        <ToolbarIcon label={t("Search")} icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
+        <ToolbarIcon label={t("Split Vertically")} icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
+        <ToolbarIcon label={t("Split Horizontally")} icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
+        <ToolbarIcon label={t("Clear Screen")} icon={Eraser} onClick={() => terminalRef.current?.clear()} />
+        <ToolbarIcon label={t("Command History")} icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
+        <ToolbarIcon label={t("Remote Files")} icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
         {/* 刷新环境：目录 / Docker / 服务 / 进程缓存一起失效并重新探测。
             只有点这里才会重新跑 `docker ps`，敲字符时一律用缓存。 */}
         <ToolbarIcon
-          label="刷新环境"
+          label={t("Refresh Environment")}
           icon={RefreshCw}
           disabled={phase !== "connected"}
           onClick={refreshEnvironmentCaches}
@@ -1549,7 +1562,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
             打开后命令才会生成结果面板（不另设开关：开了就有、关了就什么都没有）。 */}
         <ToolbarIcon
-          label="增强终端"
+          label={t("Enhanced Terminal")}
           icon={Sparkles}
           active={enhancedTerminal}
           onClick={toggleEnhancedTerminal}
@@ -1557,7 +1570,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <div className="mx-1 h-4 w-px bg-line" />
         {/* 字体：终端与命令输出共用一套栈（不打包字体，没装则回退）。 */}
         <label className="flex items-center gap-1 text-11 text-fg-muted">
-          字体
+          {t("Font")}
           <span className="relative inline-flex items-center">
             <select
               value={fontId}
@@ -1566,7 +1579,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             >
               {TERMINAL_FONTS.map((option) => (
                 <option key={option.id} value={option.id}>
-                  {option.label}
+                  {t(option.label)}
                 </option>
               ))}
             </select>
@@ -1576,7 +1589,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" ? (
           <ToolbarIcon
-            label="断开连接"
+            label={t("Disconnect")}
             icon={Unplug}
             onClick={() => {
               void opsApi.sshDisconnect(sessionId).catch(() => undefined);
@@ -1585,7 +1598,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             }}
           />
         ) : (
-          <ToolbarIcon label="重新连接" icon={PlugZap} disabled={phase === "connecting"} onClick={() => void connect()} />
+          <ToolbarIcon label={t("Reconnect")} icon={PlugZap} disabled={phase === "connecting"} onClick={() => void connect()} />
         )}
 
         {searchOpen && (
@@ -1596,16 +1609,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") runSearch();
               }}
-              placeholder="在回滚缓冲中查找"
+              placeholder={t("Search in scrollback")}
               spellCheck={false}
               className="h-[26px] w-48 rounded-[7px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
             />
             <Button variant="ghost" size="xs" className="rounded-[7px]" onClick={runSearch}>
-              查找
+              {t("Search")}
             </Button>
             {searchState && (
               <span className="text-11 text-fg-subtle">
-                {searchState.total === 0 ? "无匹配" : `${searchState.index + 1}/${searchState.total}`}
+                {searchState.total === 0 ? t("No matches") : `${searchState.index + 1}/${searchState.total}`}
               </span>
             )}
           </div>
@@ -1618,16 +1631,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           <span className="min-w-0 flex-1 truncate">{error}</span>
           <button
             type="button"
-            aria-label="复制错误信息"
-            title="复制错误信息"
+            aria-label={t("Copy error message")}
+            title={t("Copy error message")}
             className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
             onClick={() => void copyToClipboard(error)}
           >
             <Copy size={12} />
-            复制
+            {t("Copy")}
           </button>
           <Button variant="ghost" size="xs" onClick={() => void connect()}>
-            重试
+            {t("Retry")}
           </Button>
         </div>
       )}
@@ -1701,7 +1714,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
               className="shrink-0 rounded px-1 text-11 text-warning/80 hover:text-warning"
               onClick={() => setParamHint(null)}
             >
-              知道了
+              {t("Got it")}
             </button>
           </div>
         )}
@@ -1729,11 +1742,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       {rerunConfirm && (
         <ConfirmDialog
           open
-          title="重新运行该命令？"
-          description={`该命令会修改服务器状态（${
-            rerunConfirm.risk ? RISK_META[rerunConfirm.risk].label : "风险未知"
-          }）：\n${rerunConfirm.command}`}
-          confirmLabel="重新运行"
+          title={t("Rerun this command?")}
+          description={t("This command will modify the server state ({{risk}}):\n{{command}}", {
+            risk: rerunConfirm.risk ? RISK_META[rerunConfirm.risk].label : t("Unknown risk"),
+            command: rerunConfirm.command,
+          })}
+          confirmLabel={t("Rerun")}
           onConfirm={confirmRerun}
           onCancel={() => setRerunConfirm(null)}
         />
@@ -1741,11 +1755,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       {runConfirm && (
         <ConfirmDialog
           open
-          title="执行该命令？"
-          description={`该命令会修改服务器运行状态（${
-            RISK_META[runConfirm.risk].label
-          }）：\n${runConfirm.command}`}
-          confirmLabel="执行"
+          title={t("Run this command?")}
+          description={t("This command will modify the server run state ({{risk}}):\n{{command}}", {
+            risk: RISK_META[runConfirm.risk].label,
+            command: runConfirm.command,
+          })}
+          confirmLabel={t("Run")}
           onConfirm={confirmRun}
           onCancel={() => setRunConfirm(null)}
         />

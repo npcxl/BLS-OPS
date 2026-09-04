@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useObjectUrl } from "@/hooks/use-object-url";
 import { formatSize } from "@/lib/format";
@@ -15,6 +16,7 @@ const STEPS = [10, 25, 50, 75, 100, 150, 200, 300, 400];
  */
 export function ImagePreview({ bytes, mime }: { bytes: Uint8Array; mime: string }) {
   const url = useObjectUrl(bytes, mime);
+  const { t } = useTranslation();
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -43,18 +45,18 @@ export function ImagePreview({ bytes, mime }: { bytes: Uint8Array; mime: string 
           size="xs"
           variant={zoom === "fit" ? "secondary" : "ghost"}
           onClick={() => setZoom("fit")}
-          title="适应窗口"
+          title={t("Fit to window")}
         >
           <Maximize2 size={12} />
-          适应
+          {t("Fit")}
         </Button>
-        <Button size="xs" variant="ghost" onClick={() => stepZoom(-1)} title="缩小">
+        <Button size="xs" variant="ghost" onClick={() => stepZoom(-1)} title={t("Zoom out")}>
           <ZoomOut size={12} />
         </Button>
         <span className="w-12 text-center text-11 tabular-nums text-fg-muted">
-          {zoom === "fit" ? "自适应" : `${zoom}%`}
+          {zoom === "fit" ? t("Auto fit") : `${zoom}%`}
         </span>
-        <Button size="xs" variant="ghost" onClick={() => stepZoom(1)} title="放大">
+        <Button size="xs" variant="ghost" onClick={() => stepZoom(1)} title={t("Zoom in")}>
           <ZoomIn size={12} />
         </Button>
         <span className="ml-auto truncate text-11 text-fg-subtle">

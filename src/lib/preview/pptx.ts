@@ -11,6 +11,7 @@
  */
 import { strFromU8, unzipSync } from "fflate";
 
+import { i18n } from "@/i18n";
 import { compactBlocks, type DocBlock, type Slide } from "./blocks";
 import { blipRef, MediaStore } from "./media";
 import { attr, findTags, nextElement, runTexts } from "./xml";
@@ -26,7 +27,7 @@ export function parsePptx(bytes: Uint8Array): PptxModel {
   const keys = Object.keys(zip)
     .filter((key) => /^ppt\/slides\/slide\d+\.xml$/.test(key))
     .sort((a, b) => slideNumber(a) - slideNumber(b));
-  if (keys.length === 0) throw new Error("这不是有效的 .pptx 文件（未找到幻灯片）");
+  if (keys.length === 0) throw new Error(i18n.t("Not a valid .pptx file (no slides found)"));
 
   const media: MediaStore[] = [];
   const slides = keys.map((key) => {

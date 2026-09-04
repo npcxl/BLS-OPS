@@ -1,6 +1,7 @@
 import type { DirectorySizeResult } from "@/api/ops-api";
 import { formatCount, formatSize } from "@/lib/format";
 import { fileKind } from "@/lib/file-kind";
+import { i18n } from "@/i18n";
 
 /** Pure POSIX path ops — remote paths never follow the local OS's rules. */
 export function parentOf(path: string): string {
@@ -21,16 +22,17 @@ export function joinPath(base: string, target: string): string {
   return parts.length === 0 ? "/" : `/${parts.join("/")}`;
 }
 
+/** 目录大小状态 → 英文 key（渲染处统一 `i18n.t`，key 与语言包逐字一致）。 */
 export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
-  pending: "排队中",
-  computing: "计算中…",
-  completed: "已完成",
-  partial: "部分统计",
-  permission_denied: "权限不足",
-  cancelled: "已取消",
-  timed_out: "计算超时",
-  session_gone: "连接已断开",
-  failed: "计算失败",
+  pending: "Queued",
+  computing: "Computing…",
+  completed: "Completed",
+  partial: "Partial size",
+  permission_denied: "Permission denied",
+  cancelled: "Cancelled",
+  timed_out: "Timed out",
+  session_gone: "Session disconnected",
+  failed: "Computation failed",
 };
 
 /**
@@ -48,19 +50,21 @@ export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
  * 时只渲染大小，绝不显示误导性的"0 个文件"。
  */
 export function dirSizeSummary(result: DirectorySizeResult | undefined): string {
-  if (!result) return "文件夹";
+  if (!result) return i18n.t("Folder");
   switch (result.status) {
     // 后端的并发闸（每会话 2 个）会把排队中的任务报成 `pending`，
     // 与真正在跑的 `computing` 区分开，用户才能看出"在排队"还是"在算"。
     case "pending":
-      return "排队中…";
+      return i18n.t("Queued…");
     case "computing":
-      return "计算中…";
+      return i18n.t("Computing…");
     case "completed":
     case "partial": {
       const parts = [formatSize(result.sizeBytes)];
-      if (result.fileCount > 0) parts.push(`${formatCount(result.fileCount)} 个文件`);
-      if (result.status === "partial") parts.push("部分统计");
+      if (result.fileCount > 0) {
+        parts.push(i18n.t("{{name}} files", { name: formatCount(result.fileCount) }));
+      }
+      if (result.status === "partial") parts.push(i18n.t("Partial size"));
       return parts.join(" · ");
     }
     case "permission_denied":
@@ -68,18 +72,20 @@ export function dirSizeSummary(result: DirectorySizeResult | undefined): string 
     case "cancelled":
     case "failed":
     case "session_gone":
-      return `文件夹 · ${DIR_SIZE_STATUS_LABEL[result.status] ?? result.status}`;
+      return i18n.t("Folder · {{status}}", {
+        status: i18n.t(DIR_SIZE_STATUS_LABEL[result.status] ?? result.status),
+      });
     default:
-      return "文件夹";
+      return i18n.t("Folder");
   }
 }
 
 /** Rejects empty names and anything containing a path separator. */
 export function validateName(name: string): string | null {
   const trimmed = name.trim();
-  if (!trimmed) return "名称不能为空";
-  if (trimmed.includes("/")) return "名称不能包含 /";
-  if (trimmed === "." || trimmed === "..") return "名称不能是 . 或 ..";
+  if (!trimmed) return i18n.t("Name cannot be empty");
+  if (trimmed.includes("/")) return i18n.t("Name cannot contain /");
+  if (trimmed === "." || trimmed === "..") return i18n.t("Name cannot be . or ..");
   return null;
 }
 

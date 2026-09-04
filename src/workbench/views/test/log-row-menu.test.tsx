@@ -137,27 +137,27 @@ describe("LogCenterView 行右键菜单", () => {
     await rightClick(rows()[0]);
 
     expect(labels()).toEqual([
-      "复制该行",
-      "复制全部（2 条）",
-      "只看「错误」及以上",
-      "只看单元 nginx.service",
-      "在结果中搜索该消息",
-      "清除筛选",
+      "Copy this line",
+      "Copy all (2)",
+      'Show "Error" and above',
+      "Show unit nginx.service",
+      "Search this message in results",
+      "Clear filters",
     ]);
   });
 
   it("copies the row exactly as the table shows it", async () => {
     await render();
     await rightClick(rows()[0]);
-    await clickItem("复制该行");
+    await clickItem("Copy this line");
 
-    expect(clipboard.text).toBe("2026-09-04T01:02:03Z  错误  nginx.service  boom");
+    expect(clipboard.text).toBe("2026-09-04T01:02:03Z  Error  nginx.service  boom");
   });
 
   it("copies every visible row", async () => {
     await render();
     await rightClick(rows()[0]);
-    await clickItem("复制全部");
+    await clickItem("Copy all");
 
     expect(clipboard.text.split("\n")).toHaveLength(2);
     expect(clipboard.text).toContain("accepted");
@@ -166,34 +166,34 @@ describe("LogCenterView 行右键菜单", () => {
   it("filters to the row's unit by reusing the toolbar's unit field", async () => {
     await render();
     await rightClick(rows()[0]);
-    await clickItem("只看单元 nginx.service");
+    await clickItem("Show unit nginx.service");
 
     // The unit filter is the toolbar's own input, so the row count follows it.
     expect(rows()).toHaveLength(1);
     expect(rows()[0].textContent).toContain("boom");
   });
 
-  it("marks the filter the row already has as 当前 and disables it", async () => {
+  it("marks the filter the row already has as Current and disables it", async () => {
     await render();
     // Filter everything down to nginx first…
     await rightClick(rows()[0]);
-    await clickItem("只看单元 nginx.service");
+    await clickItem("Show unit nginx.service");
 
     // …then right-click the surviving row: its own filter is now active.
     await rightClick(rows()[0]);
-    const item = menuItems().find((entry) => entry.textContent?.includes("只看单元"));
+    const item = menuItems().find((entry) => entry.textContent?.includes("Show unit"));
     expect(item?.hasAttribute("disabled")).toBe(true);
-    expect(item?.textContent).toContain("当前");
+    expect(item?.textContent).toContain("Current");
   });
 
   it("clears every filter in one go", async () => {
     await render();
     await rightClick(rows()[0]);
-    await clickItem("只看单元 nginx.service");
+    await clickItem("Show unit nginx.service");
     expect(rows()).toHaveLength(1);
 
     await rightClick(rows()[0]);
-    await clickItem("清除筛选");
+    await clickItem("Clear filters");
     expect(rows()).toHaveLength(2);
   });
 });

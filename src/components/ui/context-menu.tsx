@@ -8,6 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -94,6 +95,7 @@ export const ContextMenu = memo(function ContextMenu({
   minWidth = DEFAULT_MIN_WIDTH,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const { t } = useTranslation();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [active, setActive] = useState(-1);
   /** Index of the parent item whose submenu is open, or `null`. */
@@ -317,7 +319,7 @@ export const ContextMenu = memo(function ContextMenu({
     <div
       ref={ref}
       role="menu"
-      aria-label={title ?? "上下文菜单"}
+      aria-label={title ?? t("Context menu")}
       className="glass-panel-strong fixed z-[200] rounded-[12px] p-1"
       style={{
         left: pos?.x ?? x,
@@ -413,7 +415,7 @@ export const ContextMenu = memo(function ContextMenu({
         <div
           ref={submenuRef}
           role="menu"
-          aria-label={items[submenu!]?.label ?? "子菜单"}
+          aria-label={items[submenu!]?.label ?? t("Submenu")}
           className="glass-panel-strong fixed z-[210] rounded-[12px] p-1"
           style={{
             left: subPos?.x ?? 0,

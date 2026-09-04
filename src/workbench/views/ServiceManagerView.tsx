@@ -6,6 +6,8 @@
  * that Rust validates before they become a command.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { Copy, Play, RotateCw, Square, SquareCheck, SquareMinus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,12 +29,13 @@ import type { WorkspaceTab } from "@/workbench/types";
 
 type StateFilter = "all" | "running" | "failed" | "inactive" | "enabled";
 
+/** label 存 i18n key（All/Running/Failed 复用 common），渲染处 `t(...)`。 */
 const FILTERS: { id: StateFilter; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "running", label: "运行中" },
-  { id: "failed", label: "失败" },
-  { id: "inactive", label: "未运行" },
-  { id: "enabled", label: "开机自启" },
+  { id: "all", label: "All" },
+  { id: "running", label: "Running" },
+  { id: "failed", label: "Failed" },
+  { id: "inactive", label: "Not running" },
+  { id: "enabled", label: "Enabled on boot" },
 ];
 
 /** How a unit's state is presented. Never guessed: unknown states are shown as-is. */
@@ -43,24 +46,25 @@ function activeTone(unit: ServiceUnit): string {
   return "bg-fg-subtle";
 }
 
-function activeLabel(unit: ServiceUnit): string {
-  if (unit.active === "active" && unit.sub === "running") return "运行中";
-  if (unit.active === "failed" || unit.sub === "failed") return "启动失败";
-  if (unit.active === "inactive") return "未运行";
-  if (unit.active === "activating") return "启动中";
-  if (unit.active === "deactivating") return "停止中";
-  const sub = unit.sub || "未知";
+function activeLabel(unit: ServiceUnit, t: TFunction): string {
+  if (unit.active === "active" && unit.sub === "running") return t("Running");
+  if (unit.active === "failed" || unit.sub === "failed") return t("Failed to start");
+  if (unit.active === "inactive") return t("Not running");
+  if (unit.active === "activating") return t("Starting");
+  if (unit.active === "deactivating") return t("Stopping");
+  const sub = unit.sub || t("Unknown");
   return `${unit.active} · ${sub}`;
 }
 
 /** `enabled` is `null` for states like `static`, which have no on/off answer. */
-function enabledLabel(unit: ServiceUnit): string {
-  if (unit.enabled === true) return "开机自启";
-  if (unit.enabled === false) return "不自启";
+function enabledLabel(unit: ServiceUnit, t: TFunction): string {
+  if (unit.enabled === true) return t("Enabled on boot");
+  if (unit.enabled === false) return t("Not enabled on boot");
   return unit.enabled_state ?? "—";
 }
 
 export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
+  const { t } = useTranslation();
   const session = useCommandSession(tab);
 
   const [units, setUnits] = useState<ServiceUnit[]>([]);
@@ -160,18 +164,18 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
     menu.onContextMenu(() => {
       const running = unit.active === "active" && unit.sub === "running";
       return [
-        { id: "detail", label: "查看详情", onSelect: () => void showDetail(unit) },
+        { id: "detail", label: t("View details"), onSelect: () => void showDetail(unit) },
         { id: "sep1", separator: true },
         {
           id: "start",
-          label: "启动",
+          label: t("Start"),
           icon: Play,
           disabled: running || busyUnit !== null,
           onSelect: () => void runAction(unit, "start"),
         },
         {
           id: "stop",
-          label: "停止",
+          label: t("Stop"),
           icon: Square,
           disabled: !running || busyUnit !== null,
           danger: true,
@@ -179,7 +183,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         },
         {
           id: "restart",
-          label: "重启",
+          label: t("Restart"),
           icon: RotateCw,
           disabled: busyUnit !== null,
           danger: true,
@@ -187,7 +191,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         },
         {
           id: "reload",
-          label: "重载配置",
+          label: t("Reload configuration"),
           disabled: !running || busyUnit !== null,
           onSelect: () => void runAction(unit, "reload"),
         },
@@ -195,14 +199,14 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         unit.enabled === true
           ? {
               id: "disable",
-              label: "取消开机自启",
+              label: t("Disable on boot"),
               icon: SquareMinus,
               disabled: busyUnit !== null,
               onSelect: () => void runAction(unit, "disable"),
             }
           : {
               id: "enable",
-              label: "设为开机自启",
+              label: t("Enable on boot"),
               icon: SquareCheck,
               disabled: unit.enabled === null || busyUnit !== null,
               onSelect: () => void runAction(unit, "enable"),
@@ -224,7 +228,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
           <ToolbarInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索服务…"
+            placeholder={t("Search services…")}
             width="w-40"
           />
           <div className="mx-1 h-4 w-px bg-line" />
@@ -240,11 +244,13 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
                   : "text-fg-muted hover:bg-surface-hover hover:text-fg",
               )}
             >
-              {item.label}
+              {t(item.label)}
             </button>
           ))}
           <ToolbarStatus>
-            <ToolbarStat>{loading ? "读取中…" : `${visible.length} / ${units.length} 个服务`}</ToolbarStat>
+            <ToolbarStat>
+              {loading ? t("Reading…") : t("{{visible}} / {{total}} services", { visible: visible.length, total: units.length })}
+            </ToolbarStat>
           </ToolbarStatus>
         </>
       }
@@ -254,24 +260,24 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
           <span className="min-w-0 flex-1 break-words">{error}</span>
           <button
             type="button"
-            aria-label="复制错误信息"
-            title="复制错误信息"
+            aria-label={t("Copy error message")}
+            title={t("Copy error message")}
             className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
             onClick={() => void navigator.clipboard.writeText(error)}
           >
             <Copy size={12} />
-            复制
+            {t("Copy")}
           </button>
         </div>
       )}
 
       {!loading && !error && units.length === 0 ? (
         <ModuleEmpty
-          title="没有读取到任何服务"
-          hint="这台机器可能不是 systemd 系统，或者当前用户无权列出单元。"
+          title={t("No services found")}
+          hint={t("This machine may not be a systemd system, or the current user cannot list units.")}
         />
       ) : visible.length === 0 && !loading ? (
-        <ModuleEmpty title="没有匹配的服务" hint="换个筛选条件或清空搜索试试。" />
+        <ModuleEmpty title={t("No matching services")} hint={t("Try different filters or clear the search.")} />
       ) : (
         <ServiceTable
           units={visible}
@@ -287,15 +293,17 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         open={pendingAction !== null}
         title={
           pendingAction?.action === "restart"
-            ? `重启服务 ${pendingUnit?.unit ?? ""}`
-            : `停止服务 ${pendingUnit?.unit ?? ""}`
+            ? t("Restart service {{unit}}", { unit: pendingUnit?.unit ?? "" })
+            : t("Stop service {{unit}}", { unit: pendingUnit?.unit ?? "" })
         }
         description={
           pendingAction?.action === "restart"
-            ? `确定重启“${pendingUnit?.unit ?? ""}”？服务会短暂中断。`
-            : `确定停止“${pendingUnit?.unit ?? ""}”？服务将不再可用，直到再次启动。`
+            ? t("Restart \"{{unit}}\"? The service will be briefly interrupted.", { unit: pendingUnit?.unit ?? "" })
+            : t("Stop \"{{unit}}\"? The service will be unavailable until started again.", {
+                unit: pendingUnit?.unit ?? "",
+              })
         }
-        confirmLabel={pendingAction?.action === "restart" ? "重启" : "停止"}
+        confirmLabel={pendingAction?.action === "restart" ? t("Restart") : t("Stop")}
         danger
         onConfirm={() => {
           if (pendingAction) void runAction(pendingAction.unit, pendingAction.action);
@@ -330,15 +338,16 @@ function ServiceTable({
   onRowContextMenu: (unit: ServiceUnit) => (event: React.MouseEvent) => void;
   onDetail: (unit: ServiceUnit) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <table className="w-full text-11">
       <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
         <tr>
           <th className="w-[34px] px-3 py-1.5" />
-          <th className="px-2 py-1.5 text-left font-semibold">服务单元</th>
-          <th className="w-[150px] px-2 py-1.5 text-left font-semibold">运行状态</th>
-          <th className="w-[92px] px-2 py-1.5 text-left font-semibold">自启</th>
-          <th className="px-3 py-1.5 text-left font-semibold">说明</th>
+          <th className="px-2 py-1.5 text-left font-semibold">{t("Service unit")}</th>
+          <th className="w-[150px] px-2 py-1.5 text-left font-semibold">{t("Run state")}</th>
+          <th className="w-[92px] px-2 py-1.5 text-left font-semibold">{t("Autostart")}</th>
+          <th className="px-3 py-1.5 text-left font-semibold">{t("Description")}</th>
         </tr>
       </thead>
       <tbody>
@@ -360,10 +369,10 @@ function ServiceTable({
             </td>
             <td className="px-2 py-1.5">
               <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-10", unit.active === "active" && unit.sub === "running" ? "bg-success/12 text-success" : unit.active === "failed" || unit.sub === "failed" ? "bg-danger/12 text-danger" : "bg-surface-3 text-fg-subtle")}>
-                {activeLabel(unit)}
+                {activeLabel(unit, t)}
               </span>
             </td>
-            <td className="px-2 py-1.5 text-fg-muted">{enabledLabel(unit)}</td>
+            <td className="px-2 py-1.5 text-fg-muted">{enabledLabel(unit, t)}</td>
             <td className="max-w-0 truncate px-3 py-1.5 text-fg-subtle" title={unit.description}>
               {unit.description}
             </td>
@@ -386,6 +395,7 @@ function DetailSheet({
   onClose: () => void;
   onReload: () => void;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const copyDetail = async () => {
@@ -406,18 +416,18 @@ function DetailSheet({
         <div className="ml-auto flex items-center gap-1">
           <Button variant="ghost" size="xs" onClick={() => void copyDetail()}>
             <Copy size={12} />
-            {copied ? "已复制" : "复制信息"}
+            {copied ? t("Copied") : t("Copy details")}
           </Button>
           <Button variant="ghost" size="xs" onClick={onReload}>
-            刷新列表
+            {t("Refresh list")}
           </Button>
           <Button variant="ghost" size="xs" onClick={onClose}>
-            关闭
+            {t("Close")}
           </Button>
         </div>
       </div>
       <pre className="flex-1 overflow-auto whitespace-pre-wrap p-3 font-mono text-11 leading-relaxed text-fg-muted">
-        {text || "（没有输出）"}
+        {text || t("(no output)")}
       </pre>
     </div>
   );

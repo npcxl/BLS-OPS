@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { useTranslation } from "react-i18next";
 import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 import type { ResultSection } from "../model";
 
@@ -47,8 +48,9 @@ function Rows({
   rows: Record<string, unknown>[];
   onCopy: (text: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   if (rows.length === 0) {
-    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">没有属性。</p>;
+    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">{t("No properties.")}</p>;
   }
   return (
     <dl className="divide-y divide-line/40">
@@ -68,7 +70,7 @@ function Rows({
                 data-testid="kv-value"
                 {...clickCopyProps(() => void onCopy(text))}
                 className={cn(COPYABLE, "block w-full break-words font-mono text-11 text-fg")}
-                title="点击复制该值"
+                title={t("Click to copy the value")}
               >
                 {text || "—"}
               </button>

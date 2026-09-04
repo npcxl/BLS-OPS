@@ -1,9 +1,11 @@
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import type { ServerRecord } from "@/api/ops-api";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 
 /** Shown when a terminal tab has no connection target yet. */
 export function TerminalPicker({ tabId, servers }: { tabId: string; servers: ServerRecord[] }) {
+  const { t } = useTranslation();
   const updateTab = useWorkbenchStore((s) => s.updateTab);
   const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
@@ -17,9 +19,11 @@ export function TerminalPicker({ tabId, servers }: { tabId: string; servers: Ser
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1">
-      <p className="text-13 text-fg-muted">选择一个服务器以开始 SSH 会话</p>
+      <p className="text-13 text-fg-muted">{t("Select a server to start an SSH session")}</p>
       {servers.length === 0 ? (
-        <p className="text-12 text-fg-subtle">左侧“服务器”中还没有任何条目，请先新增服务器。</p>
+        <p className="text-12 text-fg-subtle">
+          {t("No servers yet. Add one under \"Servers\" on the left first.")}
+        </p>
       ) : (
         <div className="flex max-h-[50vh] w-72 flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
           {servers.map((server) => (
@@ -38,7 +42,7 @@ export function TerminalPicker({ tabId, servers }: { tabId: string; servers: Ser
         </div>
       )}
       <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        关闭此标签
+        {t("Close this tab")}
       </Button>
     </div>
   );

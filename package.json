@@ -31,11 +31,13 @@
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
     "fflate": "^0.8.3",
+    "i18next": "^26.4.2",
     "lucide-react": "^1.33.0",
     "motion": "^13.1.1",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-i18next": "^17.0.13",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
     "zustand": "^5.0.15"

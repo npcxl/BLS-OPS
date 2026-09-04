@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 
@@ -19,14 +20,17 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "确认",
-  cancelLabel = "取消",
+  confirmLabel,
+  cancelLabel,
   danger = false,
   pending = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
-  useEffect(() => {
+  const { t } = useTranslation();
+  // 默认按钮文案存英文 key，此处解析（common 已有 Confirm/Cancel）。
+  const confirmText = confirmLabel ?? t("Confirm");
+  const cancelText = cancelLabel ?? t("Cancel");  useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Enter" && !pending) {
@@ -43,10 +47,10 @@ export function ConfirmDialog({
       <p className="text-12 leading-relaxed text-fg-muted">{description}</p>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
-          {cancelLabel}
+          {cancelText}
         </Button>
         <Button variant={danger ? "danger" : "primary"} size="sm" disabled={pending} onClick={onConfirm}>
-          {pending ? "处理中…" : confirmLabel}
+          {pending ? t("Processing") : confirmText}
         </Button>
       </div>
     </Modal>

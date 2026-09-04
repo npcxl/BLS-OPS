@@ -61,28 +61,28 @@ describe("projectSteps", () => {
 
 describe("priorityLabel", () => {
   it("names every syslog priority", () => {
-    expect(priorityLabel(0)).toBe("紧急");
-    expect(priorityLabel(1)).toBe("警报");
-    expect(priorityLabel(2)).toBe("严重");
-    expect(priorityLabel(3)).toBe("错误");
-    expect(priorityLabel(4)).toBe("警告");
-    expect(priorityLabel(5)).toBe("通知");
-    expect(priorityLabel(6)).toBe("信息");
-    expect(priorityLabel(7)).toBe("调试");
+    expect(priorityLabel(0)).toBe("Emergency");
+    expect(priorityLabel(1)).toBe("Alert");
+    expect(priorityLabel(2)).toBe("Critical");
+    expect(priorityLabel(3)).toBe("Error");
+    expect(priorityLabel(4)).toBe("Warning");
+    expect(priorityLabel(5)).toBe("Notice");
+    expect(priorityLabel(6)).toBe("Info");
+    expect(priorityLabel(7)).toBe("Debug");
   });
 
   it("falls back for anything unexpected", () => {
     // journald only defines 0..7, but a corrupt record must still render.
-    expect(priorityLabel(99)).toBe("其他");
-    expect(priorityLabel(-1)).toBe("其他");
+    expect(priorityLabel(99)).toBe("Other");
+    expect(priorityLabel(-1)).toBe("Other");
   });
 });
 
 describe("deployStatusLabel", () => {
   it("labels the three states the engine produces", () => {
-    expect(deployStatusLabel("running")).toBe("进行中");
-    expect(deployStatusLabel("success")).toBe("成功");
-    expect(deployStatusLabel("failed")).toBe("失败");
+    expect(deployStatusLabel("running")).toBe("In Progress");
+    expect(deployStatusLabel("success")).toBe("Success");
+    expect(deployStatusLabel("failed")).toBe("Failed");
   });
 
   it("shows an unknown status verbatim rather than hiding it", () => {

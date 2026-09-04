@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { i18n } from "@/i18n";
 import type { DocBlock, Slide } from "@/lib/preview/blocks";
 
 /**
@@ -155,8 +156,9 @@ export function SlidesPreview({ slides }: { slides: Slide[] }) {
 }
 
 function firstLine(blocks: DocBlock[]): string {
+  // 幻灯片缩略图占位是 UI 文案；模块级纯函数用 i18n.t 而不是 hook。
   const first = blocks.find((block) => block.type !== "image");
   if (!first) return "";
-  if (first.type === "table") return "表格";
+  if (first.type === "table") return i18n.t("Table");
   return first.text.slice(0, 12);
 }

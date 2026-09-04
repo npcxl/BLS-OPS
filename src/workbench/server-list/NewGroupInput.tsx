@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, X } from "lucide-react";
 
 /**
@@ -18,6 +19,7 @@ export function NewGroupInput({
   onSave: (name: string) => Promise<boolean>;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,7 +42,7 @@ export function NewGroupInput({
       <input
         ref={inputRef}
         autoFocus
-        aria-label="新分组名称"
+        aria-label={t("New group name")}
         data-testid="new-group-input"
         value={value}
         disabled={busy}
@@ -49,13 +51,13 @@ export function NewGroupInput({
           if (event.key === "Enter") void save();
           if (event.key === "Escape") onCancel();
         }}
-        placeholder="分组名称，回车保存"
+        placeholder={t("Group name, press Enter to save")}
         spellCheck={false}
         className="h-[24px] min-w-0 flex-1 rounded-[5px] border border-accent bg-surface-2 px-1.5 text-11 text-fg outline-none placeholder:text-fg-subtle"
       />
       <button
         type="button"
-        aria-label="保存分组"
+        aria-label={t("Save group")}
         data-testid="new-group-save"
         disabled={busy}
         className="rounded p-1 text-fg-subtle hover:text-success disabled:opacity-40"
@@ -65,7 +67,7 @@ export function NewGroupInput({
       </button>
       <button
         type="button"
-        aria-label="取消新增分组"
+        aria-label={t("Cancel new group")}
         data-testid="new-group-cancel"
         className="rounded p-1 text-fg-subtle hover:text-fg"
         onClick={onCancel}

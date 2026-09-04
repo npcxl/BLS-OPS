@@ -217,7 +217,7 @@ afterEach(() => {
 describe("ServerListTree — 收藏", () => {
   it("shows a filled star for a favorited server and an outlined one otherwise", async () => {
     servers = [server("s1", { favorite: true }), server("s2")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     const fav = find('[data-testid="server-favorite-s1"] svg');
     const plain = find('[data-testid="server-favorite-s2"] svg');
@@ -229,7 +229,7 @@ describe("ServerListTree — 收藏", () => {
   it("toggling the star never opens the server", async () => {
     servers = [server("s1")];
     const onOpenServer = vi.fn();
-    await render(<ServerListTree title="服务器列表" onOpenServer={onOpenServer} />);
+    await render(<ServerListTree title="Server list" onOpenServer={onOpenServer} />);
 
     await click(maybe('[data-testid="server-favorite-s1"]'));
 
@@ -243,7 +243,7 @@ describe("ServerListTree — 收藏", () => {
 
   it("drops the 收藏 area as soon as the last favorite is removed", async () => {
     servers = [server("s1", { favorite: true }), server("s2")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     expect(maybe('[data-testid="favorites-section"]')).not.toBeNull();
 
@@ -257,7 +257,7 @@ describe("ServerListTree — 收藏", () => {
   it("keeps favorited servers inside their own group as well", async () => {
     servers = [server("s1", { group_id: "g1", favorite: true })];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     expect(rowsIn("g1")).toEqual(["s1"]);
     expect(rowsIn("__ungrouped__")).toEqual([]);
@@ -265,7 +265,7 @@ describe("ServerListTree — 收藏", () => {
 
   it("rolls the star back and reports the error when the backend refuses", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     invoke.mockImplementation(async (cmd: string) => {
       if (cmd === "server_list") return servers.map((item) => ({ ...item }));
@@ -284,19 +284,19 @@ describe("ServerListTree — 分组", () => {
   it("renders an empty group with its 暂无服务器 placeholder", async () => {
     servers = [server("s1")];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     const section = find('[data-testid="group-section-g1"]');
     expect(section.textContent).toContain("生产环境");
-    expect(section.textContent).toContain("暂无服务器");
+    expect(section.textContent).toContain("No servers");
     expect(find('[data-testid="group-count-g1"]').textContent).toBe("0");
   });
 
   it("shows a newly created group immediately, before any server uses it", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
-    await click(maybe('[aria-label="新增分组"]'));
+    await click(maybe('[aria-label="New group"]'));
     await type('[data-testid="new-group-input"]', "生产环境");
     await click(maybe('[data-testid="new-group-save"]'));
 
@@ -309,9 +309,9 @@ describe("ServerListTree — 分组", () => {
   it("keeps the editor open and shows the error when saving a group fails", async () => {
     servers = [server("s1")];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
-    await click(maybe('[aria-label="新增分组"]'));
+    await click(maybe('[aria-label="New group"]'));
     await type('[data-testid="new-group-input"]', "生产环境");
     await click(maybe('[data-testid="new-group-save"]'));
 
@@ -323,13 +323,13 @@ describe("ServerListTree — 分组", () => {
   it("moves a server into a group from the context menu", async () => {
     servers = [server("s1")];
     groups = [group("g1", "生产环境"), group("g2", "测试环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     expect(rowsIn("__ungrouped__")).toEqual(["s1"]);
 
     await rightClick('[data-testid="server-row-s1"]');
     const root1 = menuEls()[0];
-    await click(itemByLabel(root1, "移动到分组"));
+    await click(itemByLabel(root1, "Move to group"));
     const submenu = menuEls()[1];
     expect(submenu).toBeDefined();
     await click(itemByLabel(submenu, "测试环境"));
@@ -342,11 +342,11 @@ describe("ServerListTree — 分组", () => {
   it("moves a server back to 未分组", async () => {
     servers = [server("s1", { group_id: "g1" })];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     await rightClick('[data-testid="server-row-s1"]');
-    await click(itemByLabel(menuEls()[0], "移动到分组"));
-    await click(itemByLabel(menuEls()[1], "未分组"));
+    await click(itemByLabel(menuEls()[0], "Move to group"));
+    await click(itemByLabel(menuEls()[1], "Ungrouped"));
 
     expect(storedServer("s1")?.group_id).toBeNull();
     expect(rowsIn("__ungrouped__")).toEqual(["s1"]);
@@ -355,12 +355,12 @@ describe("ServerListTree — 分组", () => {
   it("returns servers to 未分组 when their group is deleted", async () => {
     servers = [server("s1", { group_id: "g1" })];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
-    await click(maybe('[aria-label="删除分组 生产环境"]'));
+    await click(maybe('[aria-label="Delete group 生产环境"]'));
     // Destructive actions go through ConfirmDialog, never window.confirm.
     const confirm = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "确认删除",
+      (button) => button.textContent?.trim() === "Delete",
     );
     await click(confirm);
 
@@ -376,43 +376,43 @@ describe("ServerListTree — 分组", () => {
       server("alpha", { group_id: "g1", favorite: true }),
     ];
     groups = [group("g1", "生产环境")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     expect(rowsIn("g1")).toEqual(["alpha", "zeta"]);
   });
 
   it("right-clicking blank space offers the header actions", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     // The row has its own menu; blank space must give the *list* actions.
     await rightClick('[data-testid="group-section-__ungrouped__"]');
     const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
-    expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
+    expect(labels).toEqual(["Refresh servers", "Add server", "New group", "Collapse sidebar"]);
   });
 
   it("整列可右键：根容器（min-h-full 撑满滚动区）空白同样给出列表动作", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     await rightClick('[data-testid="server-list-tree"]');
     const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
-    expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
+    expect(labels).toEqual(["Refresh servers", "Add server", "New group", "Collapse sidebar"]);
   });
 
   it("a row's own menu wins over the blank-space one", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     await rightClick('[data-testid="server-row-s1"]');
     const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
-    expect(labels).toContain("打开终端");
-    expect(labels).not.toContain("新增分组");
+    expect(labels).toContain("Open terminal");
+    expect(labels).not.toContain("New group");
   });
 
   it("行菜单打开后再在空白处右键：旧菜单被顶掉，全局只剩一个", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     await rightClick('[data-testid="server-row-s1"]');
     expect(menuEls()).toHaveLength(1);
@@ -421,22 +421,22 @@ describe("ServerListTree — 分组", () => {
     await rightClick('[data-testid="server-list-tree"]');
     expect(menuEls()).toHaveLength(1);
     const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
-    expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
+    expect(labels).toEqual(["Refresh servers", "Add server", "New group", "Collapse sidebar"]);
   });
 
   it("runs the header action chosen from the blank-space menu", async () => {
     servers = [server("s1")];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     await rightClick('[data-testid="group-section-__ungrouped__"]');
-    await click(itemByLabel(menuEls()[0], "新增分组"));
+    await click(itemByLabel(menuEls()[0], "New group"));
 
     expect(maybe('[data-testid="new-group-input"]')).not.toBeNull();
   });
 
   it("warns about a server pointing at a group that no longer exists", async () => {
     servers = [server("s1", { group_id: "ghost" })];
-    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
 
     expect(document.body.textContent).toContain("ghost");
     expect(rowsIn("__ungrouped__")).toEqual(["s1"]);
@@ -445,9 +445,9 @@ describe("ServerListTree — 分组", () => {
 
 describe("侧栏行为一致", () => {
   const cases = [
-    { module: "projects" as const, title: "项目" },
-    { module: "services" as const, title: "服务" },
-    { module: "logs" as const, title: "日志" },
+    { module: "projects" as const, title: "Projects" },
+    { module: "services" as const, title: "Services" },
+    { module: "logs" as const, title: "Logs" },
   ];
 
   for (const { module, title } of cases) {
@@ -464,7 +464,7 @@ describe("侧栏行为一致", () => {
       expect(document.body.textContent).toContain(title);
       // Same ordering rules, same empty-group rendering, same favorites area.
       expect(rowsIn("g1")).toEqual(["alpha", "zeta"]);
-      expect(find('[data-testid="group-section-g2"]').textContent).toContain("暂无服务器");
+      expect(find('[data-testid="group-section-g2"]').textContent).toContain("No servers");
       expect(maybe('[data-testid="favorites-section"]')).not.toBeNull();
       expect(rowsIn("__ungrouped__")).toEqual(["solo"]);
     });

@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { useTranslation } from "react-i18next";
 import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 
 /**
@@ -10,10 +11,11 @@ import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/compone
  * 点击节点 → 复制它的值：有 `detail` 的行（叶子）复制 detail，其余复制 label。
  */
 export function TreeView({ rows }: { rows: Record<string, unknown>[] }) {
+  const { t } = useTranslation();
   const { status, copy } = useCopyFeedback();
 
   if (rows.length === 0) {
-    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">没有节点。</p>;
+    return <p className="px-3 py-6 text-center text-11 text-fg-subtle">{t("No nodes.")}</p>;
   }
   return (
     <div className="relative min-h-0 flex-1 overflow-auto py-1">
@@ -32,7 +34,7 @@ export function TreeView({ rows }: { rows: Record<string, unknown>[] }) {
             className={cn(COPYABLE, "flex w-full items-center gap-2 px-3 py-1 text-left")}
             // 每级缩进 14px；层级异常（负数/过大）时夹到 0..12，避免布局炸开。
             style={{ paddingLeft: 12 + clamp(depth) * 14 }}
-            title="点击复制该节点的值"
+            title={t("Click to copy this node's value")}
           >
             {clamp(depth) > 0 && (
               <span className="shrink-0 text-10 text-fg-subtle">└</span>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -17,6 +18,7 @@ import { useSessionStore } from "@/stores/session-store";
 export function HostKeyDialog() {
   const challenge = useSessionStore((s) => s.challenge);
   const resolve = useSessionStore((s) => s.resolveChallenge);
+  const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
 
   if (!challenge) return null;
@@ -36,19 +38,24 @@ export function HostKeyDialog() {
     <Modal
       open
       width={520}
-      title={changed ? "主机指纹已变化" : "首次连接，请确认主机指纹"}
+      title={changed ? t("Host key has changed") : t("First connection — confirm the host key")}
       description={
         changed
-          ? `${endpoint} 返回的主机密钥与已保存的不一致。如果这不是你预期中的变更，可能是中间人攻击——请拒绝并向服务器管理员核实。`
-          : `${endpoint} 的主机密钥尚未被信任。请核对指纹后再继续。`
+          ? t(
+              "{{host}} returned a host key that does not match the saved one. If you did not expect this change, it could be a man-in-the-middle attack — refuse and verify with the server administrator.",
+              { host: endpoint },
+            )
+          : t("The host key of {{host}} is not trusted yet. Verify the fingerprint before continuing.", {
+              host: endpoint,
+            })
       }
       footer={
         <>
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => void decide(false)}>
-            拒绝
+            {t("Refuse")}
           </Button>
           <Button variant="primary" size="sm" disabled={busy} onClick={() => void decide(true)}>
-            {changed ? "信任新指纹并重连" : "信任并连接"}
+            {changed ? t("Trust new key and reconnect") : t("Trust and connect")}
           </Button>
         </>
       }
@@ -72,18 +79,17 @@ export function HostKeyDialog() {
         {challenge.isJumpHop && (
           <div className="rounded-[6px] border border-line bg-surface-1 px-3 py-2">
             <p className="text-11 leading-relaxed text-fg-muted">
-              这是 <span className="text-fg">跳板机</span>的指纹，不是目标服务器{" "}
-              <span className="font-mono text-fg">
-                {challenge.targetHost}:{challenge.targetPort}
-              </span>{" "}
-              的。信任后会先记录跳板机，随后再询问目标服务器的指纹。
+              {t(
+                "This is the fingerprint of the jump host, not of the target server {{host}}. The jump host is recorded first; the target server's fingerprint is asked next.",
+                { host: `${challenge.targetHost}:${challenge.targetPort}` },
+              )}
             </p>
           </div>
         )}
 
         {changed && challenge.knownFingerprint && (
           <div className="rounded-[6px] border border-line bg-surface-1 px-3 py-2">
-            <div className="text-11 text-fg-subtle">此前已信任的指纹</div>
+            <div className="text-11 text-fg-subtle">{t("Previously trusted fingerprint")}</div>
             <code className="mt-1 block break-all font-mono text-12 text-fg-muted">
               {challenge.knownFingerprint}
             </code>
@@ -91,7 +97,9 @@ export function HostKeyDialog() {
         )}
 
         <p className="text-11 leading-relaxed text-fg-subtle">
-          接受后指纹会写入 Known Hosts，可在“设置 → 已知主机”中查看或删除。
+          {t(
+            "After accepting, the fingerprint is stored in Known Hosts. View or remove it in Settings → Known Hosts.",
+          )}
         </p>
       </div>
     </Modal>
@@ -102,9 +110,14 @@ export function HostKeyDialog() {
 export function KnownHostsPanel() {
   const knownHosts = useDomainStore((s) => s.knownHosts);
   const remove = useDomainStore((s) => s.deleteKnownHost);
+  const { t } = useTranslation();
 
   if (knownHosts.length === 0) {
-    return <p className="px-2.5 py-2 text-11 text-fg-subtle">还没有信任任何主机密钥，首次连接时会自动询问。</p>;
+    return (
+      <p className="px-2.5 py-2 text-11 text-fg-subtle">
+        {t("No trusted host keys yet. You will be asked on first connection.")}
+      </p>
+    );
   }
 
   return (
@@ -118,11 +131,11 @@ export function KnownHostsPanel() {
             </span>
             <button
               type="button"
-              aria-label={`删除 ${host.host} 的指纹`}
+              aria-label={t("Delete fingerprint for {{name}}", { name: host.host })}
               className="rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
               onClick={() => void remove(host.id)}
             >
-              删除
+              {t("Delete")}
             </button>
           </div>
           <code className="mt-0.5 block truncate pl-[19px] font-mono text-11 text-fg-subtle">

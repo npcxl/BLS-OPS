@@ -8,6 +8,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
   ArrowRight,
@@ -109,6 +110,7 @@ export function RemoteFilePanel({
   reveal,
   onClose,
 }: RemoteFilePanelProps) {
+  const { t } = useTranslation();
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   /** Canonical navigation history: back/forward + current location. */
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -368,10 +370,10 @@ export function RemoteFilePanel({
   const downloadEntry = async (entry: RemoteFileEntry) => {
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
-      const destination = await save({ title: `下载 ${entry.name}`, defaultPath: entry.name });
+      const destination = await save({ title: t("Download {{name}}", { name: entry.name }), defaultPath: entry.name });
       if (!destination) return;
       const written = await opsApi.sftpDownloadFile(sessionId, entry.path, destination);
-      setNotice(`已下载“${entry.name}”（${formatSize(written)}）`);
+      setNotice(t("Downloaded {{name}} ({{size}})", { name: entry.name, size: formatSize(written) }));
     } catch (cause) {
       setStatus({ state: "error", message: toErrorMessage(cause) });
     }
@@ -386,10 +388,10 @@ export function RemoteFilePanel({
 
   const renameEntry = (entry: RemoteFileEntry) => {
     setNameDialog({
-      title: "重命名",
-      label: "新名称",
+      title: "Rename",
+      label: "New name",
       initial: entry.name,
-      submitLabel: "重命名",
+      submitLabel: "Rename",
       validate: validateName,
       onConfirm: (name) => opsApi.sftpRename(sessionId, entry.path, name),
     });
@@ -397,13 +399,16 @@ export function RemoteFilePanel({
 
   const copyEntry = (entry: RemoteFileEntry) => {
     const dot = entry.name.lastIndexOf(".");
-    const suggested =
-      dot > 0 ? `${entry.name.slice(0, dot)} - 副本${entry.name.slice(dot)}` : `${entry.name} - 副本`;
+    // 建议副本名是数据（会创建的文件名），扩展名只是纯数据拼接；" - 副本"
+    // 这段建议文案本身走插值 key。
+    const stem = dot > 0 ? entry.name.slice(0, dot) : entry.name;
+    const extension = dot > 0 ? entry.name.slice(dot) : "";
+    const suggested = `${t("{{name}} - Copy", { name: stem })}${extension}`;
     setNameDialog({
-      title: "创建副本",
-      label: "副本名称",
+      title: "Create a copy",
+      label: "Copy name",
       initial: suggested,
-      submitLabel: "创建副本",
+      submitLabel: "Create a copy",
       validate: validateName,
       onConfirm: (name) => opsApi.sftpCopy(sessionId, entry.path, name),
     });
@@ -412,10 +417,10 @@ export function RemoteFilePanel({
   const createFolder = () => {
     if (!cwd) return;
     setNameDialog({
-      title: "新建文件夹",
-      label: "文件夹名称",
-      initial: "新建文件夹",
-      submitLabel: "创建",
+      title: "New folder",
+      label: "Folder name",
+      initial: t("New folder"),
+      submitLabel: "Create",
       validate: validateName,
       onConfirm: (name) => opsApi.sftpMkdir(sessionId, `${cwd === "/" ? "" : cwd}/${name}`),
     });
@@ -424,10 +429,10 @@ export function RemoteFilePanel({
   const createFile = () => {
     if (!cwd) return;
     setNameDialog({
-      title: "新建文件",
-      label: "文件名称",
-      initial: "新建文件.txt",
-      submitLabel: "创建",
+      title: "New file",
+      label: "File name",
+      initial: t("New file.txt"),
+      submitLabel: "Create",
       validate: validateName,
       onConfirm: (name) => opsApi.sftpTouch(sessionId, `${cwd === "/" ? "" : cwd}/${name}`),
     });
@@ -441,14 +446,18 @@ export function RemoteFilePanel({
       try {
         await opsApi.sftpUpload(sessionId, paths, cwd);
         await load(cwd);
-        setUploadNotice(paths.length === 1 ? "文件上传完成" : `${paths.length} 个文件上传完成`);
+        setUploadNotice(
+          paths.length === 1
+            ? t("Upload complete")
+            : t("{{count}} files uploaded", { count: paths.length }),
+        );
       } catch (cause) {
         setStatus({ state: "error", message: toErrorMessage(cause) });
       } finally {
         setUploads(null);
       }
     },
-    [cwd, load, sessionId],
+    [cwd, load, sessionId, t],
   );
 
   // The drag listener is registered once, so it calls through this ref rather
@@ -510,7 +519,7 @@ export function RemoteFilePanel({
       const chosen = await openDialog({
         multiple: true,
         directory: false,
-        title: `上传到 ${cwd}`,
+        title: t("Upload to {{path}}", { path: cwd }),
       });
       if (!chosen) return; // cancelled
       const paths = Array.isArray(chosen) ? chosen : [chosen];
@@ -521,7 +530,7 @@ export function RemoteFilePanel({
     } finally {
       setPicking(false);
     }
-  }, [cwd, picking, uploadFiles]);
+  }, [cwd, picking, uploadFiles, t]);
 
   // Drag & drop from the local machine. Tauri intercepts the OS drop and hands
   // over absolute paths; DOM drop events would only give opaque File objects.
@@ -617,24 +626,25 @@ export function RemoteFilePanel({
    */
   const contextTargetRef = useRef<RemoteFileEntry | null>(null);
 
+  // 菜单 label 在右键回调（事件期）里用当前语言即时求值，无需存 key。
   const entryMenu = menu.onContextMenu(() => {
     const entry = contextTargetRef.current;
     if (!entry) return [];
     const isDir = entry.kind === "directory";
     const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
-      { id: "open", label: "打开", icon: CornerDownLeft, onSelect: () => openEntry(entry) },
+      { id: "open", label: t("Open"), icon: CornerDownLeft, onSelect: () => openEntry(entry) },
     ];
     if (!isDir) {
       items.push(
         {
           id: "preview",
-          label: "预览",
+          label: t("Preview"),
           icon: Eye,
           onSelect: () => setPreview({ path: entry.path, name: entry.name, size: entry.size }),
         },
         {
           id: "download",
-          label: "下载到本地…",
+          label: t("Download to local…"),
           icon: Download,
           onSelect: () => void downloadEntry(entry),
         },
@@ -643,24 +653,24 @@ export function RemoteFilePanel({
     items.push({ id: "sep1", separator: true });
     return [
       ...items,
-      { id: "rename", label: "重命名", icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
-      { id: "duplicate", label: "创建副本", icon: Copy, onSelect: () => copyEntry(entry) },
+      { id: "rename", label: t("Rename"), icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
+      { id: "duplicate", label: t("Create a copy"), icon: Copy, onSelect: () => copyEntry(entry) },
       {
         id: "copy-path",
-        label: "复制完整路径",
+        label: t("Copy full path"),
         icon: ClipboardCopy,
         onSelect: () => void navigator.clipboard.writeText(entry.path),
       },
       {
         id: "copy-name",
-        label: "复制文件名",
+        label: t("Copy file name"),
         icon: ClipboardCopy,
         onSelect: () => void navigator.clipboard.writeText(entry.name),
       },
       { id: "sep2", separator: true },
       {
         id: "delete",
-        label: "删除",
+        label: t("Delete"),
         icon: Trash2,
         hint: "Delete",
         danger: true,
@@ -675,16 +685,16 @@ export function RemoteFilePanel({
     return [
       {
         id: "upload",
-        label: "上传文件…",
+        label: t("Upload files…"),
         icon: Upload,
         disabled: !cwd || picking,
         onSelect: () => void pickFilesToUpload(),
       },
       { id: "sep1", separator: true },
-      { id: "mkdir", label: "新建文件夹", icon: FolderPlus, disabled: !cwd, onSelect: createFolder },
-      { id: "touch", label: "新建文件", icon: FilePlus2, disabled: !cwd, onSelect: createFile },
+      { id: "mkdir", label: t("New folder"), icon: FolderPlus, disabled: !cwd, onSelect: createFolder },
+      { id: "touch", label: t("New file"), icon: FilePlus2, disabled: !cwd, onSelect: createFile },
       { id: "sep2", separator: true },
-      { id: "refresh", label: "刷新", icon: RefreshCw, disabled: !cwd, onSelect: refresh },
+      { id: "refresh", label: t("Refresh"), icon: RefreshCw, disabled: !cwd, onSelect: refresh },
     ];
   });
 
@@ -720,37 +730,37 @@ export function RemoteFilePanel({
       ref={panelRef}
       className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-line bg-surface-1"
       style={{ width }}
-      aria-label="远程文件"
+      aria-label={t("Remote files")}
     >
       {/* Drag handle */}
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="拖动调整宽度"
+        aria-label={t("Drag to resize")}
         className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-accent/40"
         onPointerDown={startDrag}
       />
 
       <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-1.5">
-        <PanelButton label="后退" icon={ArrowLeft} disabled={nav.index <= 0} onClick={goBack} />
+        <PanelButton label="Back" icon={ArrowLeft} disabled={nav.index <= 0} onClick={goBack} />
         <PanelButton
-          label="前进"
+          label="Forward"
           icon={ArrowRight}
           disabled={nav.index >= nav.stack.length - 1}
           onClick={goForward}
         />
-        <PanelButton label="上一级" icon={ArrowUp} disabled={!cwd || cwd === "/"} onClick={goUp} />
-        <PanelButton label="刷新" icon={RefreshCw} disabled={!cwd} onClick={refresh} />
-        <PanelButton label="新建文件夹" icon={FolderPlus} disabled={!cwd} onClick={createFolder} />
-        <PanelButton label="新建文件" icon={FilePlus2} disabled={!cwd} onClick={createFile} />
+        <PanelButton label="Go up" icon={ArrowUp} disabled={!cwd || cwd === "/"} onClick={goUp} />
+        <PanelButton label="Refresh" icon={RefreshCw} disabled={!cwd} onClick={refresh} />
+        <PanelButton label="New folder" icon={FolderPlus} disabled={!cwd} onClick={createFolder} />
+        <PanelButton label="New file" icon={FilePlus2} disabled={!cwd} onClick={createFile} />
         <PanelButton
-          label="上传文件到当前目录"
+          label="Upload files to this directory"
           icon={picking ? Loader2 : Upload}
           disabled={!cwd || picking}
           className={picking ? "animate-spin" : undefined}
           onClick={() => void pickFilesToUpload()}
         />
-        <PanelButton label="折叠面板" icon={Pause} onClick={onClose} />
+        <PanelButton label="Collapse panel" icon={Pause} onClick={onClose} />
       </div>
 
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-11">
@@ -777,7 +787,7 @@ export function RemoteFilePanel({
               </span>
             ))
           ) : (
-            <span className="text-fg-subtle">未连接</span>
+            <span className="text-fg-subtle">{t("Disconnected")}</span>
           )}
         </div>
 
@@ -798,11 +808,11 @@ export function RemoteFilePanel({
               {selectedEntry.name}
             </span>
             <div className="flex shrink-0 items-center gap-0.5">
-            <PanelButton label="打开" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
+            <PanelButton label="Open" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
             {selectedEntry.kind !== "directory" && (
               <>
                 <PanelButton
-                  label="预览"
+                  label="Preview"
                   icon={Eye}
                   onClick={() =>
                     setPreview({
@@ -813,16 +823,16 @@ export function RemoteFilePanel({
                   }
                 />
                 <PanelButton
-                  label="下载到本地"
+                  label="Download to local"
                   icon={Download}
                   onClick={() => void downloadEntry(selectedEntry)}
                 />
               </>
             )}
-            <PanelButton label="重命名" icon={Pencil} onClick={() => renameEntry(selectedEntry)} />
-            <PanelButton label="创建副本" icon={Copy} onClick={() => copyEntry(selectedEntry)} />
+            <PanelButton label="Rename" icon={Pencil} onClick={() => renameEntry(selectedEntry)} />
+            <PanelButton label="Create a copy" icon={Copy} onClick={() => copyEntry(selectedEntry)} />
             <PanelButton
-              label="删除"
+              label="Delete"
               icon={Trash2}
               onClick={() => removeEntry(selectedEntry)}
               className="hover:text-danger"
@@ -845,8 +855,8 @@ export function RemoteFilePanel({
         {uploads && (
           <div className="flex items-center gap-2 border-b border-line bg-accent/10 px-3 py-2 text-11 text-fg">
             <Loader2 size={12} className="animate-spin" />
-            <span className="min-w-0 flex-1">正在上传 {uploads.total} 个文件…</span>
-            <span className="text-fg-subtle">请勿关闭面板</span>
+            <span className="min-w-0 flex-1">{t("Uploading {{count}} files…", { count: uploads.total })}</span>
+            <span className="text-fg-subtle">{t("Do not close this panel")}</span>
           </div>
         )}
 
@@ -854,7 +864,7 @@ export function RemoteFilePanel({
           <div className="flex items-center justify-between border-b border-line bg-success/10 px-3 py-2 text-11 text-success">
             <span>{uploadNotice}</span>
             <button type="button" className="text-success/70 hover:text-success" onClick={() => setUploadNotice(null)}>
-              关闭
+              {t("Close")}
             </button>
           </div>
         )}
@@ -866,12 +876,12 @@ export function RemoteFilePanel({
         {status.state === "loading" && (
           <div className="flex items-center gap-2 px-3 py-3 text-11 text-fg-subtle">
             <Loader2 size={13} className="animate-spin" />
-            正在读取…
+            {t("Loading")}
           </div>
         )}
 
         {status.state === "empty" && (
-          <p className="px-3 py-3 text-11 text-fg-subtle">此目录为空。可拖入本地文件上传。</p>
+          <p className="px-3 py-3 text-11 text-fg-subtle">{t("This folder is empty. Drop local files here to upload.")}</p>
         )}
 
         {status.state === "error" && (
@@ -883,7 +893,7 @@ export function RemoteFilePanel({
                 className="self-start rounded px-1.5 py-0.5 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
                 onClick={refresh}
               >
-                重试
+                {t("Retry")}
               </button>
             )}
           </div>
@@ -892,7 +902,7 @@ export function RemoteFilePanel({
         {status.state === "disconnected" && (
           <div className="flex items-center gap-2 px-3 py-3 text-11 text-fg-subtle">
             <Pause size={13} />
-            连接已断开，文件浏览不可用。
+            {t("Connection lost. File browsing is unavailable.")}
           </div>
         )}
 
@@ -920,9 +930,9 @@ export function RemoteFilePanel({
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-[12px] border-2 border-dashed border-accent bg-accent/10 backdrop-blur-[2px]">
             <div className="flex flex-col items-center gap-2 rounded-[10px] bg-surface-1/95 px-5 py-4 text-11 text-accent shadow-lg">
               <Upload size={20} />
-              <span className="font-medium">松开以上传到当前目录</span>
+              <span className="font-medium">{t("Drop to upload here")}</span>
               <span className="truncate text-fg-subtle">{cwd ?? ""}</span>
-              <span className="text-fg-subtle">支持多个文件与文件夹</span>
+              <span className="text-fg-subtle">{t("Files and folders supported")}</span>
             </div>
           </div>
         </div>
@@ -939,13 +949,18 @@ export function RemoteFilePanel({
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={`删除${deleteTarget?.kind === "directory" ? "文件夹" : "文件"}`}
+        title={t(deleteTarget?.kind === "directory" ? "Delete folder" : "Delete file")}
         description={
           deleteTarget?.kind === "directory"
-            ? `确定删除文件夹“${deleteTarget?.name ?? ""}”？文件夹内的全部内容也会一并删除，此操作不可撤销。`
-            : `确定删除文件“${deleteTarget?.name ?? ""}”？此操作不可撤销。`
+            ? t(
+                'Delete folder "{{name}}"? Everything inside will also be deleted. This action cannot be undone.',
+                { name: deleteTarget?.name ?? "" },
+              )
+            : t('Delete file "{{name}}"? This action cannot be undone.', {
+                name: deleteTarget?.name ?? "",
+              })
         }
-        confirmLabel="删除"
+        confirmLabel={t("Delete")}
         danger
         onConfirm={confirmRemove}
         onCancel={() => setDeleteTarget(null)}

@@ -1,5 +1,10 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 
+/**
+ * 图标小按钮：`label` 是英文 key（模块级常量里不能调 hook），渲染处统一
+ * `t(...)` 输出到 aria-label 与 title。
+ */
 export function PanelButton({
   label,
   icon: Icon,
@@ -13,11 +18,12 @@ export function PanelButton({
   className?: string;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
+      aria-label={t(label)}
+      title={t(label)}
       disabled={disabled}
       onClick={onClick}
       className={cn(

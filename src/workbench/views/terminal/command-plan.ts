@@ -18,11 +18,12 @@ import { INJECTED_LINES, MARKER_C_LINE, MARKER_D_LINE } from "./command-boundary
 /** 命令来源（结果 Tab 上可见，便于区分"我敲的"和"重跑的"）。 */
 export type CommandSource = "input" | "rerun" | "history" | "suggest";
 
+/** 模块级常量只存 key（natural keys），渲染处统一 t()。 */
 export const COMMAND_SOURCE_LABELS: Record<CommandSource, string> = {
-  input: "手动输入",
-  rerun: "重新运行",
-  history: "历史命令",
-  suggest: "命令建议",
+  input: "Manual input",
+  rerun: "Rerun",
+  history: "History",
+  suggest: "Suggestion",
 };
 
 /**

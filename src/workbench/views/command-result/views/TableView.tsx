@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useTranslation } from "react-i18next";
 import { COPYABLE, CopyNotice, clickCopyProps, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { numericTone, type ColumnDefinition, type SummaryItem } from "../model";
 
@@ -21,6 +22,7 @@ export function TableView({
   summary?: SummaryItem[];
 }) {
   const [filter, setFilter] = useState("");
+  const { t } = useTranslation();
   const { status, copy } = useCopyFeedback();
 
   const visible = useMemo(() => {
@@ -53,7 +55,7 @@ export function TableView({
         <input
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          placeholder="筛选…"
+          placeholder={t("Filter…")}
           spellCheck={false}
           className="ml-auto h-[22px] w-40 rounded-[5px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
         />
@@ -100,7 +102,7 @@ export function TableView({
                           "block w-full truncate",
                           column.numeric && "text-right",
                         )}
-                        title="点击复制该单元格"
+                        title={t("Click to copy this cell")}
                       >
                         {text || "—"}
                       </button>
@@ -113,7 +115,7 @@ export function TableView({
         </table>
         {visible.length === 0 && (
           <p className="px-3 py-6 text-center text-11 text-fg-subtle">
-            {rows.length === 0 ? "没有数据。" : "没有匹配的记录。"}
+            {rows.length === 0 ? t("No data.") : t("No matching records.")}
           </p>
         )}
       </div>

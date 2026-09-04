@@ -161,6 +161,40 @@ describe("ContextMenu", () => {
     plain.remove();
   });
 
+  it("只保留最近打开的那一个菜单（不同实例互斥，双开不复现）", () => {
+    // 服务器列表正是这种接线：每个行 + 空白背景各有独立 useContextMenu。
+    function TwinHarness() {
+      const first = useContextMenu();
+      const second = useContextMenu();
+      return (
+        <div>
+          <div
+            data-testid="target-a"
+            onContextMenu={first.onContextMenu(() => [{ id: "a", label: "菜单A" }])}
+          />
+          <div
+            data-testid="target-b"
+            onContextMenu={second.onContextMenu(() => [{ id: "b", label: "菜单B" }])}
+          />
+          <ContextMenu {...first.props} />
+          <ContextMenu {...second.props} />
+        </div>
+      );
+    }
+    act(() => {
+      root.render(<TwinHarness />);
+    });
+
+    rightClick("[data-testid=target-a]");
+    expect(menuEls()).toHaveLength(1);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["菜单A"]);
+
+    // 第二个区域的右键必须顶掉第一个菜单，而不是两个并存。
+    rightClick("[data-testid=target-b]");
+    expect(menuEls()).toHaveLength(1);
+    expect(menuItems().map((item) => item.textContent)).toEqual(["菜单B"]);
+  });
+
   it("runs the item and closes when one is clicked", () => {
     const onSelect = vi.fn();
     render([{ id: "open", label: "打开", onSelect }]);

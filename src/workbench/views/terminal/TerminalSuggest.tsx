@@ -18,7 +18,7 @@ import {
  * - 点击候选行 / → / Enter → **只填入**（第一次 Enter 填入并关闭面板，
  *   第二次 Enter 才由 shell 正常执行）；
  * - 点击 ▶ / Ctrl+Enter → 补全后**立即执行**，走唯一提交入口
- *   （受控标记 → 捕获输出 → adapt_auto → 结构化结果 Tab）。
+ *   （受控标记 → 捕获输出 → 渲染快照 → 结果 Tab）。
  */
 export function TerminalSuggest({
   hits,

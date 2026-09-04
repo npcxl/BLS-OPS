@@ -14,7 +14,7 @@ import {
   Unplug,
   WifiOff,
 } from "lucide-react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type IMarker } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
@@ -38,7 +38,9 @@ import { ParamPicker } from "./ParamPicker";
 import {
   TerminalCommandCoordinator,
   type CapturedResult,
+  type RenderOutcome,
 } from "./TerminalCommandCoordinator";
+import { extractTerminalSnapshot } from "./extract-terminal-snapshot";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import type { CommandSearchHit } from "@/api/ops-api";
 import { TERMINAL_ENCODINGS, type TerminalEncoding } from "@/api/types/ssh";
@@ -127,32 +129,68 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
   const [drawerClosed, setDrawerClosed] = useState(false);
+  /**
+   * 捕获命令在 xterm 缓冲里的**起始行**（提交时注册一次）。
+   *
+   * 命令输出滚出回滚缓冲 / 清屏时 xterm 会把 marker 置为失效（line = -1）
+   * 并自动丢弃 —— 快照取不到就由协调器降级（见 consumeTerminalSnapshot），
+   * 绝不在错误的行上猜起点。
+   */
+  const captureMarkerRef = useRef<{ marker: IMarker } | null>(null);
+  const releaseCaptureMarker = useCallback(() => {
+    const held = captureMarkerRef.current;
+    captureMarkerRef.current = null;
+    if (held) held.marker.dispose();
+  }, []);
+
+  /**
+   * 从已渲染的 xterm buffer 提取命令区快照并**消费**（释放）本次的起始行
+   * marker。只释放传入的那个 marker —— 异步快照期间可能有新命令提交登记了
+   * 新的 marker，绝不能误放别人的。
+   */
+  const consumeTerminalSnapshot = useCallback(
+    (held: { marker: IMarker } | null): RenderOutcome => {
+      const instance = terminalRef.current;
+      const line = held ? held.marker.line : -1;
+      if (held) {
+        if (captureMarkerRef.current === held) captureMarkerRef.current = null;
+        held.marker.dispose();
+      }
+      // marker 失效 / 终端已销毁 → { text: null }：协调器走原始流降级。
+      if (!instance || line < 0) return { text: null };
+      const buffer = instance.buffer.active;
+      return {
+        text: extractTerminalSnapshot({
+          // IBuffer.getLine 返回 undefined，纯函数以 null 为缺省值 —— 包一层。
+          buffer: { length: buffer.length, getLine: (index) => buffer.getLine(index) ?? null },
+          startLine: line,
+        }),
+      };
+    },
+    [],
+  );
+
   const coordinatorRef = useRef<TerminalCommandCoordinator | null>(null);
   if (!coordinatorRef.current) {
     coordinatorRef.current = new TerminalCommandCoordinator({
       match: (text) => opsApi.commandMatchText(text),
-      adapt: (input) =>
-        opsApi.commandAdaptOutput({
-          // 命中知识库时 → 专用适配器只作 hint；未命中 → 纯自动识别。
-          knowledgeId: input.knowledgeId,
-          adapterHint: input.adapterHint,
-          command: input.command,
-          stdout: input.stdout,
-          stderr: input.stderr,
-          normalized: input.normalized,
-          exitCode: input.exitCode,
-          durationMs: input.durationMs,
-          truncated: input.truncated,
-        }),
       onResult: (result) => {
         setCommandResults((current) => [...current, result]);
         setActiveResultId(result.id);
         setDrawerCollapsed(false);
         setDrawerClosed(false);
       },
+      // 护栏兜底（受控标记始终没来）：主动向终端要一次当前快照。
+      captureNow: () => consumeTerminalSnapshot(captureMarkerRef.current),
     });
   }
-  useEffect(() => () => coordinatorRef.current?.dispose(), []);
+  useEffect(
+    () => () => {
+      coordinatorRef.current?.dispose();
+      releaseCaptureMarker();
+    },
+    [releaseCaptureMarker],
+  );
 
   /** 重运行：按**真实风险**门控（详见文件下方的 rerun —— 依赖唯一提交入口）。 */
   const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
@@ -321,10 +359,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * ```text
    * executeTerminalCommand(command, source)
    *   → coordinator.submit(command, source, plan)   // 开始捕获 + 记边界起点
+   *   → 注册 xterm 起始行 marker                     // 快照起点（一次一个）
    *   → sshInput(command + 受控标记)                 // 只写一次
-   *   → 捕获输出（stdout / stderr 分开）
-   *   → adapt_auto                                   // 收到 OSC 133 D 时解析
-   *   → 新建结构化结果 Tab
+   *   → stdout / stderr 原样累积，只写主 Terminal
+   *   → OSC 133 D → D 之前文本写完渲染后截图          // provideRenderedText 汇合
+   *   → 新建结果 Tab（默认渲染快照，原始输出调试）
    * ```
    *
    * `options.prefix` 是需要**原样**先发出去的按键数据（用户敲的回车、建议
@@ -348,6 +387,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const plan = planCommandSubmission(trimmed, mode);
       coordinatorRef.current?.submit(trimmed, source, plan);
       boundaryParserRef.current?.expect(plan.markers);
+      // 捕获起点：当前光标行 = 命令回显所在行。一次提交只注册一个 marker，
+      // 等输出结束后（D 标记 / 兜底）由 consumeTerminalSnapshot 消费释放。
+      if (plan.capture) {
+        releaseCaptureMarker();
+        const instance = terminalRef.current;
+        if (instance) {
+          const marker = instance.registerMarker(0);
+          captureMarkerRef.current = marker ? { marker } : null;
+        }
+      }
       const prefix = options?.prefix ?? "";
       if (!prefix && !plan.write) return;
       // `line-ready` 依赖调用方把回车一起发出来；没有（如 Ctrl+C 放弃行）
@@ -357,7 +406,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         .sshInput(sessionId, prefix + (needsSubmit ? "\r" : "") + plan.write)
         .catch(() => undefined);
     },
-    [sessionId],
+    [releaseCaptureMarker, sessionId],
   );
 
   /** 重运行：按**真实风险**门控（只读直接跑；修改型 / 未知必须确认；删除类不提供）。 */
@@ -451,7 +500,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /**
    * **执行**候选（区别于 `applySuggestion` 的"只填入不执行"）：补全剩余
    * 字符后**立刻提交**，走唯一入口 `executeTerminalCommand`（→ 标记 → 捕获
-   * → adapt_auto → 结果 Tab）。
+   * → 渲染快照 → 结果 Tab）。
    *
    * 补全字符与回车**一次写入**，不做两次 `sshInput` —— 否则标记行可能插到
    * 命令行中间。
@@ -750,26 +799,71 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
 
     let disposed = false;
+    // xterm 解析是**异步**的：instance.write(data, callback) 的 callback 在数据
+    // 被解析渲染完才触发（同一实例内 FIFO，stdout/stderr 同一条队列）。快照
+    // 必须排在"输出结束之前的所有写入"之后 —— 用这条链把 callback 串起来，
+    // 严禁 setTimeout 猜渲染。
+    let writeQueue: Promise<void> = Promise.resolve();
+    const queueWrite = (text: string): Promise<void> => {
+      if (!text) return writeQueue;
+      const done = new Promise<void>((resolve) => {
+        instance.write(text, () => resolve());
+      });
+      writeQueue = writeQueue.catch(() => undefined).then(() => done);
+      return done;
+    };
     const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
       if (disposed) return;
       const output = event.payload;
-      // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，
-      // 同时把 OSC 133 事件交给协调器判定输出起止。
+      // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，同时把
+      // OSC 133 事件按原始顺序切进 parts —— 文本写终端、事件决定快照时机。
       const parsed =
-        boundaryParserRef.current?.feed(output) ?? { text: output, events: [] };
+        boundaryParserRef.current?.feed(output) ?? {
+          text: output,
+          events: [],
+          parts: [{ kind: "text", text: output }],
+        };
       coordinatorRef.current?.onOutput(parsed.text, parsed.events);
-      if (!parsed.text) return;
-      if (isCommandNotFoundOutput(parsed.text)) {
-        instance.write(`\x1b[31m命令无效：${parsed.text}\x1b[0m`);
-      } else {
-        instance.write(parsed.text);
+      const notFound = isCommandNotFoundOutput(parsed.text);
+      const display = (text: string) => (notFound ? `\x1b[31m命令无效：${text}\x1b[0m` : text);
+
+      // 按事件把文本切成"结束标记之前 / 之后"两段：
+      // 先写 D 之前的全部内容，等它**渲染完**（write callback）再抓快照 ——
+      // 此刻 xterm 缓冲正好停在输出结束处，紧跟在 D 后面的提示符还没写进来，
+      // 不会混进快照尾部。
+      let before = "";
+      let after = "";
+      let sawEnd = false;
+      for (const part of parsed.parts) {
+        if (part.kind === "text") {
+          if (sawEnd) after += part.text;
+          else before += part.text;
+        } else if (part.kind === "event" && part.event.type === "output_end") {
+          sawEnd = true;
+        }
       }
+      // 同步抓住本次结束对应的 marker —— 异步渲染期间可能有新命令提交。
+      const heldAtEnd = captureMarkerRef.current;
+      void (async () => {
+        if (!sawEnd) {
+          await queueWrite(display(before));
+          return;
+        }
+        if (before) {
+          await queueWrite(display(before));
+        } else {
+          // 结束标记单独成块（没有可写文本）：等之前已排队的全部写入渲染完。
+          await writeQueue;
+        }
+        coordinatorRef.current?.provideRenderedText(consumeTerminalSnapshot(heldAtEnd));
+        if (after) await queueWrite(display(after));
+      })();
       // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
       setInAlternate(instance.buffer.active.type !== "normal");
       updateSuggestAnchor();
     });
     // stderr 与 stdout 分开：Rust 侧两条流各有独立的流式解码器，事件也分开，
-    // 否则结构化结果的 `raw.stderr` 永远是空的。
+    // 否则结果的原始输出里永远没有 stderr。写入仍走同一 xterm 队列。
     const unlistenStderr = listen<string>(sshStderrEvent(sessionId), (event) => {
       if (disposed) return;
       const text = event.payload;

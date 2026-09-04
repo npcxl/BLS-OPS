@@ -391,6 +391,15 @@ describe("ServerListTree — 分组", () => {
     expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
   });
 
+  it("整列可右键：根容器（min-h-full 撑满滚动区）空白同样给出列表动作", async () => {
+    servers = [server("s1")];
+    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+
+    await rightClick('[data-testid="server-list-tree"]');
+    const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
+    expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
+  });
+
   it("a row's own menu wins over the blank-space one", async () => {
     servers = [server("s1")];
     await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
@@ -399,6 +408,20 @@ describe("ServerListTree — 分组", () => {
     const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
     expect(labels).toContain("打开终端");
     expect(labels).not.toContain("新增分组");
+  });
+
+  it("行菜单打开后再在空白处右键：旧菜单被顶掉，全局只剩一个", async () => {
+    servers = [server("s1")];
+    await render(<ServerListTree title="服务器列表" onOpenServer={() => undefined} />);
+
+    await rightClick('[data-testid="server-row-s1"]');
+    expect(menuEls()).toHaveLength(1);
+
+    // 空白区右键打开背景菜单（刷新/新增…），行菜单必须随之关闭。
+    await rightClick('[data-testid="server-list-tree"]');
+    expect(menuEls()).toHaveLength(1);
+    const labels = menuItems(menuEls()[0]).map((item) => item.textContent?.trim());
+    expect(labels).toEqual(["刷新服务器", "新增服务器", "新增分组", "收起侧边栏"]);
   });
 
   it("runs the header action chosen from the blank-space menu", async () => {

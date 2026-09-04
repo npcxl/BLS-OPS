@@ -2,10 +2,11 @@ import { useRef } from "react";
 import { ChevronDown, Copy, History, RotateCw, X } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/clipboard";
 import { RISK_META } from "@/api/ops-api";
-import { CommandResultPanel } from "@/workbench/views/command-result/CommandResultPanel";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
 import { COMMAND_SOURCE_LABELS } from "./command-plan";
+import { TerminalSnapshotView } from "./TerminalSnapshotView";
 
 /**
  * 知识库**没有**命中时的风险展示。
@@ -16,13 +17,16 @@ import { COMMAND_SOURCE_LABELS } from "./command-plan";
 const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted" };
 
 /**
- * 终端下方的结构化结果抽屉 —— 结果是**真正可管理的 Tab**。
+ * 终端下方的命令结果抽屉 —— 结果是**真正可管理的 Tab**。
  *
  * 每个 Tab：
  * - 左键：查看并展开；
  * - `×` / 中键：关闭；
  * - 右键菜单：查看 / 重新运行（按真实风险门控）/ 复制命令 / 关闭 /
  *   关闭其他 / 关闭全部。
+ *
+ * 内容区是 [TerminalSnapshotView]：默认展示从 xterm buffer 还原的渲染快照，
+ * 原始输出作调试视图（不做任何结构化/表格化 —— 那是 Docker/服务/项目模块的事）。
  *
  * 关闭当前结果后优先选择右侧相邻，没有则选左侧；全部关闭则隐藏抽屉。
  * **未识别命令不产出结果 → 抽屉不渲染**。原始终端内容永远保留。
@@ -74,7 +78,7 @@ export function TerminalResultDrawer({
         id: "copy",
         label: "复制命令",
         icon: Copy,
-        onSelect: () => void navigator.clipboard.writeText(item.command),
+        onSelect: () => void copyText(item.command),
       },
       { id: "sep1", separator: true },
       { id: "close", label: "关闭", onSelect: () => onCloseTab(item.id) },
@@ -174,26 +178,8 @@ export function TerminalResultDrawer({
 
       {!collapsed && (
         <div className="h-[38vh] min-h-[180px] px-2 pb-2">
-          {/* key = 结果 id：切换结果时视图状态（结构化/可读/原始）重置为默认 */}
-          <CommandResultPanel
-            key={active.id}
-            result={{
-              knowledge_id: active.knowledgeId,
-              title: active.result.title,
-              // **真实风险**（知识库返回），禁止伪装成只读。
-              risk: active.risk,
-              raw: {
-                command_executed: active.command,
-                // 完整原始流（含 ESC 控制序列）——面板的"原始输出"Tab 经转义展示。
-                stdout: active.rawOutput,
-                stderr: active.stderr || active.result.raw.stderr,
-                duration_ms: active.result.meta.duration_ms,
-              },
-              structured: active.result as unknown as never,
-            }}
-            // 可读输出：面板**默认**展示它，用户不会直接看到 ESC[?2004l 之类。
-            readable={active.readableOutput}
-          />
+          {/* key = 结果 id：切换结果时视图状态（渲染/原始）重置为默认 */}
+          <TerminalSnapshotView key={active.id} result={active} />
         </div>
       )}
       <ContextMenu {...menu.props} title={activeRef.current?.command} />

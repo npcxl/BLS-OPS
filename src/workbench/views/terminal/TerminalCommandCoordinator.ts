@@ -1,40 +1,50 @@
-import type { CommandSearchHit, Mutability, RiskLevel, StructuredCommandResult } from "@/api/ops-api";
+import type { CommandSearchHit, Mutability, RiskLevel } from "@/api/ops-api";
 import { canonicalCommand, normalizeForParsing } from "./terminal-output-clean";
 import type { BoundaryEvent } from "./command-boundary";
 import type { CommandPlan, CommandSource } from "./command-plan";
 
 /**
- * 终端命令协调器 —— 把**终端**与统一输出适配引擎连起来（P4 终端接线）。
+ * 终端命令协调器 —— 只负责**边界 + 风险 + 结果组装**，不做任何文本解析。
  *
- * 职责：
- * 1. 命令提交（唯一入口 `submit`）→ 识别它是不是知识库里的命令；
- * 2. 开始捕获本次命令的输出（**双缓冲**：raw 给原始输出 Tab，
- *    normalized 清洗后给适配器解析；stdout 与 stderr 分开累积）；
- * 3. 收到**命令边界**的"输出结束"标记 → 调用 `adapt_auto` 解析；
- * 4. 产出结构化结果 Tab。
+ * 终端结果 = xterm 终端快照方案：
+ *
+ * ```text
+ * SSH 原始流 → xterm 完整解析（用户看到什么就抓什么）
+ *            → marker 行号 + translateToString(true) + isWrapped 合并
+ *            → renderedText（默认展示）      raw stdout → 原始输出 Tab
+ * ```
+ *
+ * 快照的**取与合**在 TerminalView（握着 xterm 实例）；本协调器管状态机：
+ *
+ * 1. 命令提交（唯一入口 `submit`）→ 识别知识库（只取真实风险 / 可变性）；
+ * 2. stdout / stderr 原样累积（原始留档，给"原始输出"调试视图）；
+ * 3. 收到**命令边界**输出结束 → 汇合渲染快照 → 产出结果 Tab。
+ *
+ * **不再调用 `adapt_auto`**：结构化适配器（表格 / JSON / 键值…）只留给
+ * Docker / 服务 / 项目 / 日志等独立模块，终端结果一律是快照视图。
  *
  * # 绝不重复执行
  *
- * `adapt` 是纯解析（`command_adapt_output` 后端不执行命令）。命令只在
- * 终端里跑了一次 —— 重复执行会让 `docker ps` 跑两次，修改型命令更危险。
+ * 命令只在终端里跑了一次 —— 本协调器不执行任何命令。
  *
  * # 命令边界（不是"静默 400ms 猜结束"）
  *
- * 结束由**受控标记**（OSC 133 D）给出，五个量都是测出来的：
- * 命令开始 = 提交时刻；输出开始 = OSC 133 C（缺失则用第一块输出）；
- * 输出结束 = OSC 133 D；退出码 = D 的参数；耗时 = 结束 − 开始。
- * 因此：
- * - 慢命令（分两批输出 / 超过 10 秒）**不会被截断**；
- * - 输出密集的长任务不会被超时腰斩。
+ * 结束由**受控标记**（OSC 133 D）给出：命令开始 = 提交时刻；输出开始 =
+ * OSC 133 C（缺失则用第一块输出）；输出结束 = OSC 133 D；退出码 = D 的
+ * 参数；耗时 = 结束 − 开始。因此慢命令不会被截断、密集输出不会被腰斩。
  *
  * [`NO_MARKER_FAILSAFE_MS`] 只是**护栏**：标记始终没来（shell 不支持
  * `printf`、命令吞掉了 stdin）时兜底收场，它不是边界判定手段。
  *
- * # 未命中知识库也要出结果
+ * # 渲染快照的两种来源
  *
- * 知识库只用于**风险门控**和"专用适配器 hint"。没命中不代表不能结构化 ——
- * 输出照常走 `adapt_auto`（表格 / JSON / 键值…都能自动识别）。此时
- * `risk = null`、`mutability = "unknown"`，**绝不伪装成只读**。
+ * - **受控结束**（OSC 133 D）：TerminalView 在写完 D 之前的文本并解析渲染
+ *   完成后调用 [`provideRenderedText`] 汇合 —— 保证抓到的是**已渲染**内容；
+ * - **护栏兜底**（无标记）：协调器通过 [`CoordinatorDeps.captureNow`] 主动
+ *   向终端要一次当前快照。
+ *
+ * 若快照不可用（marker 被回滚淘汰、无实例），结果降级为清洗后的原始流并
+ * 显式标记 `renderedDegraded` —— 绝不静默丢结果。
  */
 
 /**
@@ -63,14 +73,13 @@ export interface CommandBoundary {
   endedBy: "marker" | "failsafe" | "replaced";
 }
 
-/** 终端命令的结构化结果（含**真实风险** —— 禁止伪装成只读）。 */
+/** 终端命令的渲染快照结果（含**真实风险** —— 禁止伪装成只读）。 */
 export interface CapturedResult {
   id: string;
   /** 用户实际执行的命令原文（含 sudo / 管道等，展示用）。 */
   command: string;
   /** 知识库 id；未命中为空串。 */
   knowledgeId: string;
-  result: StructuredCommandResult;
   at: number;
   /** 命令真实风险（来自知识库）；**未命中 = null，不猜**。 */
   risk: RiskLevel | null;
@@ -80,40 +89,43 @@ export interface CapturedResult {
   canExecute: boolean;
   source: CommandSource;
   boundary: CommandBoundary;
+  /** 原始 stdout（含命令回显 / 提示符等，标记已剔除）—— 原始输出调试视图。 */
   stdout: string;
+  /** 原始 stderr（与 stdout 分开累积、独立解码）。 */
   stderr: string;
-  /**
-   * **原始捕获流**（含 ANSI 控制序列、`\r`、退格等，未加工）—— 高级调试 /
-   * 完整留档用，展示时必须经转义（见 RawStreamView）。
-   */
+  /** 与 stdout 相同的原始留档（兼容别名）。 */
   rawOutput: string;
   /**
-   * **可读输出**：`normalizeForParsing(rawOutput, command)` 的结果
-   * （去控制序列 / 回显 / 尾部提示符）。结果面板**默认**展示它 ——
-   * 用户不该看到 `ESC[?2004l` 这类控制字符。
+   * **已渲染文本**：从 xterm buffer（`translateToString(true)` +
+   * `line.isWrapped` 合并软换行）提取的结果区域 —— 结果面板**默认**展示。
+   * `null` = 快照不可用时的降级文本（见 `renderedDegraded`）。
    */
-  readableOutput: string;
+  renderedText: string | null;
+  /**
+   * `true` = 渲染快照不可用，`renderedText` 是对原始流做清洗的结果
+   * （不能还原终端软换行），面板显示"已降级"提示 —— 绝不伪装成快照。
+   */
+  renderedDegraded: boolean;
 }
 
-export interface AdaptInput {
-  knowledgeId: string | null;
-  adapterHint: string | null;
-  command: string;
-  stdout: string;
-  stderr: string;
-  normalized: string;
-  exitCode: number | null;
-  durationMs: number;
-  truncated: boolean;
+export interface RenderOutcome {
+  /**
+   * 从 xterm buffer 提取的文本；`null` = 本次没有可用的渲染快照
+   * （无 marker / marker 被淘汰），由协调器降级。
+   */
+  text: string | null;
 }
 
 export interface CoordinatorDeps {
-  /** 规范化命令文本 → 知识库命中；未识别返回 null。 */
+  /** 规范化命令文本 → 知识库命中；未识别返回 null（只用于风险门控）。 */
   match: (text: string) => Promise<CommandSearchHit | null>;
-  /** 纯解析：raw 与 normalized 分开传（两份数据严格分开）。 */
-  adapt: (input: AdaptInput) => Promise<StructuredCommandResult>;
-  /** 解析完成后回调（推入结果列表）。 */
+  /** 渲染结果 Tab。 */
   onResult: (result: CapturedResult) => void;
+  /**
+   * 立即抓一次当前快照（**护栏兜底**路径用：标记始终没来，协调器主动收）。
+   * 缺省 = 直接降级。
+   */
+  captureNow?: () => RenderOutcome | Promise<RenderOutcome>;
   /** 当前时间（测试可注入）。 */
   now?: () => number;
 }
@@ -125,9 +137,8 @@ interface Session {
   /** 清洗后的命令（去 sudo / 截管道），用于知识库匹配。 */
   canonical: string;
   knowledgeId: string | null;
-  adapterHint: string | null;
   hit: CommandSearchHit | null;
-  /** **原始** stdout（真实留档，给原始输出 Tab）。 */
+  /** **原始** stdout（真实留档，给原始输出调试视图）。 */
   stdout: string;
   /** **原始** stderr（与 stdout 分开累积）。 */
   stderr: string;
@@ -135,9 +146,15 @@ interface Session {
   truncated: boolean;
   /** 异步 match 还没回来 —— 标记已到时要等它，别丢风险信息。 */
   matchPending: boolean;
+  /** 输出结束（受控或兜底）后，渲染快照还没汇合。 */
+  renderPending: boolean;
+  renderedText: string | null;
+  renderedDegraded: boolean;
   failsafe: number | null;
   /** 已收尾（标记/兜底）或已作废。 */
   done: boolean;
+  /** 已产出（防重复 emit）。 */
+  emitted: boolean;
   /**
    * 被新命令提交 / dispose 作废。
    *
@@ -154,6 +171,8 @@ function nextId(now: number): string {
 
 export class TerminalCommandCoordinator {
   private session: Session | null = null;
+  /** 已收尾（marker 路径）但渲染还没汇合的会话 —— 只可能有一个。 */
+  private waiter: Session | null = null;
   private disposed = false;
 
   constructor(private deps: CoordinatorDeps) {}
@@ -182,7 +201,6 @@ export class TerminalCommandCoordinator {
       source,
       canonical: canonicalCommand(trimmed) ?? trimmed,
       knowledgeId: null,
-      adapterHint: null,
       hit: null,
       stdout: "",
       stderr: "",
@@ -195,8 +213,12 @@ export class TerminalCommandCoordinator {
       },
       truncated: false,
       matchPending: true,
+      renderPending: false,
+      renderedText: null,
+      renderedDegraded: false,
       failsafe: null,
       done: false,
+      emitted: false,
       cancelled: false,
     };
     this.session = session;
@@ -204,7 +226,7 @@ export class TerminalCommandCoordinator {
     session.failsafe = window.setTimeout(() => {
       if (session.cancelled || this.session !== session) return;
       session.boundary.endedBy = "failsafe";
-      this.finish(session);
+      this.finish(session, { viaMarker: false });
     }, NO_MARKER_FAILSAFE_MS);
 
     const onMatched = (resolved: CommandSearchHit | null) => {
@@ -212,10 +234,8 @@ export class TerminalCommandCoordinator {
       if (session.cancelled || this.disposed) return;
       session.hit = resolved;
       session.knowledgeId = resolved?.id ?? null;
-      session.adapterHint = resolved?.output_adapter ?? null;
       session.matchPending = false;
-      // 标记已经在等 match 了 → 现在产出结果。
-      if (session.done) this.emit(session);
+      this.tryEmit(session);
     };
     void this.deps
       .match(session.canonical)
@@ -249,77 +269,15 @@ export class TerminalCommandCoordinator {
     }
   }
 
-  private applyEvents(session: Session, events: BoundaryEvent[]): void {
-    for (const event of events) {
-      if (event.type === "output_start") {
-        session.boundary.outputStart = this.now();
-        continue;
-      }
-      if (event.type === "output_end") {
-        session.boundary.outputEnd = this.now();
-        session.boundary.exitCode = event.exitCode;
-        this.finish(session);
-        return;
-      }
-    }
-  }
-
-  private finish(session: Session): void {
-    if (this.session !== session) return;
-    session.done = true;
-    if (session.failsafe !== null) {
-      window.clearTimeout(session.failsafe);
-      session.failsafe = null;
-    }
-    this.session = null;
-    // match 还没回来：等它（风险信息不能丢），回来后再产出。
-    if (session.matchPending) return;
-    this.emit(session);
-  }
-
-  private emit(session: Session): void {
-    const end = session.boundary.outputEnd ?? this.now();
-    const durationMs = Math.max(0, end - session.boundary.commandStart);
-    // 双缓冲：rawOutput 原始流留档（含 ESC 控制序列），readableOutput 给解析器
-    // 同时是结果面板**默认展示**的可读文本（去 ANSI / 回显 / 提示符）。
-    const rawOutput = session.stdout;
-    const readableOutput = normalizeForParsing(rawOutput, session.command);
-    void this.deps
-      .adapt({
-        knowledgeId: session.knowledgeId,
-        adapterHint: session.adapterHint,
-        command: session.command,
-        stdout: rawOutput,
-        stderr: session.stderr,
-        normalized: readableOutput,
-        exitCode: session.boundary.exitCode,
-        durationMs,
-        truncated: session.truncated,
-      })
-      .then((result) => {
-        if (this.disposed) return;
-        const at = this.now();
-        this.deps.onResult({
-          id: nextId(at),
-          command: session.command,
-          knowledgeId: session.knowledgeId ?? "",
-          result,
-          at,
-          // 知识库没命中 → null：绝不把未知命令伪装成只读。
-          risk: session.hit?.risk ?? null,
-          mutability: session.hit?.mutability ?? "unknown",
-          canExecute: true,
-          source: session.source,
-          boundary: { ...session.boundary, durationMs },
-          stdout: rawOutput,
-          stderr: session.stderr,
-          rawOutput,
-          readableOutput,
-        });
-      })
-      .catch(() => {
-        /* 解析失败不打扰用户：终端输出已经原样显示了 */
-      });
+  /**
+   * 汇合渲染快照（**受控结束**路径）：TerminalView 在写完输出结束标记之前
+   * 的所有文本、确认 xterm 已解析完成后调用。
+   */
+  provideRenderedText(outcome: RenderOutcome): void {
+    const session = this.waiter;
+    this.waiter = null;
+    if (!session || session.cancelled || this.disposed) return;
+    this.applyRender(session, outcome);
   }
 
   /** 放弃当前捕获（新命令提交、切换会话、卸载时用）。 */
@@ -332,11 +290,105 @@ export class TerminalCommandCoordinator {
       window.clearTimeout(session.failsafe);
       session.failsafe = null;
     }
+    if (this.waiter === session) this.waiter = null;
     this.session = null;
   }
 
   dispose(): void {
     this.disposed = true;
     this.cancel();
+  }
+
+  private applyEvents(session: Session, events: BoundaryEvent[]): void {
+    for (const event of events) {
+      if (event.type === "output_start") {
+        session.boundary.outputStart = this.now();
+        continue;
+      }
+      if (event.type === "output_end") {
+        session.boundary.outputEnd = this.now();
+        session.boundary.exitCode = event.exitCode;
+        this.finish(session, { viaMarker: true });
+        return;
+      }
+    }
+  }
+
+  private finish(session: Session, options: { viaMarker: boolean }): void {
+    if (this.session !== session) return;
+    session.done = true;
+    if (session.failsafe !== null) {
+      window.clearTimeout(session.failsafe);
+      session.failsafe = null;
+    }
+    this.session = null;
+    session.renderPending = true;
+    if (options.viaMarker) {
+      // 渲染由 TerminalView 在写完 D 之前的文本后提供（见 provideRenderedText）。
+      this.waiter = session;
+      this.tryEmit(session);
+      return;
+    }
+    // 护栏兜底：协调器主动向终端要快照。
+    void this.captureNow(session);
+  }
+
+  private async captureNow(session: Session): Promise<void> {
+    let outcome: RenderOutcome = { text: null };
+    if (this.deps.captureNow) {
+      try {
+        outcome = await this.deps.captureNow();
+      } catch {
+        // 抓不到就降级，不抛。
+      }
+    }
+    if (session.cancelled || this.disposed) return;
+    this.applyRender(session, outcome);
+  }
+
+  private applyRender(session: Session, outcome: RenderOutcome): void {
+    session.renderedText = outcome.text ?? null;
+    session.renderedDegraded = outcome.text === null;
+    session.renderPending = false;
+    this.tryEmit(session);
+  }
+
+  private tryEmit(session: Session): void {
+    if (session.cancelled || this.disposed || session.emitted) return;
+    // 还没收尾（done）就不能产出：慢命令正在输出时 match 先回来，若这里
+    // 放行会把"进行中的命令"当成"已完成"提前交付一个空/降级结果。
+    if (!session.done || session.matchPending || session.renderPending) return;
+    session.emitted = true;
+    this.emit(session);
+  }
+
+  private emit(session: Session): void {
+    const end = session.boundary.outputEnd ?? this.now();
+    const durationMs = Math.max(0, end - session.boundary.commandStart);
+    const rawOutput = session.stdout;
+    // 快照不可用 → 降级为对原始流的清洗结果，并显式标记（不伪装成快照）。
+    const degraded =
+      session.renderedText === null || session.renderedDegraded
+        ? normalizeForParsing(rawOutput, session.command)
+        : null;
+    const renderedText = session.renderedText ?? degraded ?? "";
+    const at = this.now();
+    this.deps.onResult({
+      id: nextId(at),
+      command: session.command,
+      knowledgeId: session.knowledgeId ?? "",
+      at,
+      // 知识库没命中 → null：绝不把未知命令伪装成只读。
+      risk: session.hit?.risk ?? null,
+      mutability: session.hit?.mutability ?? "unknown",
+      canExecute: true,
+      source: session.source,
+      boundary: { ...session.boundary, durationMs },
+      stdout: rawOutput,
+      stderr: session.stderr,
+      rawOutput,
+      renderedText,
+      renderedDegraded: degraded !== null,
+    });
   }
 }

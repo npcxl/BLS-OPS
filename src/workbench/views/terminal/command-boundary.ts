@@ -39,11 +39,27 @@
  * 兜底定时器收场，并在结果里给出可见说明。兜底不是边界判定，只是护栏。
  */
 
+/**
+ * 一段按事件切分的内容：
+ *
+ * - `text` 段：清洗后的文本（已剔除 OSC 标记与注入行回显）—— 写进 xterm；
+ * - `event` 段：该事件位于前后两段文本**之间**，本身没有可见内容。
+ *
+ * 用 `parts` 顺序驱动写终端，就能在 `output_end` 处**先截快照再写后续**
+ * （否则 D 标记之后的提示符会混进快照尾部）。`text` / `events` 字段是
+ * `parts` 的等价投影，保留给只看整体结果的旧调用方。
+ */
+export type BoundaryPart =
+  | { kind: "text"; text: string }
+  | { kind: "event"; event: BoundaryEvent };
+
 /** 一次边界解析的产物。 */
 export interface BoundaryParse {
   /** 清洗后的文本（已剔除 OSC 标记与注入行回显）—— 直接写进 xterm。 */
   text: string;
   events: BoundaryEvent[];
+  /** 按事件切分的段落（文本与事件按原始字节顺序交错）。 */
+  parts: BoundaryPart[];
 }
 
 export type BoundaryEvent =
@@ -168,15 +184,32 @@ export class CommandBoundaryParser {
   }
 
   private drain(last: boolean): BoundaryParse {
-    let text = "";
+    const parts: BoundaryPart[] = [];
     const events: BoundaryEvent[] = [];
+    let accumulated = "";
     let buffer = this.buffer;
+
+    const flushText = () => {
+      if (accumulated !== "") {
+        parts.push({ kind: "text", text: accumulated });
+        accumulated = "";
+      }
+    };
+    const pushEvent = (event: BoundaryEvent) => {
+      // 事件发生在它前面的文本**之后** —— 先落文本段再落事件段。
+      flushText();
+      parts.push({ kind: "event", event });
+      events.push(event);
+    };
 
     for (;;) {
       const hit = findEarliest(buffer, this.injections);
       if (!hit) break;
-      text += buffer.slice(0, hit.start);
-      if (hit.event) events.push(hit.event);
+      accumulated += buffer.slice(0, hit.start);
+      if (hit.event) {
+        pushEvent(hit.event);
+      }
+      // 注入行回显（无事件）：整段被剔除，不产生任何可见部分。
       buffer = buffer.slice(hit.end);
     }
 
@@ -193,13 +226,16 @@ export class CommandBoundaryParser {
       }
     }
 
-    if (keep > 0) {
-      text += buffer.slice(0, buffer.length - keep);
-      this.buffer = buffer.slice(buffer.length - keep);
-    } else {
-      text += buffer;
-      this.buffer = "";
-    }
-    return { text, events };
+    const tail = keep > 0 ? buffer.slice(0, buffer.length - keep) : buffer;
+    if (tail !== "") accumulated += tail;
+    this.buffer = keep > 0 ? buffer.slice(buffer.length - keep) : "";
+    flushText();
+
+    // text / events 是 parts 的等价投影（保留旧调用方契约）。
+    const text = parts
+      .filter((part): part is { kind: "text"; text: string } => part.kind === "text")
+      .map((part) => part.text)
+      .join("");
+    return { text, events, parts };
   }
 }

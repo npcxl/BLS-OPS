@@ -84,4 +84,34 @@ describe("CommandBoundaryParser", () => {
     const body = "hello 世界\n第二行\t带 Tab\n";
     expect(parser.feed(body).text).toBe(body);
   });
+
+  it("parts 把结束标记切成独立事件段（D 之后的内容另起一段）", () => {
+    const parser = new CommandBoundaryParser();
+    parser.expect(INJECTED_LINES);
+    // D 之后还有内容（例如 D 标记行执行完 shell 再打的提示符）—— 必须落在
+    // 事件段之后，快照才能只取事件前的部分。
+    const { parts } = parser.feed(`out1\n${OSC_D(0)}tail\n`);
+    expect(parts).toEqual([
+      { kind: "text", text: "out1\n" },
+      { kind: "event", event: { type: "output_end", exitCode: 0 } },
+      { kind: "text", text: "tail\n" },
+    ]);
+  });
+
+  it("text/events 是 parts 的等价投影（连续事件不吞文本）", () => {
+    const parser = new CommandBoundaryParser();
+    parser.expect(INJECTED_LINES);
+    const { text, events, parts } = parser.feed(`head\n${OSC_C}mid\n${OSC_D(3)}`);
+    expect(parts).toEqual([
+      { kind: "text", text: "head\n" },
+      { kind: "event", event: { type: "output_start" } },
+      { kind: "text", text: "mid\n" },
+      { kind: "event", event: { type: "output_end", exitCode: 3 } },
+    ]);
+    expect(text).toBe("head\nmid\n");
+    expect(events).toEqual([
+      { type: "output_start" },
+      { type: "output_end", exitCode: 3 },
+    ]);
+  });
 });

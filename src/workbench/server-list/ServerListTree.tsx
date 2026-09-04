@@ -106,13 +106,15 @@ export function ServerListTree({
   ];
 
   return (
-    <div className="flex flex-col gap-1 pb-3">
-      <div
-        className="mt-1"
-        // Rows stop propagation on their own right-click, so this only fires on
-        // the blank areas: headers, group titles and empty space.
-        onContextMenu={backgroundMenu.onContextMenu(() => headerActions)}
-      >
+    // min-h-full：即使列表内容很短，根容器也占满侧栏可滚动区整列 ——
+    // 右键菜单因此覆盖"整列"的空白，而不是只覆盖标题+列表那个内容盒子。
+    // 行级菜单自己 stopPropagation，行上右键仍走行菜单（见 ServerRow）。
+    <div
+      className="flex min-h-full flex-col gap-1 pb-3"
+      data-testid="server-list-tree"
+      onContextMenu={backgroundMenu.onContextMenu(() => headerActions)}
+    >
+      <div className="mt-1">
         <SectionTitle
           actions={
             <div className="flex items-center gap-0.5">

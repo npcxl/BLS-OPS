@@ -15,6 +15,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 
 ## UI 组件约定
 - 右键菜单统一 `useContextMenu()`；**菜单支持一层子菜单**（children）。**右键 = 顶部功能**：面板右键菜单 = 顶部工具栏镜像/超集，同一份数组渲染两处；右键可达被滚动/折叠藏起的顶部功能。
+- **ContextMenu 全局单例**（2026-09-04）：同一时刻只允许一个右键菜单——模块级 `activeMenuClose` 槽 + 打开前 `closeActiveContextMenu()`。服务器列表（每行独立实例 + 空白背景实例）若各开各的会双菜单并存，勿回退成"每实例自治"。
 - 复制一律走 `src/lib/clipboard.ts` `copyText()`，禁散落 `navigator.clipboard`。
 - 侧栏收起后唯一展开入口在 AppTopBar（`hasContextSidebar()`），按钮必须 `data-tauri-drag-region="false"`。
 - lucide-react v1.x：`AlertTriangle→TriangleAlert`、`Loader→LoaderCircle`；`arr.at(-1)` 不可用（lib<es2022），用 `arr[len-1]`。
@@ -42,6 +43,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 参数占位符绝不进 shell（completionKeys 遇未解析返回 null；后端不拼 shell 文本）。
 - 输出适配器 `output_adapter/` + `command-result/` 渲染器代码**保留不动**（供 Docker/服务/项目/日志模块未来用），但**终端结果不再走** CommandResultRenderer/TableView/表格化，统一 TerminalSnapshotView。
 - 命令中心/知识库：适配器仅作 hint 先试，失败继续 auto（不做自动表格化的是终端快照路径）。
+- **实现状态（2026-09-04 验收通过）**：`TerminalView`（marker 注册 + `write` callback FIFO 后抓快照 + captureNow 兜底）→ `TerminalCommandCoordinator`（render rendezvous：`done && !matchPending && !renderPending` 才 `tryEmit` —— **缺 `session.done` 守卫会提前 emit 慢命令的空结果**，勿回退）→ `TerminalResultDrawer` → `TerminalSnapshotView`（默认渲染 tab `<pre w-max whitespace-pre>` 不折行横滚；原始输出 tab 走 RawStreamView）。`command-result/CommandResultPanel` 只保留给 command-center 知识库路径（`CommandExecutionResult`），终端链已不再引用。
 
 ## 技术要点
 - russh 0.63：`check_server_key` 必须实现；ProxyJump `into_stream→connect_stream`，跳板 handle 保活。`pnpm tauri dev` 才实时；改前端后必须 pnpm build+cargo build 重嵌 dist。

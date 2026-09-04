@@ -56,6 +56,23 @@ const GAP = 4;
 const DEFAULT_MIN_WIDTH = 184;
 const NO_ITEMS: ContextMenuItem[] = [];
 
+/**
+ * Global slot for "the context menu that is open right now". Every menu
+ * registers its own close handler here while open; any other `useContextMenu`
+ * closes it before opening its own.
+ *
+ * Without this, call sites that mount *several* independent menus — e.g. every
+ * server row plus the blank-space list menu — would each keep their own open
+ * state, and right-clicking a second area while the first menu is up leaves
+ * both visible at once.
+ */
+let activeMenuClose: (() => void) | null = null;
+
+/** Closes whichever context menu is open (no-op when none is). */
+export function closeActiveContextMenu(): void {
+  activeMenuClose?.();
+}
+
 interface ContextMenuProps {
   open: boolean;
   x: number;
@@ -116,6 +133,17 @@ export const ContextMenu = memo(function ContextMenu({
     setActive(-1);
     resetSubmenu();
   }, [open, x, y, resetSubmenu]);
+
+  // Claim the global singleton slot while open; another menu opening anywhere
+  // (same or different useContextMenu) closes this one first.
+  useEffect(() => {
+    if (!open) return;
+    const release = () => closeRef.current();
+    activeMenuClose = release;
+    return () => {
+      if (activeMenuClose === release) activeMenuClose = null;
+    };
+  }, [open]);
 
   // Measure before paint. Until the measurement lands the menu is hidden, so
   // it never renders at the raw cursor position and then jumps.
@@ -466,6 +494,10 @@ export function useContextMenu() {
       (event: ReactMouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
+        // 同一时刻只保留一个右键菜单：新位置/新实例打开前，先关掉已经
+        // 打开的那个（例：行菜单开着，再去空白处右键不能让两个并存）。
+        // 同一实例时 close+open 被 React 批处理成一次"移动"，不闪跳。
+        closeActiveContextMenu();
         setState({ x: event.clientX, y: event.clientY, items: build(event) });
       },
     [],

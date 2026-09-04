@@ -56,9 +56,6 @@ export function ServerGroupSectionView({
               className={cn("shrink-0 transition-transform", !folded && "rotate-90")}
             />
             <span className="min-w-0 flex-1 truncate">{section.name}</span>
-            <span data-testid={`group-count-${section.id}`} className="shrink-0">
-              {section.servers.length}
-            </span>
           </button>
           {section.group && (
             <span className="flex shrink-0 items-center opacity-0 group-hover/g:opacity-100">
@@ -80,6 +77,10 @@ export function ServerGroupSectionView({
               </button>
             </span>
           )}
+          {/* 数量恒定在整行最右（hover 操作按钮在它左侧浮现，不把它挤走）。 */}
+          <span data-testid={`group-count-${section.id}`} className="shrink-0">
+            {section.servers.length}
+          </span>
         </div>
       )}
 

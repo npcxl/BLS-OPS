@@ -1,4 +1,5 @@
 import type { CommandSearchHit, Mutability, RiskLevel } from "@/api/ops-api";
+import { detectJsonOutput, type DetectedJson } from "@/lib/detect-json";
 import { canonicalCommand, normalizeForParsing } from "./terminal-output-clean";
 import type { BoundaryEvent } from "./command-boundary";
 import type { CommandPlan, CommandSource } from "./command-plan";
@@ -20,8 +21,10 @@ import type { CommandPlan, CommandSource } from "./command-plan";
  * 2. stdout / stderr 原样累积（原始留档，给"原始输出"调试视图）；
  * 3. 收到**命令边界**输出结束 → 汇合渲染快照 → 产出结果 Tab。
  *
- * **不再调用 `adapt_auto`**：结构化适配器（表格 / JSON / 键值…）只留给
- * Docker / 服务 / 项目 / 日志等独立模块，终端结果一律是快照视图。
+ * **不再调用 `adapt_auto`**：结构化适配器（表格 / 键值 / 日志…）只留给
+ * Docker / 服务 / 项目 / 日志等独立模块。终端结果默认是快照视图，仅当
+ * 整段输出**严格**是合法 JSON / JSON Lines（每个非空行都合法，坏行即整体
+ * 不识别）时才额外给一个 JSON Tab —— 绝不再猜表格。
  *
  * # 绝不重复执行
  *
@@ -93,8 +96,12 @@ export interface CapturedResult {
   stdout: string;
   /** 原始 stderr（与 stdout 分开累积、独立解码）。 */
   stderr: string;
-  /** 与 stdout 相同的原始留档（兼容别名）。 */
-  rawOutput: string;
+  /**
+   * 严格 JSON 检测结果（数据完整）：整段输出 trim 后整体合法 JSON，或
+   * JSONL 每个非空行都合法 —— 任一行坏即 `null`，绝无“部分解析成功”。
+   * 只决定结果面板多不多一个 JSON Tab，终端输出本身不受影响。
+   */
+  json: DetectedJson | null;
   /**
    * **已渲染文本**：从 xterm buffer（`translateToString(true)` +
    * `line.isWrapped` 合并软换行）提取的结果区域 —— 结果面板**默认**展示。
@@ -372,6 +379,8 @@ export class TerminalCommandCoordinator {
         ? normalizeForParsing(rawOutput, session.command)
         : null;
     const renderedText = session.renderedText ?? degraded ?? "";
+    // 严格 JSON 检测：坏行 → null，只决定结果面板 JSON Tab 出不出来。
+    const json = session.truncated ? null : detectJsonOutput(renderedText, session.command);
     const at = this.now();
     this.deps.onResult({
       id: nextId(at),
@@ -386,7 +395,7 @@ export class TerminalCommandCoordinator {
       boundary: { ...session.boundary, durationMs },
       stdout: rawOutput,
       stderr: session.stderr,
-      rawOutput,
+      json,
       renderedText,
       renderedDegraded: degraded !== null,
     });

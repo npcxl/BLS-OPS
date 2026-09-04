@@ -314,4 +314,63 @@ describe("TerminalCommandCoordinator — 受控标记边界", () => {
     await flush();
     expect(results).toHaveLength(0);
   });
+
+  describe("严格 JSON Tab 检测（数据完整，不做任何自动表格化）", () => {
+    it("整段输出是合法 JSON → json 命中，渲染文本原样保留", async () => {
+      const { coordinator, results } = setup();
+      submit(coordinator, "docker inspect nginx");
+      coordinator.onOutput('{"Id":"abc","Image":"nginx"}\n', [
+        { type: "output_end", exitCode: 0 },
+      ]);
+      coordinator.provideRenderedText({ text: '{"Id":"abc","Image":"nginx"}' });
+      await flush();
+      expect(results[0].json).toEqual({
+        kind: "json",
+        value: { Id: "abc", Image: "nginx" },
+      });
+      expect(results[0].renderedText).toBe('{"Id":"abc","Image":"nginx"}');
+      expect(results[0].stdout).toBe('{"Id":"abc","Image":"nginx"}\n');
+    });
+
+    it("快照首行是 prompt+命令回显 → 只影响检测，渲染文本不动", async () => {
+      const { coordinator, results } = setup();
+      submit(coordinator, "cat app.json");
+      coordinator.onOutput('{"a":1}\n', [{ type: "output_end", exitCode: 0 }]);
+      coordinator.provideRenderedText({ text: 'user@host:~$ cat app.json\n{"a":1}\n' });
+      await flush();
+      expect(results[0].json).toEqual({ kind: "json", value: { a: 1 } });
+      // 终端输出保持“用户看到的原样”，检测只是额外加了一个 JSON Tab。
+      expect(results[0].renderedText).toBe('user@host:~$ cat app.json\n{"a":1}\n');
+    });
+
+    it("多行每行都是合法 JSON → jsonl，且全部行都保留", async () => {
+      const { coordinator, results } = setup();
+      submit(coordinator, "docker ps --format json");
+      coordinator.onOutput('{"a":1}\n{"a":2}\n', [{ type: "output_end", exitCode: 0 }]);
+      coordinator.provideRenderedText({ text: '{"a":1}\n{"a":2}\n' });
+      await flush();
+      expect(results[0].json).toEqual({ kind: "jsonl", value: [{ a: 1 }, { a: 2 }] });
+    });
+
+    it("输出里混有非 JSON 行 → json 为 null，JSON Tab 不出现，原样全保留", async () => {
+      const { coordinator, results } = setup();
+      submit(coordinator, "docker ps");
+      coordinator.onOutput('{"a":1}\nwarning: timeout\n', [{ type: "output_end", exitCode: 0 }]);
+      coordinator.provideRenderedText({ text: '{"a":1}\nwarning: timeout\n' });
+      await flush();
+      expect(results[0].json).toBeNull(); // 绝无“跳过坏行只留好行”的部分解析
+      expect(results[0].renderedText).toBe('{"a":1}\nwarning: timeout\n');
+      expect(results[0].stdout).toBe('{"a":1}\nwarning: timeout\n');
+    });
+
+    it("普通文本 → json 为 null，默认仍是终端输出", async () => {
+      const { coordinator, results } = setup();
+      submit(coordinator, "ls -la");
+      coordinator.onOutput("drwxr-xr-x  app\n", [{ type: "output_end", exitCode: 0 }]);
+      coordinator.provideRenderedText({ text: "drwxr-xr-x  app" });
+      await flush();
+      expect(results[0].json).toBeNull();
+      expect(results[0].renderedText).toBe("drwxr-xr-x  app");
+    });
+  });
 });

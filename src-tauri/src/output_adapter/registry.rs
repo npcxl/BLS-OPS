@@ -336,7 +336,7 @@ fn register_builtins(registry: &mut AdapterRegistry) {
                 json: Some(serde_json::Value::Array(lines)),
             },
             None => AdapterOutcome::Fallback {
-                reason: "输出不是合法 JSON，已按原始输出显示".into(),
+                reason: "输出含非 JSON 行（或不是合法 JSON），为保证完整已按原始输出显示".into(),
             },
         },
     );

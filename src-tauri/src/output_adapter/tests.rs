@@ -67,16 +67,22 @@ fn tree_parser_restores_depth() {
 }
 
 #[test]
-fn json_parser_handles_single_and_lines() {
+fn json_parser_handles_single_and_strict_lines() {
     assert!(matches!(
         generic::json::parse_json(r#"{"a":1}"#),
         Some(generic::json::JsonShape::Single(_))
     ));
-    let lines = generic::json::parse_json("{\"a\":1}\n{\"a\":2}\nbroken\n");
+    // 每行都是合法 JSON（允许结构空行）→ JSON Lines。
+    let lines = generic::json::parse_json("{\"a\":1}\n\n{\"a\":2}\n");
     match lines {
-        Some(generic::json::JsonShape::Lines(values)) => assert_eq!(values.len(), 2, "坏行跳过"),
+        Some(generic::json::JsonShape::Lines(values)) => assert_eq!(values.len(), 2, "两行全保留"),
         other => panic!("应为 JSON Lines：{other:?}"),
     }
+    // 有一行不是合法 JSON → 整体不识别，不允许“跳过坏行部分成功”。
+    assert!(
+        generic::json::parse_json("{\"a\":1}\n{\"a\":2}\nbroken\n").is_none(),
+        "坏行必须让整体失败"
+    );
     assert!(generic::json::parse_json("not json at all").is_none());
 }
 

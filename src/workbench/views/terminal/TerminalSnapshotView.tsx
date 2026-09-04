@@ -1,16 +1,20 @@
 import { useState } from "react";
-import { Check, Copy, FileCode2, FileText, TriangleAlert } from "lucide-react";
+import { Check, Copy, FileCode2, FileText, FileJson, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
+import { JsonView } from "@/workbench/views/command-result/views/JsonView";
 import { RawStreamView } from "@/workbench/views/command-result/views/RawStreamView";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
 
 /**
  * 终端结果视图 —— **xterm 终端快照方案**（不是结构化表格）。
  *
- * 结果来自用户已经在终端里看到的内容：`renderedText` 是按软换行（isWrapped）
- * 还原的已渲染输出，**默认**展示；`原始输出` 是去掉受控标记后的原始流
- * （含 ESC 控制序列），作字节层面的调试视图。
+ * Tab 固定为 `[终端输出] [JSON?] [原始流]`：
+ * - `终端输出` = 已渲染文本，按软换行（`line.isWrapped`）还原的终端快照，
+ *   **默认**展示 —— 用户看到什么，这里就是什么；
+ * - `JSON` = 仅在 `result.json`（**严格**检测：整段合法 JSON / JSONL 每行都
+ *   合法，坏行即整体失败）非空时才出现；展示为可折叠 JSON 树，绝不再猜表格；
+ * - `原始流` = 去掉受控标记后的原始 SSH 流（含 ESC 序列），字节级调试视图。
  *
  * - 渲染输出用 `<pre>` + `w-max whitespace-pre`：长行不折行，靠横向滚动看全
  *   （PTY 软换行已在提取时合并，这里不会再二次断行）；
@@ -19,7 +23,7 @@ import type { CapturedResult } from "./TerminalCommandCoordinator";
  *   是对原始流的清洗，不是真正的终端快照，绝不伪装。
  */
 export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
-  const [view, setView] = useState<"rendered" | "raw">("rendered");
+  const [view, setView] = useState<"rendered" | "json" | "raw">("rendered");
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -29,7 +33,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
     }
   };
 
-  const { boundary } = result;
+  const { boundary, json } = result;
   const exitCode = boundary.exitCode;
   const degraded = result.renderedDegraded;
   const meta: string[] = [];
@@ -56,8 +60,21 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
             )}
           >
             <FileText size={11} />
-            渲染输出
+            终端输出
           </button>
+          {json !== null && (
+            <button
+              type="button"
+              onClick={() => setView("json")}
+              className={cn(
+                "flex items-center gap-1 rounded-[5px] px-2 py-0.5 text-10 transition-colors",
+                view === "json" ? "bg-surface-3 text-fg" : "text-fg-subtle hover:text-fg",
+              )}
+            >
+              <FileJson size={11} />
+              JSON
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setView("raw")}
@@ -67,7 +84,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
             )}
           >
             <FileCode2 size={11} />
-            原始输出
+            原始流
           </button>
         </div>
       </div>
@@ -99,8 +116,10 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
               </pre>
             </div>
           </div>
+        ) : view === "json" && json !== null ? (
+          <JsonView value={json.value} />
         ) : (
-          <RawStreamView stdout={result.rawOutput} stderr={result.stderr} />
+          <RawStreamView stdout={result.stdout} stderr={result.stderr} />
         )}
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, CornerDownLeft, FileCode2, FileText, Table2, type LucideIcon } from "lucide-react";
+import { Check, Copy, CornerDownLeft, FileCode2, Table2, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
@@ -7,8 +7,6 @@ import { RISK_META, type CommandExecutionResult } from "@/api/ops-api";
 import { parseStructuredResult, VIEW_LABELS } from "./model";
 import { CommandResultRenderer } from "./CommandResultRenderer";
 import { RawView } from "./views/RawView";
-import { ReadableOutputView } from "./views/ReadableOutputView";
-import { RawStreamView } from "./views/RawStreamView";
 
 /**
  * 风险未知（`null`，知识库未命中）时的展示 —— **绝不默认只读**，
@@ -16,7 +14,7 @@ import { RawStreamView } from "./views/RawStreamView";
  */
 const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted" };
 
-type PanelTab = "structured" | "readable" | "raw";
+type PanelTab = "structured" | "raw";
 
 /** 视图切换项（header 分段控件与右键菜单共用同一份 —— 见"右键 = 顶部功能"）。 */
 interface ViewOption {
@@ -28,25 +26,17 @@ interface ViewOption {
 }
 
 /**
- * 统一结果面板 —— 结构化视图 | 可读输出 | 原始输出。
+ * 统一结果面板 —— 结构化视图 | 原始输出。
  *
- * - `readable` 缺省（Docker/服务/项目等模块）：结构化 | 原始输出，与以往一致；
- * - `readable` 提供（终端路径，`normalizeForParsing` 的结果）：默认展示
- *   **可读输出**（用户不该看到 `ESC[?2004l` 这类控制字符）；完整原始流
- *   转义后放在"原始输出"Tab 作高级调试（见 RawStreamView）。
+ * **只服务命令中心 / 模块链路**（`CommandExecutionResult` 结构化协议）：
+ * Docker / 服务 / 项目 / 日志等模块执行知识库命令后的结果。终端自由输入的
+ * 结果走独立的 `TerminalSnapshotView`（快照 + JSON + 原始流），**不经过这里**。
  *
  * 数据不删减、不伪造：结构化只是第二种视图，原始 stdout、实际执行命令、
  * 耗时永久保留。后端负载经 `parseStructuredResult` 校验，**解析不出统一协议
  * 就整块按原始输出渲染**（命令绝不因协议问题失效）。
  */
-export function CommandResultPanel({
-  result,
-  readable,
-}: {
-  result: CommandExecutionResult;
-  /** 终端结果的可读输出（去控制序列/回显/提示符）。缺省 = 非终端模块。 */
-  readable?: string;
-}) {
+export function CommandResultPanel({ result }: { result: CommandExecutionResult }) {
   const structured = parseStructuredResult(result.structured);
   const risk = result.risk ? RISK_META[result.risk] : UNKNOWN_RISK;
   const [copied, setCopied] = useState<string | null>(null);
@@ -54,17 +44,13 @@ export function CommandResultPanel({
 
   /** False when the output has no meaningful structured view to switch to. */
   const canStructure = Boolean(structured) && structured!.view !== "raw" && structured!.view !== "text";
-  /** 默认展示：结构化可看 → 结构化；否则终端结果看"可读输出"，再退原始。 */
-  const [tab, setTab] = useState<PanelTab>(() =>
-    canStructure ? "structured" : readable !== undefined ? "readable" : "raw",
-  );
+  /** 默认展示：结构化可看 → 结构化；否则原始输出。 */
+  const [tab, setTab] = useState<PanelTab>(() => (canStructure ? "structured" : "raw"));
 
   const viewOptions: ViewOption[] = [
     { id: "structured", label: "结构化视图", icon: Table2, visible: canStructure },
-    { id: "readable", label: "可读输出", icon: FileText, visible: readable !== undefined },
     { id: "raw", label: "原始输出", icon: FileCode2, visible: true },
   ];
-  const canRenderReadable = readable !== undefined;
   const headerOptions = viewOptions.filter((option) => option.visible);
 
   const copy = async (id: string, text: string) => {
@@ -85,22 +71,11 @@ export function CommandResultPanel({
       hint: canStructure && tab === "structured" ? "当前" : undefined,
       onSelect: () => setTab("structured"),
     },
-    ...(canRenderReadable
-      ? [
-          {
-            id: "view-readable",
-            label: "可读输出",
-            icon: FileText,
-            hint: tab === "readable" ? "当前" : undefined,
-            onSelect: () => setTab("readable"),
-          } satisfies ContextMenuItem,
-        ]
-      : []),
     {
       id: "view-raw",
       label: "原始输出",
       icon: FileCode2,
-      hint: tab === "raw" || (!canRenderReadable && !canStructure) ? "当前" : undefined,
+      hint: tab === "raw" ? "当前" : undefined,
       onSelect: () => setTab("raw"),
     },
     { id: "sep-copy", separator: true },
@@ -127,7 +102,7 @@ export function CommandResultPanel({
             `命令：${result.raw.command_executed}`,
             `耗时：${result.raw.duration_ms} ms`,
             "",
-            canRenderReadable && readable ? readable : result.raw.stdout || "（无输出）",
+            result.raw.stdout || "（无输出）",
             result.raw.stderr ? `\nstderr:\n${result.raw.stderr}` : "",
           ]
             .filter(Boolean)
@@ -183,11 +158,6 @@ export function CommandResultPanel({
       <div className="min-h-0 flex-1 overflow-hidden">
         {canStructure && tab === "structured" ? (
           <CommandResultRenderer result={structured!} />
-        ) : tab === "readable" && canRenderReadable ? (
-          <ReadableOutputView text={readable!} />
-        ) : canRenderReadable ? (
-          // 终端路径的"原始输出"：完整原始流（含 ESC）转义展示，作高级调试。
-          <RawStreamView stdout={result.raw.stdout} stderr={result.raw.stderr} />
         ) : (
           <RawView {...result.raw} />
         )}

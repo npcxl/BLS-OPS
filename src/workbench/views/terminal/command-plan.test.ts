@@ -31,6 +31,23 @@ describe("planCommandSubmission", () => {
     expect(plan.write).toContain("ps aux | grep nginx");
   });
 
+  it("增强终端关闭（capture:false）→ 纯终端模式：命令照发，一个标记都不注入", () => {
+    const plan = planCommandSubmission("df -h", "full", { capture: false });
+    expect(plan.capture).toBe(false);
+    expect(plan.markers).toEqual([]);
+    // 命令本身一字不改，只是没有受控标记 —— 因此不会产生任何结果面板。
+    expect(plan.write).toBe("df -h\n");
+    expect(plan.write).not.toContain(MARKER_C_LINE);
+    expect(plan.write).not.toContain(MARKER_D_LINE);
+  });
+
+  it("增强终端关闭 + line-ready → 什么都不补（回车由按键数据带出）", () => {
+    const plan = planCommandSubmission("docker ps -a", "line-ready", { capture: false });
+    expect(plan.capture).toBe(false);
+    expect(plan.write).toBe("");
+    expect(plan.markers).toEqual([]);
+  });
+
   it("交互式程序留在原生终端，不注入标记", () => {
     for (const command of ["vim /etc/hosts", "top", "htop", "less /var/log/x", "nano a.txt", "watch -n1 uptime"]) {
       const plan = planCommandSubmission(command, "full");

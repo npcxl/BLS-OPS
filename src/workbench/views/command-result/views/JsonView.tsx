@@ -125,7 +125,10 @@ export function JsonView({ value }: { value: unknown }) {
       {/* 内容 */}
       <div className="min-h-0 flex-1 overflow-auto">
         {mode === "text" ? (
-          <pre className="w-max whitespace-pre px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted">
+          <pre
+            style={{ fontFamily: "var(--font-command-output)" }}
+            className="w-max whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
+          >
             {pretty}
           </pre>
         ) : normalizedQuery !== "" ? (

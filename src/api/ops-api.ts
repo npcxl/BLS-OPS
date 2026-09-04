@@ -14,7 +14,6 @@ import {
   type CommandExecutionResult,
   type CommandParams,
   type CommandSearchHit,
-  type StructuredCommandResult,
 } from "@/api/types/command";
 import {
   type CascadeResult,
@@ -396,35 +395,6 @@ export const opsApi = {
    */
   commandMatchText: (text: string) =>
     invoke<CommandSearchHit | null>("command_match_text", { text }),
-  /**
-   * **只解析已经产生的输出，绝不再次执行命令** —— 终端里的命令已经跑完了。
-   * `normalized` 是前端清洗后的解析输入（去 ANSI/回显/提示符）；
-   * `stdout` 永远保留真实终端输出（两份数据严格分开）。
-   */
-  commandAdaptOutput: (input: {
-    command: string;
-    durationMs: number;
-    stdout?: string;
-    normalized?: string;
-    stderr?: string;
-    exitCode?: number | null;
-    truncated?: boolean;
-    /** 命中知识库时传（后端取它的 `output_adapter` 作为 hint）。 */
-    knowledgeId?: string | null;
-    /** 直接指定 hint（未命中知识库 / 测试用）。 */
-    adapterHint?: string | null;
-  }) =>
-    invoke<StructuredCommandResult>("command_adapt_output", {
-      command: input.command,
-      durationMs: input.durationMs,
-      stdout: input.stdout ?? "",
-      normalized: input.normalized ?? null,
-      stderr: input.stderr ?? "",
-      exitCode: input.exitCode ?? null,
-      truncated: input.truncated ?? false,
-      knowledgeId: input.knowledgeId ?? null,
-      adapterHint: input.adapterHint ?? null,
-    }),
   /**
    * 二级参数补全的真实取值：`unit` = 服务器上的 systemd 服务单元，
    * `container` = Docker 容器名，`path` = 远程目录。

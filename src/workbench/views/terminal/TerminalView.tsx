@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ChevronDown,
   Columns2,
   Copy,
   Eraser,
@@ -11,6 +10,7 @@ import {
   PlugZap,
   Rows2,
   Search,
+  Sparkles,
   Unplug,
   WifiOff,
 } from "lucide-react";
@@ -43,7 +43,6 @@ import {
 import { extractTerminalSnapshot } from "./extract-terminal-snapshot";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import type { CommandSearchHit } from "@/api/ops-api";
-import { TERMINAL_ENCODINGS, type TerminalEncoding } from "@/api/types/ssh";
 import type { WorkspaceTab } from "@/workbench/types";
 import { sshClosedEvent, sshOutputEvent, sshStderrEvent } from "@/lib/events";
 import { terminalTheme } from "./theme";
@@ -52,11 +51,15 @@ import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
+import { writeOutputParts } from "./terminal-output-pipeline";
 import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
 import {
   resolveSuggestKey,
   type SuggestAnchor,
 } from "./terminal-suggest";
+
+/** 增强终端开关的持久化键（关着 = 纯终端：没有标记注入、没有结果面板）。 */
+const ENHANCED_TERMINAL_KEY = "bls-ops.terminal.enhanced";
 
 const KEEPALIVE_MS = 30_000;
 /** Consecutive failed probes before the session is declared dead. */
@@ -122,13 +125,46 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 参数相关的可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   const [paramHint, setParamHint] = useState<string | null>(null);
   /**
-   * 终端命令的统一输出适配结果（本次会话历史，最新在后）。未识别的命令不会
-   * 产生条目 —— 因此不会弹空面板。
+   * 本次会话的命令结果（快照 + 原始流，最新在后）。与是否命中知识库无关：
+   * 只要是可捕获命令（非交互式、不读 stdin）都会产出一条；命令本身的
+   * 输出为空也是有效结果（显示为空，不回落）。
    */
   const [commandResults, setCommandResults] = useState<CapturedResult[]>([]);
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
   const [drawerClosed, setDrawerClosed] = useState(false);
+  /**
+   * **增强终端开关**（默认关）：只有打开时命令才会注入受控标记、捕获输出并
+   * 生成结果面板；关着时终端就是纯终端 —— 不注入任何标记、不产生任何结果
+   * Tab。状态持久化到 localStorage（隐私模式下写不进去也不影响使用）。
+   */
+  const [enhancedTerminal, setEnhancedTerminal] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(ENHANCED_TERMINAL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  /** 协调器只创建一次，onResult / 提交决策都要读到**当前**开关值。 */
+  const enhancedRef = useRef(enhancedTerminal);
+  enhancedRef.current = enhancedTerminal;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ENHANCED_TERMINAL_KEY, enhancedTerminal ? "1" : "0");
+    } catch {
+      /* 隐私模式等场景下写不进去，忽略即可 */
+    }
+  }, [enhancedTerminal]);
+  const toggleEnhancedTerminal = useCallback(() => {
+    const next = !enhancedRef.current;
+    setEnhancedTerminal(next);
+    if (!next) {
+      // 关掉 = 回到纯终端：已有结果面板全部撤掉，飞行中的捕获也会被丢弃。
+      setCommandResults([]);
+      setActiveResultId(null);
+      setDrawerClosed(true);
+    }
+  }, []);
   /**
    * 捕获命令在 xterm 缓冲里的**起始行**（提交时注册一次）。
    *
@@ -175,6 +211,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     coordinatorRef.current = new TerminalCommandCoordinator({
       match: (text) => opsApi.commandMatchText(text),
       onResult: (result) => {
+        // 增强终端关着时不产出任何结果面板（含飞行中捕获的迟到结果）。
+        if (!enhancedRef.current) return;
         setCommandResults((current) => [...current, result]);
         setActiveResultId(result.id);
         setDrawerCollapsed(false);
@@ -243,26 +281,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // recorded as history. Created once per session.
   const lineEditorRef = useRef<LineEditor | null>(null);
   if (!lineEditorRef.current) lineEditorRef.current = new LineEditor();
-
-  /**
-   * 会话输出编码（auto / UTF-8 / GB18030 / Big5）。老服务器的 `LANG=C` 或
-   * GBK 环境会让 UTF-8 解码整屏乱码 —— 这里让用户现场切换，后端从下一块
-   * 数据开始生效（stdout 与 stderr 各有独立解码器）。
-   */
-  const [encoding, setEncodingState] = useState<TerminalEncoding>("auto");
-  useEffect(() => {
-    if (phase !== "connected") return;
-    void opsApi
-      .sshGetEncoding(sessionId)
-      .then((value) => {
-        if (value) setEncodingState(value);
-      })
-      .catch(() => undefined);
-  }, [phase, sessionId]);
-  const changeEncoding = (value: TerminalEncoding) => {
-    setEncodingState(value);
-    void opsApi.sshSetEncoding(sessionId, value).catch(() => undefined);
-  };
 
   // Command suggestions share the knowledge base with the command centre.
   // Retrieval is local — it needs no connection — but suggestions only make
@@ -384,7 +402,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       }
       const mode: SubmitMode =
         options?.mode ?? (options?.prefix === undefined ? "full" : "line-ready");
-      const plan = planCommandSubmission(trimmed, mode);
+      // 增强终端关着 → 不注入受控标记、不捕获输出（命令照常发往 shell）。
+      const plan = planCommandSubmission(trimmed, mode, { capture: enhancedRef.current });
       coordinatorRef.current?.submit(trimmed, source, plan);
       boundaryParserRef.current?.expect(plan.markers);
       // 捕获起点：当前光标行 = 命令回显所在行。一次提交只注册一个 marker，
@@ -718,10 +737,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     if (!containerRef.current || !hasTarget) return;
 
     const isDark = document.documentElement.dataset.theme === "dark";
+    // 与结果面板共用同一套等宽栈（--font-command-output 的同源变量），
+    // 否则终端里的表格和结果快照里的同一份文本会对不齐。
+    const terminalFont = getComputedStyle(document.documentElement)
+      .getPropertyValue("--font-terminal")
+      .trim();
     const instance = new Terminal({
       convertEol: true,
       cursorBlink: true,
+      fontFamily: terminalFont || undefined,
       fontSize: 13,
+      lineHeight: 1.25,
       scrollback: 5000,
       theme: terminalTheme(isDark),
     });
@@ -827,37 +853,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const notFound = isCommandNotFoundOutput(parsed.text);
       const display = (text: string) => (notFound ? `\x1b[31m命令无效：${text}\x1b[0m` : text);
 
-      // 按事件把文本切成"结束标记之前 / 之后"两段：
-      // 先写 D 之前的全部内容，等它**渲染完**（write callback）再抓快照 ——
-      // 此刻 xterm 缓冲正好停在输出结束处，紧跟在 D 后面的提示符还没写进来，
-      // 不会混进快照尾部。
-      let before = "";
-      let after = "";
-      let sawEnd = false;
-      for (const part of parsed.parts) {
-        if (part.kind === "text") {
-          if (sawEnd) after += part.text;
-          else before += part.text;
-        } else if (part.kind === "event" && part.event.type === "output_end") {
-          sawEnd = true;
-        }
-      }
       // 同步抓住本次结束对应的 marker —— 异步渲染期间可能有新命令提交。
       const heldAtEnd = captureMarkerRef.current;
-      void (async () => {
-        if (!sawEnd) {
-          await queueWrite(display(before));
-          return;
-        }
-        if (before) {
-          await queueWrite(display(before));
-        } else {
-          // 结束标记单独成块（没有可写文本）：等之前已排队的全部写入渲染完。
-          await writeQueue;
-        }
-        coordinatorRef.current?.provideRenderedText(consumeTerminalSnapshot(heldAtEnd));
-        if (after) await queueWrite(display(after));
-      })();
+      // 写出顺序 = 终端输出流水线（见 terminal-output-pipeline.ts）：
+      // D 之前写完并渲染完 → 抓快照 → 才写 D 之后的提示符。
+      void writeOutputParts(parsed.parts, {
+        write: (text) => queueWrite(display(text)),
+        flush: () => writeQueue.catch(() => undefined),
+        capture: () =>
+          coordinatorRef.current?.provideRenderedText(consumeTerminalSnapshot(heldAtEnd)),
+      });
       // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
       setInAlternate(instance.buffer.active.type !== "normal");
       updateSuggestAnchor();
@@ -868,7 +873,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (disposed) return;
       const text = event.payload;
       coordinatorRef.current?.onStderr(text);
-      if (text) instance.write(text);
+      // 与 stdout **同一条写入队列**：stderr 事件晚到时也要排在快照之前，
+      // 否则它会写进下一个命令的结果，或干脆不进本次快照。
+      if (text) void queueWrite(text);
     });
 
     const selectionSubscription = instance.onSelectionChange(() => {
@@ -1050,10 +1057,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         onSelect: () => setFilesOpen((v) => !v),
       },
     ];
-    // 与 toolbar 一致：只有产生过结果时才提供"结构化结果"开关。
-    if (commandResults.length > 0) {
+    items.push({
+      label: "增强终端",
+      icon: Sparkles,
+      hint: enhancedTerminal ? "已开启" : undefined,
+      onSelect: toggleEnhancedTerminal,
+    });
+    // 与 toolbar 一致：只有增强终端开启且产生过结果时才提供"命令结果"开关。
+    if (enhancedTerminal && commandResults.length > 0) {
       items.push({
-        label: "结构化结果",
+        label: "命令结果",
         icon: LayoutPanelTop,
         hint: !drawerClosed ? "已展开" : undefined,
         onSelect: () => setDrawerClosed((v) => !v),
@@ -1096,10 +1109,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ToolbarIcon label="清空屏幕" icon={Eraser} onClick={() => terminalRef.current?.clear()} />
         <ToolbarIcon label="命令历史" icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
         <ToolbarIcon label="远程文件" icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
-        {/* 结构化结果面板：有结果时可在关闭后重新打开（未识别命令无结果 → 不显示） */}
-        {commandResults.length > 0 && (
+        {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
+            打开后命令才会生成结果 Tab，此时才出现"命令结果"开关。 */}
+        <ToolbarIcon
+          label="增强终端"
+          icon={Sparkles}
+          active={enhancedTerminal}
+          onClick={toggleEnhancedTerminal}
+        />
+        {enhancedTerminal && commandResults.length > 0 && (
           <ToolbarIcon
-            label="结构化结果"
+            label="命令结果"
             icon={LayoutPanelTop}
             active={!drawerClosed}
             onClick={() => setDrawerClosed((v) => !v)}
@@ -1119,26 +1139,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         ) : (
           <ToolbarIcon label="重新连接" icon={PlugZap} disabled={phase === "connecting"} onClick={() => void connect()} />
         )}
-
-        {/* 会话输出编码：老服务器（GBK / Big5 环境）现场切换，立即生效。 */}
-        <label className="ml-1 flex items-center gap-1 text-11 text-fg-muted">
-          编码
-          <span className="relative inline-flex items-center">
-            <select
-              value={encoding}
-              onChange={(event) => changeEncoding(event.target.value as TerminalEncoding)}
-              disabled={phase !== "connected"}
-              className="h-[26px] appearance-none rounded-[7px] border border-line bg-surface-2 pl-2 pr-6 text-11 text-fg outline-none focus:border-accent disabled:opacity-50"
-            >
-              {TERMINAL_ENCODINGS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-fg-subtle" />
-          </span>
-        </label>
 
         {searchOpen && (
           <div className="ml-2 flex items-center gap-1">
@@ -1201,7 +1201,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         />
         {selectionMenu && (
           <div
-            className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
+            // 跟随**选区末端**（x/y 已在 onSelectionChange 里以 wrapper 为基准算好）。
+            style={{ left: selectionMenu.x, top: selectionMenu.y }}
+            className="absolute z-40 flex items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
             onMouseDown={(event) => event.stopPropagation()}
           >
             <span className="px-1 text-11 text-fg-subtle">已选择 {selectionMenu.text.length} 个字符</span>
@@ -1264,9 +1266,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         )}
       </div>
 
-      {/* 结构化结果抽屉：终端内容原样保留，结果面板挂在下方。
-          未识别命令不产出结果 → 这里不渲染任何东西。 */}
-      {commandResults.length > 0 && !drawerClosed && (
+      {/* 命令结果抽屉：终端内容原样保留，结果面板挂在下方。
+          未开启增强终端 / 命令不可捕获（交互式、读 stdin）→ 这里不渲染任何东西。 */}
+      {enhancedTerminal && commandResults.length > 0 && !drawerClosed && (
         <TerminalResultDrawer
           results={commandResults}
           activeId={activeResultId}

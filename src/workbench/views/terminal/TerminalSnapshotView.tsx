@@ -111,7 +111,11 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
               {copied ? "已复制" : "复制"}
             </button>
             <div className="h-full overflow-auto">
-              <pre className="w-max whitespace-pre px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted">
+              <pre
+                // 与 xterm 同一套等宽栈（见 tokens.css --font-command-output）。
+                style={{ fontFamily: "var(--font-command-output)" }}
+                className="w-max whitespace-pre px-3 py-2.5 text-12 leading-[1.55] text-fg-muted"
+              >
                 {result.renderedText ?? ""}
               </pre>
             </div>

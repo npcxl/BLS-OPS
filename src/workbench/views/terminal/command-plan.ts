@@ -7,7 +7,7 @@
  *    的内容不是可解析文本，而且我们的标记行会被它们当成按键吃掉。
  * 2. **会吞 stdin 的程序**（`cat` 无参数 / REPL / `mysql`…）同样不注入标记 ——
  *    标记行会被当成**输入**而不是命令，既拿不到边界，还会往程序里打字。
- * 3. 其余命令注入受控标记，捕获输出并生成结构化结果 Tab。
+ * 3. 其余命令注入受控标记，捕获输出并生成命令结果 Tab（终端快照 + 原始流）。
  *
  * 命令本身**从不改写**（不加包装、不加 `;` 前缀）：终端里回显的仍然是用户
  * 敲的那一行。
@@ -196,7 +196,7 @@ export function blocksCapture(command: string): boolean {
 export type SubmitMode = "line-ready" | "full";
 
 export interface CommandPlan {
-  /** 是否捕获输出并生成结构化结果 Tab。 */
+  /** 是否捕获输出并生成命令结果 Tab（快照 + 原始流）。 */
   capture: boolean;
   /** 写到 PTY 的文本（可能含受控标记行）。 */
   write: string;
@@ -209,14 +209,26 @@ export interface CommandPlan {
 /**
  * 生成一次提交的写出内容 —— **命令本身从不改写**（不加包装、不加前缀）：
  * 终端里回显的仍然是用户敲的那一行。
+ *
+ * `options.capture === false`（未开启"增强终端"）时**不注入任何受控标记**：
+ * 终端退化成纯终端，命令照常发往 shell，但不捕获输出、不产生结果面板。
  */
 export function planCommandSubmission(
   command: string,
   mode: SubmitMode = "full",
+  options?: { capture?: boolean },
 ): CommandPlan {
   const trimmed = command.trim();
   if (!trimmed) {
     return { capture: false, write: "", markers: [], reason: "空命令" };
+  }
+  if (options?.capture === false) {
+    return {
+      capture: false,
+      write: mode === "full" ? `${trimmed}\n` : "",
+      markers: [],
+      reason: "未开启增强终端，纯终端模式（不注入标记、不生成结果）",
+    };
   }
   if (blocksCapture(trimmed)) {
     // `line-ready` 时命令行已经写好了 —— 什么都不补（回车由调用方随按键

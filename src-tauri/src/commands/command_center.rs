@@ -350,59 +350,6 @@ fn normalize_command(text: &str) -> String {
         .to_lowercase()
 }
 
-/// **只解析已经产生的输出，绝不再次执行命令。**
-///
-/// 终端里的命令已经跑完了，这里把它的 stdout/stderr/退出码/耗时交给统一
-/// 输出适配引擎，得到 `StructuredCommandResult`。重复执行会让 `docker ps`
-/// 跑两次，修改型命令更是危险 —— 所以这个命令是纯函数，无任何 I/O。
-///
-/// `normalized` 是前端清洗后的解析输入（去 ANSI / 回显 / 提示符）；
-/// `raw.stdout` 永远保留**真实终端输出** —— 两份数据严格分开。
-///
-/// # 两个输入都是可选的（可以都为空）
-///
-/// - `knowledge_id`：命中知识库时用它的 `output_adapter` 作为 **hint**；
-/// - `adapter_hint`：直接指定 hint（命令中心 / 测试用）；
-/// - 两者都没有 → 纯自动识别（绝大多数终端命令走这条路）。
-#[tauri::command]
-pub async fn command_adapt_output(
-    command: String,
-    duration_ms: u64,
-    stdout: Option<String>,
-    stderr: Option<String>,
-    exit_code: Option<i32>,
-    truncated: Option<bool>,
-    normalized: Option<String>,
-    knowledge_id: Option<String>,
-    adapter_hint: Option<String>,
-) -> Result<crate::output_adapter::StructuredCommandResult, String> {
-    let stdout = stdout.unwrap_or_default();
-    let stderr = stderr.unwrap_or_default();
-    let (hint, title) = match knowledge_id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => match builtin_catalog().iter().find(|entry| entry.id == id) {
-            Some(entry) => (Some(entry.output_adapter), entry.title.to_string()),
-            // 知识库里没有 → **不是错误**，退化为纯自动识别（终端里手敲的
-            // 命令本就不一定在知识库里）。
-            None => (adapter_hint.as_deref(), command.clone()),
-        },
-        None => (adapter_hint.as_deref(), command.clone()),
-    };
-    let meta = crate::output_adapter::CommandMeta {
-        command: command.clone(),
-        exit_code,
-        duration_ms,
-        truncated: truncated.unwrap_or(false),
-    };
-    let parse_input = normalized.unwrap_or_else(|| stdout.clone());
-    let raw = crate::output_adapter::RawOutput {
-        stdout: stdout.clone(),
-        stderr,
-    };
-    let ctx = crate::output_adapter::AdapterContext { title, meta, raw };
-    // 专用适配器只作 hint：失败后继续自动识别，绝不直接 raw。
-    Ok(crate::output_adapter::adapt_auto(hint, &parse_input, &ctx))
-}
-
 /// 收藏 / 取消收藏，返回切换后的状态。
 #[tauri::command]
 pub async fn command_toggle_favorite(
@@ -566,8 +513,8 @@ mod tests {
         assert_eq!(ps.mutability, crate::command_center::Mutability::Read);
     }
 
-    /// `command_adapt_output` 是**纯解析**：同样的输出永远得到同样的结果，
-    /// 且不执行任何命令（这里没有任何 I/O 依赖，重复调用结果一致）。
+    /// `adapt_auto` 是**纯解析**（`command_execute` 内部与模块链路共用）：
+    /// 同样的输出永远得到同样的结果，且不执行任何命令。
     #[test]
     fn adapt_output_is_pure_parsing() {
         let stdout = "LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=912,fd=6))\n";
@@ -583,7 +530,7 @@ mod tests {
         );
     }
 
-    /// 测试辅助：直接调用适配逻辑（与 `command_adapt_output` 命令体一致）。
+    /// 测试辅助：直接调用适配逻辑（与 `command_execute` 里的适配调用一致）。
     fn adapt_output_for_test(
         adapter_hint: Option<&str>,
         stdout: &str,

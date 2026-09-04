@@ -101,8 +101,14 @@
   --radius-floating: 16px;
 
   /* ── Fonts ── */
+  /* UI（标题 / 按钮 / 正文）：Inter + 思源黑体，非等宽。 */
   --font-ui: Inter, "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Cascadia Mono", monospace;
+  /* 终端与命令输出**共用一套**等宽栈：xterm 通过 JS 读 --font-terminal，
+     结果面板 / JSON 视图用 --font-command-output，保证两边字形一致。
+     项目不打包字体（体积），机器没装就按栈回退。 */
+  --font-terminal: "Cascadia Mono", "Sarasa Mono SC", "JetBrains Mono", Consolas, monospace;
+  --font-command-output: "Cascadia Mono", "Sarasa Mono SC", "JetBrains Mono", Consolas, monospace;
 
   /* ── Type scale ── */
   --text-10: 10px;

@@ -29,7 +29,8 @@ const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted"
  * 原始输出作调试视图（不做任何结构化/表格化 —— 那是 Docker/服务/项目模块的事）。
  *
  * 关闭当前结果后优先选择右侧相邻，没有则选左侧；全部关闭则隐藏抽屉。
- * **未识别命令不产出结果 → 抽屉不渲染**。原始终端内容永远保留。
+ * **不可捕获的命令（交互式 / 读 stdin / 未开增强终端）不产出结果 → 抽屉不
+ * 渲染**。原始终端内容永远保留。
  */
 export function TerminalResultDrawer({
   results,

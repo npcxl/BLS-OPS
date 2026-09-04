@@ -191,10 +191,10 @@ describe("CommandCenterView", () => {
 
     // Must NOT have executed yet.
     expect(executeMock).not.toHaveBeenCalled();
-    expect(dialogText()).toContain("确认执行");
+    expect(dialogText()).toContain("Confirm execution");
 
     // Confirming runs it.
-    const confirm = dialogButton("确认执行");
+    const confirm = dialogButton("Confirm execution");
     expect(confirm).toBeTruthy();
     await click(confirm!);
     expect(executeMock).toHaveBeenCalledTimes(1);
@@ -205,13 +205,13 @@ describe("CommandCenterView", () => {
     await mount();
     await type("systemctl restart");
     await click(buttonWith("systemctl restart <unit>")!);
-    expect(dialogText()).toContain("确认执行");
+    expect(dialogText()).toContain("Confirm execution");
 
-    const cancel = dialogButton("取消");
+    const cancel = dialogButton("Cancel");
     expect(cancel).toBeTruthy();
     await click(cancel!);
     expect(executeMock).not.toHaveBeenCalled();
-    expect(dialogText()).not.toContain("确认执行");
+    expect(dialogText()).not.toContain("Confirm execution");
   });
 
   it("blocks execution when the server lacks the tool, and says which", async () => {
@@ -222,7 +222,7 @@ describe("CommandCenterView", () => {
 
     await click(buttonWith("docker ps -a")!);
     expect(executeMock).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("服务器未安装 docker");
+    expect(container.textContent).toContain("Not installed on server: docker");
   });
 
   it("probes the tools required by the hits (not an empty first render)", async () => {

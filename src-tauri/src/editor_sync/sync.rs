@@ -12,13 +12,14 @@ use notify::{RecursiveMode, Watcher};
 use tauri::Emitter;
 use tokio::sync::{mpsc, watch};
 
+use tokio::io::AsyncWriteExt as _;
+
 use super::model::{EditorSyncScope, EditorSyncStatus, SyncSessionInfo};
 use super::{
     is_temp_artifact, upload_file_to, upload_mapped, SyncEntry, SyncRegistry, MAX_DIR_BYTES,
     MAX_DIR_DEPTH, MAX_DIR_FILES, QUIET_WINDOW, SKIP_DIR_NAMES,
 };
-use crate::ssh::sftp::sftp_error;
-use crate::ssh::{base_name, posix_join, SshSessionManager};
+use crate::ssh::{base_name, posix_join, sftp_error, SshSessionManager};
 use anyhow::{anyhow, Result};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
@@ -56,50 +57,53 @@ async fn download_file(sftp: &SftpSession, remote_path: &str, local_path: &Path)
     Ok(())
 }
 
-/// 递归下载目录（目录模式）。symlink 一律跳过（防止循环与越权），跳过
-/// `SKIP_DIR_NAMES` 中的构建产物目录。
+/// 下载目录树（目录模式，迭代栈避免 async 递归）。symlink 一律跳过
+/// （防止循环与越权），跳过 `SKIP_DIR_NAMES` 中的构建产物目录。
 async fn download_tree(
     sftp: &SftpSession,
-    remote_dir: &str,
-    local_dir: &Path,
+    remote_root: &str,
+    local_root: &Path,
     budget: &mut DownloadBudget,
-    depth: usize,
 ) -> Result<()> {
-    if depth > MAX_DIR_DEPTH {
-        return Err(anyhow!("目录嵌套超过 {} 层，请缩小范围", MAX_DIR_DEPTH));
-    }
-    tokio::fs::create_dir_all(local_dir)
-        .await
-        .map_err(|error| anyhow!("创建本地目录失败：{error}"))?;
+    let mut stack: Vec<(String, PathBuf, usize)> =
+        vec![(remote_root.to_string(), local_root.to_path_buf(), 0)];
+    while let Some((remote_dir, local_dir, depth)) = stack.pop() {
+        if depth > MAX_DIR_DEPTH {
+            return Err(anyhow!("目录嵌套超过 {} 层，请缩小范围", MAX_DIR_DEPTH));
+        }
+        tokio::fs::create_dir_all(&local_dir)
+            .await
+            .map_err(|error| anyhow!("创建本地目录失败：{error}"))?;
 
-    for entry in sftp.read_dir(remote_dir).await.map_err(sftp_error)? {
-        let name = entry.file_name();
-        let meta = entry.metadata();
-        let child_remote = posix_join(remote_dir, &name);
-        let child_local = local_dir.join(&name);
-        match meta.file_type() {
-            FileType::Symlink => continue,
-            FileType::Dir => {
-                if SKIP_DIR_NAMES.contains(&name.as_str()) {
-                    continue;
+        for entry in sftp.read_dir(&remote_dir).await.map_err(sftp_error)? {
+            let name = entry.file_name();
+            let meta = entry.metadata();
+            let child_remote = posix_join(&remote_dir, &name);
+            let child_local = local_dir.join(&name);
+            match meta.file_type() {
+                FileType::Symlink => continue,
+                FileType::Dir => {
+                    if SKIP_DIR_NAMES.contains(&name.as_str()) {
+                        continue;
+                    }
+                    stack.push((child_remote, child_local, depth + 1));
                 }
-                download_tree(sftp, &child_remote, &child_local, budget, depth + 1).await?;
-            }
-            _ => {
-                budget.files += 1;
-                budget.bytes += meta.len();
-                if budget.files > MAX_DIR_FILES {
-                    return Err(anyhow!(
-                        "目录包含超过 {MAX_DIR_FILES} 个文件，不适合整目录同步；请改为单个文件打开"
-                    ));
+                _ => {
+                    budget.files += 1;
+                    budget.bytes += meta.len();
+                    if budget.files > MAX_DIR_FILES {
+                        return Err(anyhow!(
+                            "目录包含超过 {MAX_DIR_FILES} 个文件，不适合整目录同步；请改为单个文件打开"
+                        ));
+                    }
+                    if budget.bytes > MAX_DIR_BYTES {
+                        return Err(anyhow!(
+                            "目录总大小超过 {} MB，不适合整目录同步；请缩小范围",
+                            MAX_DIR_BYTES / (1024 * 1024)
+                        ));
+                    }
+                    download_file(sftp, &child_remote, &child_local).await?;
                 }
-                if budget.bytes > MAX_DIR_BYTES {
-                    return Err(anyhow!(
-                        "目录总大小超过 {} MB，不适合整目录同步；请缩小范围",
-                        MAX_DIR_BYTES / (1024 * 1024)
-                    ));
-                }
-                download_file(sftp, &child_remote, &child_local).await?;
             }
         }
     }
@@ -112,7 +116,7 @@ async fn download_tree(
 
 /// notify 事件路径规范化：去掉 Windows 扩展路径前缀（`\\?\` / `\\?\UNC\`），
 /// 便于与工作区根做 `strip_prefix` 匹配。
-fn normalize_event_path(path: PathBuf) -> PathBuf {
+pub(crate) fn normalize_event_path(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
@@ -313,7 +317,7 @@ pub(crate) async fn open_sync_session(
         .map_err(|error| anyhow!("创建本地工作区失败：{error}"))?;
 
     let local_target: PathBuf = match scope {
-        EditorSyncScope::File => workspace.join(crate::ssh::paths::base_name(&canonical)),
+        EditorSyncScope::File => workspace.join(base_name(&canonical)),
         EditorSyncScope::Directory => workspace.clone(),
     };
 
@@ -322,7 +326,7 @@ pub(crate) async fn open_sync_session(
             EditorSyncScope::File => download_file(&sftp, &canonical, &local_target).await,
             EditorSyncScope::Directory => {
                 let mut budget = DownloadBudget { files: 0, bytes: 0 };
-                download_tree(&sftp, &canonical, &local_target, &mut budget, 0).await
+                download_tree(&sftp, &canonical, &local_target, &mut budget).await
             }
         }
     };

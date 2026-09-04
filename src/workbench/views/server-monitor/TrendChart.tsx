@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import type { MonitorSample } from "@/stores/monitor-store";
 import { cn } from "@/lib/cn";
 
@@ -24,6 +25,7 @@ export function TrendChart({
   max: number;
   tone: string;
 }) {
+  const { t } = useTranslation();
   const values = useMemo(() => points.map(pick), [pick, points]);
   const width = 100;
   const height = 34;
@@ -43,7 +45,9 @@ export function TrendChart({
       </div>
       <div className="h-[34px] w-full">
         {values.length < 2 ? (
-          <div className="flex h-full items-center text-10 text-fg-subtle">等待第二次采集…</div>
+          <div className="flex h-full items-center text-10 text-fg-subtle">
+            {t("Waiting for the second sample…")}
+          </div>
         ) : (
           <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className={cn("h-full w-full", tone)}>
             <polygon
@@ -64,7 +68,7 @@ export function TrendChart({
         )}
       </div>
       <div className="flex items-center justify-between text-10 text-fg-subtle">
-        <span>最近 30 分钟</span>
+        <span>{t("Last 30 minutes")}</span>
         <span>{detail}</span>
       </div>
     </div>

@@ -108,18 +108,18 @@ describe("CommandResultPanel 右键菜单", () => {
     await rightClick('[data-testid="result-panel"]');
 
     expect(labels()).toEqual([
-      "结构化视图",
-      "原始输出",
-      "复制原始输出",
-      "复制实际执行命令",
-      "复制完整结果",
+      "Structured view",
+      "Raw output",
+      "Copy raw output",
+      "Copy executed command",
+      "Copy full result",
     ]);
   });
 
   it("copies the raw output", async () => {
     await render(<CommandResultPanel result={result()} />);
     await rightClick('[data-testid="result-panel"]');
-    await clickItem("复制原始输出");
+    await clickItem("Copy raw output");
 
     expect(clipboard.text).toBe("Filesystem Size\n/dev/sda1 40G");
   });
@@ -127,7 +127,7 @@ describe("CommandResultPanel 右键菜单", () => {
   it("copies the command actually executed, not the knowledge id", async () => {
     await render(<CommandResultPanel result={result()} />);
     await rightClick('[data-testid="result-panel"]');
-    await clickItem("复制实际执行命令");
+    await clickItem("Copy executed command");
 
     expect(clipboard.text).toBe("df -hP");
   });
@@ -141,9 +141,9 @@ describe("CommandResultPanel 右键菜单", () => {
       />,
     );
     await rightClick('[data-testid="result-panel"]');
-    await clickItem("复制完整结果");
+    await clickItem("Copy full result");
 
-    expect(clipboard.text).toBe("命令：ls\n耗时：7 ms\na\n\nstderr:\nboom");
+    expect(clipboard.text).toBe("Command: ls\nDuration: 7 ms\na\n\nstderr:\nboom");
   });
 
   it("switches to the raw view from the menu", async () => {
@@ -151,7 +151,7 @@ describe("CommandResultPanel 右键菜单", () => {
     expect(panel().textContent).toContain("/dev/sda1");
 
     await rightClick('[data-testid="result-panel"]');
-    await clickItem("原始输出");
+    await clickItem("Raw output");
 
     expect(panel().textContent).toContain("Filesystem Size");
   });
@@ -180,7 +180,7 @@ describe("CommandResultPanel 右键菜单", () => {
     );
     await rightClick('[data-testid="result-panel"]');
 
-    const structuredItem = menuItems().find((item) => item.textContent?.trim() === "结构化视图");
+    const structuredItem = menuItems().find((item) => item.textContent?.trim() === "Structured view");
     // Offering it would be a menu entry that silently does nothing.
     expect(structuredItem?.hasAttribute("disabled")).toBe(true);
   });
@@ -189,7 +189,7 @@ describe("CommandResultPanel 右键菜单", () => {
     await render(<CommandResultPanel result={result()} />);
     await rightClick('[data-testid="result-panel"]');
 
-    const raw = menuItems().find((item) => item.textContent?.trim() === "原始输出");
+    const raw = menuItems().find((item) => item.textContent?.trim() === "Raw output");
     expect(raw?.hasAttribute("disabled")).toBe(false);
   });
 });

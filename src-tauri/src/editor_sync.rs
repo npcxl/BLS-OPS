@@ -27,12 +27,13 @@ pub use model::{
 };
 pub use registry::SyncRegistry;
 pub(crate) use registry::SyncEntry;
-pub use sync::{close_sync_session, open_sync_session};
+pub(crate) use sync::{close_sync_session, open_sync_session};
 
-use crate::ssh::{posix_join, posix_normalize, SshSessionManager};
+use crate::ssh::{posix_join, posix_normalize, sftp_error, SshSessionManager};
 use anyhow::{anyhow, Result};
 use russh_sftp::client::SftpSession;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt as _;
 
 /// 目录模式下载的上限：超过任何一个直接报错，避免把服务器整站拖到本地。
 pub(crate) const MAX_DIR_FILES: u64 = 4000;
@@ -179,7 +180,7 @@ async fn write_local_to_remote(
             if let Some((parent, _)) = remote_path.rsplit_once('/') {
                 ensure_remote_dir(&sftp, parent).await;
             }
-            sftp.create(remote_path).await.map_err(crate::ssh::sftp::sftp_error)?
+            sftp.create(remote_path).await.map_err(sftp_error)?
         }
     };
     tokio::io::copy(&mut local, &mut remote)

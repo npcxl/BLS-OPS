@@ -81,6 +81,12 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 建议面板：applySuggestion 返回 AcceptOutcome；候选与输入一致时 completionKeys 返回空串，accept 必须走 submitCurrentLine()，否则回车被吞。
 - 已删除勿加回：commandAdaptOutput/ContainerTable/StructuredTables/ReadableOutputView。
 
+## i18n（2026-09-04 全量抽取完成）
+- natural keys：key=英文文案；en 资源为空；`src/i18n/index.ts` **禁 parseMissingKeyHandler**（会把已插值结果覆盖回 `{{name}}` 字面量，en 下插值 key 全坏，勿加回）。
+- 模块语言文件在 `src/i18n/locales/<code>/<模块>.ts`；通用词只进 common.ts（Confirm/Cancel/Save/Delete/Loading…），模块文件不重复。
+- 纯 TS 模块 `import { i18n } from "@/i18n"` + `i18n.t()`；常量存英文 key、渲染处 t()；占位符用 `{{name}}`/`{{count}}`（host 类有文档先例）。
+- 测试跑 en：断言写英文 key 字面量；mock 后端错误消息（模拟 Rust）保持中文不翻；渲染类测试文件顶部加 `import "@/i18n"` 防未初始化。
+
 ## 品牌资产
 唯一 Logo 源 = `public/logo.png`，`pnpm tauri icon public/logo.png` 生成全套到 `src-tauri/icons/`；favicon=`/logo.png`；AppTopBar 左上 `<img src="/logo.png">`（18px，pointer-events-none 可拖窗）。
 

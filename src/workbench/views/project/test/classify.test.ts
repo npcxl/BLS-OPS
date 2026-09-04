@@ -113,14 +113,14 @@ describe("基础设施分组", () => {
     ]);
     expect(groups.map((g) => g.category)).toEqual(["database", "cache", "object_storage", "gateway"]);
     expect(groups[1].instances.map((i) => i.id)).toEqual(["redis-1", "redis-2"]);
-    expect(groups[1].label).toBe("缓存");
+    expect(groups[1].label).toBe("Cache");
   });
 
   it("缺类别的实例归入「其他」组，不崩溃", () => {
     const groups = groupInfrastructure([instance({ id: "weird", workload_role: "infrastructure" })]);
     expect(groups).toHaveLength(1);
     expect(groups[0].category).toBe("unknown");
-    expect(groups[0].label).toBe("其他");
+    expect(groups[0].label).toBe("Other");
   });
 
   it("基础设施可以带关联项目，但仍停留在基础设施分组（不进项目列表）", () => {

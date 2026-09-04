@@ -36,7 +36,8 @@ pub use model::{
     HostKeyInfo, RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_KEEPALIVE_SECS, KIND_DIRECTORY, KIND_FILE, KIND_OTHER, KIND_SYMLINK, SFTP_SUBSYSTEM,
 };
-pub use paths::{format_size_human, natural_cmp, posix_join, posix_normalize};
+pub use paths::{base_name, format_size_human, natural_cmp, parent_of, posix_join, posix_normalize};
+pub(crate) use sftp::sftp_error;
 pub use utf8_stream::Utf8StreamDecoder;
 
 #[cfg(test)]

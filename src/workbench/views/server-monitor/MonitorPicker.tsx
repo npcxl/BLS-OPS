@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 
 /** Shown when a monitor tab has no server attached yet. */
@@ -9,6 +10,7 @@ export function MonitorPicker({
   tabId: string;
   servers: { id: string; name: string; username: string; host: string; port: number }[];
 }) {
+  const { t } = useTranslation();
   const updateTab = useWorkbenchStore((s) => s.updateTab);
   const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
@@ -22,9 +24,11 @@ export function MonitorPicker({
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1">
-      <p className="text-13 text-fg-muted">选择一个服务器以开始监控</p>
+      <p className="text-13 text-fg-muted">{t("Pick a server to start monitoring")}</p>
       {servers.length === 0 ? (
-        <p className="text-12 text-fg-subtle">左侧“服务器”中还没有任何条目，请先新增服务器。</p>
+        <p className="text-12 text-fg-subtle">
+          {t("No servers yet — add one under Servers in the sidebar first.")}
+        </p>
       ) : (
         <div className="flex max-h-[50vh] w-72 flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
           {servers.map((server) => (
@@ -43,7 +47,7 @@ export function MonitorPicker({
         </div>
       )}
       <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        关闭此标签
+        {t("Close this tab")}
       </Button>
     </div>
   );

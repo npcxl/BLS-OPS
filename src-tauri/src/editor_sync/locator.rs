@@ -3,6 +3,8 @@
 //! 原则：只做**存在性探测**，绝不启动进程来验证（不弹窗、无副作用）。
 //! 找不到的编辑器返回 `available: false`，前端不展示——绝不猜测。
 
+use std::path::Path;
+
 use super::model::EditorInfo;
 
 /// 一个编辑器的探测描述：候选可执行文件名与常见安装子目录。
@@ -160,7 +162,7 @@ pub fn spawn_editor(exe: &Path, target: &Path) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let lower = exe.to_string_lossy().to_ascii_lowercase();
-        let command = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+        let mut command = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
             let mut cmd = std::process::Command::new("cmd");
             cmd.args(["/C", &exe.to_string_lossy(), &target.to_string_lossy()])
                 .creation_flags(CREATE_NO_WINDOW);

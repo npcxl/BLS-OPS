@@ -73,19 +73,19 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
     render(containers);
     expect(container.textContent).toContain("running");
     // 第一个容器行（[0]）折叠
-    const collapse = byAria("折叠");
+    const collapse = byAria("Collapse");
     expect(collapse).toBeTruthy();
     act(() => collapse?.click());
     expect(container.textContent).not.toContain("running");
-    act(() => byAria("展开")?.click());
+    act(() => byAria("Expand")?.click());
     expect(container.textContent).toContain("running");
   });
 
   it("全部折叠 / 展开全部", () => {
     render(containers);
-    act(() => button("全部折叠")?.click());
+    act(() => button("Collapse all")?.click());
     expect(container.textContent).not.toContain("running");
-    act(() => button("展开全部")?.click());
+    act(() => button("Expand all")?.click());
     expect(container.textContent).toContain("running");
   });
 
@@ -98,13 +98,13 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
     expect(container.textContent).not.toContain("nginx");
 
     act(() => type("zzz-not-there"));
-    expect(container.textContent).toContain("无匹配结果");
+    expect(container.textContent).toContain("No matches");
   });
 
   it("复制路径：拿到 JSONPath（不是值）", async () => {
     render({ name: "nginx" });
     await act(async () => {
-      byTitle("复制路径")?.click();
+      byTitle("Copy path")?.click();
     });
     expect(clipboard.text).toBe("$.name");
   });
@@ -112,14 +112,14 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
   it("复制整段 JSON 走 copyText（格式化文本）", async () => {
     render({ a: 1 });
     await act(async () => {
-      button("复制")?.click();
+      button("Copy")?.click();
     });
     expect(clipboard.text).toBe(JSON.stringify({ a: 1 }, null, 2));
   });
 
   it("文本模式：格式化 JSON 原样展示", () => {
     render({ a: [1, 2] });
-    act(() => button("文本")?.click());
+    act(() => button("Text")?.click());
     expect(container.querySelector("pre")?.textContent).toBe(JSON.stringify({ a: [1, 2] }, null, 2));
   });
 
@@ -153,7 +153,7 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
         leaf('"note"').click();
       });
       expect(clipboard.text).toBe("null");
-      expect(container.textContent).toContain("复制成功");
+      expect(container.textContent).toContain("Copied");
     });
 
     it("点击容器仍然展开/折叠，**不复制**", async () => {
@@ -178,7 +178,7 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
       render(containers);
       clipboard.text = "";
       await act(async () => {
-        byAria("折叠")?.click();
+        byAria("Collapse")?.click();
       });
       expect(clipboard.text).toBe("");
       expect(container.textContent).not.toContain("running");
@@ -199,7 +199,7 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
 
     it("文本模式点击内容 → 复制完整 JSON", async () => {
       render({ a: [1, 2] });
-      act(() => button("文本")?.click());
+      act(() => button("Text")?.click());
       await act(async () => {
         container.querySelector<HTMLElement>('[data-testid="json-text-copy"]')?.click();
       });
@@ -217,11 +217,11 @@ describe("JsonView —— JSON 只展示，绝不自动转表格", () => {
     it("复制路径 / 复制节点 JSON 两个按钮保持原样", async () => {
       render({ name: "nginx" });
       await act(async () => {
-        byTitle("复制路径")?.click();
+        byTitle("Copy path")?.click();
       });
       expect(clipboard.text).toBe("$.name");
       await act(async () => {
-        byTitle("复制节点 JSON")?.click();
+        byTitle("Copy node JSON")?.click();
       });
       expect(clipboard.text).toBe('"nginx"');
     });

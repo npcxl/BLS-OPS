@@ -67,7 +67,7 @@ describe("结构化结果：点击复制", () => {
       cells[3].click();
     });
     expect(clipboard.text).toBe("0.4");
-    expect(notice()).toContain("复制成功");
+    expect(notice()).toContain("Copied");
   });
 
   it("表格：筛选输入框不触发复制", async () => {
@@ -136,7 +136,7 @@ describe("结构化结果：点击复制", () => {
   it("日志：顶部“只看错误与警告”按钮不触发复制", async () => {
     render(<LogView rows={[{ level: "6", message: "info line" }]} />);
     const toggle = [...container.querySelectorAll("button")].find((node) =>
-      node.textContent?.includes("只看错误与警告"),
+      node.textContent?.includes("Errors & warnings only"),
     );
     await act(async () => {
       toggle?.click();
@@ -169,13 +169,13 @@ describe("原始输出（RawView）：只提供复制全部", () => {
   it("点击复制 → 原始字节完整复制，不拆控制字符", async () => {
     render(<RawView stdout={"line1\nline2\tend"} stderr="boom" />);
     const copyAll = [...container.querySelectorAll("button")].find(
-      (node) => node.getAttribute("title") === "复制原始输出",
+      (node) => node.getAttribute("title") === "Copy raw output",
     );
     await act(async () => {
       copyAll?.click();
     });
     expect(clipboard.text).toBe("line1\nline2\tend");
-    expect(notice()).toBe("复制成功");
+    expect(notice()).toBe("Copied");
     // stderr 仍然可见（保留展示），但不参与"复制全部"
     expect(container.textContent).toContain("boom");
   });
@@ -187,7 +187,7 @@ describe("复制提示（共用 CopyNotice）", () => {
     await act(async () => {
       nodes("kv-value")[0].click();
     });
-    expect(notice()).toBe("复制成功");
+    expect(notice()).toBe("Copied");
 
     const failing = vi
       .spyOn(navigator.clipboard, "writeText")
@@ -196,7 +196,7 @@ describe("复制提示（共用 CopyNotice）", () => {
       await act(async () => {
         nodes("kv-value")[0].click();
       });
-      expect(notice()).toBe("复制失败，请检查剪贴板权限");
+      expect(notice()).toBe("Copy failed. Please check clipboard permission");
     } finally {
       failing.mockRestore();
     }

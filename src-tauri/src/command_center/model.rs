@@ -139,7 +139,10 @@ pub struct CommandKnowledge {
     pub syntax: &'static str,
     pub risk: RiskLevel,
     pub mutability: Mutability,
-    /// 输出适配器 ID（`docker-container-table` / `generic-raw-output`…）。
+    /// 输出适配器 ID。**默认 `"auto"`** —— 由统一自动识别按输出形态选视图，
+    /// 不再要求每条命令人工绑定专用适配器（如 `docker-container-table`）。
+    ///
+    /// 专用适配器只是**提示**（hint）：先试，认不出来继续自动识别。
     pub output_adapter: &'static str,
     /// 需要服务器上存在的工具（`docker` / `nginx`）；空 = 系统自带。
     pub requires: &'static [ProbeTool],

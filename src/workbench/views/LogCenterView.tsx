@@ -6,9 +6,11 @@
  * records with their real priority; nothing is synthesised.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, Filter, Loader2, RefreshCw, ScrollText } from "lucide-react";
+import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { copyText } from "@/lib/clipboard";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import {
   JOURNAL_PRIORITIES,
   opsApi,
@@ -108,6 +110,64 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
     () => entries.filter((entry) => entry.priority <= 3).length,
     [entries],
   );
+
+  // -- row context menu -----------------------------------------------------
+  const menu = useContextMenu();
+
+  /** One log row as plain text, matching what the table shows. */
+  const rowText = (entry: JournalEntry) =>
+    [entry.timestamp || "—", priorityLabel(entry.priority), entry.unit, entry.message]
+      .filter(Boolean)
+      .join("  ");
+
+  const copyRow = (entry: JournalEntry) => void copyText(rowText(entry));
+
+  const copyAll = () =>
+    void copyText(visible.map(rowText).join("\n"));
+
+  const rowMenu = (entry: JournalEntry) =>
+    menu.onContextMenu((): ContextMenuItem[] => {
+      const levelLabel = priorityLabel(entry.priority);
+      return [
+        { id: "copy-row", label: "复制该行", icon: Copy, onSelect: () => copyRow(entry) },
+        { id: "copy-all", label: `复制全部（${visible.length} 条）`, onSelect: copyAll },
+        { id: "sep-filter", separator: true },
+        {
+          id: "filter-priority",
+          label: `只看「${levelLabel}」及以上`,
+          icon: Filter,
+          // Re-applying the filter the row already has would be a no-op that
+          // looks like a broken menu item.
+          disabled: priority === entry.priority,
+          hint: priority === entry.priority ? "当前" : undefined,
+          onSelect: () => setPriority(entry.priority),
+        },
+        {
+          id: "filter-unit",
+          label: `只看单元 ${entry.unit}`,
+          disabled: unit.trim() === entry.unit,
+          hint: unit.trim() === entry.unit ? "当前" : undefined,
+          onSelect: () => setUnit(entry.unit),
+        },
+        {
+          id: "search-unit",
+          label: "在结果中搜索该消息",
+          disabled: entry.message.trim() === "",
+          onSelect: () => setSearch(entry.message),
+        },
+        { id: "sep-clear", separator: true },
+        {
+          id: "clear-filters",
+          label: "清除筛选",
+          disabled: priority === null && unit.trim() === "" && search.trim() === "",
+          onSelect: () => {
+            setPriority(null);
+            setUnit("");
+            setSearch("");
+          },
+        },
+      ];
+    });
 
   return (
     <ModuleFrame
@@ -220,7 +280,9 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
               {visible.map((entry, index) => (
                 <tr
                   key={`${entry.timestamp}-${entry.unit}-${index}`}
+                  data-testid="log-row"
                   className={cn("border-t border-line align-top", rowTone(entry.priority))}
+                  onContextMenu={rowMenu(entry)}
                 >
                   <td className="px-3 py-1.5 whitespace-nowrap font-mono text-fg-subtle">
                     {entry.timestamp || "—"}
@@ -253,6 +315,8 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
           )}
         </div>
       )}
+
+      <ContextMenu {...menu.props} title="日志" />
     </ModuleFrame>
   );
 }

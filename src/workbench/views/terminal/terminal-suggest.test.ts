@@ -39,6 +39,25 @@ describe("提示面板定位（原位补全）", () => {
     expect(pos.top).toBe(350 - SUGGEST_GAP - 120);
   });
 
+  it("翻到上方时让开光标所在整行（rowHeight），不盖住正在输入的命令", () => {
+    const pos = computeSuggestPosition(
+      { x: 100, y: 350, rowHeight: 16 },
+      { width: 300, height: 120 },
+      viewport,
+    );
+    // 面板停在光标行上缘（350 - 16）之上再留 6px 间隔 —— 输入行完整可见。
+    expect(pos.top).toBe(350 - 16 - SUGGEST_GAP - 120);
+  });
+
+  it("带 rowHeight 翻转后上方空间不足 → 仍 clamp 到边缘，不出可视区", () => {
+    const pos = computeSuggestPosition(
+      { x: 100, y: 191, rowHeight: 16 },
+      { width: 300, height: 200 },
+      viewport,
+    );
+    expect(pos.top).toBe(4);
+  });
+
   it("右下都放不下 → 左上双翻转", () => {
     const pos = computeSuggestPosition(
       { x: 700, y: 350 },

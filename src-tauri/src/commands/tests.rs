@@ -4,12 +4,13 @@
 use rusqlite::Connection;
 
 use super::deployment::validate_project;
-use super::servers::validate_server;
+use super::servers::{validate_group_name, validate_server};
 use super::services::parse_service_action;
 use super::ssh::session_record;
 use super::test_support::db;
 use crate::db::{
-    self, insert_or_replace_server, CredentialRecord, ServerGroupRecord, ServerRecord,
+    self, insert_or_replace_server, insert_or_replace_server_group, CredentialRecord,
+    ServerGroupRecord, ServerRecord,
 };
 
 fn server(id: &str) -> ServerRecord {
@@ -67,6 +68,38 @@ fn rejects_unknown_service_actions() {
     assert!(parse_service_action("enable").is_ok());
     assert!(parse_service_action("rm -rf /").is_err());
     assert!(parse_service_action("").is_err());
+}
+
+// -- groups ---------------------------------------------------------------
+
+fn group(id: &str, name: &str) -> ServerGroupRecord {
+    ServerGroupRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        sort_order: 0,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
+#[test]
+fn rejects_a_blank_group_name() {
+    let conn = db();
+    assert!(validate_group_name(&conn, &group("g1", "   ")).is_err());
+    assert!(validate_group_name(&conn, &group("g1", "")).is_err());
+}
+
+#[test]
+fn rejects_a_duplicate_group_name_but_allows_renaming_in_place() {
+    let conn = db();
+    insert_or_replace_server_group(&conn, &group("g1", "生产")).unwrap();
+
+    // Another id claiming the same name must be rejected.
+    assert!(validate_group_name(&conn, &group("g2", "生产")).is_err());
+    assert!(validate_group_name(&conn, &group("g2", "测试")).is_ok());
+
+    // Saving the same row again (rename round-trip) is not a clash with itself.
+    assert!(validate_group_name(&conn, &group("g1", "生产")).is_ok());
 }
 
 // -- projects ------------------------------------------------------------

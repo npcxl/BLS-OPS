@@ -151,7 +151,11 @@ export interface CommandStructuredOutput {
 export interface CommandExecutionResult {
   knowledge_id: string;
   title: string;
-  risk: RiskLevel;
+  /**
+   * 命令真实风险。**`null` = 知识库未命中、风险未知**（终端里手敲的命令
+   * 不在知识库里是常态）—— UI 必须显示"未知风险"，绝不能默认按只读处理。
+   */
+  risk: RiskLevel | null;
   raw: CommandRawOutput;
   structured: CommandStructuredOutput | null;
 }
@@ -195,6 +199,8 @@ export type ResultView =
   | "json"
   | "diff"
   | "progress"
+  /** 识别出来**就是**一段短纯文本（不是"没识别出来"）。 */
+  | "text"
   | "raw";
 
 /** 数值列的阈值着色。 */

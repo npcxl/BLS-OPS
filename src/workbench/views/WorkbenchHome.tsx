@@ -1,15 +1,26 @@
 import { useMemo, useState } from "react";
-import { Clock, Plus, Server as ServerIcon, Star, Trash2 } from "lucide-react";
+import {
+  Clock,
+  Copy,
+  Pencil,
+  Plug,
+  Plus,
+  Server as ServerIcon,
+  Star,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { copyText } from "@/lib/clipboard";
 import { type CredentialRecord, type ServerRecord } from "@/api/ops-api";
 import { emptyServer, useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { cn } from "@/lib/cn";
-import { ServerForm } from "@/workbench/ssh-context-sidebar";
+import { ServerForm } from "@/workbench/server-list";
 
 /** Workbench Home — spec §28. All data comes from SQLite; nothing is mocked. */
 
@@ -209,6 +220,7 @@ export function WorkbenchHome() {
                     server={server}
                     onOpen={() => openServer(server.id, server.name, server.host, server.port)}
                     onToggleFavorite={() => void setFavorite(server.id, !server.favorite)}
+                    onEdit={() => setEditing(server)}
                     onDelete={() => setDeleteTarget(server)}
                   />
                 ))}
@@ -273,15 +285,44 @@ function ServerHomeRow({
   server,
   onOpen,
   onToggleFavorite,
+  onEdit,
   onDelete,
 }: {
   server: ServerRecord;
   onOpen: () => void;
   onToggleFavorite: () => void;
+  onEdit: () => void;
   onDelete: () => void;
 }) {
+  // The card only shows two hover icons; the rest of the actions (编辑, 复制
+  // 地址) live in the right-click menu, same as in the server list.
+  const menu = useContextMenu();
+  const items: ContextMenuItem[] = [
+    { id: "open", label: "打开终端", icon: Plug, onSelect: onOpen },
+    {
+      id: "favorite",
+      label: server.favorite ? "取消收藏" : "收藏",
+      icon: Star,
+      onSelect: onToggleFavorite,
+    },
+    { id: "sep-edit", separator: true },
+    { id: "edit", label: "编辑服务器", icon: Pencil, onSelect: onEdit },
+    {
+      id: "copy-target",
+      label: "复制连接地址",
+      icon: Copy,
+      onSelect: () => void copyText(`${server.username}@${server.host}:${server.port}`),
+    },
+    { id: "sep-delete", separator: true },
+    { id: "delete", label: "删除服务器", icon: Trash2, danger: true, onSelect: onDelete },
+  ];
+
   return (
-    <div className="group flex h-11 w-full items-center gap-2.5 px-3 transition-colors hover:bg-surface-hover/60">
+    <div
+      data-testid={`home-server-row${server.id ? `-${server.id}` : ""}`}
+      className="group flex h-11 w-full items-center gap-2.5 px-3 transition-colors hover:bg-surface-hover/60"
+      onContextMenu={menu.onContextMenu(() => items)}
+    >
       <ServerIcon size={14} className="shrink-0 text-fg-subtle" />
       <button type="button" className="min-w-0 flex-1 truncate text-left text-13 text-fg" onClick={onOpen}>
         {server.name}
@@ -302,6 +343,8 @@ function ServerHomeRow({
           </Button>
         </Tooltip>
       </div>
+
+      <ContextMenu {...menu.props} title={server.name} />
     </div>
   );
 }

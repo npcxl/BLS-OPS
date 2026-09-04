@@ -45,6 +45,40 @@ fn detect_level(line: &str) -> LogLevel {
     LogLevel::Info
 }
 
+/// 行首是否带可识别的时间戳（自动识别"这是日志"的判据之一）。
+pub fn has_timestamp(line: &str) -> bool {
+    let (timestamp, rest) = split_timestamp(line);
+    !timestamp.is_empty() && rest != line
+}
+
+/// 行内是否带**独立成词**的级别标记（ERROR / WARN / INFO …）。
+///
+/// 只认词边界，绝不拿正文里的子串当级别（`terrain` 里没有 `err` 的独立
+/// 单词，不会被误判）。
+pub fn has_level_token(line: &str) -> bool {
+    let upper = line.to_ascii_uppercase();
+    upper
+        .split(|c: char| !c.is_ascii_uppercase() && !c.is_ascii_digit())
+        .any(|token| {
+            matches!(
+                token,
+                "ERROR"
+                    | "ERR"
+                    | "FATAL"
+                    | "CRIT"
+                    | "CRITICAL"
+                    | "FAIL"
+                    | "FAILED"
+                    | "WARN"
+                    | "WARNING"
+                    | "INFO"
+                    | "NOTICE"
+                    | "DEBUG"
+                    | "TRACE"
+            )
+        })
+}
+
 /// 尝试剥离行首时间戳（`2024-01-02 03:04:05` / `Jan 02 03:04:05` / ISO8601）。
 /// 剥离失败返回 `None`，时间戳为空 —— 不伪造。
 fn split_timestamp(line: &str) -> (String, &str) {

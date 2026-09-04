@@ -22,6 +22,7 @@
 //! - 任何时候都保留原始输出（[`model::StructuredCommandResult::raw`]）；
 //! - 解析失败自动回落 raw，命令绝不因"没有专用 UI"而不可用，且回落原因可见。
 
+pub mod auto;
 pub mod domain;
 pub mod generic;
 pub mod model;
@@ -29,11 +30,15 @@ pub mod registry;
 #[cfg(test)]
 mod tests;
 
+pub use auto::{adapt_auto, has_shell_operator};
 pub use model::{
     ColumnDefinition, ColumnThresholds, CommandMeta, RawOutput, ResultSection,
     StructuredCommandResult, SummaryItem, ViewType,
 };
 pub use registry::{AdapterContext, AdapterOutcome, AdapterRegistry};
+
+/// 知识库未给专用适配器时的默认 adapter id。
+pub const AUTO_ADAPTER: &str = "auto";
 
 /// 全局注册表（进程内只建一次）。
 static REGISTRY: std::sync::OnceLock<AdapterRegistry> = std::sync::OnceLock::new();

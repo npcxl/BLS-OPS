@@ -2,9 +2,18 @@ import { useRef } from "react";
 import { ChevronDown, Copy, History, RotateCw, X } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
-import { RISK_META, type RiskLevel } from "@/api/ops-api";
+import { RISK_META } from "@/api/ops-api";
 import { CommandResultPanel } from "@/workbench/views/command-result/CommandResultPanel";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
+import { COMMAND_SOURCE_LABELS } from "./command-plan";
+
+/**
+ * 知识库**没有**命中时的风险展示。
+ *
+ * 终端里手敲的命令不在知识库里是常态（`ls -l` / 自研脚本…）。此时风险未知，
+ * 必须**明确显示"未知"**，绝不能悄悄按只读处理（readonly 会绕过确认）。
+ */
+const UNKNOWN_RISK = { label: "未知风险", tone: "bg-surface-2 text-fg-muted" };
 
 /**
  * 终端下方的结构化结果抽屉 —— 结果是**真正可管理的 Tab**。
@@ -104,7 +113,8 @@ export function TerminalResultDrawer({
           )}
           {results.map((item) => {
             const isActive = item.id === active.id;
-            const risk = RISK_META[item.risk as RiskLevel] ?? RISK_META.read_only;
+            // 未命中知识库 → 未知风险（可见），绝不默认只读。
+            const risk = item.risk ? RISK_META[item.risk] : UNKNOWN_RISK;
             return (
               <div
                 key={item.id}
@@ -116,7 +126,9 @@ export function TerminalResultDrawer({
                 <button
                   type="button"
                   className="flex min-w-0 items-center gap-1"
-                  title={`${item.command} · ${risk.label}`}
+                  title={`${item.command} · ${risk.label} · ${
+                    COMMAND_SOURCE_LABELS[item.source]
+                  }`}
                   onClick={() => onSelect(item.id)}
                   onAuxClick={(event) => {
                     if (event.button === 1) onCloseTab(item.id);
@@ -127,6 +139,7 @@ export function TerminalResultDrawer({
                   }}
                 >
                   <span className="truncate">{item.command}</span>
+                  {/* 只读是默认情况，不占位置；未知风险必须显示出来。 */}
                   {item.risk !== "read_only" && (
                     <span className={cn("shrink-0 rounded px-1 text-9", risk.tone)}>
                       {risk.label}
@@ -161,7 +174,7 @@ export function TerminalResultDrawer({
 
       {!collapsed && (
         <div className="h-[38vh] min-h-[180px] px-2 pb-2">
-          {/* key = 结果 id：切换结果时视图状态（结构化/原始）重置为默认 */}
+          {/* key = 结果 id：切换结果时视图状态（结构化/可读/原始）重置为默认 */}
           <CommandResultPanel
             key={active.id}
             result={{
@@ -171,12 +184,15 @@ export function TerminalResultDrawer({
               risk: active.risk,
               raw: {
                 command_executed: active.command,
-                stdout: active.result.raw.stdout,
-                stderr: active.result.raw.stderr,
+                // 完整原始流（含 ESC 控制序列）——面板的"原始输出"Tab 经转义展示。
+                stdout: active.rawOutput,
+                stderr: active.stderr || active.result.raw.stderr,
                 duration_ms: active.result.meta.duration_ms,
               },
               structured: active.result as unknown as never,
             }}
+            // 可读输出：面板**默认**展示它，用户不会直接看到 ESC[?2004l 之类。
+            readable={active.readableOutput}
           />
         </div>
       )}

@@ -11,11 +11,12 @@ import { RawView } from "./views/RawView";
  * 统一结果渲染器 —— **只按 `view` 分发**，完全不关心命令来自 Docker、
  * Nginx 还是普通 Linux 工具。
  *
- * 这是"统一输出适配引擎"的前端一半：新增命令只要后端产出 9 种视图之一，
+ * 这是"统一输出适配引擎"的前端一半：新增命令只要后端产出这些视图之一，
  * 前端零改动。
  *
  * - `diff` / `progress`：协议已保留，但当前没有适配器产出（git diff 与
  *   构建进度在 P4.5+）。此时**退回 raw**，绝不显示空壳 UI。
+ * - `text`：识别出来就是一段短纯文本（"concise text"），按原始输出渲染。
  * - 任何未预期的 view 值同样退回 raw —— 解析/协议异常不影响可用性。
  */
 export function CommandResultRenderer({ result }: { result: StructuredCommandResult }) {
@@ -38,6 +39,7 @@ export function CommandResultRenderer({ result }: { result: StructuredCommandRes
     // diff / progress 暂无数据源 → 退回原始输出（保留全部 stdout）。
     case "diff":
     case "progress":
+    case "text":
     case "raw":
     default:
       return <RawView {...result.raw} />;

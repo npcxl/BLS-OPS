@@ -4,6 +4,7 @@
 //! 1. 各层解析出的结构符合统一协议（前端只认 view + 行契约）；
 //! 2. **任何失败都回落 raw 且保留原始输出**，命令绝不因无 UI 而不可用。
 
+use super::auto;
 use super::generic;
 use super::model::{CommandMeta, RawOutput, ViewType};
 use super::registry::{AdapterContext, AdapterRegistry};
@@ -254,4 +255,233 @@ fn empty_output_is_a_valid_result_not_an_error() {
     let result = registry.adapt("docker-container-table", "", &ctx("容器", ""));
     assert_eq!(result.view, ViewType::Table, "空输出仍是有效表格");
     assert!(result.is_empty());
+}
+
+// ── 统一自动识别（adapt_auto）──
+
+/** 走完整链路（hint → auto → raw）拿结果。 */
+fn auto_adapt(hint: Option<&str>, command: &str, stdout: &str) -> super::StructuredCommandResult {
+    let ctx = AdapterContext {
+        title: command.to_string(),
+        meta: CommandMeta {
+            command: command.to_string(),
+            exit_code: Some(0),
+            duration_ms: 42,
+            truncated: false,
+        },
+        raw: RawOutput {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+        },
+    };
+    super::adapt_auto(hint, stdout, &ctx)
+}
+
+#[test]
+fn auto_detects_a_plain_table_without_any_specialized_adapter() {
+    // 关键验收项：知识库里**没有**专用适配器的标准表格，也要自动生成表格。
+    let stdout = concat!(
+        "PID   COMMAND      CPU   MEM\n",
+        "1     /sbin/init   0.0   0.1\n",
+        "912   nginx        1.2   3.4\n",
+        "1204  node         12.5  8.0\n",
+    );
+    let result = auto_adapt(None, "some-tool list", stdout);
+    assert_eq!(
+        result.view,
+        ViewType::Table,
+        "describe={}",
+        auto::describe(stdout)
+    );
+    assert_eq!(result.rows.len(), 3);
+    assert_eq!(result.rows[0]["command"], "/sbin/init");
+    assert_eq!(result.rows[2]["cpu"], "12.5");
+    // 表头当列名（ASCII 化 + 去重），不做语义猜测。
+    let keys: Vec<&str> = result.columns.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(keys, vec!["pid", "command", "cpu", "mem"]);
+    // 原始输出永久留档。
+    assert_eq!(result.raw.stdout, stdout);
+}
+
+#[test]
+fn auto_detects_key_value_pairs() {
+    let stdout = concat!(
+        "Server Version: 24.0.7\n",
+        "Storage Driver: overlay2\n",
+        "Logging Driver: json-file\n",
+    );
+    let result = auto_adapt(None, "docker info", stdout);
+    assert_eq!(
+        result.view,
+        ViewType::KeyValue,
+        "{}",
+        auto::describe(stdout)
+    );
+    let total: usize = result.sections.iter().map(|s| s.rows.len()).sum();
+    assert_eq!(total, 3);
+    assert_eq!(result.sections[0].rows[0]["key"], "Server Version");
+}
+
+#[test]
+fn auto_detects_json_and_json_lines() {
+    let single = r#"{"Name":"web","State":"running"}"#;
+    let result = auto_adapt(None, "docker inspect web", single);
+    assert_eq!(result.view, ViewType::Json);
+    assert_eq!(
+        result.json.as_ref().and_then(|v| v["Name"].as_str()),
+        Some("web")
+    );
+
+    let lines = "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n";
+    let result = auto_adapt(None, "journalctl -o json", lines);
+    assert_eq!(result.view, ViewType::Json);
+    assert_eq!(
+        result
+            .json
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .map(Vec::len),
+        Some(3)
+    );
+}
+
+#[test]
+fn auto_detects_log_metrics_and_tree() {
+    let log = concat!(
+        "2024-01-02 10:00:01 INFO  started\n",
+        "2024-01-02 10:00:02 ERROR disk full\n",
+        "2024-01-02 10:00:03 WARN  low memory\n",
+    );
+    assert_eq!(auto::describe(log), "log");
+    let result = auto_adapt(None, "journalctl -u nginx", log);
+    assert_eq!(result.view, ViewType::Log);
+
+    let uptime = " 10:00:00 up 3 days,  2:00,  1 user,  load average: 0.10, 0.20, 0.30\n";
+    assert_eq!(auto::describe(uptime), "metrics");
+
+    let tree = "/srv\n├── api\n│   └── node_modules\n└── web\n";
+    assert_eq!(auto::describe(tree), "tree");
+}
+
+#[test]
+fn plain_text_falls_back_to_text_or_raw() {
+    // 短文本 → 识别成"纯文本"（一等公民，不是"解析失败"）。
+    let short = "v1.24.7\n";
+    let result = auto_adapt(None, "cat VERSION", short);
+    assert_eq!(result.view, ViewType::Text, "{}", auto::describe(short));
+
+    // 超长无结构文本 → raw（交给原始输出视图翻页）。
+    let huge = "x".repeat(9_000);
+    assert_eq!(auto::describe(&huge), "raw");
+
+    // 任何情况下原始输出都不丢。
+    assert_eq!(auto_adapt(None, "x", &huge).raw.stdout, huge);
+}
+
+#[test]
+fn generic_table_is_conservative_never_invents_tables() {
+    let detect = generic::table::detect_table;
+
+    // 1. 只有一行 → 不是表格。
+    assert!(detect("NAME   STATE\n").is_none());
+    // 2. 列数不稳定 → 不是表格。
+    assert!(detect("A  B  C\nd  e\nf  g  h\n").is_none());
+    // 3. 列没对齐（散文） → 不是表格。
+    assert!(detect("hello world foo\nbar baz qux something\n").is_none());
+    // 4. 首行是时间戳/数字 → 不像表头。
+    assert!(detect("2024-01-02 10:00:00\n2024-01-02 10:00:01\n").is_none());
+    // 5. 两行散文（即便碰巧对齐） → 不是表格。
+    assert!(detect("hello world\nfoo    bar\n").is_none());
+    // 6. 空输出 → 不是表格。
+    assert!(detect("").is_none() && detect("\n\n").is_none());
+
+    // 正向：稳定表格（连续空格分列）与 Tab 分列都要认出来。
+    let spaced = "PID   COMM       CPU\n1     systemd    0.0\n912   nginx      1.2\n";
+    let table = detect(spaced).expect("连续空格表格");
+    assert_eq!(table.header, vec!["PID", "COMM", "CPU"]);
+    assert_eq!(table.rows.len(), 2);
+
+    let tabbed = "PID\tCOMM\tCPU\n1\tsystemd\t0.0\n912\tnginx\t1.2\n";
+    let table = detect(tabbed).expect("Tab 分列表格");
+    assert_eq!(table.rows[1], vec!["912", "nginx", "1.2"]);
+}
+
+#[test]
+fn auto_columns_mark_numeric_columns_only() {
+    let stdout = concat!(
+        "NAME        CPU     MEM\n",
+        "web         1.20    512Mi\n",
+        "api         0.30    1.2Gi\n",
+        "worker-01   12.5    256Mi\n",
+    );
+    let result = auto_adapt(None, "tool stats", stdout);
+    let numeric: Vec<&str> = result
+        .columns
+        .iter()
+        .filter(|c| c.numeric)
+        .map(|c| c.key.as_str())
+        .collect();
+    assert_eq!(
+        numeric,
+        vec!["cpu", "mem"],
+        "数值列自动标 numeric（右对齐）"
+    );
+}
+
+#[test]
+fn shell_operators_disable_the_specialized_hint() {
+    assert!(auto::has_shell_operator("df -h | grep /dev"));
+    assert!(auto::has_shell_operator("ls > out.txt"));
+    assert!(auto::has_shell_operator("make && make install"));
+    assert!(auto::has_shell_operator("cat a; cat b"));
+    // 引号里的符号不是操作符（`awk` 的字段引用）。
+    assert!(!auto::has_shell_operator("awk '{print $1}'"));
+    assert!(!auto::has_shell_operator(
+        "docker ps --format \"{{.Names}}\""
+    ));
+    assert!(!auto::has_shell_operator("df -h"));
+}
+
+#[test]
+fn specialized_adapter_wins_when_it_recognizes_the_output() {
+    // 专用适配器认得出来 → 用它（比通用猜更准）。
+    let stdout = "LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=912,fd=6))\n";
+    let result = auto_adapt(Some("port-listener-table"), "ss -tulnp", stdout);
+    assert_eq!(result.view, ViewType::Table);
+    assert_eq!(result.rows[0]["process"], "nginx");
+    assert!(result.warnings.is_empty(), "专用适配器命中时不该有提示");
+}
+
+#[test]
+fn specialized_adapter_failure_continues_into_auto() {
+    // 专用适配器（`json-viewer`）拿到的是一张标准表格 → 认不出 → **继续 auto**，
+    // 最终按真实形态（表格）渲染，而不是直接 raw。
+    let stdout = concat!(
+        "PID   COMMAND      CPU   MEM\n",
+        "1     /sbin/init   0.0   0.1\n",
+        "912   nginx        1.2   3.4\n",
+        "1204  node         12.5  8.0\n",
+    );
+    let result = auto_adapt(Some("json-viewer"), "some-tool list", stdout);
+    assert_eq!(result.view, ViewType::Table, "失败后必须继续自动识别");
+    assert_eq!(result.rows[1]["command"], "nginx");
+    assert!(
+        result.warnings.iter().any(|w| w.contains("自动识别")),
+        "回落原因必须可见：{:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn header_with_one_extra_column_is_still_a_table() {
+    // `df -h` 的 `Mounted on`、`lsblk` 的空白 `MOUNTPOINT`：表头比数据多一列。
+    let stdout = concat!(
+        "Filesystem      Size  Used Avail Use% Mounted on\n",
+        "/dev/sda1       458G  100G  335G  23% /\n",
+        "tmpfs            16G    0B   16G   0% /dev/shm\n",
+    );
+    let table = generic::table::detect_table(stdout).expect("表头多一列也要认出来");
+    assert_eq!(table.header.last().map(String::as_str), Some("Mounted on"));
+    assert_eq!(table.rows[0][5], "/");
+    assert_eq!(table.rows[1][5], "/dev/shm");
 }

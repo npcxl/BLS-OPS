@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Play } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { RISK_META, type CommandSearchHit } from "@/api/ops-api";
 import {
@@ -11,22 +12,29 @@ import {
  * 右侧放不下向左展开、底部放不下翻到光标上方。
  *
  * 键盘交互由 `TerminalView` 的按键层处理（见 `terminal-suggest.ts` 的映射表）；
- * 这里只负责展示与鼠标点选（mousedown 抢在终端失焦之前完成补全）。
+ * 这里只负责展示与鼠标操作（mousedown 抢在终端失焦之前完成）。
  *
- * 填入只把候选写进当前行，**不执行**：第一次 Enter 填入并关闭面板，
- * 第二次 Enter 才由 shell 正常执行。
+ * 两种用法：
+ * - 点击候选行 / → / Enter → **只填入**（第一次 Enter 填入并关闭面板，
+ *   第二次 Enter 才由 shell 正常执行）；
+ * - 点击 ▶ / Ctrl+Enter → 补全后**立即执行**，走唯一提交入口
+ *   （受控标记 → 捕获输出 → adapt_auto → 结构化结果 Tab）。
  */
 export function TerminalSuggest({
   hits,
   activeIndex,
   onHover,
   onApply,
+  onRun,
   anchor,
 }: {
   hits: CommandSearchHit[];
   activeIndex: number;
   onHover: (index: number) => void;
+  /** 填入候选（**不执行**）。 */
   onApply: (hit: CommandSearchHit) => void;
+  /** 补全后**立即执行**（可选 —— 未提供时只显示"填入"）。 */
+  onRun?: (hit: CommandSearchHit) => void;
   /** 光标锚点（px，相对定位父元素 = 光标右下角）。null 时不渲染。 */
   anchor: SuggestAnchor | null;
 }) {
@@ -98,11 +106,29 @@ export function TerminalSuggest({
             <span className="min-w-0 flex-1 truncate text-10 text-fg-subtle" title={hit.title}>
               {hit.title}
             </span>
+            {/* 立即执行：补全 + 提交，走唯一入口（受控标记 + 结果 Tab）。 */}
+            {onRun && (
+              <span
+                role="button"
+                tabIndex={-1}
+                aria-label={`执行 ${hit.syntax}`}
+                title="补全并立即执行"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onRun(hit);
+                }}
+                className="shrink-0 rounded p-0.5 text-fg-subtle hover:bg-accent/15 hover:text-accent"
+              >
+                <Play size={11} />
+              </span>
+            )}
           </button>
         ))}
       </div>
       <div className="border-t border-line bg-surface-2/60 px-2.5 py-0.5 text-9 text-fg-subtle">
         ↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行
+        {onRun ? " · ▶ / Ctrl+Enter 直接执行" : ""}
       </div>
     </div>
   );

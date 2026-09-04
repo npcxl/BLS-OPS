@@ -66,12 +66,40 @@ pub fn insert_or_replace_server(conn: &Connection, server: &ServerRecord) -> Res
     Ok(())
 }
 
-pub fn set_server_favorite(conn: &Connection, id: &str, favorite: bool) -> Result<()> {
-    conn.execute(
+/// Flips `favorite` and returns the updated record. `None` means the id does
+/// not exist — the command layer surfaces that as "服务器不存在" instead of
+/// pretending the update succeeded.
+pub fn set_server_favorite(
+    conn: &Connection,
+    id: &str,
+    favorite: bool,
+) -> Result<Option<ServerRecord>> {
+    let affected = conn.execute(
         "UPDATE servers SET favorite = ?1, updated_at = ?2 WHERE id = ?3",
         params![i64::from(favorite), AppDb::now(), id],
     )?;
-    Ok(())
+    if affected == 0 {
+        return Ok(None);
+    }
+    get_server(conn, id)
+}
+
+/// Moves a server between groups. `None` for the group id means "未分组".
+/// Only `group_id` and `updated_at` are touched; `None` means the id does not
+/// exist.
+pub fn move_server_to_group(
+    conn: &Connection,
+    id: &str,
+    group_id: Option<&str>,
+) -> Result<Option<ServerRecord>> {
+    let affected = conn.execute(
+        "UPDATE servers SET group_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![group_id, AppDb::now(), id],
+    )?;
+    if affected == 0 {
+        return Ok(None);
+    }
+    get_server(conn, id)
 }
 
 pub fn touch_server_connection(conn: &Connection, id: &str) -> Result<()> {
@@ -144,6 +172,15 @@ pub fn list_server_groups(conn: &Connection) -> Result<Vec<ServerGroupRecord>> {
 }
 
 pub fn insert_or_replace_server_group(conn: &Connection, group: &ServerGroupRecord) -> Result<()> {
+    // Group names are unique (excluding the row being renamed itself).
+    let duplicates: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM server_groups WHERE name = ?1 AND id != ?2",
+        params![group.name, group.id],
+        |row| row.get(0),
+    )?;
+    if duplicates > 0 {
+        anyhow::bail!("已存在同名分组“{}”", group.name);
+    }
     conn.execute(
         r#"
         INSERT INTO server_groups (id, name, sort_order, created_at, updated_at)

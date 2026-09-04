@@ -10,6 +10,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import type { NavModule } from "@/workbench/types";
+import { AiPlaceholder } from "@/workbench/views/ai/AiPlaceholder";
 import { SshContextSidebar } from "./ssh-context-sidebar";
 import { SettingsContextSidebar } from "./settings-context-sidebar";
 
@@ -86,6 +87,9 @@ export function ModulePage({ module }: { module: NavModule }) {
           <SshContextSidebar />
         ) : module === "settings" ? (
           <SettingsContextSidebar />
+        ) : module === "ai" ? (
+          // P4 不开发 AI：只保留菜单入口 + feature flag + 接口类型占位。
+          <AiPlaceholder />
         ) : (
           <ModulePlaceholder module={module} />
         )}

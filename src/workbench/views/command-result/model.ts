@@ -78,5 +78,6 @@ export const VIEW_LABELS: Record<ResultView, string> = {
   json: "JSON",
   diff: "差异",
   progress: "进度",
+  text: "纯文本",
   raw: "原始输出",
 };

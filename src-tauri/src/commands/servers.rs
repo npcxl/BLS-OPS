@@ -128,9 +128,52 @@ pub fn server_set_favorite(
     state: State<'_, AppState>,
     id: String,
     favorite: bool,
-) -> Result<(), String> {
+) -> Result<ServerRecord, String> {
     let conn = open_db(&state)?;
-    db::set_server_favorite(&conn, &id, favorite).map_err(|error| error.to_string())
+    db::set_server_favorite(&conn, &id, favorite)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "服务器不存在".to_string())
+}
+
+/// Moves a server into a group (or out of one with `None`). Deliberately not
+/// the full edit dialog: this is the direct "移动到分组" action from the list.
+#[tauri::command]
+pub fn server_move_to_group(
+    state: State<'_, AppState>,
+    id: String,
+    group_id: Option<String>,
+) -> Result<ServerRecord, String> {
+    let conn = open_db(&state)?;
+    let server = db::get_server(&conn, &id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "服务器不存在".to_string())?;
+    // An empty string from the frontend means "未分组".
+    let group_id = group_id.filter(|value| !value.trim().is_empty());
+    if let Some(group_id) = group_id.as_deref() {
+        let exists = db::list_server_groups(&conn)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|group| group.id == group_id);
+        if !exists {
+            return Err("所选分组不存在".to_string());
+        }
+    }
+
+    let moved = db::move_server_to_group(&conn, &id, group_id.as_deref())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "服务器不存在".to_string())?;
+    record_audit(
+        &state,
+        "server_move_to_group",
+        Some(&id),
+        Some(&moved.name),
+        &format!(
+            "from={:?} to={}",
+            server.group_id.as_deref().unwrap_or(""),
+            group_id.as_deref().unwrap_or("ungrouped")
+        ),
+    );
+    Ok(moved)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,17 +186,34 @@ pub fn group_list(state: State<'_, AppState>) -> Result<Vec<db::ServerGroupRecor
     db::list_server_groups(&conn).map_err(|error| error.to_string())
 }
 
+/// Group-name rules, kept free of Tauri types so it can be unit-tested.
+pub(crate) fn validate_group_name(
+    conn: &Connection,
+    group: &db::ServerGroupRecord,
+) -> Result<(), String> {
+    let name = group.name.trim();
+    if name.is_empty() {
+        return Err("分组名称不能为空".to_string());
+    }
+    let duplicate = db::list_server_groups(conn)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|item| item.id != group.id && item.name == name);
+    if duplicate {
+        return Err(format!("已存在同名分组“{name}”"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn group_save(
     state: State<'_, AppState>,
     group: db::ServerGroupRecord,
 ) -> Result<db::ServerGroupRecord, String> {
-    if group.name.trim().is_empty() {
-        return Err("分组名称不能为空".to_string());
-    }
     let conn = open_db(&state)?;
     let mut group = group;
     group.name = group.name.trim().to_string();
+    validate_group_name(&conn, &group)?;
     group.updated_at = db::AppDb::now();
     db::insert_or_replace_server_group(&conn, &group).map_err(|error| error.to_string())?;
     db::list_server_groups(&conn)

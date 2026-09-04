@@ -16,6 +16,7 @@ use russh_sftp::client::SftpSession;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{watch, Mutex};
 
+use super::decoder::SessionEncoding;
 use super::handshake::ClientHandler;
 use super::model::{ExecOutput, SFTP_SUBSYSTEM};
 use super::sftp::sftp_error;
@@ -53,6 +54,11 @@ pub(crate) struct SshSession {
     pub(crate) sftp: Mutex<Option<Arc<SftpSession>>>,
     /// Last canonical directory this session's file browser viewed.
     pub(crate) cwd: Mutex<Option<String>>,
+    /// 输出编码设置（`auto` / `utf8` / `gb18030` / `big5`）。
+    ///
+    /// 不是连接参数，可**运行时修改**（老服务器接不上 UTF-8 时现场切）；
+    /// reader 循环每收到一块就读一次，切换后从下一块生效。
+    pub(crate) encoding: Mutex<SessionEncoding>,
 }
 
 impl SshSession {

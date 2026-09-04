@@ -1,6 +1,22 @@
 /** SSH connect handshake types + target parsing shared with the Rust side. */
 
 /**
+ * 会话输出编码（与 Rust `ssh::decoder::SessionEncoding` 逐字对齐）。
+ *
+ * - `auto`：先按 UTF-8，遇到真非法字节才降级 GB18030（中文老服务器）；
+ * - `utf8` / `gb18030` / `big5`：显式指定，**不做任何猜测**。
+ */
+export type TerminalEncoding = "auto" | "utf8" | "gb18030" | "big5";
+
+/** 编码下拉框选项（含中文标签，顺序与后端 ALL 一致）。 */
+export const TERMINAL_ENCODINGS: { id: TerminalEncoding; label: string }[] = [
+  { id: "auto", label: "自动" },
+  { id: "utf8", label: "UTF-8" },
+  { id: "gb18030", label: "GB18030" },
+  { id: "big5", label: "Big5" },
+];
+
+/**
  * Result of a connect attempt.
  *
  * `host` / `port` are the final destination (what the tab shows).

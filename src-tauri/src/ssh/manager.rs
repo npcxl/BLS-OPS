@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use russh::ChannelReadHalf;
 use tokio::sync::{watch, Mutex};
 
+use super::decoder::SessionEncoding;
 use super::handshake::{connect_hop, HopResult};
 use super::model::{ConnectOutcome, ConnectTarget, ExecOutput};
 use super::session::SshSession;
@@ -104,6 +105,7 @@ impl SshSessionManager {
                         _chain: connection.chain,
                         sftp: Mutex::new(None),
                         cwd: Mutex::new(None),
+                        encoding: Mutex::new(SessionEncoding::Auto),
                     }),
                 );
                 Ok((ConnectOutcome::Connected { host_key }, reader))
@@ -135,6 +137,27 @@ impl SshSessionManager {
                 None,
             )),
         }
+    }
+
+    /// 当前的输出编码（会话不存在返回 `None`）。reader 循环每块读一次，
+    /// 所以设置**运行时可改**。
+    pub async fn encoding(&self, session_id: &str) -> Option<SessionEncoding> {
+        let session = self.sessions.lock().await.get(session_id).cloned();
+        match session {
+            Some(session) => Some(*session.encoding.lock().await),
+            None => None,
+        }
+    }
+
+    /// 切换输出编码。返回切换后的值（便于前端回显真实状态）。
+    pub async fn set_encoding(
+        &self,
+        session_id: &str,
+        encoding: SessionEncoding,
+    ) -> Result<SessionEncoding> {
+        let session = self.get(session_id).await?;
+        *session.encoding.lock().await = encoding;
+        Ok(encoding)
     }
 
     pub async fn input(&self, session_id: &str, data: Vec<u8>) -> Result<()> {

@@ -9,6 +9,11 @@
 export interface SuggestAnchor {
   x: number;
   y: number;
+  /**
+   * 光标所在行高（px）。翻到上方时需要让开**正在输入的整行** ——
+   * 否则面板会盖住用户敲的命令，看不见自己在打什么。
+   */
+  rowHeight?: number;
 }
 
 /** 提示面板尺寸（px）。 */
@@ -33,6 +38,10 @@ const VIEWPORT_MARGIN = 4;
  * 计算面板位置：默认在光标**右下方**（间隔 6px）；
  * 右侧放不下 → 向左展开；底部放不下 → 翻到光标上方；
  * 面板比容器还大 → 贴边（clamp 到 MARGIN）。
+ *
+ * 翻到上方时：锚点 y 是**光标行底缘**。若不额外让开一行，面板顶到光标
+ * 行内 —— 用户正在敲的命令会被整个盖住。有 `rowHeight` 时按"让出整行 +
+ * 间隔"上移（面板底缘停在光标行的上缘之上），保证输入始终可见。
  */
 export function computeSuggestPosition(
   anchor: SuggestAnchor,
@@ -48,7 +57,8 @@ export function computeSuggestPosition(
 
   let top = anchor.y + gap;
   if (top + panel.height > viewport.height - VIEWPORT_MARGIN) {
-    top = anchor.y - gap - panel.height;
+    // 让开正在输入的那一行（rowHeight），再留间隔；无 rowHeight 时保持旧行为。
+    top = anchor.y - (anchor.rowHeight ?? 0) - gap - panel.height;
   }
   if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
 

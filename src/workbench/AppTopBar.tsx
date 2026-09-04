@@ -1,12 +1,16 @@
+import { PanelLeftOpen } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
+import { hasContextSidebar } from "./module-server-sidebar";
 
 /** macOS Sonoma System Settings — titlebar is just traffic lights; the
  *  current section title appears centered only while hovering the bar. */
 const MODULE_TITLES: Record<string, string> = {
   ssh: "终端",
   servers: "服务器",
+  services: "服务",
+  logs: "日志",
   projects: "项目",
   commands: "命令",
   deploy: "部署",
@@ -44,6 +48,13 @@ function WindowButton({ kind }: { kind: "close" | "minimize" | "maximize" }) {
 
 export function AppTopBar() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
+  const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
+
+  // Only offer the way back for modules that actually have a rail. Collapsing
+  // the sidebar hides its own 收起 button, so without this the rail would be
+  // unreachable until the module was switched away and back.
+  const canExpand = collapsed && hasContextSidebar(activeModule);
 
   return (
     <header
@@ -53,16 +64,20 @@ export function AppTopBar() {
       <WindowButton kind="close" />
       <WindowButton kind="minimize" />
       <WindowButton kind="maximize" />
-      {/* <button
-        type="button"
-        aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
-        title={collapsed ? "展开侧边栏" : "收起侧边栏"}
-        className="flex h-3 w-3 items-center justify-center rounded-full text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
-        onClick={() => setCollapsed(!collapsed)}
-        data-tauri-drag-region="false"
-      >
-        <ChevronsLeft size={10} className={collapsed ? "rotate-180" : ""} />
-      </button> */}
+      {canExpand && (
+        <button
+          type="button"
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          // The whole bar is the window drag region; without this the click
+          // is swallowed by the drag handler.
+          data-tauri-drag-region="false"
+          onClick={() => setSidebarCollapsed(false)}
+          className="ml-1 flex h-[18px] w-[18px] items-center justify-center rounded-[5px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+        >
+          <PanelLeftOpen size={13} strokeWidth={1.8} />
+        </button>
+      )}
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
         {MODULE_TITLES[activeModule] ?? "BLS-OPS"}
       </span>

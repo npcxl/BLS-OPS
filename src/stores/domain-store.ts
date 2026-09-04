@@ -40,6 +40,8 @@ interface DomainState {
   saveServer: (server: ServerRecord) => Promise<ServerRecord>;
   deleteServer: (id: string) => Promise<CascadeResult>;
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
+  /** `groupId: null` puts the server back into 未分组. */
+  moveServerToGroup: (id: string, groupId: string | null) => Promise<ServerRecord>;
   testConnection: (id: string) => Promise<SshConnectResult>;
 
   saveGroup: (group: ServerGroupRecord) => Promise<ServerGroupRecord>;
@@ -135,6 +137,12 @@ export const useDomainStore = create<DomainState>()((set, get) => ({
   setFavorite: async (id, favorite) => {
     await opsApi.setServerFavorite(id, favorite);
     await get().refreshServers();
+  },
+
+  moveServerToGroup: async (id, groupId) => {
+    const moved = await opsApi.moveServerToGroup(id, groupId);
+    await get().refreshServers();
+    return moved;
   },
 
   testConnection: async (id) => opsApi.testConnection(id),

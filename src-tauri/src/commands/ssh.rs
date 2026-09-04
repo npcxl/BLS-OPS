@@ -10,7 +10,7 @@ use crate::{
     db,
     db::CredentialRecord,
     keyring,
-    ssh::{ConnectTarget, CredentialSecrets, Utf8StreamDecoder},
+    ssh::{ConnectTarget, CredentialSecrets, OutputDecoder, SessionEncoding},
     state::AppState,
 };
 
@@ -226,27 +226,59 @@ pub async fn ssh_connect(
         let manager = state.ssh.clone();
         let db_state = state.inner().clone();
         tauri::async_runtime::spawn(async move {
-            // 流式 UTF-8 解码：中文字符常跨两个 SSH 数据块，逐块
-            // `from_utf8_lossy` 会把它变成不可恢复的 `�`。
-            let mut decoder = Utf8StreamDecoder::new();
+            // stdout 与 stderr **各一个**流式解码器：两条流的字节边界互不
+            // 相干，共用会把残片拼在一起产生乱码（中文跨块时尤其明显）。
+            let mut stdout_decoder = OutputDecoder::new(SessionEncoding::Auto);
+            let mut stderr_decoder = OutputDecoder::new(SessionEncoding::Auto);
             while let Some(message) = reader.wait().await {
                 match message {
-                    russh::ChannelMsg::Data { data }
-                    | russh::ChannelMsg::ExtendedData { data, .. } => {
-                        let text = decoder.feed(&data);
+                    russh::ChannelMsg::Data { data } => {
+                        // 编码可运行时切换：每块读一次当前设置。
+                        if let Some(wanted) = manager.encoding(&session_key).await {
+                            if wanted != stdout_decoder.encoding() {
+                                let tail = stdout_decoder.flush();
+                                if !tail.is_empty() {
+                                    let _ =
+                                        app_handle.emit(&format!("ssh-output-{session_key}"), tail);
+                                }
+                                stdout_decoder = OutputDecoder::new(wanted);
+                            }
+                        }
+                        let text = stdout_decoder.feed(&data);
                         if text.is_empty() {
                             continue; // 整块都是未完成的多字节序列
                         }
                         let _ = app_handle.emit(&format!("ssh-output-{session_key}"), text);
+                    }
+                    russh::ChannelMsg::ExtendedData { data, .. } => {
+                        if let Some(wanted) = manager.encoding(&session_key).await {
+                            if wanted != stderr_decoder.encoding() {
+                                let tail = stderr_decoder.flush();
+                                if !tail.is_empty() {
+                                    let _ =
+                                        app_handle.emit(&format!("ssh-stderr-{session_key}"), tail);
+                                }
+                                stderr_decoder = OutputDecoder::new(wanted);
+                            }
+                        }
+                        let text = stderr_decoder.feed(&data);
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let _ = app_handle.emit(&format!("ssh-stderr-{session_key}"), text);
                     }
                     russh::ChannelMsg::Eof | russh::ChannelMsg::Close { .. } => break,
                     _ => continue,
                 }
             }
             // 连接结束：吐出残留字节，避免丢最后一个字符。
-            let tail = decoder.flush();
+            let tail = stdout_decoder.flush();
             if !tail.is_empty() {
                 let _ = app_handle.emit(&format!("ssh-output-{session_key}"), tail);
+            }
+            let tail = stderr_decoder.flush();
+            if !tail.is_empty() {
+                let _ = app_handle.emit(&format!("ssh-stderr-{session_key}"), tail);
             }
             manager.disconnect(&session_key).await;
             db_state.dir_sizes.forget_session(&session_key);
@@ -271,6 +303,43 @@ pub async fn ssh_input(
         .input(&session_id, data.into_bytes())
         .await
         .map_err(|error| error.to_string())
+}
+
+/// 切换一个会话的**输出编码**（`auto` / `utf8` / `gb18030` / `big5`）。
+///
+/// 老服务器的 `LANG=C` 或 GBK 环境会让 UTF-8 解码整屏乱码，用户需要现场
+/// 切换。认不出的编码名直接报错 —— **绝不猜**。返回实际生效的编码（前端
+/// 回显真实状态，而不是它自己以为的值）。
+#[tauri::command]
+pub async fn ssh_set_encoding(
+    state: State<'_, AppState>,
+    session_id: String,
+    encoding: String,
+) -> Result<String, String> {
+    let Some(parsed) = SessionEncoding::parse(&encoding) else {
+        return Err(format!(
+            "不支持的编码：{encoding}（可选 auto / utf8 / gb18030 / big5）"
+        ));
+    };
+    let applied = state
+        .ssh
+        .set_encoding(&session_id, parsed)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(applied.as_str().to_string())
+}
+
+/// 当前会话的输出编码（会话不存在返回 `None`）。
+#[tauri::command]
+pub async fn ssh_get_encoding(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    Ok(state
+        .ssh
+        .encoding(&session_id)
+        .await
+        .map(|encoding| encoding.as_str().to_string()))
 }
 
 #[tauri::command]

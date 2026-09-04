@@ -18,6 +18,7 @@
 //! * **Destructive SFTP operations never canonicalize first** (see
 //!   [`sftp`] for why that would follow a symlink and delete its target).
 
+mod decoder;
 mod handshake;
 mod host_key;
 mod manager;
@@ -27,6 +28,7 @@ mod session;
 mod sftp;
 pub mod utf8_stream;
 
+pub use decoder::{OutputDecoder, SessionEncoding};
 pub use host_key::{evaluate_host_key, HostKeyVerdict};
 pub use manager::SshSessionManager;
 pub use model::{

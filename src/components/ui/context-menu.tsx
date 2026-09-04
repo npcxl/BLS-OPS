@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import type { LucideIcon } from "lucide-react";
+import { ChevronRight, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
@@ -19,6 +19,7 @@ import { cn } from "@/lib/cn";
  *   closing and reopening it (no flicker);
  * - any left click outside, Escape, window blur, resize or scroll closes it;
  * - arrow keys / Home / End / Enter navigate and activate;
+ * - items may carry `children`, which opens a submenu (hover, click, or →);
  * - the menu never overflows the viewport and never jumps after paint.
  *
  * It is `memo`ised and every listener is registered exactly once per open, so
@@ -36,6 +37,12 @@ export interface ContextMenuItem {
   /** Right-aligned secondary text (shortcut hint). */
   hint?: string;
   onSelect?: () => void;
+  /**
+   * Turns the item into a submenu parent. Selecting it (or hovering it, or →)
+   * opens the child list; the parent's own `onSelect` is never fired.
+   * Nesting is intentionally one level deep.
+   */
+  children?: ContextMenuItem[];
 }
 
 export interface ContextMenuState {
@@ -72,6 +79,14 @@ export const ContextMenu = memo(function ContextMenu({
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [active, setActive] = useState(-1);
+  /** Index of the parent item whose submenu is open, or `null`. */
+  const [submenu, setSubmenu] = useState<number | null>(null);
+  const [subActive, setSubActive] = useState(-1);
+  const [subPos, setSubPos] = useState<{ x: number; y: number } | null>(null);
+
+  // Per-item DOM nodes, needed to anchor the submenu next to its parent row.
+  const itemRefs = useRef(new Map<number, HTMLElement>());
+  const submenuRef = useRef<HTMLDivElement>(null);
 
   // Listeners are registered once per open, so they read through refs —
   // otherwise every parent re-render would tear down and re-add them.
@@ -81,11 +96,26 @@ export const ContextMenu = memo(function ContextMenu({
   itemsRef.current = items;
   const activeRef = useRef(active);
   activeRef.current = active;
+  const submenuRefValue = useRef(submenu);
+  submenuRefValue.current = submenu;
+  const subActiveRef = useRef(subActive);
+  subActiveRef.current = subActive;
+
+  const openSubmenu = useCallback((index: number) => {
+    setSubmenu(index);
+    setSubActive(-1);
+  }, []);
+
+  const resetSubmenu = useCallback(() => {
+    setSubmenu(null);
+    setSubActive(-1);
+  }, []);
 
   // A new position (or a fresh open) means a new menu: drop the highlight.
   useEffect(() => {
     setActive(-1);
-  }, [open, x, y]);
+    resetSubmenu();
+  }, [open, x, y, resetSubmenu]);
 
   // Measure before paint. Until the measurement lands the menu is hidden, so
   // it never renders at the raw cursor position and then jumps.
@@ -102,6 +132,32 @@ export const ContextMenu = memo(function ContextMenu({
       y: Math.max(GAP, Math.min(y, window.innerHeight - rect.height - GAP)),
     });
   }, [open, x, y, items]);
+
+  // The submenu is anchored to its parent row, measured before paint like the
+  // root menu, and flipped to the other side when it would leave the viewport.
+  useLayoutEffect(() => {
+    if (submenu === null) {
+      setSubPos(null);
+      return;
+    }
+    const anchor = itemRefs.current.get(submenu);
+    if (!anchor) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    const panel = submenuRef.current;
+    const width = panel?.offsetWidth ?? DEFAULT_MIN_WIDTH;
+    const height = panel?.offsetHeight ?? 0;
+
+    // Prefer opening to the right of the row; flip left when it overflows.
+    let left = anchorRect.right - 6;
+    if (left + width > window.innerWidth - GAP) {
+      left = Math.max(GAP, anchorRect.left - width + 6);
+    }
+    let top = anchorRect.top - 6;
+    if (top + height > window.innerHeight - GAP) {
+      top = Math.max(GAP, window.innerHeight - height - GAP);
+    }
+    setSubPos({ x: left, y: top });
+  }, [submenu, items, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -131,45 +187,79 @@ export const ContextMenu = memo(function ContextMenu({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // Escape unwinds one level: the submenu first, then the whole menu.
       if (event.key === "Escape") {
         event.preventDefault();
+        if (submenuRefValue.current !== null) {
+          setSubmenu(null);
+          setSubActive(-1);
+          return;
+        }
         closeRef.current();
         return;
       }
 
       const current = itemsRef.current;
-      const enabled: number[] = [];
-      current.forEach((item, index) => {
-        if (!item.separator && !item.disabled) enabled.push(index);
+      const parent = submenuRefValue.current;
+      const inSubmenu = parent !== null;
+      const list = inSubmenu ? current[parent]?.children ?? [] : current;
+      const selectable: number[] = [];
+      list.forEach((item, index) => {
+        if (!item.separator && !item.disabled) selectable.push(index);
       });
-      if (enabled.length === 0) return;
+      const setIndex = (index: number) => (inSubmenu ? setSubActive(index) : setActive(index));
 
-      if (event.key === "Enter") {
-        event.preventDefault();
+      if (event.key === "ArrowRight") {
+        // Opens (or walks into) a submenu from the highlighted parent row.
+        if (inSubmenu) return;
         const item = current[activeRef.current];
-        if (item && !item.disabled && !item.separator && item.onSelect) {
-          closeRef.current();
-          item.onSelect();
+        if (item?.children?.length) {
+          event.preventDefault();
+          openSubmenu(activeRef.current);
         }
         return;
       }
 
+      if (event.key === "ArrowLeft") {
+        if (!inSubmenu) return;
+        event.preventDefault();
+        setSubmenu(null);
+        setSubActive(-1);
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const index = inSubmenu ? subActiveRef.current : activeRef.current;
+        const item = list[index];
+        if (!item || item.disabled || item.separator) return;
+        if (item.children?.length) {
+          if (!inSubmenu) openSubmenu(index);
+          return;
+        }
+        closeRef.current();
+        item.onSelect?.();
+        return;
+      }
+
+      if (selectable.length === 0) return;
+
       if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
-        setActive(event.key === "Home" ? enabled[0] : enabled[enabled.length - 1]);
+        setIndex(event.key === "Home" ? selectable[0] : selectable[selectable.length - 1]);
         return;
       }
 
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
       event.preventDefault();
       const step = event.key === "ArrowDown" ? 1 : -1;
-      const at = enabled.indexOf(activeRef.current);
+      const at = selectable.indexOf(inSubmenu ? subActiveRef.current : activeRef.current);
       if (at < 0) {
         // Nothing focused yet: Down lands on the first item, Up on the last.
-        setActive(step === 1 ? enabled[0] : enabled[enabled.length - 1]);
+        setIndex(step === 1 ? selectable[0] : selectable[selectable.length - 1]);
         return;
       }
-      setActive(enabled[(at + step + enabled.length) % enabled.length]);
+      setIndex(selectable[(at + step + selectable.length) % selectable.length]);
     };
 
     const onBlur = () => closeRef.current();
@@ -189,9 +279,11 @@ export const ContextMenu = memo(function ContextMenu({
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", onResize);
     };
-  }, [open]);
+  }, [open, openSubmenu]);
 
   if (!open) return null;
+
+  const submenuItems = submenu === null ? null : items[submenu]?.children;
 
   return createPortal(
     <div
@@ -221,20 +313,40 @@ export const ContextMenu = memo(function ContextMenu({
         }
         const Icon = item.icon;
         const highlighted = active === index;
+        const hasChildren = (item.children?.length ?? 0) > 0;
         return (
           <button
             key={item.id ?? item.label ?? index}
+            ref={(node) => {
+              if (node) itemRefs.current.set(index, node);
+              else itemRefs.current.delete(index);
+            }}
             type="button"
             role="menuitem"
+            aria-haspopup={hasChildren || undefined}
+            aria-expanded={hasChildren ? submenu === index : undefined}
+            data-submenu-open={hasChildren && submenu === index ? "true" : undefined}
             disabled={item.disabled}
             className={cn(
               "relative flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
               item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
               item.disabled && "pointer-events-none opacity-40",
             )}
-            onPointerEnter={() => !item.disabled && setActive(index)}
+            onPointerEnter={() => {
+              if (item.disabled) return;
+              setActive(index);
+              // Hovering a parent opens its submenu; hovering a leaf closes any
+              // open one so the panel never belongs to a row the cursor left.
+              if (hasChildren) openSubmenu(index);
+              else resetSubmenu();
+            }}
             onClick={() => {
               if (item.disabled) return;
+              if (hasChildren) {
+                setSubmenu((current) => (current === index ? null : index));
+                setSubActive(-1);
+                return;
+              }
               closeRef.current();
               item.onSelect?.();
             }}
@@ -257,9 +369,78 @@ export const ContextMenu = memo(function ContextMenu({
             )}
             <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
             {item.hint && <span className="shrink-0 text-10 text-fg-subtle">{item.hint}</span>}
+            {hasChildren && (
+              <ChevronRight
+                size={12}
+                strokeWidth={1.75}
+                aria-hidden="true"
+                className="shrink-0 text-fg-subtle"
+              />
+            )}
           </button>
         );
       })}
+
+      {submenuItems && (
+        <div
+          ref={submenuRef}
+          role="menu"
+          aria-label={items[submenu!]?.label ?? "子菜单"}
+          className="glass-panel-strong fixed z-[210] rounded-[12px] p-1"
+          style={{
+            left: subPos?.x ?? 0,
+            top: subPos?.y ?? 0,
+            minWidth,
+            visibility: subPos ? "visible" : "hidden",
+          }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {submenuItems.map((item, index) => {
+            if (item.separator) {
+              return <div key={item.id ?? `sub-sep-${index}`} className="my-1 h-px bg-line" role="separator" />;
+            }
+            const Icon = item.icon;
+            const highlighted = subActive === index;
+            return (
+              <button
+                key={item.id ?? item.label ?? index}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                className={cn(
+                  "relative flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
+                  item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
+                  item.disabled && "pointer-events-none opacity-40",
+                )}
+                onPointerEnter={() => !item.disabled && setSubActive(index)}
+                onClick={() => {
+                  if (item.disabled) return;
+                  closeRef.current();
+                  item.onSelect?.();
+                }}
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150",
+                    highlighted ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                {Icon ? (
+                  <Icon
+                    size={14}
+                    strokeWidth={1.75}
+                    className={cn("shrink-0", item.danger ? "text-danger/80" : highlighted ? "text-accent" : "text-fg-subtle")}
+                  />
+                ) : (
+                  <span className="w-[14px] shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+                {item.hint && <span className="shrink-0 text-10 text-fg-subtle">{item.hint}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>,
     document.body,
   );

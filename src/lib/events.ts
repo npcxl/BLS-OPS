@@ -9,6 +9,14 @@
 /** Terminal stdout chunks for a session. Payload: `string`. */
 export const sshOutputEvent = (sessionId: string) => `ssh-output-${sessionId}`;
 
+/**
+ * Terminal **stderr** chunks for a session. Payload: `string`.
+ *
+ * 与 stdout 分开：两条流在 Rust 侧各有独立的流式解码器（字节边界互不
+ * 相干），事件也必须分开，否则结构化结果的 `raw.stderr` 永远是空的。
+ */
+export const sshStderrEvent = (sessionId: string) => `ssh-stderr-${sessionId}`;
+
 /** Emitted when the transport for a session drops. Payload: `string` reason. */
 export const sshClosedEvent = (sessionId: string) => `ssh-closed-${sessionId}`;
 

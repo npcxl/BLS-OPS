@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ChevronDown,
   Columns2,
   Copy,
   Eraser,
@@ -18,6 +19,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -39,13 +41,16 @@ import {
 } from "./TerminalCommandCoordinator";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import type { CommandSearchHit } from "@/api/ops-api";
+import { TERMINAL_ENCODINGS, type TerminalEncoding } from "@/api/types/ssh";
 import type { WorkspaceTab } from "@/workbench/types";
-import { sshClosedEvent, sshOutputEvent } from "@/lib/events";
+import { sshClosedEvent, sshOutputEvent, sshStderrEvent } from "@/lib/events";
 import { terminalTheme } from "./theme";
 import { ToolbarIcon } from "./ToolbarIcon";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
+import { CommandBoundaryParser } from "./command-boundary";
+import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
 import {
   resolveSuggestKey,
   type SuggestAnchor,
@@ -128,12 +133,16 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       match: (text) => opsApi.commandMatchText(text),
       adapt: (input) =>
         opsApi.commandAdaptOutput({
+          // 命中知识库时 → 专用适配器只作 hint；未命中 → 纯自动识别。
           knowledgeId: input.knowledgeId,
+          adapterHint: input.adapterHint,
           command: input.command,
           stdout: input.stdout,
+          stderr: input.stderr,
           normalized: input.normalized,
           exitCode: input.exitCode,
           durationMs: input.durationMs,
+          truncated: input.truncated,
         }),
       onResult: (result) => {
         setCommandResults((current) => [...current, result]);
@@ -145,22 +154,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }
   useEffect(() => () => coordinatorRef.current?.dispose(), []);
 
-  /** 重运行：按**真实风险**门控（只读直接跑；修改型必须确认；删除类不提供）。 */
+  /** 重运行：按**真实风险**门控（详见文件下方的 rerun —— 依赖唯一提交入口）。 */
   const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
-  const rerun = (item: CapturedResult) => {
-    if (!item.canExecute) return;
-    if (item.mutability === "delete") return; // 删除类走 P4.4 软删除流程
-    if (item.mutability === "change") {
-      setRerunConfirm(item);
-      return;
-    }
-    void opsApi.sshInput(sessionId, `${item.command}\n`).catch(() => undefined);
-  };
-  const confirmRerun = () => {
-    const item = rerunConfirm;
-    setRerunConfirm(null);
-    if (item) void opsApi.sshInput(sessionId, `${item.command}\n`).catch(() => undefined);
-  };
+
+  /** 右键 = 顶部工具栏镜像：终端画布上右键可达被滚动/折叠藏起的顶部功能。 */
+  const terminalMenu = useContextMenu();
 
   /** 关闭单个结果 Tab：优先选择右侧相邻，没有则选左侧。 */
   const closeResultTab = (id: string) => {
@@ -207,6 +205,26 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // recorded as history. Created once per session.
   const lineEditorRef = useRef<LineEditor | null>(null);
   if (!lineEditorRef.current) lineEditorRef.current = new LineEditor();
+
+  /**
+   * 会话输出编码（auto / UTF-8 / GB18030 / Big5）。老服务器的 `LANG=C` 或
+   * GBK 环境会让 UTF-8 解码整屏乱码 —— 这里让用户现场切换，后端从下一块
+   * 数据开始生效（stdout 与 stderr 各有独立解码器）。
+   */
+  const [encoding, setEncodingState] = useState<TerminalEncoding>("auto");
+  useEffect(() => {
+    if (phase !== "connected") return;
+    void opsApi
+      .sshGetEncoding(sessionId)
+      .then((value) => {
+        if (value) setEncodingState(value);
+      })
+      .catch(() => undefined);
+  }, [phase, sessionId]);
+  const changeEncoding = (value: TerminalEncoding) => {
+    setEncodingState(value);
+    void opsApi.sshSetEncoding(sessionId, value).catch(() => undefined);
+  };
 
   // Command suggestions share the knowledge base with the command centre.
   // Retrieval is local — it needs no connection — but suggestions only make
@@ -262,12 +280,118 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setSuggestAnchor({
         x: containerRect.left - wrapperRect.left + (cursorX + 1) * cellWidth,
         y: containerRect.top - wrapperRect.top + (cursorY + 1) * cellHeight,
+        // 光标所在行高：提示面板底部放不下翻到上方时让开整行，
+        // 否则候选列表会盖住用户正在敲的命令（看不见自己在打什么）。
+        rowHeight: cellHeight,
       });
     });
   }, []);
 
   /**
-   * 把一段文本写进远程 shell 的当前行（**唯一**的写入口）。
+   * 命令边界解析器：从输出流里挑出受控标记（OSC 133）并剔除注入行的回显。
+   * **必须**在写进 xterm 之前跑，否则用户会看到标记行。
+   */
+  const boundaryParserRef = useRef<CommandBoundaryParser | null>(null);
+  if (!boundaryParserRef.current) boundaryParserRef.current = new CommandBoundaryParser();
+
+  /** 记历史 + `cd` 跟随 —— 任何来源的执行都要留下痕迹。 */
+  const noteExecutedCommand = useCallback(
+    (command: string) => {
+      if (tab.serverId || tab.quickTarget) {
+        void opsApi
+          .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
+          .catch(() => undefined);
+      }
+      // `cd` 跟随：文件面板用自己的 cwd 解析参数（支持 cd ~ / cd - / 相对路径）。
+      const match = /^cd(?:\s+(.*))?$/.exec(command.trim());
+      if (match) {
+        const arg = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+        setFollow((current) => ({ nonce: current.nonce + 1, arg }));
+      }
+    },
+    [sessionId, tab.quickTarget, tab.serverId, tab.title],
+  );
+
+  /**
+   * **唯一命令提交入口。**
+   *
+   * 所有来源（用户手动输入 / 结果右键重新运行 / 命令历史重新运行 / 命令
+   * 建议执行）都必须经过这里：
+   *
+   * ```text
+   * executeTerminalCommand(command, source)
+   *   → coordinator.submit(command, source, plan)   // 开始捕获 + 记边界起点
+   *   → sshInput(command + 受控标记)                 // 只写一次
+   *   → 捕获输出（stdout / stderr 分开）
+   *   → adapt_auto                                   // 收到 OSC 133 D 时解析
+   *   → 新建结构化结果 Tab
+   * ```
+   *
+   * `options.prefix` 是需要**原样**先发出去的按键数据（用户敲的回车、建议
+   * 补全的字符）—— 命令文本就是这么被"敲"进终端的，不能重复发送。
+   */
+  const executeTerminalCommand = useCallback(
+    (
+      command: string,
+      source: CommandSource,
+      options?: { prefix?: string; mode?: SubmitMode },
+    ) => {
+      const trimmed = command.trim();
+      if (!trimmed) return;
+      // 未解析占位符绝不进 shell（bash 会当成输入重定向）。
+      if (hasUnresolvedPlaceholder(trimmed)) {
+        setParamHint(`命令里还有未替换的参数（${trimmed}），请先选择具体值`);
+        return;
+      }
+      const mode: SubmitMode =
+        options?.mode ?? (options?.prefix === undefined ? "full" : "line-ready");
+      const plan = planCommandSubmission(trimmed, mode);
+      coordinatorRef.current?.submit(trimmed, source, plan);
+      boundaryParserRef.current?.expect(plan.markers);
+      const prefix = options?.prefix ?? "";
+      if (!prefix && !plan.write) return;
+      // `line-ready` 依赖调用方把回车一起发出来；没有（如 Ctrl+C 放弃行）
+      // 就补一个，否则命令不会被提交。
+      const needsSubmit = mode === "line-ready" && prefix.length > 0 && !/[\r\n]$/.test(prefix);
+      void opsApi
+        .sshInput(sessionId, prefix + (needsSubmit ? "\r" : "") + plan.write)
+        .catch(() => undefined);
+    },
+    [sessionId],
+  );
+
+  /** 重运行：按**真实风险**门控（只读直接跑；修改型 / 未知必须确认；删除类不提供）。 */
+  const rerun = (item: CapturedResult) => {
+    if (!item.canExecute) return;
+    if (item.mutability === "delete") return; // 删除类走 P4.4 软删除流程
+    // 知识库未命中 → `unknown`，同样要确认：绝不把未知命令假装成只读。
+    if (item.mutability === "change" || item.mutability === "unknown") {
+      setRerunConfirm(item);
+      return;
+    }
+    noteExecutedCommand(item.command);
+    executeTerminalCommand(item.command, "rerun");
+  };
+  const confirmRerun = () => {
+    const item = rerunConfirm;
+    setRerunConfirm(null);
+    if (!item) return;
+    noteExecutedCommand(item.command);
+    executeTerminalCommand(item.command, "rerun");
+  };
+
+  /**
+   * 终端实例只创建一次，它的 `onData` 闭包会一直持有首帧的函数。用 ref
+   * 让它每次都能拿到**最新**的提交入口（否则切服务器后记历史会记错标题）。
+   */
+  const commandEntryRef = useRef({
+    note: noteExecutedCommand,
+    submit: executeTerminalCommand,
+  });
+  commandEntryRef.current = { note: noteExecutedCommand, submit: executeTerminalCommand };
+
+  /**
+   * 把一段文本写进远程 shell 的当前行。
    *
    * 这里是"未解析占位符绝不进 shell"的**最后一道拦截**：`<unit>` 之类
    * 一旦漏到这里，bash 会当成输入重定向而报 `No such file or directory`。
@@ -324,6 +448,36 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [updateSuggestAnchor, writeToShell],
   );
 
+  /**
+   * **执行**候选（区别于 `applySuggestion` 的"只填入不执行"）：补全剩余
+   * 字符后**立刻提交**，走唯一入口 `executeTerminalCommand`（→ 标记 → 捕获
+   * → adapt_auto → 结果 Tab）。
+   *
+   * 补全字符与回车**一次写入**，不做两次 `sshInput` —— 否则标记行可能插到
+   * 命令行中间。
+   */
+  const runSuggestion = useCallback(
+    (hit: CommandSearchHit) => {
+      const editor = lineEditorRef.current;
+      if (!editor) return;
+      const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
+      if (hasPlaceholder) {
+        // 还有参数要填 → 走参数选择器流程，绝不带着占位符提交。
+        applySuggestion(hit);
+        return;
+      }
+      const keys = completionKeys(editor.current, hit.syntax);
+      if (keys === null) return;
+      editor.feed(keys);
+      const line = editor.current;
+      setDraft("");
+      noteExecutedCommand(line);
+      executeTerminalCommand(line, "suggest", { prefix: `${keys}\r` });
+      updateSuggestAnchor();
+    },
+    [applySuggestion, executeTerminalCommand, noteExecutedCommand, updateSuggestAnchor],
+  );
+
   /** 二级选择器选中一个值：替换当前占位符，还有占位符就继续选，否则写入 shell。 */
   const applyParamValue = useCallback(
     (value: string) => {
@@ -371,6 +525,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         // 二级选择器打开时先关它（它有自己的 window 级监听）。
         if (paramPicker) setParamPicker(null);
         else setSuggestOpen((open) => !open);
+        return true;
+      }
+      // Ctrl+Enter：补全候选并**立即执行**（走唯一提交入口 → 结果 Tab）。
+      if (event.ctrlKey && (event.key === "Enter" || event.code === "Enter")) {
+        const hit = suggestions.hits[suggestions.activeIndex];
+        if (!hit) return false;
+        event.preventDefault();
+        runSuggestion(hit);
         return true;
       }
       // 二级选择器打开期间：按键交给它（window 捕获阶段），本层不参与，
@@ -547,29 +709,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         void opsApi.sshInput(sessionId, data).catch(() => undefined);
         return;
       }
-      for (const command of commands) {
-        if (tab.serverId || tab.quickTarget) {
-          void opsApi
-            .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
-            .catch(() => undefined);
-        }
-        // Follow `cd` commands in the file panel: the panel resolves the
-        // argument against its own cwd (handles `cd`, `cd ~`, `cd -`, paths).
-        const match = /^cd(?:\s+(.*))?$/.exec(command.trim());
-        if (match) {
-          const arg = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
-          setFollow((current) => ({ nonce: current.nonce + 1, arg }));
-        }
-      }
-      // 终端命令结果协调器：识别本次命令，能识别就捕获输出交给统一适配引擎
-      // （只解析，绝不重复执行）。未识别命令完全不介入。
-      for (const command of commands) {
-        coordinatorRef.current?.submit(command);
+      // 粘贴多条命令时每条都记历史，但只捕获最后一条（它才会真正产生结果）。
+      for (const command of commands) commandEntryRef.current.note(command);
+      const submitted = commands[commands.length - 1];
+      if (submitted) {
+        // 唯一提交入口：命令文本就是靠 `data` 一个字符一个字符"敲"进终端的，
+        // 所以按键数据必须原样发出（prefix），提交入口只追加受控标记。
+        commandEntryRef.current.submit(submitted, "input", { prefix: data });
+      } else {
+        void opsApi.sshInput(sessionId, data).catch(() => undefined);
       }
       // A submitted line (or Ctrl+C, which the editor abandons) clears the
       // draft, which in turn hides the suggestion layer.
       setDraft(commands.length > 0 ? "" : (lineEditorRef.current?.current ?? ""));
-      void opsApi.sshInput(sessionId, data).catch(() => undefined);
       // 输入会移动光标 → 重算提示面板锚点。
       updateSuggestAnchor();
     });
@@ -601,16 +753,28 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
       if (disposed) return;
       const output = event.payload;
-      // 先喂给协调器（原样累积，不做任何加工），再写进终端。
-      coordinatorRef.current?.onOutput(output);
-      if (isCommandNotFoundOutput(output)) {
-        instance.write(`\x1b[31m命令无效：${output}\x1b[0m`);
+      // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，
+      // 同时把 OSC 133 事件交给协调器判定输出起止。
+      const parsed =
+        boundaryParserRef.current?.feed(output) ?? { text: output, events: [] };
+      coordinatorRef.current?.onOutput(parsed.text, parsed.events);
+      if (!parsed.text) return;
+      if (isCommandNotFoundOutput(parsed.text)) {
+        instance.write(`\x1b[31m命令无效：${parsed.text}\x1b[0m`);
       } else {
-        instance.write(output);
+        instance.write(parsed.text);
       }
       // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
       setInAlternate(instance.buffer.active.type !== "normal");
       updateSuggestAnchor();
+    });
+    // stderr 与 stdout 分开：Rust 侧两条流各有独立的流式解码器，事件也分开，
+    // 否则结构化结果的 `raw.stderr` 永远是空的。
+    const unlistenStderr = listen<string>(sshStderrEvent(sessionId), (event) => {
+      if (disposed) return;
+      const text = event.payload;
+      coordinatorRef.current?.onStderr(text);
+      if (text) instance.write(text);
     });
 
     const selectionSubscription = instance.onSelectionChange(() => {
@@ -673,6 +837,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       selectionSubscription.dispose();
       if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
       void unlistenOutput.then((fn) => fn());
+      void unlistenStderr.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());
       void opsApi.sshDisconnect(sessionId).catch(() => undefined);
       removeSession(sessionId);
@@ -747,6 +912,82 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     setSearchState({ index: (seen + 1) % Math.max(total, 1), total });
   }, [searchQuery, searchState]);
 
+  /**
+   * 右键菜单 = 顶部 icon 工具栏的镜像（同样的动作与可见性条件）：
+   * 终端画布上右键，可达被滚动/折叠藏起的顶部功能。toggle 类菜单项
+   * 用 hint 标注当前展开状态；连接动作按 phase 二选一，与 toolbar 一致。
+   */
+  const openToolbarMenu = terminalMenu.onContextMenu(() => {
+    // xterm 的隐藏 textarea 持有焦点时，菜单的键盘导航（↑↓/Enter）会被
+    // 终端当成 shell 按键吞掉 —— 先让它失焦，焦点回到 body。
+    containerRef.current?.querySelector("textarea")?.blur();
+    const items: ContextMenuItem[] = [
+      {
+        label: "查找",
+        icon: Search,
+        hint: searchOpen ? "已展开" : undefined,
+        onSelect: () => setSearchOpen((v) => !v),
+      },
+      {
+        label: "垂直分栏",
+        icon: Columns2,
+        onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal"),
+      },
+      {
+        label: "水平分栏",
+        icon: Rows2,
+        onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical"),
+      },
+      {
+        label: "清空屏幕",
+        icon: Eraser,
+        onSelect: () => terminalRef.current?.clear(),
+      },
+      {
+        label: "命令历史",
+        icon: History,
+        hint: historyOpen ? "已展开" : undefined,
+        onSelect: () => setHistoryOpen((v) => !v),
+      },
+      {
+        label: "远程文件",
+        icon: FolderOpen,
+        hint: filesOpen ? "已展开" : undefined,
+        onSelect: () => setFilesOpen((v) => !v),
+      },
+    ];
+    // 与 toolbar 一致：只有产生过结果时才提供"结构化结果"开关。
+    if (commandResults.length > 0) {
+      items.push({
+        label: "结构化结果",
+        icon: LayoutPanelTop,
+        hint: !drawerClosed ? "已展开" : undefined,
+        onSelect: () => setDrawerClosed((v) => !v),
+      });
+    }
+    items.push({ separator: true });
+    if (phase === "connected") {
+      items.push({
+        label: "断开连接",
+        icon: Unplug,
+        danger: true,
+        onSelect: () => {
+          void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+          setPhase("closed");
+          setStatus(sessionId, "closed");
+        },
+      });
+    } else {
+      items.push({
+        label: "重新连接",
+        icon: PlugZap,
+        disabled: phase === "connecting",
+        onSelect: () => void connect(),
+      });
+    }
+    return items;
+  });
+
   if (!hasTarget) {
     return <TerminalPicker tabId={tab.id} servers={servers} />;
   }
@@ -784,6 +1025,26 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         ) : (
           <ToolbarIcon label="重新连接" icon={PlugZap} disabled={phase === "connecting"} onClick={() => void connect()} />
         )}
+
+        {/* 会话输出编码：老服务器（GBK / Big5 环境）现场切换，立即生效。 */}
+        <label className="ml-1 flex items-center gap-1 text-11 text-fg-muted">
+          编码
+          <span className="relative inline-flex items-center">
+            <select
+              value={encoding}
+              onChange={(event) => changeEncoding(event.target.value as TerminalEncoding)}
+              disabled={phase !== "connected"}
+              className="h-[26px] appearance-none rounded-[7px] border border-line bg-surface-2 pl-2 pr-6 text-11 text-fg outline-none focus:border-accent disabled:opacity-50"
+            >
+              {TERMINAL_ENCODINGS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-fg-subtle" />
+          </span>
+        </label>
 
         {searchOpen && (
           <div className="ml-2 flex items-center gap-1">
@@ -838,7 +1099,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         className="relative flex min-h-0 flex-1 p-2"
         onMouseDown={() => setSelectionMenu(null)}
       >
-        <div ref={containerRef} className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1" data-selectable />
+        <div
+          ref={containerRef}
+          className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1"
+          data-selectable
+          onContextMenu={openToolbarMenu}
+        />
         {selectionMenu && (
           <div
             className="absolute left-1/2 top-3 z-40 flex -translate-x-1/2 items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
@@ -862,7 +1128,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           <CommandHistoryPanel
             sessionId={sessionId}
             serverId={tab.serverId}
-            onPick={(command) => void opsApi.sshInput(sessionId, `${command}\n`)}
+            onPick={(command) => {
+              noteExecutedCommand(command);
+              executeTerminalCommand(command, "history");
+            }}
           />
         )}
         {suggestionsEnabled && !paramPicker && (
@@ -871,6 +1140,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             activeIndex={suggestions.activeIndex}
             onHover={suggestions.setActiveIndex}
             onApply={applySuggestion}
+            onRun={runSuggestion}
             anchor={suggestAnchor}
           />
         )}
@@ -920,7 +1190,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <ConfirmDialog
           open
           title="重新运行该命令？"
-          description={`该命令会修改服务器状态（${RISK_META[rerunConfirm.risk]?.label ?? "需确认"}）：\n${rerunConfirm.command}`}
+          description={`该命令会修改服务器状态（${
+            rerunConfirm.risk ? RISK_META[rerunConfirm.risk].label : "风险未知"
+          }）：\n${rerunConfirm.command}`}
           confirmLabel="重新运行"
           onConfirm={confirmRerun}
           onCancel={() => setRerunConfirm(null)}
@@ -937,6 +1209,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           onClose={() => setFilesOpen(false)}
         />
       )}
+
+      {/* 右键菜单（portal 到 body）：终端画布上的 onContextMenu 打开。 */}
+      <ContextMenu {...terminalMenu.props} />
     </div>
   );
 }

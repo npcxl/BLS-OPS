@@ -57,6 +57,11 @@ pub fn parse_uptime_metrics(stdout: &str) -> Vec<serde_json::Value> {
     if line.is_empty() {
         return Vec::new();
     }
+    // 形态门槛：必须真的有 `up ` 或 `load average:`。否则任何含 "user"
+    // 一词的文本都会被解析出一条"登录用户"指标（自动识别会误判成 metrics）。
+    if !line.contains(" up ") && !line.contains("load average:") {
+        return Vec::new();
+    }
     let mut metrics = Vec::new();
     if let Some((_, rest)) = line.split_once("up ") {
         let uptime = rest.split(',').next().unwrap_or("").trim().to_string();

@@ -15,6 +15,16 @@ fn test_db() -> Connection {
     conn
 }
 
+fn group(id: &str, name: &str) -> ServerGroupRecord {
+    ServerGroupRecord {
+        id: id.to_string(),
+        name: name.to_string(),
+        sort_order: 0,
+        created_at: 1,
+        updated_at: 1,
+    }
+}
+
 fn server(id: &str, name: &str) -> ServerRecord {
     ServerRecord {
         id: id.to_string(),
@@ -154,10 +164,59 @@ fn migration_upgrades_a_v1_database() {
 fn favorite_round_trips() {
     let conn = test_db();
     insert_or_replace_server(&conn, &server("s1", "web")).unwrap();
-    set_server_favorite(&conn, "s1", true).unwrap();
+    let updated = set_server_favorite(&conn, "s1", true).unwrap();
+    assert!(updated.as_ref().unwrap().favorite);
     assert!(get_server(&conn, "s1").unwrap().unwrap().favorite);
     set_server_favorite(&conn, "s1", false).unwrap();
     assert!(!get_server(&conn, "s1").unwrap().unwrap().favorite);
+}
+
+#[test]
+fn favoriting_a_missing_server_reports_none() {
+    let conn = test_db();
+    assert!(set_server_favorite(&conn, "ghost", true).unwrap().is_none());
+}
+
+#[test]
+fn moving_a_server_between_groups_only_touches_the_group() {
+    let conn = test_db();
+    insert_or_replace_server_group(&conn, &group("g1", "prod")).unwrap();
+    insert_or_replace_server_group(&conn, &group("g2", "test")).unwrap();
+    let created = server("s1", "web");
+    insert_or_replace_server(&conn, &created).unwrap();
+
+    let moved = move_server_to_group(&conn, "s1", Some("g1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(moved.group_id.as_deref(), Some("g1"));
+    assert_eq!(moved.name, "web", "only group_id must change");
+
+    let back = move_server_to_group(&conn, "s1", None).unwrap().unwrap();
+    assert_eq!(back.group_id, None);
+}
+
+#[test]
+fn moving_a_missing_server_reports_none() {
+    let conn = test_db();
+    assert!(move_server_to_group(&conn, "ghost", None)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn group_names_are_unique() {
+    let conn = test_db();
+    insert_or_replace_server_group(&conn, &group("g1", "prod")).unwrap();
+
+    // A different id with the same name is rejected…
+    let clash = group("g2", "prod");
+    assert!(insert_or_replace_server_group(&conn, &clash).is_err());
+
+    // …while re-saving the same row (rename round-trip) is fine.
+    let mut renamed = group("g1", "生产");
+    renamed.sort_order = 2;
+    insert_or_replace_server_group(&conn, &renamed).unwrap();
+    assert_eq!(list_server_groups(&conn).unwrap()[0].name, "生产");
 }
 
 #[test]

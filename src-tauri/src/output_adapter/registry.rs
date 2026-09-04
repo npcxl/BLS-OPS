@@ -343,11 +343,30 @@ fn register_builtins(registry: &mut AdapterRegistry) {
 
     // ── 第二层：通用文本解析 ──
     registry.register("generic-table", |stdout, _ctx| {
-        // 通用表格没有列定义（不知道命令语义），用首行当表头是猜测 ——
-        // 这里拒绝猜测，直接回落，避免"看起来对其实错"的表格。
-        let _ = stdout;
-        AdapterOutcome::Fallback {
-            reason: "通用表格需要列定义（请在注册表里登记专用适配器）".into(),
+        // 通用表格**没有列定义**：首行当表头是猜测，所以只在"稳定"时才猜 ——
+        // 列数一致 + 列对齐 + 表头像表头（见 `generic::table::detect_table`）。
+        // 认不出就回落 raw：绝不把任意文本硬拼成一个看起来对其实错的表格。
+        match super::generic::table::detect_table(stdout) {
+            Some(table) => {
+                let columns = super::generic::table::table_columns(&table.header, &table.rows);
+                let rows = super::generic::table::table_rows(&columns, &table.rows);
+                AdapterOutcome::Structured {
+                    view: ViewType::Table,
+                    summary: vec![SummaryItem {
+                        label: "行".into(),
+                        value: rows.len().to_string(),
+                        tone: None,
+                    }],
+                    columns,
+                    rows,
+                    sections: Vec::new(),
+                    warnings: Vec::new(),
+                    json: None,
+                }
+            }
+            None => AdapterOutcome::Fallback {
+                reason: "输出不是稳定的列式表格（列数不一致或未对齐）".into(),
+            },
         }
     });
     registry.register("key-value", |stdout, _ctx| {
@@ -456,5 +475,24 @@ fn register_builtins(registry: &mut AdapterRegistry) {
             warnings: Vec::new(),
             json: None,
         }
+    });
+
+    // ── 统一自动识别：没有专用适配器（或专用适配器没认出来）时的默认路径 ──
+    //
+    // 知识库里 100+ 条命令没有专用适配器 —— 它们全部走这里，不再需要每条
+    // 命令人工绑定一个 adapter id。专用适配器只是 `adapt_auto` 的 hint。
+    registry.register("auto", |stdout, _ctx| match super::auto::detect(stdout) {
+        Some(hit) => AdapterOutcome::Structured {
+            view: hit.view,
+            summary: hit.summary,
+            columns: hit.columns,
+            rows: hit.rows,
+            sections: hit.sections,
+            warnings: Vec::new(),
+            json: hit.json,
+        },
+        None => AdapterOutcome::Fallback {
+            reason: "未识别出已知输出形态，已按原始输出显示".into(),
+        },
     });
 }

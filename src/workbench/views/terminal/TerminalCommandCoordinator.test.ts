@@ -1,324 +1,299 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { CommandSearchHit, StructuredCommandResult } from "@/api/ops-api";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CommandSearchHit, Mutability, RiskLevel, StructuredCommandResult } from "@/api/ops-api";
 import {
-  QUIET_MS,
+  NO_MARKER_FAILSAFE_MS,
   TerminalCommandCoordinator,
+  type AdaptInput,
   type CapturedResult,
-  type CoordinatorDeps,
 } from "./TerminalCommandCoordinator";
-
-// React 19：act() 需要这个全局标记。
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-/** 冲刷微任务队列（假定时器下 setTimeout 不会自己跑）。 */
-const flush = async () => {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
-};
-
-function useFakeTimers() {
-  vi.useFakeTimers();
-  return {
-    advance: (ms: number) => vi.advanceTimersByTime(ms),
-    restore: () => vi.useRealTimers(),
-  };
-}
-
-let timers: ReturnType<typeof useFakeTimers>;
-
-beforeEach(() => {
-  timers = useFakeTimers();
-});
-
-afterEach(() => {
-  timers.restore();
-});
+import { planCommandSubmission } from "./command-plan";
 
 function hit(overrides: Partial<CommandSearchHit> = {}): CommandSearchHit {
   return {
     id: "docker.ps.all",
-    executable: "docker",
-    subcommand: "ps -a",
     title: "查看所有容器",
-    description: "",
     category: "container",
     syntax: "docker ps -a",
-    risk: "read_only",
-    mutability: "read",
+    risk: "read_only" as RiskLevel,
+    mutability: "read" as Mutability,
     output_adapter: "docker-container-table",
     requires: ["docker"],
     required_params: [],
     placeholders: [],
-    can_execute: true,
-    favorite: false,
-    score: 0,
+    description: "显示运行中和已停止的容器",
+    score: 1,
+    matched_on: "syntax",
     ...overrides,
-  };
+  } as CommandSearchHit;
 }
 
-function structured(view: string): StructuredCommandResult {
+const TABLE = "PID   COMMAND      CPU   MEM\n1     /sbin/init   0.0   0.1\n912   nginx        1.2   3.4\n";
+
+function result(view = "table"): StructuredCommandResult {
   return {
-    view: view as StructuredCommandResult["view"],
-    title: "结果",
+    view,
+    title: "T",
     summary: [],
     columns: [],
     rows: [],
     sections: [],
     warnings: [],
-    meta: { command: "cmd", exit_code: null, duration_ms: 1, truncated: false },
+    meta: { command: "c", exit_code: 0, duration_ms: 5, truncated: false },
     raw: { stdout: "", stderr: "" },
-  };
+  } as unknown as StructuredCommandResult;
 }
 
-function deps(overrides: Partial<CoordinatorDeps> = {}) {
-  const state = {
-    results: [] as CapturedResult[],
-    matchCalls: [] as string[],
-    adaptCalls: [] as {
-      knowledgeId: string;
-      command: string;
-      stdout: string;
-      normalized: string;
-    }[],
-  };
-  const value: CoordinatorDeps = {
-    match: async (text) => {
-      state.matchCalls.push(text);
-      // 模拟后端两级匹配：docker 家族 / df 家族（-h、-hP 等标志变体同家族）。
-      if (text.startsWith("docker")) return hit();
-      if (text.startsWith("df")) return hit({ id: "df.h", syntax: "df -hP" });
-      return null;
-    },
-    adapt: async (input) => {
-      state.adaptCalls.push({
-        knowledgeId: input.knowledgeId,
-        command: input.command,
-        stdout: input.stdout,
-        normalized: input.normalized,
-      });
-      return structured("table");
-    },
-    onResult: (result) => state.results.push(result),
-    ...overrides,
-  };
-  return { value, state };
-}
+let now = 1_000;
+/**
+ * 只推进**微任务**：用例跑在 fake timers 下（`window.setTimeout` 是假的），
+ * 用 `setTimeout(0)` 等会永远卡住。`match` / `adapt` 都是立即 resolve 的
+ * async 函数，几个微任务周期就足够跑完 `submit → finish → emit` 链。
+ */
+const flush = async () => {
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+};
 
-describe("终端命令协调器", () => {
-  it("识别到知识库命令 → 捕获输出并产出结构化结果", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps -a");
-    await flush();
-    coordinator.onOutput("CONTAINER ID\n");
-    coordinator.onOutput("abc123  web\n");
-    timers.advance(QUIET_MS);
-    await flush();
-
-    expect(state.matchCalls).toEqual(["docker ps -a"]);
-    expect(state.adaptCalls).toHaveLength(1);
-    // 关键：原样传递已产生的输出，不截断、不加工。
-    expect(state.adaptCalls[0].stdout).toBe("CONTAINER ID\nabc123  web\n");
-    // normalized 是净化后的解析输入：去尾部提示符行后不含尾换行（无 ANSI 时内容一致）。
-    expect(state.adaptCalls[0].normalized).toBe("CONTAINER ID\nabc123  web");
-    expect(state.results).toHaveLength(1);
-    expect(state.results[0].command).toBe("docker ps -a");
-    // 真实风险随结果带回（禁止伪装成只读）。
-    expect(state.results[0].risk).toBe("read_only");
-    expect(state.results[0].mutability).toBe("read");
-    expect(state.results[0].canExecute).toBe(true);
+describe("TerminalCommandCoordinator — 受控标记边界", () => {
+  beforeEach(() => {
+    now = 1_000;
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("未识别命令 → 完全不介入（不弹空面板）", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("echo hello");
-    await flush();
-    coordinator.onOutput("hello\n");
-    timers.advance(QUIET_MS + 1000);
-    await flush();
-
-    expect(state.adaptCalls).toHaveLength(0);
-    expect(state.results).toHaveLength(0);
-  });
-
-  it("解析只发生一次（绝不重复执行命令）", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps");
-    await flush();
-    for (let i = 0; i < 5; i += 1) coordinator.onOutput(`line ${i}\n`);
-    timers.advance(QUIET_MS);
-    await flush();
-    timers.advance(5000);
-    await flush();
-
-    expect(state.adaptCalls).toHaveLength(1);
-    expect(state.results).toHaveLength(1);
-  });
-
-  it("匹配期间的输出不丢（异步 match 竞态）", async () => {
-    let resolveMatch: (value: CommandSearchHit | null) => void = () => {};
-    const { value, state } = deps({
-      match: () => new Promise<CommandSearchHit | null>((resolve) => (resolveMatch = resolve)),
+  function setup(options?: { hit?: CommandSearchHit | null }) {
+    const adaptInputs: AdaptInput[] = [];
+    const results: CapturedResult[] = [];
+    const coordinator = new TerminalCommandCoordinator({
+      now: () => now,
+      match: async () => (options && "hit" in options ? options.hit : hit()) ?? null,
+      adapt: async (input) => {
+        adaptInputs.push(input);
+        return result();
+      },
+      onResult: (item) => results.push(item),
     });
-    const coordinator = new TerminalCommandCoordinator(value);
+    return { coordinator, adaptInputs, results };
+  }
 
-    coordinator.submit("docker images");
-    coordinator.onOutput("REPOSITORY\n");
-    resolveMatch(hit({ id: "docker.images" }));
+  /** 提交一条命令（走真实计划）。 */
+  const submit = (
+    coordinator: TerminalCommandCoordinator,
+    command: string,
+    source: "input" | "rerun" | "history" | "suggest" = "input",
+  ) => coordinator.submit(command, source, planCommandSubmission(command));
+
+  it("收到结束标记才产出结果，慢命令分两批输出不会提前结束", async () => {
+    const { coordinator, results } = setup();
+    submit(coordinator, "sleep 2 && ps aux");
+
+    now += 2_000;
+    coordinator.onOutput("第一批\n");
     await flush();
-    coordinator.onOutput("nginx\n");
-    timers.advance(QUIET_MS);
+    expect(results).toHaveLength(0); // 第一批之后不能就当结束了
+
+    // 中间隔了很久再来第二批（真实的慢命令形态）。
+    now += 8_000;
+    coordinator.onOutput("第二批\n", [{ type: "output_end", exitCode: 0 }]);
     await flush();
 
-    expect(state.adaptCalls[0]?.stdout).toBe("REPOSITORY\nnginx\n");
+    expect(results).toHaveLength(1);
+    expect(results[0].stdout).toBe("第一批\n第二批\n"); // 两批输出都不能丢
+    expect(results[0].boundary.exitCode).toBe(0);
+    expect(results[0].boundary.durationMs).toBe(10_000);
+    expect(results[0].boundary.endedBy).toBe("marker");
   });
 
-  it("sudo / 管道命令被标准化：sudo df -hP | grep → 匹配 df -hP", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
+  it("超过 10 秒的命令不会被截断（静默期不再是结束判据）", async () => {
+    const { coordinator, results } = setup();
+    submit(coordinator, "make -j8");
 
-    // 前导 sudo 去掉、管道之后截断 → 规范化为 "df -hP"。
-    coordinator.submit("sudo df -hP | grep /dev");
-    await flush();
-
-    expect(state.matchCalls).toEqual(["df -hP"]);
-  });
-
-  it("纯管道命令不介入（输出结构已被改变）", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("| grep x");
-    await flush();
-    coordinator.onOutput("x\n");
-    timers.advance(QUIET_MS + 1000);
-    await flush();
-
-    expect(state.matchCalls).toHaveLength(0);
-    expect(state.results).toHaveLength(0);
-  });
-
-  it("交互式全屏程序（vim/top）不介入", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    for (const command of ["vim /etc/nginx/nginx.conf", "top"]) {
-      coordinator.submit(command);
+    // 11 秒里持续出输出，中间从未静默满 400ms 之外的任何阈值。
+    for (let i = 0; i < 11; i += 1) {
+      now += 1_000;
+      coordinator.onOutput(`line ${i}\n`);
     }
     await flush();
-    timers.advance(QUIET_MS + 1000);
-    await flush();
+    expect(results).toHaveLength(0); // 输出还在继续 → 绝不能结束
 
-    expect(state.matchCalls).toHaveLength(0);
-    expect(state.results).toHaveLength(0);
+    vi.advanceTimersByTime(NO_MARKER_FAILSAFE_MS - 1);
+    await flush();
+    expect(results).toHaveLength(0);
+
+    // 命令真正结束（标记到达）→ 一次交付全部输出。
+    now += 500;
+    coordinator.onOutput("", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(results).toHaveLength(1);
+    expect(results[0].stdout.split("\n")).toHaveLength(12);
+    expect(results[0].boundary.durationMs).toBe(11_500);
   });
 
-  it("新命令提交会取消上一次捕获（不串味）", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps");
+  it("标记始终不来 → 兜底收场，并标明是兜底（不是边界判定）", async () => {
+    const { coordinator, results } = setup();
+    submit(coordinator, "some-tool");
+    coordinator.onOutput("半截输出");
+    vi.advanceTimersByTime(NO_MARKER_FAILSAFE_MS);
     await flush();
-    coordinator.onOutput("first\n");
-    coordinator.submit("docker ps -a");
-    await flush();
-    coordinator.onOutput("second\n");
-    timers.advance(QUIET_MS);
-    await flush();
-
-    expect(state.adaptCalls).toHaveLength(1);
-    expect(state.adaptCalls[0].command).toBe("docker ps -a");
-    expect(state.adaptCalls[0].stdout).not.toContain("first");
+    expect(results).toHaveLength(1);
+    expect(results[0].boundary.endedBy).toBe("failsafe");
+    expect(results[0].boundary.exitCode).toBeNull();
+    expect(results[0].stdout).toBe("半截输出");
   });
 
-  it("长流命令有上限兜底（不会永久挂着）", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps -a");
+  it("输出开始标记优先于第一块输出；没有标记时用第一块输出", async () => {
+    const { coordinator, results } = setup();
+    submit(coordinator, "tool a");
+    now += 50;
+    coordinator.onOutput("x\n", [{ type: "output_start" }]);
+    coordinator.onOutput("", [{ type: "output_end", exitCode: 3 }]);
     await flush();
-    coordinator.onOutput("streaming…\n");
-    for (let i = 0; i < 40; i += 1) {
-      timers.advance(300);
-      coordinator.onOutput("more\n");
+    expect(results[0].boundary.outputStart).toBe(1_050);
+
+    // 重置时钟，让第二段断言读起来直观。
+    now = 1_000;
+    const second = setup();
+    submit(second.coordinator, "tool b");
+    now += 70;
+    second.coordinator.onOutput("y\n");
+    second.coordinator.onOutput("", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(second.results[0].boundary.outputStart).toBe(1_070);
+  });
+
+  it("stdout 与 stderr 分开累积，stderr 不会污染 stdout", async () => {
+    const { coordinator, adaptInputs, results } = setup();
+    submit(coordinator, "tool c");
+    coordinator.onOutput("out\n");
+    coordinator.onStderr("err\n");
+    coordinator.onOutput("", [{ type: "output_end", exitCode: 1 }]);
+    await flush();
+    expect(adaptInputs[0].stdout).toBe("out\n");
+    expect(adaptInputs[0].stderr).toBe("err\n");
+    expect(results[0].stderr).toBe("err\n");
+  });
+
+  it("重新运行生成**新的**结果 Tab（两条互不覆盖）", async () => {
+    const { coordinator, results } = setup();
+    coordinator.submit("df -h", "input", planCommandSubmission("df -h"));
+    coordinator.onOutput("第一次\n", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+
+    coordinator.submit("df -h", "rerun", planCommandSubmission("df -h"));
+    coordinator.onOutput("第二次\n", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+
+    expect(results).toHaveLength(2); // 每次执行都是一个新 Tab
+    expect(results[0].id).not.toBe(results[1].id);
+    expect(results[0].source).toBe("input");
+    expect(results[1].source).toBe("rerun");
+    expect(results[1].stdout).toBe("第二次\n"); // 新 Tab 不串上一次的输出
+  });
+
+  it("命令历史执行同样生成结果 Tab", async () => {
+    const { coordinator, results } = setup();
+    coordinator.submit("systemctl status nginx", "history", planCommandSubmission("systemctl status nginx"));
+    coordinator.onOutput("active\n", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(results).toHaveLength(1);
+    expect(results[0].source).toBe("history");
+    expect(results[0].command).toBe("systemctl status nginx");
+  });
+
+  it("未命中知识库 → 仍出结果，但风险是 null（绝不伪装成只读）", async () => {
+    const { coordinator, adaptInputs, results } = setup({ hit: null });
+    submit(coordinator, "lsblk");
+    coordinator.onOutput(TABLE, [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(results).toHaveLength(1); // 没命中也要出结构化结果（走 auto）
+    expect(results[0].risk).toBeNull();
+    expect(results[0].mutability).toBe("unknown");
+    expect(results[0].knowledgeId).toBe("");
+    // hint 为空 → 后端纯自动识别。
+    expect(adaptInputs[0].knowledgeId).toBeNull();
+    expect(adaptInputs[0].adapterHint).toBeNull();
+  });
+
+  it("命中知识库 → 带上专用适配器 hint 与真实风险", async () => {
+    const { coordinator, adaptInputs, results } = setup();
+    submit(coordinator, "docker ps -a");
+    coordinator.onOutput("x\n", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(adaptInputs[0].adapterHint).toBe("docker-container-table");
+    expect(results[0].risk).toBe("read_only");
+    expect(results[0].mutability).toBe("read");
+  });
+
+  it("解析输入同时给 raw（留档）与 normalized（清洗后）", async () => {
+    const { coordinator, adaptInputs } = setup();
+    submit(coordinator, "docker ps -a");
+    coordinator.onOutput("CONTAINER ID   IMAGE\nabc   nginx\n", [
+      { type: "output_end", exitCode: 0 },
+    ]);
+    await flush();
+    expect(adaptInputs[0].stdout).toBe("CONTAINER ID   IMAGE\nabc   nginx\n");
+    expect(adaptInputs[0].normalized).toBeTruthy();
+    expect(adaptInputs[0].truncated).toBe(false);
+  });
+
+  it("命令用归一化形式匹配知识库（sudo / 管道前缀不影响命中）", async () => {
+    const seen: string[] = [];
+    const coordinator = new TerminalCommandCoordinator({
+      now: () => now,
+      match: async (text) => {
+        seen.push(text);
+        return null;
+      },
+      adapt: async () => result(),
+      onResult: () => undefined,
+    });
+    coordinator.submit("sudo docker ps -a", "input", planCommandSubmission("sudo docker ps -a"));
+    coordinator.onOutput("", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(seen[0]).toBe("docker ps -a");
+    coordinator.dispose();
+  });
+
+  it("交互式 / 无输出内建命令不产生结果 Tab（留在原生终端）", async () => {
+    const { coordinator, results } = setup();
+    for (const command of ["vim /etc/hosts", "top", "cd /var/log", "cat", "export FOO=1"]) {
+      const plan = planCommandSubmission(command);
+      expect(plan.capture).toBe(false);
+      submit(coordinator, command);
     }
+    coordinator.onOutput("whatever\n", [{ type: "output_end", exitCode: 0 }]);
+    vi.advanceTimersByTime(NO_MARKER_FAILSAFE_MS);
     await flush();
+    expect(results).toHaveLength(0);
+  });
 
-    // MAX_MS 兜底必须触发。
-    expect(state.adaptCalls).toHaveLength(1);
+  it("未提交命令时的输出不会被捕获", async () => {
+    const { coordinator, results } = setup();
+    coordinator.onOutput("登录横幅\n");
+    vi.advanceTimersByTime(NO_MARKER_FAILSAFE_MS);
+    await flush();
+    expect(results).toHaveLength(0);
+  });
+
+  it("新命令提交会作废上一次捕获（不串味）", async () => {
+    const { coordinator, results } = setup();
+    submit(coordinator, "tool a");
+    coordinator.onOutput("A 的输出\n");
+    submit(coordinator, "tool b");
+    coordinator.onOutput("B 的输出\n", [{ type: "output_end", exitCode: 0 }]);
+    await flush();
+    expect(results).toHaveLength(1);
+    expect(results[0].command).toBe("tool b");
+    expect(results[0].stdout).toBe("B 的输出\n");
   });
 
   it("dispose 后不再产出结果", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-    coordinator.submit("docker ps -a");
+    const { coordinator, results } = setup();
+    submit(coordinator, "tool a");
     coordinator.dispose();
+    coordinator.onOutput("x\n", [{ type: "output_end", exitCode: 0 }]);
     await flush();
-    timers.advance(QUIET_MS + 1000);
-    await flush();
-
-    expect(state.results).toHaveLength(0);
-  });
-
-  it("adapt 失败不抛错、不产出结果（终端输出已原样显示）", async () => {
-    const calls: string[] = [];
-    const { value, state } = deps({
-      adapt: async (input) => {
-        calls.push(input.command);
-        throw new Error("boom");
-      },
-    });
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps -a");
-    await flush();
-    timers.advance(QUIET_MS);
-    await flush();
-
-    // 解析失败：不产出结果，异常不向上传播（终端该怎么显示还怎么显示）。
-    expect(calls).toEqual(["docker ps -a"]);
-    expect(state.results).toHaveLength(0);
-
-    // 失败后协调器依然可用 —— 下一条命令照常工作。
-    coordinator.submit("docker ps -a");
-    await flush();
-    coordinator.onOutput("ok\n");
-    timers.advance(QUIET_MS);
-    await flush();
-    expect(calls).toEqual(["docker ps -a", "docker ps -a"]);
-    expect(state.results).toHaveLength(0);
-  });
-
-  it("空命令不启动捕获", async () => {
-    const { value, state } = deps();
-    const coordinator = new TerminalCommandCoordinator(value);
-    coordinator.submit("   ");
-    await flush();
-    expect(state.matchCalls).toHaveLength(0);
-  });
-
-  it("真实风险随结果带回（medium 命令不再伪装成只读）", async () => {
-    const { value, state } = deps({
-      match: async () =>
-        hit({
-          id: "systemctl.restart",
-          risk: "medium",
-          mutability: "change",
-        }),
-    });
-    const coordinator = new TerminalCommandCoordinator(value);
-
-    coordinator.submit("docker ps -a"); // 文本无所谓，match 被 mock
-    await flush();
-    timers.advance(QUIET_MS);
-    await flush();
-
-    expect(state.results).toHaveLength(1);
-    expect(state.results[0].risk).toBe("medium");
-    expect(state.results[0].mutability).toBe("change");
+    expect(results).toHaveLength(0);
   });
 });

@@ -247,7 +247,7 @@ pub async fn command_execute(
         duration_ms,
     };
     let structured = structure_output(
-        entry.output_adapter,
+        Some(entry.output_adapter),
         &stdout,
         entry.title,
         &command_executed,
@@ -280,18 +280,25 @@ pub async fn command_execute(
 
 /// 命令文本 → 知识库条目（终端手动输入命令的识别入口）。
 ///
-/// 两级匹配，都**只认结构化适配器**（`generic-raw-output` 不值得弹面板）：
+/// 两级匹配：
 ///
 /// 1. **精确**：规范化（压空白、小写）后与条目 syntax / display 完全相等；
 ///    含 `<占位符>` 的条目跳过（要填真值，不能拿展示语法硬套）。
 /// 2. **同命令家族**：精确失败后，可执行名相同、用户第二段是标志
 ///    （`-h`/`--xxx`）或与条目子命令首段一致 → 视为同家族
-///    （`df -h`/`df -Th`/`sudo df -h` 都命中 `df.h` 的磁盘表 —— 它们的
-///    输出列结构一致）。绝不跨子命令匹配（`systemctl status` 不会错配成
-///    `list-units` 的表格）。
+///    （`df -h`/`df -Th`/`sudo df -h` 都命中 `df.h` —— 它们输出列结构一致）。
+///    绝不跨子命令匹配（`systemctl status` 不会错配成 `list-units`）。
+///
+/// # 为什么不再有"面板价值门槛"
+///
+/// 以前只给"有专用适配器"的命令弹结果面板，其余（知识库里占绝大多数）
+/// 一律 `generic-raw-output` 不弹 —— 结果就是绝大多数命令白白放弃结构化。
+/// 现在默认适配器是 `auto`（按输出形态自动识别），**任何非交互式命令都值得
+/// 尝试**，所以门槛取消。
 ///
 /// 返回完整命中（含真实 risk / mutability / can_execute —— 终端结果抽屉
-/// 据此做风险门控，禁止伪装成只读）。`None` = 未识别，走原始终端。
+/// 据此做风险门控，禁止伪装成只读）。`None` = 未识别（仍然走 auto，只是
+/// 没有知识库的风险信息）。
 #[tauri::command]
 pub async fn command_match_text(text: String) -> Result<Option<CommandSearchHit>, String> {
     Ok(match_knowledge(&text).map(search::hit_for))
@@ -304,13 +311,6 @@ fn match_knowledge(text: &str) -> Option<&'static CommandKnowledge> {
         return None;
     }
     let catalog = builtin_catalog();
-    // 面板价值门槛：结构化适配器**或**修改型命令（medium 的面板 = 风险徽标
-    // + 确认 + 审计可见）。只读 + raw（ls / cat 这类知识层）不值得弹面板，
-    // 用户在终端里已经看到了原始输出。
-    let panel_worthy = |entry: &CommandKnowledge| {
-        entry.output_adapter != "generic-raw-output"
-            || entry.mutability != crate::command_center::Mutability::Read
-    };
 
     // 第一级：精确相等（含 `<占位符>` 的展示语法跳过 —— 用户不会输尖括号）。
     if let Some(entry) = catalog.iter().find(|entry| {
@@ -318,20 +318,18 @@ fn match_knowledge(text: &str) -> Option<&'static CommandKnowledge> {
         let display = normalize_command(&entry.display_command());
         !syntax.contains('<') && (syntax == normalized || display == normalized)
     }) {
-        return panel_worthy(entry).then_some(entry);
+        return Some(entry);
     }
     // 第二级：同命令家族（可执行名一致）：
-    // - `df -h` / `df -Th` / `sudo df -h`：第二段是**标志** → 同家族
-    //   （df 各变体输出列一致，磁盘表都能解析）；
+    // - `df -h` / `df -Th` / `sudo df -h`：第二段是**标志** → 同家族；
     // - `systemctl restart X`：第二段与条目子命令**首段**一致（restart ==
     //   restart）→ 语义相同，语法里的 `<unit>` 占位符不影响输出结构；
-    // - 裸可执行名（`df` / `free` / `uptime`）→ 该命令第一个合格条目。
+    // - 裸可执行名（`df` / `free` / `uptime`）→ 该命令第一个条目。
     let mut parts = normalized.split(' ');
     let exe = parts.next()?;
     let second = parts.next();
     catalog.iter().find(|entry| {
-        panel_worthy(entry)
-            && entry.executable.eq_ignore_ascii_case(exe)
+        entry.executable.eq_ignore_ascii_case(exe)
             && match second {
                 None => true,
                 Some(token) if token.starts_with('-') => entry
@@ -360,37 +358,49 @@ fn normalize_command(text: &str) -> String {
 ///
 /// `normalized` 是前端清洗后的解析输入（去 ANSI / 回显 / 提示符）；
 /// `raw.stdout` 永远保留**真实终端输出** —— 两份数据严格分开。
+///
+/// # 两个输入都是可选的（可以都为空）
+///
+/// - `knowledge_id`：命中知识库时用它的 `output_adapter` 作为 **hint**；
+/// - `adapter_hint`：直接指定 hint（命令中心 / 测试用）；
+/// - 两者都没有 → 纯自动识别（绝大多数终端命令走这条路）。
 #[tauri::command]
 pub async fn command_adapt_output(
-    knowledge_id: String,
     command: String,
-    stdout: String,
-    stderr: String,
-    exit_code: Option<i32>,
     duration_ms: u64,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    exit_code: Option<i32>,
+    truncated: Option<bool>,
     normalized: Option<String>,
+    knowledge_id: Option<String>,
+    adapter_hint: Option<String>,
 ) -> Result<crate::output_adapter::StructuredCommandResult, String> {
-    let Some(entry) = builtin_catalog().iter().find(|e| e.id == knowledge_id) else {
-        return Err(format!("知识库中不存在命令 {knowledge_id}"));
+    let stdout = stdout.unwrap_or_default();
+    let stderr = stderr.unwrap_or_default();
+    let (hint, title) = match knowledge_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => match builtin_catalog().iter().find(|entry| entry.id == id) {
+            Some(entry) => (Some(entry.output_adapter), entry.title.to_string()),
+            // 知识库里没有 → **不是错误**，退化为纯自动识别（终端里手敲的
+            // 命令本就不一定在知识库里）。
+            None => (adapter_hint.as_deref(), command.clone()),
+        },
+        None => (adapter_hint.as_deref(), command.clone()),
     };
     let meta = crate::output_adapter::CommandMeta {
-        command,
+        command: command.clone(),
         exit_code,
         duration_ms,
-        truncated: false,
+        truncated: truncated.unwrap_or(false),
     };
     let parse_input = normalized.unwrap_or_else(|| stdout.clone());
     let raw = crate::output_adapter::RawOutput {
         stdout: stdout.clone(),
         stderr,
     };
-    Ok(crate::output_adapter::adapt(
-        entry.output_adapter,
-        &parse_input,
-        entry.title,
-        meta,
-        raw,
-    ))
+    let ctx = crate::output_adapter::AdapterContext { title, meta, raw };
+    // 专用适配器只作 hint：失败后继续自动识别，绝不直接 raw。
+    Ok(crate::output_adapter::adapt_auto(hint, &parse_input, &ctx))
 }
 
 /// 收藏 / 取消收藏，返回切换后的状态。
@@ -452,7 +462,7 @@ pub async fn command_catalog_meta() -> Result<CommandCatalogMeta, String> {
 // ---------------------------------------------------------------------------
 
 fn structure_output(
-    adapter: &str,
+    adapter_hint: Option<&str>,
     stdout: &str,
     title: &str,
     command_executed: &str,
@@ -468,7 +478,13 @@ fn structure_output(
         stdout: stdout.to_string(),
         stderr: String::new(),
     };
-    let result = crate::output_adapter::adapt(adapter, stdout, title, meta, raw);
+    let ctx = crate::output_adapter::AdapterContext {
+        title: title.to_string(),
+        meta,
+        raw,
+    };
+    // 专用适配器只是 hint：认不出来继续走统一自动识别，绝不直接 raw。
+    let result = crate::output_adapter::adapt_auto(adapter_hint, stdout, &ctx);
     serde_json::to_value(result).ok()
 }
 
@@ -505,20 +521,28 @@ mod tests {
         );
     }
 
-    /// 同命令家族：`df -h` / `df -Th` / `df --output` 都命中 `df.h` 的磁盘表 ——
-    /// 它们的输出列结构一致。绝不跨子命令（`systemctl status` 不会错配成
-    /// `list-units` 的表格），且 raw 适配器的条目不参与（不值得弹面板）。
+    /// 同命令家族：`df -h` / `df -Th` / `df --output` 都命中 `df.h` ——
+    /// 它们输出列结构一致。绝不跨子命令（`systemctl status` 命中
+    /// `systemctl.status`，不会错配成 `list-units`）。
+    ///
+    /// 知识库里**没有专用适配器**的条目（现在默认 `auto`）同样参与匹配 ——
+    /// 自动识别让每条命令都值得一个结果面板。
     #[test]
     fn flag_variants_match_the_same_family() {
         for text in ["df -h", "df -Th", "df --output=source,size", "df"] {
             let entry = match_knowledge(text).expect(text);
             assert_eq!(entry.id, "df.h", "text={text}");
-            assert_ne!(entry.output_adapter, "generic-raw-output");
         }
-        // 跨子命令绝不匹配。
-        assert!(match_knowledge("systemctl status nginx.service").is_none());
-        // 家族里没有结构化适配器的命令不匹配（base.du 是 raw）。
-        assert!(match_knowledge("du -sh /var").is_none());
+        // 跨子命令绝不匹配：`status` 命中 status 条目，不是 list-units。
+        assert_eq!(
+            match_knowledge("systemctl status nginx.service").map(|e| e.id),
+            Some("systemctl.status")
+        );
+        // 没有专用适配器的命令也匹配（走 auto，不再被门槛挡掉）。
+        assert_eq!(
+            match_knowledge("du -sh /var").map(|e| e.id),
+            Some("base.du")
+        );
     }
 
     /// 匹配返回**完整命中**（真实 risk / mutability / can_execute）——
@@ -547,8 +571,8 @@ mod tests {
     #[test]
     fn adapt_output_is_pure_parsing() {
         let stdout = "LISTEN 0 128 0.0.0.0:80 0.0.0.0:* users:((\"nginx\",pid=912,fd=6))\n";
-        let first = adapt_output_for_test("port-listener-table", stdout);
-        let second = adapt_output_for_test("port-listener-table", stdout);
+        let first = adapt_output_for_test(Some("port-listener-table"), stdout);
+        let second = adapt_output_for_test(Some("port-listener-table"), stdout);
         assert_eq!(first.view, crate::output_adapter::ViewType::Table);
         assert_eq!(first.rows.len(), 1);
         assert_eq!(first.rows[0]["port"], "80");
@@ -561,7 +585,7 @@ mod tests {
 
     /// 测试辅助：直接调用适配逻辑（与 `command_adapt_output` 命令体一致）。
     fn adapt_output_for_test(
-        adapter: &str,
+        adapter_hint: Option<&str>,
         stdout: &str,
     ) -> crate::output_adapter::StructuredCommandResult {
         let meta = crate::output_adapter::CommandMeta {
@@ -574,30 +598,87 @@ mod tests {
             stdout: stdout.to_string(),
             stderr: String::new(),
         };
-        crate::output_adapter::adapt(adapter, stdout, "测试", meta, raw)
+        let ctx = crate::output_adapter::AdapterContext {
+            title: "测试".into(),
+            meta,
+            raw,
+        };
+        crate::output_adapter::adapt_auto(adapter_hint, stdout, &ctx)
     }
 
-    /// 未知适配器 → **raw 回落**（不是错误，也不是 None）。
+    /// 未知 / 未命中的适配器 → **继续自动识别**，实在认不出才 raw 回落。
     ///
-    /// 旧行为是返回 `None` 让前端显示原始输出；统一协议后返回
-    /// `view = raw` 的结果 —— 用户看到的仍然是原始输出，但元信息与
-    /// 原始 stdout 都在同一个对象里，且回落原因可见。
+    /// 关键变化：以前"没有专用适配器"就等于 raw；现在专用适配器只是 hint，
+    /// 失败后走 `adapt_auto`，输出仍然有结构化机会。
     #[test]
-    fn unknown_adapter_falls_back_to_raw() {
+    fn unknown_adapter_falls_back_to_auto_then_raw() {
+        // 一条**没有专用适配器**的标准列式表格。
+        let table = concat!(
+            "PID   COMMAND      CPU   MEM\n",
+            "1     /sbin/init   0.0   0.1\n",
+            "912   nginx        1.2   3.4\n",
+            "1204  node         12.5  8.0\n",
+        );
+        let result = adapt_output_for_test(Some("made-up-adapter"), table);
+        assert_eq!(
+            result.view,
+            crate::output_adapter::ViewType::Table,
+            "专用适配器没认出来 → 自动识别接管，绝不直接 raw"
+        );
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[1]["command"], "nginx");
+        assert_eq!(result.raw.stdout, table, "原始输出必须完整保留");
+
+        // 真的认不出（一段散文 + 无 hint）→ raw，且原始输出完整。
+        let prose = "正在处理，请稍候……\n这既不是表格也不是键值。\n";
+        let result = adapt_output_for_test(None, prose);
+        assert!(matches!(
+            result.view,
+            crate::output_adapter::ViewType::Raw | crate::output_adapter::ViewType::Text
+        ));
+        assert_eq!(result.raw.stdout, prose);
+    }
+
+    /// 管道命令**不得**套用主命令的专用适配器 —— 输出结构已被管道改变。
+    #[test]
+    fn pipeline_disables_specialized_hint() {
+        // `ss -tulnp` 的专用表格列是 local/port/pid/process；
+        // `| grep` 之后只剩一列，套用专用适配器会解析出空/错表。
+        let stdout = "tcp LISTEN 0 128 0.0.0.0:80 users:((\"nginx\",pid=912,fd=6))\n";
         let meta = crate::output_adapter::CommandMeta {
-            command: "echo hi".into(),
+            command: "ss -tulnp | grep 80".into(),
             exit_code: Some(0),
             duration_ms: 1,
             truncated: false,
         };
         let raw = crate::output_adapter::RawOutput {
-            stdout: "anything".into(),
+            stdout: stdout.to_string(),
             stderr: String::new(),
         };
-        let result =
-            crate::output_adapter::adapt("generic-raw-output", "anything", "标题", meta, raw);
-        assert_eq!(result.view, crate::output_adapter::ViewType::Raw);
-        assert_eq!(result.raw.stdout, "anything", "原始输出必须完整保留");
-        assert_eq!(result.meta.command, "echo hi");
+        let ctx = crate::output_adapter::AdapterContext {
+            title: "监听端口".into(),
+            meta,
+            raw,
+        };
+        let result = crate::output_adapter::adapt_auto(Some("port-listener-table"), stdout, &ctx);
+        assert_ne!(
+            result
+                .columns
+                .iter()
+                .map(|c| c.key.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "local".to_string(),
+                "port".to_string(),
+                "pid".to_string(),
+                "process".to_string()
+            ],
+            "管道命令不能套用 ss 的专用列定义"
+        );
+        assert!(
+            result.warnings.iter().any(|w| w.contains("管道")),
+            "跳过专用适配器的原因必须对可见：{:?}",
+            result.warnings
+        );
     }
 }

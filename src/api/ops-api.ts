@@ -31,7 +31,7 @@ import {
   type SessionRecord,
   type SessionStats,
 } from "@/api/types/sessions";
-import { type SshConnectResult } from "@/api/types/ssh";
+import { type SshConnectResult, type TerminalEncoding } from "@/api/types/ssh";
 import {
   type DirectorySizeResult,
   type RemoteBinaryContent,
@@ -215,7 +215,10 @@ export const opsApi = {
   saveServer: (server: ServerRecord) => invoke<ServerRecord>("server_save", { server }),
   deleteServer: (id: string) => invoke<CascadeResult>("server_delete", { id }),
   setServerFavorite: (id: string, favorite: boolean) =>
-    invoke<void>("server_set_favorite", { id, favorite }),
+    invoke<ServerRecord>("server_set_favorite", { id, favorite }),
+  /** Direct "移动到分组" action — `null` moves the server back to 未分组. */
+  moveServerToGroup: (id: string, groupId: string | null) =>
+    invoke<ServerRecord>("server_move_to_group", { id, groupId }),
   testConnection: (serverId: string) =>
     invoke<SshConnectResult>("server_test_connection", { serverId }),
 
@@ -301,6 +304,14 @@ export const opsApi = {
   sshResize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>("ssh_resize", { sessionId, cols, rows }),
   sshKeepalive: (sessionId: string) => invoke<void>("ssh_keepalive", { sessionId }),
+  /**
+   * 切换会话的**输出编码**（`auto` / `utf8` / `gb18030` / `big5`）。
+   * 返回**实际生效**的值（后端认不出编码名会直接报错，绝不猜）。
+   */
+  sshSetEncoding: (sessionId: string, encoding: TerminalEncoding) =>
+    invoke<TerminalEncoding>("ssh_set_encoding", { sessionId, encoding }),
+  sshGetEncoding: (sessionId: string) =>
+    invoke<TerminalEncoding | null>("ssh_get_encoding", { sessionId }),
   sshStatus: (sessionId: string) => invoke<boolean>("ssh_status", { sessionId }),
   sshDisconnect: (sessionId: string) => invoke<void>("ssh_disconnect", { sessionId }),
 
@@ -391,22 +402,28 @@ export const opsApi = {
    * `stdout` 永远保留真实终端输出（两份数据严格分开）。
    */
   commandAdaptOutput: (input: {
-    knowledgeId: string;
     command: string;
-    stdout: string;
+    durationMs: number;
+    stdout?: string;
     normalized?: string;
     stderr?: string;
     exitCode?: number | null;
-    durationMs: number;
+    truncated?: boolean;
+    /** 命中知识库时传（后端取它的 `output_adapter` 作为 hint）。 */
+    knowledgeId?: string | null;
+    /** 直接指定 hint（未命中知识库 / 测试用）。 */
+    adapterHint?: string | null;
   }) =>
     invoke<StructuredCommandResult>("command_adapt_output", {
-      knowledgeId: input.knowledgeId,
       command: input.command,
-      stdout: input.stdout,
+      durationMs: input.durationMs,
+      stdout: input.stdout ?? "",
       normalized: input.normalized ?? null,
       stderr: input.stderr ?? "",
       exitCode: input.exitCode ?? null,
-      durationMs: input.durationMs,
+      truncated: input.truncated ?? false,
+      knowledgeId: input.knowledgeId ?? null,
+      adapterHint: input.adapterHint ?? null,
     }),
   /**
    * 二级参数补全的真实取值：`unit` = 服务器上的 systemd 服务单元，

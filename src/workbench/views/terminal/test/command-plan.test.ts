@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { blocksCapture, planCommandSubmission } from "./command-plan";
-import { INJECTED_LINES, MARKER_C_LINE, MARKER_D_LINE } from "./command-boundary";
+import { blocksCapture, planCommandSubmission } from "../command-plan";
+import { INJECTED_LINES, MARKER_C_LINE, MARKER_D_LINE } from "../command-boundary";
 
 describe("planCommandSubmission", () => {
   it("普通命令注入受控标记，且**不改写命令本身**", () => {

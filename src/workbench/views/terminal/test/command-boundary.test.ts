@@ -4,7 +4,7 @@ import {
   INJECTED_LINES,
   MARKER_C_LINE,
   MARKER_D_LINE,
-} from "./command-boundary";
+} from "../command-boundary";
 
 const OSC_C = "\x1b]133;C\x07";
 const OSC_D = (code = 0) => `\x1b]133;D;${code}\x07`;

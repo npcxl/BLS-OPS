@@ -6,7 +6,7 @@ import {
   applyTerminalFont,
   readTerminalFontId,
   resolveFontStack,
-} from "./terminal-font";
+} from "../terminal-font";
 
 describe("terminal-font", () => {
   beforeEach(() => {

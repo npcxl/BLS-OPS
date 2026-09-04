@@ -5,7 +5,7 @@ import {
   buildServerSections,
   compareServers,
   serverSectionsInOrder,
-} from "./sections";
+} from "../sections";
 
 function server(id: string, overrides: Partial<ServerRecord> = {}): ServerRecord {
   return {

@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen,
 }));
 
-const loadStore = async () => await import("./dir-size-store");
+const loadStore = async () => await import("../dir-size-store");
 
 function result(overrides: Partial<DirectorySizeResult> = {}): DirectorySizeResult {
   return {

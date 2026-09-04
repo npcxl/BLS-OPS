@@ -37,6 +37,14 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 项目发现=部署实例优先；`source_known=false` 绝不伪造路径；已确认项目持久化软删+绝不删行。
 - 安全边界：`safe/` Capability 是唯一"动作→命令"翻译点，禁别处拼命令；校验在网络 I/O 前；部署步骤三重校验；docker_prune 禁用。
 
+## 测试文件布局（2026-09-04 定稿）
+- **前端**：测试文件一律放在**被测代码所在目录的 `test/` 子目录**（`src/lib/test/`、`src/workbench/views/terminal/test/`、`…/completion/providers/test/`）。新增测试照此办理，不要放回源码同级。
+- 配置**无需**为它改动：`tsconfig.json` 的 `include: ["src"]` 与 vitest 默认 glob（`**/*.test.{ts,tsx}`）自动覆盖任意深度的 `test/` 目录。
+- **移动测试文件时的改写规则**：`from "./X"` → `from "../X"`、`import("./X")` → `import("../X")`。两个**易漏**的例外必须手动查：① 目录索引导入 `from "."` → `from ".."`；② **跨行**动态 import（`await import(\n "./x"\n)`）——按行匹配 `from "./` / `import("./` 的脚本都匹配不到，会被 tsc 抓出来。
+- **Windows 写文件必须保 BOM 状态**：本项目源码**无 BOM**，而 PowerShell 5.1 的 `Set-Content -Encoding utf8` 会强加 BOM。批量改写测试文件要用 `[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))`。
+- 用 `git mv` 迁移（不是复制+删除）：git 会识别为 `R` 重命名，保留 `git log --follow` 历史。
+- **Rust 侧不动**：`src/module/tests.rs`（单元测试）+ `src-tauri/tests/*.rs`（集成测试）已是 Rust 社区标准布局。
+
 ## 服务器列表（2026-09-04 定稿）
 唯一实现在 `src/workbench/server-list/`：`sections.ts`（纯逻辑，groups 为主数据）、`use-server-list.ts`（乐观+回滚）、`ServerListTree/ServerRow/ServerGroupSection/NewGroupInput/ServerForm`。**两侧栏只是壳**（标题+onOpenServer）。星标=行内兄弟按钮；"移动到分组"走子菜单。分组同名唯一（db 查重+命令层 validate，改名跳过自身）。
 
@@ -47,13 +55,16 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **cwd 四源优先级**（`remote-cwd.ts`，每会话 Map 隔离，切 Tab 不串）：OSC 7（shell 上报，`Osc7Scanner` 跨 chunk）> 跟踪的 cd（**退出码 0 才更新**，复合命令不跟踪）> 受控 pwd 探测（`CWD_PROBE_LINE`，前导空格避历史 + 走 `expect()` 剔回显）> 登录目录。**绝不用 `root@host:~#` 猜提示符**。受控探测**只在命令行是空的时候发**（否则会把 `printf` 拼进用户正在输入的 `cd opt`）。
 - **环境驱动的建议**：Rust `env_probe.rs`（镜像拆 registry/repository/tag，**只对最后一段等值判 nginx/openresty**；证据合并：镜像→强、容器内可执行文件→强、名称 token+Compose service→两条弱证据才成立；`classify` 单容器看 Compose 三要素、多容器一律 Multiple）+ 命令 `probe_nginx_environment`。新 Capability `DockerPsJson`（`docker ps --format '{{json .}}'`，一次拿 labels/端口/挂载）与 `ContainerHasNginx`（只读），**都在 safe 白名单里**。
 - 多容器**必须先让用户选**（CompletionItem.container），选择按会话记住，容器消失/停止即失效。风险真实：`-v/-t/-T/logs/inspect/port` 只读，`reload/restart` medium → 执行前 ConfirmDialog，删除类**根本不生成**。Compose 命令用 `docker compose -p <project>`（不依赖当前目录），工作目录不可靠就退回 `docker exec`。
+- **焦点归还（"回车选中提示后光标消失"）**：xterm 靠隐藏 textarea 接收按键，浮层（`ParamPicker` 有 `autoFocus` 的筛选框、`ConfirmDialog`、历史/文件面板、选区菜单）打开会抢走焦点，关闭时浏览器把焦点丢回 `body` → xterm 失焦（光标停闪变空心 + 之后敲的字不进终端）。修复要点：① `refocusTerminal()` 只在 `document.activeElement !== textarea` 时才 focus（避免无谓 focus 打乱闪烁节奏）；② **必须在 commit 后的 effect 里捞焦点**——按键处理里的同步调用救不了，因为 React 状态更新是异步的，浮层 DOM 要等提交后才卸载；③ 每个浮层**独立**追踪"开→关"，禁止合并成一个"任一浮层打开"布尔量（文件面板默认展开会一直为真，把选择器关闭事件全挡掉）。
 - 缓存纪律：目录 10s / Docker 15s / 服务 20s / 环境 60s；`mkdir|rm|mv|rm|cp|touch|ln|git clone|tar -x` 执行后目录缓存失效；手动入口是工具栏"刷新环境"（RefreshCw）。**绝不在每敲一个字符时跑 docker ps**。
+- **"再按 Enter 执行"用 `filledDraftRef` 判定**（上次填入后行内容没变 = 执行），不能只靠"候选与已输入一致才执行"：目录补完行以 `/` 结尾会立刻异步列下一层，执行还是继续补全取决于网络快慢，同样的操作结果漂移就是"交互不顺畅"的来源。任何真实提交（onData 的 commands / submitCurrentLine / runSuggestion）都要清掉这个 ref。
 
 ## P4 命令中心 / 终端（2026-09 重构中）
 - 安全模型：前端只传 knowledgeId+结构化 params；`ExecKind`→`build_exec`→`capability()` 唯一翻译点，命令串只在 safe.rs。风险：readonly 直接/medium ConfirmDialog/high 不入第一批。知识库=编译期常量，检索内存打分。
 - **终端与模块 = 两条独立链路（2026-09-04 定稿，用户裁决，勿回退）**：
   - **终端结果 = xterm 终端快照方案**（勿回退到 ANSI 清洗/逐命令解析/自动表格化/adapt_auto）：SSH 输出只写主 Terminal，`CapturedResult{stdout, stderr, json, renderedText, renderedDegraded, boundary, risk, ...}`（**无 rawOutput 别名**——曾与 stdout 完全重复），renderedText 从已渲染的 xterm buffer（`extract-terminal-snapshot.ts`）经 marker 行截取、`line.isWrapped` 合并软换行；命令边界用 OSC 133 Shell Integration，400ms 静默仅作不支持服务器的 fallback 且标 `boundaryReliable=false`；`terminal.write(data, callback)` 确认解析完成后才截图，禁 setTimeout 猜渲染；Marker 被 scrollback 淘汰不崩溃→走原始流降级并提示。交互程序（vim/top/htop/less/watch/tmux/screen 等）不生成快照；持续日志标 streaming 等停止后再出快照。
   - **严格 JSON Tab**：`src/lib/detect-json.ts` 数据完整铁律——整段 trim 后整体合法 JSON，否则 JSONL **逐非空行解析、任一行坏即整体 null**（禁“跳过坏行部分成功”）；`detectJsonOutput(text, command)` 剥掉快照首行的 prompt+命令回显再检测（只决定 Tab 出不出，绝不动终端输出）。Tab 固定 `[终端输出](默认)[JSON?][原始流]`。
+  - **快照两端都要剥**（2026-09-04 修 bug）：快照结束边界是 buffer 末尾（`consumeTerminalSnapshot` 不传 `endLine`），命令跑完后 shell **立刻**打印的下一个提示符也被框进来 → 严格整段 parse 多这一行就整体失败 → `docker inspect` / `docker ps --format json` 明明输出合法 JSON，JSON Tab 偏偏不出现。`stripTrailingPrompt()` **不猜 PS1 格式**：首行是 `<PS1><command>`，去掉 command 剩下的就是这台机器真实 PS1，最后一行以它开头即剥掉（只剥最后一行）。与剥首行回显对称。
   - **模块结构化链**：`output_adapter/`（Rust，含 `adapt_auto`/hint 先试失败 auto）+ `command-result/` 渲染器保留给 Docker/服务/项目/日志/command-center。Rust `generic/json.rs::parse_json` 的 JSONL 同样**坏行整体 None**（7efa21e 收紧，删掉死函数 `json_array_to_rows`）；`CommandResultPanel` 只服务 command-center 知识库路径，终端链不再引用。JsonView 是通用 JSON 查看器（折叠树+文本+搜索+复制路径/节点，**绝无数组→表格分支**），终端 JSON Tab 与模块 json 视图共用。
 - 参数占位符绝不进 shell（completionKeys 遇未解析返回 null；后端不拼 shell 文本）。
 - **建议面板绝不吞回车**（2026-09-04 修）：`applySuggestion` 返回 `AcceptOutcome`（`filled`/`noop`/`blocked`）。**候选与已输入内容一致时 `completionKeys` 返回空串 = 空操作**，此时 `accept` 分支必须改走 `submitCurrentLine()` **直接执行**，否则回车被静默吞掉、命令永远发不出去（曾表现为"结果面板不出现/时好时坏"，因为 120ms 防抖内按回车候选还没回来就会正常执行）。有占位符 → `blocked`，绝不带着 `<unit>` 执行。已知限制：↑/Ctrl+R 从 shell 历史调出的命令拿不到文本（`LineEditor` 只看用户按键），不产生结果，**不许用猜提示符去扒 buffer 行**。
@@ -62,6 +73,11 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **终端写出流水线**（`terminal-output-pipeline.ts`，TerminalView 拆分第一步）：`splitAtOutputEnd` + `writeOutputParts(parts, {write, flush, capture})` —— 顺序恒为 `before → 等渲染完 → 抓快照 → after`，**D 之后的提示符绝不进快照**；结束时若本次无可写文本必须先 `flush()` 再抓。stderr 与 stdout 走**同一条** `queueWrite`（晚到的 stderr 也进本次快照）。快照只依赖 `instance.write(data, callback)` 的 promise，禁 setTimeout。
 - **已删除的旧残留（2026-09-04，勿加回）**：`commandAdaptOutput` / `command_adapt_output` 命令、`ContainerTable.tsx`、`StructuredTables.tsx`、`ReadableOutputView.tsx` 与 `CommandResultPanel.readable` 分支。终端工具栏/菜单文案统一为**命令结果**（不是"结构化结果"）。字体：`--font-terminal`（xterm）与 `--font-command-output`（结果快照/JSON 文本）同栈，UI 仍用 `--font-ui`。
 - **实现链路（勿回退）**：`TerminalView`（marker 注册 + `write` callback FIFO 后抓快照 + captureNow 兜底）→ `TerminalCommandCoordinator`（render rendezvous：`done && !matchPending && !renderPending` 才 `tryEmit` —— **缺 `session.done` 守卫会提前 emit 慢命令的空结果**）→ `TerminalResultDrawer` → `TerminalSnapshotView`（`<pre w-max whitespace-pre>` 不折行横滚；RawStreamView 走 stdout/stderr）。`commandAdaptOutput` API 定义保留但**零调用方**（符合终端不碰适配器）。
+
+## 品牌资产（2026-09-04 定稿）
+- **唯一 Logo 源文件 = `public/logo.png`**。全套图标由 `pnpm tauri icon public/logo.png` 生成到 `src-tauri/icons/`（52 个：ico/icns/png/StoreLogo/Square*/android/ios）；`tauri.macos.conf.json` 无独立 icon（继承 bundle）。favicon = `/logo.png`；头部左上角 `AppTopBar` 常驻 `<img src="/logo.png">`（18px，`pointer-events-none` → 点 Logo 拖窗口）。
+- 旧 Logo 文件 `app-icon.svg`、`public/tauri.svg`、`public/vite.svg` **已删除**（当时全仓零引用）。dist 里能取到 `/logo.png` 依赖 vite 默认 publicDir（未覆盖）。
+- 坑：`public/` 曾整体未跟踪，新增 logo 要 `git add`；`delete_file` 删受版本控制文件常卡审批弹窗 → 用 `git rm`。
 
 ## 技术要点
 - russh 0.63：`check_server_key` 必须实现；ProxyJump `into_stream→connect_stream`，跳板 handle 保活。`pnpm tauri dev` 才实时；改前端后必须 pnpm build+cargo build 重嵌 dist。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileKind, isEditableKind } from "./file-kind";
+import { fileKind, isEditableKind } from "../file-kind";
 
 const file = (name: string, path?: string) => fileKind({ name, kind: "file", path });
 const dir = (name: string, path?: string) => fileKind({ name, kind: "directory", path });

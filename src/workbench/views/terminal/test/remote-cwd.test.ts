@@ -9,7 +9,7 @@ import {
   parseOsc7,
   resolveCd,
   unquoteArgument,
-} from "./remote-cwd";
+} from "../remote-cwd";
 
 /**
  * cwd 是"补全在哪儿列目录"的依据 —— 错了整份候选就错了，所以：

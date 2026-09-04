@@ -22,7 +22,7 @@ const {
   MONITOR_INTERVAL_MS,
   maxSamplesFor,
   totalThroughput,
-} = await import("./monitor-store");
+} = await import("../monitor-store");
 
 function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
   return {

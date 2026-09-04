@@ -15,7 +15,7 @@ import { useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { WorkbenchPane } from "@/workbench/types";
 import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
-import { ServerListTree } from "./ServerListTree";
+import { ServerListTree } from "../ServerListTree";
 import { ModuleServerSidebar } from "@/workbench/module-server-sidebar";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

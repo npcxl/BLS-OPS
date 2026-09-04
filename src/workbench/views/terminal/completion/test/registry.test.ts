@@ -2,18 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import type { NginxContainer, NginxEnvironment } from "@/api/types/environment";
 import type { RemoteFileEntry } from "@/api/ops-api";
-import { defaultProviders, providerFor, resolveCompletions } from "./registry";
-import { parseLine } from "./path-input";
-import { createRemoteDirectoryProvider } from "./providers/remote-directory";
-import { createDockerResourceProvider, resourceKindAt } from "./providers/docker-resource";
-import { createServiceProvider, isUnitPosition } from "./providers/service";
-import { createProcessProvider } from "./providers/process";
-import { createFileProvider } from "./providers/file";
-import { createKnowledgeProvider, setKnowledgeSearcher } from "./providers/knowledge";
+import { defaultProviders, providerFor, resolveCompletions } from "../registry";
+import { parseLine } from "../path-input";
+import { createRemoteDirectoryProvider } from "../providers/remote-directory";
+import { createDockerResourceProvider, resourceKindAt } from "../providers/docker-resource";
+import { createServiceProvider, isUnitPosition } from "../providers/service";
+import { createProcessProvider } from "../providers/process";
+import { createFileProvider } from "../providers/file";
+import { createKnowledgeProvider, setKnowledgeSearcher } from "../providers/knowledge";
 import type { CommandSearchHit } from "@/api/ops-api";
-import { createEnvironmentProvider } from "./providers/environment";
-import { invalidateDirectoryCache } from "./remote-listing";
-import type { CompletionContext } from "./types";
+import { createEnvironmentProvider } from "../providers/environment";
+import { invalidateDirectoryCache } from "../remote-listing";
+import type { CompletionContext } from "../types";
 
 /**
  * 路由测试：**同一行、不同光标位置必须落到不同的 Provider**。
@@ -234,7 +234,7 @@ describe("environment provider", () => {
     provider.complete(ctx("nginx", 5, { environment: env }), parseLine("nginx", 5));
     // 模拟用户选了第二个容器。
     const { rememberNginxContainer, forgetNginxContainer } = await import(
-      "./providers/environment"
+      "../providers/environment"
     );
     rememberNginxContainer("s1", "b-nginx");
     const result = await provider.complete(

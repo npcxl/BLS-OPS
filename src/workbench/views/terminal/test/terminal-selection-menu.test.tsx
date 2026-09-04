@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
-import { TerminalSelectionMenu, clampMenuPosition } from "./terminal-selection-menu";
+import { TerminalSelectionMenu, clampMenuPosition } from "../terminal-selection-menu";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

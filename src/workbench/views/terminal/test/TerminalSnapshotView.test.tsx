@@ -1,8 +1,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalSnapshotView } from "./TerminalSnapshotView";
-import type { CapturedResult } from "./TerminalCommandCoordinator";
+import { TerminalSnapshotView } from "../TerminalSnapshotView";
+import type { CapturedResult } from "../TerminalCommandCoordinator";
 
 // React 19 + vitest：需要显式声明 act 环境（见项目既有约定）。
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

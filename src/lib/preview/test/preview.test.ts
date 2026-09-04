@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { strToU8, zipSync } from "fflate";
 
-import { buildPreview, decodeText, extensionOf } from ".";
-import { listArchive, UnsupportedArchiveError } from "./archive";
-import { parseDocx } from "./docx";
-import { parsePptx } from "./pptx";
-import { parseXlsx } from "./xlsx";
-import { hexDump, sniffType } from "./hex";
-import { attr, decodeXmlEntities, findTags, nextElement } from "./xml";
+import { buildPreview, decodeText, extensionOf } from "..";
+import { listArchive, UnsupportedArchiveError } from "../archive";
+import { parseDocx } from "../docx";
+import { parsePptx } from "../pptx";
+import { parseXlsx } from "../xlsx";
+import { hexDump, sniffType } from "../hex";
+import { attr, decodeXmlEntities, findTags, nextElement } from "../xml";
 
 /**
  * Fixtures are built with fflate from the real OOXML part layout, so these

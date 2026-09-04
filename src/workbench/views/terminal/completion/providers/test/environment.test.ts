@@ -8,7 +8,7 @@ import {
   forgetNginxContainer,
   nginxCommands,
   rememberNginxContainer,
-} from "./environment";
+} from "../environment";
 
 /**
  * 环境驱动的建议：同一句 `nginx`，在不同服务器上必须给出**不同且都能跑**的

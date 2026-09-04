@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CompletionScheduler, DEBOUNCE_MAX_MS, DEBOUNCE_MIN_MS } from "./scheduler";
-import type { CompletionContext, CompletionResult } from "./types";
+import { CompletionScheduler, DEBOUNCE_MAX_MS, DEBOUNCE_MIN_MS } from "../scheduler";
+import type { CompletionContext, CompletionResult } from "../types";
 
 /**
  * 调度器是"补全和输入对不上"的防线：

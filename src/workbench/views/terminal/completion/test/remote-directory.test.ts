@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RemoteFileEntry } from "@/api/ops-api";
-import { createRemoteDirectoryProvider } from "./providers/remote-directory";
-import { createFileProvider } from "./providers/file";
-import { invalidateDirectoryCache, setDirectoryLister } from "./remote-listing";
-import { parseLine } from "./path-input";
-import type { CompletionContext, CompletionResult, ParsedLine } from "./types";
+import { createRemoteDirectoryProvider } from "../providers/remote-directory";
+import { createFileProvider } from "../providers/file";
+import { invalidateDirectoryCache, setDirectoryLister } from "../remote-listing";
+import { parseLine } from "../path-input";
+import type { CompletionContext, CompletionResult, ParsedLine } from "../types";
 
 /**
  * cd 目录补全的行为测试（列目录是唯一的 I/O，这里整体替换掉）。

@@ -5,7 +5,7 @@ import {
   groupInfrastructure,
   instanceProductLabel,
   partitionInstances,
-} from "./classify";
+} from "../classify";
 
 /** 构造一个最小实例；role 传 undefined 模拟旧快照缺字段。 */
 function instance(overrides: Partial<DeploymentInstance> & { id: string }): DeploymentInstance {

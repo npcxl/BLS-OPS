@@ -2,12 +2,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COPY_NOTICE_MS } from "@/components/ui/copy-feedback";
-import { KeyValueView } from "./KeyValueView";
-import { LogView } from "./LogView";
-import { MetricsView } from "./MetricsView";
-import { RawView } from "./RawView";
-import { TableView } from "./TableView";
-import { TreeView } from "./TreeView";
+import { KeyValueView } from "../KeyValueView";
+import { LogView } from "../LogView";
+import { MetricsView } from "../MetricsView";
+import { RawView } from "../RawView";
+import { TableView } from "../TableView";
+import { TreeView } from "../TreeView";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

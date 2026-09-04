@@ -5,7 +5,7 @@ import {
   fillPlaceholder,
   hasUnresolvedPlaceholder,
   placeholdersIn,
-} from "./complete";
+} from "../complete";
 
 describe("占位符识别", () => {
   it("识别 unit 占位符并归一成参数种类", () => {

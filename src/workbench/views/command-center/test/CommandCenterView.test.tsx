@@ -39,7 +39,7 @@ vi.mock("@/api/ops-api", async (importOriginal) => {
 });
 
 import { opsApi } from "@/api/ops-api";
-import { CommandCenterView } from "./CommandCenterView";
+import { CommandCenterView } from "../CommandCenterView";
 
 const searchMock = vi.mocked(opsApi.commandSearch);
 const executeMock = vi.mocked(opsApi.commandExecute);

@@ -8,7 +8,7 @@ import {
   mergeApplications,
   removeConfirmedLocally,
   upsertConfirmedLocally,
-} from "./merge-applications";
+} from "../merge-applications";
 
 /** 构造一个最小候选（path 即身份）。 */
 function candidate(overrides: Partial<ProjectCandidate> & { path: string }): ProjectCandidate {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeMatchIndex } from "./cm-search";
+import { activeMatchIndex } from "../cm-search";
 
 /**
  * 只测纯函数部分。`matchRanges` / apply / replace 需要真实 EditorView，

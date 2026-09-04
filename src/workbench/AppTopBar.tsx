@@ -44,6 +44,15 @@ export function AppTopBar() {
         mac ? "pl-[76px] pr-3" : "pl-3",
       )}
     >
+      {/* 应用 Logo（public/logo.png，与 exe/任务栏/网页图标同源）：最左侧常驻。
+          pointer-events-none 让点击穿透到整条拖拽栏 —— 点 Logo = 拖动窗口。 */}
+      <img
+        src="/logo.png"
+        alt="BLS-OPS"
+        data-tauri-drag-region="false"
+        className="pointer-events-none h-[24px] w-[24px] shrink-0 rounded-[5px]"
+        draggable={false}
+      />
       {canExpand && (
         <button
           type="button"

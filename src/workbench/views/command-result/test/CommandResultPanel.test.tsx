@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { CommandExecutionResult } from "@/api/ops-api";
-import { CommandResultPanel } from "./CommandResultPanel";
+import { CommandResultPanel } from "../CommandResultPanel";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => undefined })
 
 import { useDomainStore } from "@/stores/domain-store";
 import type { ServerRecord } from "@/api/types/servers";
-import { WorkbenchHome } from "./WorkbenchHome";
+import { WorkbenchHome } from "../WorkbenchHome";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

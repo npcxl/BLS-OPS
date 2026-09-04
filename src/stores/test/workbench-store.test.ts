@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useWorkbenchStore } from "./workbench-store";
+import { useWorkbenchStore } from "../workbench-store";
 import type { WorkbenchPane } from "@/workbench/types";
 
 /**

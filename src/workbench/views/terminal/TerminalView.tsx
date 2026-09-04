@@ -310,6 +310,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 右键 = 顶部工具栏镜像：终端画布上右键可达被滚动/折叠藏起的顶部功能。 */
   const terminalMenu = useContextMenu();
 
+  /**
+   * 上一次**填入候选之后**的完整行。
+   *
+   * 用于实现"再按一次回车 = 执行"：用户在 `cd o` 上按回车 → 补成 `cd opt/`；
+   * 行内容没再变过就再按回车 → 这次是执行 `cd opt/`。
+   *
+   * 不能只靠"候选与已输入一致才执行"来判断：目录补完后行以 `/` 结尾，
+   * 面板会立刻去列下一层（异步），**执行还是继续补全取决于网络快慢** ——
+   * 同样的操作有时执行有时往下钻，这就是"交互不顺畅"的来源。用"行内容
+   * 自上次填入后是否变过"判定，结果与网络时序无关。
+   */
+  const filledDraftRef = useRef<string | null>(null);
+
   /** 关闭单个结果 Tab：优先选择右侧相邻，没有则选左侧。 */
   const closeResultTab = (id: string) => {
     setCommandResults((current) => {
@@ -335,6 +348,24 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   };
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 把焦点还给终端（**只在焦点真的丢了的时候**）。
+   *
+   * 为什么需要：xterm 接收按键的是它的隐藏 `textarea`。一旦焦点落到
+   * `body`（浮层里的 `<button>` 被 React 卸载时浏览器就会这么干），xterm
+   * 进入失焦态 —— 光标停止闪烁、变成空心框，看起来就是"光标消失了"，
+   * 而且接下来敲的字也不进终端。
+   *
+   * 焦点还在时**不做任何事**：避免无谓的 focus 事件（会重置光标闪烁节奏）。
+   */
+  const refocusTerminal = useCallback(() => {
+    const instance = terminalRef.current;
+    if (!instance) return;
+    const textarea = containerRef.current?.querySelector("textarea");
+    if (document.activeElement === textarea) return;
+    instance.focus();
+  }, []);
   /**
    * 是否处于 alternate screen（vim / top / less …）。这些程序自己接管整屏，
    * 此时任何提示都是噪音，且"当前行"也不再是 shell 命令行。
@@ -674,6 +705,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const next = editor.current;
       setDraft(next);
       setDismissedDraft(next);
+      // 补完的行记下来：下一次回车若行内容没变，就是执行（见
+      // `filledDraftRef` 的说明）。
+      filledDraftRef.current = next;
       updateSuggestAnchor();
       return "filled";
     },
@@ -717,6 +751,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       editor.feed(keys);
       const next = editor.current;
       setDraft(next);
+      // 记下"这次补完的行"：下一次回车若行内容没变，就是执行（见下方
+      // `filledDraftRef` 与按键处理）。
+      filledDraftRef.current = next;
       // 目录继续提示下一层；其它候选填完就不再打扰（第二次 Enter 才能执行）。
       if (item.type !== "directory") setDismissedDraft(next);
       updateSuggestAnchor();
@@ -734,6 +771,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const submitCurrentLine = useCallback(() => {
     const editor = lineEditorRef.current;
     const command = editor?.current.trim() ?? "";
+    // 提交后行清空，"上次填入的行"就作废了 —— 留着会让下一次补全被
+    // 误判成"执行"。
+    filledDraftRef.current = null;
     if (!command) return;
     // 与真实回车一致：`feed("\r")` 提交并清空行编辑器。
     editor?.feed("\r");
@@ -757,6 +797,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     (item: CompletionItem) => {
       const editor = lineEditorRef.current;
       if (!editor) return;
+      // 走的是"补完即执行"，行会清空 —— 作废"上次填入的行"。
+      filledDraftRef.current = null;
 
       if (item.hit) {
         const hit = item.hit;
@@ -879,27 +921,118 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           setActiveIndex(
             Math.min(Math.max(activeIndex + action.delta, 0), items.length - 1),
           );
+          refocusTerminal();
           return true;
         }
         case "accept": {
           event.preventDefault();
           const hit = items[activeIndex];
-          if (!hit) return true;
+          if (!hit) {
+            refocusTerminal();
+            return true;
+          }
+          // 上一次回车已经补过、之后用户一个字符都没再敲 → 这次回车就是
+          // 执行。判据是"行内容自上次填入后变没变"，与网络快慢无关
+          // （详见 `filledDraftRef` 的注释）。
+          const currentLine = lineEditorRef.current?.current ?? "";
+          if (filledDraftRef.current !== null && filledDraftRef.current === currentLine) {
+            filledDraftRef.current = null;
+            submitCurrentLine();
+            refocusTerminal();
+            return true;
+          }
           const outcome = applySuggestion(hit);
           // 候选与已输入内容一致 → 这次"填入"是空操作，回车**必须**执行
           // 命令，否则面板会一直吞掉回车（表现为命令没跑、结果面板不出现）。
           if (outcome === "noop") submitCurrentLine();
+          // 填入后面板通常会消失（DOM 卸载）→ 焦点可能被丢回 body，
+          // 光标会随之"消失"。这里立刻把它还给终端，交互才连贯。
+          refocusTerminal();
           return true;
         }
         case "dismiss": {
           event.preventDefault();
           // 关闭面板：记录当前草稿，draft 变化前面板不再出现。
           setDismissedDraft(draft);
+          refocusTerminal();
           return true;
         }
       }
     };
   });
+
+  // 面板是**真正**渲染出来的条件（与下方 JSX 保持一致）：
+  // TerminalSuggest 自己也会在"没有候选也没有说明"时返回 null。
+  const suggestPanelVisible =
+    suggestionsEnabled &&
+    !paramPicker &&
+    (suggestions.items.length > 0 || Boolean(suggestions.notice));
+
+  /**
+   * 面板消失 → 焦点还给终端（**真正的修复点**）。
+   *
+   * 按键处理里那次同步 `refocusTerminal()` 救不了这个场景：React 的状态
+   * 更新是异步的，面板 DOM 要等提交之后才卸载；同步时机上焦点还在
+   * textarea，"检查→没丢→不管"，紧接着 DOM 卸载才把焦点丢回 body。
+   *
+   * 所以必须在**提交之后**（这里）捞回来。不捞的后果：xterm 进入失焦态 →
+   * 光标停止闪烁、变空心，用户看到的就是"回车选中提示后光标消失了"，
+   * 而且接下来敲的字也不再进终端。
+   */
+  /**
+   * 浮层关闭 → 把焦点还给终端。
+   *
+   * 为什么需要：这些浮层打开时焦点就不在终端了（二级选择器有 `autoFocus`
+   * 的筛选框、对话框聚焦确认按钮、历史/文件面板同理）。关闭时浏览器把焦点
+   * 丢回 `body` —— xterm 进入失焦态：光标停止闪烁、变空心（用户说的"光标
+   * 消失了"），而且**接下来敲的字也不再进终端**。
+   *
+   * 每个浮层**独立**追踪"开 → 关"，不能合并成一个"任一浮层打开"的布尔
+   * 量：文件面板默认就是展开的，合并后它会一直为真，把二级选择器之类的
+   * 关闭事件整个挡掉。
+   */
+  const overlays = {
+    paramPicker: Boolean(paramPicker),
+    paramHint: Boolean(paramHint),
+    runConfirm: Boolean(runConfirm),
+    rerunConfirm: Boolean(rerunConfirm),
+    selectionMenu: Boolean(selectionMenu),
+    history: historyOpen,
+    files: filesOpen,
+  };
+  const overlayStatesRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    const previous = overlayStatesRef.current;
+    overlayStatesRef.current = overlays;
+    // 渲染之间**没有**浮层状态数据 → 首次渲染，不处理。
+    if (Object.keys(previous).length === 0) return;
+    // 关键：React 的状态更新是异步的，浮层 DOM 要等这次提交之后才卸载。
+    // 所以必须在**提交之后**（这里）捞，同步时机上焦点还在 textarea，
+    // "检查→没丢→不管"，紧接着 DOM 卸载才把焦点丢回 body。
+    const closed = (Object.keys(overlays) as (keyof typeof overlays)[]).some(
+      (key) => previous[key] && !overlays[key],
+    );
+    if (closed) refocusTerminal();
+  }, [
+    overlays.paramPicker,
+    overlays.paramHint,
+    overlays.runConfirm,
+    overlays.rerunConfirm,
+    overlays.selectionMenu,
+    overlays.history,
+    overlays.files,
+    filesOpen,
+    historyOpen,
+    refocusTerminal,
+  ]);
+
+  const panelVisibleRef = useRef(false);
+  useEffect(() => {
+    const wasVisible = panelVisibleRef.current;
+    panelVisibleRef.current = suggestPanelVisible;
+    // 二级选择器打开时它自己接管键盘（window 捕获阶段），不能把焦点抢回来。
+    if (wasVisible && !suggestPanelVisible && !paramPicker) refocusTerminal();
+  }, [suggestPanelVisible, paramPicker, refocusTerminal]);
 
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
@@ -1059,6 +1192,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         void opsApi.sshInput(sessionId, data).catch(() => undefined);
         return;
       }
+      // 用户真的按了回车（行已提交）→ "上次填入的行"作废，避免下一次
+      // 补全被误判成执行。
+      if (commands.length > 0) filledDraftRef.current = null;
       // 粘贴多条命令时每条都记历史，但只捕获最后一条（它才会真正产生结果）。
       for (const command of commands) commandEntryRef.current.note(command);
       const submitted = commands[commands.length - 1];

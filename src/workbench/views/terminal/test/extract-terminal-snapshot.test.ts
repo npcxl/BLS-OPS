@@ -3,7 +3,7 @@ import {
   extractTerminalSnapshot,
   type SnapshotBuffer,
   type SnapshotBufferLine,
-} from "./extract-terminal-snapshot";
+} from "../extract-terminal-snapshot";
 
 function line(text: string, isWrapped = false): SnapshotBufferLine {
   // 模拟 xterm：translateToString(true) 会裁掉行尾空白（未写入的单元格）。

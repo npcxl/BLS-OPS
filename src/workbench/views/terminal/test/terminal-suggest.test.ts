@@ -4,7 +4,7 @@ import {
   keysForReplace,
   resolveSuggestKey,
   SUGGEST_GAP,
-} from "./terminal-suggest";
+} from "../terminal-suggest";
 
 const BS = "\x7f"; // Backspace
 

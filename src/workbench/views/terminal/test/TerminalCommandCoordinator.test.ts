@@ -4,8 +4,8 @@ import {
   NO_MARKER_FAILSAFE_MS,
   TerminalCommandCoordinator,
   type CapturedResult,
-} from "./TerminalCommandCoordinator";
-import { planCommandSubmission } from "./command-plan";
+} from "../TerminalCommandCoordinator";
+import { planCommandSubmission } from "../command-plan";
 
 function hit(overrides: Partial<CommandSearchHit> = {}): CommandSearchHit {
   return {

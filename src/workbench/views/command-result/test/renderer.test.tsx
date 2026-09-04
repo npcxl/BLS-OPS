@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // React 19：act() 需要这个全局标记（与项目内其他组件测试一致）。
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { CommandResultRenderer } from "./CommandResultRenderer";
-import { numericTone, parseStructuredResult } from "./model";
-import type { StructuredCommandResult } from "./model";
+import { CommandResultRenderer } from "../CommandResultRenderer";
+import { numericTone, parseStructuredResult } from "../model";
+import type { StructuredCommandResult } from "../model";
 
 /** 构造一个最小结果（其余字段走默认）。 */
 function result(overrides: Partial<StructuredCommandResult>): StructuredCommandResult {

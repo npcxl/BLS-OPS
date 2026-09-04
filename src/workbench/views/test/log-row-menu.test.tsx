@@ -24,7 +24,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: async () => () => undefined,
 }));
 
-import { LogCenterView } from "./LogCenterView";
+import { LogCenterView } from "../LogCenterView";
 import type { WorkspaceTab } from "@/workbench/types";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

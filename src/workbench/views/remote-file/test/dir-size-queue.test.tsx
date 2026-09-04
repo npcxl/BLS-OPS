@@ -10,7 +10,7 @@ import {
   pendingWatchPaths,
   useDirSizeQueue,
   useDirSizeWatchdog,
-} from "./use-dir-size-queue";
+} from "../use-dir-size-queue";
 
 // React 19 requires this flag for act() outside react-dom/test-utils.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

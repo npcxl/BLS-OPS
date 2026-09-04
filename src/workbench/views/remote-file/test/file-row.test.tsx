@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { DirectorySizeResult, RemoteFileEntry } from "@/api/ops-api";
 import { useDirSizeStore } from "@/stores/dir-size-store";
-import { FileRow } from "./FileRow";
+import { FileRow } from "../FileRow";
 
 // React 19 requires this flag for act() outside react-dom/test-utils.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

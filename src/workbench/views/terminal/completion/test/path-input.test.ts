@@ -9,7 +9,7 @@ import {
   quotePathSegment,
   tokenize,
   unescapePath,
-} from "./path-input";
+} from "../path-input";
 
 /**
  * cd 补全的正确性全在这些纯函数里：

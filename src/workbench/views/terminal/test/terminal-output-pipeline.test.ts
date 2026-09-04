@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { splitAtOutputEnd, writeOutputParts, type OutputWriteDeps } from "./terminal-output-pipeline";
-import type { BoundaryPart } from "./command-boundary";
+import { splitAtOutputEnd, writeOutputParts, type OutputWriteDeps } from "../terminal-output-pipeline";
+import type { BoundaryPart } from "../command-boundary";
 
 /**
  * 假的 xterm：write 是**异步**的（对应 `instance.write(data, callback)` 的

@@ -19,8 +19,8 @@ const win = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => win }));
 
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { AppTopBar } from "./AppTopBar";
-import { CONTEXT_SIDEBAR_MODULES } from "./module-server-sidebar";
+import { AppTopBar } from "../AppTopBar";
+import { CONTEXT_SIDEBAR_MODULES } from "../module-server-sidebar";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -66,6 +66,15 @@ afterEach(() => {
 });
 
 describe("AppTopBar 侧边栏展开入口", () => {
+  it("左上角常驻应用 Logo（public/logo.png，与 exe/网页图标同源）", async () => {
+    await render("ssh", false);
+    const logo = holder.querySelector<HTMLImageElement>('header img[src="/logo.png"]');
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute("alt")).toBe("BLS-OPS");
+    // 点击穿透到整条拖拽栏：点 Logo = 拖动窗口。
+    expect(logo?.className).toContain("pointer-events-none");
+  });
+
   it("shows the expand button when a collapsed module has a rail", async () => {
     await render("ssh", true);
     expect(expandButton()).not.toBeNull();

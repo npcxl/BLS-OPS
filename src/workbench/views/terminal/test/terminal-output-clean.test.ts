@@ -8,7 +8,7 @@ import {
   stripAnsi,
   stripCommandEcho,
   stripTrailingPrompt,
-} from "./terminal-output-clean";
+} from "../terminal-output-clean";
 
 describe("ANSI 控制序列清理", () => {
   it("去掉颜色码但保留文本", () => {

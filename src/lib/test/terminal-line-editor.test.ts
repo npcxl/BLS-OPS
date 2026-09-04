@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LineEditor } from "./terminal-line-editor";
+import { LineEditor } from "../terminal-line-editor";
 
 describe("LineEditor", () => {
   it("accumulates printable input and submits on Enter", () => {

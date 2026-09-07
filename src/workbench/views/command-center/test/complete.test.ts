@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canAutoFill,
+  commandBody,
   completionKeys,
   fillPlaceholder,
   hasUnresolvedPlaceholder,
@@ -65,6 +66,23 @@ describe("占位符拦截（安全底线）", () => {
     expect(canAutoFill("systemctl status <unit>")).toBe(true);
     expect(canAutoFill("journalctl --since <时间>")).toBe(false);
     expect(canAutoFill("docker ps -a")).toBe(false);
+  });
+});
+
+describe("命令主体（手填参数场景）", () => {
+  it("取第一个占位符之前的字面部分，保留尾随空格", () => {
+    expect(commandBody("unzip <包名.zip> -d <目标目录>")).toBe("unzip ");
+    expect(commandBody("docker cp <容器>:<路径> .")).toBe("docker cp ");
+  });
+
+  it("主体绝不含占位符（可安全写入 shell）", () => {
+    const body = commandBody("unzip <包名.zip> -d <目标目录>");
+    expect(hasUnresolvedPlaceholder(body)).toBe(false);
+  });
+
+  it("无占位符返回整条语法，起始即占位符返回空串", () => {
+    expect(commandBody("docker ps -a")).toBe("docker ps -a");
+    expect(commandBody("<容器> logs")).toBe("");
   });
 });
 

@@ -82,6 +82,7 @@ export default {
   "Close all": "关闭全部",
   "Expand results panel": "展开结果面板",
   "Collapse results panel": "折叠结果面板",
+  "Drag to resize the results panel (double-click to reset)": "拖动调整结果面板高度（双击恢复默认）",
   "Close result for {{command}}": "关闭 {{command}} 的结果",
   "Close results panel (results are kept in history)": "关闭结果面板（结果保留在历史中）",
 
@@ -156,4 +157,7 @@ export default {
   "View port mapping": "查看端口映射",
   "View config mounts": "查看配置挂载",
   "View run status": "查看运行状态",
+
+  // —— completion/providers/environment：容器归属标签 ——
+  "Compose {{project}}/{{service}}": "Compose {{project}}/{{service}}",
 } as const;

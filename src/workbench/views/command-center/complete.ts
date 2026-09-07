@@ -93,6 +93,18 @@ export function canAutoFill(syntax: string): boolean {
 }
 
 /**
+ * 手填参数场景下能安全写进 shell 的**命令主体**：第一个占位符之前的字面部分。
+ *
+ * 例：`unzip <包名.zip> -d <目标目录>` → `unzip `（保留一个空格，用户
+ * 接着补文件名）。占位符绝不进 shell，所以只取字面前缀；
+ * 无占位符时返回整条语法，起始即占位符时返回空串。
+ */
+export function commandBody(syntax: string): string {
+  const idx = syntax.indexOf("<");
+  return idx >= 0 ? syntax.slice(0, idx) : syntax;
+}
+
+/**
  * 把第一个 `token` 占位符替换成 `value`；其余占位符原样保留（供下一轮继续填）。
  *
  * `value` 为空或含空白时不做替换 —— 服务名/容器名/路径都不该带空格，

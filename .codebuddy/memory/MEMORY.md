@@ -27,13 +27,15 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **三个禁手**：① 禁配 `parseMissingKeyHandler`（会覆盖已插值结果，en 下显示 `{{host}}`）；② 禁配 `keySeparator`／改嵌套结构（含 `.`/`:` 的 key 依赖 `ignoreJSONStructure` 扁平命中）；③ 通用词只进 common.ts。
 - 模式：模块常量（MODULE_LABELS/RISK_META/NGINX_KIND_LABELS/fileKind label/hex MAGIC…）**存英文 key、渲染处 t()**；含插值句子在**生成点** `i18n.t()`；纯 TS 用 `import { i18n } from "@/i18n"`。
 - 不翻：Rust 错误消息（透传）、知识库 Rust catalog 的 title、xterm `write` 内容、远程输出、注释/console/it 名。
+- **2026-09-07 体检（勿忘）**：zh-CN 728 key，但 `locales/zh-CN/{commandCenter,docker,monitor,nginx,projects}.ts` **是空壳（`export default {}`）**，并行代理分工时没填 → 代码里 197 个 `t()` key 无中文，中文界面混英文（project 82 / server-monitor 54 / command-result 34 / command-center 13 / 其它 14）。另外 8 种非中文语言只有 common+workbench 共 95 key（覆盖率 13%），其余 87% 回退英文。
+- 已知硬编码中文（未抽取）：`views/ai/AiPlaceholder.tsx` 整块、`settings-context-sidebar.tsx` 的"正在加载…"、`lib/format.ts` 时长（"X 天 X 小时"）、`terminal/completion/providers/environment.ts` 的 note（"会改变运行中的服务状态，执行前请确认" 等）。
+- 复查 i18n 的手段（无 rg 可用）：PowerShell 正则扫 `t("...")` 字面量 key 与语言文件 key 做集合 diff；扫硬编码中文要跳过 `//` 起首行、`console.*`、`{/* */}` 块。
 - 测试跑 en：断言写英文 key 字面量；mock 后端错误保持中文；渲染类测试顶部加 `import "@/i18n"`。
 
 ## 版本与发布（勿回退）
 - `package.json` 是版本唯一输入；改版本只走 `pnpm version:bump patch|minor|major|X.Y.Z`（`scripts/bump-version.mjs`），禁止手改四处。
-- pnpm 版本**只**写在 `package.json` 的 `packageManager` 字段；`pnpm/action-setup@v4` 一律不带 `with: version:`（写了会与 packageManager 冲突直接报错）。
-- `pnpm check:versions`（`scripts/check-versions.mjs`）同时校验四处版本一致 + 前后端插件版本同号。
-- pnpm 固定 9.15.9（`packageManager` 字段）；改依赖后必须 `pnpm install --lockfile-only`，否则 CI `--frozen-lockfile` 会失败。
+- pnpm 固定 9.15.9，版本**只**写在 `package.json` 的 `packageManager` 字段；`pnpm/action-setup@v4` 一律不带 `with: version:`（写了冲突直接报错）。改依赖后必须 `pnpm install --lockfile-only`，否则 CI `--frozen-lockfile` 会失败。
+- `pnpm check:versions`（`scripts/check-versions.mjs`）校验四处版本一致 + 前后端插件版本同号且用 `=` 钉死。
 - 发布只能走 `.github/workflows/release.yml`：**单工作流**完成 bump→提交→tag→构建（GITHUB_TOKEN 推送不触发其它工作流）；draft release 人工 Publish 后才进 `latest.json`。
 
 ## P5.1 自动更新（勿回退）
@@ -41,7 +43,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 状态机唯一入口 `src/stores/updater-store.ts`；组件不得自己调 `check()`；客户端接口 `src/lib/updater/updater-client.ts`（可注入假实现做测试）。
 - 更新签名（minisign，私钥只在 GitHub Secrets）≠ Windows Authenticode 代码签名（未做）。
 - 重启前必须过 `src/workbench/updater/update-guard.ts`：活动 SSH / 命令 / 传输 / 未保存文件 / 长任务任一存在即弹确认；取消后保持 `restart_required`，不重复下载。
-- 版本四处一致由 `scripts/check-versions.mjs`（`pnpm check:versions`）把关；JS 与 Rust 插件版本号同号并用 `=` 钉死。
+- 版本四处一致由 `pnpm check:versions` 把关（见"版本与发布"）。
 - 发布走 `.github/workflows/release.yml`：tag 触发 → 校验 → draft release（`latest.json` 只在 publish 后生效）。详见 `docs/p5.1-updater.md`。
 
 ## UI 组件约定
@@ -49,6 +51,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 复制一律 `src/lib/clipboard.ts::copyText()`；点击复制共用 `components/ui/copy-feedback.tsx`（禁自写计时器）；测试断言用 `data-line`。
 - 窗口按钮：macOS 原生（`tauri.macos.conf.json`，顶栏留 `pl-[76px]`）；Win/Linux 自绘 `src/workbench/window-controls.tsx`；平台判定 `src/lib/platform.ts::isMacOS()`（函数非常量）。Tauri 平台配置按 JSON Merge Patch 合并、数组整体替换。
 - 浮层纯白实色（`.glass-panel`）；**浮层限高用 `calc(vh)`**（max-h-full+padding 百分比链在 WebView2 不生效）；CSS 禁写死十六进制背景色，用 `--surface-*/--app` 令牌。
+- 面板拖拽统一模式（左右侧栏 + 终端结果抽屉）：mousedown → window mousemove/mouseup，把手 hover/drag 高亮 `bg-accent/15|25`，双击恢复默认；**内联 height 会被 Tailwind min-h 压过（CSS 规范），高度三件套必须全走 style**。
 - lucide v1.x：`AlertTriangle→TriangleAlert`、`Loader→LoaderCircle`；`arr.at(-1)` 不可用（lib<es2022），用 `arr[len-1]`。
 - xterm：测量容器禁 padding（FitAddon 裁行）；`globals.css` 禁给 `.xterm` user-select（破坏 IME）；非活动 tab `inert`。
 - 文件图标：`src/lib/file-kind.ts`（`fileKind({name,kind,path?})`→iconKey）+ `src/lib/icons/vscode-file-icons.ts`（生成文件，`pnpm icons:regen`）+ @iconify/react 离线渲染，禁联网。
@@ -62,6 +65,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 焦点归还：`refocusTerminal()` 只在 activeElement≠textarea 时 focus；**commit 后 effect 里捞焦点**；每个浮层独立开关，禁合并布尔量。
 - 缓存纪律：目录 10s / Docker 15s / 服务 20s / 环境 60s；写命令后目录缓存失效。
 - 结果链路：TerminalView→TerminalCommandCoordinator（render rendezvous，缺 session.done 守卫会提前 emit）→TerminalResultDrawer→TerminalSnapshotView（xterm 快照方案；400ms 静默 fallback 标 boundaryReliable=false）。
+- 结果抽屉高度可拖拽（2026-09-07）：把手在抽屉顶边，上限 = 默认 38vh，**拖到 ≤140px 自动收起**（不是硬墙）；折叠态上拖 ≥16px 直接展开；双击恢复默认。状态 `drawerHeight` 在 `use-terminal-results.ts`（null=默认 38vh），不持久化。
 - 增强终端唯一开关：`bls-ops.terminal.enhanced`（**默认开**，只有用户主动关过存 `"0"` 才关；读写在 `terminal-preferences.ts`）；字体 `bls-ops.terminal.font`。
 - `TerminalView.tsx`（1084 行）已拆出同目录模块：`terminal-preferences.ts`、`terminal-phase.ts`、`use-terminal-session.ts`（xterm 生命周期大 effect，依赖只留 hasTarget/sessionId，其余走 hostRef）、`use-ssh-keepalive.ts`、`use-terminal-search.ts`、`use-terminal-results.ts`（结果面板状态 + **唯一提交入口** `execute`）、`terminal-toolbar.tsx`、`terminal-error-banner.tsx`、`use-terminal-menu.ts`（右键 = 工具栏镜像）。改交互逻辑先确定落在哪个 hook。
 

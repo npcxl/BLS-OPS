@@ -14,6 +14,7 @@ import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import {
   canAutoFill,
+  commandBody,
   completionKeys,
   fillPlaceholder,
   hasUnresolvedPlaceholder,
@@ -432,6 +433,29 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const hasPlaceholder = hit.placeholders?.length ?? placeholdersIn(hit.syntax).length > 0;
       if (hasPlaceholder) {
         if (!canAutoFill(hit.syntax)) {
+          // 占位符没有数据源（如 unzip 的 <包名.zip>），开不了选择器 ——
+          // 但不能把用户晾在原地：把命令主体（第一个占位符之前的字面部分）
+          // 填进行里，参数由用户接着手补；可见提示钉在终端**顶部**，
+          // 绝不挡住底部正在输入的命令行。
+          const body = commandBody(hit.syntax);
+          if (draft.startsWith(body)) {
+            // 主体已在行上（参数已补或补到一半）→ 这次"填入"无事可做，
+            // 回车交还执行（noop 口径），绝不在这里吞成死胡同。
+            return "noop";
+          }
+          const keys = completionKeys(draft, body);
+          // 理论不可达（body 不含占位符）；守住：写不进去就不填。
+          if (keys === null) return "blocked";
+          // writeToShell 失败时自己会给可见提示，这里不再重复。
+          if (!writeToShell(keys)) return "blocked";
+          editor.feed(keys);
+          const next = editor.current;
+          setDraft(next);
+          setDismissedDraft(next);
+          // 填完主体后立刻回车 = 执行（与无参候选口径一致，缺参由 bash
+          // 如实报错）；补全参数后再回车同样直接执行。
+          filledDraftRef.current = next;
+          updateSuggestAnchor();
           setParamHint(
             t("This command has parameters that must be filled manually; the command body has been filled in, please complete the rest"),
           );
@@ -1063,12 +1087,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             anchor={suggestAnchor}
           />
         )}
+        {/* 参数提示钉在**顶部**：命令行通常在终端底部，钉底部会正好盖住
+            正在输入的行。整条 pointer-events-none（只有"知道了"可点），
+            顶部那两行终端内容照常可点可选，不干扰正常输入。 */}
         {paramHint && (
-          <div className="absolute bottom-1.5 left-1.5 right-1.5 z-30 flex items-center gap-2 rounded-[8px] border border-warning/40 bg-warning/12 px-2.5 py-1.5 text-11 text-warning">
+          <div className="pointer-events-none absolute left-1.5 right-1.5 top-1.5 z-30 flex items-center gap-2 rounded-[8px] border border-warning/40 bg-warning/12 px-2.5 py-1.5 text-11 text-warning">
             <span className="min-w-0 flex-1 truncate">{paramHint}</span>
             <button
               type="button"
-              className="shrink-0 rounded px-1 text-11 text-warning/80 hover:text-warning"
+              className="pointer-events-auto shrink-0 rounded px-1 text-11 text-warning/80 hover:text-warning"
               onClick={() => setParamHint(null)}
             >
               {t("Got it")}
@@ -1088,6 +1115,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           activeId={results.activeId}
           collapsed={results.drawerCollapsed}
           onToggleCollapse={() => results.setDrawerCollapsed((v) => !v)}
+          height={results.drawerHeight}
+          onHeightChange={results.setDrawerHeight}
           onSelect={results.setActiveId}
           onClose={() => results.setDrawerClosed(true)}
           onCloseTab={results.closeTab}

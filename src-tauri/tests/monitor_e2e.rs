@@ -1343,8 +1343,12 @@ async fn directory_size_never_scans_more_than_two_directories_at_once() {
 /// queued behind it still gets its turn.
 #[tokio::test]
 async fn cancelling_a_queued_directory_size_reports_cancelled() {
+    // du_delay 提到 5s：两个占位扫描在断言窗口内绝不可能完成，"排队中"
+    // 因此是稳定状态——低配/高负载 CI 上取消也必然落在任务还是 Pending 的
+    // 时候。此前用 400ms，负载一高"观察→取消"的间隙里排队任务就可能抢到
+    // 名额并跑完 du，取消晚于完成，断言必挂（本测试曾多次间歇失败）。
     let (addr, handle, _kill, _du) =
-        spawn_monitor_server_with(linux("web-04"), false, Duration::from_millis(400)).await;
+        spawn_monitor_server_with(linux("web-04"), false, Duration::from_secs(5)).await;
     let manager = SshSessionManager::default();
     connect_for_monitoring(&manager, "s1", None, addr.port()).await;
 

@@ -137,6 +137,13 @@ export function useTerminalResults(host: TerminalResultsHost) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
   const [drawerClosed, setDrawerClosed] = useState(false);
+  /**
+   * 结果面板内容区高度（px）；null = 默认 38vh。顶部把手可拖拽调节：
+   * 默认高度（38vh）就是上限，拖到最低会自动收起（交互见 TerminalResultDrawer）。
+   * 放在 hook 里与 collapsed/closed 同层 —— 抽屉因关闭/清空卸载后再出现时，
+   * 高度不无故回到默认。
+   */
+  const [drawerHeight, setDrawerHeight] = useState<number | null>(null);
   /** 重运行前的确认（按真实风险门控，依赖唯一提交入口）。 */
   const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
   /**
@@ -170,6 +177,9 @@ export function useTerminalResults(host: TerminalResultsHost) {
         );
         return;
       }
+      // 命令真正要执行了：手填参数的顶部提示已完成使命（补参前它常驻，
+      // 补完执行后还留着就是过期噪音），在这里一并清掉。
+      setParamHint(null);
       const mode: SubmitMode =
         options?.mode ?? (options?.prefix === undefined ? "full" : "line-ready");
       // 增强终端关着 → 不注入受控标记、不捕获输出（命令照常发往 shell）。
@@ -271,6 +281,8 @@ export function useTerminalResults(host: TerminalResultsHost) {
     setDrawerCollapsed,
     drawerClosed,
     setDrawerClosed,
+    drawerHeight,
+    setDrawerHeight,
     closeTab,
     closeOthers,
     clearAll,

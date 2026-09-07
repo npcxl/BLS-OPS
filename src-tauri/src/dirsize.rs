@@ -17,6 +17,7 @@
 //! directory replays the cached numbers instead of recomputing them.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -191,6 +192,10 @@ async fn wait_cancel(cancel: &watch::Receiver<bool>) {
 /// One in-flight (or finished) computation.
 struct DirectorySizeTask {
     cancel: watch::Sender<bool>,
+    /// 取消意图的权威标志。`watch` 信号负责打断等待/计算；这个标志与
+    /// `state` 的锁配合（见 [`DirectorySizeTask::finish`]），把
+    /// "取消后绝不报 completed" 变成无竞态保证。
+    cancelled: AtomicBool,
     state: Mutex<DirectorySizeResult>,
 }
 
@@ -199,12 +204,48 @@ impl DirectorySizeTask {
         self.state.lock().unwrap().clone()
     }
 
+    /// 写入中间状态（computing）。
+    ///
+    /// 终态是粘性的：`cancel()` 可能已把排队中的任务直接落成 `Cancelled`，
+    /// 此时迟到的 `computing` 不许再把它抹回"未完成"。
     fn update(&self, emit: &Option<EmitFn>, next: DirectorySizeResult) {
-        *self.state.lock().unwrap() = next.clone();
-        // A fire-and-forget emit is fine: the worst case is a dropped event
-        // for a transient state, and the terminal event is also replayable via
-        // `directory_size_status`. When no emitter is available (tests) we skip
-        // it but still cache the result.
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.complete {
+                return;
+            }
+            *state = next.clone();
+        }
+        if let Some(emit) = emit {
+            emit(next);
+        }
+    }
+
+    /// 写入任务终态（每个任务只会走到这里一次）。
+    ///
+    /// 取消的优先级最高：只要 `cancelled` 已置位，无论算出了什么——哪怕
+    /// `du` 已经给出完整数字——都改报 `Cancelled`。标志的最后一次检查在
+    /// `state` 锁内进行，与 [`DirectorySizeRegistry::cancel`] 的锁内落态
+    /// 构成全序，因此不存在"取消检查已过、结果又写回 completed"的窗口。
+    fn finish(&self, emit: &Option<EmitFn>, result: DirectorySizeResult) {
+        let mut next = result;
+        {
+            let mut state = self.state.lock().unwrap();
+            if self.cancelled.load(Ordering::SeqCst)
+                && next.status != DirectorySizeStatus::Cancelled
+            {
+                next = DirectorySizeResult::computing(&next.session_id, &next.path)
+                    .terminal(DirectorySizeStatus::Cancelled);
+            }
+            // 终态粘性：只有"已取消 → 再写取消"这一种等价重写被允许。
+            if state.complete
+                && (state.status != DirectorySizeStatus::Cancelled
+                    || next.status != DirectorySizeStatus::Cancelled)
+            {
+                return;
+            }
+            *state = next.clone();
+        }
         if let Some(emit) = emit {
             emit(next);
         }
@@ -296,6 +337,7 @@ impl DirectorySizeRegistry {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = Arc::new(DirectorySizeTask {
             cancel: cancel_tx,
+            cancelled: AtomicBool::new(false),
             // 新任务一律从 `pending` 开始：拿到并发名额后才会变成 `computing`。
             state: Mutex::new(DirectorySizeResult::pending(&session_id, &path)),
         });
@@ -346,24 +388,52 @@ impl DirectorySizeRegistry {
                 outcome
             }
             .await;
-            task_handle.update(&registry.emit_fn(), result);
+            task_handle.finish(&registry.emit_fn(), result);
             // Leave the finished task in the map so `cached`/`status` can replay
             // it; it is only evicted when the session is forgotten.
         });
         initial
     }
 
-    /// Asks a running computation to stop. The task decides how to honour it
-    /// (the SFTP walk checks the signal each step; a single `du` invocation is
-    /// dropped on arrival once cancelled).
+    /// Asks a running (or queued) computation to stop.
+    ///
+    /// 取消是"权威意图"，不只是信号：
+    /// 1. 先立 `cancelled` 标志——这是 `finish()` 判定结果作废的依据；
+    /// 2. 再发 `watch` 信号，打断等待名额 / SFTP 遍历；
+    /// 3. 最后在 `state` 锁内落 `Cancelled` 终态——排队中的任务直接终结，
+    ///    不必等任务自己发现信号。
+    ///
+    /// 与 [`DirectorySizeTask::finish`] 的锁内标志检查构成全序：取消与完成
+    /// 谁先进锁谁赢，而排队中的任务取消必胜（这正是 e2e
+    /// `cancelling_a_queued_directory_size_reports_cancelled` 锁定的行为）。
+    /// 已完成的任务不受影响（历史结果不被篡改）。
     pub fn cancel(&self, session_id: &str, path: &str) {
-        if let Some(task) = self
+        let task = self
             .tasks
             .lock()
             .unwrap()
             .get(&(session_id.to_string(), path.to_string()))
-        {
-            let _ = task.cancel.send(true);
+            .cloned();
+        let Some(task) = task else {
+            return;
+        };
+        task.cancelled.store(true, Ordering::SeqCst);
+        let _ = task.cancel.send(true);
+        let cancelled_now = {
+            let mut state = task.state.lock().unwrap();
+            if !state.status.is_terminal() {
+                let next = DirectorySizeResult::pending(&state.session_id, &state.path)
+                    .terminal(DirectorySizeStatus::Cancelled);
+                *state = next.clone();
+                Some(next)
+            } else {
+                None
+            }
+        };
+        if let Some(next) = cancelled_now {
+            if let Some(emit) = self.emit_fn() {
+                emit(next);
+            }
         }
     }
 

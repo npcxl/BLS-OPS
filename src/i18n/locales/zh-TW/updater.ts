@@ -1,0 +1,61 @@
+/** zh-TW · 應用更新（P5.1）。key 與英文文案逐字一致（natural keys）。 */
+export default {
+  // -- 設定 → 應用更新 --
+  "App update": "應用更新",
+  "Current version": "當前版本",
+  "Update channel": "更新通道",
+  Stable: "穩定版",
+  "Last checked": "上次檢查",
+  Never: "從未檢查",
+  "Check for updates automatically": "啟動時自動檢查更新",
+  "Check for updates": "檢查更新",
+  Checking: "檢查中…",
+  "Checking for updates…": "正在檢查更新…",
+  "You are already on the latest version": "當前已是最新版本",
+  "A new version is available": "發現新版本",
+  "Downloading update…": "正在下載更新…",
+  "Downloaded — waiting for a safe moment to install": "已下載完成，正在等待合適的時機安裝",
+  "Installing update…": "正在安裝更新…",
+  "Update installed — restart to finish": "更新已安裝，重啟後生效",
+  "Update postponed": "已推遲更新",
+  "Update failed": "更新失敗",
+  "New version": "新版本",
+  Published: "釋出時間",
+  "Release notes": "釋出說明",
+  "Download and install": "下載並安裝",
+  "Restart now": "立即重啟",
+  "Remind me later": "稍後提醒",
+
+  // -- 自動檢查通知 --
+  "Update available": "有可用更新",
+
+  // -- 重啟確認（會中斷 SSH / 傳輸 / 未儲存檔案）--
+  "Install update and restart?": "安裝更新並重啟？",
+  "Restart to finish the update?": "重啟以完成更新？",
+  "Not now": "暫不重啟",
+  "Install and restart": "安裝並重啟",
+  "Restarting now will interrupt the following work:": "现在重启会中断以下工作：",
+  "{{count}} active SSH sessions": "{{count}} 個正在連線的 SSH 會話",
+  "{{count}} SSH connections still being established": "{{count}} 個正在建立中的 SSH 連線",
+  "{{count}} commands are still running": "{{count}} 個命令仍在執行",
+  "{{count}} file transfers in progress": "{{count}} 個檔案傳輸正在進行",
+  "{{count}} files have unsaved changes": "{{count}} 個檔案有未儲存的修改",
+  "{{count}} long-running tasks": "{{count}} 個長時間任務正在執行",
+  "The downloaded update is kept, so you can restart later from Settings without downloading it again.":
+    "已下载的更新会保留，你可以稍后在设置页重启，无需重新下载。",
+
+  // -- 錯誤分類（一一對應 UpdateErrorCode）--
+  "No network connection. Check your connection and try again.": "網路不可用，請檢查網路後重試。",
+  "The update server did not respond in time. Try again later.": "更新伺服器響應超時，請稍後重試。",
+  "The update information is malformed and cannot be used.": "更新資訊格式錯誤，無法使用。",
+  "This release has no installer for the current platform.": "該版本沒有適用於當前平臺的安裝包。",
+  "The update package is not signed. Update aborted.": "更新包缺少簽名，已終止更新。",
+  "Signature verification failed. Update aborted.": "簽名校驗失敗，已終止更新。",
+  "The download was interrupted. Please try again.": "下載被中斷，請重新嘗試。",
+  "Not enough disk space to install the update.": "磁碟空間不足，無法安裝更新。",
+  "The installation failed. The app was left unchanged.": "安裝失敗，應用保持原狀。",
+  "Update cancelled.": "已取消更新。",
+  "The app could not be restarted. Please close and reopen it manually.": "應用重啟失敗，請手動關閉並重新開啟。",
+  "Updates are not available in development builds.": "開發版本不支援檢查更新。",
+  "The update could not be completed.": "更新未能完成。",
+} as const;

@@ -130,4 +130,10 @@ export default {
   "Show next {{count}} rows ({{name}} total)": "继续显示后 {{count}} 行（共 {{name}} 行）",
   "{{name}} rows × {{cols}} columns": "{{name}} 行 × {{cols}} 列",
   "{{name}} more rows not rendered": "另有 {{name}} 行未渲染",
+
+  // -- 远程文件面板（RemoteFilePanel）--
+  "New folder": "新建文件夹",
+  "New file": "新建文件",
+  "New file.txt": "新建文件.txt",
+  "{{name}} - Copy": "{{name}} - 副本",
 } as const;

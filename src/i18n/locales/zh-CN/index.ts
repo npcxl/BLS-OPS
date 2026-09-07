@@ -8,6 +8,7 @@ import workbench from "./workbench";
 import terminal from "./terminal";
 import servers from "./servers";
 import commandCenter from "./commandCenter";
+import commandResult from "./commandResult";
 import files from "./files";
 import projects from "./projects";
 import monitor from "./monitor";
@@ -23,6 +24,7 @@ export default {
   ...terminal,
   ...servers,
   ...commandCenter,
+  ...commandResult,
   ...files,
   ...projects,
   ...monitor,

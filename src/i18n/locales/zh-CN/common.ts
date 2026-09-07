@@ -112,4 +112,5 @@ export default {
   "Clear search": "清除搜索",
   "Context menu": "上下文菜单",
   Submenu: "子菜单",
+  "No records matching \"{{query}}\"": "没有匹配「{{query}}」的记录",
 } as const;

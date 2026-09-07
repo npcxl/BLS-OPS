@@ -31,6 +31,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 
 ## 版本与发布（勿回退）
 - `package.json` 是版本唯一输入；改版本只走 `pnpm version:bump patch|minor|major|X.Y.Z`（`scripts/bump-version.mjs`），禁止手改四处。
+- pnpm 版本**只**写在 `package.json` 的 `packageManager` 字段；`pnpm/action-setup@v4` 一律不带 `with: version:`（写了会与 packageManager 冲突直接报错）。
 - `pnpm check:versions`（`scripts/check-versions.mjs`）同时校验四处版本一致 + 前后端插件版本同号。
 - pnpm 固定 9.15.9（`packageManager` 字段）；改依赖后必须 `pnpm install --lockfile-only`，否则 CI `--frozen-lockfile` 会失败。
 - 发布只能走 `.github/workflows/release.yml`：**单工作流**完成 bump→提交→tag→构建（GITHUB_TOKEN 推送不触发其它工作流）；draft release 人工 Publish 后才进 `latest.json`。

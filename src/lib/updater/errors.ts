@@ -20,6 +20,7 @@ import type {
 export const UPDATE_ERROR_MESSAGES: Record<UpdateErrorCode, string> = {
   network: "No network connection. Check your connection and try again.",
   timeout: "The update server did not respond in time. Try again later.",
+  no_release: "No update has been published yet. Please try again later.",
   malformed_manifest: "The update information is malformed and cannot be used.",
   no_platform_asset: "This release has no installer for the current platform.",
   signature_missing: "The update package is not signed. Update aborted.",
@@ -37,6 +38,7 @@ export const UPDATE_ERROR_MESSAGES: Record<UpdateErrorCode, string> = {
 export const RETRYABLE_ERRORS: ReadonlySet<UpdateErrorCode> = new Set<UpdateErrorCode>([
   "network",
   "timeout",
+  "no_release",
   "download_interrupted",
   "disk_full",
   "restart_failed",
@@ -98,7 +100,26 @@ const RULES: Rule[] = [
   { code: "timeout", all: [/timed?\s*out|timeout|deadline/] },
   { code: "disk_full", all: [/no space|disk (full|quota)|os error 112|not enough space/] },
   { code: "cancelled", all: [/cancel(l)?ed|aborted by user/] },
-  { code: "malformed_manifest", all: [/json|serde|deserial|parse|malformed|invalid (manifest|update)|expected value|missing field/] },
+  // **Must run before `malformed_manifest`.** A repo that has never published a
+  // release answers 404, and tauri-plugin-updater reports that as
+  // `ReleaseNotFound` → *"Could not fetch a valid release JSON from the
+  // remote"* — the word "JSON" in there is not a parsing failure.
+  {
+    code: "no_release",
+    all: [
+      /valid release json|release not found|releasenotfound|no published release|could not fetch a valid release|404/,
+    ],
+  },
+  // `json` alone is **not** enough: the endpoint URL contains `latest.json`,
+  // so any network/404 message about it would match. Require a parsing verb
+  // alongside it.
+  {
+    code: "malformed_manifest",
+    all: [
+      /json|serde|manifest|yaml|toml/,
+      /deserial|parsed?|malformed|invalid|expected value|missing field|unexpected|syntax/,
+    ],
+  },
   { code: "no_platform_asset", all: [/platform|target|no (release|asset|binary)|not (found|available) for/] },
   { code: "download_interrupted", all: [/(download|transfer|connection).{0,32}(interrupt|reset|closed|abort|broken)|unexpected eof/] },
   { code: "install_failed", all: [/install/] },

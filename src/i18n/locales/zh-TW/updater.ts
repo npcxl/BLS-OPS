@@ -47,6 +47,7 @@ export default {
   // -- 錯誤分類（一一對應 UpdateErrorCode）--
   "No network connection. Check your connection and try again.": "網路不可用，請檢查網路後重試。",
   "The update server did not respond in time. Try again later.": "更新伺服器響應超時，請稍後重試。",
+  "No update has been published yet. Please try again later.": "尚未發布任何更新版本，請稍後再試。",
   "The update information is malformed and cannot be used.": "更新資訊格式錯誤，無法使用。",
   "This release has no installer for the current platform.": "該版本沒有適用於當前平臺的安裝包。",
   "The update package is not signed. Update aborted.": "更新包缺少簽名，已終止更新。",

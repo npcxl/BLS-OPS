@@ -25,7 +25,7 @@ export default {
   "Search in scrollback": "在回滚缓冲中查找",
   "No matches": "无匹配",
   "Copy error message": "复制错误信息",
-  "Got it": "知道了",
+  "Closes in {{seconds}}s": "{{seconds}} 秒后自动关闭",
 
   // —— TerminalView：参数提示 / 连接状态 ——
   "The command still has unfilled parameters ({{command}}); please select values for them first":

@@ -40,6 +40,8 @@ pub mod ssh;
 mod state;
 /// systemd service management (P3-1.1).
 pub mod systemd;
+/// 系统托盘：点 X 隐藏窗口到托盘（不退出），托盘恢复/退出。
+mod tray;
 /// 实例业务分类器：应用服务 / 基础设施 / 系统组件 / 待归类 四个互斥集合。
 /// 只在后端做判定，React 只展示结果。纯逻辑，零 I/O。
 pub mod workload_class;
@@ -72,11 +74,22 @@ pub fn run() {
                 return Err(e.into());
             }
             app.manage(state::AppState::new(app_db));
+            tray::init(app)?;
             Ok(())
+        })
+        // 点 X = 隐藏到托盘（SSH 会话保持），**绝不退出**；真正的退出只走
+        // 托盘菜单 Quit（tray.rs → app.exit）。这是用户裁决的交互，勿回退。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
+            // tray menu labels follow the frontend locale
+            commands::tray_set_labels,
             // servers
             commands::server_list,
             commands::server_get,
@@ -200,6 +213,18 @@ pub fn run() {
             commands::project_delete,
             // deployment IPC is intentionally not exposed in P3; retained as P5 foundation
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS：窗口隐藏后点 Dock 图标也要能把主窗口唤回来
+            // （Windows 走托盘单击恢复，见 tray.rs）。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show_main(app_handle);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app_handle, event);
+            }
+        });
 }

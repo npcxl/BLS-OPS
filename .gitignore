@@ -15,8 +15,8 @@ dist
 dist-ssr
 *.local
 
-# Rust build artifacts
-src-tauri/target/
+# Rust build artifacts（含验证用的临时 CARGO_TARGET_DIR，一律不入库）
+src-tauri/target*/
 
 # Updater signing keys — NEVER commit the private key or its password.
 # The public key lives in src-tauri/tauri.conf.json (plugins.updater.pubkey);

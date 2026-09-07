@@ -25,7 +25,7 @@ russh = "0.63.1"
 russh-sftp = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 # Updater/process versions are pinned with `=` on purpose: the JS packages in
 # package.json carry the exact same numbers, and a drift between the two sides

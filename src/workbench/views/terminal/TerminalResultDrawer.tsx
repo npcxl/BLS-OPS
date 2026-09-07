@@ -19,11 +19,9 @@ const UNKNOWN_RISK = { label: "Unknown risk", tone: "bg-surface-2 text-fg-muted"
 
 /**
  * 结果面板内容区的最小高度；**拖到更低不是硬墙，而是自动收起**（用户感知上
- * “最低点 = 收起”）。默认高度 38vh（见内容区样式）就是可拖到的最大高度。
+ * "最低点 = 收起"）。默认高度 38vh（见内容区样式）就是可拖到的最大高度。
  */
-const MIN_DRAWER_HEIGHT = 140;
-/** 折叠态下向上拖多少 px 才展开（防误触；展开后不低于 MIN）。 */
-const DRAG_EXPAND_THRESHOLD = 16;
+const MIN_DRAWER_HEIGHT = 40;
 /** 默认最大高度 = 内容区 38vh，与默认样式一致，也是拖拽的上限。 */
 const DEFAULT_MAX_RATIO = 0.38;
 
@@ -44,7 +42,8 @@ const DEFAULT_MAX_RATIO = 0.38;
  * 渲染**。原始终端内容永远保留。
  *
  * 顶部有拖拽把手（与左右侧栏同款交互）：上拖加高 / 下拖减低，上限 = 默认
- * 38vh；**拖到最低自动收起**，折叠态向上拖可直接展开；双击恢复默认高度。
+ * 38vh；**拖到最低自动收起**（走原本的折叠函数）；收起后把手消失 ——
+ * **只能点展开按钮恢复，不能拖拽展开**；双击把手恢复默认高度。
  */
 export function TerminalResultDrawer({
   results,
@@ -87,19 +86,17 @@ export function TerminalResultDrawer({
 
   /**
    * 拖拽把手（与左右侧栏同款：mousedown → window mousemove/mouseup）。
-   * 向上拖 = 变高（上限 = 默认 38vh）；**拖到最低（≤ MIN）自动收起并结束
-   * 拖拽** —— 收起后继续下拽不会又弹开；折叠态向上拖过阈值则直接展开，
-   * 并让面板落到指针位置。双击把手恢复默认高度。
+   * 向上拖 = 变高（上限 = 默认 38vh）；**拖到最低（≤ MIN）自动收起**（调用
+   * 原本的折叠函数）并结束拖拽。**收起态不渲染把手** —— 只能点展开按钮
+   * 恢复，不能拖拽展开。双击把手恢复默认高度。
    */
   const onResizeStart = (e: React.MouseEvent) => {
+    if (collapsed) return; // 收起态：只能点展开按钮，拖拽把手不存在。
     e.preventDefault();
     const startY = e.clientY;
-    const startCollapsed = collapsed;
-    const startHeight = startCollapsed
-      ? 0
-      : (contentRef.current?.offsetHeight ??
-        Math.round(window.innerHeight * DEFAULT_MAX_RATIO));
-    let draggingContent = !startCollapsed;
+    const startHeight =
+      contentRef.current?.offsetHeight ??
+      Math.round(window.innerHeight * DEFAULT_MAX_RATIO);
     setDragging(true);
 
     // “现在这个高度”就是上限：默认 38vh；窗口太小时至少允许拖到 MIN。
@@ -115,15 +112,6 @@ export function TerminalResultDrawer({
     };
     const onMove = (ev: MouseEvent) => {
       const desired = startHeight + (startY - ev.clientY); // 向上拖 = 变高
-      if (!draggingContent) {
-        // 折叠态：先拖过阈值展开，之后按正常缩放跟随指针。
-        if (desired < DRAG_EXPAND_THRESHOLD) return;
-        draggingContent = true;
-        onToggleCollapse();
-        // 展开第一帧就落到指针位置（不低于 MIN，避免立刻又触发“收起”）。
-        onHeightChange(Math.min(Math.max(desired, MIN_DRAWER_HEIGHT), maxHeight));
-        return;
-      }
       if (desired <= MIN_DRAWER_HEIGHT) {
         finish();
         onToggleCollapse();
@@ -171,21 +159,24 @@ export function TerminalResultDrawer({
 
   return (
     <div className="relative flex shrink-0 flex-col border-t border-line bg-surface-1">
-      {/* 拖拽把手：贴上边框整行（叠在 Tab 条上沿 5px），悬停/拖拽高亮。 */}
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label={t("Drag to resize the results panel (double-click to reset)")}
-        title={t("Drag to resize the results panel (double-click to reset)")}
-        className={cn(
-          "absolute inset-x-0 top-0 z-10 flex h-[5px] cursor-row-resize items-center justify-center",
-          dragging ? "bg-accent/25" : "hover:bg-accent/15",
-        )}
-        onMouseDown={onResizeStart}
-        onDoubleClick={() => onHeightChange(null)}
-      >
-        <GripHorizontal size={10} className="text-fg-subtle" />
-      </div>
+      {/* 拖拽把手：贴上边框整行（叠在 Tab 条上沿 5px），悬停/拖拽高亮。
+          收起态不渲染 —— 只能点展开按钮恢复，不能拖拽展开。 */}
+      {!collapsed && (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={t("Drag to resize the results panel (double-click to reset)")}
+          title={t("Drag to resize the results panel (double-click to reset)")}
+          className={cn(
+            "absolute inset-x-0 top-0 z-10 flex h-[5px] cursor-row-resize items-center justify-center",
+            dragging ? "bg-accent/25" : "hover:bg-accent/15",
+          )}
+          onMouseDown={onResizeStart}
+          onDoubleClick={() => onHeightChange(null)}
+        >
+          <GripHorizontal size={10} className="text-fg-subtle" />
+        </div>
+      )}
 
       <div className="flex items-center gap-1 px-2 py-1">
         <button

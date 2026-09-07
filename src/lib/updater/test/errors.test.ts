@@ -20,6 +20,19 @@ describe("classifyUpdateError", () => {
     expect(classifyUpdateError("invalid json: expected value at line 1").code).toBe("malformed_manifest");
   });
 
+  // Regression: a repo that has never published a release answers 404, and
+  // tauri-plugin-updater reports that as `ReleaseNotFound` → "Could not fetch
+  // a valid release JSON from the remote". The word "JSON" used to route this
+  // to `malformed_manifest`, so a first-run user saw "the update information
+  // is malformed" instead of "nothing has been published yet".
+  it.each([
+    "Could not fetch a valid release JSON from the remote",
+    "https://github.com/npcxl/BLS-OPS/releases/latest/download/latest.json: 404 Not Found",
+    "release not found",
+  ])("maps a missing release to no_release, never to malformed_manifest: %s", (raw) => {
+    expect(classifyUpdateError(raw).code).toBe("no_release");
+  });
+
   it("maps a release without an asset for this platform to no_platform_asset", () => {
     expect(classifyUpdateError("no release asset found for target windows-x86_64").code).toBe(
       "no_platform_asset",

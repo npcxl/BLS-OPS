@@ -123,6 +123,22 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   } | null>(null);
   /** 参数相关的可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   const [paramHint, setParamHint] = useState<string | null>(null);
+  /** 提示条倒计时（秒）：出现即 5s，递减到 0 自动关闭，无需手动点掉。 */
+  const [paramHintCountdown, setParamHintCountdown] = useState(0);
+  useEffect(() => {
+    if (!paramHint) return;
+    setParamHintCountdown(5);
+    const timer = window.setInterval(() => {
+      setParamHintCountdown((v) => {
+        if (v <= 1) {
+          setParamHint(null);
+          return 0;
+        }
+        return v - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [paramHint, setParamHint]);
   /**
    * 终端 / 命令输出字体（用户可选，与结果面板共用同一套栈）。
    * 切换后要 `fit()` 重排 —— 字宽变了，xterm 的行列数会跟着变。
@@ -1091,15 +1107,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             正在输入的行。整条 pointer-events-none（只有"知道了"可点），
             顶部那两行终端内容照常可点可选，不干扰正常输入。 */}
         {paramHint && (
-          <div className="pointer-events-none absolute left-1.5 right-1.5 top-1.5 z-30 flex items-center gap-2 rounded-[8px] border border-warning/40 bg-warning/12 px-2.5 py-1.5 text-11 text-warning">
+          <div className="pointer-events-none absolute left-1.5 right-1.5 top-0.5 z-30 flex items-center gap-2 rounded-[8px] border border-warning/40 bg-surface-1 px-2.5 py-1.5 text-11 text-warning shadow-sm">
             <span className="min-w-0 flex-1 truncate">{paramHint}</span>
-            <button
-              type="button"
-              className="pointer-events-auto shrink-0 rounded px-1 text-11 text-warning/80 hover:text-warning"
-              onClick={() => setParamHint(null)}
-            >
-              {t("Got it")}
-            </button>
+            <span className="shrink-0 text-warning/70">
+              {t("Closes in {{seconds}}s", { seconds: paramHintCountdown })}
+            </span>
           </div>
         )}
         {/* 复制提示（选区菜单 / 复制错误信息共用）：绝对定位不占布局，1.5s

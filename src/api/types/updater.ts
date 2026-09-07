@@ -58,6 +58,8 @@ export interface UpdateProgress {
 export type UpdateErrorCode =
   | "network"
   | "timeout"
+  /** The endpoint has no published release at all (404 / empty manifest). */
+  | "no_release"
   | "malformed_manifest"
   | "no_platform_asset"
   | "signature_missing"

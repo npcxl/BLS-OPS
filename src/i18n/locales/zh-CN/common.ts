@@ -107,6 +107,8 @@ export default {
   "Replace (Enter replaces the current match)": "替换（Enter 后替换当前匹配）",
   "Replace all (Alt+Enter)": "全部替换（Alt+Enter）",
   "Close window": "关闭窗口",
+  "Show window": "显示主窗口",
+  Quit: "退出",
   "Minimize window": "最小化窗口",
   "Maximize window": "最大化窗口",
   "Clear search": "清除搜索",

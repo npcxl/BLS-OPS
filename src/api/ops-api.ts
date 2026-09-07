@@ -225,6 +225,10 @@ export { message as toErrorMessage };
 export const opsApi = {
   appInfo: () => invoke<AppInfo>("app_info"),
 
+  /** 托盘菜单文案跟随当前语言（i18n 只在前端，见 hooks/use-tray-labels.ts）。 */
+  traySetLabels: (show: string, quit: string) =>
+    invoke<void>("tray_set_labels", { show, quit }),
+
   listServers: () => invoke<ServerRecord[]>("server_list"),
   getServer: (id: string) => invoke<ServerRecord | null>("server_get", { id }),
   saveServer: (server: ServerRecord) => invoke<ServerRecord>("server_save", { server }),

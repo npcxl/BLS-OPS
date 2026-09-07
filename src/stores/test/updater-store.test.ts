@@ -23,7 +23,7 @@ import type { UpdateProgress, UpdateRelease } from "@/api/types/updater";
 import type { AppInfo } from "@/api/ops-api";
 
 const appInfo = (version: string): AppInfo => ({
-  app_name: "ops-workbench",
+  app_name: "Ops Workbench",
   version,
   db_path: "C:\\data\\ops.sqlite3",
   schema_version: 1,

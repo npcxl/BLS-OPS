@@ -34,6 +34,8 @@ export default {
   "10s": "10 秒",
   "30s": "30 秒",
   "Unsupported operating system": "不支持的操作系统",
+  "Ops Workbench only provides read-only monitoring for Linux servers; collection has stopped.":
+    "Ops Workbench 仅对 Linux 服务器提供只读监控，采集已停止。",
   "SSH connection lost, monitoring stopped: {{message}}": "SSH 连接已断开，监控已停止：{{message}}",
 
   // -- 服务器环境 / 命令中心标签（ssh.ts、environment.ts、command.ts）--

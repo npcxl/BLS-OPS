@@ -73,7 +73,7 @@ describe("AppTopBar 侧边栏展开入口", () => {
     await render("ssh", false);
     const logo = holder.querySelector<HTMLImageElement>('header img[src="/logo.png"]');
     expect(logo).not.toBeNull();
-    expect(logo?.getAttribute("alt")).toBe("BLS-OPS");
+    expect(logo?.getAttribute("alt")).toBe("Ops Workbench");
     // 点击穿透到整条拖拽栏：点 Logo = 拖动窗口。
     expect(logo?.className).toContain("pointer-events-none");
   });

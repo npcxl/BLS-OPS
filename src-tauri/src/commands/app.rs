@@ -19,7 +19,7 @@ pub struct AppInfo {
 #[tauri::command]
 pub async fn app_info(state: State<'_, AppState>) -> Result<AppInfo, String> {
     Ok(AppInfo {
-        app_name: "运维工作台".to_string(),
+        app_name: "Ops Workbench".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         db_path: state.db.path().to_string_lossy().to_string(),
         schema_version: db::SCHEMA_VERSION,

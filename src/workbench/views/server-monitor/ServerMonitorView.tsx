@@ -376,7 +376,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           <span className="min-w-0 flex-1">
             {entry?.unsupportedReason ?? t("Unsupported operating system")}
             <span className="ml-1 text-fg-subtle">
-              {t("BLS-OPS only provides read-only monitoring for Linux servers; collection has stopped.")}
+              {t("Ops Workbench only provides read-only monitoring for Linux servers; collection has stopped.")}
             </span>
           </span>
         </div>

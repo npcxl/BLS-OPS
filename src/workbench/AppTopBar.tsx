@@ -51,7 +51,7 @@ export function AppTopBar() {
           pointer-events-none 让点击穿透到整条拖拽栏 —— 点 Logo = 拖动窗口。 */}
       <img
         src="/logo.png"
-        alt="BLS-OPS"
+        alt="Ops Workbench"
         data-tauri-drag-region="false"
         className="pointer-events-none h-[24px] w-[24px] shrink-0 rounded-[5px]"
         draggable={false}
@@ -71,7 +71,7 @@ export function AppTopBar() {
         </button>
       )}
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-        {t(MODULE_TITLES[activeModule] ?? "BLS-OPS")}
+        {t(MODULE_TITLES[activeModule] ?? "Ops Workbench")}
       </span>
       {!mac && <WindowControls />}
     </header>

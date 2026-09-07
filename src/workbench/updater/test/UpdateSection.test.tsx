@@ -21,7 +21,7 @@ import type { AppInfo } from "@/api/ops-api";
 import { UpdateSection } from "../UpdateSection";
 
 const appInfo = (version: string): AppInfo => ({
-  app_name: "ops-workbench",
+  app_name: "Ops Workbench",
   version,
   db_path: "C:\\data\\ops.sqlite3",
   schema_version: 1,

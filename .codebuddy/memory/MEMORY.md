@@ -74,6 +74,10 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **P4.4 软删除（软删执行/删除记录/可恢复列表/永久删除/回滚）已明确移出 P4**，列入后续"删除治理"阶段（见 `docs/p4-acceptance.md`）。
 
 ## 技术要点
+- **vite 禁用 manualChunks 强拆 node_modules**（2026-09 白屏事故）：react 被强拆后 chunk 成环，生产包抛 `Cannot set properties of undefined (setting 'Activity')`，WebView 白屏；`tauri dev` 不打包所以完全正常，只有安装版暴露。分包靠动态 import 边界即可。
+- **debug exe 不加载内嵌 dist**，走 `devUrl`(localhost:4200)：验证生产包必须 `pnpm tauri build` 出的 release exe；改 dist 后 Rust 侧要 touch `src-tauri/build.rs` 才会重新嵌入。
+- WebView2 排查：设 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--enable-logging`，看 `%LOCALAPPDATA%\com.bls.ops\EBWebView\chrome_debug.log` 的 CONSOLE 行（会附带黑色日志控制台窗口）；`Tauri v2 Windows 绝对路径 /assets 正常`，白屏别再怪 base。
+- CI smoke test 只查进程+窗口标题，查不出渲染。
 - russh 0.63：`check_server_key` 必须实现；ProxyJump into_stream→connect_stream。
 - UTF-8 跨块：`ssh/utf8_stream.rs::Utf8StreamDecoder`（禁逐块 from_utf8_lossy）；GB18030/Big5 不做假支持。
 - React 19 测试：`IS_REACT_ACT_ENVIRONMENT=true`；受控 input 用 native setter；ConfirmDialog 查 document.body；shell/TextPreview 不得导入 CM 符号（破坏代码分割）。

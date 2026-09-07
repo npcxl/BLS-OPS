@@ -17,6 +17,8 @@ import { useSubmit } from "@/hooks/use-submit";
 import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
 import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
+import { UpdateSection } from "./updater/UpdateSection";
+import { EmptyRow, Group, ListGroup } from "./settings-parts";
 import { cn } from "@/lib/cn";
 
 /**
@@ -28,42 +30,6 @@ const THEME_OPTIONS: { id: ThemeMode; labelKey: string; shortKey: string; icon: 
   { id: "light", labelKey: "Light", shortKey: "Light", icon: Sun },
   { id: "dark", labelKey: "Dark", shortKey: "Dark", icon: Moon },
 ];
-
-function Group({
-  title,
-  hint,
-  action,
-  children,
-}: {
-  title: string;
-  hint?: React.ReactNode;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-1.5">
-      <div className="flex h-6 items-center justify-between px-0.5">
-        <span className="text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">{title}</span>
-        {action}
-      </div>
-      {hint && <p className="px-0.5 text-11 leading-relaxed text-fg-subtle">{hint}</p>}
-      {children}
-    </section>
-  );
-}
-
-/** macOS-style grouped inset list — a rounded panel whose rows are divided. */
-function ListGroup({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
-      <div className="divide-y divide-line/60">{children}</div>
-    </div>
-  );
-}
-
-function EmptyRow({ children }: { children: React.ReactNode }) {
-  return <p className="px-3 py-3 text-11 text-fg-subtle">{children}</p>;
-}
 
 function CollapsibleList<T>({
   title,
@@ -330,6 +296,8 @@ export function SettingsContextSidebar() {
           </CollapsibleList>
         </div>
       </Group>
+
+      <UpdateSection />
 
       {appInfo && (
         <Group title={t("Runtime")}>

@@ -27,7 +27,10 @@ pub struct SyncRegistry {
 impl SyncRegistry {
     /// 插入新会话（同 id 重复插入覆盖旧值——uuid 冲突即内部错误）。
     pub async fn insert(&self, entry: SyncEntry) {
-        self.sessions.lock().await.insert(entry.info.id.clone(), entry);
+        self.sessions
+            .lock()
+            .await
+            .insert(entry.info.id.clone(), entry);
     }
 
     /// 移除并返回会话（调用方负责发关闭信号 + 清理临时目录）。

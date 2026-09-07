@@ -18,6 +18,19 @@ dist-ssr
 # Rust build artifacts
 src-tauri/target/
 
+# Updater signing keys — NEVER commit the private key or its password.
+# The public key lives in src-tauri/tauri.conf.json (plugins.updater.pubkey);
+# the private key + password live in GitHub Actions Secrets only.
+.tauri/
+*.key
+*.key.pub
+*.key.pass
+
+# Local verification leftovers (build / test 输出与临时脚本)
+*_out.txt
+scripts/tmp-*
+.tmp-*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

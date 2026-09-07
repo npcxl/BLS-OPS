@@ -13,6 +13,7 @@ import {
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
+import { useActivityTicket } from "@/stores/activity-store";
 import type { WorkspaceTab } from "@/workbench/types";
 import { RISK_LABEL_KEYS } from "@/workbench/views/command-result/model";
 import { ResultPanel } from "./ResultPanel";
@@ -36,6 +37,8 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   const [executing, setExecuting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CommandExecutionResult | null>(null);
+  // A command running on a server: the restart guard must see it (P5.1).
+  useActivityTicket("command", executing !== null);
   const [paramsTarget, setParamsTarget] = useState<CommandSearchHit | null>(null);
   /** 待确认的中风险命令（无参数，走 ConfirmDialog）。 */
   const [confirmTarget, setConfirmTarget] = useState<CommandSearchHit | null>(null);

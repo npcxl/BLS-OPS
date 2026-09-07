@@ -1,28 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import {
-  ChevronDown,
-  Columns2,
-  Copy,
-  Eraser,
-  FolderOpen,
-  History,
-  PlugZap,
-  RefreshCw,
-  Rows2,
-  Search,
-  Sparkles,
-  Unplug,
-  WifiOff,
-} from "lucide-react";
-import { Terminal, type IMarker } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { useTranslation } from "react-i18next";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
-import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -37,39 +20,30 @@ import {
   placeholdersIn,
 } from "@/workbench/views/command-center/complete";
 import { ParamPicker } from "./ParamPicker";
-import {
-  TerminalCommandCoordinator,
-  type CapturedResult,
-  type RenderOutcome,
-} from "./TerminalCommandCoordinator";
-import { extractTerminalSnapshot } from "./extract-terminal-snapshot";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import { TerminalSelectionMenu } from "./terminal-selection-menu";
 import type { CommandSearchHit } from "@/api/ops-api";
-import type { SuggestedRisk } from "@/api/types/environment";
 import type { WorkspaceTab } from "@/workbench/types";
-import { sshClosedEvent, sshOutputEvent, sshStderrEvent } from "@/lib/events";
-import { terminalTheme } from "./theme";
-import { ToolbarIcon } from "./ToolbarIcon";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
-import { writeOutputParts } from "./terminal-output-pipeline";
-import {
-  TERMINAL_FONTS,
-  applyTerminalFont,
-  readTerminalFontId,
-  saveTerminalFontId,
-} from "./terminal-font";
-import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
+import { applyTerminalFont, readTerminalFontId, saveTerminalFontId } from "./terminal-font";
+import type { Phase } from "./terminal-phase";
+import { TerminalErrorBanner } from "./terminal-error-banner";
+import { TerminalToolbar } from "./terminal-toolbar";
+import { useSshKeepalive } from "./use-ssh-keepalive";
+import { useTerminalMenu } from "./use-terminal-menu";
+import { useTerminalSearch } from "./use-terminal-search";
+import { useTerminalSession, type TerminalCommandEntry } from "./use-terminal-session";
+import { useTerminalResults } from "./use-terminal-results";
 import {
   keysForReplace,
   resolveSuggestKey,
   type SuggestAnchor,
 } from "./terminal-suggest";
 import { useTerminalCompletion } from "./use-terminal-completion";
-import { useServerEnvironment, invalidateEnvironmentCache } from "./use-server-environment";
+import { useServerEnvironment } from "./use-server-environment";
 import { RemoteCwdTracker, CWD_PROBE_LINE, CWD_PROBE_TIMEOUT_MS } from "./remote-cwd";
 import { invalidateDirectoryCache } from "./completion/remote-listing";
 import { invalidateDockerCache } from "./completion/providers/docker-resource";
@@ -78,26 +52,12 @@ import { invalidateProcessCache } from "./completion/providers/process";
 import { rememberNginxContainer } from "./completion/providers/environment";
 import type { CompletionItem } from "./completion/types";
 
-/** 增强终端开关的持久化键（关着 = 纯终端：没有标记注入、没有结果面板）。 */
-const ENHANCED_TERMINAL_KEY = "bls-ops.terminal.enhanced";
-
-const KEEPALIVE_MS = 30_000;
-/** Consecutive failed probes before the session is declared dead. */
-const KEEPALIVE_MAX_FAILURES = 2;
-const SELECTION_MENU_DELAY_MS = 450;
-
-function isCommandNotFoundOutput(output: string): boolean {
-  return /command ['“”']?[^'“”']+['“”']? not found/i.test(output);
-}
-
 /**
  * 会改变目录结构的命令。执行后远程目录缓存必须失效 ——
  * 缓存里留着已被 `rm -rf` 删掉的目录，用户就会补出一个不存在的路径。
  */
 const MUTATES_DIRECTORY =
   /^\s*(mkdir|rmdir|rm|mv|cp|touch|unlink|ln|install|git\s+clone|tar\s+-?[xj])\b/;
-
-type Phase = "idle" | "connecting" | "connected" | "error" | "closed";
 
 /**
  * 接受候选（Enter / → / Tab）的结果。
@@ -122,9 +82,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchState, setSearchState] = useState<{ index: number; total: number } | null>(null);
+  // 回滚缓冲查找（状态与"往后找下一个"的逻辑都在 hook 里）。
+  const search = useTerminalSearch(terminalRef);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(true);
   /**
@@ -164,56 +123,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 参数相关的可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   const [paramHint, setParamHint] = useState<string | null>(null);
   /**
-   * 本次会话的命令结果（快照 + 原始流，最新在后）。与是否命中知识库无关：
-   * 只要是可捕获命令（非交互式、不读 stdin）都会产出一条；命令本身的
-   * 输出为空也是有效结果（显示为空，不回落）。
-   */
-  const [commandResults, setCommandResults] = useState<CapturedResult[]>([]);
-  const [activeResultId, setActiveResultId] = useState<string | null>(null);
-  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
-  const [drawerClosed, setDrawerClosed] = useState(false);
-  /**
-   * **增强终端开关**（默认关）：只有打开时命令才会注入受控标记、捕获输出并
-   * 生成结果面板；关着时终端就是纯终端 —— 不注入任何标记、不产生任何结果
-   * Tab。状态持久化到 localStorage（隐私模式下写不进去也不影响使用）。
-   */
-  const [enhancedTerminal, setEnhancedTerminal] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(ENHANCED_TERMINAL_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  /** 协调器只创建一次，onResult / 提交决策都要读到**当前**开关值。 */
-  const enhancedRef = useRef(enhancedTerminal);
-  enhancedRef.current = enhancedTerminal;
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ENHANCED_TERMINAL_KEY, enhancedTerminal ? "1" : "0");
-    } catch {
-      /* 隐私模式等场景下写不进去，忽略即可 */
-    }
-  }, [enhancedTerminal]);
-  /**
-   * **就一个开关**：开 → 命令结果面板随结果自动出现；关 → 纯终端，什么都没有
-   * （结果面板、已存结果全部撤掉）。面板自己的 × 只是临时收起，下一条命令
-   * 的结果会重新展开它 —— 不再需要第二个"显示/隐藏结果"按钮。
-   */
-  const toggleEnhancedTerminal = useCallback(() => {
-    const next = !enhancedRef.current;
-    setEnhancedTerminal(next);
-    if (!next) {
-      // 关掉 = 回到纯终端：已有结果面板全部撤掉，飞行中的捕获也会被丢弃。
-      setCommandResults([]);
-      setActiveResultId(null);
-      setDrawerClosed(true);
-    } else {
-      // 重新打开：面板跟着新结果出来（之前只是被 × 收起）。
-      setDrawerClosed(false);
-    }
-  }, []);
-
-  /**
    * 终端 / 命令输出字体（用户可选，与结果面板共用同一套栈）。
    * 切换后要 `fit()` 重排 —— 字宽变了，xterm 的行列数会跟着变。
    */
@@ -232,82 +141,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontId]);
-  /**
-   * 捕获命令在 xterm 缓冲里的**起始行**（提交时注册一次）。
-   *
-   * 命令输出滚出回滚缓冲 / 清屏时 xterm 会把 marker 置为失效（line = -1）
-   * 并自动丢弃 —— 快照取不到就由协调器降级（见 consumeTerminalSnapshot），
-   * 绝不在错误的行上猜起点。
-   */
-  const captureMarkerRef = useRef<{ marker: IMarker } | null>(null);
-  const releaseCaptureMarker = useCallback(() => {
-    const held = captureMarkerRef.current;
-    captureMarkerRef.current = null;
-    if (held) held.marker.dispose();
-  }, []);
-
-  /**
-   * 从已渲染的 xterm buffer 提取命令区快照并**消费**（释放）本次的起始行
-   * marker。只释放传入的那个 marker —— 异步快照期间可能有新命令提交登记了
-   * 新的 marker，绝不能误放别人的。
-   */
-  const consumeTerminalSnapshot = useCallback(
-    (held: { marker: IMarker } | null): RenderOutcome => {
-      const instance = terminalRef.current;
-      const line = held ? held.marker.line : -1;
-      if (held) {
-        if (captureMarkerRef.current === held) captureMarkerRef.current = null;
-        held.marker.dispose();
-      }
-      // marker 失效 / 终端已销毁 → { text: null }：协调器走原始流降级。
-      if (!instance || line < 0) return { text: null };
-      const buffer = instance.buffer.active;
-      return {
-        text: extractTerminalSnapshot({
-          // IBuffer.getLine 返回 undefined，纯函数以 null 为缺省值 —— 包一层。
-          buffer: { length: buffer.length, getLine: (index) => buffer.getLine(index) ?? null },
-          startLine: line,
-        }),
-      };
-    },
-    [],
-  );
-
-  const coordinatorRef = useRef<TerminalCommandCoordinator | null>(null);
-  if (!coordinatorRef.current) {
-    coordinatorRef.current = new TerminalCommandCoordinator({
-      match: (text) => opsApi.commandMatchText(text),
-      onResult: (result) => {
-        // 增强终端关着时不产出任何结果面板（含飞行中捕获的迟到结果）。
-        if (!enhancedRef.current) return;
-        setCommandResults((current) => [...current, result]);
-        setActiveResultId(result.id);
-        setDrawerCollapsed(false);
-        setDrawerClosed(false);
-      },
-      // 护栏兜底（受控标记始终没来）：主动向终端要一次当前快照。
-      captureNow: () => consumeTerminalSnapshot(captureMarkerRef.current),
-    });
-  }
-  useEffect(
-    () => () => {
-      coordinatorRef.current?.dispose();
-      releaseCaptureMarker();
-    },
-    [releaseCaptureMarker],
-  );
-
-  /** 重运行：按**真实风险**门控（详见文件下方的 rerun —— 依赖唯一提交入口）。 */
-  const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
-
-  /**
-   * 补全候选的"补全并立即执行"也要按**真实风险**门控：
-   * `nginx -s reload` / `docker compose restart` 是"需确认"，确认前不写 shell。
-   */
-  const [runConfirm, setRunConfirm] = useState<{ command: string; risk: SuggestedRisk } | null>(
-    null,
-  );
-
   /** 右键 = 顶部工具栏镜像：终端画布上右键可达被滚动/折叠藏起的顶部功能。 */
   const terminalMenu = useContextMenu();
 
@@ -324,29 +157,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    */
   const filledDraftRef = useRef<string | null>(null);
 
-  /** 关闭单个结果 Tab：优先选择右侧相邻，没有则选左侧。 */
-  const closeResultTab = (id: string) => {
-    setCommandResults((current) => {
-      const index = current.findIndex((item) => item.id === id);
-      if (index === -1) return current;
-      const next = current.filter((item) => item.id !== id);
-      setActiveResultId((activeId) => {
-        if (activeId !== id) return activeId;
-        // 右侧优先，没有则左侧；全部关完 → null（抽屉隐藏）。
-        return next[index] ? next[index].id : (next[index - 1]?.id ?? null);
-      });
-      return next;
-    });
-  };
-  const closeOtherTabs = (id: string) => {
-    setCommandResults((current) => current.filter((item) => item.id === id));
-    setActiveResultId(id);
-  };
-  const closeAllTabs = () => {
-    setCommandResults([]);
-    setActiveResultId(null);
-    setDrawerClosed(true);
-  };
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
 
@@ -523,6 +333,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [sessionId, tab.quickTarget, tab.serverId, tab.title],
   );
 
+  // 命令结果面板：增强终端开关、捕获起点、结果 Tab 管理与**唯一提交入口**
+  // 全部归 `use-terminal-results.ts`（它依赖上面这个 noteExecutedCommand）。
+  const results = useTerminalResults({
+    sessionId,
+    terminalRef,
+    boundaryParserRef,
+    noteExecutedCommand,
+    setParamHint,
+  });
+  const executeTerminalCommand = results.execute;
+
   /**
    * 受控 pwd 探测：前两条来源（OSC 7 / 跟踪的 cd）都没答案时才用。
    *
@@ -567,94 +388,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }, [draft, phase, requestCwdProbe]);
 
   /**
-   * **唯一命令提交入口。**
-   *
-   * 所有来源（用户手动输入 / 结果右键重新运行 / 命令历史重新运行 / 命令
-   * 建议执行）都必须经过这里：
-   *
-   * ```text
-   * executeTerminalCommand(command, source)
-   *   → coordinator.submit(command, source, plan)   // 开始捕获 + 记边界起点
-   *   → 注册 xterm 起始行 marker                     // 快照起点（一次一个）
-   *   → sshInput(command + 受控标记)                 // 只写一次
-   *   → stdout / stderr 原样累积，只写主 Terminal
-   *   → OSC 133 D → D 之前文本写完渲染后截图          // provideRenderedText 汇合
-   *   → 新建结果 Tab（默认渲染快照，原始输出调试）
-   * ```
-   *
-   * `options.prefix` 是需要**原样**先发出去的按键数据（用户敲的回车、建议
-   * 补全的字符）—— 命令文本就是这么被"敲"进终端的，不能重复发送。
-   */
-  const executeTerminalCommand = useCallback(
-    (
-      command: string,
-      source: CommandSource,
-      options?: { prefix?: string; mode?: SubmitMode },
-    ) => {
-      const trimmed = command.trim();
-      if (!trimmed) return;
-      // 未解析占位符绝不进 shell（bash 会当成输入重定向）。
-      if (hasUnresolvedPlaceholder(trimmed)) {
-        setParamHint(
-          t("The command still has unfilled parameters ({{command}}); please select values for them first", {
-            command: trimmed,
-          }),
-        );
-        return;
-      }
-      const mode: SubmitMode =
-        options?.mode ?? (options?.prefix === undefined ? "full" : "line-ready");
-      // 增强终端关着 → 不注入受控标记、不捕获输出（命令照常发往 shell）。
-      const plan = planCommandSubmission(trimmed, mode, { capture: enhancedRef.current });
-      coordinatorRef.current?.submit(trimmed, source, plan);
-      boundaryParserRef.current?.expect(plan.markers);
-      // 捕获起点：当前光标行 = 命令回显所在行。一次提交只注册一个 marker，
-      // 等输出结束后（D 标记 / 兜底）由 consumeTerminalSnapshot 消费释放。
-      if (plan.capture) {
-        releaseCaptureMarker();
-        const instance = terminalRef.current;
-        if (instance) {
-          const marker = instance.registerMarker(0);
-          captureMarkerRef.current = marker ? { marker } : null;
-        }
-      }
-      const prefix = options?.prefix ?? "";
-      if (!prefix && !plan.write) return;
-      // `line-ready` 依赖调用方把回车一起发出来；没有（如 Ctrl+C 放弃行）
-      // 就补一个，否则命令不会被提交。
-      const needsSubmit = mode === "line-ready" && prefix.length > 0 && !/[\r\n]$/.test(prefix);
-      void opsApi
-        .sshInput(sessionId, prefix + (needsSubmit ? "\r" : "") + plan.write)
-        .catch(() => undefined);
-    },
-    [releaseCaptureMarker, sessionId, t],
-  );
-
-  /** 重运行：按**真实风险**门控（只读直接跑；修改型 / 未知必须确认；删除类不提供）。 */
-  const rerun = (item: CapturedResult) => {
-    if (!item.canExecute) return;
-    if (item.mutability === "delete") return; // 删除类走 P4.4 软删除流程
-    // 知识库未命中 → `unknown`，同样要确认：绝不把未知命令假装成只读。
-    if (item.mutability === "change" || item.mutability === "unknown") {
-      setRerunConfirm(item);
-      return;
-    }
-    noteExecutedCommand(item.command);
-    executeTerminalCommand(item.command, "rerun");
-  };
-  const confirmRerun = () => {
-    const item = rerunConfirm;
-    setRerunConfirm(null);
-    if (!item) return;
-    noteExecutedCommand(item.command);
-    executeTerminalCommand(item.command, "rerun");
-  };
-
-  /**
    * 终端实例只创建一次，它的 `onData` 闭包会一直持有首帧的函数。用 ref
    * 让它每次都能拿到**最新**的提交入口（否则切服务器后记历史会记错标题）。
    */
-  const commandEntryRef = useRef({
+  const commandEntryRef = useRef<TerminalCommandEntry>({
     note: noteExecutedCommand,
     submit: executeTerminalCommand,
   });
@@ -837,7 +574,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const risk = item.command?.risk;
       // 修改运行状态 / 危险操作：先确认，再写 shell（绝不自动执行）。
       if (risk === "medium" || risk === "high") {
-        setRunConfirm({ command: line, risk });
+        results.setRunConfirm({ command: line, risk });
         return;
       }
       setDraft("");
@@ -850,8 +587,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   /** 确认后真正执行（reload / restart 之类改变运行状态的命令）。 */
   const confirmRun = () => {
-    const pending = runConfirm;
-    setRunConfirm(null);
+    const pending = results.runConfirm;
+    results.setRunConfirm(null);
     if (!pending) return;
     setDraft("");
     noteExecutedCommand(pending.command);
@@ -1006,8 +743,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const overlays = {
     paramPicker: Boolean(paramPicker),
     paramHint: Boolean(paramHint),
-    runConfirm: Boolean(runConfirm),
-    rerunConfirm: Boolean(rerunConfirm),
+    runConfirm: Boolean(results.runConfirm),
+    rerunConfirm: Boolean(results.rerunConfirm),
     selectionMenu: Boolean(selectionMenu),
     history: historyOpen,
     files: filesOpen,
@@ -1153,388 +890,78 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     updateTab,
   ]);
 
-  // Terminal instance + data plumbing.
-  useEffect(() => {
-    if (!containerRef.current || !hasTarget) return;
+  // xterm 实例的创建、输入/输出接线、缩放、选区菜单与断开清理 —— 见
+  // `use-terminal-session.ts`（依赖只留 hasTarget / sessionId：换目标或换
+  // 会话才重建实例，绝不因为父组件重渲染就把连接拆掉）。
+  useTerminalSession({
+    containerRef,
+    suggestWrapperRef,
+    terminalRef,
+    fitRef,
+    lineEditorRef,
+    commandEntryRef,
+    filledDraftRef,
+    boundaryParserRef,
+    cwdTrackerRef,
+    coordinatorRef: results.coordinatorRef,
+    captureMarkerRef: results.captureMarkerRef,
+    selectionMenuTimerRef,
+    cwdProbeTimerRef,
+    keyHandlerRef,
+    sessionId,
+    hasTarget,
+    consumeTerminalSnapshot: results.consumeTerminalSnapshot,
+    updateSuggestAnchor,
+    setInAlternate,
+    setDraft,
+    setCwd,
+    setSelectionMenu,
+    setPhase,
+    setStatus,
+    connect: () => void connect(),
+    removeSession,
+  });
 
-    const isDark = document.documentElement.dataset.theme === "dark";
-    // 与结果面板共用同一套等宽栈（--font-command-output 的同源变量），
-    // 否则终端里的表格和结果快照里的同一份文本会对不齐。
-    const terminalFont = getComputedStyle(document.documentElement)
-      .getPropertyValue("--font-terminal")
-      .trim();
-    const instance = new Terminal({
-      convertEol: true,
-      cursorBlink: true,
-      fontFamily: terminalFont || undefined,
-      fontSize: 13,
-      lineHeight: 1.25,
-      scrollback: 5000,
-      theme: terminalTheme(isDark),
-    });
-    const fit = new FitAddon();
-    instance.loadAddon(fit);
-    instance.open(containerRef.current);
-    fit.fit();
-    terminalRef.current = instance;
-    fitRef.current = fit;
+  /** 存活探测判定断线后的落地：切状态，并在终端里写一行（用户看得到）。 */
+  const handleConnectionLost = useCallback(
+    (message: string) => {
+      setPhase("closed");
+      setError(message);
+      setStatus(sessionId, "closed", { error: message });
+      terminalRef.current?.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+    },
+    [sessionId, setStatus],
+  );
 
-    // Follow the app theme live (system theme can change while running).
-    const themeObserver = new MutationObserver(() => {
-      instance.options.theme = terminalTheme(document.documentElement.dataset.theme === "dark");
-    });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  /** 主动断开（工具栏按钮与右键菜单共用同一条路径）。 */
+  const disconnect = useCallback(() => {
+    void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+    setPhase("closed");
+    setStatus(sessionId, "closed");
+  }, [sessionId, setStatus]);
 
-    // Claim only the suggestion keys; everything else reaches the shell.
-    instance.attachCustomKeyEventHandler((event) => {
-      if (event.type !== "keydown") return true;
-      return !keyHandlerRef.current(event);
-    });
+  // 只在真的连着的时候探测：服务端可能早就关了，UI 不能继续显示"活着"。
+  useSshKeepalive({ phase, sessionId, onLost: handleConnectionLost });
 
-    const dataSubscription = instance.onData((data) => {
-      // Full-screen programs (vim, top, less) take over the screen: the
-      // "current line" is no longer a shell command, so suggestions are noise.
-      // Sampled on input — entering them always involves a keystroke.
-      const alternate = instance.buffer.active.type !== "normal";
-      setInAlternate(alternate);
 
-      // Recover whole commands from the raw stream; arrow keys, Ctrl+C, pastes
-      // and line continuations are handled by the editor.
-      const commands = lineEditorRef.current?.feed(data) ?? [];
-      if (alternate) {
-        void opsApi.sshInput(sessionId, data).catch(() => undefined);
-        return;
-      }
-      // 用户真的按了回车（行已提交）→ "上次填入的行"作废，避免下一次
-      // 补全被误判成执行。
-      if (commands.length > 0) filledDraftRef.current = null;
-      // 粘贴多条命令时每条都记历史，但只捕获最后一条（它才会真正产生结果）。
-      for (const command of commands) commandEntryRef.current.note(command);
-      const submitted = commands[commands.length - 1];
-      if (submitted) {
-        // 唯一提交入口：命令文本就是靠 `data` 一个字符一个字符"敲"进终端的，
-        // 所以按键数据必须原样发出（prefix），提交入口只追加受控标记。
-        commandEntryRef.current.submit(submitted, "input", { prefix: data });
-      } else {
-        void opsApi.sshInput(sessionId, data).catch(() => undefined);
-      }
-      // A submitted line (or Ctrl+C, which the editor abandons) clears the
-      // draft, which in turn hides the suggestion layer.
-      setDraft(commands.length > 0 ? "" : (lineEditorRef.current?.current ?? ""));
-      // 输入会移动光标 → 重算提示面板锚点。
-      updateSuggestAnchor();
-    });
 
-    const resizeObserver = new ResizeObserver(() => {
-      // While this tab is hidden (display:none) the container measures 0;
-      // refitting would collapse the terminal and spam the connection with
-      // resize packets. Skip until it is visible again.
-      if (containerRef.current && containerRef.current.clientWidth === 0) return;
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      if (instance.cols > 0 && instance.rows > 0) {
-        void opsApi.sshResize(sessionId, instance.cols, instance.rows).catch(() => undefined);
-      }
-      // 缩放 / fit 改变单元格尺寸 → 重算锚点。
-      updateSuggestAnchor();
-    });
-    resizeObserver.observe(containerRef.current);
-
-    // 回滚缓冲滚动改变光标在视口中的行 → 重算锚点（rAF 节流）。
-    const viewport = containerRef.current.querySelector<HTMLElement>(".xterm-viewport");
-    const onViewportScroll = () => updateSuggestAnchor();
-    viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
-
-    let disposed = false;
-    // xterm 解析是**异步**的：instance.write(data, callback) 的 callback 在数据
-    // 被解析渲染完才触发（同一实例内 FIFO，stdout/stderr 同一条队列）。快照
-    // 必须排在"输出结束之前的所有写入"之后 —— 用这条链把 callback 串起来，
-    // 严禁 setTimeout 猜渲染。
-    let writeQueue: Promise<void> = Promise.resolve();
-    const queueWrite = (text: string): Promise<void> => {
-      if (!text) return writeQueue;
-      const done = new Promise<void>((resolve) => {
-        instance.write(text, () => resolve());
-      });
-      writeQueue = writeQueue.catch(() => undefined).then(() => done);
-      return done;
-    };
-    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
-      if (disposed) return;
-      const output = event.payload;
-      // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，同时把
-      // OSC 133 事件按原始顺序切进 parts —— 文本写终端、事件决定快照时机。
-      const parsed =
-        boundaryParserRef.current?.feed(output) ?? {
-          text: output,
-          events: [],
-          parts: [{ kind: "text", text: output }],
-        };
-      // OSC 7（shell 自己上报的 cwd）：扫**原始**输出，不受边界解析的剔除
-      // 影响 —— 这是 cwd 的最可信来源（优先级 1）。
-      const reported = cwdTrackerRef.current?.feedOutput(sessionId, output) ?? null;
-      if (reported) setCwd(reported);
-      // 命令结束（OSC 133 D 带真实退出码）：`cd` 成功才更新 cwd，失败不动。
-      for (const event of parsed.events) {
-        if (event.type === "output_end") {
-          cwdTrackerRef.current?.onCommandEnd(sessionId, event.exitCode);
-          setCwd(cwdTrackerRef.current?.get(sessionId) ?? null);
-        }
-      }
-      coordinatorRef.current?.onOutput(parsed.text, parsed.events);
-      const notFound = isCommandNotFoundOutput(parsed.text);
-      const display = (text: string) => (notFound ? `\x1b[31m命令无效：${text}\x1b[0m` : text);
-
-      // 同步抓住本次结束对应的 marker —— 异步渲染期间可能有新命令提交。
-      const heldAtEnd = captureMarkerRef.current;
-      // 写出顺序 = 终端输出流水线（见 terminal-output-pipeline.ts）：
-      // D 之前写完并渲染完 → 抓快照 → 才写 D 之后的提示符。
-      void writeOutputParts(parsed.parts, {
-        write: (text) => queueWrite(display(text)),
-        flush: () => writeQueue.catch(() => undefined),
-        capture: () =>
-          coordinatorRef.current?.provideRenderedText(consumeTerminalSnapshot(heldAtEnd)),
-      });
-      // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
-      setInAlternate(instance.buffer.active.type !== "normal");
-      updateSuggestAnchor();
-    });
-    // stderr 与 stdout 分开：Rust 侧两条流各有独立的流式解码器，事件也分开，
-    // 否则结果的原始输出里永远没有 stderr。写入仍走同一 xterm 队列。
-    const unlistenStderr = listen<string>(sshStderrEvent(sessionId), (event) => {
-      if (disposed) return;
-      const text = event.payload;
-      coordinatorRef.current?.onStderr(text);
-      // 与 stdout **同一条写入队列**：stderr 事件晚到时也要排在快照之前，
-      // 否则它会写进下一个命令的结果，或干脆不进本次快照。
-      if (text) void queueWrite(text);
-    });
-
-    const selectionSubscription = instance.onSelectionChange(() => {
-      if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
-      const text = instance.getSelection();
-      if (!text) {
-        setSelectionMenu(null);
-        return;
-      }
-      selectionMenuTimerRef.current = window.setTimeout(() => {
-        const container = containerRef.current;
-        // 菜单渲染在 wrapper（relative 定位父元素）里，坐标必须以 wrapper 为基准。
-        const wrapper = suggestWrapperRef.current;
-        if (!container || !wrapper || !instance.hasSelection()) return;
-        // 菜单贴着**选区末端**（最后一个选中单元格的右下方），不是写死的顶部居中。
-        const screen = container.querySelector<HTMLElement>(".xterm-screen");
-        const cols = instance.cols;
-        const rows = instance.rows;
-        const pos = instance.getSelectionPosition?.();
-        const containerRect = container.getBoundingClientRect();
-        const wrapperRect = wrapper.getBoundingClientRect();
-        let x: number;
-        let y: number;
-        if (screen && cols > 0 && rows > 0 && pos) {
-          const rect = screen.getBoundingClientRect();
-          const cellWidth = rect.width / cols;
-          const cellHeight = rect.height / rows;
-          // start/end 是缓冲坐标（含回滚偏移）；可视行 = bufferY - viewportY。
-          const viewportY = instance.buffer.active.viewportY;
-          const endColumn = pos.end.x + 1; // 0 基 → 选中文字右缘
-          const endRow = pos.end.y - viewportY + 1; // 选中行下一行上缘
-          x = containerRect.left - wrapperRect.left + endColumn * cellWidth;
-          y = containerRect.top - wrapperRect.top + endRow * cellHeight;
-          // 越界保护：末端滚出视口（选区跨屏）时退回顶部居中。
-          if (endRow < 0 || endRow > rows) {
-            x = Math.max(12, wrapperRect.width / 2);
-            y = 12;
-          }
-        } else {
-          x = Math.max(12, wrapperRect.width / 2);
-          y = 12;
-        }
-        setSelectionMenu({ x, y, text });
-      }, SELECTION_MENU_DELAY_MS);
-    });
-    const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
-      if (disposed) return;
-      setPhase((current) => (current === "connected" ? "closed" : current));
-      setStatus(sessionId, "closed");
-    });
-
-    void connect();
-
-    return () => {
-      disposed = true;
-      resizeObserver.disconnect();
-      themeObserver.disconnect();
-      viewport?.removeEventListener("scroll", onViewportScroll);
-      dataSubscription.dispose();
-      selectionSubscription.dispose();
-      if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
-      void unlistenOutput.then((fn) => fn());
-      void unlistenStderr.then((fn) => fn());
-      void unlistenClosed.then((fn) => fn());
-      void opsApi.sshDisconnect(sessionId).catch(() => undefined);
-      removeSession(sessionId);
-      // 会话结束：该服务器上的目录 / Docker / 服务 / 进程缓存与容器选择全部
-      // 失效 —— 重连后环境可能完全不同，留着旧缓存会给出错误的补全。
-      invalidateDirectoryCache(sessionId);
-      invalidateDockerCache(sessionId);
-      invalidateServiceCache();
-      invalidateProcessCache();
-      invalidateEnvironmentCache(sessionId);
-      cwdTrackerRef.current?.forget(sessionId);
-      if (cwdProbeTimerRef.current !== null) window.clearTimeout(cwdProbeTimerRef.current);
-      instance.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
-    };
-    // Reconnecting on target change is intentional; `connect` is stable per mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasTarget, sessionId, updateSuggestAnchor]);
-
-  // Keepalive only runs while the session is actually connected. Consecutive
-  // failures flip the session to "closed" so the UI stops claiming a live
-  // connection that the server has already dropped.
-  useEffect(() => {
-    if (phase !== "connected") return;
-
-    let failures = 0;
-    const timer = window.setInterval(() => {
-      opsApi.sshKeepalive(sessionId).then(
-        () => {
-          failures = 0;
-        },
-        (cause) => {
-          failures += 1;
-          if (failures < KEEPALIVE_MAX_FAILURES) return;
-          window.clearInterval(timer);
-          const message = t("Connection lost: {{message}}", { message: toErrorMessage(cause) });
-          setPhase("closed");
-          setError(message);
-          setStatus(sessionId, "closed", { error: message });
-          terminalRef.current?.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
-        },
-      );
-    }, KEEPALIVE_MS);
-
-    return () => window.clearInterval(timer);
-  }, [phase, sessionId, setStatus, t]);
-
-  const runSearch = useCallback(() => {
-    const instance = terminalRef.current;
-    if (!instance || !searchQuery.trim()) {
-      setSearchState(null);
-      return;
-    }
-    const needle = searchQuery.toLowerCase();
-    const buffer = instance.buffer.active;
-    let total = 0;
-    let firstLine: number | null = null;
-    for (let i = 0; i < buffer.length; i += 1) {
-      const text = buffer.getLine(i)?.translateToString(true).toLowerCase() ?? "";
-      if (text.includes(needle)) {
-        total += 1;
-        firstLine ??= i;
-      }
-    }
-    if (firstLine === null) {
-      setSearchState({ index: 0, total: 0 });
-      return;
-    }
-    // Walk forward from the current position so repeated searches advance.
-    const start = (searchState?.index ?? 0) % Math.max(total, 1);
-    let seen = -1;
-    let target = firstLine;
-    for (let i = 0; i < buffer.length && seen < start; i += 1) {
-      const text = buffer.getLine(i)?.translateToString(true).toLowerCase() ?? "";
-      if (!text.includes(needle)) continue;
-      seen += 1;
-      target = i;
-    }
-    instance.scrollToLine(target);
-    setSearchState({ index: (seen + 1) % Math.max(total, 1), total });
-  }, [searchQuery, searchState]);
-
-  /**
-   * 右键菜单 = 顶部 icon 工具栏的镜像（同样的动作与可见性条件）：
-   * 终端画布上右键，可达被滚动/折叠藏起的顶部功能。toggle 类菜单项
-   * 用 hint 标注当前展开状态；连接动作按 phase 二选一，与 toolbar 一致。
-   */
-  const openToolbarMenu = terminalMenu.onContextMenu(() => {
-    // xterm 的隐藏 textarea 持有焦点时，菜单的键盘导航（↑↓/Enter）会被
-    // 终端当成 shell 按键吞掉 —— 先让它失焦，焦点回到 body。
-    containerRef.current?.querySelector("textarea")?.blur();
-    const items: ContextMenuItem[] = [
-      {
-        label: t("Search"),
-        icon: Search,
-        hint: searchOpen ? t("Expanded") : undefined,
-        onSelect: () => setSearchOpen((v) => !v),
-      },
-      {
-        label: t("Split Vertically"),
-        icon: Columns2,
-        onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal"),
-      },
-      {
-        label: t("Split Horizontally"),
-        icon: Rows2,
-        onSelect: () => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical"),
-      },
-      {
-        label: t("Clear Screen"),
-        icon: Eraser,
-        onSelect: () => terminalRef.current?.clear(),
-      },
-      {
-        label: t("Command History"),
-        icon: History,
-        hint: historyOpen ? t("Expanded") : undefined,
-        onSelect: () => setHistoryOpen((v) => !v),
-      },
-      {
-        label: t("Remote Files"),
-        icon: FolderOpen,
-        hint: filesOpen ? t("Expanded") : undefined,
-        onSelect: () => setFilesOpen((v) => !v),
-      },
-      {
-        label: t("Refresh Environment"),
-        icon: RefreshCw,
-        hint: t("Re-probe Docker / Nginx"),
-        disabled: phase !== "connected",
-        onSelect: refreshEnvironmentCaches,
-      },
-    ];
-    items.push({
-      label: t("Enhanced Terminal"),
-      icon: Sparkles,
-      hint: enhancedTerminal ? t("Enabled") : undefined,
-      onSelect: toggleEnhancedTerminal,
-    });
-    items.push({ separator: true });
-    if (phase === "connected") {
-      items.push({
-        label: t("Disconnect"),
-        icon: Unplug,
-        danger: true,
-        onSelect: () => {
-          void opsApi.sshDisconnect(sessionId).catch(() => undefined);
-          setPhase("closed");
-          setStatus(sessionId, "closed");
-        },
-      });
-    } else {
-      items.push({
-        label: t("Reconnect"),
-        icon: PlugZap,
-        disabled: phase === "connecting",
-        onSelect: () => void connect(),
-      });
-    }
-    return items;
+  // 右键菜单 = 顶部 icon 工具栏的镜像（同一组动作与可见性条件）：终端画布上
+  // 右键，可达被滚动/折叠藏起的顶部功能。菜单项构建见 `use-terminal-menu.ts`。
+  const openToolbarMenu = useTerminalMenu(terminalMenu, containerRef, {
+    searchOpen: search.open,
+    historyOpen,
+    filesOpen,
+    phase,
+    enhancedTerminal: results.enhanced,
+    onToggleSearch: () => search.setOpen((v) => !v),
+    onSplit: (direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction),
+    onClear: () => terminalRef.current?.clear(),
+    onToggleHistory: () => setHistoryOpen((v) => !v),
+    onToggleFiles: () => setFilesOpen((v) => !v),
+    onRefreshEnvironment: refreshEnvironmentCaches,
+    onToggleEnhanced: results.toggleEnhanced,
+    onDisconnect: disconnect,
+    onReconnect: () => void connect(),
   });
 
   if (!hasTarget) {
@@ -1544,105 +971,35 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   return (
     <div className="flex h-full min-h-0 flex-row bg-surface-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1  border-line bg-transparent px-2">
-        <ToolbarIcon label={t("Search")} icon={Search} active={searchOpen} onClick={() => setSearchOpen((v) => !v)} />
-        <ToolbarIcon label={t("Split Vertically")} icon={Columns2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "horizontal")} />
-        <ToolbarIcon label={t("Split Horizontally")} icon={Rows2} onClick={() => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", "vertical")} />
-        <ToolbarIcon label={t("Clear Screen")} icon={Eraser} onClick={() => terminalRef.current?.clear()} />
-        <ToolbarIcon label={t("Command History")} icon={History} active={historyOpen} onClick={() => setHistoryOpen((v) => !v)} />
-        <ToolbarIcon label={t("Remote Files")} icon={FolderOpen} active={filesOpen} onClick={() => setFilesOpen((v) => !v)} />
-        {/* 刷新环境：目录 / Docker / 服务 / 进程缓存一起失效并重新探测。
-            只有点这里才会重新跑 `docker ps`，敲字符时一律用缓存。 */}
-        <ToolbarIcon
-          label={t("Refresh Environment")}
-          icon={RefreshCw}
-          disabled={phase !== "connected"}
-          onClick={refreshEnvironmentCaches}
-        />
-        {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
-            打开后命令才会生成结果面板（不另设开关：开了就有、关了就什么都没有）。 */}
-        <ToolbarIcon
-          label={t("Enhanced Terminal")}
-          icon={Sparkles}
-          active={enhancedTerminal}
-          onClick={toggleEnhancedTerminal}
-        />
-        <div className="mx-1 h-4 w-px bg-line" />
-        {/* 字体：终端与命令输出共用一套栈（不打包字体，没装则回退）。 */}
-        <label className="flex items-center gap-1 text-11 text-fg-muted">
-          {t("Font")}
-          <span className="relative inline-flex items-center">
-            <select
-              value={fontId}
-              onChange={(event) => setFontId(event.target.value)}
-              className="h-[26px] w-[132px] appearance-none rounded-[7px] border border-line bg-surface-2 pl-2 pr-5 text-11 text-fg outline-none focus:border-accent"
-            >
-              {TERMINAL_FONTS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {t(option.label)}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-fg-subtle" />
-          </span>
-        </label>
-        <div className="mx-1 h-4 w-px bg-line" />
-        {phase === "connected" ? (
-          <ToolbarIcon
-            label={t("Disconnect")}
-            icon={Unplug}
-            onClick={() => {
-              void opsApi.sshDisconnect(sessionId).catch(() => undefined);
-              setPhase("closed");
-              setStatus(sessionId, "closed");
-            }}
-          />
-        ) : (
-          <ToolbarIcon label={t("Reconnect")} icon={PlugZap} disabled={phase === "connecting"} onClick={() => void connect()} />
-        )}
-
-        {searchOpen && (
-          <div className="ml-2 flex items-center gap-1">
-            <input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") runSearch();
-              }}
-              placeholder={t("Search in scrollback")}
-              spellCheck={false}
-              className="h-[26px] w-48 rounded-[7px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-            />
-            <Button variant="ghost" size="xs" className="rounded-[7px]" onClick={runSearch}>
-              {t("Search")}
-            </Button>
-            {searchState && (
-              <span className="text-11 text-fg-subtle">
-                {searchState.total === 0 ? t("No matches") : `${searchState.index + 1}/${searchState.total}`}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+      <TerminalToolbar
+        phase={phase}
+        searchOpen={search.open}
+        searchQuery={search.query}
+        searchState={search.state}
+        historyOpen={historyOpen}
+        filesOpen={filesOpen}
+        enhancedTerminal={results.enhanced}
+        fontId={fontId}
+        onToggleSearch={() => search.setOpen((v) => !v)}
+        onSearchQueryChange={search.setQuery}
+        onSearch={search.run}
+        onSplit={(direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction)}
+        onClear={() => terminalRef.current?.clear()}
+        onToggleHistory={() => setHistoryOpen((v) => !v)}
+        onToggleFiles={() => setFilesOpen((v) => !v)}
+        onRefreshEnvironment={refreshEnvironmentCaches}
+        onToggleEnhanced={results.toggleEnhanced}
+        onFontChange={setFontId}
+        onDisconnect={disconnect}
+        onReconnect={() => void connect()}
+      />
 
       {error && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
-          <WifiOff size={12} />
-          <span className="min-w-0 flex-1 truncate">{error}</span>
-          <button
-            type="button"
-            aria-label={t("Copy error message")}
-            title={t("Copy error message")}
-            className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
-            onClick={() => void copyToClipboard(error)}
-          >
-            <Copy size={12} />
-            {t("Copy")}
-          </button>
-          <Button variant="ghost" size="xs" onClick={() => void connect()}>
-            {t("Retry")}
-          </Button>
-        </div>
+        <TerminalErrorBanner
+          message={error}
+          onCopy={() => void copyToClipboard(error)}
+          onRetry={() => void connect()}
+        />
       )}
 
       {/* padding 放在包装层：FitAddon 读的是测量元素（containerRef）的
@@ -1725,44 +1082,46 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
       {/* 命令结果抽屉：终端内容原样保留，结果面板挂在下方。
           未开启增强终端 / 命令不可捕获（交互式、读 stdin）→ 这里不渲染任何东西。 */}
-      {enhancedTerminal && commandResults.length > 0 && !drawerClosed && (
+      {results.enhanced && results.results.length > 0 && !results.drawerClosed && (
         <TerminalResultDrawer
-          results={commandResults}
-          activeId={activeResultId}
-          collapsed={drawerCollapsed}
-          onToggleCollapse={() => setDrawerCollapsed((v) => !v)}
-          onSelect={setActiveResultId}
-          onClose={() => setDrawerClosed(true)}
-          onCloseTab={closeResultTab}
-          onCloseOthers={closeOtherTabs}
-          onCloseAll={closeAllTabs}
-          onRerun={rerun}
+          results={results.results}
+          activeId={results.activeId}
+          collapsed={results.drawerCollapsed}
+          onToggleCollapse={() => results.setDrawerCollapsed((v) => !v)}
+          onSelect={results.setActiveId}
+          onClose={() => results.setDrawerClosed(true)}
+          onCloseTab={results.closeTab}
+          onCloseOthers={results.closeOthers}
+          onCloseAll={results.clearAll}
+          onRerun={results.rerun}
         />
       )}
-      {rerunConfirm && (
+      {results.rerunConfirm && (
         <ConfirmDialog
           open
           title={t("Rerun this command?")}
           description={t("This command will modify the server state ({{risk}}):\n{{command}}", {
-            risk: rerunConfirm.risk ? RISK_META[rerunConfirm.risk].label : t("Unknown risk"),
-            command: rerunConfirm.command,
+            risk: results.rerunConfirm.risk
+              ? RISK_META[results.rerunConfirm.risk].label
+              : t("Unknown risk"),
+            command: results.rerunConfirm.command,
           })}
           confirmLabel={t("Rerun")}
-          onConfirm={confirmRerun}
-          onCancel={() => setRerunConfirm(null)}
+          onConfirm={results.confirmRerun}
+          onCancel={() => results.setRerunConfirm(null)}
         />
       )}
-      {runConfirm && (
+      {results.runConfirm && (
         <ConfirmDialog
           open
           title={t("Run this command?")}
           description={t("This command will modify the server run state ({{risk}}):\n{{command}}", {
-            risk: RISK_META[runConfirm.risk].label,
-            command: runConfirm.command,
+            risk: RISK_META[results.runConfirm.risk].label,
+            command: results.runConfirm.command,
           })}
           confirmLabel={t("Run")}
           onConfirm={confirmRun}
-          onCancel={() => setRunConfirm(null)}
+          onCancel={() => results.setRunConfirm(null)}
         />
       )}
       </div>

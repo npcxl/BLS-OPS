@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
+import { useAutoUpdateCheck } from "@/hooks/use-updater";
+import { UpdateNotification } from "./updater/UpdateNotification";
 import { AppTopBar } from "./AppTopBar";
 import { NavigationRail } from "./NavigationRail";
 import { ContextSidebar } from "./ContextSidebar";
@@ -37,6 +39,8 @@ const MANAGE_KINDS: {
  */
 export function Workbench() {
   useGlobalShortcuts();
+  // One delayed, once-per-launch update check for the whole app.
+  useAutoUpdateCheck();
   const { t } = useTranslation();
 
   const openTab = useWorkbenchStore((s) => s.openTab);
@@ -164,6 +168,7 @@ export function Workbench() {
       </div>
       <CommandPalette open={commandPaletteOpen} actions={actions} onClose={() => setCommandPaletteOpen(false)} />
       <HostKeyDialog />
+      <UpdateNotification />
     </div>
   );
 }

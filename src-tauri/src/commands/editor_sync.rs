@@ -36,10 +36,23 @@ pub async fn editor_sync_open(
         .map(|(name, path)| (editor_id.clone(), name, path))
         .ok_or_else(|| format!("未检测到编辑器 {editor_id}，无法打开"))?;
 
-    let info = open_sync_session(&app, &state.editor_syncs, &state.ssh, &session_id, &remote_path, editor)
-        .await
-        .map_err(|error| error.to_string())?;
-    record_audit(&state, "editor_sync_open", None, None, &format!("{} → {}", info.remote_path, info.editor_name));
+    let info = open_sync_session(
+        &app,
+        &state.editor_syncs,
+        &state.ssh,
+        &session_id,
+        &remote_path,
+        editor,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    record_audit(
+        &state,
+        "editor_sync_open",
+        None,
+        None,
+        &format!("{} → {}", info.remote_path, info.editor_name),
+    );
     Ok(info)
 }
 
@@ -54,7 +67,10 @@ pub async fn editor_sync_close(
         .await
         .map_err(|error| error.to_string())?;
     record_audit(&state, "editor_sync_close", None, None, &closed.remote_path);
-    let _ = app.emit(EDITOR_SYNC_EVENT, EditorSyncEventPayload::upsert(closed.clone()));
+    let _ = app.emit(
+        EDITOR_SYNC_EVENT,
+        EditorSyncEventPayload::upsert(closed.clone()),
+    );
     Ok(closed)
 }
 

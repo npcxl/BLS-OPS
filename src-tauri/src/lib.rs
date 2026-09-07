@@ -52,6 +52,13 @@ pub fn run() {
         // Native open/save dialogs: the file panel needs "upload" to work from
         // a click, not only from a drag & drop.
         .plugin(tauri_plugin_dialog::init())
+        // P5.1 auto-update. Signature verification is **always on**: the public
+        // key ships inside `tauri.conf.json` (plugins.updater.pubkey) and is
+        // embedded into the binary by `generate_context!`, so a `.sig` it does
+        // not match aborts the install. No frontend switch can bypass it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Only used to relaunch the app once an update has been installed.
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let base_dir = dirs::data_local_dir()
                 .or_else(dirs::data_dir)

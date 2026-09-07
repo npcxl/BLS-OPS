@@ -14,6 +14,7 @@ import monitor from "./monitor";
 import docker from "./docker";
 import nginx from "./nginx";
 import settings from "./settings";
+import updater from "./updater";
 import errors from "./errors";
 
 export default {
@@ -28,5 +29,6 @@ export default {
   ...docker,
   ...nginx,
   ...settings,
+  ...updater,
   ...errors,
 } as const;

@@ -357,6 +357,43 @@ fn exec_kind_builds_from_params() {
     assert!(format!("{exec:?}").contains("web-1"));
 }
 
+/// `docker info` 必须同时有**普通文本版**与 **JSON 版**，且两版都能被检索到。
+///
+/// 普通文本版给人读（`docker info` 按 `[Section]` 分块），JSON 版给脚本
+/// （`--format '{{json .}}'`，字段完整）—— 缺一个都会让某一侧的人找不到入口。
+#[test]
+fn docker_info_has_plain_and_json_variants() {
+    let catalog = builtin_catalog();
+    let plain = catalog
+        .iter()
+        .find(|entry| entry.id == "docker.info")
+        .expect("缺少 docker info 普通文本版");
+    let json = catalog
+        .iter()
+        .find(|entry| entry.id == "docker.info.json")
+        .expect("缺少 docker info JSON 版");
+    assert_eq!(plain.syntax, "docker info");
+    assert_eq!(json.syntax, "docker info --format '{{json .}}'");
+    // 两版都是只读（引擎信息查询，不改状态）。
+    assert_eq!(plain.risk, RiskLevel::ReadOnly);
+    assert_eq!(json.risk, RiskLevel::ReadOnly);
+
+    // 输入 `docker info json` 时 JSON 版必须能被检索到。
+    let hits = search("docker info json", &empty_ctx());
+    assert!(
+        ids(&hits).contains(&"docker.info.json"),
+        "JSON 版检索不到：{:?}",
+        ids(&hits)
+    );
+    // 只输入 `docker info` 时普通文本版优先。
+    let hits = search("docker info", &empty_ctx());
+    assert!(
+        ids(&hits).contains(&"docker.info"),
+        "普通文本版检索不到：{:?}",
+        ids(&hits)
+    );
+}
+
 /// 模块引用完整性（防 catalog.rs 里的 ExecKind 拼写漂移）。
 #[test]
 fn catalog_only_references_known_exec_kinds() {

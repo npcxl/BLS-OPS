@@ -168,3 +168,13 @@ export function canonicalCommand(input: string): string | null {
 export function hasPipeline(input: string): boolean {
   return /[|;&]/.test(input.trim());
 }
+
+/**
+ * shell 报"命令不存在"的输出（`-bash: xxx: command not found`）。
+ *
+ * 中英文引号都要认：不同发行版/语言的报错用的引号不同，漏一种就会把
+ * 错误原样当命令输出显示。
+ */
+export function isCommandNotFoundOutput(output: string): boolean {
+  return /command ['“”']?[^'“”']+['“”']? not found/i.test(output);
+}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { projectScanResultEvent } from "@/lib/events";
 import { i18n } from "@/i18n";
+import { useActivityTicket } from "@/stores/activity-store";
 import { opsApi, toErrorMessage, type ProjectScanResult, type ProjectScanStatus } from "@/api/ops-api";
 
 /**
@@ -34,6 +35,10 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
   /** 该扫描的最新后端状态，供卸载/切换时判断是否需要取消。 */
   const activeStateRef = useRef<string | null>(null);
   const targetKeyRef = useRef(`${serverId ?? ""}::${sessionId}`);
+
+  // A scan walks the whole remote filesystem over SSH — it is exactly the kind
+  // of long task an update restart must not silently kill (P5.1).
+  useActivityTicket("long_task", loading);
 
   const stopPolling = useCallback(() => {
     if (timerRef.current !== null) {

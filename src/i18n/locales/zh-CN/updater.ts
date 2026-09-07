@@ -1,0 +1,60 @@
+/** zh-CN · 应用更新（P5.1）。key 与英文文案逐字一致（natural keys）。 */
+export default {
+  // -- 设置 → 应用更新 --
+  "App update": "应用更新",
+  "Current version": "当前版本",
+  "Update channel": "更新通道",
+  Stable: "稳定版",
+  "Last checked": "上次检查",
+  Never: "从未检查",
+  "Check for updates automatically": "启动时自动检查更新",
+  "Check for updates": "检查更新",
+  Checking: "检查中…",
+  "Checking for updates…": "正在检查更新…",
+  "You are already on the latest version": "当前已是最新版本",
+  "A new version is available": "发现新版本",
+  "Downloading update…": "正在下载更新…",
+  "Installing update…": "正在安装更新…",
+  "Update installed — restart to finish": "更新已安装，重启后生效",
+  "Update postponed": "已推迟更新",
+  "Update failed": "更新失败",
+  "New version": "新版本",
+  Published: "发布时间",
+  "Release notes": "发布说明",
+  "Download and install": "下载并安装",
+  "Restart now": "立即重启",
+  "Remind me later": "稍后提醒",
+
+  // -- 自动检查通知 --
+  "Update available": "有可用更新",
+
+  // -- 重启确认（会中断 SSH / 传输 / 未保存文件）--
+  "Install update and restart?": "安装更新并重启？",
+  "Restart to finish the update?": "重启以完成更新？",
+  "Not now": "暂不重启",
+  "Install and restart": "安装并重启",
+  "Restarting now will interrupt the following work:": "现在重启会中断以下工作：",
+  "{{count}} active SSH sessions": "{{count}} 个正在连接的 SSH 会话",
+  "{{count}} SSH connections still being established": "{{count}} 个正在建立中的 SSH 连接",
+  "{{count}} commands are still running": "{{count}} 个命令仍在执行",
+  "{{count}} file transfers in progress": "{{count}} 个文件传输正在进行",
+  "{{count}} files have unsaved changes": "{{count}} 个文件有未保存的修改",
+  "{{count}} long-running tasks": "{{count}} 个长时间任务正在运行",
+  "The downloaded update is kept, so you can restart later from Settings without downloading it again.":
+    "已下载的更新会保留，你可以稍后在设置页重启，无需重新下载。",
+
+  // -- 错误分类（一一对应 UpdateErrorCode）--
+  "No network connection. Check your connection and try again.": "网络不可用，请检查网络后重试。",
+  "The update server did not respond in time. Try again later.": "更新服务器响应超时，请稍后重试。",
+  "The update information is malformed and cannot be used.": "更新信息格式错误，无法使用。",
+  "This release has no installer for the current platform.": "该版本没有适用于当前平台的安装包。",
+  "The update package is not signed. Update aborted.": "更新包缺少签名，已终止更新。",
+  "Signature verification failed. Update aborted.": "签名校验失败，已终止更新。",
+  "The download was interrupted. Please try again.": "下载被中断，请重新尝试。",
+  "Not enough disk space to install the update.": "磁盘空间不足，无法安装更新。",
+  "The installation failed. The app was left unchanged.": "安装失败，应用保持原状。",
+  "Update cancelled.": "已取消更新。",
+  "The app could not be restarted. Please close and reopen it manually.": "应用重启失败，请手动关闭并重新打开。",
+  "Updates are not available in development builds.": "开发版本不支持检查更新。",
+  "The update could not be completed.": "更新未能完成。",
+} as const;

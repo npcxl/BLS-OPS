@@ -1,0 +1,192 @@
+name: Release
+
+# Publishes a signed, updatable BLS-OPS build.
+#
+# Trigger: push a `vX.Y.Z` tag, or run manually with the same tag.
+# Phase 1 creates a **draft** release: the updater endpoint is
+# `/releases/latest/download/latest.json`, and GitHub's `latest` ignores drafts,
+# so nothing goes live until a human publishes the release.
+#
+# This workflow is deliberately separate from `ci.yml` — CI keeps running on
+# every push, this one only runs for releases.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release, e.g. v0.1.1"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  preflight:
+    name: Version + secrets preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Resolve the version from the tag
+        id: tag
+        shell: bash
+        run: |
+          ref="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          case "$ref" in v*) ;; *) echo "::error::tag must start with 'v', got '$ref'"; exit 1 ;; esac
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+
+      # One version, four files: package.json / Cargo.toml / tauri.conf.json /
+      # Cargo.lock, plus the tag itself.
+      - name: Versions must agree
+        run: node scripts/check-versions.mjs
+        env:
+          EXPECTED_VERSION: ${{ steps.tag.outputs.version }}
+
+      - name: Updater signing secret must be configured
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is empty."
+            echo "::error::Add it under Settings -> Secrets and variables -> Actions."
+            echo "::error::Never commit the private key — only the public key belongs in tauri.conf.json."
+            exit 1
+          fi
+
+  frontend:
+    name: Frontend quality
+    needs: preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # `pnpm build` runs `tsc && vite build`, so types are checked too.
+      - name: Type check + build
+        run: pnpm build
+
+      - name: Frontend tests
+        run: pnpm test
+
+  backend:
+    name: Rust quality
+    needs: preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --all-targets
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [frontend, backend]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Phase 1 ships one fully verified channel: Windows x86_64.
+          - os: windows-latest
+            platform: windows-x86_64
+            args: --target x86_64-pc-windows-msvc
+          # Extension points, intentionally disabled in P5.1:
+          # - macOS needs a Developer ID signature + notarization before an
+          #   updater artifact can be trusted; an unsigned .app is quarantined
+          #   by Gatekeeper, so we must not publish it.
+          # - Linux needs per-distro packaging verification (AppImage/DEB).
+          # - os: macos-latest
+          #   platform: macos-universal
+          #   args: --target universal-apple-darwin
+          # - os: ubuntu-22.04
+          #   platform: linux-x86_64
+          #   args: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-universal' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signature (minisign) — NOT Windows Authenticode. The private
+          # key never leaves GitHub Secrets; only its public half is compiled
+          # into the app via tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "BLS-OPS v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          # Generates latest.json next to the installers — the file the running
+          # app reads from /releases/latest/download/.
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}

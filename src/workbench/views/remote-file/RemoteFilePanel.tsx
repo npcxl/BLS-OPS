@@ -35,6 +35,7 @@ import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
 import { useDirSizeStore } from "@/stores/dir-size-store";
+import { useActivityTicket } from "@/stores/activity-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
@@ -127,6 +128,12 @@ export function RemoteFilePanel({
   const [dragging, setDraggingState] = useState(false);
   const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  /**
+   * Restart guard: an in-flight upload/download would be killed by an update
+   * restart, so the work is registered while it runs (see §P5.1 重启保护).
+   */
+  useActivityTicket("transfer", uploads !== null || downloading);
 
   /**
    * `over` fires on every mouse move while dragging. Writing the highlight
@@ -372,10 +379,13 @@ export function RemoteFilePanel({
       const { save } = await import("@tauri-apps/plugin-dialog");
       const destination = await save({ title: t("Download {{name}}", { name: entry.name }), defaultPath: entry.name });
       if (!destination) return;
+      setDownloading(true);
       const written = await opsApi.sftpDownloadFile(sessionId, entry.path, destination);
       setNotice(t("Downloaded {{name}} ({{size}})", { name: entry.name, size: formatSize(written) }));
     } catch (cause) {
       setStatus({ state: "error", message: toErrorMessage(cause) });
+    } finally {
+      setDownloading(false);
     }
   };
 

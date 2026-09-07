@@ -25,8 +25,8 @@ pub use model::{
     EditorInfo, EditorSyncEventPayload, EditorSyncScope, EditorSyncStatus, SyncSessionInfo,
     EDITOR_SYNC_EVENT,
 };
-pub use registry::SyncRegistry;
 pub(crate) use registry::SyncEntry;
+pub use registry::SyncRegistry;
 pub(crate) use sync::{close_sync_session, open_sync_session};
 
 use crate::ssh::{posix_join, posix_normalize, sftp_error, SshSessionManager};
@@ -41,7 +41,8 @@ pub(crate) const MAX_DIR_BYTES: u64 = 512 * 1024 * 1024;
 /// 递归最大深度。
 pub(crate) const MAX_DIR_DEPTH: usize = 16;
 /// 目录模式下跳过的本地开发产物目录名（不会出现在服务器部署目录里也能兜底）。
-pub(crate) const SKIP_DIR_NAMES: &[&str] = &["node_modules", "__pycache__", ".venv", "venv", ".cache"];
+pub(crate) const SKIP_DIR_NAMES: &[&str] =
+    &["node_modules", "__pycache__", ".venv", "venv", ".cache"];
 
 /// 上传前静默窗口：编辑器保存常见"临时文件 + 改名替换"，多事件在窗口内合并。
 pub(crate) const QUIET_WINDOW: std::time::Duration = std::time::Duration::from_millis(700);

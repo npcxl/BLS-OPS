@@ -23,7 +23,14 @@ fn sample_info() -> SyncSessionInfo {
 
 #[test]
 fn temp_artifacts_are_filtered() {
-    for path in [".#nginx.conf", "notes.txt~", "x.conf.swp", "x.conf.swx", "a.tmp", "4913"] {
+    for path in [
+        ".#nginx.conf",
+        "notes.txt~",
+        "x.conf.swp",
+        "x.conf.swx",
+        "a.tmp",
+        "4913",
+    ] {
         assert!(is_temp_artifact(Path::new(path)), "{path} 应被过滤");
     }
     for path in ["nginx.conf", "script.lua", "data.sql", "4914", "notes.md"] {
@@ -49,7 +56,16 @@ fn payload_is_camel_case_with_snake_case_enums() {
     let json = serde_json::to_value(&payload).unwrap();
     let session = json.get("session").unwrap();
     assert_eq!(json.get("kind").unwrap(), "upsert");
-    for key in ["sessionId", "remotePath", "localPath", "editorId", "editorName", "syncCount", "lastSyncAt", "openedAt"] {
+    for key in [
+        "sessionId",
+        "remotePath",
+        "localPath",
+        "editorId",
+        "editorName",
+        "syncCount",
+        "lastSyncAt",
+        "openedAt",
+    ] {
         assert!(session.get(key).is_some(), "缺少 camelCase 字段 {key}");
     }
     assert!(!session.get("session_id").is_some(), "字段必须是 camelCase");

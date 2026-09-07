@@ -88,12 +88,17 @@ cargo test              # Rust 单元测试
 | **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
 | **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 153 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析、**进程列表不携带命令行机密**等） |
+| **Rust 单元测试** | ✅ | 348 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析、**进程列表不携带命令行机密**等） |
 | **SSH 端到端测试** | ✅ | 27 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
-| **监控端到端测试** | ✅ | 15 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、**服务端主动断开被识别**、**断开后同 sessionId 重连、首次采集使用新基线**、**服务端误回 args 风格进程列表时密码/token/连接串不进入响应**、exec 与 PTY 同时使用、无 shell 的监控会话 |
-| **前端测试** | ✅ | 52 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口（2s/5s/30s 三个间隔的样本上限）/ 断连停止 / 不重叠采集**、**右键菜单的打开 / 外部点击关闭 / Escape 关闭 / 失焦关闭 / 右键别处不闪烁 / 无 handler 区域右键关闭 / 键盘跳过分隔符与禁用项 / 视口吸附** |
+| **监控端到端测试** | ✅ | 19 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、**服务端主动断开被识别**、**断开后同 sessionId 重连、首次采集使用新基线**、**服务端误回 args 风格进程列表时密码/token/连接串不进入响应**、exec 与 PTY 同时使用、无 shell 的监控会话 |
+| **前端测试** | ✅ | 625 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口（2s/5s/30s 三个间隔的样本上限）/ 断连停止 / 不重叠采集**、**右键菜单的打开 / 外部点击关闭 / Escape 关闭 / 失焦关闭 / 右键别处不闪烁 / 无 handler 区域右键关闭 / 键盘跳过分隔符与禁用项 / 视口吸附** |
 | **CI** | ✅ | Windows：`fmt` / `check --all-targets` / `test --all-targets` / `build` + **桌面程序启动冒烟** + `pnpm build` + `pnpm test` |
-| **Docker / Nginx / 部署 / 项目 / AI** | ⏸ 暂停 | 仅保留占位说明，验收通过前不开发。**文件模块第一阶段（SFTP 只读浏览）已上线**，上传/下载/删除/重命名/在线编辑留待后续 |
+| **命令智能中心（P4）** | ✅ | `command_center/`：编译期命令知识库（110 条）+ 风险分级 + 服务器工具探测；前端只传 `knowledgeId` 与结构化参数，命令字符串只在 `safe.rs` 拼 |
+| **统一输出适配引擎（P4）** | ✅ | `output_adapter/`：9 种 view + 通用解析 + 领域解析；前端 `views/command-result/` 只按 view 分发；raw 永久保留、解析失败可见 |
+| **增强终端（P4）** | ✅ | 命令结果抽屉（快照 / 原始双视图）、原位补全、二级参数选择器（占位符绝不进 shell）；**首次启动默认开启** |
+| **国际化 i18n** | ✅ | i18next natural keys，10 种语言（`en` 为 key 本身，`zh-CN` 全量），语言包在 `src/i18n/locales/<code>/<模块>.ts` |
+| **软删除 / 危险命令治理** | ⏭ 移出 P4 | 软删除**不属于 P4**：软删执行 / 删除记录 / 可恢复列表 / 永久删除 / 回滚，独立排在 P5 之后，详见 `docs/p4-acceptance.md` |
+| **AI 能力** | ⏸ 占位 | 未提供任何 AI 能力；UI 明确显示"未实现"，不展示假数据 |
 
 ### 关于 Windows `0xc0000139`
 
@@ -117,25 +122,35 @@ cargo test              # Rust 单元测试
 BLS-OPS/
 ├── src/                          # 前端 (React + TS)
 │   ├── api/ops-api.ts            # IPC 客户端 + 类型（无 getCredentialSecret）
+│   ├── api/types/<域>.ts         # 领域类型（与 Rust snake_case 逐字对齐）
+│   ├── i18n/                     # natural keys，locales/<code>/<模块>.ts
 │   ├── stores/
 │   │   ├── workbench-store.ts    # Tab / 分屏 UI 状态
 │   │   ├── domain-store.ts       # 服务器 / 凭据 / 分组 / Known Hosts / 会话
 │   │   ├── session-store.ts      # 实时会话状态与 Host Key 挑战
 │   │   └── monitor-store.ts      # 监控状态：按 Tab 隔离、暂停、30 分钟趋势窗口
 │   ├── workbench/
-│   │   ├── views/               # WorkbenchHome、TerminalView、ServerMonitorView、PlaceholderView
-│   │   ├── host-key-dialog.tsx  # Host Key 确认弹窗 + 已知主机面板
+│   │   ├── views/                # 各领域视图（terminal/、command-center/、remote-file/ …）
+│   │   ├── views/command-result/ # 统一结果渲染器：只按 view 分发
+│   │   ├── server-list/          # 服务器列表唯一实现（两侧栏只是壳）
+│   │   ├── host-key-dialog.tsx   # Host Key 确认弹窗 + 已知主机面板
 │   │   ├── ssh-context-sidebar.tsx      # 服务器列表 / 编辑表单
-│   │   ├── settings-context-sidebar.tsx # 凭据 / 已知主机 / 运行环境
-│   │   └── StatusBar.tsx         # 真实会话数与实体计数
+│   │   └── settings-context-sidebar.tsx # 凭据 / 已知主机 / 运行环境
+│   ├── components/ui/            # context-menu / confirm-dialog / copy-feedback …
 │   └── hooks/                    # 全局快捷键、窗口边缘拖拽、表单提交守卫
 │
 ├── src-tauri/src/
 │   ├── lib.rs              # Tauri 入口与命令注册
-│   ├── db.rs               # Schema、迁移、CRUD、单元测试
-│   ├── ssh.rs              # SshSessionManager：认证、Host Key、KeepAlive、ProxyJump、exec 通道
-│   ├── monitor.rs          # 只读监控：固定命令表 / /proc·df·ps 解析 / 速率基线 / 断连取消
-│   ├── commands.rs         # IPC 命令层（密钥只在此读取）
+│   ├── commands/           # IPC 命令层（按域拆分；密钥只在此读取）
+│   ├── command_center/     # P4 命令知识库与检索（catalog / model / search）
+│   ├── output_adapter/     # P4 统一输出适配引擎（model / registry / generic / domain）
+│   ├── env_probe.rs        # 服务器运行环境探测（Nginx 宿主机 / Docker / Compose）
+│   ├── safe/               # 唯一"动作 → 命令字符串"翻译点
+│   ├── ssh/                # SshSessionManager：认证、Host Key、KeepAlive、ProxyJump、exec、UTF-8 解码
+│   ├── monitor/            # 只读监控：固定命令表 / 解析 / 速率基线 / 断连取消
+│   ├── db/                 # Schema、迁移、CRUD
+│   ├── docker.rs / systemd.rs / journal.rs / nginx.rs / dirsize.rs
+│   ├── project_discovery.rs / service_catalog.rs / workload_class.rs / deployment_*
 │   ├── keyring.rs          # 系统凭据管理器封装
 │   └── state.rs            # AppState
 │
@@ -433,13 +448,42 @@ cargo test --test p3_e2e      # 只跑服务/日志/容器/网关端到端
 ### P3-4 测试
 
 - [x] `tests/p3_e2e.rs`：**25 个端到端测试**，真实 SSH 服务端 + 命令日志断言
-- [x] Rust 单元测试 **152 个**（systemd / journal / docker / nginx 解析、安全层校验、项目与部署 CRUD、迁移）
+- [x] Rust 单元测试 **348 个**（systemd / journal / docker / nginx 解析、安全层校验、项目与部署 CRUD、迁移）
 - [x] 前端测试 **52 个**（新增 `ops-api.test.ts` 覆盖 `projectSteps` / `priorityLabel` / `deployStatusLabel`）
 - [x] `pnpm test`、`pnpm build`、`cargo fmt --check`、`cargo check --all-targets`、`cargo test`、`cargo build` 全部通过
 
 ### 本阶段明确不做
 
 进程终止（`kill` 类操作）、AI 能力、镜像拉取 / 容器创建（需要交互式参数与进度，留待后续）、编排（compose / swarm）。
+
+---
+
+## ✅ 阶段验收清单：P4 命令智能中心 / 增强终端
+
+> 完整验收材料（含真实服务器人工验收清单）见 [`docs/p4-acceptance.md`](docs/p4-acceptance.md)。
+
+### 后端
+
+- [x] **安全模型**：前端只传 `knowledgeId` + 结构化 `CommandParams`；`ExecKind → build_exec → capability()` 是唯一翻译点，命令字符串只在 `safe.rs`
+- [x] **知识库**：编译期常量 110 条，7 大类；**删除类与高风险命令不入库**
+- [x] **风险分级**：只读直接执行；medium（restart / stop / reload）走 `ConfirmDialog`；high / destructive 不收录
+- [x] **工具探测**：`command_probe_tools` 按服务器上下文置灰未安装工具；`command_execute` 执行前二次校验
+- [x] **统一输出适配引擎**：`output_adapter/`（9 种 view + 通用解析 + 领域解析），未注册 / 解析失败回退 raw 且原因可见
+- [x] **终端接线**：`command_adapt_output`（纯解析、零 I/O、绝不重复执行）+ `command_match_text`（确定性匹配）
+
+### 前端
+
+- [x] **命令结果抽屉**：每结果一个 Tab（关闭 / 中键 / 右键菜单：查看 / 重运行 / 复制 / 关闭其他），快照 + 原始双视图
+- [x] **增强终端默认开启**：`bls-ops.terminal.enhanced` 首次启动为开，只有用户主动关过才记忆关闭
+- [x] **原位补全**：锚点 = 光标右下角，↑↓ 选择、→ / Enter 只填入不执行、← / Esc 关闭；候选与输入一致时回车**执行**（不吞回车）
+- [x] **占位符绝不进 shell**：含 `<unit>` / `<容器>` 的候选走二级参数选择器，写 shell 前最后一道拦截
+- [x] **按 view 分发的渲染器**：`views/command-result/` 不认命令来源，未知 view 退回原始输出
+
+### 本阶段明确不做
+
+- **软删除（危险命令治理）**：软删执行 / 删除记录 / 可恢复列表 / 永久删除 / 删除回滚 —— **明确移出 P4**，作为独立阶段排在 P5 之后。当前删除能力无任何入口（知识库不收录、重运行直接拒绝、建议面板不生成），移出不留半成品。
+- **AI 能力**：继续占位，UI 显示"未实现"。
+- **部署工作流（原 P4.5）**：并入 P5 系统基础部署流程。
 
 ---
 

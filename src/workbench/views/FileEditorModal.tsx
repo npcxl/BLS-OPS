@@ -18,6 +18,7 @@ import { opsApi, toErrorMessage } from "@/api/ops-api";
 import type { EditorLanguage } from "@/lib/file-kind";
 import { useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
+import { useActivityTicket } from "@/stores/activity-store";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -47,6 +48,9 @@ export default function FileEditorModal({
   const [size, setSize] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // Unsaved remote edits: an update restart would lose them, so they are
+  // registered with the restart guard (P5.1).
+  useActivityTicket("editor", dirty);
   const [saving, setSaving] = useState(false);
   /** 浮动搜索框开关（Ctrl+F）。 */
   const [searchOpen, setSearchOpen] = useState(false);

@@ -128,10 +128,16 @@ pub(crate) fn normalize_event_path(path: PathBuf) -> PathBuf {
 }
 
 /// 建立文件监听，返回（watcher, 事件接收端）。watcher 必须保活。
-fn create_watcher(workspace: &Path, scope: EditorSyncScope) -> Result<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>)> {
+fn create_watcher(
+    workspace: &Path,
+    scope: EditorSyncScope,
+) -> Result<(
+    notify::RecommendedWatcher,
+    std::sync::mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>,
+)> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(tx)
-        .map_err(|error| anyhow!("无法监听本地目录：{error}"))?;
+    let mut watcher =
+        notify::recommended_watcher(tx).map_err(|error| anyhow!("无法监听本地目录：{error}"))?;
     let mode = match scope {
         EditorSyncScope::File => RecursiveMode::NonRecursive,
         EditorSyncScope::Directory => RecursiveMode::Recursive,
@@ -154,7 +160,11 @@ pub(crate) struct SyncTaskDeps {
 ///
 /// 退出条件（任一）：事件通道关闭（watcher 被 drop，即用户关闭同步）、
 /// 关闭信号触发。任务结束前把会话标记为 closed 并 emit。
-pub(crate) fn spawn_sync_task(deps: SyncTaskDeps, rx: std::sync::mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>, close_rx: watch::Receiver<bool>) {
+pub(crate) fn spawn_sync_task(
+    deps: SyncTaskDeps,
+    rx: std::sync::mpsc::Receiver<std::result::Result<notify::Event, notify::Error>>,
+    close_rx: watch::Receiver<bool>,
+) {
     tokio::spawn(async move {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<PathBuf>();
         // 桥接线程：notify 回调在自家线程里触发，这里转成 tokio 世界的事件流。
@@ -279,7 +289,10 @@ pub(crate) fn spawn_sync_task(deps: SyncTaskDeps, rx: std::sync::mpsc::Receiver<
             })
             .await
         {
-            let _ = app.emit(super::EDITOR_SYNC_EVENT, super::model::EditorSyncEventPayload::upsert(updated));
+            let _ = app.emit(
+                super::EDITOR_SYNC_EVENT,
+                super::model::EditorSyncEventPayload::upsert(updated),
+            );
         }
     });
 }
@@ -303,7 +316,10 @@ pub(crate) async fn open_sync_session(
     let session = ssh.get(session_id).await?;
     let sftp = session.sftp_client().await?;
     let canonical = sftp.canonicalize(remote_path).await.map_err(sftp_error)?;
-    let meta = sftp.symlink_metadata(&canonical).await.map_err(sftp_error)?;
+    let meta = sftp
+        .symlink_metadata(&canonical)
+        .await
+        .map_err(sftp_error)?;
     let scope = match meta.file_type() {
         FileType::Dir => EditorSyncScope::Directory,
         FileType::Symlink => return Err(anyhow!("不支持同步符号链接")),

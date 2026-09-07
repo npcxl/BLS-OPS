@@ -379,14 +379,14 @@ fn docker_info_has_plain_and_json_variants() {
     assert_eq!(json.risk, RiskLevel::ReadOnly);
 
     // 输入 `docker info json` 时 JSON 版必须能被检索到。
-    let hits = search("docker info json", &empty_ctx());
+    let hits = search(catalog, "docker info json", &empty_ctx(), 10);
     assert!(
         ids(&hits).contains(&"docker.info.json"),
         "JSON 版检索不到：{:?}",
         ids(&hits)
     );
     // 只输入 `docker info` 时普通文本版优先。
-    let hits = search("docker info", &empty_ctx());
+    let hits = search(catalog, "docker info", &empty_ctx(), 10);
     assert!(
         ids(&hits).contains(&"docker.info"),
         "普通文本版检索不到：{:?}",

@@ -14,6 +14,7 @@ export default {
   "You are already on the latest version": "当前已是最新版本",
   "A new version is available": "发现新版本",
   "Downloading update…": "正在下载更新…",
+  "Downloaded — waiting for a safe moment to install": "已下载完成，正在等待合适的时机安装",
   "Installing update…": "正在安装更新…",
   "Update installed — restart to finish": "更新已安装，重启后生效",
   "Update postponed": "已推迟更新",

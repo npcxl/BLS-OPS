@@ -8,7 +8,7 @@
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { RESTART_WARNING_KEY, type RestartBlocker } from "./update-guard";
+import { RESTART_WARNING_KEY, type RestartBlocker } from "@/lib/updater/restart-guard";
 
 interface UpdateRestartDialogProps {
   open: boolean;

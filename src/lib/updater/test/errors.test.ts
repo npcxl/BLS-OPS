@@ -69,10 +69,27 @@ describe("classifyUpdateError", () => {
 });
 
 describe("sanitizeUpdateDetail", () => {
-  it("redacts the local user's home path", () => {
+  it("redacts the local user's home path on Windows", () => {
     expect(sanitizeUpdateDetail("failed to write C:\\Users\\alice\\AppData\\Local\\Temp\\x")).toBe(
       "failed to write C:\\Users\\<redacted>\\AppData\\Local\\Temp\\x",
     );
+  });
+
+  // Regression: an earlier version kept the captured group (the username) and
+  // only hid the slash, turning /home/alice into "alice<redacted>".
+  it.each([
+    ["Linux", "failed to write /home/alice/.local/share/x", "failed to write /home/<redacted>/.local/share/x"],
+    ["macOS", "failed to write /Users/alice/Library/x", "failed to write /Users/<redacted>/Library/x"],
+  ])("redacts the home path on %s without leaking the username", (_os, input, expected) => {
+    const detail = sanitizeUpdateDetail(input);
+    expect(detail).toBe(expected);
+    expect(detail).not.toContain("alice");
+  });
+
+  it("redacts every home path in a multi-path message", () => {
+    const detail = sanitizeUpdateDetail("copy /home/alice/a to /Users/bob/b failed");
+    expect(detail).toBe("copy /home/<redacted>/a to /Users/<redacted>/b failed");
+    expect(detail).not.toMatch(/alice|bob/);
   });
 
   it("redacts tokens and signature blobs", () => {

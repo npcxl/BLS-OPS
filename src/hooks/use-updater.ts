@@ -16,7 +16,7 @@ import {
   selectConnectingCount,
   useSessionStore,
 } from "@/stores/session-store";
-import { collectRestartBlockers, type RestartBlocker } from "@/workbench/updater/update-guard";
+import { collectRestartBlockers, type RestartBlocker } from "@/lib/updater/restart-guard";
 import { isDevRuntime } from "@/lib/updater/updater-client";
 
 /**

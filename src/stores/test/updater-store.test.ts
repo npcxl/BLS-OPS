@@ -16,6 +16,8 @@ vi.mock("@/lib/updater/updater-client", async (importOriginal) => {
 
 import { resetUpdaterStore, setUpdaterClient, useUpdaterStore } from "@/stores/updater-store";
 import { useDomainStore } from "@/stores/domain-store";
+import { useActivityStore } from "@/stores/activity-store";
+import { useSessionStore } from "@/stores/session-store";
 import type { UpdaterClient } from "@/lib/updater/updater-client";
 import type { UpdateProgress, UpdateRelease } from "@/api/types/updater";
 import type { AppInfo } from "@/api/ops-api";
@@ -64,9 +66,17 @@ beforeEach(() => {
   localStorage.clear();
   mocks.dev = false;
   resetUpdaterStore();
+  useActivityStore.setState({ tickets: {} });
+  useSessionStore.setState({ sessions: {}, challenge: null });
   useDomainStore.setState({ appInfo: appInfo("0.1.0") });
   store().init();
 });
+
+/** Registers one connected SSH session, as the terminal would. */
+function connectSession() {
+  useSessionStore.getState().register({ sessionId: "s1", tabId: "t1", title: "prod" });
+  useSessionStore.getState().setStatus("s1", "connected");
+}
 
 describe("checking", () => {
   it("reports 'up to date' after a manual check that finds nothing", async () => {
@@ -190,6 +200,35 @@ describe("downloading and installing", () => {
     await store().check({ manual: true });
 
     expect(client.download).toHaveBeenCalledTimes(1);
+    expect(store().phase).toBe("restart_required");
+  });
+
+  // Regression guard for the race the store exists to close: the guard runs
+  // when the user clicks *and* again after the download, because a download can
+  // take minutes and an SSH session may appear meanwhile.
+  it("stops at 'downloaded' when an SSH session appears during the download", async () => {
+    setClient(fakeClient(NEW));
+    client.download = vi.fn(async () => connectSession());
+    await store().check({ manual: true });
+    await store().install();
+
+    expect(store().phase).toBe("downloaded");
+    expect(client.install).not.toHaveBeenCalled();
+    expect(store().release?.version).toBe("0.1.1");
+  });
+
+  it("finishes the install from 'downloaded' without downloading again", async () => {
+    setClient(fakeClient(NEW));
+    client.download = vi.fn(async () => connectSession());
+    await store().check({ manual: true });
+    await store().install();
+
+    // Session closed: the same button now only has to run the installer.
+    useSessionStore.setState({ sessions: {} });
+    await store().install();
+
+    expect(client.download).toHaveBeenCalledTimes(1);
+    expect(client.install).toHaveBeenCalledTimes(1);
     expect(store().phase).toBe("restart_required");
   });
 

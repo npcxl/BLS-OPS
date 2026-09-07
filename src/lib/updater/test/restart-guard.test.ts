@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectRestartBlockers, hasBlockingActivity } from "../update-guard";
+import { collectRestartBlockers, hasBlockingActivity } from "../restart-guard";
 import { countTickets, useActivityStore } from "@/stores/activity-store";
 
 const emptyActivity = () => countTickets({});

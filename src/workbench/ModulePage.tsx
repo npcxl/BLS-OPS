@@ -84,9 +84,8 @@ function ModulePlaceholder({ module }: { module: NavModule }) {
             </div>
           ))}
           <div className="px-3 py-3 text-11 leading-relaxed text-fg-subtle">
-            {t(
-              "This module is not implemented yet. Development starts after P0 (real SSH terminal, host key verification and credential binding) passes acceptance.",
-            )}
+            {/* No phase references: this text outlives individual milestones. */}
+            {t("This module is not implemented yet.")}
           </div>
         </div>
       </div>

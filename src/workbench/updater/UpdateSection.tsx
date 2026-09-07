@@ -24,6 +24,7 @@ const PHASE_LABELS: Record<UpdatePhase, string> = {
   up_to_date: "You are already on the latest version",
   available: "A new version is available",
   downloading: "Downloading update…",
+  downloaded: "Downloaded — waiting for a safe moment to install",
   installing: "Installing update…",
   restart_required: "Update installed — restart to finish",
   cancelled: "Update postponed",
@@ -51,8 +52,15 @@ export function UpdateSection() {
 
   const busy = phase === "checking" || phase === "downloading" || phase === "installing";
   // Installing is allowed whenever we hold a release and are not already
-  // mid-flight or waiting for a restart.
-  const canInstall = !!release && (phase === "available" || phase === "cancelled" || phase === "error" || phase === "up_to_date");
+  // mid-flight or waiting for a restart. From `downloaded` the same button
+  // finishes the install — the package is on disk, so nothing is refetched.
+  const canInstall =
+    !!release &&
+    (phase === "available" ||
+      phase === "cancelled" ||
+      phase === "error" ||
+      phase === "up_to_date" ||
+      phase === "downloaded");
   const percent =
     progress && progress.total && progress.total > 0
       ? Math.min(100, Math.round((progress.received / progress.total) * 100))
@@ -117,7 +125,7 @@ export function UpdateSection() {
         </Button>
         {canInstall && (
           <Button variant="primary" size="sm" disabled={busy} onClick={guard.requestInstall}>
-            {t("Download and install")}
+            {phase === "downloaded" ? t("Install and restart") : t("Download and install")}
           </Button>
         )}
         {phase === "restart_required" && (

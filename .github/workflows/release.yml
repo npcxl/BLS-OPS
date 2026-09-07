@@ -1,26 +1,39 @@
 name: Release
 
-# Publishes a signed, updatable BLS-OPS build.
+# One workflow, end to end: version → tag → build → draft release.
 #
-# Trigger: push a `vX.Y.Z` tag, or run manually with the same tag.
-# Phase 1 creates a **draft** release: the updater endpoint is
-# `/releases/latest/download/latest.json`, and GitHub's `latest` ignores drafts,
-# so nothing goes live until a human publishes the release.
+# Why everything lives in a single workflow: a push made with `GITHUB_TOKEN`
+# does **not** trigger other workflows. Bumping the version in one workflow and
+# building in another would therefore never build the new tag, so the bump,
+# the commit, the tag and the build all happen here.
 #
-# This workflow is deliberately separate from `ci.yml` — CI keeps running on
-# every push, this one only runs for releases.
+# Two ways to run it:
+#   * "Run workflow" → pick `patch` / `minor` / `major` (or an explicit tag)
+#     → the version is computed, committed, tagged and built.
+#   * push a `vX.Y.Z` tag → the version is taken from the tag and only built.
+#
+# The result is always a **draft** release: the updater reads
+# `/releases/latest/download/latest.json`, and GitHub's `latest` ignores
+# drafts, so nothing reaches users until a human publishes it.
 
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
+      bump:
+        description: "SemVer level (ignored when 'tag' is set)"
+        required: false
+        default: patch
+        type: choice
+        options: [patch, minor, major]
       tag:
-        description: "Tag to build and release, e.g. v0.1.1"
-        required: true
+        description: "Explicit tag to publish, e.g. v0.1.0 for a baseline. No version bump happens."
+        required: false
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -31,11 +44,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  preflight:
-    name: Version + secrets preflight
+  version:
+    name: Resolve version
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -48,26 +66,78 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Resolve the version from the tag
-        id: tag
+      - name: Compute the version
+        id: resolve
         shell: bash
         run: |
-          ref="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          case "$ref" in v*) ;; *) echo "::error::tag must start with 'v', got '$ref'"; exit 1 ;; esac
-          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          explicit="${{ inputs.tag || '' }}"
+          if [ -n "$explicit" ]; then
+            # Baseline / re-publish: tag only, never touch the version files.
+            case "$explicit" in v*) ;; *) echo "::error::tag must start with 'v'"; exit 1 ;; esac
+            version="${explicit#v}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            pnpm version:bump "${{ inputs.bump }}" | tee bump.log
+            version="$(sed -n 's/^version=//p' bump.log | tail -n1)"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -z "$version" ]; then echo "::error::could not resolve a version"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      # One version, four files: package.json / Cargo.toml / tauri.conf.json /
-      # Cargo.lock, plus the tag itself.
+      - name: Refresh the lockfile
+        id: lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The app package is private, so pnpm does not store its version in
+          # the lockfile — but dependency changes must still be committed.
+          pnpm install --lockfile-only
+          if [ -n "$(git status --porcelain pnpm-lock.yaml)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Four files, one number; see scripts/check-versions.mjs.
       - name: Versions must agree
         run: node scripts/check-versions.mjs
         env:
-          EXPECTED_VERSION: ${{ steps.tag.outputs.version }}
+          EXPECTED_VERSION: ${{ steps.resolve.outputs.version }}
+
+      - name: Commit the version bump and create the tag
+        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json pnpm-lock.yaml
+          if git diff --cached --quiet; then
+            echo "::error::version bump produced no change — was this version already released?"
+            exit 1
+          fi
+          git commit -m "chore(release): v${{ steps.resolve.outputs.version }}"
+          git tag "v${{ steps.resolve.outputs.version }}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v${{ steps.resolve.outputs.version }}"
+
+      - name: Create the tag without bumping
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.resolve.outputs.tag }}"
+          git push origin "${{ steps.resolve.outputs.tag }}"
 
       - name: Updater signing secret must be configured
         shell: bash
         env:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -z "$KEY" ]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY is empty."
@@ -75,10 +145,14 @@ jobs:
             echo "::error::Never commit the private key — only the public key belongs in tauri.conf.json."
             exit 1
           fi
+          if [ -z "$PASSWORD" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty."
+            exit 1
+          fi
 
   frontend:
     name: Frontend quality
-    needs: preflight
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,13 +177,15 @@ jobs:
 
   backend:
     name: Rust quality
-    needs: preflight
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -119,6 +195,8 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --all -- --check
 
+      # Not `-D warnings`: existing code carries warnings we are not fixing in
+      # this release; clippy errors still fail the job.
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets
@@ -129,7 +207,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    needs: [frontend, backend]
+    needs: [version, frontend, backend]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -152,6 +230,9 @@ jobs:
           #   args: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -173,7 +254,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - uses: tauri-apps/tauri-action@v0
+      # Belt and braces: the built binary must carry the version we tagged.
+      - name: Verify the built version
+        run: node scripts/check-versions.mjs
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signature (minisign) — NOT Windows Authenticode. The private
@@ -182,11 +269,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          tauriScript: pnpm tauri
           tagName: v__VERSION__
           releaseName: "BLS-OPS v__VERSION__"
           releaseDraft: true
           prerelease: false
           # Generates latest.json next to the installers — the file the running
           # app reads from /releases/latest/download/.
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
+          # NSIS (setup.exe) is the recommended Windows update target and is
+          # what `installMode: passive` was chosen for.
+          updaterJsonPreferNsis: true
+          uploadUpdaterSignatures: true
+          retryAttempts: 1
           args: ${{ matrix.args }}

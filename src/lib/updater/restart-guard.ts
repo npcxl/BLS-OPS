@@ -4,6 +4,10 @@
  * BLS-OPS holds live SSH sessions, in-flight file transfers and unsaved remote
  * files. Restarting the app for an update kills all of them, so the update flow
  * must ask first and must say *what* would be lost.
+ *
+ * Kept pure (and in `lib/`) so both the store — which re-checks right before
+ * running the installer — and the React hook can call it from anywhere without
+ * dragging component code into the store layer.
  */
 import type { ActivityCounts } from "@/stores/activity-store";
 
@@ -22,8 +26,7 @@ export interface GuardInput {
 }
 
 /** Sentence shown above the list of blockers. i18n key. */
-export const RESTART_WARNING_KEY =
-  "Restarting now will interrupt the following work:";
+export const RESTART_WARNING_KEY = "Restarting now will interrupt the following work:";
 
 /**
  * Collects everything a restart would interrupt, in a stable display order.

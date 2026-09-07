@@ -2,10 +2,14 @@
  * "Install / restart, but only after asking" — shared by the settings section
  * and the auto-check banner so both behave identically.
  *
- * The rule: a restart is never silent while BLS-OPS holds live SSH sessions,
- * in-flight transfers, unsaved remote files or long-running tasks. If any of
- * those exist the user gets a dialog naming them; cancelling leaves the update
- * installed-but-waiting so it can be finished later without re-downloading.
+ * The rule: neither installing nor restarting is silent while BLS-OPS holds
+ * live SSH sessions, in-flight transfers, unsaved remote files or long-running
+ * tasks. Anything found is listed in a dialog; cancelling leaves the update
+ * where it is (downloaded-but-not-installed, or installed-but-not-restarted)
+ * so it can be finished later without fetching the package again.
+ *
+ * The store repeats this check itself right before running the installer —
+ * this hook only decides whether *starting* the flow needs a warning.
  */
 import { useCallback, useState } from "react";
 import { useRestartBlockers, useUpdaterActions } from "@/hooks/use-updater";

@@ -138,8 +138,7 @@ export default {
   Upload: "上传",
   Context: "上下文",
   "Model providers": "模型提供方",
-  "This module is not implemented yet. Development starts after P0 (real SSH terminal, host key verification and credential binding) passes acceptance.":
-    "本模块尚未实现。在 P0（真实 SSH 终端、Host Key 校验、凭据绑定）验收通过之前不进入开发。",
+  "This module is not implemented yet.": "本模块尚未实现。",
 
   // -- 占位视图 --
   "Phase 1": "阶段 1",

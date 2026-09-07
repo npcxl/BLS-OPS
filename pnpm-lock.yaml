@@ -51,10 +51,10 @@ importers:
         specifier: ^2.7.3
         version: 2.7.3
       '@tauri-apps/plugin-process':
-        specifier: ^2.3.1
+        specifier: 2.3.1
         version: 2.3.1
       '@tauri-apps/plugin-updater':
-        specifier: ^2.11.0
+        specifier: 2.11.0
         version: 2.11.0
       '@uiw/react-codemirror':
         specifier: ^4.25.11

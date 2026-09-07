@@ -14,12 +14,19 @@ import type {
   UpdateRelease,
 } from "@/api/types/updater";
 import { classifyUpdateError } from "@/lib/updater/errors";
+import { collectRestartBlockers, type RestartBlocker } from "@/lib/updater/restart-guard";
 import {
   createTauriUpdaterClient,
   isDevRuntime,
   type UpdaterClient,
 } from "@/lib/updater/updater-client";
 import { useDomainStore } from "@/stores/domain-store";
+import { countTickets, useActivityStore } from "@/stores/activity-store";
+import {
+  selectActiveCount,
+  selectConnectingCount,
+  useSessionStore,
+} from "@/stores/session-store";
 
 const AUTO_CHECK_KEY = "bls-ops.updater.autoCheck";
 const LAST_CHECK_KEY = "bls-ops.updater.lastCheckedAt";
@@ -57,6 +64,26 @@ interface UpdaterState {
 let client: UpdaterClient = createTauriUpdaterClient();
 let checkInFlight: Promise<void> | null = null;
 let installInFlight: Promise<void> | null = null;
+
+/**
+ * Live snapshot of the work a restart would interrupt.
+ *
+ * Read from the stores that actually own that state — the session store for
+ * live SSH, the activity store for transfers, unsaved files and long tasks.
+ *
+ * The updater calls it **twice**: once before downloading and once more right
+ * before running the installer. A download can take minutes, and a session
+ * opened while it was in flight must not be killed by a check that is already
+ * stale.
+ */
+export function blockingActivity(): RestartBlocker[] {
+  const sessions = useSessionStore.getState();
+  return collectRestartBlockers({
+    connectedSessions: selectActiveCount(sessions),
+    connectingSessions: selectConnectingCount(sessions),
+    activity: countTickets(useActivityStore.getState().tickets),
+  });
+}
 
 /** Swaps the backend — used by tests and by nothing else. */
 export function setUpdaterClient(next: UpdaterClient): void {
@@ -183,15 +210,39 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
   install: async () => {
     const state = get();
     if (installInFlight) return installInFlight;
-    // Never re-download a package that is already installed and waiting for a
-    // restart, and never start without something to install.
-    if (state.phase === "restart_required" || state.phase === "downloading") return;
-    if (state.phase === "installing" || !state.release) return;
+    // Never re-download or re-install a package that is already applied, and
+    // never start without something to install.
+    if (
+      state.phase === "restart_required" ||
+      state.phase === "downloading" ||
+      state.phase === "installing" ||
+      !state.release
+    ) {
+      return;
+    }
 
     const run = async () => {
-      set({ phase: "downloading", error: null, progress: { received: 0, total: null } });
+      set({ error: null });
       try {
-        await client.download((progress) => set({ progress }));
+        // Skip the download when the package is already on disk: reaching
+        // `downloaded` and finishing later must not fetch it twice.
+        if (get().phase !== "downloaded") {
+          set({ phase: "downloading", progress: { received: 0, total: null } });
+          await client.download((progress) => set({ progress }));
+        }
+
+        /*
+         * Second guard. The first one ran when the user clicked; this one runs
+         * against *now* — a download can take minutes and an SSH session, a
+         * transfer or an unsaved editor buffer may have appeared while it ran.
+         * Finding one stops the flow at `downloaded` so nothing is lost without
+         * the user saying so.
+         */
+        if (blockingActivity().length > 0) {
+          set({ phase: "downloaded", bannerVisible: false });
+          return;
+        }
+
         // The installer runs the verified package; on Windows it takes over and
         // this process exits, so `restart_required` is mostly a macOS/Linux
         // state — harmless (and honest) to set either way.

@@ -10,13 +10,15 @@
  * The update state machine.
  *
  * `idle → checking → (up_to_date | available)`
- * `available → downloading → installing → restart_required`
+ * `available → downloading → downloaded? → installing → restart_required`
  * any in-flight step → `cancelled` (user) or `error` (failure).
  *
- * There is no "downloaded" state: on Windows the installer is launched as soon
- * as the package is verified, and on macOS/Linux the binary is replaced in
- * place, so the only meaningful terminal states are "restart required" or
- * "failed".
+ * `downloaded` exists because installing is destructive to live work: the
+ * restart guard is evaluated **before** the download and again **before** the
+ * installer runs, since a download can take minutes and an SSH session may
+ * appear meanwhile. When the second check finds activity we stop at
+ * `downloaded` — the package is already on disk, so finishing later never
+ * re-downloads anything.
  */
 export type UpdatePhase =
   | "idle"
@@ -24,6 +26,7 @@ export type UpdatePhase =
   | "up_to_date"
   | "available"
   | "downloading"
+  | "downloaded"
   | "installing"
   | "restart_required"
   | "cancelled"

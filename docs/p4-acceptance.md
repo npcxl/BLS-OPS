@@ -32,9 +32,15 @@
    `scripts/tmp-check-i18n-keys.cjs` / `scripts/tmp-i18n-index.mjs` / `.codebuddy/teams/`
    历史团队记录，`.gitignore` 增加 `*_out.txt`、`scripts/tmp-*`、`*.tmp-*` 防复发；
    README 进度表与实际代码对齐（P2/P3/P4 真实状态）。
-6. **拆分巨型文件** —— `TerminalView.tsx`（1785 行）按职责拆出
-   `views/terminal/` 下的独立模块；`src-tauri/src/env_probe.rs`（1392 行）按
-   `foo.rs` + `foo/` 目录拆分为父模块与子模块，对外路径不变。
+6. **拆分巨型文件** ——
+   - `TerminalView.tsx` **1785 → 1084 行**，拆出 `views/terminal/` 下 8 个模块：
+     `terminal-preferences.ts`、`terminal-phase.ts`、`use-terminal-session.ts`
+     （xterm 生命周期大 effect）、`use-ssh-keepalive.ts`、`use-terminal-search.ts`、
+     `use-terminal-results.ts`（结果面板状态 + 唯一提交入口）、
+     `terminal-toolbar.tsx`、`terminal-error-banner.tsx`、`use-terminal-menu.ts`。
+   - `src-tauri/src/env_probe.rs` **1392 行** → 父模块（docs + `mod` + re-export，
+     **对外路径 `crate::env_probe::X` 不变**）+ `env_probe/{model,commands,parse,
+     collect,tests}.rs`（396 / 257 / 192 / 125 / 415 行）。
 
 ## 三、P4.4 软删除：明确移出 P4
 
@@ -105,9 +111,12 @@ pnpm tauri build          # 发布构建
 |------|------|------|
 | Rust 格式 | `cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check` | ✅ 通过（顺带修掉了 `editor_sync/` 与 `ssh/mod.rs` 的历史格式漂移） |
 | Rust 编译 | `cargo check --all-targets` | ✅ 0 error |
-| Rust 测试 | `cargo test --manifest-path src-tauri/Cargo.toml` | ✅ 348 单元 + 19 监控 e2e + 25 P3 e2e + 27 SSH e2e 全绿 |
-| 前端测试 | `pnpm test` | ✅ 625 / 626 通过（唯一失败来自并行开发中的 `updater` 分支，与 P4 无关） |
-| 前端打包 | `vite build` | ✅ 2556 modules，21s |
-| 前端类型 | `tsc` | ⚠️ 受并行分支中间态影响（`updater-store.test.ts` 的 mock 类型），P4 相关文件 0 error |
-| 桌面构建 | `pnpm tauri build` | ⏳ 需在 `updater` 分支合入、tsc 全绿后执行（等价的 `cargo build --release` 已跑通再确认） |
-| 真实 SSH 人工验收 | 见 4.2 表格 | ⚠️ **必须人工执行**（涉及真实发行版 / Docker / 中文环境，自动化覆盖不到） |
+| Rust 测试 | `cargo test --manifest-path src-tauri/Cargo.toml` | ✅ 349 单元 + 19 监控 e2e + 25 P3 e2e + 27 SSH e2e 全绿 |
+| 前端测试 | `pnpm test` | ✅ 626 / 627（唯一失败来自并行开发中的 `updater` 分支，与 P4 无关） |
+| 前端类型 + 打包 | `pnpm build`（`tsc && vite build`） | ✅ 通过 |
+| 桌面构建 | `pnpm tauri build` | ✅ 产物已出：`ops-workbench.exe` + `msi/...msi` 9.3MB + `nsis/...setup.exe` 6.4MB。最后一步报 `TAURI_SIGNING_PRIVATE_KEY` 缺失 —— 是并行分支新增的 updater 签名配置，与 P4 无关（设好签名密钥即消失） |
+
+### 真实 SSH 人工验收
+
+⚠️ **必须人工执行**：第 4.2 节那张表涉及真实发行版、真实 Docker、真实
+中文环境，进程内 e2e 覆盖不到，需要在真机逐条走一遍。

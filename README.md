@@ -88,7 +88,7 @@ cargo test              # Rust 单元测试
 | **优雅断开** | ✅ | channel EOF → channel close → SSH `Disconnect::ByApplication` → 清理会话与数据库 |
 | **并发安全** | ✅ | 会话注册表只在查表时持锁；每个会话独立锁，慢会话不阻塞其他会话 |
 | **安全边界** | ✅ | Rust 侧读 Keyring 并建立连接，密码永不回传 WebView；已移除 `credential_get_secret`；CSP 已启用 |
-| **Rust 单元测试** | ✅ | 348 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析、**进程列表不携带命令行机密**等） |
+| **Rust 单元测试** | ✅ | 349 个（目标解析、主机密钥信任矩阵、POSIX 路径、自然排序、迁移、级联删除、Known Hosts、服务器校验、会话记录、**exec 超时与断连取消**、`/proc` 与 `df`/`ps`/`os-release` 解析、**进程列表不携带命令行机密**等） |
 | **SSH 端到端测试** | ✅ | 27 个，进程内真实 SSH 服务端：握手、信任、密码认证、双跳 ProxyJump、优雅断开、SFTP 浏览、文件管理（删除/重命名/副本/mkdir/上传）、编辑器读写往返、二进制识别 |
 | **监控端到端测试** | ✅ | 19 个，进程内真实 SSH 服务端 + 会“走字”的 `/proc/stat` 夹具：全量快照解析、连续两次采集求差、**ProxyJump 采集最终服务器**、不支持的操作系统、命令超时、**断开后采集停止**、**断开取消进行中的采集**、**服务端主动断开被识别**、**断开后同 sessionId 重连、首次采集使用新基线**、**服务端误回 args 风格进程列表时密码/token/连接串不进入响应**、exec 与 PTY 同时使用、无 shell 的监控会话 |
 | **前端测试** | ✅ | 625 个（vitest + happy-dom）：Modal 退出动画遮罩回收、中途重开取消卸载、文件类型识别、**监控 store 的按 Tab 隔离 / 暂停 / 30 分钟窗口（2s/5s/30s 三个间隔的样本上限）/ 断连停止 / 不重叠采集**、**右键菜单的打开 / 外部点击关闭 / Escape 关闭 / 失焦关闭 / 右键别处不闪烁 / 无 handler 区域右键关闭 / 键盘跳过分隔符与禁用项 / 视口吸附** |
@@ -448,7 +448,7 @@ cargo test --test p3_e2e      # 只跑服务/日志/容器/网关端到端
 ### P3-4 测试
 
 - [x] `tests/p3_e2e.rs`：**25 个端到端测试**，真实 SSH 服务端 + 命令日志断言
-- [x] Rust 单元测试 **348 个**（systemd / journal / docker / nginx 解析、安全层校验、项目与部署 CRUD、迁移）
+- [x] Rust 单元测试 **349 个**（systemd / journal / docker / nginx 解析、安全层校验、项目与部署 CRUD、迁移）
 - [x] 前端测试 **52 个**（新增 `ops-api.test.ts` 覆盖 `projectSteps` / `priorityLabel` / `deployStatusLabel`）
 - [x] `pnpm test`、`pnpm build`、`cargo fmt --check`、`cargo check --all-targets`、`cargo test`、`cargo build` 全部通过
 

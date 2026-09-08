@@ -1,6 +1,6 @@
 [package]
 name = "ops-workbench"
-version = "0.1.4"
+version = "0.1.5"
 description = "Modern SSH desktop operations tool"
 edition = "2021"
 

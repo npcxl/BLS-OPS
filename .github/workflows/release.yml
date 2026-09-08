@@ -123,6 +123,8 @@ jobs:
           git push origin "HEAD:${{ github.ref_name }}"
           git push origin "v${{ steps.resolve.outputs.version }}"
 
+      # Re-publish path: the tag may already exist (fixing an old release's
+      # updater manifest, for example) — never fail the run for that.
       - name: Create the tag without bumping
         if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
         shell: bash
@@ -130,8 +132,8 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.resolve.outputs.tag }}"
-          git push origin "${{ steps.resolve.outputs.tag }}"
+          git tag "${{ steps.resolve.outputs.tag }}" || echo "tag already exists"
+          git push origin "${{ steps.resolve.outputs.tag }}" || echo "tag already pushed"
 
       - name: Updater signing secret must be configured
         shell: bash
@@ -283,3 +285,21 @@ jobs:
           uploadUpdaterSignatures: true
           retryAttempts: 1
           args: ${{ matrix.args }}
+
+      # tauri-action writes `api.github.com/.../releases/assets/<id>` URLs into
+      # latest.json. That endpoint serves *metadata* (401 anonymously), not the
+      # installer — the updater's download step would always fail. Rewrite the
+      # URLs to browser-downloadable `releases/download/<tag>/<file>` links.
+      - name: Rewrite updater manifest URLs to direct downloads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --pattern 'latest.json' --output latest.json
+          ASSET_MAP="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq 'map({(.id|tostring): .name}) | add')"
+          export ASSET_MAP
+          node scripts/rewrite-updater-urls.mjs latest.json
+          gh release upload "$TAG" latest.json --clobber

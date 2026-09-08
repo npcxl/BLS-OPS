@@ -36,6 +36,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - `package.json` 唯一版本输入；只走 `pnpm version:bump`（禁手改四处）；`pnpm check:versions` 校验。pnpm 固定 9.15.9 只写 `packageManager`；`pnpm/action-setup@v4` 不带 `with: version:`；改依赖必须 `pnpm install --lockfile-only`（CI `--frozen-lockfile`）。
 - 发布只走 `.github/workflows/release.yml`（bump→提交→tag→构建；tag 触发 draft，人工 Publish 后进 `latest.json`）。见 `docs/p5.1-updater.md`。
 - 自动更新只用官方 `tauri-plugin-updater`（禁前端 fetch 安装包/shell 拉起 exe）；状态机唯一入口 `src/stores/updater-store.ts`（组件禁自调 check()）；重启前过 `update-guard.ts`（取消保持 `restart_required`）。
+- **tauri-action 的 latest.json URL 必须重写（2026-09-08 事故，勿删 workflow 步骤）**：它写 `api.github.com/.../releases/assets/<id>`（匿名 401/元数据，非二进制）→ updater 下载必失败报 unknown；workflow 已加 `scripts/rewrite-updater-urls.mjs` 重写步骤（→ `releases/download/<tag>/<file>` 直链 --clobber）。重跑已有 tag 时 git 步骤有 `|| echo` 容错。unknown 类更新错误先看 console `[updater] … failed (unknown)` 后的 detail。
 
 ## UI 组件约定
 - 右键菜单统一 `useContextMenu()`（右键=顶部功能镜像；全局单例 `closeActiveContextMenu()`）。

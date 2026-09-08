@@ -8,6 +8,8 @@
  * differ slightly and callers depend on the current output.
  */
 
+import { i18n } from "@/i18n";
+
 // -- Monitoring (log-based byte ladder, B..PB) -------------------------------
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -24,14 +26,18 @@ export function formatSpeed(bytesPerSecond: number): string {
   return `${formatBytes(bytesPerSecond)}/s`;
 }
 
+/**
+ * Uptime → localized duration. Keys live in common.ts (时间分组); callers run
+ * during render, so `i18n.t()` picks up the active language.
+ */
 export function formatUptime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
-  if (days > 0) return `${days} 天 ${hours} 小时`;
-  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  return `${minutes} 分`;
+  if (days > 0) return i18n.t("{{days}}d {{hours}}h", { days, hours });
+  if (hours > 0) return i18n.t("{{hours}}h {{minutes}}m", { hours, minutes });
+  return i18n.t("{{minutes}}m", { minutes });
 }
 
 // -- Remote file panel (iterative byte ladder, B..TB) ------------------------

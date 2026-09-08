@@ -30,9 +30,22 @@ export interface CwdState {
   previous: string | null;
   /** 已提交但还没确认成功的 `cd` 目标。 */
   pending: string | null;
+  /**
+   * **不可信标记**：提交了 `cd` 但既没等到 OSC 133 D（退出码）也没等到
+   * OSC 7 —— 这时目录**可能**变了但无法确认。path 保留旧值（比 null 好），
+   * 但补全层必须知道它可能是过期的：`needsProbe` 会把 uncertain 当作
+   * "需要受控 pwd 探测"（用户裁决：cd 后无标记 → 下一次补全前刷新）。
+   */
+  uncertain: boolean;
 }
 
-const EMPTY: CwdState = { path: null, source: "unknown", previous: null, pending: null };
+const EMPTY: CwdState = {
+  path: null,
+  source: "unknown",
+  previous: null,
+  pending: null,
+  uncertain: false,
+};
 
 // -- OSC 7 ------------------------------------------------------------------
 
@@ -251,6 +264,7 @@ export class RemoteCwdTracker {
       previous,
       // OSC 7 是权威结果，任何待定的 cd 都作废。
       pending: null,
+      uncertain: false,
     });
   }
 
@@ -264,6 +278,7 @@ export class RemoteCwdTracker {
       source: "probe",
       previous: state.path ?? state.previous,
       pending: null,
+      uncertain: false,
     });
   }
 
@@ -301,16 +316,24 @@ export class RemoteCwdTracker {
   /**
    * 命令结束：`cd` 成功（退出码 0）才更新 cwd，失败一律不更新。
    *
-   * `exitCode` 为 `null`（shell 没上报）时保守起见**不更新**追踪值 —— 但
-   * 会清掉待定目标，避免它污染下一次判定。
+   * - `exitCode === 0` → cd 成功，cwd 更新为待定目标；
+   * - `exitCode !== 0` → cd 失败，目录**确定没变**（这是确定态，不标 uncertain）；
+   * - `exitCode === null`（没收到 OSC 133 D / OSC 7）→ **无法确认**：path
+   *   保留旧值但标 `uncertain` —— 下一次目录补全前由调用方触发受控 pwd
+   *   探测刷新（用户裁决，勿回退）。
    */
   onCommandEnd(sessionId: string, exitCode: number | null): void {
     const state = this.stateOf(sessionId);
     const pending = state.pending;
     if (pending === null) return;
+    if (exitCode === null) {
+      // 没有任何确认信号：目录可能变了但无法证实 → uncertain。
+      this.states.set(sessionId, { ...state, pending: null, uncertain: true });
+      return;
+    }
     if (exitCode !== 0) {
       // cd 失败：目录没变，待定目标作废。
-      this.states.set(sessionId, { ...state, pending: null });
+      this.states.set(sessionId, { ...state, pending: null, uncertain: false });
       return;
     }
     const previous = state.path ?? state.previous;
@@ -319,6 +342,7 @@ export class RemoteCwdTracker {
       source: "tracked",
       previous,
       pending: null,
+      uncertain: false,
     });
   }
 
@@ -326,10 +350,10 @@ export class RemoteCwdTracker {
     return this.states.get(sessionId) ?? { ...EMPTY };
   }
 
-  /** 是否需要受控探测（前两条来源都没有答案）。 */
+  /** 是否需要受控探测：没有答案、只有兜底家目录、或 cwd 已不可信。 */
   needsProbe(sessionId: string): boolean {
     const state = this.stateOf(sessionId);
-    return state.path === null || state.source === "home";
+    return state.path === null || state.source === "home" || state.uncertain;
   }
 
   /** 断开连接 / 切换目标：整个会话的状态一起丢掉。 */

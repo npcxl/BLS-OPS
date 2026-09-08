@@ -110,11 +110,15 @@ async function type(value: string) {
  * 新交互（用户裁决）：输入只给行内 ghost，**按 Tab 才展开完整列表**。
  * 列表操作类用例都先 type 再 pressTab 回到"之前的流程"。
  */
-async function pressTab() {
+async function pressKey(key: string) {
   const input = container.querySelector("input") as HTMLInputElement;
   await act(async () => {
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   });
+}
+
+async function pressTab() {
+  await pressKey("Tab");
 }
 
 /** Buttons inside the view (the suggestion list). */
@@ -157,7 +161,19 @@ afterEach(() => {
 });
 
 describe("CommandCenterView", () => {
-  it("typing shows an inline ghost + Tab badge, NOT the list; Tab expands it", async () => {
+  it("blank input fires zero search API calls and renders no hint at all", async () => {
+    await mount();
+    await type("   "); // 纯空白 = 视为空输入
+
+    expect(searchMock).toHaveBeenCalledTimes(0);
+    expect(container.querySelector("kbd")).toBeNull();
+    expect(container.querySelector("svg.text-fg-subtle + div")?.textContent ?? "").not.toContain(
+      "docker ps -a",
+    );
+    expect(buttonWith("查看所有容器")).toBeUndefined();
+  });
+
+  it("typing shows an inline ghost + Tab badge, NOT the list and NOT a hit count", async () => {
     // Retrieval is local knowledge — it must work even when disconnected.
     mocks.session.phase = "closed";
     searchMock.mockResolvedValue([hit()]);
@@ -168,22 +184,33 @@ describe("CommandCenterView", () => {
     // 收起态：完整列表（<button> 项）不出现，但 ghost 提示与 Tab 徽标在。
     expect(buttonWith("查看所有容器")).toBeUndefined();
     expect(container.querySelector("kbd")).not.toBeNull();
-    // Tab = 接受第一条并展开完整列表（"之前的流程"）。
+    // 命中数量（"x hits"）已删除 —— 轻提示模式不打扰。
+    expect(container.textContent).not.toContain("hits");
+  });
+
+  it("Tab fills the first suggestion and expands the full list", async () => {
+    searchMock.mockResolvedValue([hit()]);
+    await mount();
+    await type("docker p");
     await pressTab();
+
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.value).toBe("docker ps -a");
     expect(buttonWith("查看所有容器")).toBeTruthy();
   });
 
-  it("shows nothing (no ghost, no badge) while the query is blank", async () => {
+  it("ArrowDown also fills the first suggestion and expands", async () => {
     searchMock.mockResolvedValue([hit()]);
     await mount();
-    await type("   "); // 纯空白 = 视为空输入
+    await type("docker p");
+    await pressKey("ArrowDown");
 
-    expect(searchMock).not.toHaveBeenCalled();
-    expect(container.querySelector("kbd")).toBeNull();
-    expect(buttonWith("查看所有容器")).toBeUndefined();
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.value).toBe("docker ps -a");
+    expect(buttonWith("查看所有容器")).toBeTruthy();
   });
 
-  it("executes a read-only command directly", async () => {
+  it("collapsed Enter executes the first (ghost) suggestion directly", async () => {
     searchMock.mockResolvedValue([hit()]);
     executeMock.mockResolvedValue({
       knowledge_id: "docker.ps.all",
@@ -194,12 +221,65 @@ describe("CommandCenterView", () => {
     } as never);
     await mount();
     await type("docker");
+
+    await pressKey("Enter");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapsed Enter still goes through confirmation for medium risk", async () => {
+    searchMock.mockResolvedValue([RESTART]);
+    await mount();
+    await type("systemctl restart");
+
+    await pressKey("Enter");
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(dialogText()).toContain("Confirm execution");
+  });
+
+  it("Escape clears the query, collapses the list and keeps focus", async () => {
+    searchMock.mockResolvedValue([hit()]);
+    await mount();
+    await type("docker p");
+    await pressTab();
+    expect(buttonWith("查看所有容器")).toBeTruthy();
+
+    await pressKey("Escape");
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(buttonWith("查看所有容器")).toBeUndefined();
+    expect(container.querySelector("kbd")).toBeNull();
+    // 焦点保持在输入框。
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("editing the query while expanded returns to the collapsed ghost state", async () => {
+    searchMock.mockResolvedValue([hit()]);
+    await mount();
+    await type("docker p");
+    await pressTab();
+    expect(buttonWith("查看所有容器")).toBeTruthy();
+
+    // 展开态手动改字 → 重新进入 collapsed（ghost + Tab 徽标，列表消失）。
+    await type("docker ps ");
+    expect(buttonWith("查看所有容器")).toBeUndefined();
+    expect(container.querySelector("kbd")).not.toBeNull();
+  });
+
+  it("expanded list keeps select / run / click / favorite behaviors", async () => {
+    searchMock.mockResolvedValue([hit()]);
+    executeMock.mockResolvedValue({
+      knowledge_id: "docker.ps.all",
+      title: "查看所有容器",
+      risk: "read_only",
+      raw: { command_executed: "docker ps -a", stdout: "", stderr: "", duration_ms: 1 },
+      structured: null,
+    } as never);
+    await mount();
+    await type("docker p");
     await pressTab();
 
-    const target = buttonWith("docker ps -a");
-    expect(target).toBeTruthy();
-    await click(target!);
-
+    // 鼠标点击执行。
+    await click(buttonWith("docker ps -a")!);
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
@@ -207,7 +287,7 @@ describe("CommandCenterView", () => {
    * 安全回归：medium 风险命令（restart / reload 等）必须先弹确认，
    * 绝不能在点击或回车后直接执行。
    */
-  it("asks for confirmation before running a medium-risk command", async () => {
+  it("asks for confirmation before running a medium-risk command from the expanded list", async () => {
     searchMock.mockResolvedValue([RESTART]);
     await mount();
     await type("systemctl restart");

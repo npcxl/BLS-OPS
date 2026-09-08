@@ -144,9 +144,9 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
-      if (event.key === "Tab") {
-        // Tab = 接受第一条建议并展开完整列表（收起态才有 ghost 可接受）。
-        if (!expanded && hits[0]) {
+      // 收起态：Tab / ArrowDown 都 = 接受第一条建议并展开完整列表。
+      if ((event.key === "Tab" || event.key === "ArrowDown") && !expanded) {
+        if (hits[0]) {
           event.preventDefault();
           setQuery(hits[0].syntax);
           setActiveIndex(0);
@@ -156,11 +156,6 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        // 收起态按 ↓ 直接展开列表（保持输入不变），再按才是移动高亮。
-        if (!expanded) {
-          if (hits.length > 0) setExpanded(true);
-          return;
-        }
         setActiveIndex(Math.min(activeIndex + 1, hits.length - 1));
       } else if (event.key === "ArrowUp") {
         if (!expanded) {
@@ -171,9 +166,13 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
         setActiveIndex(Math.max(activeIndex - 1, 0));
       } else if (event.key === "Enter") {
         event.preventDefault();
-        // 收起态 activeIndex 恒为 0：Enter = 执行 ghost 提示的那条命令。
-        if (active) requestExecute(active);
+        // 收起态**固定执行 hits[0]** —— ghost 提示的就是它；expanded 后
+        // 手动改字会回到 collapsed，此时 activeIndex 可能残留旧值，绝不能
+        // 拿它当执行目标。风险确认 / 参数弹窗在 requestExecute 内走原流程。
+        const target = expanded ? active : hits[0];
+        if (target) requestExecute(target);
       } else if (event.key === "Escape") {
+        // 清空 + 收起；keydown 发生在输入框上，焦点天然保持在输入框。
         setQuery("");
         setExpanded(false);
         clearHits();
@@ -202,7 +201,12 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
             <input
               autoFocus
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                // 展开态手动改字 = 用户换了主意 → 回到收起态的轻提示
+                // （ghost + Tab 徽标），完整列表不再压着下方内容。
+                if (expanded) setExpanded(false);
+              }}
               onKeyDown={onKeyDown}
               placeholder={t("Search by command prefix or scenario, e.g. docker p")}
               spellCheck={false}
@@ -233,11 +237,6 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
             >
               Tab
             </kbd>
-          )}
-          {query && !searching && (
-            <span className="text-10 tabular-nums text-fg-subtle">
-              {t("{{count}} hits", { count: hits.length })}
-            </span>
           )}
         </div>
 

@@ -4,6 +4,13 @@
  * 目录只从当前 SSH 会话的 SFTP 列目录取（见 `remote-listing`）：不读本地
  * 文件系统，也不执行并解析 `ls` 文本。
  *
+ * 接管的输入形态（用户裁决）：
+ * - `cd `（已有空格）：光标在空参数位，partial="" → 列 cwd；
+ * - `cd`（裸，光标紧贴命令词）：**视为正在输入第一个空参数** —— 同样列
+ *   cwd，但选中时插入文本必须自带**前导空格**（`cd` 后面现在没有空格），
+ *   且替换范围从光标开始（不动已输入的 `cd`）；
+ * - `cd o` / `cd ../` / `cd /var/` / `cd ~/` / 带引号路径：走 `analyzePathInput`。
+ *
  * 三条硬规则：
  * 1. 只提示目录（含符号链接 —— `cd` 能进去），普通文件一律不出现；
  * 2. 只有输入以 `.` 开头时才显示隐藏目录；
@@ -41,12 +48,22 @@ export function createRemoteDirectoryProvider(
   return {
     id: "remote-directory",
     matches(parsed: ParsedLine): boolean {
-      // 只有 `cd` 的第一个参数归它管。
-      return parsed.command === "cd" && parsed.index === 1;
+      if (parsed.command !== "cd") return false;
+      // index 1 = 光标在参数位（`cd `、`cd o`）；
+      // index 0 = 裸 `cd`（光标贴在命令词末尾，还没有空格）。
+      return parsed.index === 1 || parsed.index === 0;
     },
     async complete(ctx: CompletionContext, parsed: ParsedLine): Promise<CompletionResult> {
-      const input = analyzePathInput(parsed.prefix, ctx.cwd, ctx.home);
-      const requestKey = `cd:${input?.dir ?? "?"}:${input?.partial ?? ""}`;
+      // 裸 `cd`：光标贴在命令 token **末尾**且没有任何参数 —— 按"空参数"解析。
+      // 注意不能用 parsed.prefix（那是 "cd"，会被当成路径）；光标不在末尾的
+      // 情况终端里不存在，但纯函数必须守住（防插入错位）。
+      const bareCd =
+        parsed.index === 0 &&
+        parsed.tokens.length === 1 &&
+        parsed.token !== null &&
+        ctx.cursor >= parsed.token.end;
+      const input = analyzePathInput(bareCd ? "" : parsed.prefix, ctx.cwd, ctx.home);
+      const requestKey = `cd:${bareCd ? "<bare>" : input?.dir ?? "?"}:${input?.partial ?? ""}`;
 
       if (!input) {
         return {
@@ -89,20 +106,25 @@ export function createRemoteDirectoryProvider(
         return { items: [], notice: "No matching remote directories", requestKey };
       }
 
-      const start = ctx.cursor - partial.length;
-      const items: CompletionItem[] = visible.map((entry, index) => ({
-        label: entry.name,
-        // 目录保留结尾 `/`，补全后能继续提示下一层。
-        insertText: quotePathSegment(entry.name, input.quote, true),
-        detail: displayRelativePath(input.dir, entry.name, ctx.cwd),
-        icon: "directory",
-        type: "directory",
-        replaceRange: { start, end: ctx.cursor },
-        // 大小写精确匹配优先，其余按名字排。
-        priority: (entry.name.startsWith(partial) ? 100 : 50) - index,
-        source: "remote-directory",
-        highlight: partial ? { start: 0, length: partial.length } : undefined,
-      }));
+      // 裸 `cd`：什么都不替换（`cd` 三个字母保留），插入文本自带前导空格；
+      // 其余场景：替换光标前已敲出的 partial。
+      const start = bareCd ? ctx.cursor : ctx.cursor - partial.length;
+      const items: CompletionItem[] = visible.map((entry, index) => {
+        const segment = quotePathSegment(entry.name, input.quote, true);
+        return {
+          label: entry.name,
+          // 目录保留结尾 `/`，补全后能继续提示下一层。
+          insertText: bareCd ? ` ${segment}` : segment,
+          detail: displayRelativePath(input.dir, entry.name, ctx.cwd),
+          icon: "directory",
+          type: "directory",
+          replaceRange: { start, end: ctx.cursor },
+          // 大小写精确匹配优先，其余按名字排。
+          priority: (entry.name.startsWith(partial) ? 100 : 50) - index,
+          source: "remote-directory",
+          highlight: partial ? { start: 0, length: partial.length } : undefined,
+        };
+      });
 
       return { items, requestKey };
     },

@@ -26,6 +26,7 @@ const TREE: Record<string, RemoteFileEntry[]> = {
     entry("opt"),
     entry("output"),
     entry("logs"),
+    entry("linked", "symlink"),
     entry(".config"),
     entry("my dir"),
     entry("readme.txt", "file"),
@@ -96,8 +97,15 @@ describe("cd completion", () => {
     const io = lister();
     const result = await complete("cd ", io.list);
     expect(io.calls).toEqual(["/root"]);
-    // 隐藏目录不出现（输入不是 `.` 开头），普通文件也不出现。
-    expect(result.items.map((item) => item.label)).toEqual(["logs", "my dir", "opt", "output"]);
+    // 隐藏目录不出现（输入不是 `.` 开头），普通文件也不出现；symlink 可进
+    // （cd 能进去），与真目录一起出现。
+    expect(result.items.map((item) => item.label)).toEqual([
+      "linked",
+      "logs",
+      "my dir",
+      "opt",
+      "output",
+    ]);
     expect(result.items.every((item) => item.type === "directory")).toBe(true);
   });
 
@@ -245,6 +253,55 @@ describe("cd completion", () => {
     expect(provider.matches(parsed(ctx("cd ")))).toBe(true);
     expect(provider.matches(parsed(ctx("cd opt x")))).toBe(false);
     expect(provider.matches(parsed(ctx("ls ")))).toBe(false);
+  });
+});
+
+describe("bare cd (no space yet)", () => {
+  it("is owned by the provider and lists the cwd", async () => {
+    const provider = createRemoteDirectoryProvider({ list: lister().list });
+    expect(provider.matches(parsed(ctx("cd")))).toBe(true);
+    expect(provider.matches(parsed(ctx("cdx")))).toBe(false);
+
+    const io = lister();
+    const result = await complete("cd", io.list);
+    expect(io.calls).toEqual(["/root"]);
+    expect(result.items.map((item) => item.label)).toEqual([
+      "linked",
+      "logs",
+      "my dir",
+      "opt",
+      "output",
+    ]);
+  });
+
+  it("inserts a leading space when picking from a bare `cd`", async () => {
+    const io = lister();
+    const result = await complete("cd", io.list);
+    expect(result.items[0].insertText).toMatch(/^ /);
+    // 替换范围从光标开始：不替换已经输入的 `cd`。
+    expect(result.items[0].replaceRange).toEqual({ start: 2, end: 2 });
+  });
+
+  it("does NOT double the space when `cd ` already has one", async () => {
+    const io = lister();
+    const result = await complete("cd ", io.list);
+    expect(result.items[0].insertText).not.toMatch(/^ /);
+    expect(result.items[0].replaceRange).toEqual({ start: 3, end: 3 });
+  });
+
+  it("shows enterable symlinks alongside real directories", async () => {
+    const io = lister();
+    const result = await complete("cd l", io.list);
+    // logs 是真目录，linked 是 symlink —— cd 都能进去；普通文件绝不出现。
+    expect(result.items.map((item) => item.label)).toEqual(["linked", "logs"]);
+    expect(result.items.every((item) => item.type === "directory")).toBe(true);
+  });
+
+  it("says the cwd is unknown for a bare cd too (never guesses)", async () => {
+    const io = lister();
+    const result = await complete("cd", io.list, { cwd: null });
+    expect(io.calls).toEqual([]);
+    expect(result.notice).toContain("Remote working directory is unknown");
   });
 });
 

@@ -55,6 +55,8 @@ export default {
   "Disk usage": "磁盘占用",
   Device: "设备",
   "Mount point": "挂载点",
+  Type: "类型",
+  Size: "大小",
   Usage: "使用率",
   Used: "已用",
   Avail: "可用",
@@ -75,12 +77,36 @@ export default {
   Closed: "已关闭",
   "No process list reported.": "没有上报进程列表。",
 
+  // -- 明细 tab --
+  Disk: "磁盘",
+  Network: "网络",
+  Processes: "进程",
+
   // -- 服务管家（systemd）--
+  Starting: "启动中",
+  Stopping: "停止中",
+  Autostart: "自启",
   "Restart \"{{unit}}\"? The service will be briefly interrupted.":
     "重启「{{unit}}」？该服务会短暂中断。",
   "Stop \"{{unit}}\"? The service will be unavailable until started again.":
     "停止「{{unit}}」？在重新启动之前该服务将不可用。",
 
   // -- 日志中心（journald）--
+  Logs: "日志",
+  Level: "级别",
+  Unit: "单元",
+  Message: "消息",
+  Lines: "行数",
+  Following: "跟随中",
+  Current: "当前",
+  Emergency: "紧急",
+  Alert: "警报",
+  Critical: "严重",
+  Error: "错误",
+  Warning: "警告",
+  Notice: "通知",
+  Info: "信息",
+  Debug: "调试",
+  Other: "其它",
   "Show \"{{level}}\" and above": "显示「{{level}}」及以上级别",
 } as const;

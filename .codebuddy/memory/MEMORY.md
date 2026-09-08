@@ -21,7 +21,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - Rust 文件超 ~600 行拆目录：`foo.rs` 父模块 + `foo/` 子模块（不可与 `foo/mod.rs` 并存），父模块 re-export 保持旧路径不变。
 - 前端：领域类型 `src/api/types/<域>.ts`；事件名唯一来源 `src/lib/events.ts`；新视图 `src/workbench/views/<域>/`；视图超 ~400 行拆目录；列表行 memo+稳定回调。
 - 验证：`pnpm build`、`pnpm test`、`cargo fmt --all -- --check`、`cd src-tauri && cargo check --all-targets && cargo test --all-targets`。新增纯解析函数 → 固定样本断言（空输入/超长/缺失字段）。
-- **改前端后必须 `pnpm build` + `cargo build`**（`generate_context!` 编译期嵌 dist，只跑 tsc 不生效；`tauri dev` 才实时；debug exe 不加载内嵌 dist）。改 dist 后要 touch `src-tauri/build.rs` 才重新嵌入。
+- **改前端后必须 `pnpm build` + `cargo build`**（`generate_context!` 编译期嵌 dist，只跑 tsc 不生效；`tauri dev` 才实时；直接跑的 exe 嵌入构建时的 dist，`devUrl` 只在 tauri dev 生效）。改 dist 后要 touch `src-tauri/build.rs` 才重新嵌入。**用户报"没生效"先 diff dist 时间 vs exe 时间**（2026-09-08 案例：dist 新、exe 旧 = 忘了重新 cargo build）。
 
 ## i18n（natural keys）
 - i18next 26 + react-i18next 17。key=英文文案本身，`en` 空、`zh-CN` 全量、其余 8 语言尽力（目前仅 common+workbench，覆盖率 ~13%），`fallbackLng: en`。默认 en。结构见 `docs/i18n.md`（同步 init + `localStorage["bls-ops.locale"]`）。

@@ -86,6 +86,10 @@ export default {
   MinutesAgo: "{{count}} 分钟前",
   HoursAgo: "{{count}} 小时前",
   DaysAgo: "{{count}} 天前",
+  // formatUptime（lib/format.ts）的时长段
+  "{{days}}d {{hours}}h": "{{days}} 天 {{hours}} 小时",
+  "{{hours}}h {{minutes}}m": "{{hours}} 小时 {{minutes}} 分",
+  "{{minutes}}m": "{{minutes}} 分钟",
 
   // -- 基础组件（src/components）--
   "Unknown error": "未知错误",

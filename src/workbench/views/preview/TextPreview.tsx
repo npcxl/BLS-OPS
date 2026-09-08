@@ -13,7 +13,7 @@ const CodeText = lazy(() => import("./CodeText"));
 export function TextPreview({ text }: { text: string }) {
   const { t } = useTranslation();
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <Suspense
         fallback={
           <div className="flex flex-1 items-center justify-center text-12 text-fg-subtle">

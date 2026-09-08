@@ -9,7 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, type LucideIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
@@ -31,7 +31,11 @@ import { cn } from "@/lib/cn";
 export interface ContextMenuItem {
   id?: string;
   label?: string;
-  icon?: LucideIcon;
+  /**
+   * Mostly a lucide icon; may be any component accepting
+   * `{ size?, className? }` (e.g. the multi-colour VscodeLogoIcon).
+   */
+  icon?: React.ElementType;
   danger?: boolean;
   disabled?: boolean;
   separator?: boolean;

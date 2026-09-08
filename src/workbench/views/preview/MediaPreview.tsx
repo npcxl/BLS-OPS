@@ -25,7 +25,7 @@ export function MediaPreview({
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 p-6">
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6">
       <div className="flex items-center gap-2 text-12 text-fg-subtle">
         <Music size={14} />
         {audio ? t("Audio") : t("Video")} · {formatSize(bytes.length)}

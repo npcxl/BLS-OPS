@@ -22,6 +22,7 @@ import {
 } from "@/workbench/views/command-center/complete";
 import { ParamPicker } from "./ParamPicker";
 import { TerminalResultDrawer } from "./TerminalResultDrawer";
+import { TerminalCommandBlocks } from "./TerminalCommandBlocks";
 import { TerminalSelectionMenu } from "./terminal-selection-menu";
 import type { CommandSearchHit } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
@@ -1124,6 +1125,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
               // 复制完就收起浮层（提示由共用模块继续显示）。
               setSelectionMenu(null);
             }}
+          />
+        )}
+        {/* 命令块悬浮复制（增强终端产出）：alternate screen（vim/less）下
+            缓冲行语义完全不同，不参与。 */}
+        {!inAlternate && results.commandBlocks.length > 0 && (
+          <TerminalCommandBlocks
+            blocks={results.commandBlocks}
+            terminalRef={terminalRef}
+            containerRef={containerRef}
           />
         )}
         {historyOpen && (

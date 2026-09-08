@@ -18,6 +18,7 @@ export default {
   // -- 右鍵選單 --
   "Download to local…": "下載到本地…",
   "Download to local": "下載到本地",
+  "Open in VSCode": "在 VSCode 中開啟",
   "Create a copy": "建立副本",
   "Copy full path": "複製完整路徑",
   "Copy file name": "複製檔名",

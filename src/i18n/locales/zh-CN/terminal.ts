@@ -25,6 +25,7 @@ export default {
   "Search in scrollback": "在回滚缓冲中查找",
   "No matches": "无匹配",
   "Copy error message": "复制错误信息",
+  "Copy output": "复制输出",
   "Closes in {{seconds}}s": "{{seconds}} 秒后自动关闭",
 
   // —— TerminalView：参数提示 / 连接状态 ——

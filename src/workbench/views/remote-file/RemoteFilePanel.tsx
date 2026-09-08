@@ -29,7 +29,10 @@ import {
 } from "lucide-react";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
+import { useDomainStore } from "@/stores/domain-store";
+import { useSessionStore } from "@/stores/session-store";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
 import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -389,6 +392,28 @@ export function RemoteFilePanel({
     }
   };
 
+  /**
+   * Open a remote folder in the user's VSCode via Remote-SSH. The backend
+   * registers (or reuses) a marked Host in ~/.ssh/config and spawns `code`;
+   * VSCode then talks to the server itself, so the folder is live. Only
+   * saved servers qualify (a stable alias needs a stable server), and
+   * ProxyJump chains are refused server-side — hidden here.
+   */
+  const savedServerId = useSessionStore((state) => state.sessions[sessionId]?.serverId);
+  const usesJumpHost = useDomainStore((state) =>
+    savedServerId ? state.servers.find((server) => server.id === savedServerId)?.proxy_jump_id != null : false,
+  );
+  const canOpenInVscode = Boolean(savedServerId) && !usesJumpHost;
+
+  const openInVscode = async (path: string) => {
+    if (!savedServerId) return;
+    try {
+      await opsApi.vscodeOpenRemoteFolder(savedServerId, path);
+    } catch (cause) {
+      setNotice(toErrorMessage(cause));
+    }
+  };
+
   const confirmRemove = () => {
     if (!deleteTarget) return;
     const target = deleteTarget;
@@ -659,6 +684,15 @@ export function RemoteFilePanel({
           onSelect: () => void downloadEntry(entry),
         },
       );
+    } else if (canOpenInVscode) {
+      // Folders only: Remote-SSH opens a workspace root. Quick targets and
+      // ProxyJump servers have no stably registrable host, so no item at all.
+      items.push({
+        id: "vscode",
+        label: t("Open in VSCode"),
+        icon: VscodeLogoIcon,
+        onSelect: () => void openInVscode(entry.path),
+      });
     }
     items.push({ id: "sep1", separator: true });
     return [

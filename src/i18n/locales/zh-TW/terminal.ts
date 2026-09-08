@@ -25,6 +25,7 @@ export default {
   "Search in scrollback": "在回滾緩衝中查詢",
   "No matches": "無匹配",
   "Copy error message": "複製錯誤資訊",
+  "Copy output": "複製輸出",
   "Closes in {{seconds}}s": "{{seconds}} 秒後自動關閉",
 
   // —— TerminalView：引數提示 / 連線狀態 ——

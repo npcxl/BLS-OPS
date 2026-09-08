@@ -9,6 +9,12 @@ import { planCommandSubmission, type CommandSource, type SubmitMode } from "./co
 import { readEnhancedTerminal, saveEnhancedTerminal } from "./terminal-preferences";
 import type { CommandBoundaryParser } from "./command-boundary";
 import {
+  beginBlock,
+  disposeBlocks,
+  finishBlock,
+  type CommandBlock,
+} from "./terminal-command-blocks";
+import {
   TerminalCommandCoordinator,
   type CapturedResult,
   type RenderOutcome,
@@ -105,12 +111,46 @@ export function useTerminalResults(host: TerminalResultsHost) {
   );
 
   const coordinatorRef = useRef<TerminalCommandCoordinator | null>(null);
+
+  /**
+   * 命令块（悬浮复制）：一次提交的"命令回显 + 输出"在终端里的行范围。
+   *
+   * - 起点：`execute` 里注册捕获 marker 的同一行（提交时光标所在行）；
+   * - 终点：`onResult` 时刻再注册一枚 marker —— OSC 133 D 已写完输出、
+   *   提示符尚未回写，所以终点正好是输出最后一行；
+   * - 文本 / 退出码来自 `CapturedResult`，复制内容与结果抽屉一致。
+   *
+   * `blocksRef` 是写路径的真源（begin/finish 都发生在事件回调里，不在
+   * render 期），与 `enhancedRef` 同款模式。
+   */
+  const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
+  const blocksRef = useRef<CommandBlock[]>([]);
+  blocksRef.current = commandBlocks;
+  const blockIdRef = useRef(0);
+
+  const applyBlocks = useCallback((mutation: { blocks: CommandBlock[]; evicted: CommandBlock[] }) => {
+    disposeBlocks(mutation.evicted);
+    blocksRef.current = mutation.blocks;
+    setCommandBlocks(mutation.blocks);
+  }, []);
+
+  const clearCommandBlocks = useCallback(() => {
+    applyBlocks({ blocks: [], evicted: blocksRef.current });
+  }, [applyBlocks]);
+
   if (!coordinatorRef.current) {
     coordinatorRef.current = new TerminalCommandCoordinator({
       match: (text) => opsApi.commandMatchText(text),
       onResult: (result) => {
         // 增强终端关着时不产出任何结果面板（含飞行中捕获的迟到结果）。
         if (!enhancedRef.current) return;
+        // 命令块封口：此刻 D 标记后的输出已写完渲染、提示符还没回写，
+        // 在当前光标行注册终点 marker 正好停在输出最后一行。
+        const instance = terminalRef.current;
+        const endMarker = instance?.registerMarker(0) ?? null;
+        applyBlocks(
+          finishBlock(blocksRef.current, result.boundary.exitCode, endMarker, result.renderedText),
+        );
         setResults((current) => [...current, result]);
         setActiveId(result.id);
         setDrawerCollapsed(false);
@@ -124,8 +164,9 @@ export function useTerminalResults(host: TerminalResultsHost) {
     () => () => {
       coordinatorRef.current?.dispose();
       releaseCaptureMarker();
+      clearCommandBlocks();
     },
-    [releaseCaptureMarker],
+    [clearCommandBlocks, releaseCaptureMarker],
   );
 
   /**
@@ -194,6 +235,11 @@ export function useTerminalResults(host: TerminalResultsHost) {
         if (instance) {
           const marker = instance.registerMarker(0);
           captureMarkerRef.current = marker ? { marker } : null;
+          // 命令块起点：与捕获 marker 同一行（悬浮复制的整块高亮从这里开始）。
+          if (marker) {
+            blockIdRef.current += 1;
+            applyBlocks(beginBlock(blocksRef.current, `block-${blockIdRef.current}`, trimmed, marker));
+          }
         }
       }
       const prefix = options?.prefix ?? "";
@@ -265,16 +311,18 @@ export function useTerminalResults(host: TerminalResultsHost) {
       setResults([]);
       setActiveId(null);
       setDrawerClosed(true);
+      clearCommandBlocks();
     } else {
       // 重新打开：面板跟着新结果出来（之前只是被 × 收起）。
       setDrawerClosed(false);
     }
-  }, []);
+  }, [clearCommandBlocks]);
 
   return {
     enhanced,
     toggleEnhanced,
     results,
+    commandBlocks,
     activeId,
     setActiveId: setActiveId as Dispatch<SetStateAction<string | null>>,
     drawerCollapsed,

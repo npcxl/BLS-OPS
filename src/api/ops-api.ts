@@ -91,6 +91,7 @@ export {
   type SessionStats,
 } from "@/api/types/sessions";
 export { parseSshTarget, type SshConnectResult } from "@/api/types/ssh";
+export type { VscodeOpenResult } from "@/api/types/vscode";
 export {
   DIRECTORY_SIZE_EVENT,
   type DirectorySizeResult,
@@ -187,6 +188,7 @@ export {
   type ServiceGroup,
   type WorkloadRole,
 } from "@/api/types/project";
+import { type VscodeOpenResult } from "@/api/types/vscode";
 
 function message(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
@@ -379,6 +381,15 @@ export const opsApi = {
   /** Streams a remote file to a local path (preview dialog's 下载 action). */
   sftpDownloadFile: (sessionId: string, path: string, localPath: string) =>
     invoke<number>("sftp_download_file", { sessionId, path, localPath }),
+
+  /**
+   * Open a remote folder in the user's VSCode via Remote-SSH. Registers a
+   * marked Host block in `~/.ssh/config` first (key credentials get an
+   * exported IdentityFile), then spawns `code --remote ssh-remote+<alias>`.
+   * VSCode owns the SSH connection, so the folder is the live remote FS.
+   */
+  vscodeOpenRemoteFolder: (serverId: string, path: string) =>
+    invoke<VscodeOpenResult>("vscode_open_remote_folder", { serverId, path }),
 
   // Monitoring — read-only Linux metrics. `monitor_snapshot` is the one the
   // page polls: every headline metric in a single round trip.

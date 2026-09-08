@@ -78,7 +78,7 @@ function Block({ block }: { block: DocBlock }) {
 /** Word documents: one continuous flow of blocks. */
 export function DocxPreview({ blocks }: { blocks: DocBlock[] }) {
   return (
-    <div className="h-full min-h-0 overflow-auto bg-surface-1">
+    <div className="min-h-0 flex-1 overflow-auto bg-surface-1">
       <BlockList blocks={blocks} />
     </div>
   );
@@ -101,7 +101,7 @@ export function SlidesPreview({ slides }: { slides: Slide[] }) {
   if (!current) return null;
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex min-h-0 flex-1">
       <div className="w-20 shrink-0 overflow-y-auto border-r border-line bg-surface-2/50 p-1.5">
         {slides.map((slide, slideIndex) => (
           <button

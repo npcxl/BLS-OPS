@@ -14,6 +14,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 远程命令字符串只能在 `safe.rs` Capability 枚举拼；校验在网络 I/O 前；前端只传结构化标识。
 - **交互铁律**：浮层/横幅不得遮挡命令行与输入区（paramHint 钉终端顶部+pointer-events-none）；"不能选/不能自动填"降级为填入+提示，绝不让回车吞成死胡同（占位符三态 `filled|noop|blocked`，`hasUnresolvedPlaceholder` 是 SSH 前最后拦截）。
 - **命令面板轻提示**：空输入无建议（`enabled` 门控）；有输入只给行内 ghost+Tab 徽标，Tab/↓ 才展开下拉，Enter 恒执行高亮项。ghost 纯函数 `complete.ts::inlineGhost`。
+- **统一补全状态机（2026-09-08 终端+命令中心同一套，勿回退）**：默认**只有行内 ghost**（灰字+Tab 徽标，pointer-events-none，绝不弹面板）；**Tab/↓=接受第一条并展开**（面板唯一出现方式）；collapsed Enter=**直接执行第一条**（参数/风险流程照走，无候选穿透）；expanded：↑↓ 移动、Enter 执行当前项、Tab/→ 填入当前项（filled 保持展开→多级目录）；**任何状态 Esc=清空整行**；**展开后非程序性 draft 变化→回 collapsed**。终端核心 `terminal-suggest.ts::resolveTerminalCompleteKey`+`ghostTextFor`+`terminal-ghost.tsx`；**程序性写行必须先设 `programmaticDraftRef` 再 setDraft**（否则刚展开的面板被自己收回）；`dismissedDraft` 已退役。命令中心：删 "x hits"，collapsed Enter 固定 `hits[0]`（expanded 改字后 activeIndex 残留，不能当执行目标）。cd 补全：裸 `cd` 由 Provider 接管（insertText 带前导空格，不能用 parsed.prefix 当路径）；只提示 directory+symlink；集成测试在 `terminal/test/terminal-cd-completion.integration.test.tsx`。
 
 ## 模块化分层（skill: bls-ops-modular）
 - 新 Tauri 命令 → `src-tauri/src/commands/<域>.rs`；新监控指标 → `monitor/`（model→parse 纯函数→collect）。
@@ -51,7 +52,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 
 ## 终端（勿回退）
 - 智能提示 Provider 注册制 `views/terminal/completion/`，禁在 TerminalSuggest/TerminalView 里 if/else；cd 补全只走 `sftpListDir`；写回用 `quotePathSegment`。
-- cwd 四源优先级：OSC7 > 跟踪 cd（退出码 0）> 受控 pwd 探测（只在空命令行发）> 登录目录。绝不用提示符猜 cwd。
+- cwd 五源：OSC7 > 成功 cd（exitCode 0）> 受控 pwd 探测（只在空命令行发）> 登录目录；**cd 后无任何标记→`uncertain`**（path 保留旧值+needsProbe=true，下次补全前探测刷新；cd 失败是确定态不标 uncertain）。绝不用提示符猜 cwd。
 - 焦点归还：`refocusTerminal()` 只在 activeElement≠textarea 时 focus；commit 后 effect 里捞焦点；每个浮层独立开关，禁合并布尔量。
 - 缓存纪律：目录 10s / Docker 15s / 服务 20s / 环境 60s；写命令后目录缓存失效。
 - 结果链路：TerminalView→TerminalCommandCoordinator（render rendezvous，缺 session.done 守卫会提前 emit）→TerminalResultDrawer→TerminalSnapshotView（400ms 静默 fallback 标 boundaryReliable=false）。抽屉高度可拖拽（`use-terminal-results.ts` 的 drawerHeight，≤40px 自动收起不持久化；**收起态把手不渲染，只能点按钮恢复，不能拖拽展开**——用户裁决）。
@@ -64,6 +65,11 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 终端与模块两条独立链路：`CapturedResult` 无 rawOutput 别名；禁 ANSI 清洗/自动表格化/adapt_auto。
 - 输出适配引擎 `src-tauri/src/output_adapter/` + 渲染器 `views/command-result/`（只按 view 分发，不认命令来源）。严格 JSON：`detect-json.ts` 整段合法才出 Tab；`stripTrailingPrompt()` 不猜 PS1。
 - 已删除勿加回：commandAdaptOutput/ContainerTable/StructuredTables/ReadableOutputView。P4.4 软删除移入"删除治理"阶段（见 `docs/p4-acceptance.md`）。
+
+## 远程文件夹 → VSCode（Remote-SSH，2026-09-08）
+- 右键远程文件夹 "Open in VSCode"：新域 `commands/vscode.rs`（`vscode_open_remote_folder`）在 `~/.ssh/config` 写标记块 `# bls-ops:begin/end <alias>`（幂等 upsert；alias 冲突时 `<slug>-2` 递增；复用 `editor_sync::find_editor("vscode")` 探测）。key 凭据导出 `~/.ssh/bls-ops/<cred_id>.pem`（unix 0600，Rust 侧不经前端——用户裁决允许）；密码凭据连接时 VSCode 弹框手输。ProxyJump/quickTarget 不显示菜单项。
+- Windows `.cmd` 必须经 `cmd /C` + `raw_arg` 显式引号（cmd 解析器不守 MSVCRT 规则）；`Code.exe` 直接 spawn。远程路径复用 `safe::validate_abs_path`（白名单挡引号/空格/&）。不写 `accept-new`——Host key 人工确认铁律由 VSCode/OpenSSH 默认 ask 承担。
+- **editor_sync 域后端完整但前端零调用**（远程文件/目录副本→本地编辑器→保存回传 SFTP，locator 支持 VSCode/Cursor/Windsurf/Trae/CodeBuddy）——历史半成品，待接前端做单文件编辑入口。
 
 ## 技术要点
 - **vite 禁 manualChunks 强拆 node_modules**（2026-09 白屏事故：chunk 成环，生产包 `Cannot set properties of undefined (setting 'Activity')`；分包靠动态 import 边界）。

@@ -72,7 +72,13 @@ pub fn sanitize_alias(name: &str) -> String {
 }
 
 /// The full marked block for one host, trailing newline included.
-pub fn build_host_block(alias: &str, host: &str, port: i64, user: &str, identity: Option<&str>) -> String {
+pub fn build_host_block(
+    alias: &str,
+    host: &str,
+    port: i64,
+    user: &str,
+    identity: Option<&str>,
+) -> String {
     let mut block = String::new();
     block.push_str(BEGIN_PREFIX);
     block.push_str(alias);
@@ -206,7 +212,10 @@ fn validate_host_value(value: &str, field: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err(format!("{field}不能为空"));
     }
-    if value.chars().any(|ch| ch.is_control() || matches!(ch, '"' | '\'')) {
+    if value
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '"' | '\''))
+    {
         return Err(format!("{field}包含不允许的字符"));
     }
     Ok(())
@@ -243,7 +252,9 @@ fn launch(alias: &str, remote_path: &str) -> Result<(), String> {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
     };
-    result.map(|_| ()).map_err(|error| format!("启动 VSCode 失败：{error}"))
+    result
+        .map(|_| ())
+        .map_err(|error| format!("启动 VSCode 失败：{error}"))
 }
 
 #[cfg(not(windows))]
@@ -270,8 +281,9 @@ pub fn vscode_open_remote_folder(
     let remote_path = validate_abs_path(&path, "远程路径").map_err(|error| error.to_string())?;
 
     let conn = open_db(&state)?;
-    let server =
-        db::get_server(&conn, &server_id).map_err(|error| error.to_string())?.ok_or_else(|| "服务器不存在".to_string())?;
+    let server = db::get_server(&conn, &server_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "服务器不存在".to_string())?;
     if server.proxy_jump_id.is_some() {
         return Err("经由跳板机的服务器暂不支持在 VSCode 中打开".to_string());
     }
@@ -285,7 +297,11 @@ pub fn vscode_open_remote_folder(
     // password credentials fall back to VSCode's own interactive prompt.
     let mut identity = None;
     let mut key_exported = false;
-    if let Some(credential_id) = server.credential_id.as_deref().filter(|id| !id.trim().is_empty()) {
+    if let Some(credential_id) = server
+        .credential_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+    {
         let credential = require_existing_credential(&conn, credential_id)?;
         if credential.credential_type == "private_key" {
             let secret_ref = credential
@@ -297,7 +313,13 @@ pub fn vscode_open_remote_folder(
                 "~/.ssh/bls-ops/{}.pem",
                 credential_id
                     .chars()
-                    .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') { ch } else { '-' })
+                    .map(
+                        |ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                            ch
+                        } else {
+                            '-'
+                        }
+                    )
                     .collect::<String>()
             ));
         }
@@ -311,7 +333,9 @@ pub fn vscode_open_remote_folder(
     let mut suffix = 2;
     loop {
         match existing_block(&config, &alias) {
-            Some(block) if block_matches(&block, &server.host, server.port, &server.username) => break,
+            Some(block) if block_matches(&block, &server.host, server.port, &server.username) => {
+                break
+            }
             Some(_) => {
                 alias = format!("{base}-{suffix}");
                 suffix += 1;
@@ -320,7 +344,13 @@ pub fn vscode_open_remote_folder(
         }
     }
 
-    let block = build_host_block(&alias, &server.host, server.port, &server.username, identity.as_deref());
+    let block = build_host_block(
+        &alias,
+        &server.host,
+        server.port,
+        &server.username,
+        identity.as_deref(),
+    );
     let updated = upsert_block(&config, &alias, &block);
     let config_file = config_path()?;
     fs::write(&config_file, &updated)
@@ -350,14 +380,22 @@ mod tests {
     #[test]
     fn sanitizes_aliases() {
         assert_eq!(sanitize_alias("My Server!"), "my-server");
-        assert_eq!(sanitize_alias("生产环境/01"), "----01");
+        // Non-ascii collapses to '-', then trims: only "01" survives.
+        assert_eq!(sanitize_alias("生产环境/01"), "01");
+        assert_eq!(sanitize_alias("生产环境"), "server");
         assert_eq!(sanitize_alias("  "), "server");
         assert_eq!(sanitize_alias("web-1.2"), "web-1.2");
     }
 
     #[test]
     fn builds_blocks_with_and_without_identity() {
-        let with = build_host_block("bls-ops-web", "1.2.3.4", 22, "root", Some("~/.ssh/bls-ops/cred.pem"));
+        let with = build_host_block(
+            "bls-ops-web",
+            "1.2.3.4",
+            22,
+            "root",
+            Some("~/.ssh/bls-ops/cred.pem"),
+        );
         assert!(with.starts_with("# bls-ops:begin bls-ops-web\n"));
         assert!(with.contains("    IdentityFile ~/.ssh/bls-ops/cred.pem\n"));
         assert!(with.contains("    IdentitiesOnly yes\n"));

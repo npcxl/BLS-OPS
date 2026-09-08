@@ -169,7 +169,7 @@ pub fn run() {
             commands::service_action,
             commands::service_status,
             // log centre — journald (P3-1.2)
-            commands::journal_query,s
+            commands::journal_query,
             commands::journal_disk_usage,
             // command centre (P4.0–P4.3)
             commands::command_search,

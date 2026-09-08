@@ -215,7 +215,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
         )}
 
         {state.status === "ready" && (
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {state.result.note && (
               <div className="shrink-0 border-b border-line bg-warning/10 px-3 py-1.5 text-11 text-warning">
                 {state.result.note}

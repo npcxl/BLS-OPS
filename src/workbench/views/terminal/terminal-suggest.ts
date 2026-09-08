@@ -65,55 +65,11 @@ export function computeSuggestPosition(
   return { left, top };
 }
 
-/** 键盘判定产出的动作。`none` = 不拦截，按键照常发给远程 shell。 */
-export type SuggestKeyAction =
-  | { type: "none" }
-  | { type: "move"; delta: 1 | -1 }
-  | { type: "accept" }
-  | { type: "dismiss" };
-
+/** 键盘事件输入（供状态机判定）。 */
 export interface SuggestKeyEventInput {
   key: string;
   /** 输入法组合中（keydown keyCode 229）：绝不拦截，方向键与 Enter 属于 IME。 */
   isComposing?: boolean;
-}
-
-/**
- * 提示面板打开时的按键映射：
- *
- * | 按键          | 动作                     |
- * | ------------- | ------------------------ |
- * | `↑` / `↓`     | 上下选择候选              |
- * | `→`           | 填入当前候选（不执行）    |
- * | `Tab`         | 补全当前候选（不执行）    |
- * | `←` / `Esc`   | 关闭面板，恢复 shell 按键 |
- * | `Enter`       | 填入候选（不执行）        |
- *
- * **第一次 Enter 只填入**。填入后视图层记录 dismissedDraft（= 填入后的草稿），
- * 面板关闭、hasHits 变 false —— 第二次 Enter 在这里落到 `none`，穿透给
- * shell 正常执行。用户继续输入/删除/修改草稿后才会重新检索。
- */
-export function resolveSuggestKey(
-  event: SuggestKeyEventInput,
-  hasHits: boolean,
-): SuggestKeyAction {
-  if (event.isComposing) return { type: "none" };
-  if (!hasHits) return { type: "none" };
-  switch (event.key) {
-    case "ArrowDown":
-      return { type: "move", delta: 1 };
-    case "ArrowUp":
-      return { type: "move", delta: -1 };
-    case "ArrowRight":
-    case "Tab":
-    case "Enter":
-      return { type: "accept" };
-    case "ArrowLeft":
-    case "Escape":
-      return { type: "dismiss" };
-    default:
-      return { type: "none" };
-  }
 }
 
 /**
@@ -136,4 +92,102 @@ export function keysForReplace(
   const backspaces = Math.max(0, cursor - start);
   const forward = Math.max(0, end - cursor);
   return "\x7f".repeat(backspaces) + insertText + "\x1b[C".repeat(forward);
+}
+
+// ---------------------------------------------------------------------------
+// 统一补全状态机（用户裁决 2026-09-08，勿回退）：
+// **默认只有行内 ghost，面板只在 Tab / ArrowDown 后出现。**
+//
+// collapsed（ghost 态）：输入框只有灰色 ghost + Tab 徽标，没有面板；
+//   Tab / ↓ = 接受第一条并展开面板；Enter = 直接执行第一条（无候选则穿透）；
+//   Esc = 清空整行。
+// expanded（面板态）：↑↓ 选择、Enter 执行当前项、Tab/→ 填入当前项、
+//   Esc = 清空整行。继续编辑（行内容变化）→ 回 collapsed。
+// ---------------------------------------------------------------------------
+
+/** 统一状态机的动作。`none` = 不拦截，按键照常发给远程 shell。 */
+export type TerminalCompleteAction =
+  | { type: "none" }
+  | { type: "move"; delta: 1 | -1 }
+  | { type: "accept-first" }
+  | { type: "accept-active" }
+  | { type: "run-first" }
+  | { type: "run-active" }
+  | { type: "clear-line" };
+
+export interface TerminalCompleteState {
+  /** 面板是否已展开（Tab/ArrowDown 之后）。 */
+  expanded: boolean;
+  /** 是否有候选（决定 collapsed 的 Tab/↓/Enter 是否接管）。 */
+  hasItems: boolean;
+}
+
+export function resolveTerminalCompleteKey(
+  event: SuggestKeyEventInput,
+  state: TerminalCompleteState,
+): TerminalCompleteAction {
+  if (event.isComposing) return { type: "none" };
+  // Esc 任何状态都清空整行（用户裁决第七条：清输入、清 ghost、关面板）。
+  if (event.key === "Escape") return { type: "clear-line" };
+
+  if (state.expanded) {
+    switch (event.key) {
+      case "ArrowDown":
+        return state.hasItems ? { type: "move", delta: 1 } : { type: "none" };
+      case "ArrowUp":
+        return state.hasItems ? { type: "move", delta: -1 } : { type: "none" };
+      case "Enter":
+        // 展开态 Enter = **执行**当前高亮项（与命令中心一致）；没有候选则
+        // 穿透 —— shell 执行用户输入的原始命令。
+        return state.hasItems ? { type: "run-active" } : { type: "none" };
+      case "Tab":
+      case "ArrowRight":
+        // 填入当前高亮（不执行）：多级目录 / 继续补参数的路径。
+        return state.hasItems ? { type: "accept-active" } : { type: "none" };
+      default:
+        return { type: "none" };
+    }
+  }
+
+  switch (event.key) {
+    case "Tab":
+    case "ArrowDown":
+      // 接受第一条并展开完整面板 —— 面板唯一的出现方式。
+      return state.hasItems ? { type: "accept-first" } : { type: "none" };
+    case "Enter":
+      // 有 ghost 建议 → 直接执行第一条（参数/风险流程照走）；
+      // 没有 → 穿透，shell 执行原始输入。
+      return state.hasItems ? { type: "run-first" } : { type: "none" };
+    default:
+      return { type: "none" };
+  }
+}
+
+/**
+ * 行内 ghost 文本：第一条候选里**用户还没敲出来的部分**。
+ *
+ * 候选的 `insertText` 有两种语义，匹配策略随之不同：
+ * 1. **token 替换**（目录 / 服务 / 容器名 / 进程…）：insertText 是当前
+ *    token 的完整替换文本 → ghost = 去掉已敲的 partial（`cd o` + `ops/` → `ps/`）；
+ * 2. **完整语法**（知识库 / 环境命令）：insertText 是整条命令 →
+ *    ghost = 去掉与整行重合的前缀（`docker p` + `docker ps -a` → `s -a`）。
+ *
+ * 都不匹配（场景命中、裸 `cd` 的 `" ops/"`）→ 显示整条 insertText
+ * （裸 `cd` 的 ghost 因此自带前导空格 —— 用户裁决：ghost 前自动含空格）。
+ * 空行 / 无候选 → 空串（**不显示任何 ghost**）。
+ */
+export function ghostTextFor(
+  item: { insertText: string } | undefined,
+  line: string,
+  parsedPrefix: string | null,
+): string {
+  if (!item) return "";
+  const insert = item.insertText;
+  if (!insert) return "";
+  if (!line.trim()) return "";
+  if (parsedPrefix && parsedPrefix.length > 0 && insert.startsWith(parsedPrefix)) {
+    return insert.slice(parsedPrefix.length);
+  }
+  if (insert.startsWith(line)) return insert.slice(line.length);
+  return insert;
 }

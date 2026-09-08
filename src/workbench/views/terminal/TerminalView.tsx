@@ -39,10 +39,13 @@ import { useTerminalSearch } from "./use-terminal-search";
 import { useTerminalSession, type TerminalCommandEntry } from "./use-terminal-session";
 import { useTerminalResults } from "./use-terminal-results";
 import {
+  ghostTextFor,
   keysForReplace,
-  resolveSuggestKey,
+  resolveTerminalCompleteKey,
   type SuggestAnchor,
 } from "./terminal-suggest";
+import { TerminalGhost } from "./terminal-ghost";
+import { parseLine } from "./completion/path-input";
 import { useTerminalCompletion } from "./use-terminal-completion";
 import { useServerEnvironment } from "./use-server-environment";
 import { RemoteCwdTracker, CWD_PROBE_LINE, CWD_PROBE_TIMEOUT_MS } from "./remote-cwd";
@@ -105,11 +108,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** Ctrl+Space 可临时关闭提示（有人就是不喜欢）。 */
   const [suggestOpen, setSuggestOpen] = useState(true);
   /**
-   * 提示面板的"已关闭"草稿：填入候选（→ / Enter / 点击）或 ← / Esc 关闭后
-   * 记录当前草稿，面板暂时不再出现 —— **否则第二次 Enter 会再次命中候选，
-   * 永远无法真正执行**。用户继续输入/删除/修改草稿后（draft 变化）自动恢复。
+   * 建议面板是否展开（统一补全状态机，见 `terminal-suggest.ts`）：
+   * **默认收起 —— 只显示行内 ghost；Tab / ArrowDown 后才展开完整面板**。
+   * 用户继续编辑（draft 变化且不是程序性填入）→ 立即回到收起态。
    */
-  const [dismissedDraft, setDismissedDraft] = useState<string | null>(null);
+  const [suggestExpanded, setSuggestExpanded] = useState(false);
+  /**
+   * 程序性草稿标记：`applySuggestion` / 参数选择器写入的行**不算用户编辑**
+   * （否则 Tab 填入后 draft 变化会立刻把刚展开的面板又收回去）。draft 每次
+   * 变化都会与标记比对：相同 = 程序性写入，保持 expanded；不同 = 用户在
+   * 编辑，回 collapsed。
+   */
+  const programmaticDraftRef = useRef<string | null>(null);
   /** 提示面板锚点：光标单元格右下角（px，相对终端定位容器）。 */
   const [suggestAnchor, setSuggestAnchor] = useState<SuggestAnchor | null>(null);
   /**
@@ -218,14 +228,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   // 补全统一走 `CompletionProvider`：知识库、远程目录（cd）、Docker 资源、
   // 服务、进程、环境生成的命令都是同一个 `CompletionItem`。
-  // dismissedDraft = 填入候选或关闭面板时的草稿：相同就不再检索
-  // （见 dismissedDraft 注释）。
+  // 空输入（含纯空白）不检索也不提示（用户裁决：保持输入区干净）。
   const suggestionsEnabled =
-    phase === "connected" &&
-    !inAlternate &&
-    suggestOpen &&
-    draft.trim().length > 0 &&
-    draft !== dismissedDraft;
+    phase === "connected" && !inAlternate && suggestOpen && draft.trim().length > 0;
+
+  // 展开态的手动编辑 → 回到收起态（ghost）。程序性填入（Tab/选择器写行）
+  // 通过 `programmaticDraftRef` 豁免，否则刚展开的面板会被自己收回去。
+  useEffect(() => {
+    if (programmaticDraftRef.current !== null) {
+      if (draft === programmaticDraftRef.current) return;
+      programmaticDraftRef.current = null;
+    }
+    setSuggestExpanded(false);
+  }, [draft]);
 
   /**
    * 远程 cwd 追踪：每个 TerminalView 实例一份 → **不同 SSH Tab 天然隔离**。
@@ -466,8 +481,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           if (!writeToShell(keys)) return "blocked";
           editor.feed(keys);
           const next = editor.current;
+          programmaticDraftRef.current = next;
           setDraft(next);
-          setDismissedDraft(next);
           // 填完主体后立刻回车 = 执行（与无参候选口径一致，缺参由 bash
           // 如实报错）；补全参数后再回车同样直接执行。
           filledDraftRef.current = next;
@@ -478,7 +493,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           return "blocked";
         }
         setParamPicker({ hit, syntax: hit.syntax, draft });
-        setDismissedDraft(draft);
         return "blocked";
       }
 
@@ -492,8 +506,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (!writeToShell(keys)) return "blocked";
       editor.feed(keys);
       const next = editor.current;
+      programmaticDraftRef.current = next;
       setDraft(next);
-      setDismissedDraft(next);
       // 补完的行记下来：下一次回车若行内容没变，就是执行（见
       // `filledDraftRef` 的说明）。
       filledDraftRef.current = next;
@@ -539,12 +553,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (!writeToShell(keys)) return "blocked";
       editor.feed(keys);
       const next = editor.current;
+      programmaticDraftRef.current = next;
       setDraft(next);
       // 记下"这次补完的行"：下一次回车若行内容没变，就是执行（见下方
       // `filledDraftRef` 与按键处理）。
       filledDraftRef.current = next;
-      // 目录继续提示下一层；其它候选填完就不再打扰（第二次 Enter 才能执行）。
-      if (item.type !== "directory") setDismissedDraft(next);
       updateSuggestAnchor();
       return "filled";
     },
@@ -656,8 +669,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (keys === null || !writeToShell(keys)) return;
       editor.feed(keys);
       const line = editor.current;
+      programmaticDraftRef.current = line;
       setDraft(line);
-      setDismissedDraft(line);
       updateSuggestAnchor();
     },
     [paramPicker, updateSuggestAnchor, writeToShell],
@@ -696,11 +709,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       // 否则 ↑↓/Enter 会被两层各处理一次。
       if (paramPickerRef) return false;
       if (event.isComposing || event.keyCode === 229) return false;
-      // 补全候选（新 hook 用 `items`；见 use-terminal-completion.ts）。
+      // 统一补全状态机（见 terminal-suggest.ts）：
+      // collapsed（ghost 态）—— Tab/↓ 接受第一条并展开；Enter 执行第一条；
+      // expanded（面板态）—— ↑↓ 移动、Enter 执行当前项、Tab/→ 填入当前项；
+      // 任何状态 Esc = 清空整行。其余按键穿透给远程 shell。
       const { items, activeIndex, setActiveIndex } = suggestions;
-      const action = resolveSuggestKey(
+      const action = resolveTerminalCompleteKey(
         { key: event.key, isComposing: event.isComposing },
-        items.length > 0,
+        { expanded: suggestExpanded, hasItems: items.length > 0 },
       );
       switch (action.type) {
         case "none":
@@ -713,36 +729,66 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           refocusTerminal();
           return true;
         }
-        case "accept": {
+        case "accept-first": {
+          // 接受第一条（ghost 提示的那条）+ 展开完整面板。
           event.preventDefault();
-          const hit = items[activeIndex];
-          if (!hit) {
-            refocusTerminal();
-            return true;
-          }
-          // 上一次回车已经补过、之后用户一个字符都没再敲 → 这次回车就是
-          // 执行。判据是"行内容自上次填入后变没变"，与网络快慢无关
-          // （详见 `filledDraftRef` 的注释）。
-          const currentLine = lineEditorRef.current?.current ?? "";
-          if (filledDraftRef.current !== null && filledDraftRef.current === currentLine) {
-            filledDraftRef.current = null;
+          const first = items[0];
+          if (!first) return true;
+          const outcome = applySuggestion(first);
+          if (outcome === "noop") {
+            // 候选与行内一致 → 这次按键是执行意图，不能吞掉。
             submitCurrentLine();
-            refocusTerminal();
-            return true;
+            setSuggestExpanded(false);
+          } else if (outcome === "filled") {
+            setSuggestExpanded(true);
           }
-          const outcome = applySuggestion(hit);
-          // 候选与已输入内容一致 → 这次"填入"是空操作，回车**必须**执行
-          // 命令，否则面板会一直吞掉回车（表现为命令没跑、结果面板不出现）。
-          if (outcome === "noop") submitCurrentLine();
-          // 填入后面板通常会消失（DOM 卸载）→ 焦点可能被丢回 body，
-          // 光标会随之"消失"。这里立刻把它还给终端，交互才连贯。
+          // blocked：参数选择器已打开 / 主体已填（手填参数）→ 不展开面板。
           refocusTerminal();
           return true;
         }
-        case "dismiss": {
+        case "accept-active": {
+          // 展开态 Tab/→：填入当前高亮（不执行）—— 多级目录 / 继续补参数。
           event.preventDefault();
-          // 关闭面板：记录当前草稿，draft 变化前面板不再出现。
-          setDismissedDraft(draft);
+          const hit = items[activeIndex] ?? items[0];
+          if (!hit) return true;
+          const outcome = applySuggestion(hit);
+          if (outcome === "noop") {
+            submitCurrentLine();
+            setSuggestExpanded(false);
+          } else if (outcome === "blocked") {
+            setSuggestExpanded(false);
+          }
+          // filled → 保持展开：`cd ops/` 后面板立刻提示下一层。
+          refocusTerminal();
+          return true;
+        }
+        case "run-first": {
+          // 收起态 Enter：直接执行 ghost 提示的第一条（参数/风险流程照走）。
+          event.preventDefault();
+          const first = items[0];
+          if (!first) return true;
+          runSuggestion(first);
+          setSuggestExpanded(false);
+          refocusTerminal();
+          return true;
+        }
+        case "run-active": {
+          // 展开态 Enter：执行当前高亮项。
+          event.preventDefault();
+          const hit = items[activeIndex] ?? items[0];
+          if (!hit) return true;
+          runSuggestion(hit);
+          setSuggestExpanded(false);
+          refocusTerminal();
+          return true;
+        }
+        case "clear-line": {
+          // Esc（任何状态）：清空整行 + 关闭面板 + 保持终端焦点。
+          // 远程发 Ctrl+U（readline 清行），本地 LineEditor 同步清空。
+          event.preventDefault();
+          writeToShell("\x15");
+          lineEditorRef.current?.feed("\x15");
+          setDraft("");
           refocusTerminal();
           return true;
         }
@@ -751,11 +797,21 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   });
 
   // 面板是**真正**渲染出来的条件（与下方 JSX 保持一致）：
-  // TerminalSuggest 自己也会在"没有候选也没有说明"时返回 null。
+  // 统一状态机 —— 只有 expanded（Tab/ArrowDown 之后）才允许出现完整面板。
   const suggestPanelVisible =
     suggestionsEnabled &&
+    suggestExpanded &&
     !paramPicker &&
     (suggestions.items.length > 0 || Boolean(suggestions.notice));
+
+  // 行内 ghost（收起态）：第一条候选的剩余部分 + Tab 徽标。
+  // 裸 `cd` 的 ghost 自带前导空格（insertText 里已含）。
+  const parsed = parseLine(draft, draft.length);
+  const ghostPrefix = parsed && parsed.index > 0 ? parsed.prefix : null;
+  const ghostText = suggestionsEnabled
+    ? ghostTextFor(suggestions.items[0], draft, ghostPrefix)
+    : "";
+  const ghostVisible = suggestionsEnabled && !suggestExpanded && !paramPicker && ghostText !== "";
 
   /**
    * 面板消失 → 焦点还给终端（**真正的修复点**）。
@@ -1080,7 +1136,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             }}
           />
         )}
-        {suggestionsEnabled && !paramPicker && (
+        {ghostVisible && suggestAnchor && (
+          <TerminalGhost
+            text={ghostText}
+            anchor={suggestAnchor}
+            terminal={terminalRef.current}
+          />
+        )}
+        {suggestPanelVisible && (
           <TerminalSuggest
             items={suggestions.items}
             notice={suggestions.notice}

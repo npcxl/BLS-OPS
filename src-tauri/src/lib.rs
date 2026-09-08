@@ -157,6 +157,8 @@ pub fn run() {
             commands::editor_sync_open,
             commands::editor_sync_close,
             commands::editor_sync_list,
+            // vscode remote-ssh — open a remote folder in the user's editor
+            commands::vscode_open_remote_folder,
             // directory size (on-demand, background)
             commands::directory_size_start,
             commands::directory_size_cancel,
@@ -167,7 +169,7 @@ pub fn run() {
             commands::service_action,
             commands::service_status,
             // log centre — journald (P3-1.2)
-            commands::journal_query,
+            commands::journal_query,s
             commands::journal_disk_usage,
             // command centre (P4.0–P4.3)
             commands::command_search,

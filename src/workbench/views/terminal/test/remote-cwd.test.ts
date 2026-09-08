@@ -187,6 +187,58 @@ describe("RemoteCwdTracker", () => {
     expect(tracker.get("s1")).toBe("/root");
   });
 
+  it("marks the cwd uncertain when a cd ends without exit code or OSC 7", () => {
+    // 用户裁决：cd 提交后既没等到 OSC 133 D 也没等到 OSC 7 → 目录**可能**
+    // 变了但无法证实 → uncertain（下一次补全前受控 pwd 探测刷新）。
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/root");
+    tracker.noteCd("s1", "cd /dev");
+    tracker.onCommandEnd("s1", null);
+    // 旧值保留（列目录有得用，比 null 好），但必须标 uncertain。
+    expect(tracker.get("s1")).toBe("/root");
+    expect(tracker.stateOf("s1").uncertain).toBe(true);
+    expect(tracker.needsProbe("s1")).toBe(true);
+  });
+
+  it("a failed cd is NOT uncertain — the directory definitely did not change", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/root");
+    tracker.noteCd("s1", "cd /does/not/exist");
+    tracker.onCommandEnd("s1", 1);
+    expect(tracker.get("s1")).toBe("/root");
+    expect(tracker.stateOf("s1").uncertain).toBe(false);
+    expect(tracker.needsProbe("s1")).toBe(false);
+  });
+
+  it("a successful cd clears uncertainty", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/root");
+    tracker.noteCd("s1", "cd /dev");
+    tracker.onCommandEnd("s1", 0);
+    expect(tracker.stateOf("s1").uncertain).toBe(false);
+    expect(tracker.needsProbe("s1")).toBe(false);
+  });
+
+  it("OSC 7 arriving late clears uncertainty", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/root");
+    tracker.noteCd("s1", "cd /dev");
+    tracker.onCommandEnd("s1", null);
+    expect(tracker.needsProbe("s1")).toBe(true);
+    tracker.setFromOsc7("s1", "/dev"); // shell 的探测/上报回来了
+    expect(tracker.needsProbe("s1")).toBe(false);
+    expect(tracker.get("s1")).toBe("/dev");
+  });
+
+  it("non-cd commands never touch uncertainty", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/root");
+    tracker.noteCd("s1", "ls -la"); // 不是 cd → 不进 pending
+    tracker.onCommandEnd("s1", null);
+    expect(tracker.stateOf("s1").uncertain).toBe(false);
+    expect(tracker.needsProbe("s1")).toBe(false);
+  });
+
   it("keeps a cd - memory of the previous directory", () => {
     const tracker = new RemoteCwdTracker();
     tracker.setHome("s1", "/root");

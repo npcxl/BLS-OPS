@@ -20,6 +20,7 @@ mod services;
 mod sessions;
 mod sftp;
 mod ssh;
+mod vscode;
 
 pub use app::*;
 pub use command_center::*;
@@ -37,6 +38,7 @@ pub use services::*;
 pub use sessions::*;
 pub use sftp::*;
 pub use ssh::*;
+pub use vscode::*;
 
 use rusqlite::Connection;
 

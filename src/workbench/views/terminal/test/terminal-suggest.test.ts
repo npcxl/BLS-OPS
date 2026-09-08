@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   computeSuggestPosition,
+  ghostTextFor,
   keysForReplace,
-  resolveSuggestKey,
+  resolveTerminalCompleteKey,
   SUGGEST_GAP,
 } from "../terminal-suggest";
 
@@ -115,44 +116,82 @@ describe("提示面板定位（原位补全）", () => {
   });
 });
 
-describe("提示面板键盘映射（面板打开时接管）", () => {
-  it("↑/↓ = 移动选择", () => {
-    expect(resolveSuggestKey({ key: "ArrowDown" }, true)).toEqual({ type: "move", delta: 1 });
-    expect(resolveSuggestKey({ key: "ArrowUp" }, true)).toEqual({ type: "move", delta: -1 });
+describe("统一补全状态机（默认 ghost，Tab/↓ 才展开面板）", () => {
+  const expanded = { expanded: true, hasItems: true };
+  const collapsed = { expanded: false, hasItems: true };
+  const empty = { expanded: false, hasItems: false };
+
+  it("collapsed：Tab / ArrowDown = 接受第一条并展开面板（唯一出现方式）", () => {
+    expect(resolveTerminalCompleteKey({ key: "Tab" }, collapsed)).toEqual({ type: "accept-first" });
+    expect(resolveTerminalCompleteKey({ key: "ArrowDown" }, collapsed)).toEqual({
+      type: "accept-first",
+    });
   });
 
-  it("→ 与 Enter = 填入候选（第一次 Enter 不执行）", () => {
-    expect(resolveSuggestKey({ key: "ArrowRight" }, true)).toEqual({ type: "accept" });
-    expect(resolveSuggestKey({ key: "Enter" }, true)).toEqual({ type: "accept" });
+  it("collapsed：Enter = 直接执行第一条；无候选 = 穿透给 shell 执行原始命令", () => {
+    expect(resolveTerminalCompleteKey({ key: "Enter" }, collapsed)).toEqual({ type: "run-first" });
+    expect(resolveTerminalCompleteKey({ key: "Enter" }, empty)).toEqual({ type: "none" });
   });
 
-  it("← / Esc = 关闭面板，恢复 shell 原生方向键", () => {
-    expect(resolveSuggestKey({ key: "ArrowLeft" }, true)).toEqual({ type: "dismiss" });
-    expect(resolveSuggestKey({ key: "Escape" }, true)).toEqual({ type: "dismiss" });
+  it("expanded：↑/↓ 移动，Enter 执行当前项，Tab/→ 填入当前项", () => {
+    expect(resolveTerminalCompleteKey({ key: "ArrowDown" }, expanded)).toEqual({
+      type: "move",
+      delta: 1,
+    });
+    expect(resolveTerminalCompleteKey({ key: "ArrowUp" }, expanded)).toEqual({
+      type: "move",
+      delta: -1,
+    });
+    expect(resolveTerminalCompleteKey({ key: "Enter" }, expanded)).toEqual({ type: "run-active" });
+    expect(resolveTerminalCompleteKey({ key: "Tab" }, expanded)).toEqual({ type: "accept-active" });
+    expect(resolveTerminalCompleteKey({ key: "ArrowRight" }, expanded)).toEqual({
+      type: "accept-active",
+    });
   });
 
-  it("面板关闭后（无候选）：第二次 Enter 落回 shell 正常执行", () => {
-    expect(resolveSuggestKey({ key: "Enter" }, false)).toEqual({ type: "none" });
-    expect(resolveSuggestKey({ key: "ArrowDown" }, false)).toEqual({ type: "none" });
+  it("任何状态 Esc = 清空整行（清输入/ghost/面板）", () => {
+    expect(resolveTerminalCompleteKey({ key: "Escape" }, collapsed)).toEqual({ type: "clear-line" });
+    expect(resolveTerminalCompleteKey({ key: "Escape" }, expanded)).toEqual({ type: "clear-line" });
+    expect(resolveTerminalCompleteKey({ key: "Escape" }, empty)).toEqual({ type: "clear-line" });
   });
 
-  it("输入法组合中绝不拦截（方向键与 Enter 属于 IME 导航）", () => {
-    expect(resolveSuggestKey({ key: "Enter", isComposing: true }, true)).toEqual({ type: "none" });
-    expect(resolveSuggestKey({ key: "ArrowDown", isComposing: true }, true)).toEqual({
+  it("无候选时 Tab/↓ 不接管（终端 Tab 穿透给远程 shell 补全）", () => {
+    expect(resolveTerminalCompleteKey({ key: "Tab" }, empty)).toEqual({ type: "none" });
+    expect(resolveTerminalCompleteKey({ key: "ArrowDown" }, empty)).toEqual({ type: "none" });
+  });
+
+  it("输入法组合中绝不拦截", () => {
+    expect(
+      resolveTerminalCompleteKey({ key: "Enter", isComposing: true }, collapsed),
+    ).toEqual({ type: "none" });
+    expect(resolveTerminalCompleteKey({ key: "ArrowDown", isComposing: true }, expanded)).toEqual({
       type: "none",
     });
   });
 
-  it("Tab = 补全选中目录（shell 自带的补全换成「认得远程目录」的那个）", () => {
-    // 面板打开时 Tab 必须被接管：远程的 readline 补全看不见我们拿到的
-    // SFTP 目录列表，让它去补会给出本地视角的结果。
-    expect(resolveSuggestKey({ key: "Tab" }, true)).toEqual({ type: "accept" });
-    // 面板关闭时 Tab 原样交给 shell（不含候选就没有可补全的东西）。
-    expect(resolveSuggestKey({ key: "Tab" }, false)).toEqual({ type: "none" });
+  it("其他按键不拦截（字符是输入；ArrowUp 在 collapsed 是 shell 历史）", () => {
+    expect(resolveTerminalCompleteKey({ key: "a" }, collapsed)).toEqual({ type: "none" });
+    expect(resolveTerminalCompleteKey({ key: "Backspace" }, expanded)).toEqual({ type: "none" });
+    expect(resolveTerminalCompleteKey({ key: "ArrowUp" }, collapsed)).toEqual({ type: "none" });
+  });
+});
+
+describe("行内 ghost 文本（第一条候选的剩余部分）", () => {
+  it("token 替换类：去掉已敲的 partial（cd o + ops/ → ps/）", () => {
+    expect(ghostTextFor({ insertText: "ops/" }, "cd o", "o")).toBe("ps/");
   });
 
-  it("其他按键不拦截（字符是输入）", () => {
-    expect(resolveSuggestKey({ key: "a" }, true)).toEqual({ type: "none" });
-    expect(resolveSuggestKey({ key: "Backspace" }, true)).toEqual({ type: "none" });
+  it("全语法类：去掉与整行重合的前缀（docker p + docker ps -a → s -a）", () => {
+    expect(ghostTextFor({ insertText: "docker ps -a" }, "docker p", "p")).toBe("s -a");
+  });
+
+  it("裸 cd：整条显示（自带前导空格 —— ghost 前自动含空格）", () => {
+    expect(ghostTextFor({ insertText: " ops/" }, "cd", "cd")).toBe(" ops/");
+  });
+
+  it("空输入或无候选 → 空串（不显示 ghost）", () => {
+    expect(ghostTextFor({ insertText: "docker ps -a" }, "", null)).toBe("");
+    expect(ghostTextFor({ insertText: "docker ps -a" }, "   ", null)).toBe("");
+    expect(ghostTextFor(undefined, "docker p", "p")).toBe("");
   });
 });

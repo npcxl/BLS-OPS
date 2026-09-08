@@ -297,9 +297,13 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release download "$TAG" --pattern 'latest.json' --output latest.json
+          # `--clobber`: the build directory already holds a latest.json from
+          # tauri-action's own upload.
+          gh release download "$TAG" --pattern 'latest.json' --output latest.json --clobber
+          # `releases/tags/$TAG` returns ONE release object — the assets live in
+          # `.assets`. Map id → file name so the script can build direct URLs.
           ASSET_MAP="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq 'map({(.id|tostring): .name}) | add')"
+            --jq '.assets | map({(.id|tostring): .name}) | add')"
           export ASSET_MAP
           node scripts/rewrite-updater-urls.mjs latest.json
           gh release upload "$TAG" latest.json --clobber

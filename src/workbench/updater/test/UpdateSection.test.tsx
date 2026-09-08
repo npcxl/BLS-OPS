@@ -6,6 +6,12 @@ import "@/i18n";
 // React 19 requires this flag for act() outside react-dom/test-utils.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const writeText = vi.fn(async (_text: string) => undefined);
+Object.defineProperty(navigator, "clipboard", {
+  value: { writeText },
+  configurable: true,
+});
+
 vi.mock("@/lib/updater/updater-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/updater/updater-client")>();
   return { ...actual, isDevRuntime: () => false };
@@ -74,6 +80,7 @@ function withSession() {
 }
 
 beforeEach(() => {
+  writeText.mockClear();
   localStorage.clear();
   resetUpdaterStore();
   useActivityStore.setState({ tickets: {} });
@@ -189,5 +196,52 @@ describe("UpdateSection", () => {
 
     expect(container.textContent).toContain("No network connection");
     expect(buttonWith("Check for updates")?.disabled).toBe(false);
+  });
+
+  it("shows the failure stage instead of a catch-all message", async () => {
+    client.download = vi.fn(async () => {
+      throw new Error("download failed: connection reset by peer");
+    });
+    setUpdaterClient(client);
+    await store().check({ manual: true });
+    await store().install();
+    await mount();
+
+    // Not "The update could not be completed" — the stage says *when*.
+    expect(container.textContent).toContain("Downloading the update failed");
+    expect(container.textContent).toContain("Error code: download_interrupted");
+    // The sanitised reason is visible **in the UI**, not only in console.
+    expect(container.textContent).toContain("connection reset by peer");
+    expect(store().errorStage).toBe("download");
+  });
+
+  it("lets the user copy the sanitised error and the diagnostics bundle", async () => {
+    client.install = vi.fn(async () => {
+      throw new Error("failed to write C:\\Users\\alice\\AppData\\Local\\Temp\\x: access denied");
+    });
+    setUpdaterClient(client);
+    await store().check({ manual: true });
+    await store().install();
+    await mount();
+
+    expect(container.textContent).toContain("Starting the installer failed");
+    // Redacted in the UI as well as in the clipboard.
+    expect(container.textContent).not.toContain("alice");
+    expect(container.textContent).toContain("Users\\<redacted>");
+
+    await click(buttonWith("Copy error details"));
+    expect(writeText).toHaveBeenCalled();
+    const calls = writeText.mock.calls;
+    const copiedError = calls[calls.length - 1]?.[0] ?? "";
+    expect(copiedError).toContain("access denied");
+    expect(copiedError).not.toContain("alice");
+
+    await click(buttonWith("Copy diagnostics"));
+    const bundle = calls[calls.length - 1]?.[0] ?? "";
+    expect(bundle).toContain("BLS-OPS update diagnostics");
+    expect(bundle).toContain("error stage: install");
+    expect(bundle).toContain("current version: v0.1.0");
+    expect(bundle).toContain("latest.json");
+    expect(bundle).not.toContain("alice");
   });
 });

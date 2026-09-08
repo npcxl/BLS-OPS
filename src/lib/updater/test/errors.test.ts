@@ -75,9 +75,51 @@ describe("classifyUpdateError", () => {
     expect(classifyUpdateError("Updater is disabled in dev mode").code).toBe("unsupported_build");
   });
 
+  it.each([
+    // Windows / Tauri installer failures that used to fall through to unknown.
+    ["failed to extract the update archive", "install_failed"],
+    ["failed to spawn installer process", "install_failed"],
+    ["failed to execute the installer", "install_failed"],
+    ["ShellExecuteW returned 5", "install_failed"],
+    ["access denied writing the update", "install_failed"],
+    ["permission denied", "install_failed"],
+    ["elevation required", "install_failed"],
+    ["the installer exited with code 2", "install_failed"],
+    ["failed to create temporary file (os error 5)", "install_failed"],
+    ["failed to rename/replace the executable (os error 5)", "install_failed"],
+    ["file not found (os error 2)", "install_failed"],
+    ["path not found", "install_failed"],
+    ["blocked by antivirus", "install_failed"],
+    ["blocked by security policy", "install_failed"],
+    ["requires elevation (os error 740)", "install_failed"],
+    ["failed to open the downloaded archive", "install_failed"],
+  ])("maps %s to %s", (raw, code) => {
+    expect(classifyUpdateError(raw, "install").code).toBe(code);
+  });
+
   it("falls back to unknown instead of guessing", () => {
     expect(classifyUpdateError("something entirely new happened").code).toBe("unknown");
     expect(classifyUpdateError(undefined).code).toBe("unknown");
+  });
+});
+
+describe("failure stage", () => {
+  it("keeps the stage the caller reports", () => {
+    expect(classifyUpdateError("boom", "check").stage).toBe("check");
+    expect(classifyUpdateError("boom", "download").stage).toBe("download");
+    expect(classifyUpdateError("boom", "install").stage).toBe("install");
+    expect(classifyUpdateError("boom", "relaunch").stage).toBe("relaunch");
+  });
+
+  it("relabels signature failures as verify — the plugin verifies inside install", () => {
+    const error = classifyUpdateError("failed to verify signature: invalid", "install");
+    expect(error.code).toBe("signature_invalid");
+    expect(error.stage).toBe("verify");
+  });
+
+  it("timestamps the failure for the diagnostics bundle", () => {
+    const { at } = classifyUpdateError("boom", "download");
+    expect(Number.isNaN(Date.parse(at))).toBe(false);
   });
 });
 

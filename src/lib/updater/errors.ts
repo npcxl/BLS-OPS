@@ -9,6 +9,7 @@
 import type {
   UpdateError,
   UpdateErrorCode,
+  UpdateStage,
 } from "@/api/types/updater";
 
 /**
@@ -32,6 +33,22 @@ export const UPDATE_ERROR_MESSAGES: Record<UpdateErrorCode, string> = {
   restart_failed: "The app could not be restarted. Please close and reopen it manually.",
   unsupported_build: "Updates are not available in development builds.",
   unknown: "The update could not be completed.",
+};
+
+/**
+ * Stage-specific headline, e.g. "Downloading the update failed".
+ *
+ * The generic per-code message is still shown underneath: the code explains
+ * **what** went wrong (no network, bad signature…), the stage explains
+ * **when**. Showing only the catch-all "The update could not be completed"
+ * made every failure look identical and un-diagnosable.
+ */
+export const UPDATE_STAGE_MESSAGES: Record<UpdateStage, string> = {
+  check: "Checking for updates failed",
+  download: "Downloading the update failed",
+  verify: "Signature verification failed",
+  install: "Starting the installer failed",
+  relaunch: "Restarting the app failed",
 };
 
 /** Codes that mean "nothing is broken, the user can retry immediately". */
@@ -122,7 +139,15 @@ const RULES: Rule[] = [
   },
   { code: "no_platform_asset", all: [/platform|target|no (release|asset|binary)|not (found|available) for/] },
   { code: "download_interrupted", all: [/(download|transfer|connection).{0,32}(interrupt|reset|closed|abort|broken)|unexpected eof/] },
-  { code: "install_failed", all: [/install/] },
+  // Windows installer / OS level failures. These must land on `install_failed`
+  // instead of `unknown` — they are the ones users actually hit (locked file,
+  // missing elevation, blocked by policy).
+  {
+    code: "install_failed",
+    all: [
+      /install|failed to (extract|spawn|execute|open|create|rename|replace)|shellexecute|access denied|permission denied|elevation required|requires (admin|elevation)|os error (2|5|740)\b|file not found|path not found|antivirus|security policy|security software|blocked by|temp(orary)? file|exit(ed)? (with )?code/,
+    ],
+  },
   { code: "network", all: [/network|offline|dns|resolve|connect|unreachable|os error (11001|10051|10060|10061)|error sending request|failed to (fetch|download|get)/] },
 ];
 
@@ -131,14 +156,30 @@ const RULES: Rule[] = [
  *
  * Deliberately conservative: an unrecognised message yields `unknown` rather
  * than a guessed code, because a wrong explanation is worse than a vague one.
+ *
+ * `stage` is supplied by the caller (it knows which step it called). The
+ * plugin verifies the signature **inside** install, so a verification failure
+ * is re-labelled `verify` here — otherwise it would read as "install failed".
  */
-export function classifyUpdateError(cause: unknown): UpdateError {
+export function classifyUpdateError(cause: unknown, stage: UpdateStage = "check"): UpdateError {
   const detail = sanitizeUpdateDetail(messageOf(cause));
   const haystack = detail.toLowerCase();
-  if (!haystack) return { code: "unknown", detail: "" };
+  let code: UpdateErrorCode = "unknown";
 
-  for (const rule of RULES) {
-    if (rule.all.every((pattern) => pattern.test(haystack))) return { code: rule.code, detail };
+  if (haystack) {
+    for (const rule of RULES) {
+      if (rule.all.every((pattern) => pattern.test(haystack))) {
+        code = rule.code;
+        break;
+      }
+    }
   }
-  return { code: "unknown", detail };
+
+  return {
+    code,
+    detail,
+    stage:
+      code === "signature_invalid" || code === "signature_missing" ? "verify" : stage,
+    at: new Date().toISOString(),
+  };
 }

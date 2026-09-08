@@ -1,0 +1,19 @@
+{
+  "version": "0.1.3",
+  "notes": "",
+  "pub_date": "2026-09-08T06:00:15.841Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSWGVXbEF6U0EyTU04Qjd3bU82QXVDb3MydlVsSnhydy9HTnRhdkdkZW5UbXlFcGxUOWZ4UXdLZkhXeklvSHJCZUJ1bkwzQzFGUldaM3VlTDM2ODVFZzBINVhBVDZsQ1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ3MjExCWZpbGU6T3BzIFdvcmtiZW5jaF8wLjEuM194NjQtc2V0dXAuZXhlCm1wR3RYbnFZa1JUT050RFNOVFJYNTFKWEJ6eVluY1dDMjZKTWN2SGdOQVlDSDdXUVlKejkzWlFqeGR1ZXpMVWdPRzJBT0x6dnd0cXFUVk00MUxpVUJRPT0K",
+      "url": "https://github.com/npcxl/BLS-OPS/releases/download/v0.1.3/Ops.Workbench_0.1.3_x64-setup.exe"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSWGVXbEF6U0EyTU04Qjd3bU82QXVDb3MydlVsSnhydy9HTnRhdkdkZW5UbXlFcGxUOWZ4UXdLZkhXeklvSHJCZUJ1bkwzQzFGUldaM3VlTDM2ODVFZzBINVhBVDZsQ1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ3MjExCWZpbGU6T3BzIFdvcmtiZW5jaF8wLjEuM194NjQtc2V0dXAuZXhlCm1wR3RYbnFZa1JUT050RFNOVFJYNTFKWEJ6eVluY1dDMjZKTWN2SGdOQVlDSDdXUVlKejkzWlFqeGR1ZXpMVWdPRzJBT0x6dnd0cXFUVk00MUxpVUJRPT0K",
+      "url": "https://github.com/npcxl/BLS-OPS/releases/download/v0.1.3/Ops.Workbench_0.1.3_x64-setup.exe"
+    },
+    "windows-x86_64-msi": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSWGVXbEF6U0EyTU9HRmF1RjNudS9xcm5BeUxyZ1NmL2p5Ti9qVkhKbzF4WFNmMEFYZCttMi83Z1RHMXAzQUYycWZwSmVXM1ZhNG1rK04yR1o3ckhRYWhCSTJ5VWEyM2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ3MjExCWZpbGU6T3BzIFdvcmtiZW5jaF8wLjEuM194NjRfZW4tVVMubXNpCjlWS05IbHoyRTFvM0ZOTWhOV2RXcjVJTmVuSXZ4SUx6eFhHM3RtcG9qVWRMN29KTnQzbVl0L2Rna2I5WW5WeWk1WnJaMzF0SksrblhjTnprcWlSckJBPT0K",
+      "url": "https://github.com/npcxl/BLS-OPS/releases/download/v0.1.3/Ops.Workbench_0.1.3_x64_en-US.msi"
+    }
+  }
+}

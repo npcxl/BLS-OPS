@@ -72,9 +72,25 @@ export type UpdateErrorCode =
   | "unsupported_build"
   | "unknown";
 
+/**
+ * Which half of the pipeline failed.
+ *
+ * The plugin reports every failure as a free-form string, so the **caller**
+ * says where it happened — that is the only way the user can be told
+ * "downloading failed" instead of the catch-all "the update failed".
+ */
+export type UpdateStage = "check" | "download" | "verify" | "install" | "relaunch";
+
 /** A classified failure: user-facing code plus the sanitised dev log line. */
 export interface UpdateError {
   code: UpdateErrorCode;
   /** Raw message for the console only — already stripped of local paths. */
   detail: string;
+  /**
+   * Where it failed. `verify` has no separate call site (the plugin verifies
+   * inside `install`), so it is **inferred** from the error text.
+   */
+  stage: UpdateStage;
+  /** ISO-8601 timestamp of the failure — for the diagnostics bundle. */
+  at: string;
 }

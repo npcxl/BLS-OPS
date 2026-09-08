@@ -5,17 +5,36 @@
  * logic of its own. Everything is an i18n key resolved with `t()` here, so no
  * language is hard-coded into the component.
  */
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { ErrorText } from "@/components/ui/modal";
+import { copyText } from "@/lib/clipboard";
 import { formatBytes } from "@/lib/format";
-import { UPDATE_ERROR_MESSAGES } from "@/lib/updater/errors";
+import {
+  UPDATE_ERROR_MESSAGES,
+  UPDATE_STAGE_MESSAGES,
+  sanitizeUpdateDetail,
+} from "@/lib/updater/errors";
+import { buildUpdateDiagnostics } from "@/lib/updater/diagnostics";
 import { useUpdaterStore } from "@/stores/updater-store";
 import { useUpdaterActions } from "@/hooks/use-updater";
+import { useDomainStore } from "@/stores/domain-store";
 import type { UpdatePhase } from "@/api/types/updater";
 import { Group, InfoRow, ListGroup, Switch } from "../settings-parts";
 import { UpdateRestartDialog } from "./UpdateRestartDialog";
 import { useGuardedUpdate } from "./use-guarded-update";
+
+/**
+ * The endpoint the updater reads its manifest from.
+ *
+ * Mirrors `tauri.conf.json → plugins.updater.endpoints[0]` — the plugin reads
+ * it inside Rust, so the frontend cannot ask for it; keep the two in sync.
+ * Shown in the diagnostics bundle (never a local path, never a token).
+ */
+const UPDATE_MANIFEST_URL =
+  "https://github.com/npcxl/BLS-OPS/releases/latest/download/latest.json";
+/** Manual download page — same releases, no API, no credentials. */
+const RELEASES_PAGE_URL = "https://github.com/npcxl/BLS-OPS/releases/latest";
 
 /** Status line per phase. Values are i18n keys (natural keys). */
 const PHASE_LABELS: Record<UpdatePhase, string> = {
@@ -47,8 +66,37 @@ export function UpdateSection() {
   const release = useUpdaterStore((s) => s.release);
   const progress = useUpdaterStore((s) => s.progress);
   const error = useUpdaterStore((s) => s.error);
+  const errorStage = useUpdaterStore((s) => s.errorStage);
   const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt);
   const autoCheck = useUpdaterStore((s) => s.autoCheck);
+  const appInfo = useDomainStore((s) => s.appInfo);
+  /** "Copied" is a one-shot confirmation; two buttons share one message. */
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // Sanitised again at the render site: the UI shows text the user can copy
+  // into an issue, so nothing unsanitised may reach the DOM either.
+  const detail = error ? sanitizeUpdateDetail(error.detail) : "";
+  const diagnostics = useMemo(
+    () =>
+      buildUpdateDiagnostics({
+        currentVersion,
+        targetVersion: release?.version ?? null,
+        os: appInfo?.os ?? null,
+        arch: appInfo?.arch ?? null,
+        stage: errorStage,
+        error,
+        manifestUrl: UPDATE_MANIFEST_URL,
+        lastCheckedAt,
+      }),
+    [appInfo?.arch, appInfo?.os, currentVersion, error, errorStage, lastCheckedAt, release?.version],
+  );
+
+  const copy = async (text: string, message: "Copied" | "Diagnostics copied") => {
+    const ok = await copyText(text);
+    setCopied(ok ? message : null);
+    if (!ok) return;
+    window.setTimeout(() => setCopied(null), 2000);
+  };
 
   const busy = phase === "checking" || phase === "downloading" || phase === "installing";
   // Installing is allowed whenever we hold a release and are not already
@@ -117,10 +165,49 @@ export function UpdateSection() {
         <p className="px-0.5 text-11 leading-relaxed text-fg-subtle">{t(PHASE_LABELS[phase])}</p>
       )}
 
-      {error && <ErrorText>{t(UPDATE_ERROR_MESSAGES[error.code])}</ErrorText>}
+      {error && (
+        <div className="flex flex-col gap-2 rounded-[10px] border border-danger/25 bg-danger/5 px-3 py-2.5">
+          {/* Stage headline ("Downloading the update failed") + the code's
+              explanation ("No network connection…") + the sanitised reason.
+              Production must never be a dead end: the real cause is visible
+              and copyable even though console is out of reach for users. */}
+          <p className="text-12 font-medium text-danger">
+            {t(UPDATE_STAGE_MESSAGES[error.stage])}
+          </p>
+          <p className="text-11 leading-relaxed text-fg">{t(UPDATE_ERROR_MESSAGES[error.code])}</p>
+          {detail && (
+            <p className="break-words text-11 leading-relaxed text-fg-muted">
+              {t("Details: {{detail}}", { detail })}
+            </p>
+          )}
+          <p className="text-11 text-fg-subtle">
+            {t("Error code: {{code}}", { code: error.code })}
+          </p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button variant="secondary" size="sm" onClick={() => void copy(detail, "Copied")}>
+              {t("Copy error details")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void check({ manual: true })}
+              disabled={busy}
+            >
+              {t("Retry")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {copied && <p className="px-0.5 text-11 text-success">{t(copied)}</p>}
 
       <div className="flex flex-wrap items-center gap-1.5 px-0.5">
-        <Button variant="secondary" size="sm" disabled={busy} onClick={() => void check({ manual: true })}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onClick={() => void check({ manual: true })}
+        >
           {phase === "checking" ? t("Checking") : t("Check for updates")}
         </Button>
         {canInstall && (
@@ -138,6 +225,17 @@ export function UpdateSection() {
             {t("Remind me later")}
           </Button>
         )}
+        <Button variant="ghost" size="sm" onClick={() => void copy(diagnostics, "Diagnostics copied")}>
+          {t("Copy diagnostics")}
+        </Button>
+        <a
+          href={RELEASES_PAGE_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="text-11 text-accent underline-offset-2 hover:underline"
+        >
+          {t("Download manually from GitHub")}
+        </a>
       </div>
 
       <UpdateRestartDialog

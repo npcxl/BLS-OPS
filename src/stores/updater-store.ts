@@ -12,6 +12,7 @@ import type {
   UpdatePhase,
   UpdateProgress,
   UpdateRelease,
+  UpdateStage,
 } from "@/api/types/updater";
 import { classifyUpdateError } from "@/lib/updater/errors";
 import { collectRestartBlockers, type RestartBlocker } from "@/lib/updater/restart-guard";
@@ -41,6 +42,8 @@ interface UpdaterState {
   release: UpdateRelease | null;
   progress: UpdateProgress | null;
   error: UpdateError | null;
+  /** Stage of the failed step — for the error headline and diagnostics. */
+  errorStage: UpdateStage | null;
   lastCheckedAt: number | null;
   autoCheck: boolean;
   /** Non-blocking "a new version is available" banner (auto-check only). */
@@ -117,11 +120,18 @@ function persistLastCheckedAt(value: number | null): void {
   }
 }
 
-function logFailure(where: string, error: UpdateError): void {
+function logFailure(where: UpdateStage, error: UpdateError): void {
   // Dev log keeps the classified code and a sanitised reason — never the
   // installer path, never a token, never the signature blob.
-  console.error(`[updater] ${where} failed (${error.code})`, error.detail);
+  console.error(`[updater] ${where} failed (${error.code}/${error.stage})`, error.detail);
 }
+
+/** Sets the error **and** the stage it happened in — one place, never split. */
+function fail(error: UpdateError): UpdateState {
+  return { phase: "error", progress: null, error, errorStage: error.stage };
+}
+
+type UpdateState = Partial<UpdaterState>;
 
 export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
   phase: "idle",
@@ -129,6 +139,7 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
   release: null,
   progress: null,
   error: null,
+  errorStage: null,
   lastCheckedAt: null,
   autoCheck: true,
   bannerVisible: false,
@@ -162,7 +173,13 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
         set({
           phase: "error",
           release: null,
-          error: { code: "unsupported_build", detail: "tauri dev" },
+          error: {
+            code: "unsupported_build",
+            detail: "tauri dev",
+            stage: "check",
+            at: new Date().toISOString(),
+          },
+          errorStage: "check",
         });
         return;
       }
@@ -193,11 +210,11 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
           bannerVisible: !manual,
         });
       } catch (cause) {
-        const error = classifyUpdateError(cause);
+        const error = classifyUpdateError(cause, "check");
         logFailure("check", error);
         const now = Date.now();
         persistLastCheckedAt(now);
-        set({ phase: "error", release: null, progress: null, error, lastCheckedAt: now });
+        set({ release: null, lastCheckedAt: now, ...fail(error) });
       }
     };
 
@@ -223,6 +240,10 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
 
     const run = async () => {
       set({ error: null });
+      // Tracks which half of the pipeline failed: `download` fetches the
+      // package, `install` verifies + runs it. Reported so the user sees
+      // "downloading failed" vs "starting the installer failed".
+      let stage: UpdateStage = "download";
       try {
         // Skip the download when the package is already on disk: reaching
         // `downloaded` and finishing later must not fetch it twice.
@@ -230,7 +251,6 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
           set({ phase: "downloading", progress: { received: 0, total: null } });
           await client.download((progress) => set({ progress }));
         }
-
         /*
          * Second guard. The first one ran when the user clicked; this one runs
          * against *now* — a download can take minutes and an SSH session, a
@@ -247,12 +267,13 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
         // this process exits, so `restart_required` is mostly a macOS/Linux
         // state — harmless (and honest) to set either way.
         set({ phase: "installing" });
+        stage = "install";
         await client.install();
         set({ phase: "restart_required", bannerVisible: false });
       } catch (cause) {
-        const error = classifyUpdateError(cause);
-        logFailure("install", error);
-        set({ phase: "error", error, progress: null });
+        const error = classifyUpdateError(cause, stage);
+        logFailure(stage, error);
+        set(fail(error));
       }
     };
 
@@ -278,10 +299,18 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
     try {
       await client.relaunch();
     } catch (cause) {
-      const error = classifyUpdateError(cause);
+      const error = classifyUpdateError(cause, "relaunch");
       logFailure("relaunch", error);
       // The install succeeded; only the restart failed. Say exactly that.
-      set({ error: { code: "restart_failed", detail: error.detail } });
+      set({
+        error: {
+          code: "restart_failed",
+          detail: error.detail,
+          stage: "relaunch",
+          at: error.at,
+        },
+        errorStage: "relaunch",
+      });
     }
   },
 
@@ -305,6 +334,7 @@ export function resetUpdaterStore(): void {
     release: null,
     progress: null,
     error: null,
+    errorStage: null,
     lastCheckedAt: null,
     autoCheck: true,
     bannerVisible: false,

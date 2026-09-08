@@ -10,6 +10,7 @@ export default {
   "{{count}} hits": "{{count}} 条命中",
   "{{count}} favorites": "{{count}} 条收藏",
   "↑↓ select · Enter run · Esc clear": "↑↓ 选择 · Enter 执行 · Esc 清空",
+  "Tab to complete": "按 Tab 补全并展开列表",
   "No results yet": "暂无结果",
 
   // -- 可执行性 --

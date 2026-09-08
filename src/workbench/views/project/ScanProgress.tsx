@@ -18,8 +18,8 @@ export function ScanProgress({
           <Loader2 size={14} className="animate-spin text-accent" />
           <div className="min-w-0">
             <div className="text-12 font-medium text-fg">{t("Scanning server projects")}</div>
-            {/* phase 是后端下发的原文，保持原样展示 */}
-            <div className="truncate text-10 text-fg-subtle">{scan.progress.phase}</div>
+            {/* phase 是后端下发的英文 key：en 原样显示，zh 走 projects.ts 翻译 */}
+            <div className="truncate text-10 text-fg-subtle">{t(scan.progress.phase)}</div>
           </div>
         </div>
         <Button variant="ghost" size="xs" onClick={onCancel}>

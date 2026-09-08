@@ -106,6 +106,17 @@ async function type(value: string) {
   });
 }
 
+/**
+ * 新交互（用户裁决）：输入只给行内 ghost，**按 Tab 才展开完整列表**。
+ * 列表操作类用例都先 type 再 pressTab 回到"之前的流程"。
+ */
+async function pressTab() {
+  const input = container.querySelector("input") as HTMLInputElement;
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+  });
+}
+
 /** Buttons inside the view (the suggestion list). */
 function buttonWith(text: string): HTMLButtonElement | undefined {
   return [...container.querySelectorAll("button")].find((node) =>
@@ -146,7 +157,7 @@ afterEach(() => {
 });
 
 describe("CommandCenterView", () => {
-  it("searches as you type without requiring a server connection", async () => {
+  it("typing shows an inline ghost + Tab badge, NOT the list; Tab expands it", async () => {
     // Retrieval is local knowledge — it must work even when disconnected.
     mocks.session.phase = "closed";
     searchMock.mockResolvedValue([hit()]);
@@ -154,7 +165,22 @@ describe("CommandCenterView", () => {
     await type("docker p");
 
     expect(searchMock).toHaveBeenCalledWith("docker p", 20);
-    expect(container.textContent).toContain("docker ps -a");
+    // 收起态：完整列表（<button> 项）不出现，但 ghost 提示与 Tab 徽标在。
+    expect(buttonWith("查看所有容器")).toBeUndefined();
+    expect(container.querySelector("kbd")).not.toBeNull();
+    // Tab = 接受第一条并展开完整列表（"之前的流程"）。
+    await pressTab();
+    expect(buttonWith("查看所有容器")).toBeTruthy();
+  });
+
+  it("shows nothing (no ghost, no badge) while the query is blank", async () => {
+    searchMock.mockResolvedValue([hit()]);
+    await mount();
+    await type("   "); // 纯空白 = 视为空输入
+
+    expect(searchMock).not.toHaveBeenCalled();
+    expect(container.querySelector("kbd")).toBeNull();
+    expect(buttonWith("查看所有容器")).toBeUndefined();
   });
 
   it("executes a read-only command directly", async () => {
@@ -168,6 +194,7 @@ describe("CommandCenterView", () => {
     } as never);
     await mount();
     await type("docker");
+    await pressTab();
 
     const target = buttonWith("docker ps -a");
     expect(target).toBeTruthy();
@@ -184,6 +211,7 @@ describe("CommandCenterView", () => {
     searchMock.mockResolvedValue([RESTART]);
     await mount();
     await type("systemctl restart");
+    await pressTab();
 
     const target = buttonWith("systemctl restart <unit>");
     expect(target).toBeTruthy();
@@ -204,6 +232,7 @@ describe("CommandCenterView", () => {
     searchMock.mockResolvedValue([RESTART]);
     await mount();
     await type("systemctl restart");
+    await pressTab();
     await click(buttonWith("systemctl restart <unit>")!);
     expect(dialogText()).toContain("Confirm execution");
 
@@ -219,6 +248,7 @@ describe("CommandCenterView", () => {
     probeMock.mockResolvedValue([]); // docker not installed
     await mount();
     await type("docker");
+    await pressTab();
 
     await click(buttonWith("docker ps -a")!);
     expect(executeMock).not.toHaveBeenCalled();

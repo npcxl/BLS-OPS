@@ -5,8 +5,10 @@ import {
   completionKeys,
   fillPlaceholder,
   hasUnresolvedPlaceholder,
+  inlineGhost,
   placeholdersIn,
 } from "../complete";
+import type { CommandSearchHit } from "@/api/ops-api";
 
 describe("占位符识别", () => {
   it("识别 unit 占位符并归一成参数种类", () => {
@@ -66,6 +68,29 @@ describe("占位符拦截（安全底线）", () => {
     expect(canAutoFill("systemctl status <unit>")).toBe(true);
     expect(canAutoFill("journalctl --since <时间>")).toBe(false);
     expect(canAutoFill("docker ps -a")).toBe(false);
+  });
+});
+
+describe("行内 ghost 提示", () => {
+  const hit = { syntax: "docker ps -a" } as CommandSearchHit;
+
+  it("输入是前缀（忽略大小写）→ 只提示剩余部分", () => {
+    expect(inlineGhost("docker p", hit)).toBe("s -a");
+    expect(inlineGhost("DOCKER ", hit)).toBe("ps -a");
+  });
+
+  it("场景/别名命中（非前缀）→ 提示整条语法", () => {
+    expect(inlineGhost("容器列表", hit)).toBe("docker ps -a");
+  });
+
+  it("空输入或无命中 → 空串（空白输入不出现建议）", () => {
+    expect(inlineGhost("", hit)).toBe("");
+    expect(inlineGhost("   ", hit)).toBe("");
+    expect(inlineGhost("docker", undefined)).toBe("");
+  });
+
+  it("完整输入等于语法 → 空串（没有可提示的剩余）", () => {
+    expect(inlineGhost("docker ps -a", hit)).toBe("");
   });
 });
 

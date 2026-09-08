@@ -14,6 +14,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 输出适配铁律：raw 永久保留、空输出有效不回落、解析失败必须可见。
 - 远程命令字符串只能在 `safe.rs` Capability 枚举拼；校验在网络 I/O 前；前端只传结构化标识。
 - **交互铁律（用户裁决 2026-09-07）**：浮层/横幅提示不得遮挡命令行与输入区（paramHint 钉终端顶部 + pointer-events-none，仅关闭键可点）；"不能选择/不能自动填"的功能宁降级为**填入+提示**，绝不让回车被吞成死胡同。
+- **命令面板轻提示模式（用户裁决 2026-09-07）**：空输入（含纯空白）**不出现任何建议**（`useCommandSuggestions` 传 `enabled` 门控）；有输入只给**行内 ghost**（第一条建议剩余部分，灰色，镜像 span 量宽对齐）+ Tab 徽标；**按 Tab/↓ 才展开完整下拉**（之前的完整流程），Enter 恒执行高亮项（收起态=第一条）。ghost 纯函数 `complete.ts::inlineGhost`。
 
 ## 模块化分层（skill: bls-ops-modular）
 - 新 Tauri 命令 → `src-tauri/src/commands/<域>.rs`；新监控指标 → `monitor/`（model→parse 纯函数→collect）。
@@ -25,7 +26,7 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 ## i18n（natural keys）
 - i18next 26 + react-i18next 17。key=英文文案本身，`en` 空、`zh-CN` 全量、其余 8 语言尽力（目前仅 common+workbench，覆盖率 ~13%），`fallbackLng: en`。默认 en。结构见 `docs/i18n.md`（同步 init + `localStorage["bls-ops.locale"]`）。
 - **三个禁手**：① 禁 `parseMissingKeyHandler`（覆盖已插值结果）；② 禁 `keySeparator`／嵌套结构（依赖 `ignoreJSONStructure` 扁平命中）；③ 通用词只进 common.ts。
-- 模式：模块常量**存英文 key、渲染处 t()**；含插值句子在**生成点** `i18n.t()`；纯 TS 用 `import { i18n } from "@/i18n"`。不翻：Rust 错误消息、catalog title、xterm write、远程输出、注释/console/it 名。
+- 模式：模块常量**存英文 key、渲染处 t()**；含插值句子在**生成点** `i18n.t()`；纯 TS 用 `import { i18n } from "@/i18n"`。不翻：Rust 错误消息、catalog title、xterm write、远程输出、注释/console/it 名。**后端结构化 UI 标签（如扫描 phase）不算错误消息**：发英文 natural key、渲染处 `t()`、zh 补翻译（2026-09-07 扫描 phase 已英文化，渲染点 `ScanProgress.tsx`）。
 - **2026-09-07 体检**：`locales/zh-CN/{commandCenter,docker,monitor,nginx,projects}.ts` 是**空壳**，197 个 `t()` key 无中文（project 82 / server-monitor 54 / command-result 34 / command-center 13 / 其它 14）。硬编码中文未抽取：`AiPlaceholder.tsx`、`settings-context-sidebar.tsx`"正在加载…"、`lib/format.ts` 时长、`environment.ts` note。
 - 复查手段：PowerShell 正则扫 `t("...")` key 与语言文件做集合 diff；扫硬编码中文跳过 `//`、`console.*`、`{/* */}`。测试跑 en：断言写英文 key；渲染类测试顶部 `import "@/i18n"`。
 

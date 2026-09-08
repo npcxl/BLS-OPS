@@ -139,6 +139,26 @@ export function needsParams(hit: CommandSearchHit): boolean {
   return hit.can_execute && hit.required_params.length > 0;
 }
 
+/**
+ * 行内 ghost 提示（IDE 风格）：输入框只显示**第一条**建议的未输入部分。
+ *
+ * - 命中是输入的前缀（忽略大小写）→ 只提示剩余部分（`docker p` → `s`）；
+ * - 场景/别名命中 → 提示整条语法；
+ * - 空输入或无命中 → 空串（**不提示** —— 空白输入必须保持干净，
+ *   不出现任何建议，这是用户裁决的交互）。
+ *
+ * 展开完整列表走 Tab（`CommandCenterView` 的 expanded 态），ghost 只在
+ * 收起态渲染。
+ */
+export function inlineGhost(query: string, hit: CommandSearchHit | undefined): string {
+  if (!query.trim() || !hit) return "";
+  const syntax = hit.syntax;
+  if (syntax.toLowerCase().startsWith(query.toLowerCase())) {
+    return syntax.slice(query.length);
+  }
+  return syntax;
+}
+
 const PARAM_LABELS: Record<string, string> = {
   container: "Container name",
   unit: "Service unit name",

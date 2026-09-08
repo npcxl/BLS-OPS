@@ -13,6 +13,16 @@ export default {
   "No directories to review": "沒有需要複核的目錄",
   "Loaded the last discovery; re-checking in the background…":
     "已载入上次的发现结果，正在后台复核…",
+
+  // -- 掃描進度 phase（後端下發的英文 key，en 原樣顯示）--
+  "Candidate discovery": "候選發現",
+  "Capability probe": "能力識別",
+  "Enumerating deployment instances": "部署實例列舉",
+  "Targeted scan of instance paths": "部署實例路徑定向掃描",
+  "Supplementary source scan": "補充原始碼掃描",
+  "Scoring candidates": "候選評分",
+  "Linking runtime services": "執行服務關聯",
+  "Done": "完成",
   "Scan warnings: {{warnings}}": "掃描告警：{{warnings}}",
   Warnings: "告警",
   Progress: "進度",

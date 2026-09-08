@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Search, Star, TerminalSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
@@ -18,14 +18,21 @@ import type { WorkspaceTab } from "@/workbench/types";
 import { RISK_LABEL_KEYS } from "@/workbench/views/command-result/model";
 import { ResultPanel } from "./ResultPanel";
 import { ParamsDialog } from "./ParamsDialog";
-import { buildArgs, needsParams } from "./complete";
+import { buildArgs, inlineGhost, needsParams } from "./complete";
 import { executability } from "./executability";
 
 /**
  * P4 命令智能中心。
  *
- * 输入 → 实时提示（与终端共用 `useCommandSuggestions`）→ 执行 →
- * 结构化视图 | 原始输出 双 Tab（原始输出永久保留）。
+ * 交互（用户裁决，勿回退）：**默认轻提示，Tab 才展开完整列表**。
+ * ```
+ * 空输入   → 什么都不提示（干净输入框，只有 placeholder）；
+ * 有输入   → 下拉不出现；输入框内 = 自己的输入（正常色）+ 第一条建议的
+ *            ghost 剩余部分（灰色）+ 右侧 "Tab" 徽标；
+ * Tab / ↓  → 展开完整建议列表（填入第一条），回到完整流程；
+ * Enter    → 执行当前高亮项（收起态高亮恒为第一条）。
+ * ```
+ * 这样不需要完整列表的用户完全不被打扰（列表会盖住下方内容）。
  *
  * 执行分级：只读直接执行；medium 弹确认（无参数走 ConfirmDialog，带参数走
  * ParamsDialog 的 danger 确认）；high/destructive 第一批不收录。
@@ -34,6 +41,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   const { t } = useTranslation();
   const session = useCommandSession(tab);
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(false);
   const [executing, setExecuting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CommandExecutionResult | null>(null);
@@ -45,10 +53,24 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   /** 服务器上真实存在的工具（command -v 探测）。 */
   const [installedTools, setInstalledTools] = useState<Set<string> | null>(null);
 
-  // 检索不依赖连接：知识库是本地编目。
-  const suggestions = useCommandSuggestions(query, { limit: 20 });
+  // 检索不依赖连接：知识库是本地编目。空输入不检索（"不要输入就出现"禁令）。
+  const canSearch = query.trim().length > 0;
+  const suggestions = useCommandSuggestions(query, { limit: 20, enabled: canSearch });
   const { hits, activeIndex, setActiveIndex, searching, clear: clearHits } = suggestions;
   const active = hits[activeIndex];
+
+  // 收起态的行内 ghost：第一条建议的剩余部分。展开后由完整列表接管。
+  const ghost = inlineGhost(query, hits[0]);
+  const showGhost = canSearch && !expanded && ghost.length > 0;
+
+  // ghost 与已输入文字无缝对齐：镜像 span 用同一字体渲染 query，量出宽度
+  // 作为 ghost 的左偏移。布局完成后同步（jsdom offsetWidth 恒 0，不影响测试）。
+  const mirrorRef = useRef<HTMLSpanElement | null>(null);
+  const [typedWidth, setTypedWidth] = useState(0);
+  useLayoutEffect(() => {
+    const width = mirrorRef.current?.offsetWidth ?? 0;
+    setTypedWidth((prev) => (prev === width ? prev : width));
+  }, [query]);
 
   // 工具探测：依赖"命中的工具集合"而非 hits 引用本身 —— 首屏 hits 为空时
   // 若直接探测会得到空集合，随后命中的 docker/nginx 会被误判成"未安装"。
@@ -122,21 +144,42 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Tab") {
+        // Tab = 接受第一条建议并展开完整列表（收起态才有 ghost 可接受）。
+        if (!expanded && hits[0]) {
+          event.preventDefault();
+          setQuery(hits[0].syntax);
+          setActiveIndex(0);
+          setExpanded(true);
+        }
+        return;
+      }
       if (event.key === "ArrowDown") {
         event.preventDefault();
+        // 收起态按 ↓ 直接展开列表（保持输入不变），再按才是移动高亮。
+        if (!expanded) {
+          if (hits.length > 0) setExpanded(true);
+          return;
+        }
         setActiveIndex(Math.min(activeIndex + 1, hits.length - 1));
       } else if (event.key === "ArrowUp") {
+        if (!expanded) {
+          event.preventDefault();
+          return;
+        }
         event.preventDefault();
         setActiveIndex(Math.max(activeIndex - 1, 0));
       } else if (event.key === "Enter") {
         event.preventDefault();
+        // 收起态 activeIndex 恒为 0：Enter = 执行 ghost 提示的那条命令。
         if (active) requestExecute(active);
       } else if (event.key === "Escape") {
         setQuery("");
+        setExpanded(false);
         clearHits();
       }
     },
-    [active, activeIndex, clearHits, hits.length, requestExecute, setActiveIndex],
+    [active, activeIndex, clearHits, expanded, hits, requestExecute, setActiveIndex],
   );
 
   const summary = useMemo(
@@ -151,20 +194,46 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
         <div
           className={cn(
             "flex h-9 items-center gap-2 rounded-[9px] border bg-surface-1 px-2.5 transition-colors",
-            active ? "border-accent" : "border-line",
+            expanded && active ? "border-accent" : "border-line",
           )}
         >
           <Search size={14} className="shrink-0 text-fg-subtle" />
-          <input
-            autoFocus
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder={t("Search by command prefix or scenario, e.g. docker p")}
-            spellCheck={false}
-            className="h-full min-w-0 flex-1 bg-transparent text-12 text-fg outline-none placeholder:text-fg-subtle"
-          />
+          <div className="relative h-full min-w-0 flex-1">
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder={t("Search by command prefix or scenario, e.g. docker p")}
+              spellCheck={false}
+              className="h-full w-full bg-transparent text-12 text-fg outline-none placeholder:text-fg-subtle"
+            />
+            {/* 行内 ghost（收起态）：灰色显示第一条建议的剩余部分，严格对齐
+                已输入文字的末端 —— 镜像 span 用同样的字体渲染 query 来测宽。 */}
+            {showGhost && (
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex w-full select-none items-center overflow-hidden">
+                <span className="whitespace-pre text-12 text-fg-subtle" style={{ marginLeft: typedWidth }}>
+                  {ghost}
+                </span>
+              </div>
+            )}
+            <span
+              ref={mirrorRef}
+              aria-hidden
+              className="invisible absolute left-0 top-0 whitespace-pre text-12"
+            >
+              {query}
+            </span>
+          </div>
           {searching && <Loader2 size={12} className="animate-spin text-fg-subtle" />}
+          {showGhost && (
+            <kbd
+              title={t("Tab to complete")}
+              className="shrink-0 rounded border border-line bg-surface-3 px-1 py-0.5 text-9 leading-none text-fg-subtle"
+            >
+              Tab
+            </kbd>
+          )}
           {query && !searching && (
             <span className="text-10 tabular-nums text-fg-subtle">
               {t("{{count}} hits", { count: hits.length })}
@@ -172,7 +241,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
           )}
         </div>
 
-        {hits.length > 0 && (
+        {expanded && hits.length > 0 && (
           <div className="absolute inset-x-0 top-[calc(100%+4px)] z-30 max-h-[46vh] overflow-y-auto rounded-[10px] border border-line bg-surface-1 p-1 shadow-lg">
             {hits.map((hit, index) => {
               const state = executability(

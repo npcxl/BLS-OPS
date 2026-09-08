@@ -120,7 +120,7 @@ fn scan_status(
         server_id: server_id.into(),
         state,
         progress: crate::project_discovery::ScanProgress {
-            phase: "候选发现".into(),
+            phase: "Candidate discovery".into(),
             progress: 0,
             checked_directories: 0,
             discovered_candidates: 0,
@@ -183,7 +183,7 @@ pub async fn project_scan_start(
             // ---- 阶段 1（0→15%）：能力识别前置 ----
             // 先搞清楚服务器装了什么，再决定启用哪些收集器。未安装的组件
             // （Docker/Nginx/…）不会产生任何探测命令。
-            set_progress(&registry, &id, "能力识别", 5, 0, 0, None, 0).await;
+            set_progress(&registry, &id, "Capability probe", 5, 0, 0, None, 0).await;
             let profile = match crate::capability_probe::probe_capabilities(&sid, &ssh).await {
                 Ok(p) => p,
                 Err(e) => return Err(format!("服务器能力识别失败：{e}")),
@@ -196,7 +196,7 @@ pub async fn project_scan_start(
             set_progress(
                 &registry,
                 &id,
-                "部署实例枚举",
+                "Enumerating deployment instances",
                 18,
                 0,
                 0,
@@ -212,7 +212,7 @@ pub async fn project_scan_start(
             set_progress(
                 &registry,
                 &id,
-                "部署实例枚举",
+                "Enumerating deployment instances",
                 35,
                 instances.len() as u32,
                 0,
@@ -258,7 +258,7 @@ pub async fn project_scan_start(
                 set_progress(
                     &registry,
                     &id,
-                    "部署实例路径定向扫描",
+                    "Targeted scan of instance paths",
                     35 + (((index + 1) * 30 / chunks) as u8),
                     chunk.len() as u32 * (index as u32 + 1),
                     0,
@@ -277,7 +277,7 @@ pub async fn project_scan_start(
             set_progress(
                 &registry,
                 &id,
-                "补充源码扫描",
+                "Supplementary source scan",
                 68,
                 targeted.len() as u32,
                 0,
@@ -298,7 +298,7 @@ pub async fn project_scan_start(
             set_progress(
                 &registry,
                 &id,
-                "补充源码扫描",
+                "Supplementary source scan",
                 85,
                 targeted.len() as u32,
                 0,
@@ -323,9 +323,9 @@ pub async fn project_scan_start(
                     &registry,
                     &id,
                     if runtime_links.is_empty() {
-                        "候选评分"
+                        "Scoring candidates"
                     } else {
-                        "运行服务关联"
+                        "Linking runtime services"
                     },
                     85 + (((index as u32 + 1) * 15 / total) as u8),
                     index as u32 + 1,
@@ -336,7 +336,7 @@ pub async fn project_scan_start(
                 .await;
                 let input = crate::project_discovery::CandidateInput {
                     path: path.clone(),
-                    name: path.rsplit('/').next().unwrap_or("项目").into(),
+                    name: path.rsplit('/').next().unwrap_or("Project").into(),
                     server_id: server.clone(),
                     markers,
                     source: "deployment_instance_scan".into(),
@@ -388,7 +388,7 @@ pub async fn project_scan_start(
             set_progress(
                 &registry,
                 &id,
-                "完成",
+                "Done",
                 100,
                 total,
                 candidates.len(),

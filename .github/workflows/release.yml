@@ -297,13 +297,37 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          # `--clobber`: the build directory already holds a latest.json from
-          # tauri-action's own upload.
-          gh release download "$TAG" --pattern 'latest.json' --output latest.json --clobber
-          # `releases/tags/$TAG` returns ONE release object — the assets live in
+          API="repos/$GITHUB_REPOSITORY"
+
+          # tauri-action just created this release (as a **draft**) — the API can
+          # take a few seconds to expose it, so poll instead of failing fast.
+          # `gh release download` is deliberately avoided: it behaves differently
+          # across gh versions for drafts; the REST call below does not.
+          for attempt in $(seq 1 12); do
+            if gh api "$API/releases/tags/$TAG" > release.json 2>/dev/null; then break; fi
+            echo "release $TAG not visible yet (attempt $attempt) — waiting 5s"
+            sleep 5
+          done
+          if [ ! -s release.json ]; then
+            echo "::error::no release for tag $TAG. Releases visible to this token:"
+            gh api "$API/releases" --jq '.[] | "\(.tag_name) draft=\(.draft)"' || true
+            exit 1
+          fi
+
+          # `releases/tags/$TAG` returns ONE release object — assets live in
           # `.assets`. Map id → file name so the script can build direct URLs.
-          ASSET_MAP="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets | map({(.id|tostring): .name}) | add')"
+          ASSET_MAP="$(jq -c '.assets | map({(.id|tostring): .name}) | add' release.json)"
+          MANIFEST_ID="$(jq -r '.assets[] | select(.name == "latest.json") | .id' release.json | head -n1)"
+          if [ -z "$MANIFEST_ID" ] || [ "$MANIFEST_ID" = "null" ]; then
+            echo "::error::latest.json is not attached to release $TAG"
+            jq -r '.assets[] | "\(.id)\t\(.name)"' release.json || true
+            exit 1
+          fi
+
+          # Downloading an asset by id with the octet-stream header works for
+          # drafts too (and needs no `gh release download`).
+          gh api "$API/releases/assets/$MANIFEST_ID" \
+            -H "Accept: application/octet-stream" > latest.json
           export ASSET_MAP
           node scripts/rewrite-updater-urls.mjs latest.json
           gh release upload "$TAG" latest.json --clobber

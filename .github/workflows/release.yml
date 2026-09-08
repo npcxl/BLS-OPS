@@ -299,35 +299,40 @@ jobs:
           set -euo pipefail
           API="repos/$GITHUB_REPOSITORY"
 
-          # tauri-action just created this release (as a **draft**) — the API can
-          # take a few seconds to expose it, so poll instead of failing fast.
-          # `gh release download` is deliberately avoided: it behaves differently
-          # across gh versions for drafts; the REST call below does not.
+          # **Draft releases are invisible to `GET /releases/tags/{tag}`** — that
+          # endpoint skips drafts entirely (REST docs), and tauri-action creates
+          # a draft. Poll the **list** endpoint instead (drafts appear there for
+          # an authorised token) and pick our tag out of it.
           for attempt in $(seq 1 12); do
-            if gh api "$API/releases/tags/$TAG" > release.json 2>/dev/null; then break; fi
+            if gh api "$API/releases?per_page=50" > releases.json 2>/dev/null &&
+               jq -e --arg tag "$TAG" 'map(select(.tag_name == $tag))[0]' releases.json > release.json; then
+              break
+            fi
             echo "release $TAG not visible yet (attempt $attempt) — waiting 5s"
             sleep 5
           done
-          if [ ! -s release.json ]; then
+          if [ ! -s release.json ] || [ "$(jq -r '.id // 0' release.json)" = "0" ]; then
             echo "::error::no release for tag $TAG. Releases visible to this token:"
-            gh api "$API/releases" --jq '.[] | "\(.tag_name) draft=\(.draft)"' || true
+            jq -r '.[] | "\(.tag_name) draft=\(.draft) id=\(.id)"' releases.json || true
             exit 1
           fi
 
-          # `releases/tags/$TAG` returns ONE release object — assets live in
-          # `.assets`. Map id → file name so the script can build direct URLs.
+          # One release object — assets live in `.assets`. Map id → file name so
+          # the script can build direct download URLs.
           ASSET_MAP="$(jq -c '.assets | map({(.id|tostring): .name}) | add' release.json)"
-          MANIFEST_ID="$(jq -r '.assets[] | select(.name == "latest.json") | .id' release.json | head -n1)"
+          MANIFEST_ID="$(jq -r '.assets[] | select(.name == "latest.json") | .id' release.json)"
           if [ -z "$MANIFEST_ID" ] || [ "$MANIFEST_ID" = "null" ]; then
             echo "::error::latest.json is not attached to release $TAG"
             jq -r '.assets[] | "\(.id)\t\(.name)"' release.json || true
             exit 1
           fi
 
-          # Downloading an asset by id with the octet-stream header works for
-          # drafts too (and needs no `gh release download`).
+          # Download the asset **by id** with the octet-stream header — works for
+          # drafts and needs no `gh release download` (whose tag lookup skips
+          # drafts in some gh versions).
           gh api "$API/releases/assets/$MANIFEST_ID" \
             -H "Accept: application/octet-stream" > latest.json
           export ASSET_MAP
           node scripts/rewrite-updater-urls.mjs latest.json
+          # `gh release upload` matches via the release *list*, so drafts work.
           gh release upload "$TAG" latest.json --clobber

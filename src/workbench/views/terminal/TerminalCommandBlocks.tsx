@@ -48,35 +48,44 @@ export function TerminalCommandBlocks({
   );
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
 
-  /** 测量当前几何（每次事件都重新读，字号缩放 / 窗口变化自动跟随）。 */
+  /**
+   * 定位基准：overlay 挂在 xterm 容器的父节点（relative wrapper）里，所以
+   * 命中/高亮几何必须全部相对**同一个元素**。事件也挂在这个 wrapper 上 ——
+   * 复制按钮条渲染在块顶上方（块矩形之外），如果只监听 xterm 容器，鼠标
+   * 移向按钮会先触发 mouseleave 把按钮条干掉，永远点不到。
+   */
+  const hostRef = useRef<HTMLElement | null>(null);
+
   const measure = useCallback((): BlockGeometry | null => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
-    if (!terminal || !container) return null;
+    const host = hostRef.current ?? (containerRef.current?.parentElement as HTMLElement | null);
+    hostRef.current = host;
+    if (!terminal || !container || !host) return null;
     const rows = container.querySelector<HTMLElement>(".xterm-rows");
     if (!rows) return null;
     const rowsRect = rows.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
     const cellHeightPx = rowsRect.height / terminal.rows;
     if (!(cellHeightPx > 0)) return null;
     return {
       viewportY: terminal.buffer.active.viewportY,
       cellHeightPx,
-      rowsTopPx: rowsRect.top - containerRect.top,
+      rowsTopPx: rowsRect.top - hostRect.top,
     };
   }, [containerRef, terminalRef]);
 
   /** 用最后一次鼠标位置重算 hover（滚轮 / resize 后调用）。 */
   const recompute = useCallback(() => {
     const last = lastMouseRef.current;
-    const container = containerRef.current;
-    if (!last || !container) return;
+    const host = hostRef.current ?? (containerRef.current?.parentElement as HTMLElement | null);
+    if (!last || !host) return;
     const geometry = measure();
     if (!geometry) {
       setHover(null);
       return;
     }
-    const localY = last.y - container.getBoundingClientRect().top;
+    const localY = last.y - host.getBoundingClientRect().top;
     const line = bufferLineAtY(localY, geometry);
     const block = line === null ? null : blockAtLine(blocks, line);
     if (!block) {
@@ -96,9 +105,17 @@ export function TerminalCommandBlocks({
   }, [blocks, containerRef, measure]);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const host = (containerRef.current?.parentElement as HTMLElement | null) ?? null;
+    hostRef.current = host;
+    if (!host) return;
     const onMouseMove = (event: MouseEvent) => {
+      // 鼠标移到复制按钮条上（在块矩形之外）：保持当前 hover 不动，否则
+      // 命中检测立刻清掉 hover，按钮条闪没 —— 永远点不到。
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-block-actions]")) {
+        lastMouseRef.current = { x: event.clientX, y: event.clientY };
+        return;
+      }
       lastMouseRef.current = { x: event.clientX, y: event.clientY };
       recompute();
     };
@@ -111,14 +128,14 @@ export function TerminalCommandBlocks({
       window.requestAnimationFrame(recompute);
     };
     const onResize = () => recompute();
-    container.addEventListener("mousemove", onMouseMove);
-    container.addEventListener("mouseleave", onMouseLeave);
-    container.addEventListener("wheel", onWheel, { passive: true });
+    host.addEventListener("mousemove", onMouseMove);
+    host.addEventListener("mouseleave", onMouseLeave);
+    host.addEventListener("wheel", onWheel, { passive: true });
     window.addEventListener("resize", onResize);
     return () => {
-      container.removeEventListener("mousemove", onMouseMove);
-      container.removeEventListener("mouseleave", onMouseLeave);
-      container.removeEventListener("wheel", onWheel);
+      host.removeEventListener("mousemove", onMouseMove);
+      host.removeEventListener("mouseleave", onMouseLeave);
+      host.removeEventListener("wheel", onWheel);
       window.removeEventListener("resize", onResize);
     };
   }, [containerRef, recompute]);
@@ -147,6 +164,7 @@ export function TerminalCommandBlocks({
       {/* 按钮条：块顶右上角；贴顶时翻进块内 */}
       <div
         data-testid="terminal-command-block-actions"
+        data-block-actions
         className="absolute z-30 flex items-center gap-1 rounded-[9px] border border-line bg-surface-1 px-1.5 py-1 shadow-lg"
         style={{ top: top < 28 ? top + 4 : top - 28, right: 12 }}
         onMouseDown={(event) => event.stopPropagation()}

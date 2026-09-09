@@ -250,17 +250,24 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
         if (get().phase !== "downloaded") {
           set({ phase: "downloading", progress: { received: 0, total: null } });
           await client.download((progress) => set({ progress }));
-        }
-        /*
-         * Second guard. The first one ran when the user clicked; this one runs
-         * against *now* — a download can take minutes and an SSH session, a
-         * transfer or an unsaved editor buffer may have appeared while it ran.
-         * Finding one stops the flow at `downloaded` so nothing is lost without
-         * the user saying so.
-         */
-        if (blockingActivity().length > 0) {
-          set({ phase: "downloaded", bannerVisible: false });
-          return;
+
+          /*
+           * Second guard — **only on the download path**. The user confirmed
+           * the restart minutes ago; work (an SSH session, a transfer) may
+           * have started since. Stopping here is *visible*: the phase label
+           * switches to "Downloaded — waiting for a safe moment to install"
+           * and the button becomes "Install and restart".
+           *
+           * It must NEVER run again on the `downloaded` → install step: that
+           * click *is* the confirmation (the dialog was just acknowledged),
+           * and re-blocking here with the very same blockers silently ate the
+           * click — the reported "pressing install does nothing" bug.
+           */
+          if (blockingActivity().length > 0) {
+            console.info("[updater] download finished with active work; holding at downloaded");
+            set({ phase: "downloaded", bannerVisible: false });
+            return;
+          }
         }
 
         // The installer runs the verified package; on Windows it takes over and

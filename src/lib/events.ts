@@ -26,4 +26,10 @@ export const servicesChangedEvent = (sessionId: string) => `services-changed-${s
 /** Final (and incremental, if ever) result of a project scan. Payload: `ProjectScanResult`. */
 export const projectScanResultEvent = (scanId: string) => `project-scan-result-${scanId}`;
 
+/**
+ * Local-editor sync session status change (open/save/close/error).
+ * Payload: `EditorSyncEventPayload`. Rust emitter: `editor_sync::EDITOR_SYNC_EVENT`.
+ */
+export const editorSyncEvent = "editor-sync-update";
+
 export { DIRECTORY_SIZE_EVENT } from "@/api/ops-api";

@@ -3,7 +3,7 @@
  * 補全 providers / 命令歷史 / 選區選單 / 終端字型）。
  *
  * 注意：
- * - 發給 xterm 的字串（terminal.write / writeln）不屬於 UI 文案，不在這裡翻譯。
+ * - 前端自繪的連線狀態行（Connected / Connection failed）走 i18n；遠端輸出與結果快照不翻譯。
  * - 結果快照中的文本是遠端伺服器輸出，不翻譯。
  * - 知識庫建議的 title/detail 來自 Rust catalog（資料驅動），前端不翻譯。
  * - 通用詞（Copy / Close / Retry / Search / Copied / Enabled / Running 等）複用 common。
@@ -39,6 +39,7 @@ export default {
     "首次连接 {{host}}，请确认主机指纹",
   "Waiting for host key confirmation": "等待主機指紋確認",
   "Connection lost: {{message}}": "連線已斷開：{{message}}",
+  "Connection failed: {{message}}": "連線失敗：{{message}}",
 
   // —— TerminalView：風險確認彈窗 ——
   "Rerun this command?": "重新執行該命令？",

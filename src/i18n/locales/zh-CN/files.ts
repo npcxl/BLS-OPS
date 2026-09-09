@@ -19,6 +19,10 @@ export default {
   "Download to local…": "下载到本地…",
   "Download to local": "下载到本地",
   "Open in VSCode": "在 VSCode 中打开",
+  "Already open in VSCode": "该文件已在 VSCode 中打开",
+  "Opened {{name}} in VSCode — saving syncs back to the server":
+    "已在 VSCode 打开“{{name}}”，保存后自动回传服务器",
+  "Save sync failed: {{message}}": "保存回传失败：{{message}}",
   "Create a copy": "创建副本",
   "Copy full path": "复制完整路径",
   "Copy file name": "复制文件名",

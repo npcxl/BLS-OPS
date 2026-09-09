@@ -93,6 +93,13 @@ export {
 export { parseSshTarget, type SshConnectResult } from "@/api/types/ssh";
 export type { VscodeOpenResult } from "@/api/types/vscode";
 export {
+  type EditorInfo,
+  type EditorSyncEventPayload,
+  type EditorSyncScope,
+  type EditorSyncStatus,
+  type SyncSessionInfo,
+} from "@/api/types/editor-sync";
+export {
   DIRECTORY_SIZE_EVENT,
   type DirectorySizeResult,
   type DirectorySizeStatus,
@@ -189,6 +196,7 @@ export {
   type WorkloadRole,
 } from "@/api/types/project";
 import { type VscodeOpenResult } from "@/api/types/vscode";
+import { type EditorInfo, type SyncSessionInfo } from "@/api/types/editor-sync";
 
 function message(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
@@ -390,6 +398,21 @@ export const opsApi = {
    */
   vscodeOpenRemoteFolder: (serverId: string, path: string) =>
     invoke<VscodeOpenResult>("vscode_open_remote_folder", { serverId, path }),
+
+  // Local-editor sync (editor_sync domain): a copy of the remote file is
+  // opened in a locally installed editor; every save syncs back over the
+  // session's own SFTP. Frontend only ever passes structured identifiers.
+  /** Probes locally installed editors (VSCode / Cursor / …). */
+  editorListAvailable: () => invoke<EditorInfo[]>("editor_list_available"),
+  /** Opens a sync session for a remote file (or directory) in an editor. */
+  editorSyncOpen: (sessionId: string, remotePath: string, editorId: string) =>
+    invoke<SyncSessionInfo>("editor_sync_open", { sessionId, remotePath, editorId }),
+  /** Closes a sync session (stops watching + removes the local copy). */
+  editorSyncClose: (syncId: string) =>
+    invoke<SyncSessionInfo>("editor_sync_close", { syncId }),
+  /** Lists sync sessions (optionally just one SSH session's). */
+  editorSyncList: (sessionId?: string) =>
+    invoke<SyncSessionInfo[]>("editor_sync_list", { sessionId: sessionId ?? null }),
 
   // Monitoring — read-only Linux metrics. `monitor_snapshot` is the one the
   // page polls: every headline metric in a single round trip.

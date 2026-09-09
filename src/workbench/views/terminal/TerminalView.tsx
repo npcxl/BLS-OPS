@@ -914,7 +914,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         const elapsed = Math.round(performance.now() - startedAt);
         setPhase("connected");
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
-        instance?.writeln(`\r\n已连接 ${result.host}:${result.port}（${result.fingerprint_type}）`);
+        // 连接成功只给一行绿色 i18n 状态，host/fingerprint 等细节不再刷屏。
+        instance?.writeln(`\r\n\x1b[32m${t("Connected")}\x1b[0m`);
         // 登录目录：cwd 的兜底答案（`cd ~`、以及还没探测到时用它）。
         // 只信 SFTP 的 canonicalize 结果 —— 绝不从提示符文本猜。
         void opsApi
@@ -967,7 +968,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setPhase("error");
       setError(message);
       setStatus(sessionId, "error", { error: message });
-      instance?.writeln(`\r\n\x1b[31m连接失败：${message}\x1b[0m`);
+      instance?.writeln(`\r\n\x1b[31m${t("Connection failed: {{message}}", { message })}\x1b[0m`);
     } finally {
       connectingRef.current = false;
     }

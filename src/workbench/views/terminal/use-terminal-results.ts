@@ -235,10 +235,15 @@ export function useTerminalResults(host: TerminalResultsHost) {
         if (instance) {
           const marker = instance.registerMarker(0);
           captureMarkerRef.current = marker ? { marker } : null;
-          // 命令块起点：与捕获 marker 同一行（悬浮复制的整块高亮从这里开始）。
+          // 命令块起点：**独立** marker（同一行）。捕获 marker 在快照消费时
+          // 会被 dispose —— dispose 后不再跟随回滚 trim，块若共用它，输出
+          // 一多就会圈到错误的行；块需要全程跟随缓冲，必须有自己的 marker。
           if (marker) {
-            blockIdRef.current += 1;
-            applyBlocks(beginBlock(blocksRef.current, `block-${blockIdRef.current}`, trimmed, marker));
+            const blockMarker = instance.registerMarker(0);
+            if (blockMarker) {
+              blockIdRef.current += 1;
+              applyBlocks(beginBlock(blocksRef.current, `block-${blockIdRef.current}`, trimmed, blockMarker));
+            }
           }
         }
       }

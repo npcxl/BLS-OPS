@@ -72,6 +72,11 @@ export default function CodeText({ text }: { text: string }) {
         }}
       >
         <CodeMirror
+          // @uiw 外层 div 自身无高度，`&`(cm-editor) 的 height:100% 会对
+          // auto 高度解析失败 → 编辑器被内容撑开、被 overflow-hidden 裁掉
+          // → 无处滚动。这里用 absolute inset-0 给外层一个定高（父容器
+          // 已 relative），不依赖 flex 百分比链。
+          className="absolute inset-0"
           value={text}
           height="100%"
           theme={theme}

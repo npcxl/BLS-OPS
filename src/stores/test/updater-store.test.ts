@@ -217,6 +217,27 @@ describe("downloading and installing", () => {
     expect(store().release?.version).toBe("0.1.1");
   });
 
+  /**
+   * Regression for "pressing Install and restart does nothing": the session
+   * was already there when the user confirmed the dialog, the package is on
+   * disk — the click must run the installer. Re-running the blocker guard on
+   * this step silently ate the click forever (the dialog confirmed the very
+   * blockers the guard was waiting for).
+   */
+  it("runs the installer from 'downloaded' even with an SSH session still open", async () => {
+    setClient(fakeClient(NEW));
+    client.download = vi.fn(async () => connectSession());
+    await store().check({ manual: true });
+    await store().install(); // → held at 'downloaded', session still open
+    expect(store().phase).toBe("downloaded");
+
+    await store().install();
+
+    expect(client.download).toHaveBeenCalledTimes(1); // package is on disk
+    expect(client.install).toHaveBeenCalledTimes(1);
+    expect(store().phase).toBe("restart_required");
+  });
+
   it("finishes the install from 'downloaded' without downloading again", async () => {
     setClient(fakeClient(NEW));
     client.download = vi.fn(async () => connectSession());

@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { listen } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
   ArrowRight,
@@ -31,6 +32,8 @@ import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
+import type { EditorSyncEventPayload } from "@/api/types/editor-sync";
+import { editorSyncEvent } from "@/lib/events";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
@@ -414,6 +417,73 @@ export function RemoteFilePanel({
     }
   };
 
+  /**
+   * 本地编辑器同步（editor_sync）：远程文件副本下载到本地工作区，用本机
+   * VSCode 打开，之后每次保存自动 SFTP 回传。与文件夹的 Remote-SSH 模式
+   * 互补——这里走的是本面板自己的 SSH 连接，quick target 也能用。
+   * 探测本机是否装了 VSCode（挂载时一次）；没装就不显示入口。
+   */
+  const [vscodeEditor, setVscodeEditor] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void opsApi
+      .editorListAvailable()
+      .then((editors) => {
+        if (!cancelled) {
+          setVscodeEditor(editors.some((editor) => editor.id === "vscode" && editor.available));
+        }
+      })
+      .catch(() => {
+        /* 探测失败：视为未安装，不显示入口 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openInVscodeEditor = async (entry: RemoteFileEntry) => {
+    try {
+      // 同一文件重复右键时不建第二个会话（第二份本地副本会互相覆盖）。
+      const sessions = await opsApi.editorSyncList(sessionId);
+      if (
+        sessions.some(
+          (sync) =>
+            sync.remotePath === entry.path && (sync.status === "starting" || sync.status === "active"),
+        )
+      ) {
+        setNotice(t("Already open in VSCode"));
+        return;
+      }
+      await opsApi.editorSyncOpen(sessionId, entry.path, "vscode");
+      setNotice(
+        t("Opened {{name}} in VSCode — saving syncs back to the server", { name: entry.name }),
+      );
+    } catch (cause) {
+      setNotice(toErrorMessage(cause));
+    }
+  };
+
+  // 保存回传失败必须可见（status=error 持续到下一次保存成功）。
+  useEffect(() => {
+    if (!connected) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<EditorSyncEventPayload>(editorSyncEvent, (event) => {
+      const { session } = event.payload;
+      if (session.sessionId !== sessionId || session.status !== "error") return;
+      setNotice(
+        t("Save sync failed: {{message}}", { message: session.message ?? "" }),
+      );
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [connected, sessionId, t]);
+
   const confirmRemove = () => {
     if (!deleteTarget) return;
     const target = deleteTarget;
@@ -677,6 +747,17 @@ export function RemoteFilePanel({
           icon: Eye,
           onSelect: () => setPreview({ path: entry.path, name: entry.name, size: entry.size }),
         },
+        // 本机装了 VSCode 才显示（单文件编辑同步模式）。
+        ...(vscodeEditor
+          ? [
+              {
+                id: "vscode-file",
+                label: t("Open in VSCode"),
+                icon: VscodeLogoIcon,
+                onSelect: () => void openInVscodeEditor(entry),
+              },
+            ]
+          : []),
         {
           id: "download",
           label: t("Download to local…"),

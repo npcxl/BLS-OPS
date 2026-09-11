@@ -1,7 +1,7 @@
 {
   "name": "Ops-Workbench",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "//version": "Single source of release truth — `pnpm version:bump <patch|minor|major>` syncs Cargo.toml / tauri.conf.json / Cargo.lock from it.",
   "packageManager": "pnpm@9.15.9",

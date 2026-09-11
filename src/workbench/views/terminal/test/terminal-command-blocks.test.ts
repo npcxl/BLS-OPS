@@ -32,7 +32,13 @@ function begin(blocks: CommandBlock[], id: string, startLine: number): CommandBl
   return next[next.length - 1];
 }
 
-const GEOMETRY: BlockGeometry = { viewportY: 100, cellHeightPx: 20, rowsTopPx: 8 };
+/** 20 行 × 20px 的可视区：行区 8..408（相对容器）。 */
+const GEOMETRY: BlockGeometry = {
+  viewportY: 100,
+  cellHeightPx: 20,
+  rowsTopPx: 8,
+  viewportHeightPx: 400,
+};
 
 describe("beginBlock", () => {
   it("追加新块并把遗留的未完成块作废", () => {
@@ -141,6 +147,12 @@ describe("bufferLineAtY", () => {
     expect(bufferLineAtY(7, GEOMETRY)).toBeNull();
     expect(bufferLineAtY(10, { ...GEOMETRY, cellHeightPx: 0 })).toBeNull();
   });
+
+  it("行区以下（容器底部 padding / 抽屉区）不参与命中", () => {
+    // 行区底 = 8 + 400 = 408。
+    expect(bufferLineAtY(407, GEOMETRY)).toBe(119);
+    expect(bufferLineAtY(408, GEOMETRY)).toBeNull();
+  });
 });
 
 describe("blockRectPx", () => {
@@ -166,6 +178,61 @@ describe("blockRectPx", () => {
       GEOMETRY,
     );
     expect(rect).toEqual({ top: 48, height: 20 });
+  });
+
+  describe("超出可视区自动裁剪（背景色不溢出）", () => {
+    function block(start: number, end: number): CommandBlock {
+      return {
+        id: "a",
+        command: "a",
+        startMarker: fakeMarker(start),
+        endMarker: end === start ? null : fakeMarker(end),
+        exitCode: 0,
+        renderedText: null,
+        finished: true,
+      };
+    }
+
+    it("块上半部分滚出视口上方 → 只画可视部分", () => {
+      // 视口顶=100。块 95..120：95 行在视口上方，裁到行区顶 8。
+      expect(blockRectPx(block(95, 120), GEOMETRY)).toEqual({ top: 8, height: 400 });
+    });
+
+    it("块下半部分超出视口下方 → 裁到行区底", () => {
+      // 视口有 20 行（100..119）。块 115..200 → 可见 115..119。
+      const rect = blockRectPx(block(115, 200), GEOMETRY);
+      expect(rect).toEqual({ top: 8 + 15 * 20, height: 5 * 20 });
+      expect(rect!.top + rect!.height).toBe(408); // 正好贴行区底
+    });
+
+    it("整块都滚出视口上方 → 不高亮（返回 null）", () => {
+      expect(blockRectPx(block(50, 80), GEOMETRY)).toBeNull();
+    });
+
+    it("整块都在视口下方（还没滚到）→ 不高亮（返回 null）", () => {
+      expect(blockRectPx(block(200, 210), GEOMETRY)).toBeNull();
+    });
+
+    it("块顶正好贴视口底边之外一格 → null（零高度不算可见）", () => {
+      // 视口行 100..119，120 行正好是视口下方第一行。
+      expect(blockRectPx(block(120, 130), GEOMETRY)).toBeNull();
+    });
+
+    it("完全在视口内的块不受裁剪影响", () => {
+      expect(blockRectPx(block(105, 110), GEOMETRY)).toEqual({ top: 108, height: 120 });
+    });
+
+    it("viewportHeightPx 缺失/非法 → 退化为不裁剪（高亮绝不能整个消失）", () => {
+      // 热更新版本错配时就会走到这条路径：宁可多画也不能没有高亮。
+      const noHeight: BlockGeometry = { viewportY: 100, cellHeightPx: 20, rowsTopPx: 8 };
+      expect(blockRectPx(block(105, 110), noHeight)).toEqual({ top: 108, height: 120 });
+      expect(blockRectPx(block(115, 200), noHeight)).toEqual({ top: 308, height: 1720 });
+      expect(blockRectPx(block(105, 110), { ...GEOMETRY, viewportHeightPx: 0 })).toEqual({
+        top: 108,
+        height: 120,
+      });
+      expect(bufferLineAtY(500, noHeight)).toBe(124);
+    });
   });
 });
 

@@ -72,6 +72,7 @@ export function TerminalCommandBlocks({
       viewportY: terminal.buffer.active.viewportY,
       cellHeightPx,
       rowsTopPx: rowsRect.top - hostRect.top,
+      viewportHeightPx: rowsRect.height,
     };
   }, [containerRef, terminalRef]);
 
@@ -154,12 +155,15 @@ export function TerminalCommandBlocks({
   const hasOutput = (block.renderedText ?? "").trim().length > 0;
   return (
     <>
-      {/* 高亮：命令回显行 + 输出区整体 */}
+      {/* 高亮：命令回显行 + 输出区整体。纯背景色，无描边；失败块用红底区分。 */}
       <div
         data-testid="terminal-command-block-highlight"
         aria-hidden
-        className="pointer-events-none absolute inset-x-2 z-10 rounded-[4px] border bg-accent/10"
-        style={{ top, height, borderColor: failed ? "var(--danger)" : undefined }}
+        className={cn(
+          "pointer-events-none absolute inset-x-2 z-10 rounded-[4px]",
+          failed ? "bg-danger/10" : "bg-accent/10",
+        )}
+        style={{ top, height }}
       />
       {/* 按钮条：块顶右上角；贴顶时翻进块内 */}
       <div

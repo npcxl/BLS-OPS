@@ -140,12 +140,21 @@ describe("TerminalCommandBlocks", () => {
     expect(copyText).toHaveBeenLastCalledWith("CONTAINER ID   IMAGE");
   });
 
-  it("报错块显示 exit 徽标与红色边框", () => {
+  it("报错块显示 exit 徽标 + 红底高亮；成功块用强调色底且无描边", () => {
     render([makeBlock({ exitCode: 1 })]);
     hoverAt(12);
 
     expect(holder.querySelector("[data-testid=terminal-command-block-exit]")!.textContent).toBe("exit 1");
-    expect(highlight()!.getAttribute("style")).toContain("var(--danger)");
+    expect(highlight()!.className).toContain("bg-danger/10");
+    expect(highlight()!.className).not.toContain("border");
+  });
+
+  it("成功块高亮是纯背景色，不含任何描边类", () => {
+    render([makeBlock({ exitCode: 0 })]);
+    hoverAt(12);
+
+    expect(highlight()!.className).toContain("bg-accent/10");
+    expect(highlight()!.className).not.toMatch(/\bborder\b/);
   });
 
   it("输出为空的块不显示「复制输出」按钮", () => {
@@ -178,5 +187,24 @@ describe("TerminalCommandBlocks", () => {
     render([makeBlock({ startMarker: fakeMarker(-1), endMarker: fakeMarker(-1) })]);
     hoverAt(12);
     expect(highlight()).toBeNull();
+  });
+
+  it("块滚出视口下方 → 不画高亮（超出自动隐藏）", () => {
+    // 视口 20 行（0..19）：块 30..34 完全在视口下方。
+    render([makeBlock({ startMarker: fakeMarker(30), endMarker: fakeMarker(34) })]);
+    hoverAt(12);
+    expect(highlight()).toBeNull();
+  });
+
+  it("块部分滚出视口 → 只画可视部分，不溢出", () => {
+    // 视口行 0..19；块 15..40：可见 15..19 → top=8+15*16=248，高=5*16=80。
+    render([makeBlock({ startMarker: fakeMarker(15), endMarker: fakeMarker(40) })]);
+    hoverAt(16);
+
+    const style = highlight()!.getAttribute("style")!;
+    expect(style).toMatch(/top:\s*248/);
+    expect(style).toMatch(/height:\s*80/);
+    // 底边正好贴行区底（8 + 320 = 328），不越界。
+    expect(248 + 80).toBe(328);
   });
 });

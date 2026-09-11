@@ -124,18 +124,35 @@ export interface BlockGeometry {
   cellHeightPx: number;
   /** 行区相对定位容器的纵向偏移（px；容器 padding 就在这里体现）。 */
   rowsTopPx: number;
+  /**
+   * 行区高度（px）= 视口可见高度；高亮超出这个范围的部分要裁掉。
+   *
+   * **可选**：拿不到就按"不裁剪"处理（宁可多画，也不能让高亮整个消失）。
+   */
+  viewportHeightPx?: number;
+}
+
+/** 行区底边（px）；`viewportHeightPx` 缺失/非法时为正无穷 = 不裁剪。 */
+function viewBottomPx(geometry: BlockGeometry): number {
+  const height = geometry.viewportHeightPx;
+  return height !== undefined && height > 0 ? geometry.rowsTopPx + height : Number.POSITIVE_INFINITY;
 }
 
 /** 屏幕坐标（相对定位容器的 px）→ buffer 绝对行；不在行区内返回 null。 */
 export function bufferLineAtY(localY: number, geometry: BlockGeometry): number | null {
   const { viewportY, cellHeightPx, rowsTopPx } = geometry;
   if (!(cellHeightPx > 0) || localY < rowsTopPx) return null;
+  // 行区以下（容器底部 padding / 抽屉区）不属于终端行，不参与命中。
+  if (localY >= viewBottomPx(geometry)) return null;
   return viewportY + Math.floor((localY - rowsTopPx) / cellHeightPx);
 }
 
 /**
- * 块在视口里的高亮矩形（相对定位容器的 px）。任一端被淘汰（line<0）→
- * `null`：滚出回滚缓冲的块绝不高亮错位置。
+ * 块在视口里的高亮矩形（相对定位容器的 px），**已按可视区裁剪**：
+ * 块滚出视口上/下的部分不画（背景色绝不会溢出终端行区）。
+ *
+ * 返回 `null` 的情况：任一端被淘汰（line<0），或整块都在可视区之外
+ * （已完全滚出屏幕 —— 用户要的"超出自动隐藏"）。
  */
 export function blockRectPx(
   block: CommandBlock,
@@ -147,9 +164,16 @@ export function blockRectPx(
   if (end < 0) return null;
   const first = Math.min(start, end);
   const last = Math.max(start, end);
-  const top = geometry.rowsTopPx + (first - geometry.viewportY) * geometry.cellHeightPx;
-  const bottom = geometry.rowsTopPx + (last + 1 - geometry.viewportY) * geometry.cellHeightPx;
-  return { top, height: Math.max(geometry.cellHeightPx, bottom - top) };
+  const rawTop = geometry.rowsTopPx + (first - geometry.viewportY) * geometry.cellHeightPx;
+  const rawBottom = geometry.rowsTopPx + (last + 1 - geometry.viewportY) * geometry.cellHeightPx;
+
+  const viewTop = geometry.rowsTopPx;
+  const viewBottom = viewBottomPx(geometry);
+  const top = Math.max(rawTop, viewTop);
+  const bottom = Math.min(rawBottom, viewBottom);
+  // 只在确实无交集时才放弃高亮（整块滚出可视区）。
+  if (!(bottom > top)) return null;
+  return { top, height: bottom - top };
 }
 
 /** 报错块（退出码非 0 且已知）。 */

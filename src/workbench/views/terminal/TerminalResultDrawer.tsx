@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { ChevronDown, Copy, GripHorizontal, History, RotateCw, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ChevronDown, Copy, GripHorizontal, History, Search, RotateCw, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
@@ -7,6 +7,8 @@ import { copyText } from "@/lib/clipboard";
 import { RISK_META } from "@/api/ops-api";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
 import { COMMAND_SOURCE_LABELS } from "./command-plan";
+import { countHits, normalizeQuery } from "./result-search";
+import { ResultSearchBar } from "./ResultSearchBar";
 import { TerminalSnapshotView } from "./TerminalSnapshotView";
 
 /**
@@ -83,6 +85,27 @@ export function TerminalResultDrawer({
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  /**
+   * 结果内搜索：搜的是**当前结果的内容**（终端输出快照 / 原始流），
+   * 命中处高亮。JSON 视图自带树内搜索，不重复注入。
+   *
+   * 切到别的结果时清空搜索词 —— 搜索词属于"当前这条结果"，带到另一条上
+   * 是噪音，也会让人误以为新结果里有那些命中。
+   */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const lastResultId = useRef<string | null>(active?.id ?? null);
+  if (lastResultId.current !== (active?.id ?? null)) {
+    lastResultId.current = active?.id ?? null;
+    if (searchQuery !== "") setSearchQuery("");
+  }
+
+  /** 命中数 = 当前结果里会被高亮的命中总数；空查询 → null（未搜索）。 */
+  const searchHits = useMemo(() => {
+    if (!active || normalizeQuery(searchQuery) === "") return null;
+    return countHits((active.renderedText ?? "").split("\n"), searchQuery);
+  }, [active, searchQuery]);
 
   /**
    * 拖拽把手（与左右侧栏同款：mousedown → window mousemove/mouseup）。
@@ -252,8 +275,41 @@ export function TerminalResultDrawer({
 
         <button
           type="button"
+          onClick={() => {
+            setSearchOpen((current) => {
+              if (current) setSearchQuery("");
+              return !current;
+            });
+          }}
+          aria-label={t("Search in result")}
+          title={t("Search in result")}
+          className={cn(
+            "ml-auto flex shrink-0 items-center rounded-[6px] p-1 transition-colors",
+            searchOpen ? "bg-surface-active text-fg" : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+          )}
+        >
+          <Search size={11} />
+        </button>
+
+        {searchOpen && (
+          <ResultSearchBar
+            value={searchQuery}
+            hits={searchHits}
+            onChange={setSearchQuery}
+            onClose={() => {
+              setSearchQuery("");
+              setSearchOpen(false);
+            }}
+          />
+        )}
+
+        <button
+          type="button"
           onClick={onClose}
-          className="ml-auto flex shrink-0 items-center gap-0.5 rounded-[6px] px-1 py-0.5 text-10 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+          className={cn(
+            "flex shrink-0 items-center gap-0.5 rounded-[6px] px-1 py-0.5 text-10 text-fg-subtle hover:bg-surface-hover hover:text-fg",
+            !searchOpen && "ml-auto",
+          )}
           title={t("Close results panel (results are kept in history)")}
         >
           <X size={11} />
@@ -271,8 +327,9 @@ export function TerminalResultDrawer({
             maxHeight: "38vh",
           }}
         >
-          {/* key = 结果 id：切换结果时视图状态（渲染/原始）重置为默认 */}
-          <TerminalSnapshotView key={active.id} result={active} />
+          {/* key = 结果 id：切换结果时视图状态（渲染/原始）重置为默认，
+              搜索词也随之重置（searchQuery 已在上面的渲染期同步清空）。 */}
+          <TerminalSnapshotView key={active.id} result={active} searchQuery={searchQuery} />
         </div>
       )}
       <ContextMenu {...menu.props} title={activeRef.current?.command} />

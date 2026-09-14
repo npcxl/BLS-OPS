@@ -36,7 +36,6 @@ import { TerminalErrorBanner } from "./terminal-error-banner";
 import { TerminalToolbar } from "./terminal-toolbar";
 import { useSshKeepalive } from "./use-ssh-keepalive";
 import { useTerminalMenu } from "./use-terminal-menu";
-import { useTerminalSearch } from "./use-terminal-search";
 import { useTerminalSession, type TerminalCommandEntry } from "./use-terminal-session";
 import { useTerminalResults } from "./use-terminal-results";
 import {
@@ -87,8 +86,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
-  // 回滚缓冲查找（状态与"往后找下一个"的逻辑都在 hook 里）。
-  const search = useTerminalSearch(terminalRef);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(true);
   /**
@@ -1046,12 +1043,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // 右键菜单 = 顶部 icon 工具栏的镜像（同一组动作与可见性条件）：终端画布上
   // 右键，可达被滚动/折叠藏起的顶部功能。菜单项构建见 `use-terminal-menu.ts`。
   const openToolbarMenu = useTerminalMenu(terminalMenu, containerRef, {
-    searchOpen: search.open,
     historyOpen,
     filesOpen,
     phase,
     enhancedTerminal: results.enhanced,
-    onToggleSearch: () => search.setOpen((v) => !v),
     onSplit: (direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction),
     onClear: () => terminalRef.current?.clear(),
     onToggleHistory: () => setHistoryOpen((v) => !v),
@@ -1071,16 +1066,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <TerminalToolbar
         phase={phase}
-        searchOpen={search.open}
-        searchQuery={search.query}
-        searchState={search.state}
         historyOpen={historyOpen}
         filesOpen={filesOpen}
         enhancedTerminal={results.enhanced}
         fontId={fontId}
-        onToggleSearch={() => search.setOpen((v) => !v)}
-        onSearchQueryChange={search.setQuery}
-        onSearch={search.run}
         onSplit={(direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction)}
         onClear={() => terminalRef.current?.clear()}
         onToggleHistory={() => setHistoryOpen((v) => !v)}

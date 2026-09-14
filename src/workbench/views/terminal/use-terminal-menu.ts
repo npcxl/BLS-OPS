@@ -6,7 +6,6 @@ import {
   PlugZap,
   RefreshCw,
   Rows2,
-  Search,
   Sparkles,
   Unplug,
 } from "lucide-react";
@@ -15,12 +14,10 @@ import { useContextMenu, type ContextMenuItem } from "@/components/ui/context-me
 import type { Phase } from "./terminal-phase";
 
 export interface TerminalMenuActions {
-  searchOpen: boolean;
   historyOpen: boolean;
   filesOpen: boolean;
   phase: Phase;
   enhancedTerminal: boolean;
-  onToggleSearch: () => void;
   onSplit: (direction: "horizontal" | "vertical") => void;
   onClear: () => void;
   onToggleHistory: () => void;
@@ -41,12 +38,6 @@ export function buildTerminalMenuItems(
   actions: TerminalMenuActions,
 ): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
-    {
-      label: t("Search"),
-      icon: Search,
-      hint: actions.searchOpen ? t("Expanded") : undefined,
-      onSelect: actions.onToggleSearch,
-    },
     {
       label: t("Split Vertically"),
       icon: Columns2,

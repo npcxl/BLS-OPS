@@ -2,6 +2,20 @@ import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { copyText } from "@/lib/clipboard";
+import { segmentLine } from "@/workbench/views/terminal/result-search";
+
+/** 命中片段包 `<mark>`（底色由主题令牌控制），原文不改。 */
+function Highlight({ text, query }: { text: string; query: string }) {
+  const segments = segmentLine(text, query);
+  if (segments.length === 1 && !segments[0].hit) return <>{text}</>;
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.hit ? <mark key={index}>{segment.text}</mark> : <span key={index}>{segment.text}</span>,
+      )}
+    </>
+  );
+}
 
 /**
  * 把原始终端流里的**真实控制字符**变成可见 token，放进 `<pre>` 后不会破坏
@@ -29,7 +43,16 @@ export function escapeControlCharacters(text: string): string {
  * **复制仍是原始字节**（不带 `<ESC>` 等标记）—— 标记只负责"看得见"，
  * 不影响留档与粘贴。
  */
-export function RawStreamView({ stdout, stderr }: { stdout: string; stderr?: string }) {
+export function RawStreamView({
+  stdout,
+  stderr,
+  searchQuery = "",
+}: {
+  stdout: string;
+  stderr?: string;
+  /** 结果内搜索词；命中处在**转义后的可见文本**上高亮。 */
+  searchQuery?: string;
+}) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
@@ -53,7 +76,11 @@ export function RawStreamView({ stdout, stderr }: { stdout: string; stderr?: str
       </button>
       <div className="h-full overflow-auto">
         <pre className="w-max whitespace-pre px-3 py-2.5 font-mono text-11 leading-[1.8] text-fg-muted">
-          {escapeControlCharacters(stdout) || t("(no output)")}
+          {stdout === "" ? (
+            t("(no output)")
+          ) : (
+            <Highlight text={escapeControlCharacters(stdout)} query={searchQuery} />
+          )}
         </pre>
       </div>
       {stderr ? (
@@ -61,7 +88,7 @@ export function RawStreamView({ stdout, stderr }: { stdout: string; stderr?: str
           <div className="px-3 pt-2 text-10 font-semibold text-danger">stderr</div>
           <div className="max-h-40 overflow-auto">
             <pre className="w-max whitespace-pre px-3 py-2 font-mono text-11 text-danger">
-              {escapeControlCharacters(stderr)}
+              <Highlight text={escapeControlCharacters(stderr)} query={searchQuery} />
             </pre>
           </div>
         </div>

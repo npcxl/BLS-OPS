@@ -11,6 +11,31 @@ import {
 import { JsonView } from "@/workbench/views/command-result/views/JsonView";
 import { RawStreamView } from "@/workbench/views/command-result/views/RawStreamView";
 import type { CapturedResult } from "./TerminalCommandCoordinator";
+import { segmentLine } from "./result-search";
+
+/**
+ * 一行文本按搜索命中画高亮（命中片段包 `<mark>`，原文一字不改）。
+ *
+ * 用 `<mark>` 而不是自绘 span：语义正确，且底色/字色都由主题令牌控制
+ * （见 tokens.css 的 `mark` 样式），暗色主题下不会出现刺眼的默认黄底。
+ */
+function HighlightedLine({ line, query }: { line: string; query: string }) {
+  const segments = segmentLine(line, query);
+  if (segments.length === 1 && !segments[0].hit) return <>{line}</>;
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.hit ? (
+          <mark key={index} data-testid="result-search-hit">
+            {segment.text}
+          </mark>
+        ) : (
+          <span key={index}>{segment.text}</span>
+        ),
+      )}
+    </>
+  );
+}
 
 /**
  * 终端结果视图 —— **xterm 终端快照方案**（不是结构化表格）。
@@ -29,7 +54,14 @@ import type { CapturedResult } from "./TerminalCommandCoordinator";
  * - 快照不可用（`renderedDegraded`）时显示可见的"已降级"提示 —— 降级文本
  *   是对原始流的清洗，不是真正的终端快照，绝不伪装。
  */
-export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
+export function TerminalSnapshotView({
+  result,
+  searchQuery = "",
+}: {
+  result: CapturedResult;
+  /** 结果内搜索词（来自抽屉的搜索栏）；空 = 不高亮。 */
+  searchQuery?: string;
+}) {
   const { t } = useTranslation();
   const [view, setView] = useState<"rendered" | "json" | "raw">("rendered");
   const { status, copy } = useCopyFeedback();
@@ -132,7 +164,7 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
                     className={cn(COPYABLE, "block w-full min-w-full whitespace-pre")}
                     title={t("Click to copy this line")}
                   >
-                    {line === "" ? "\u00A0" : line}
+                    {line === "" ? "\u00A0" : <HighlightedLine line={line} query={searchQuery} />}
                   </button>
                 ))}
               </pre>
@@ -140,9 +172,10 @@ export function TerminalSnapshotView({ result }: { result: CapturedResult }) {
             <CopyNotice status={status} />
           </div>
         ) : view === "json" && json !== null ? (
+          // JSON 视图自带树内搜索（关键词过滤 + 命中列表），不重复注入。
           <JsonView value={json.value} />
         ) : (
-          <RawStreamView stdout={result.stdout} stderr={result.stderr} />
+          <RawStreamView stdout={result.stdout} stderr={result.stderr} searchQuery={searchQuery} />
         )}
       </div>
     </div>

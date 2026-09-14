@@ -44,6 +44,18 @@
     color: rgb(var(--fg));
   }
 
+  /*
+   * 搜索命中高亮（结果面板内搜索）。
+   * 浏览器默认的 `<mark>` 是刺眼的黄底黑字，在暗色主题下尤其突兀；
+   * 统一改成强调色底色、继承正文颜色，两种主题下都可读。
+   */
+  mark {
+    background: rgb(var(--accent) / 0.28);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
   input,
   textarea,
   [data-selectable] {

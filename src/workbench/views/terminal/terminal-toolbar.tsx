@@ -1,22 +1,15 @@
-import { ChevronDown, Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Search, Sparkles, Unplug } from "lucide-react";
+import { ChevronDown, Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Sparkles, Unplug } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/components/ui/button";
 import { ToolbarIcon } from "./ToolbarIcon";
 import { TERMINAL_FONTS } from "./terminal-font";
 import type { Phase } from "./terminal-phase";
 
 export interface TerminalToolbarProps {
   phase: Phase;
-  searchOpen: boolean;
-  searchQuery: string;
-  searchState: { index: number; total: number } | null;
   historyOpen: boolean;
   filesOpen: boolean;
   enhancedTerminal: boolean;
   fontId: string;
-  onToggleSearch: () => void;
-  onSearchQueryChange: (value: string) => void;
-  onSearch: () => void;
   onSplit: (direction: "horizontal" | "vertical") => void;
   onClear: () => void;
   onToggleHistory: () => void;
@@ -36,16 +29,10 @@ export interface TerminalToolbarProps {
  */
 export function TerminalToolbar({
   phase,
-  searchOpen,
-  searchQuery,
-  searchState,
   historyOpen,
   filesOpen,
   enhancedTerminal,
   fontId,
-  onToggleSearch,
-  onSearchQueryChange,
-  onSearch,
   onSplit,
   onClear,
   onToggleHistory,
@@ -60,7 +47,6 @@ export function TerminalToolbar({
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-1  border-line bg-transparent px-2">
-      <ToolbarIcon label={t("Search")} icon={Search} active={searchOpen} onClick={onToggleSearch} />
       <ToolbarIcon label={t("Split Vertically")} icon={Columns2} onClick={() => onSplit("horizontal")} />
       <ToolbarIcon label={t("Split Horizontally")} icon={Rows2} onClick={() => onSplit("vertical")} />
       <ToolbarIcon label={t("Clear Screen")} icon={Eraser} onClick={onClear} />
@@ -108,28 +94,6 @@ export function TerminalToolbar({
         <ToolbarIcon label={t("Reconnect")} icon={PlugZap} disabled={phase === "connecting"} onClick={onReconnect} />
       )}
 
-      {searchOpen && (
-        <div className="ml-2 flex items-center gap-1">
-          <input
-            value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onSearch();
-            }}
-            placeholder={t("Search in scrollback")}
-            spellCheck={false}
-            className="h-[26px] w-48 rounded-[7px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          />
-          <Button variant="ghost" size="xs" className="rounded-[7px]" onClick={onSearch}>
-            {t("Search")}
-          </Button>
-          {searchState && (
-            <span className="text-11 text-fg-subtle">
-              {searchState.total === 0 ? t("No matches") : `${searchState.index + 1}/${searchState.total}`}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }

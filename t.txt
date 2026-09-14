@@ -1,0 +1,36 @@
+﻿
+> Ops-Workbench@0.1.10 test C:\git-bls\BLS-OPS
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90mC:/git-bls/BLS-OPS[39m
+
+ [32m✓[39m src/workbench/views/terminal/completion/test/scheduler.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 190[2mms[22m[39m
+node.exe : [90mstderr[2m | src/components/ui/test/context-menu.test.tsx[2m > [22m[2mContextMenu[2m > [22m[2msta
+ys closed until a right-click opens it
+所在位置 C:\nvm4w\nodejs\pnpm.ps1:16 字符: 5
++     & "$basedir/node$exe"  "$basedir/node_modules/corepack/dist/pnpm. ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([90mstderr[2m...-click opens it:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[22m[39mreact-i18next:: useTranslation: You will need to pass in an i18next instance by using initReactI18next or by 
+passing it via props or context. In monorepo setups, make sure there is only one instance of react-i18next. { code: [3
+2m'NO_I18NEXT_INSTANCE'[39m }
+
+ [32m✓[39m src/components/ui/test/context-menu.test.tsx [2m([22m[2m21 tests[22m[2m)[22m[32m 120[2mms[22m[39m
+[90mstderr[2m | src/components/ui/test/modal.test.tsx[2m > [22m[2mModal exit animation[2m > [22m[2mrenders the 
+overlay and panel while open
+[22m[39mreact-i18next:: useTranslation: You will need to pass in an i18next instance by using initReactI18next or by 
+passing it via props or context. In monorepo setups, make sure there is only one instance of react-i18next. { code: [3
+2m'NO_I18NEXT_INSTANCE'[39m }
+
+[90mstderr[2m | src/workbench/views/command-result/views/test/copy-views.test.tsx[2m > [22m[2m结构化结果：点击复制[2m > [2
+2m[2m表格：点击单元格复制单元格内容
+[22m[39mreact-i18next:: useTranslation: You will need to pass in an i18next instance by using initReactI18next or by 
+passing it via props or context. In monorepo setups, make sure there is only one instance of react-i18next. { code: [3
+2m'NO_I18NEXT_INSTANCE'[39m }
+
+ [32m✓[39m src/workbench/views/command-result/views/test/copy-views.test.tsx [2m([22m[2m12 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+ [32m✓[39m src/components/ui/test/modal.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 561[2mms[22m[39m
+ [32m✓[39m src/workbench/views/terminal/test/terminal-output-pipeline.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 119[2mms[22m[39m

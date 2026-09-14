@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
+import { readText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
@@ -98,6 +99,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // 终端里的复制（选区菜单 / 复制错误信息）统一走共用模块：有成功失败提示、
   // 一个计时器、绝不散落 navigator.clipboard。
   const { status: copyStatus, copy: copyToClipboard } = useCopyFeedback();
+  // 粘贴读剪贴板（共用模块统一处理失败，绝不散落 navigator.clipboard）。
   /**
    * 正在输入的命令行（由 LineEditor 从按键流还原）。驱动命令提示 —— 与
    * 命令中心共用 `useCommandSuggestions`，因此输入 `docker p` 的行为一致。
@@ -450,6 +452,36 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [sessionId, t],
   );
 
+  /**
+   * 粘贴剪贴板文本到当前命令行。
+   *
+   * - 换行统一成 `\r`：Shell 只认 `\r` 作为"执行"，直接送 `\n` 会在多行
+   *   文本里粘出一堆没提交的 `^J`；用户从网页复制的命令常带 `\n`。
+   * - **同一个 `writeToShell` 出口**（与手打、补全、参数填入一致）：占位符
+   *   拦截照常生效 —— 粘贴一段带 `<unit>` 的命令绝不会直送 shell。
+   * - 行编辑器同步 feed：粘贴后 ghost/补全状态与真实命令行一致（不然下一次
+   *   补全会拿旧行算差集）。
+   * - 空剪贴板/读取失败**不静默**：给出可见提示（粘贴"什么也没发生"是最
+   *   让人困惑的状态）。
+   */
+  const pasteIntoTerminal = useCallback(async () => {
+    const raw = await readText();
+    if (raw === null) {
+      setParamHint(t("Paste failed — the clipboard could not be read"));
+      return;
+    }
+    if (raw === "") return;
+    const text = raw.replace(/\r?\n/g, "\r");
+    if (!writeToShell(text)) return;
+    lineEditorRef.current?.feed(text);
+    const next = lineEditorRef.current?.current ?? "";
+    programmaticDraftRef.current = next;
+    setDraft(next);
+    filledDraftRef.current = null;
+    updateSuggestAnchor();
+    refocusTerminal();
+  }, [t, updateSuggestAnchor, writeToShell]);
+
   /** 知识库候选（含占位符 → 二级选择器）。见下方 `applySuggestion`。 */
   const applyKnowledgeHit = useCallback(
     (hit: CommandSearchHit): AcceptOutcome => {
@@ -689,6 +721,40 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // to be refreshed after every render to see the current suggestions/draft.
   useEffect(() => {
     keyHandlerRef.current = (event) => {
+      // Ctrl+C / Ctrl+V：终端里这两个键有双重身份，必须按"有没有选区"分流。
+      //
+      // - Ctrl+C **有选中** → 复制（用户刚从回滚缓冲里选了东西，此时他要的
+      //   是"拿走这段文本"）。**无选中** → 不拦截，原样交给远程 shell 发
+      //   SIGINT（中断正在跑的命令）—— 这是终端最不能丢的语义。
+      // - Ctrl+V 恒为粘贴；Shift+Insert 是终端世界的传统粘贴键，一并支持。
+      //
+      // 用 `event.code`（物理键）而不是 `event.key`：非英文键盘布局下
+      // Ctrl+C 的 `key` 可能是别的字符，但 code 恒为 "KeyC"。
+      if (event.ctrlKey && !event.shiftKey && !event.altKey) {
+        if (event.code === "KeyC") {
+          const text = terminalRef.current?.getSelection();
+          if (text) {
+            event.preventDefault();
+            void copyToClipboard(text);
+            terminalRef.current?.clearSelection();
+            return true;
+          }
+          // 无选区：穿透给 shell（SIGINT）。
+          return false;
+        }
+        if (event.code === "KeyV") {
+          // 粘贴是异步的：先认领这次按键，避免 xterm 把 `\x16`(^V) 直接
+          // 送进 shell —— 那会变成一个可打印的控制字符。
+          event.preventDefault();
+          void pasteIntoTerminal();
+          return true;
+        }
+      }
+      if (event.shiftKey && event.key === "Insert") {
+        event.preventDefault();
+        void pasteIntoTerminal();
+        return true;
+      }
       if (event.ctrlKey && event.code === "Space") {
         // 二级选择器打开时先关它（它有自己的 window 级监听）。
         if (paramPicker) setParamPicker(null);
@@ -1047,6 +1113,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     filesOpen,
     phase,
     enhancedTerminal: results.enhanced,
+    hasSelection: (terminalRef.current?.getSelection() ?? "") !== "",
+    onCopySelection: () => {
+      const text = terminalRef.current?.getSelection() ?? "";
+      if (!text) return;
+      void copyToClipboard(text);
+      terminalRef.current?.clearSelection();
+    },
+    onPaste: () => void pasteIntoTerminal(),
     onSplit: (direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction),
     onClear: () => terminalRef.current?.clear(),
     onToggleHistory: () => setHistoryOpen((v) => !v),

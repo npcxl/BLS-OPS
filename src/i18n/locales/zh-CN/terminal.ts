@@ -11,6 +11,9 @@
 export default {
   // —— TerminalView：右键菜单 / 工具栏 ——
   "Expanded": "已展开",
+  "Copy": "复制",
+  "Paste": "粘贴",
+  "Paste failed — the clipboard could not be read": "粘贴失败——无法读取剪贴板",
   "Split Vertically": "垂直分栏",
   "Split Horizontally": "水平分栏",
   "Clear Screen": "清空屏幕",

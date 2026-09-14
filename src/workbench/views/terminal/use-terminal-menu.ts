@@ -1,5 +1,7 @@
 import {
+  ClipboardPaste,
   Columns2,
+  Copy,
   Eraser,
   FolderOpen,
   History,
@@ -18,6 +20,10 @@ export interface TerminalMenuActions {
   filesOpen: boolean;
   phase: Phase;
   enhancedTerminal: boolean;
+  /** 有选中时才给"复制"（无选区时 Ctrl+C 是 SIGINT，菜单里不给这个动作）。 */
+  hasSelection: boolean;
+  onCopySelection: () => void;
+  onPaste: () => void;
   onSplit: (direction: "horizontal" | "vertical") => void;
   onClear: () => void;
   onToggleHistory: () => void;
@@ -38,6 +44,27 @@ export function buildTerminalMenuItems(
   actions: TerminalMenuActions,
 ): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
+    // 复制/粘贴排在首位：右键菜单最常用的就是这两件事，且与系统的
+    // Ctrl+C / Ctrl+V 一一对应。复制只在真有选区时出现 —— 没有选区时
+    // Ctrl+C 在终端里的含义是中断（SIGINT），给它配一个"复制"项会误导。
+    ...(actions.hasSelection
+      ? [
+          {
+            label: t("Copy"),
+            icon: Copy,
+            hint: "Ctrl+C",
+            onSelect: actions.onCopySelection,
+          } satisfies ContextMenuItem,
+        ]
+      : []),
+    {
+      label: t("Paste"),
+      icon: ClipboardPaste,
+      hint: "Ctrl+V",
+      disabled: actions.phase !== "connected",
+      onSelect: actions.onPaste,
+    },
+    { separator: true },
     {
       label: t("Split Vertically"),
       icon: Columns2,

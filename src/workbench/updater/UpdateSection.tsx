@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { formatBytes } from "@/lib/format";
+import { openExternal } from "@/lib/open-external";
 import {
   UPDATE_ERROR_MESSAGES,
   UPDATE_STAGE_MESSAGES,
@@ -99,6 +100,14 @@ export function UpdateSection() {
   };
 
   const busy = phase === "checking" || phase === "downloading" || phase === "installing";
+
+  /** 外链打开失败（系统无浏览器 handler / 权限被拒）时的可见反馈。 */
+  const openReleases = async () => {
+    const ok = await openExternal(RELEASES_PAGE_URL);
+    if (ok) return;
+    setCopied("Opening the browser failed");
+    window.setTimeout(() => setCopied(null), 3000);
+  };
   // Installing is allowed whenever we hold a release and are not already
   // mid-flight or waiting for a restart. From `downloaded` the same button
   // finishes the install — the package is on disk, so nothing is refetched.
@@ -228,14 +237,15 @@ export function UpdateSection() {
         <Button variant="ghost" size="sm" onClick={() => void copy(diagnostics, "Diagnostics copied")}>
           {t("Copy diagnostics")}
         </Button>
-        <a
-          href={RELEASES_PAGE_URL}
-          target="_blank"
-          rel="noreferrer"
+        {/* 外链必须走 opener 插件：WebView 里的裸 <a target="_blank"> 点了
+            没有任何反应（本按钮曾经的 bug）。 */}
+        <button
+          type="button"
           className="text-11 text-accent underline-offset-2 hover:underline"
+          onClick={() => void openReleases()}
         >
           {t("Download manually from GitHub")}
-        </a>
+        </button>
       </div>
 
       <UpdateRestartDialog

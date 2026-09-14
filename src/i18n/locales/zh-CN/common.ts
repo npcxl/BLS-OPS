@@ -122,6 +122,7 @@ export default {
   "Copy diagnostics": "复制诊断信息",
   "Diagnostics copied": "诊断信息已复制",
   "Download manually from GitHub": "前往 GitHub 手动下载",
+  "Opening the browser failed": "打开浏览器失败",
   Quit: "退出",
   "Minimize window": "最小化窗口",
   "Maximize window": "最大化窗口",

@@ -10,6 +10,7 @@
     "dialog:allow-message",
     "dialog:allow-ask",
     "dialog:allow-confirm",
+    "opener:allow-open-url",
     "updater:allow-check",
     "updater:allow-download",
     "updater:allow-install",

@@ -54,6 +54,12 @@ pub fn run() {
         // Native open/save dialogs: the file panel needs "upload" to work from
         // a click, not only from a drag & drop.
         .plugin(tauri_plugin_dialog::init())
+        // Opens external links (e.g. the GitHub releases page from the updater
+        // panel) in the user's real browser. A bare `<a target="_blank">` is a
+        // no-op inside the Tauri WebView, which is why the manual-download link
+        // used to do nothing. It only ever *opens URLs* — it never launches an
+        // installer, so the "no shell.open" rule of the updater still holds.
+        .plugin(tauri_plugin_opener::init())
         // P5.1 auto-update. Signature verification is **always on**: the public
         // key ships inside `tauri.conf.json` (plugins.updater.pubkey) and is
         // embedded into the binary by `generate_context!`, so a `.sig` it does

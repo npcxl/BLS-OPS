@@ -1,0 +1,135 @@
+﻿
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90mC:/git-bls/BLS-OPS[39m
+
+ [31m❯[39m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx [2m([22m[2m16 tests[22m[2m | [22m[31m5 failed[39m[2m)[22m[32m 122[2mms[22m[39m
+     [32m✓[39m 默认展示【终端输出】（快照），不是结构化视图[32m 29[2mms[22m[39m
+     [32m✓[39m 快照长行不折行：整行文本原样出现（可被横向滚动查看）[32m 4[2mms[22m[39m
+     [32m✓[39m 没有 json → 只有【终端输出】【原始流】两个 Tab[32m 4[2mms[22m[39m
+     [32m✓[39m 合法 JSON → 出现 JSON Tab，切过去展示 JSON 值[32m 17[2mms[22m[39m
+     [32m✓[39m 坏 JSON Lines → json 为 null 时不出现 JSON Tab（数据完整，无部分解析）[32m 4[2mms[22m[39m
+[31m     [31m×[31m 原始流 Tab：控制字符转义为可见 token，且可复制不含标记[39m[32m 12[2mms[22m[39m
+     [32m✓[39m 降级结果：显示可见的降级提示（不伪装成快照）[32m 4[2mms[22m[39m
+     [32m✓[39m 空输出是有效结果：显示为空，不回落、不假装有内容[32m 4[2mms[22m[39m
+[31m       [31m×[31m 点击某一行 → 复制该行完整内容（保留原始空格与列宽）[39m[32m 6[2mms[22m[39m
+       [32m✓[39m 复制成功后约 1.5 秒自动消失，连续复制重新计时[32m 10[2mms[22m[39m
+[31m       [31m×[31m 复制失败 → 显示失败提示（不假装成功）[39m[32m 6[2mms[22m[39m
+       [32m✓[39m 拖选文字不会误触整行复制[32m 3[2mms[22m[39m
+       [32m✓[39m 存在选区时不触发整行复制[32m 3[2mms[22m[39m
+[31m       [31m×[31m 键盘 Enter 也能复制（可聚焦）[39m[32m 6[2mms[22m[39m
+[31m       [31m×[31m 全量复制按钮仍然可用（不因逐行渲染退化）[39m[32m 4[2mms[22m[39m
+       [32m✓[39m 提示不遮挡内容：绝对定位 + 不参与布局[32m 4[2mms[22m[39m
+node.exe : 
+所在位置 C:\nvm4w\nodejs\pnpm.ps1:16 字符: 5
++     & "$basedir/node$exe"  "$basedir/node_modules/corepack/dist/pnpm. ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 5 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx[2m > [22mTerminalSnapshotVi
+ew[2m > [22m原始流 Tab：控制字符转义为可见 token，且可复制不含标记
+[31m[1mAssertionError[22m: expected '' to be 'a\u001b[?2004l\r\n' // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- a[?2004l
+[39m
+[32m-[39m
+
+[36m [2m❯[22m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx:[2m131:28[22m[39m
+    [90m129|[39m       [34mtab[39m([32m"Copy"[39m)[33m?.[39m[34mclick[39m()[33m;[39m
+    [90m130|[39m     })[33m;[39m
+    [90m131|[39m     [34mexpect[39m(clipboard[33m.[39mtext)[33m.[39m[34mtoBe[39m([32m"a\x1b[?2004l\r\n"[39m
+)[33m;[39m [90m// 复制的是原始字节[39m
+    [90m   |[39m                            [31m^[39m
+    [90m132|[39m   })[33m;[39m
+    [90m133|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx[2m > [22mTerminalSnapshotVi
+ew[2m > [22m点击复制[2m > [22m点击某一行 → 复制该行完整内容（保留原始空格与列宽）
+[31m[1mAssertionError[22m: expected '' to be 'CONTAINER ID   IMAGE          STATUS' // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- CONTAINER ID   IMAGE          STATUS[39m
+
+[36m [2m❯[22m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx:[2m153:30[22m[39m
+    [90m151|[39m         [34mline[39m([34m0[39m)[33m.[39m[34mclick[39m()[33m;[39m
+    [90m152|[39m       })[33m;[39m
+    [90m153|[39m       [34mexpect[39m(clipboard[33m.[39mtext)[33m.[39m[34mtoBe[39m(row)[33m;[39m
+    [90m   |[39m                              [31m^[39m
+    [90m154|[39m       [34mexpect[39m(container[33m.[39mtextContent)[33m.[39m[34mtoContain[39m([32m"Copied"
+[39m)[33m;[39m
+    [90m155|[39m     })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx[2m > [22mTerminalSnapshotVi
+ew[2m > [22m点击复制[2m > [22m复制失败 → 显示失败提示（不假装成功）
+[31m[1mAssertionError[22m: expected 'Copied' to contain 'Copy failed. Please check clipboard p…'[39m
+
+Expected: [32m"Cop[7my failed. Please check clipboard permission[27m"[39m
+Received: [31m"Cop[7mied[27m"[39m
+
+[36m [2m❯[22m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx:[2m194:26[22m[39m
+    [90m192|[39m           [34mline[39m([34m0[39m)[33m.[39m[34mclick[39m()[33m;[39m
+    [90m193|[39m         })[33m;[39m
+    [90m194|[39m         expect(notice()).toContain("Copy failed. Please check clipboar…
+    [90m   |[39m                          [31m^[39m
+    [90m195|[39m       } [35mfinally[39m {
+    [90m196|[39m         failing[33m.[39m[34mmockRestore[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx[2m > [22mTerminalSnapshotVi
+ew[2m > [22m点击复制[2m > [22m键盘 Enter 也能复制（可聚焦）
+[31m[1mAssertionError[22m: expected '' to be 'kbd line' // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- kbd line[39m
+
+[36m [2m❯[22m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx:[2m240:30[22m[39m
+    [90m238|[39m         [34mline[39m([34m0[39m)[33m.[39m[34mclick[39m()[33m;[39m
+    [90m239|[39m       })[33m;[39m
+    [90m240|[39m       [34mexpect[39m(clipboard[33m.[39mtext)[33m.[39m[34mtoBe[39m([32m"kbd line"[39m)[33m
+;[39m
+    [90m   |[39m                              [31m^[39m
+    [90m241|[39m     })[33m;[39m
+    [90m242|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx[2m > [22mTerminalSnapshotVi
+ew[2m > [22m点击复制[2m > [22m全量复制按钮仍然可用（不因逐行渲染退化）
+[31m[1mAssertionError[22m: expected '' to be 'a\nb' // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- a[39m
+[32m- b[39m
+
+[36m [2m❯[22m src/workbench/views/terminal/test/TerminalSnapshotView.test.tsx:[2m248:30[22m[39m
+    [90m246|[39m         [34mtab[39m([32m"Copy"[39m)[33m?.[39m[34mclick[39m()[33m;[39m
+    [90m247|[39m       })[33m;[39m
+    [90m248|[39m       [34mexpect[39m(clipboard[33m.[39mtext)[33m.[39m[34mtoBe[39m([32m"a\nb"[39m)[33m;[3
+9m
+    [90m   |[39m                              [31m^[39m
+    [90m249|[39m     })[33m;[39m
+    [90m250|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m5 failed[39m[22m[2m | [22m[1m[32m11 passed[39m[22m[90m (16)[39m
+[2m   Start at [22m 16:39:56
+[2m   Duration [22m 1.36s[2m (transform 304ms, setup 34ms, import 756ms, tests 122ms, environment 294ms)[22m
+

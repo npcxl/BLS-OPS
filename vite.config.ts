@@ -21,6 +21,8 @@ export default defineConfig(async () => ({
 
   test: {
     environment: "happy-dom",
+    // 剪贴板在测试环境没有 Tauri IPC 后端，统一替身（见文件内说明）。
+    setupFiles: ["./src/test/setup-clipboard.ts"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

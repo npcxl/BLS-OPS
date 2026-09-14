@@ -60,6 +60,12 @@ pub fn run() {
         // used to do nothing. It only ever *opens URLs* — it never launches an
         // installer, so the "no shell.open" rule of the updater still holds.
         .plugin(tauri_plugin_opener::init())
+        // Clipboard via Rust instead of `navigator.clipboard`: the WebView's
+        // async clipboard API makes WebView2 raise a native permission prompt
+        // ("http://tauri.localhost wants to see text and images copied to the
+        // clipboard") on every paste. Reading/writing from the Rust side needs
+        // no such permission and never prompts.
+        .plugin(tauri_plugin_clipboard_manager::init())
         // P5.1 auto-update. Signature verification is **always on**: the public
         // key ships inside `tauri.conf.json` (plugins.updater.pubkey) and is
         // embedded into the binary by `generate_context!`, so a `.sig` it does

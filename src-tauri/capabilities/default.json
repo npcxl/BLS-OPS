@@ -11,6 +11,8 @@
     "dialog:allow-ask",
     "dialog:allow-confirm",
     "opener:allow-open-url",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     "updater:allow-check",
     "updater:allow-download",
     "updater:allow-install",

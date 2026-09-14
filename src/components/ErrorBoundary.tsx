@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { i18n } from "@/i18n";
+import { copyText } from "@/lib/clipboard";
 
 interface Props {
   children: ReactNode;
@@ -29,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
   private handleRetry = () => this.setState({ error: null });
 
   private handleCopy = () => {
-    void navigator.clipboard.writeText(
+    void copyText(
       `${this.state.error?.message ?? i18n.t("Unknown error")}\n\n${this.state.error?.stack ?? ""}`,
     );
   };

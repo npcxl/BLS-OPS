@@ -37,6 +37,7 @@ import { editorSyncEvent } from "@/lib/events";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
+import { copyText } from "@/lib/clipboard";
 import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
@@ -784,13 +785,13 @@ export function RemoteFilePanel({
         id: "copy-path",
         label: t("Copy full path"),
         icon: ClipboardCopy,
-        onSelect: () => void navigator.clipboard.writeText(entry.path),
+        onSelect: () => void copyText(entry.path),
       },
       {
         id: "copy-name",
         label: t("Copy file name"),
         icon: ClipboardCopy,
-        onSelect: () => void navigator.clipboard.writeText(entry.name),
+        onSelect: () => void copyText(entry.name),
       },
       { id: "sep2", separator: true },
       {

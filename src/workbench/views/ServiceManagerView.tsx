@@ -13,6 +13,7 @@ import { Copy, Play, RotateCw, Square, SquareCheck, SquareMinus } from "lucide-r
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { servicesChangedEvent } from "@/lib/events";
 import { opsApi, toErrorMessage, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
@@ -263,7 +264,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
             aria-label={t("Copy error message")}
             title={t("Copy error message")}
             className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
-            onClick={() => void navigator.clipboard.writeText(error)}
+            onClick={() => void copyText(error)}
           >
             <Copy size={12} />
             {t("Copy")}
@@ -399,13 +400,9 @@ function DetailSheet({
   const [copied, setCopied] = useState(false);
 
   const copyDetail = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      setCopied(false);
-    }
+    const ok = await copyText(text);
+    setCopied(ok);
+    if (ok) window.setTimeout(() => setCopied(false), 1500);
   };
 
   return (

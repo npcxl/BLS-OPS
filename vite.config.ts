@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
@@ -17,12 +16,6 @@ export default defineConfig(async () => ({
   },
 
   build: {
-    // ⚠️ 不要加 rollupOptions.manualChunks（按 node_modules 强拆 vendor/react）。
-    // 2026-09 白屏事故：react 块被强拆后与其他 chunk 成环，生产包在模块求值时
-    // 抛 "Cannot set properties of undefined (setting 'Activity')"，WebView 白屏，
-    // 而 `pnpm tauri dev`（不打包）完全正常——只有安装版能暴露。懒加载分包由
-    // 动态 import 边界自然产生（xterm / editor / preview），无需手动干预。
-    // The bundle ships inside the desktop app, so source maps only bloat it.
     sourcemap: false,
   },
 

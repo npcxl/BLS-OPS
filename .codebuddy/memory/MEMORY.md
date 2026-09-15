@@ -34,7 +34,8 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **GitHub REST `GET /releases/tags/{tag}` 不返回 draft**：release 查询/轮询一律用 `GET /releases` 列表+过滤；资产下载 `gh api .../assets/<id> -H "Accept: application/octet-stream"`；`gh api` 失败仍会写 HTTP body 进重定向文件——用 jq -e 验语义别只看大小。draft 的 manifest 在 Publish 前对应用不可见。
 
 ## UI 组件约定
-- 右键菜单统一 useContextMenu()；复制一律 `lib/clipboard.ts::copyText()`+copy-feedback.tsx（禁自写计时器）；测试断言用 data-line。
+- 右键菜单统一 useContextMenu()；复制/粘贴一律走 `lib/clipboard.ts`（`copyText`/`readText`）+copy-feedback.tsx（禁自写计时器）；测试断言用 data-line。
+- **禁裸 `navigator.clipboard`**：WebView2 下读剪贴板会弹原生权限窗（`http://tauri.localhost wants to see text and images…`）→ 内部走 `tauri-plugin-clipboard-manager`（Rust 读写，无弹窗）。测试替身 `src/test/setup-clipboard.ts`（vite.config `test.setupFiles`）mock 插件模块并**转发到 `navigator.clipboard`**，使既有 `vi.spyOn(navigator.clipboard,"writeText")` 用例继续有效。
 - 窗口按钮：macOS 原生（顶栏 pl-[76px]）；Win/Linux 自绘 window-controls.tsx；平台判定 `lib/platform.ts::isMacOS()`。Tauri 平台配置 JSON Merge Patch、数组整体替换。
 - 浮层纯白实色（.glass-panel）；限高 calc(vh)；CSS 禁写死十六进制背景色，用 --surface-*/--app 令牌。**嵌套 flex 里 height 百分比脆弱：preview 根全链 flex+min-h-0 弃 h-full；面板高度三件套必须全走 style**。
 - lucide v1.x：AlertTriangle→TriangleAlert、Loader→LoaderCircle；arr.at(-1) 不可用（lib<es2022），用 arr[len-1]。

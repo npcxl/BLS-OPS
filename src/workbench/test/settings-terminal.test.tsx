@@ -10,6 +10,7 @@ import {
   resolveFontStack,
   setTerminalFontId,
 } from "../views/terminal/terminal-font";
+import { COMPACT_PROMPT_KEY } from "../views/terminal/terminal-prompt";
 
 // React 19 + vitest：需要显式声明 act 环境（见项目既有约定）。
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,6 +21,7 @@ let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   // 复位共享字体状态（模块级缓存 + CSS 变量 + 存储），避免用例互相污染。
   setTerminalFontId(DEFAULT_TERMINAL_FONT_ID);
+  window.localStorage.removeItem(COMPACT_PROMPT_KEY);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -78,5 +80,20 @@ describe("TerminalSettingsGroup", () => {
     // 终端读的就是这个变量 —— 预览与实际渲染不可能各说各话。
     expect(document.documentElement.style.getPropertyValue("--font-terminal")).toBe(stack);
     expect(window.localStorage.getItem(TERMINAL_FONT_KEY)).toBe("consolas");
+  });
+
+  it("提示符精简开关：默认关，打开后落到存储（下次连接生效）", () => {
+    act(() => {
+      root.render(<TerminalSettingsGroup />);
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    act(() => {
+      toggle?.click();
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(window.localStorage.getItem(COMPACT_PROMPT_KEY)).toBe("1");
   });
 });

@@ -33,6 +33,7 @@ import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
 import { resolveFontStack } from "./terminal-font";
+import { COMPACT_PROMPT_COMMAND, readCompactPrompt } from "./terminal-prompt";
 import { useTerminalFont } from "@/hooks/use-terminal-font";
 import type { Phase } from "./terminal-phase";
 import { TerminalErrorBanner } from "./terminal-error-banner";
@@ -945,6 +946,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
         // 连接成功只给一行绿色 i18n 状态，host/fingerprint 等细节不再刷屏。
         instance?.writeln(`\r\n\x1b[32m${t("Connected")}\x1b[0m`);
+        // 提示符精简（用户开关，默认关）：只在**连接成功这一瞬间**发一次。
+        // 绝不能改成"设置一变就立即注入"——那会在用户正敲命令时往命令行里
+        // 写字，等于替他改输入。设置变更从下一次连接生效。
+        if (readCompactPrompt()) {
+          void opsApi.sshInput(sessionId, COMPACT_PROMPT_COMMAND).catch(() => undefined);
+        }
         // 登录目录：cwd 的兜底答案（`cd ~`、以及还没探测到时用它）。
         // 只信 SFTP 的 canonicalize 结果 —— 绝不从提示符文本猜。
         void opsApi

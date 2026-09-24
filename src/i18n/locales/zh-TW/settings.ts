@@ -12,6 +12,9 @@ export default {
   Terminal: "終端",
   "The font is shared by the terminal and the command output panel.":
     "終端與命令輸出面板共用同一套字型。",
+  "Compact prompt": "精簡提示符",
+  "Shows only the current directory (~#, /#). One command is sent to the remote shell after connecting — session only, no server config file is touched.":
+    "提示符只顯示目前目錄（如 ~#、/#）。連線成功後向遠端 shell 傳送一條命令生效：僅本次工作階段有效，不修改伺服器上的任何設定檔。",
 
   // -- 憑據 --
   Credentials: "憑據",

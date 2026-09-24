@@ -21,7 +21,6 @@ export default {
   "Remote Files": "遠端檔案",
   "Refresh Environment": "重新整理環境",
   "Re-probe Docker / Nginx": "重新探測 Docker / Nginx",
-  "Enhanced Terminal": "增強終端",
   "Disconnect": "斷開連線",
   "Reconnect": "重新連線",
   "Font": "字型",

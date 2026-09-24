@@ -1,22 +1,17 @@
-import { ChevronDown, Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Sparkles, Unplug } from "lucide-react";
+import { Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Unplug } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ToolbarIcon } from "./ToolbarIcon";
-import { TERMINAL_FONTS } from "./terminal-font";
 import type { Phase } from "./terminal-phase";
 
 export interface TerminalToolbarProps {
   phase: Phase;
   historyOpen: boolean;
   filesOpen: boolean;
-  enhancedTerminal: boolean;
-  fontId: string;
   onSplit: (direction: "horizontal" | "vertical") => void;
   onClear: () => void;
   onToggleHistory: () => void;
   onToggleFiles: () => void;
   onRefreshEnvironment: () => void;
-  onToggleEnhanced: () => void;
-  onFontChange: (id: string) => void;
   onDisconnect: () => void;
   onReconnect: () => void;
 }
@@ -31,15 +26,11 @@ export function TerminalToolbar({
   phase,
   historyOpen,
   filesOpen,
-  enhancedTerminal,
-  fontId,
   onSplit,
   onClear,
   onToggleHistory,
   onToggleFiles,
   onRefreshEnvironment,
-  onToggleEnhanced,
-  onFontChange,
   onDisconnect,
   onReconnect,
 }: TerminalToolbarProps) {
@@ -60,33 +51,6 @@ export function TerminalToolbar({
         disabled={phase !== "connected"}
         onClick={onRefreshEnvironment}
       />
-      {/* 增强终端：关着时终端就是纯终端（不注入标记、无结果面板）；
-          打开后命令才会生成结果面板（不另设开关：开了就有、关了就什么都没有）。 */}
-      <ToolbarIcon
-        label={t("Enhanced Terminal")}
-        icon={Sparkles}
-        active={enhancedTerminal}
-        onClick={onToggleEnhanced}
-      />
-      <div className="mx-1 h-4 w-px bg-line" />
-      {/* 字体：终端与命令输出共用一套栈（不打包字体，没装则回退）。 */}
-      <label className="flex items-center gap-1 text-11 text-fg-muted">
-        {t("Font")}
-        <span className="relative inline-flex items-center">
-          <select
-            value={fontId}
-            onChange={(event) => onFontChange(event.target.value)}
-            className="h-[26px] w-[132px] appearance-none rounded-[7px] border border-line bg-surface-2 pl-2 pr-5 text-11 text-fg outline-none focus:border-accent"
-          >
-            {TERMINAL_FONTS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {t(option.label)}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-fg-subtle" />
-        </span>
-      </label>
       <div className="mx-1 h-4 w-px bg-line" />
       {phase === "connected" ? (
         <ToolbarIcon label={t("Disconnect")} icon={Unplug} onClick={onDisconnect} />

@@ -95,14 +95,20 @@ export function keysForReplace(
 }
 
 // ---------------------------------------------------------------------------
-// 统一补全状态机（用户裁决 2026-09-08，勿回退）：
+// 统一补全状态机（用户裁决 2026-09-08，Enter 语义 2026-09-24 修订）：
 // **默认只有行内 ghost，面板只在 Tab / ArrowDown 后出现。**
 //
 // collapsed（ghost 态）：输入框只有灰色 ghost + Tab 徽标，没有面板；
-//   Tab / ↓ = 接受第一条并展开面板；Enter = 直接执行第一条（无候选则穿透）；
-//   Esc = 清空整行。
+//   Tab / ↓ = 接受第一条并展开面板；Enter = **原样提交用户敲的那一行**
+//   （穿透给 shell）；Esc = 清空整行。
 // expanded（面板态）：↑↓ 选择、Enter 执行当前项、Tab/→ 填入当前项、
 //   Esc = 清空整行。继续编辑（行内容变化）→ 回 collapsed。
+//
+// ※ collapsed 的 Enter 曾经是"直接执行第一条候选"，2026-09-24 被用户否掉：
+//   补全是**建议**，不是替用户改命令。用户敲 `git pull` 回车，结果跑的是第
+//   一条候选（`git pull --rebase` 之类），最后发现"在后面加几个空格"才能躲
+//   开 —— 这是把提示做成了强制。要用候选就显式来：Tab/↓ 展开后选，或
+//   Ctrl+Enter 直接执行当前项。
 // ---------------------------------------------------------------------------
 
 /** 统一状态机的动作。`none` = 不拦截，按键照常发给远程 shell。 */
@@ -111,14 +117,13 @@ export type TerminalCompleteAction =
   | { type: "move"; delta: 1 | -1 }
   | { type: "accept-first" }
   | { type: "accept-active" }
-  | { type: "run-first" }
   | { type: "run-active" }
   | { type: "clear-line" };
 
 export interface TerminalCompleteState {
   /** 面板是否已展开（Tab/ArrowDown 之后）。 */
   expanded: boolean;
-  /** 是否有候选（决定 collapsed 的 Tab/↓/Enter 是否接管）。 */
+  /** 是否有候选（决定 collapsed 的 Tab/↓ 是否接管）。 */
   hasItems: boolean;
 }
 
@@ -155,9 +160,9 @@ export function resolveTerminalCompleteKey(
       // 接受第一条并展开完整面板 —— 面板唯一的出现方式。
       return state.hasItems ? { type: "accept-first" } : { type: "none" };
     case "Enter":
-      // 有 ghost 建议 → 直接执行第一条（参数/风险流程照走）；
-      // 没有 → 穿透，shell 执行原始输入。
-      return state.hasItems ? { type: "run-first" } : { type: "none" };
+      // **Enter 永远穿透**：用户敲的是什么就执行什么。候选再合适也只是
+      // 建议，替用户执行另一条命令是"强制"，不是"补全"（用户裁决 2026-09-24）。
+      return { type: "none" };
     default:
       return { type: "none" };
   }

@@ -19,7 +19,6 @@ use tokio::sync::{watch, Mutex};
 use super::decoder::SessionEncoding;
 use super::handshake::ClientHandler;
 use super::model::{ExecOutput, SFTP_SUBSYSTEM};
-use super::sftp::sftp_error;
 
 pub(crate) type SessionWriter = ChannelWriteHalf<client::Msg>;
 use russh::ChannelWriteHalf;

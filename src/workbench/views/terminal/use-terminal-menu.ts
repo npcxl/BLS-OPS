@@ -8,7 +8,6 @@ import {
   PlugZap,
   RefreshCw,
   Rows2,
-  Sparkles,
   Unplug,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -19,7 +18,6 @@ export interface TerminalMenuActions {
   historyOpen: boolean;
   filesOpen: boolean;
   phase: Phase;
-  enhancedTerminal: boolean;
   /** 有选中时才给"复制"（无选区时 Ctrl+C 是 SIGINT，菜单里不给这个动作）。 */
   hasSelection: boolean;
   onCopySelection: () => void;
@@ -29,7 +27,6 @@ export interface TerminalMenuActions {
   onToggleHistory: () => void;
   onToggleFiles: () => void;
   onRefreshEnvironment: () => void;
-  onToggleEnhanced: () => void;
   onDisconnect: () => void;
   onReconnect: () => void;
 }
@@ -94,12 +91,6 @@ export function buildTerminalMenuItems(
       hint: t("Re-probe Docker / Nginx"),
       disabled: actions.phase !== "connected",
       onSelect: actions.onRefreshEnvironment,
-    },
-    {
-      label: t("Enhanced Terminal"),
-      icon: Sparkles,
-      hint: actions.enhancedTerminal ? t("Enabled") : undefined,
-      onSelect: actions.onToggleEnhanced,
     },
     { separator: true },
   ];

@@ -53,10 +53,10 @@ import {
   useTransientNotice,
 } from "./use-dir-size-queue";
 import {
-  joinPath,
   parentOf,
   validateName,
   type EditorTarget,
+  type FilePanelFollow,
   type NameDialog,
   type PanelStatus,
 } from "./utils";
@@ -82,10 +82,10 @@ export interface RemoteFilePanelProps {
   sessionId: string;
   connected: boolean;
   /**
-   * Terminal follow state: bumped on every `cd` typed in the paired terminal.
-   * The panel resolves the raw argument against its own cwd.
+   * Terminal follow state: bumped on every `cd` typed in the paired terminal,
+   * carrying the **absolute path the terminal resolved** for it.
    */
-  follow: { nonce: number; arg: string };
+  follow: FilePanelFollow;
   /**
    * 挂载时直接落地的路径（P3 项目发现的"查看项目文件"）。与 `reveal` 的区别：
    * 这是**首次打开**的位置，放在这里才不会和"打开 home 目录"的初始化逻辑
@@ -122,7 +122,6 @@ export function RemoteFilePanel({
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   /** Canonical navigation history: back/forward + current location. */
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
-  const [home, setHome] = useState<string | null>(null);
   const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
   const [status, setStatus] = useState<PanelStatus>({ state: "idle" });
   const [selected, setSelected] = useState<string | null>(null);
@@ -241,7 +240,6 @@ export function RemoteFilePanel({
       try {
         const homePath = await opsApi.sftpOpen(sessionId);
         if (cancelled) return;
-        setHome(homePath);
 
         const target = initialPath?.trim();
         if (target) {
@@ -265,31 +263,18 @@ export function RemoteFilePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, sessionId]);
 
-  // Follow `cd` typed in the terminal. Nonce 0 is the initial state, not a
+  // Follow `cd` typed in the terminal: the terminal already resolved the
+  // argument into an absolute path (`~`, `-`, `..` and relative forms
+  // included), so all we do here is jump. Nonce 0 is the initial state, not a
   // command — reacting to it would reload the home listing a second time.
   const followNonce = follow.nonce;
+  const followPath = follow.path;
   useEffect(() => {
-    if (followNonce === 0) return;
-    const arg = follow.arg.trim();
-    if (!cwd) return;
-
-    let target: string | null = null;
-    if (arg === "" || arg === "~") {
-      target = home ?? cwd; // bare `cd` goes home; keep cwd if home is unknown
-    } else if (arg === "-") {
-      target = nav.index > 0 ? nav.stack[nav.index - 1] : cwd;
-    } else if (arg === "..") {
-      target = parentOf(cwd);
-    } else {
-      const expanded = arg.startsWith("~")
-        ? joinPath(home ?? cwd, arg.slice(1).replace(/^\/+/, "") || ".")
-        : arg;
-      target = joinPath(cwd, expanded);
-    }
-    if (target) void load(target);
-    // `cwd`/`nav` intentionally excluded: respond to each nonce exactly once.
+    if (followNonce === 0 || !followPath) return;
+    void load(followPath);
+    // 每个 nonce 只响应一次，`load` 有意不入依赖。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followNonce]);
+  }, [followNonce, followPath]);
 
   // Subsequent jump requests from another view (项目发现的"查看 Docker 配置"/
   // "查看 Nginx 配置")。挂载时的首次落地由 `initialPath` 负责。

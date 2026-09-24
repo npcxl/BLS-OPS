@@ -181,7 +181,9 @@ async fn write_local_to_remote(
             if let Some((parent, _)) = remote_path.rsplit_once('/') {
                 ensure_remote_dir(&sftp, parent).await;
             }
-            sftp.create(remote_path).await.map_err(sftp_error)?
+            sftp.create(remote_path)
+                .await
+                .map_err(|error| sftp_error(remote_path, error))?
         }
     };
     tokio::io::copy(&mut local, &mut remote)

@@ -211,25 +211,13 @@ export interface CommandPlan {
  * 生成一次提交的写出内容 —— **命令本身从不改写**（不加包装、不加前缀）：
  * 终端里回显的仍然是用户敲的那一行。
  *
- * `options.capture === false`（未开启"增强终端"）时**不注入任何受控标记**：
- * 终端退化成纯终端，命令照常发往 shell，但不捕获输出、不产生结果面板。
+ * 是否捕获由**命令本身**决定（交互式 / 读 stdin / 无输出的内建命令不捕获），
+ * 不再有全局开关：需要结果面板的命令一律捕获。
  */
-export function planCommandSubmission(
-  command: string,
-  mode: SubmitMode = "full",
-  options?: { capture?: boolean },
-): CommandPlan {
+export function planCommandSubmission(command: string, mode: SubmitMode = "full"): CommandPlan {
   const trimmed = command.trim();
   if (!trimmed) {
     return { capture: false, write: "", markers: [], reason: "空命令" };
-  }
-  if (options?.capture === false) {
-    return {
-      capture: false,
-      write: mode === "full" ? `${trimmed}\n` : "",
-      markers: [],
-      reason: "未开启增强终端，纯终端模式（不注入标记、不生成结果）",
-    };
   }
   if (blocksCapture(trimmed)) {
     // `line-ready` 时命令行已经写好了 —— 什么都不补（回车由调用方随按键

@@ -12,6 +12,7 @@ import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
+import type { FilePanelFollow } from "@/workbench/views/remote-file/utils";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import {
   canAutoFill,
@@ -31,7 +32,8 @@ import { CommandHistoryPanel } from "./CommandHistoryPanel";
 import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
-import { applyTerminalFont, readTerminalFontId, saveTerminalFontId } from "./terminal-font";
+import { resolveFontStack } from "./terminal-font";
+import { useTerminalFont } from "@/hooks/use-terminal-font";
 import type { Phase } from "./terminal-phase";
 import { TerminalErrorBanner } from "./terminal-error-banner";
 import { TerminalToolbar } from "./terminal-toolbar";
@@ -90,10 +92,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(true);
   /**
-   * Shell-to-panel sync: every `cd` typed in the terminal bumps this nonce
-   * with the raw argument; the file panel resolves it against its own cwd.
+   * Shell-to-panel sync: every `cd` typed in the terminal bumps this nonce with
+   * the **absolute target the terminal resolved** (never the raw argument —
+   * the panel's own cwd can be somewhere else entirely).
    */
-  const [follow, setFollow] = useState<{ nonce: number; arg: string }>({ nonce: 0, arg: "" });
+  const [follow, setFollow] = useState<FilePanelFollow>({ nonce: 0, path: "" });
   const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
   const selectionMenuTimerRef = useRef<number | null>(null);
   // 终端里的复制（选区菜单 / 复制错误信息）统一走共用模块：有成功失败提示、
@@ -150,39 +153,25 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     return () => window.clearInterval(timer);
   }, [paramHint, setParamHint]);
   /**
-   * 终端 / 命令输出字体（用户可选，与结果面板共用同一套栈）。
-   * 切换后要 `fit()` 重排 —— 字宽变了，xterm 的行列数会跟着变。
+   * 终端 / 命令输出字体（与结果面板共用同一套栈）。
+   *
+   * 字体本身由设置页改（`useTerminalFont` = 同一份共享状态），这里只负责
+   * **让已经存在的 xterm 实例跟上**：`fontFamily` 是创建时读的，改完必须
+   * `fit()` 重排 —— 字宽变了，行列数也跟着变。
    */
-  const [fontId, setFontId] = useState<string>(readTerminalFontId);
+  const { fontId } = useTerminalFont();
   useEffect(() => {
-    saveTerminalFontId(fontId);
-    applyTerminalFont(fontId);
-    // 已存在的 xterm 实例：改 options 后重排（新建实例时读的是同一变量）。
     const instance = terminalRef.current;
-    if (instance) {
-      instance.options.fontFamily = document.documentElement.style.getPropertyValue(
-        "--font-terminal",
-      );
-      fitRef.current?.fit();
-      updateSuggestAnchor();
-    }
+    if (!instance) return;
+    instance.options.fontFamily = resolveFontStack(fontId);
+    fitRef.current?.fit();
+    updateSuggestAnchor();
+    // `updateSuggestAnchor` 在本组件里声明得更晚（且是稳定 useCallback）：
+    // 写进依赖数组会在渲染期读取尚未初始化的绑定，所以照旧只依赖 fontId。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fontId]);
   /** 右键 = 顶部工具栏镜像：终端画布上右键可达被滚动/折叠藏起的顶部功能。 */
   const terminalMenu = useContextMenu();
-
-  /**
-   * 上一次**填入候选之后**的完整行。
-   *
-   * 用于实现"再按一次回车 = 执行"：用户在 `cd o` 上按回车 → 补成 `cd opt/`；
-   * 行内容没再变过就再按回车 → 这次是执行 `cd opt/`。
-   *
-   * 不能只靠"候选与已输入一致才执行"来判断：目录补完后行以 `/` 结尾，
-   * 面板会立刻去列下一层（异步），**执行还是继续补全取决于网络快慢** ——
-   * 同样的操作有时执行有时往下钻，这就是"交互不顺畅"的来源。用"行内容
-   * 自上次填入后是否变过"判定，结果与网络时序无关。
-   */
-  const filledDraftRef = useRef<string | null>(null);
 
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
@@ -349,15 +338,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
           .catch(() => undefined);
       }
-      // `cd` 跟随：文件面板用自己的 cwd 解析参数（支持 cd ~ / cd - / 相对路径）。
-      const match = /^cd(?:\s+(.*))?$/.exec(command.trim());
-      if (match) {
-        const arg = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
-        setFollow((current) => ({ nonce: current.nonce + 1, arg }));
-      }
-      // `cd` 跟踪：先记下"待定目标"，等 OSC 133 D 的真实退出码确认成功才
-      // 真正更新（cd 失败 → 目录没变）。
-      cwdTrackerRef.current?.noteCd(sessionId, command);
+      // `cd` 跟踪 + 跟随：目标路径一律由**终端自己的 cwd** 解析（resolveCd，
+      // 与 shell 同语义，支持 ~ / - / 相对路径），解析结果同时交给文件面板。
+      // 绝不能让面板拿命令原文配它自己的 cwd 去拼 —— 面板可能停在完全不同的
+      // 目录，拼出来的路径根本不存在（表现为 cd 后 100% 报 SFTP 路径不存在）。
+      // 先记下"待定目标"，等 OSC 133 D 的真实退出码确认成功才真正更新
+      // （cd 失败 → 目录没变）。
+      const cdTarget = cwdTrackerRef.current?.noteCd(sessionId, command) ?? null;
+      if (cdTarget) setFollow((current) => ({ nonce: current.nonce + 1, path: cdTarget }));
       // 目录结构被改动的命令 → 远程目录缓存立刻失效：给用户看一份"刚才还
       // 存在、现在已经没了"的候选，比不给补全更糟。
       if (MUTATES_DIRECTORY.test(command)) invalidateDirectoryCache(sessionId);
@@ -477,7 +465,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     const next = lineEditorRef.current?.current ?? "";
     programmaticDraftRef.current = next;
     setDraft(next);
-    filledDraftRef.current = null;
     updateSuggestAnchor();
     refocusTerminal();
   }, [t, updateSuggestAnchor, writeToShell]);
@@ -513,9 +500,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           const next = editor.current;
           programmaticDraftRef.current = next;
           setDraft(next);
-          // 填完主体后立刻回车 = 执行（与无参候选口径一致，缺参由 bash
-          // 如实报错）；补全参数后再回车同样直接执行。
-          filledDraftRef.current = next;
+          // 主体已填入、参数留给用户手填：回车照常发给 shell，但唯一提交入口
+          // 会再校验一次占位符 —— 没替换就拦下来并提示，绝不带着 `<路径>` 提交。
           updateSuggestAnchor();
           setParamHint(
             t("This command has parameters that must be filled manually; the command body has been filled in, please complete the rest"),
@@ -538,9 +524,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const next = editor.current;
       programmaticDraftRef.current = next;
       setDraft(next);
-      // 补完的行记下来：下一次回车若行内容没变，就是执行（见
-      // `filledDraftRef` 的说明）。
-      filledDraftRef.current = next;
       updateSuggestAnchor();
       return "filled";
     },
@@ -585,9 +568,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const next = editor.current;
       programmaticDraftRef.current = next;
       setDraft(next);
-      // 记下"这次补完的行"：下一次回车若行内容没变，就是执行（见下方
-      // `filledDraftRef` 与按键处理）。
-      filledDraftRef.current = next;
       updateSuggestAnchor();
       return "filled";
     },
@@ -603,9 +583,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const submitCurrentLine = useCallback(() => {
     const editor = lineEditorRef.current;
     const command = editor?.current.trim() ?? "";
-    // 提交后行清空，"上次填入的行"就作废了 —— 留着会让下一次补全被
-    // 误判成"执行"。
-    filledDraftRef.current = null;
     if (!command) return;
     // 与真实回车一致：`feed("\r")` 提交并清空行编辑器。
     editor?.feed("\r");
@@ -629,8 +606,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     (item: CompletionItem) => {
       const editor = lineEditorRef.current;
       if (!editor) return;
-      // 走的是"补完即执行"，行会清空 —— 作废"上次填入的行"。
-      filledDraftRef.current = null;
 
       if (item.hit) {
         const hit = item.hit;
@@ -774,7 +749,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (paramPickerRef) return false;
       if (event.isComposing || event.keyCode === 229) return false;
       // 统一补全状态机（见 terminal-suggest.ts）：
-      // collapsed（ghost 态）—— Tab/↓ 接受第一条并展开；Enter 执行第一条；
+      // collapsed（ghost 态）—— Tab/↓ 接受第一条并展开；**Enter 原样提交
+      // 用户敲的行**（提示不替用户改命令，用户裁决 2026-09-24）；
       // expanded（面板态）—— ↑↓ 移动、Enter 执行当前项、Tab/→ 填入当前项；
       // 任何状态 Esc = 清空整行。其余按键穿透给远程 shell。
       const { items, activeIndex, setActiveIndex } = suggestions;
@@ -823,16 +799,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             setSuggestExpanded(false);
           }
           // filled → 保持展开：`cd ops/` 后面板立刻提示下一层。
-          refocusTerminal();
-          return true;
-        }
-        case "run-first": {
-          // 收起态 Enter：直接执行 ghost 提示的第一条（参数/风险流程照走）。
-          event.preventDefault();
-          const first = items[0];
-          if (!first) return true;
-          runSuggestion(first);
-          setSuggestExpanded(false);
           refocusTerminal();
           return true;
         }
@@ -1061,7 +1027,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     fitRef,
     lineEditorRef,
     commandEntryRef,
-    filledDraftRef,
     boundaryParserRef,
     cwdTrackerRef,
     coordinatorRef: results.coordinatorRef,
@@ -1112,7 +1077,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     historyOpen,
     filesOpen,
     phase,
-    enhancedTerminal: results.enhanced,
     hasSelection: (terminalRef.current?.getSelection() ?? "") !== "",
     onCopySelection: () => {
       const text = terminalRef.current?.getSelection() ?? "";
@@ -1126,7 +1090,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     onToggleHistory: () => setHistoryOpen((v) => !v),
     onToggleFiles: () => setFilesOpen((v) => !v),
     onRefreshEnvironment: refreshEnvironmentCaches,
-    onToggleEnhanced: results.toggleEnhanced,
     onDisconnect: disconnect,
     onReconnect: () => void connect(),
   });
@@ -1142,15 +1105,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         phase={phase}
         historyOpen={historyOpen}
         filesOpen={filesOpen}
-        enhancedTerminal={results.enhanced}
-        fontId={fontId}
         onSplit={(direction) => splitPane(useWorkbenchStore.getState().focusedPaneId ?? "", direction)}
         onClear={() => terminalRef.current?.clear()}
         onToggleHistory={() => setHistoryOpen((v) => !v)}
         onToggleFiles={() => setFilesOpen((v) => !v)}
         onRefreshEnvironment={refreshEnvironmentCaches}
-        onToggleEnhanced={results.toggleEnhanced}
-        onFontChange={setFontId}
         onDisconnect={disconnect}
         onReconnect={() => void connect()}
       />
@@ -1257,8 +1216,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       </div>
 
       {/* 命令结果抽屉：终端内容原样保留，结果面板挂在下方。
-          未开启增强终端 / 命令不可捕获（交互式、读 stdin）→ 这里不渲染任何东西。 */}
-      {results.enhanced && results.results.length > 0 && !results.drawerClosed && (
+          命令不可捕获（交互式、读 stdin、无输出内建命令）→ 这里不渲染任何东西。 */}
+      {results.results.length > 0 && !results.drawerClosed && (
         <TerminalResultDrawer
           results={results.results}
           activeId={results.activeId}

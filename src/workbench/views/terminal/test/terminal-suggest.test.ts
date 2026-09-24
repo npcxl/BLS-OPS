@@ -128,8 +128,10 @@ describe("统一补全状态机（默认 ghost，Tab/↓ 才展开面板）", ()
     });
   });
 
-  it("collapsed：Enter = 直接执行第一条；无候选 = 穿透给 shell 执行原始命令", () => {
-    expect(resolveTerminalCompleteKey({ key: "Enter" }, collapsed)).toEqual({ type: "run-first" });
+  it("collapsed：Enter 永远穿透 —— 用户敲的是什么就执行什么", () => {
+    // 提示是建议，不是替用户改命令：有候选也绝不"回车跑第一条"。
+    // （用户裁决 2026-09-24：敲 `git pull` 回车却跑了第一条候选，得加空格才躲开。）
+    expect(resolveTerminalCompleteKey({ key: "Enter" }, collapsed)).toEqual({ type: "none" });
     expect(resolveTerminalCompleteKey({ key: "Enter" }, empty)).toEqual({ type: "none" });
   });
 

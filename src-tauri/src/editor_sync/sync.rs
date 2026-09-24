@@ -43,7 +43,10 @@ struct DownloadBudget {
 
 /// 单文件下载（文件模式）。
 async fn download_file(sftp: &SftpSession, remote_path: &str, local_path: &Path) -> Result<()> {
-    let mut remote = sftp.open(remote_path).await.map_err(sftp_error)?;
+    let mut remote = sftp
+        .open(remote_path)
+        .await
+        .map_err(|error| sftp_error(remote_path, error))?;
     let mut local = tokio::fs::File::create(local_path)
         .await
         .map_err(|error| anyhow!("创建本地副本失败：{error}"))?;
@@ -75,7 +78,11 @@ async fn download_tree(
             .await
             .map_err(|error| anyhow!("创建本地目录失败：{error}"))?;
 
-        for entry in sftp.read_dir(&remote_dir).await.map_err(sftp_error)? {
+        for entry in sftp
+            .read_dir(&remote_dir)
+            .await
+            .map_err(|error| sftp_error(&remote_dir, error))?
+        {
             let name = entry.file_name();
             let meta = entry.metadata();
             let child_remote = posix_join(&remote_dir, &name);
@@ -315,11 +322,14 @@ pub(crate) async fn open_sync_session(
 
     let session = ssh.get(session_id).await?;
     let sftp = session.sftp_client().await?;
-    let canonical = sftp.canonicalize(remote_path).await.map_err(sftp_error)?;
+    let canonical = sftp
+        .canonicalize(remote_path)
+        .await
+        .map_err(|error| sftp_error(remote_path, error))?;
     let meta = sftp
         .symlink_metadata(&canonical)
         .await
-        .map_err(sftp_error)?;
+        .map_err(|error| sftp_error(&canonical, error))?;
     let scope = match meta.file_type() {
         FileType::Dir => EditorSyncScope::Directory,
         FileType::Symlink => return Err(anyhow!("不支持同步符号链接")),

@@ -8,6 +8,11 @@ export default {
   Light: "浅色",
   Dark: "深色",
 
+  // -- 终端 --
+  Terminal: "终端",
+  "The font is shared by the terminal and the command output panel.":
+    "终端与命令输出面板共用同一套字体。",
+
   // -- 凭据 --
   Credentials: "凭据",
   "Add credential": "新增凭据",

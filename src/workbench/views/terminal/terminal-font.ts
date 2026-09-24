@@ -88,3 +88,59 @@ export function applyTerminalFont(id: string): string {
   root.style.setProperty("--font-command-output", stack);
   return stack;
 }
+
+// ── 共享状态（设置页改，终端跟着重排）─────────────────────────────────────
+
+const listeners = new Set<() => void>();
+
+/**
+ * 当前字体 id 的**内存副本**。
+ *
+ * `useSyncExternalStore` 的 `getSnapshot` 每次渲染都会被调用，必须返回稳定的
+ * 同一个值 —— 直接读 localStorage 会每次产生新字符串比较（且隐私模式下抛错）。
+ */
+let current: string | null = null;
+
+export function getTerminalFontId(): string {
+  if (current === null) current = readTerminalFontId();
+  return current;
+}
+
+export function subscribeTerminalFont(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+/**
+ * 设置字体的**唯一入口**：规范化 id → 持久化 → 应用到 CSS 变量 → 通知订阅者。
+ *
+ * 三件事必须一起做，否则会出现"存了但没应用"或"应用了但终端不知道要重排"
+ * 的中间态（xterm 的 fontFamily 是**创建时**读的，不重排就一直用旧字体）。
+ */
+export function setTerminalFontId(id: string): void {
+  const next = TERMINAL_FONTS.some((option) => option.id === id) ? id : DEFAULT_TERMINAL_FONT_ID;
+  current = next;
+  saveTerminalFontId(next);
+  applyTerminalFont(next);
+  emit();
+}
+
+/**
+ * 启动时应用一次 —— 终端还没打开、结果面板已经渲染的场景也要用上同一套栈。
+ * 顺带跟随其他窗口的改动（localStorage `storage` 事件）。
+ */
+export function initTerminalFont(): void {
+  applyTerminalFont(getTerminalFontId());
+  window.addEventListener("storage", (event) => {
+    if (event.key !== TERMINAL_FONT_KEY) return;
+    current = null;
+    applyTerminalFont(getTerminalFontId());
+    emit();
+  });
+}

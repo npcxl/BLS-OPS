@@ -315,3 +315,39 @@ describe("controlled pwd probe", () => {
     expect(CWD_PROBE_LINE).not.toContain("echo");
   });
 });
+
+/**
+ * 文件面板跟随 `cd` 用的就是这个返回值。**必须是绝对路径**：面板可能停在跟
+ * 终端完全不同的目录，让它自己拿命令原文配自己的 cwd 拼相对路径，会拼出一个
+ * 不存在的目录 —— 用户看到的是"cd 之后 100% 报 SFTP 路径不存在"。
+ */
+describe("noteCd exposes the resolved target for the file panel", () => {
+  it("resolves a relative argument against the terminal's own cwd", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setFromOsc7("s1", "/opt/bls-kox");
+    expect(tracker.noteCd("s1", "cd ../logs")).toBe("/opt/logs");
+    expect(tracker.noteCd("s1", "cd nginx")).toBe("/opt/bls-kox/nginx");
+    expect(tracker.noteCd("s1", "cd ..")).toBe("/opt");
+    expect(tracker.noteCd("s1", "cd /var/www")).toBe("/var/www");
+  });
+
+  it("resolves ~ and - like the shell would", () => {
+    const tracker = new RemoteCwdTracker();
+    tracker.setHome("s1", "/root");
+    expect(tracker.noteCd("s1", "cd ~/app")).toBe("/root/app");
+    expect(tracker.noteCd("s1", "cd")).toBe("/root");
+    tracker.setFromOsc7("s1", "/opt/a");
+    tracker.noteCd("s1", "cd /opt/b");
+    tracker.onCommandEnd("s1", 0);
+    expect(tracker.noteCd("s1", "cd -")).toBe("/opt/a");
+  });
+
+  it("returns null instead of guessing when it cannot resolve", () => {
+    const tracker = new RemoteCwdTracker();
+    // 不是 cd / 复合命令。
+    expect(tracker.noteCd("s1", "ls -la")).toBeNull();
+    expect(tracker.noteCd("s1", "cd /tmp && ls")).toBeNull();
+    // cwd 与家目录都不知道 → 解析不出来，绝不退回面板自己的目录。
+    expect(tracker.noteCd("s1", "cd ~/app")).toBeNull();
+  });
+});

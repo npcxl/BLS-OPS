@@ -304,13 +304,18 @@ export class RemoteCwdTracker {
    * 用户提交了一条命令：如果是 `cd`，记下待定目标（还没确认成功）。
    *
    * 复合命令（`cd /x && ls`）不算 —— 它的退出码不能代表 `cd` 成功。
+   *
+   * **返回解析出的绝对目标路径**（`null` = 不是 cd，或家目录/上一个目录未知
+   * 解析不出来）。这个返回值是文件面板跟随的唯一依据：只有终端知道 cwd，
+   * 面板自己拼相对路径会拼到别的目录去。
    */
-  noteCd(sessionId: string, command: string): void {
+  noteCd(sessionId: string, command: string): string | null {
     const arg = parseCdArgument(command);
-    if (arg === null) return;
+    if (arg === null) return null;
     const state = this.stateOf(sessionId);
     const target = resolveCd(state.path, arg, this.home(sessionId), state.previous);
     this.states.set(sessionId, { ...state, pending: target });
+    return target;
   }
 
   /**

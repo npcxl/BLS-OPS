@@ -32,16 +32,35 @@ use super::paths::{base_name, format_size_human, parent_of, posix_join, posix_no
 /// multi-GB file through the IPC layer by accident.
 pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Maps SFTP client errors onto user-facing messages, calling out permission
-/// problems explicitly so the UI can present them distinctly.
-pub(crate) fn sftp_error(error: russh_sftp::client::error::Error) -> anyhow::Error {
+/// Maps SFTP client errors onto user-facing messages.
+///
+/// 服务器把协议错误码的名字当错误说明返回（`No such file` /
+/// `Permission denied`），原样透给用户等于没说 —— 用户既不知道哪条路径，
+/// 也不知道该怎么办。这里按状态码翻成人话，并带上**出错的远程路径**
+/// （`path`）：报错时第一个要回答的问题永远是"哪个路径"。
+///
+/// 确实没有具体路径的调用（如关闭会话）传空串，消息里就不带路径段。
+pub(crate) fn sftp_error(path: &str, error: russh_sftp::client::error::Error) -> anyhow::Error {
     use russh_sftp::client::error::Error as SftpError;
+    let at = if path.is_empty() {
+        String::new()
+    } else {
+        format!("：{path}")
+    };
     match &error {
-        SftpError::Status(status) if status.status_code == SftpStatusCode::PermissionDenied => {
-            anyhow!("权限不足：无法访问该路径（{}）", status.error_message)
-        }
-        SftpError::Status(status) => anyhow!("SFTP 错误：{}", status.error_message),
-        _ => anyhow!("SFTP 错误：{error}"),
+        SftpError::Status(status) => match status.status_code {
+            SftpStatusCode::NoSuchFile => anyhow!("路径不存在或已被删除{at}"),
+            SftpStatusCode::PermissionDenied => anyhow!("权限不足，无法访问{at}"),
+            SftpStatusCode::OpUnsupported => anyhow!("服务器不支持该操作{at}"),
+            SftpStatusCode::NoConnection | SftpStatusCode::ConnectionLost => {
+                anyhow!("SFTP 连接已断开{at}")
+            }
+            SftpStatusCode::Failure => {
+                anyhow!("服务器拒绝了该操作{at}（{}）", status.error_message)
+            }
+            _ => anyhow!("SFTP 错误{at}：{}", status.error_message),
+        },
+        _ => anyhow!("SFTP 错误{at}：{error}"),
     }
 }
 
@@ -97,17 +116,28 @@ fn remove_recursive<'a>(
     path: &'a str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
-        let meta = sftp.symlink_metadata(path).await.map_err(sftp_error)?;
+        let meta = sftp
+            .symlink_metadata(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         if meta.file_type() != FileType::Dir {
-            sftp.remove_file(path).await.map_err(sftp_error)?;
+            sftp.remove_file(path)
+                .await
+                .map_err(|error| sftp_error(path, error))?;
             return Ok(());
         }
-        for entry in sftp.read_dir(path).await.map_err(sftp_error)? {
+        for entry in sftp
+            .read_dir(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?
+        {
             let child = posix_join(path, &entry.file_name());
             // Use lstat so a symlink inside the tree is unlinked, not followed.
             remove_recursive(sftp, &child).await?;
         }
-        sftp.remove_dir(path).await.map_err(sftp_error)?;
+        sftp.remove_dir(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         Ok(())
     })
 }
@@ -118,11 +148,20 @@ fn copy_recursive<'a>(
     to: &'a str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
-        let meta = sftp.symlink_metadata(from).await.map_err(sftp_error)?;
+        let meta = sftp
+            .symlink_metadata(from)
+            .await
+            .map_err(|error| sftp_error(from, error))?;
         match meta.file_type() {
             FileType::Dir => {
-                sftp.create_dir(to).await.map_err(sftp_error)?;
-                for entry in sftp.read_dir(from).await.map_err(sftp_error)? {
+                sftp.create_dir(to)
+                    .await
+                    .map_err(|error| sftp_error(to, error))?;
+                for entry in sftp
+                    .read_dir(from)
+                    .await
+                    .map_err(|error| sftp_error(from, error))?
+                {
                     let child_from = posix_join(from, &entry.file_name());
                     let child_to = posix_join(to, &entry.file_name());
                     copy_recursive(sftp, &child_from, &child_to).await?;
@@ -131,8 +170,14 @@ fn copy_recursive<'a>(
             }
             FileType::Symlink => Err(anyhow!("暂不支持复制符号链接：{from}")),
             _ => {
-                let mut source = sftp.open(from).await.map_err(sftp_error)?;
-                let mut target = sftp.create(to).await.map_err(sftp_error)?;
+                let mut source = sftp
+                    .open(from)
+                    .await
+                    .map_err(|error| sftp_error(from, error))?;
+                let mut target = sftp
+                    .create(to)
+                    .await
+                    .map_err(|error| sftp_error(to, error))?;
                 tokio::io::copy(&mut source, &mut target)
                     .await
                     .map_err(|error| anyhow!("复制 {from} 失败：{error}"))?;
@@ -188,7 +233,9 @@ async fn upload_walk_inner(
             // Overwrite-tolerant create: an existing dir makes CREATE fail, so
             // reuse it instead of erroring the whole upload.
             if sftp.symlink_metadata(&remote_path).await.is_err() {
-                sftp.create_dir(&remote_path).await.map_err(sftp_error)?;
+                sftp.create_dir(&remote_path)
+                    .await
+                    .map_err(|error| sftp_error(&remote_path, error))?;
             }
         }
         let mut uploaded = Vec::new();
@@ -213,7 +260,10 @@ async fn upload_walk_inner(
         let mut local = tokio::fs::File::open(current)
             .await
             .map_err(|error| anyhow!("打开本地文件 {} 失败：{error}", current.display()))?;
-        let mut remote = sftp.create(&remote_path).await.map_err(sftp_error)?;
+        let mut remote = sftp
+            .create(&remote_path)
+            .await
+            .map_err(|error| sftp_error(&remote_path, error))?;
         tokio::io::copy(&mut local, &mut remote)
             .await
             .map_err(|error| anyhow!("上传 {name} 失败：{error}"))?;
@@ -241,7 +291,10 @@ impl SshSessionManager {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
         // "." resolves against the login directory of the authenticated user.
-        let home = sftp.canonicalize(".").await.map_err(sftp_error)?;
+        let home = sftp
+            .canonicalize(".")
+            .await
+            .map_err(|error| sftp_error(".", error))?;
         let mut cwd = session.cwd.lock().await;
         if cwd.is_none() {
             *cwd = Some(home.clone());
@@ -280,13 +333,16 @@ impl SshSessionManager {
 
         // The server canonicalizes (resolving symlinks in the path), so the
         // returned path is always the real, absolute remote path.
-        let canonical = sftp.canonicalize(requested).await.map_err(sftp_error)?;
+        let canonical = sftp
+            .canonicalize(requested.as_str())
+            .await
+            .map_err(|error| sftp_error(&requested, error))?;
 
         let mut entries: Vec<RemoteFileEntry> = Vec::new();
         for (entry, size_missing) in sftp
             .read_dir(&canonical)
             .await
-            .map_err(sftp_error)?
+            .map_err(|error| sftp_error(&canonical, error))?
             .map(|entry| remote_entry(&canonical, entry))
         {
             // Some servers omit SIZE in readdir attrs (the client would then
@@ -319,7 +375,10 @@ impl SshSessionManager {
     pub async fn sftp_realpath(&self, session_id: &str, path: &str) -> Result<String> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        Ok(sftp.canonicalize(path).await.map_err(sftp_error)?)
+        Ok(sftp
+            .canonicalize(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?)
     }
 
     /// Stat for a single entry, with true lstat semantics: a symlink is
@@ -329,7 +388,10 @@ impl SshSessionManager {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
         let raw = posix_normalize(path);
-        let meta = sftp.symlink_metadata(&raw).await.map_err(sftp_error)?;
+        let meta = sftp
+            .symlink_metadata(&raw)
+            .await
+            .map_err(|error| sftp_error(&raw, error))?;
         let name = raw.rsplit('/').next().unwrap_or(&raw);
         Ok(build_entry(&raw, name, &meta))
     }
@@ -339,7 +401,8 @@ impl SshSessionManager {
         let session = self.get(session_id).await?;
         let mut guard = session.sftp.lock().await;
         if let Some(sftp) = guard.take() {
-            sftp.close().await.map_err(sftp_error)?;
+            // 关闭会话通道没有"目标路径"可报，传空串。
+            sftp.close().await.map_err(|error| sftp_error("", error))?;
         }
         Ok(())
     }
@@ -375,7 +438,9 @@ impl SshSessionManager {
         // symlink is the link — exactly the semantics we want.
         let source = posix_normalize(path);
         let target = posix_join(&parent_of(&source), new_name);
-        sftp.rename(&source, &target).await.map_err(sftp_error)?;
+        sftp.rename(&source, &target)
+            .await
+            .map_err(|error| sftp_error(&source, error))?;
         Ok(target)
     }
 
@@ -390,7 +455,10 @@ impl SshSessionManager {
             return Err(anyhow!("名称不能为空，且不能包含 /"));
         }
         let source = posix_normalize(path);
-        let source_meta = sftp.symlink_metadata(&source).await.map_err(sftp_error)?;
+        let source_meta = sftp
+            .symlink_metadata(&source)
+            .await
+            .map_err(|error| sftp_error(&source, error))?;
         if source_meta.file_type() == FileType::Symlink {
             return Err(anyhow!("暂不支持复制符号链接：{source}"));
         }
@@ -407,7 +475,9 @@ impl SshSessionManager {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
         let target = posix_normalize(path);
-        sftp.create_dir(&target).await.map_err(sftp_error)?;
+        sftp.create_dir(&target)
+            .await
+            .map_err(|error| sftp_error(&target, error))?;
         Ok(target)
     }
 
@@ -418,7 +488,10 @@ impl SshSessionManager {
         if sftp.symlink_metadata(path).await.is_ok() {
             return Err(anyhow!("文件已存在"));
         }
-        let mut file = sftp.create(path).await.map_err(sftp_error)?;
+        let mut file = sftp
+            .create(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         file.shutdown()
             .await
             .map_err(|error| anyhow!("创建文件失败：{error}"))?;
@@ -438,11 +511,14 @@ impl SshSessionManager {
     ) -> Result<RemoteFileContent> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
+        let canonical = sftp
+            .canonicalize(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         let meta = sftp
             .symlink_metadata(&canonical)
             .await
-            .map_err(sftp_error)?;
+            .map_err(|error| sftp_error(&canonical, error))?;
         if meta.file_type() == FileType::Dir {
             return Err(anyhow!("这是一个文件夹，无法作为文本打开"));
         }
@@ -454,7 +530,10 @@ impl SshSessionManager {
             ));
         }
 
-        let mut file = sftp.open(&canonical).await.map_err(sftp_error)?;
+        let mut file = sftp
+            .open(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
         let mut bytes = Vec::with_capacity(size as usize);
         tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
             .await
@@ -478,8 +557,14 @@ impl SshSessionManager {
     pub async fn sftp_write_file(&self, session_id: &str, path: &str, content: &str) -> Result<()> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
-        let mut file = sftp.create(&canonical).await.map_err(sftp_error)?;
+        let canonical = sftp
+            .canonicalize(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
+        let mut file = sftp
+            .create(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
         tokio::io::AsyncWriteExt::write_all(&mut file, content.as_bytes())
             .await
             .map_err(|error| anyhow!("写入文件失败：{error}"))?;
@@ -504,11 +589,14 @@ impl SshSessionManager {
     ) -> Result<RemoteBinaryContent> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
+        let canonical = sftp
+            .canonicalize(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         let meta = sftp
             .symlink_metadata(&canonical)
             .await
-            .map_err(sftp_error)?;
+            .map_err(|error| sftp_error(&canonical, error))?;
         if meta.file_type() == FileType::Dir {
             return Err(anyhow!("这是一个文件夹，无法预览"));
         }
@@ -516,7 +604,10 @@ impl SshSessionManager {
         let budget = max_len.clamp(1, MAX_PREVIEW_BYTES);
         let take = (size.min(budget)) as usize;
 
-        let mut file = sftp.open(&canonical).await.map_err(sftp_error)?;
+        let mut file = sftp
+            .open(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
         let mut bytes = Vec::with_capacity(take);
         // `take` bounds the read: the remote file is never pulled in whole just
         // to be thrown away when it is over budget.
@@ -546,16 +637,22 @@ impl SshSessionManager {
     ) -> Result<u64> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let canonical = sftp.canonicalize(path).await.map_err(sftp_error)?;
+        let canonical = sftp
+            .canonicalize(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?;
         let meta = sftp
             .symlink_metadata(&canonical)
             .await
-            .map_err(sftp_error)?;
+            .map_err(|error| sftp_error(&canonical, error))?;
         if meta.file_type() == FileType::Dir {
             return Err(anyhow!("暂不支持下载整个文件夹"));
         }
 
-        let mut remote = sftp.open(&canonical).await.map_err(sftp_error)?;
+        let mut remote = sftp
+            .open(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
         let mut local = tokio::fs::File::create(local_path)
             .await
             .map_err(|error| anyhow!("无法创建本地文件：{error}"))?;
@@ -583,7 +680,10 @@ impl SshSessionManager {
     ) -> Result<Vec<RemoteFileEntry>> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let base = sftp.canonicalize(remote_dir).await.map_err(sftp_error)?;
+        let base = sftp
+            .canonicalize(remote_dir)
+            .await
+            .map_err(|error| sftp_error(remote_dir, error))?;
 
         let mut uploaded = Vec::new();
         for raw in local_paths {

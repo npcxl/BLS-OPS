@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
 import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
+import type { FilePanelFollow } from "@/workbench/views/remote-file/utils";
 import type {
   ConfirmedProject,
   ProjectCandidate,
@@ -30,7 +31,7 @@ import { TabBasicInfo } from "./tabs/TabBasicInfo";
 import { findDuplicateIds, partitionInstances } from "./classify";
 
 /** 项目视图里没有配对的终端，文件面板不需要跟随 `cd`。引用必须稳定。 */
-const NO_FOLLOW = { nonce: 0, arg: "" };
+const NO_FOLLOW: FilePanelFollow = { nonce: 0, path: "" };
 
 type TabId = "applications" | "needs_confirm" | "runtime" | "infrastructure" | "basic_info";
 

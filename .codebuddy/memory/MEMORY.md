@@ -9,8 +9,9 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - 密码/私钥永不回传前端：只提交 credential_id；Host Key 必须人工确认（首连+指纹变更弹窗）。
 - 破坏性操作统一 `components/ui/confirm-dialog.tsx`（禁 window.confirm）；Nginx 先 nginx -t 再 reload。
 - 输出适配铁律：raw 永久保留、空输出有效不回落、解析失败必须可见。远程命令字符串只能在 `safe.rs` Capability 枚举拼；校验在网络 I/O 前；前端只传结构化标识。
+- **SFTP 报错一律经 `sftp_error(path, error)` 翻人话**：协议错误码名（`No such file`/`Permission denied`）是给程序员看的，**禁原样透给用户**；必须带出错路径（确实没有路径的调用传 `""`，消息里省略路径段）。改签名=编译器强制全量更新调用点，别退回单参版本。
 - **交互铁律**：浮层/横幅不得遮挡命令行与输入区；"不能自动填"降级为填入+提示，绝不让回车吞成死胡同（占位符三态 filled|noop|blocked，`hasUnresolvedPlaceholder` 是 SSH 前最后拦截）。
-- **统一补全状态机（2026-09-08 终端+命令中心同一套，勿回退）**：默认只有行内 ghost（灰字+Tab 徽标，pointer-events-none，绝不弹面板）；Tab/↓=接受第一条并展开（面板唯一出现方式）；collapsed Enter=直接执行第一条（参数/风险流程照走）；expanded：↑↓ 移动、Enter 执行当前项、Tab/→ 填入（filled 保持展开→多级目录）；任何状态 Esc=清空整行；展开后非程序性 draft 变化→回 collapsed。核心 `terminal-suggest.ts`+`terminal-ghost.tsx`；**程序性写行必须先设 `programmaticDraftRef` 再 setDraft**。命令中心 collapsed Enter 固定 hits[0]（expanded 改字后 activeIndex 残留不可当执行目标）。cd 补全：裸 cd 由 Provider 接管（insertText 带前导空格，不能用 parsed.prefix 当路径）；只提示 directory+symlink；集成测试 `terminal/test/terminal-cd-completion.integration.test.tsx`。
+- **统一补全状态机（2026-09-08 终端+命令中心同一套，勿回退）**：默认只有行内 ghost（灰字+Tab 徽标，pointer-events-none，绝不弹面板）；Tab/↓=接受第一条并展开（面板唯一出现方式）；**collapsed Enter=原样提交用户输入（2026-09-24 修订，勿回退）**——补全是建议不是强制，绝不许"回车跑第一条候选"（`git pull` 曾被换成含 `<路径>` 的模板并弹"请自行补全"，用户得加空格才躲开）；expanded：↑↓ 移动、Enter 执行当前项、Tab/→ 填入（filled 保持展开→多级目录）；任何状态 Esc=清空整行；展开后非程序性 draft 变化→回 collapsed。核心 `terminal-suggest.ts`+`terminal-ghost.tsx`；**程序性写行必须先设 `programmaticDraftRef` 再 setDraft**。命令中心是**启动器**、collapsed Enter 固定 hits[0]（与终端语义不同，别一起改；expanded 改字后 activeIndex 残留不可当执行目标）。cd 补全：裸 cd 由 Provider 接管（insertText 带前导空格，不能用 parsed.prefix 当路径）；只提示 directory+symlink；集成测试 `terminal/test/terminal-cd-completion.integration.test.tsx`。
 
 ## 模块化分层（skill: bls-ops-modular）
 - 新 Tauri 命令 → `src-tauri/src/commands/<域>.rs`；新监控指标 → `monitor/`（model→parse 纯函数→collect）。
@@ -50,8 +51,10 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - cwd 五源：OSC7 > 成功 cd（exitCode 0）> 受控 pwd 探测（只在空命令行发）> 登录目录；cd 后无任何标记→uncertain（path 保留旧值+needsProbe，下次补全前探测刷新）；cd 失败是确定态。绝不用提示符猜 cwd。
 - 焦点归还 refocusTerminal() 只在 activeElement≠textarea 时 focus；每个浮层独立开关，禁合并布尔量。缓存：目录 10s/Docker 15s/服务 20s/环境 60s；写命令后目录缓存失效。
 - 结果链路：TerminalView→TerminalCommandCoordinator（render rendezvous，缺 session.done 守卫会提前 emit）→TerminalResultDrawer→TerminalSnapshotView（400ms 静默 fallback 标 boundaryReliable=false）。抽屉高度可拖拽（≤40px 自动收起不持久化；收起态把手不渲染只能点按钮恢复——用户裁决）。
+- **文件面板跟随 `cd`：终端解析、面板只跳（勿回退）**。唯一依据是 `RemoteCwdTracker.noteCd()` 返回的**绝对路径**（`FilePanelFollow.path`）。禁让面板拿命令原文配自己的 cwd 拼相对路径——面板可被手动导航到与终端不同的目录，拼出来是不存在的路径，表现为"cd 之后 100% 报 SFTP 路径不存在"（绝对路径反而不受影响，容易误判）。
 - 手填参数：canAutoFill=false 占位符→commandBody() 填命令主体+paramHint 横幅钉终端顶部（实底、pointer-events-none、无关闭按钮、右侧 5s 倒计时、execute() 清掉），返回 noop。
-- 增强终端唯一开关 bls-ops.terminal.enhanced（默认开，仅用户主动关过存 "0" 才关）；字体 bls-ops.terminal.font。
+- **增强终端开关已删除（2026-09-24，勿加回）**：是否捕获只由命令本身决定（`command-plan.ts`：交互式 / 读 stdin / 无输出内建命令不捕获），没有全局开关、没有 `bls-ops.terminal.enhanced`（旧键成死键）。字体**只能从设置页改**：共享状态在 `terminal-font.ts`（`setTerminalFontId` = 持久化+CSS变量+emit 一次做完）+ `hooks/use-terminal-font.ts`，`initTerminalFont()` 在 main.tsx 启动应用；工具栏不再有字体选择；`bls-ops.terminal.font` 键不变。
+- **终端 ANSI 色必须"前景/背景两用"**：禁把 App 的正文色令牌当 ANSI 色（浅色主题尤其——GitHub Primer 那种深绿当背景就是"暗底压暗字"）。亮色用 VS Code Light+ 标准值，背景/前景/光标才用 App 令牌；`theme.ts` 由 `test/theme.test.ts` 兜底（16 槽位齐全、无 ANSI 色等于背景色）。
 - TerminalView 已拆：terminal-preferences/phase、use-terminal-session、use-ssh-keepalive、use-terminal-search、use-terminal-results（唯一提交入口 execute）、terminal-toolbar、terminal-error-banner、use-terminal-menu（右键=工具栏镜像）。
 - 命令块悬浮复制（2026-09-08）：`terminal-command-blocks.ts`（块=start/end 两枚 xterm IMarker，存 marker 不存行号，回滚 trim 自动跟随）+ use-terminal-results 接线（execute 时 beginBlock、onResult 封口）+ `TerminalCommandBlocks.tsx` 悬浮层（pointer-events-none 只按钮可点；alternate screen 不渲染）。切片挤出必须先算 `overflow=length-max` 再切（负索引截尾丢块 bug）。
 

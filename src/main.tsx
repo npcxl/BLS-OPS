@@ -1,11 +1,14 @@
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { initTheme } from "@/hooks/use-theme";
+import { initTerminalFont } from "@/workbench/views/terminal/terminal-font";
 import "./styles/globals.css";
 // i18n 必须在任何组件渲染前初始化（副作用导入，同步 init，见 src/i18n/index.ts）。
 import "@/i18n";
 
 initTheme();
+// 终端字体同样是 CSS 变量：启动就应用，终端还没打开时结果面板也不跑偏。
+initTerminalFont();
 
 /**
  * Disable the WebView's built-in context menu (Reload / Inspect / Save as…).

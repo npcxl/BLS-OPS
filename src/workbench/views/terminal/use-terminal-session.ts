@@ -46,7 +46,6 @@ export interface TerminalSessionHost {
   fitRef: RefObject<FitAddon | null>;
   lineEditorRef: RefObject<LineEditor | null>;
   commandEntryRef: RefObject<TerminalCommandEntry>;
-  filledDraftRef: RefObject<string | null>;
   boundaryParserRef: RefObject<CommandBoundaryParser | null>;
   cwdTrackerRef: RefObject<RemoteCwdTracker | null>;
   coordinatorRef: RefObject<TerminalCommandCoordinator | null>;
@@ -136,9 +135,6 @@ export function useTerminalSession(host: TerminalSessionHost): void {
         void opsApi.sshInput(sessionId, data).catch(() => undefined);
         return;
       }
-      // 用户真的按了回车（行已提交）→ "上次填入的行"作废，避免下一次
-      // 补全被误判成执行。
-      if (commands.length > 0) host.filledDraftRef.current = null;
       // 粘贴多条命令时每条都记历史，但只捕获最后一条（它才会真正产生结果）。
       for (const command of commands) host.commandEntryRef.current.note(command);
       const submitted = commands[commands.length - 1];

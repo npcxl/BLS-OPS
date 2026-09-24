@@ -109,7 +109,7 @@ function bumpTauriConf(source, version) {
   const next = source.replace(/("version"\s*:\s*")[^"]+(")/, `$1${version}$2`);
   if (next === source) fail("could not find the top-level \"version\" in tauri.conf.json");
   return next;
-}
+} 
 
 const pkgSource = read("package.json");
 const edits = [

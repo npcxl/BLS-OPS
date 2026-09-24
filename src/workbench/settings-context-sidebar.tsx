@@ -19,6 +19,7 @@ import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
 import { EmptyRow, Group, ListGroup } from "./settings-parts";
+import { TerminalSettingsGroup } from "./settings-terminal";
 import { cn } from "@/lib/cn";
 
 /**
@@ -186,6 +187,8 @@ export function SettingsContextSidebar() {
           </div>
         </ListGroup>
       </Group>
+
+      <TerminalSettingsGroup />
 
       <Group
         title={t("Credentials")}

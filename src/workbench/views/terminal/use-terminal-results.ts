@@ -6,7 +6,6 @@ import type { SuggestedRisk } from "@/api/types/environment";
 import { hasUnresolvedPlaceholder } from "@/workbench/views/command-center/complete";
 import { extractTerminalSnapshot } from "./extract-terminal-snapshot";
 import { planCommandSubmission, type CommandSource, type SubmitMode } from "./command-plan";
-import { readEnhancedTerminal, saveEnhancedTerminal } from "./terminal-preferences";
 import type { CommandBoundaryParser } from "./command-boundary";
 import {
   beginBlock,
@@ -36,7 +35,6 @@ export interface TerminalResultsHost {
  * 从 `TerminalView` 拆出来是为了让"结果怎么产生、怎么关闭、怎么重运行"
  * 有一个完整归属：
  *
- * - 增强终端开关（关着 → 不注入标记、不产出结果、撤掉已有结果）；
  * - 捕获起点 marker 与 xterm 快照的消费；
  * - 结果 Tab 管理与按**真实风险**门控的重运行。
  *
@@ -53,21 +51,6 @@ export interface TerminalResultsHost {
 export function useTerminalResults(host: TerminalResultsHost) {
   const { sessionId, terminalRef, boundaryParserRef, noteExecutedCommand, setParamHint } = host;
   const { t } = useTranslation();
-
-  /**
-   * **增强终端开关**（默认开）：只有打开时命令才会注入受控标记、捕获输出并
-   * 生成结果面板；关着时终端就是纯终端 —— 不注入任何标记、不产生任何结果
-   * Tab。默认关会让新用户看不到任何结果 Tab / JSON Tab（表现为"功能写了但
-   * 界面没反应"），所以只有用户**主动关过**才保持关闭
-   * （读写细节见 `terminal-preferences.ts`）。
-   */
-  const [enhanced, setEnhanced] = useState<boolean>(readEnhancedTerminal);
-  /** 协调器只创建一次，onResult / 提交决策都要读到**当前**开关值。 */
-  const enhancedRef = useRef(enhanced);
-  enhancedRef.current = enhanced;
-  useEffect(() => {
-    saveEnhancedTerminal(enhanced);
-  }, [enhanced]);
 
   /**
    * 捕获命令在 xterm 缓冲里的**起始行**（提交时注册一次）。
@@ -142,8 +125,6 @@ export function useTerminalResults(host: TerminalResultsHost) {
     coordinatorRef.current = new TerminalCommandCoordinator({
       match: (text) => opsApi.commandMatchText(text),
       onResult: (result) => {
-        // 增强终端关着时不产出任何结果面板（含飞行中捕获的迟到结果）。
-        if (!enhancedRef.current) return;
         // 命令块封口：此刻 D 标记后的输出已写完渲染、提示符还没回写，
         // 在当前光标行注册终点 marker 正好停在输出最后一行。
         const instance = terminalRef.current;
@@ -223,8 +204,8 @@ export function useTerminalResults(host: TerminalResultsHost) {
       setParamHint(null);
       const mode: SubmitMode =
         options?.mode ?? (options?.prefix === undefined ? "full" : "line-ready");
-      // 增强终端关着 → 不注入受控标记、不捕获输出（命令照常发往 shell）。
-      const plan = planCommandSubmission(trimmed, mode, { capture: enhancedRef.current });
+      // 要不要捕获由命令本身决定（交互式 / 读 stdin / 无输出内建命令不捕获）。
+      const plan = planCommandSubmission(trimmed, mode);
       coordinatorRef.current?.submit(trimmed, source, plan);
       boundaryParserRef.current?.expect(plan.markers);
       // 捕获起点：当前光标行 = 命令回显所在行。一次提交只注册一个 marker，
@@ -303,29 +284,7 @@ export function useTerminalResults(host: TerminalResultsHost) {
     setDrawerClosed(true);
   };
 
-  /**
-   * **就一个开关**：开 → 命令结果面板随结果自动出现；关 → 纯终端，什么都没有
-   * （结果面板、已存结果全部撤掉）。面板自己的 × 只是临时收起，下一条命令
-   * 的结果会重新展开它 —— 不再需要第二个"显示/隐藏结果"按钮。
-   */
-  const toggleEnhanced = useCallback(() => {
-    const next = !enhancedRef.current;
-    setEnhanced(next);
-    if (!next) {
-      // 关掉 = 回到纯终端：已有结果面板全部撤掉，飞行中的捕获也会被丢弃。
-      setResults([]);
-      setActiveId(null);
-      setDrawerClosed(true);
-      clearCommandBlocks();
-    } else {
-      // 重新打开：面板跟着新结果出来（之前只是被 × 收起）。
-      setDrawerClosed(false);
-    }
-  }, [clearCommandBlocks]);
-
   return {
-    enhanced,
-    toggleEnhanced,
     results,
     commandBlocks,
     activeId,

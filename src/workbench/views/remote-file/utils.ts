@@ -10,18 +10,6 @@ export function parentOf(path: string): string {
   return path.slice(0, cut);
 }
 
-/** Lexically joins + resolves `.` / `..` (used for `cd` following). */
-export function joinPath(base: string, target: string): string {
-  const raw = target.startsWith("/") ? target : `${base}/${target}`;
-  const parts: string[] = [];
-  for (const component of raw.split("/")) {
-    if (component === "" || component === ".") continue;
-    if (component === "..") parts.pop();
-    else parts.push(component);
-  }
-  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
-}
-
 /** 目录大小状态 → 英文 key（渲染处统一 `i18n.t`，key 与语言包逐字一致）。 */
 export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
   pending: "Queued",
@@ -99,8 +87,13 @@ export type PanelStatus =
 
 export interface FilePanelFollow {
   nonce: number;
-  /** Raw argument of the `cd` command: "", "~", "-", "..", "/x", "dir". */
-  arg: string;
+  /**
+   * **终端已经解析好的绝对目标路径**（`RemoteCwdTracker.noteCd` 的返回值）。
+   *
+   * 刻意不是命令原文：文件面板可以停在跟终端完全不同的目录，让它拿原文配
+   * 自己的 cwd 拼相对路径，会算出一个根本不存在的目录（100% 报错）。
+   */
+  path: string;
 }
 
 /** Name prompt for the create/rename dialogs (replaces window.prompt). */

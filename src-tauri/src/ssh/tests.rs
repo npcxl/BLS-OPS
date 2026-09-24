@@ -7,12 +7,14 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use anyhow::Result;
+use russh_sftp::client::error::Error as SftpError;
+use russh_sftp::protocol::{Status, StatusCode};
 
 use super::paths::{natural_cmp, posix_join, posix_normalize};
 use super::session::timed;
 use super::{
-    evaluate_host_key, parse_ssh_target, ConnectOutcome, ConnectTarget, CredentialSecrets,
-    Endpoint, HostKeyInfo, HostKeyVerdict,
+    evaluate_host_key, parse_ssh_target, sftp_error, ConnectOutcome, ConnectTarget,
+    CredentialSecrets, Endpoint, HostKeyInfo, HostKeyVerdict,
 };
 
 fn key(fingerprint: &str) -> HostKeyInfo {
@@ -315,4 +317,52 @@ fn natural_order_handles_cjk_and_spaces() {
 fn natural_order_mixed_digit_text_chunks() {
     assert_eq!(natural_cmp("2.txt", "a.txt"), Ordering::Less);
     assert_eq!(natural_cmp("10", "9a"), Ordering::Greater);
+}
+
+// -- SFTP error messages ---------------------------------------------------
+
+/// 服务器返回的错误说明就是协议错误码的名字（`No such file`），原样透给用户
+/// 等于没说 —— 这些用例锁住"翻成人话 + 带上出错的路径"。
+fn sftp_status(code: StatusCode, message: &str) -> SftpError {
+    SftpError::Status(Status {
+        id: 1,
+        status_code: code,
+        error_message: message.to_string(),
+        language_tag: "en-US".to_string(),
+    })
+}
+
+#[test]
+fn sftp_error_translates_a_missing_path() {
+    let error = sftp_error(
+        "/opt/bls-kox/missing",
+        sftp_status(StatusCode::NoSuchFile, "No such file"),
+    );
+    assert_eq!(
+        error.to_string(),
+        "路径不存在或已被删除：/opt/bls-kox/missing"
+    );
+}
+
+#[test]
+fn sftp_error_translates_permission_denied() {
+    let error = sftp_error(
+        "/root",
+        sftp_status(StatusCode::PermissionDenied, "Permission denied"),
+    );
+    assert_eq!(error.to_string(), "权限不足，无法访问：/root");
+}
+
+/// 没有具体路径的调用（关闭会话通道）不该在消息里留下空的路径段。
+#[test]
+fn sftp_error_without_a_path_omits_the_path_segment() {
+    let error = sftp_error("", sftp_status(StatusCode::NoSuchFile, "No such file"));
+    assert_eq!(error.to_string(), "路径不存在或已被删除");
+}
+
+/// 没有专门翻译的状态码仍要带上路径与服务器原文 —— 宁可啰嗦也别丢信息。
+#[test]
+fn sftp_error_keeps_the_server_message_for_unmapped_codes() {
+    let error = sftp_error("/tmp/x", sftp_status(StatusCode::BadMessage, "Bad message"));
+    assert_eq!(error.to_string(), "SFTP 错误：/tmp/x：Bad message");
 }

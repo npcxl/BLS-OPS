@@ -263,10 +263,11 @@ export function RemoteFilePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, sessionId]);
 
-  // Follow `cd` typed in the terminal: the terminal already resolved the
-  // argument into an absolute path (`~`, `-`, `..` and relative forms
-  // included), so all we do here is jump. Nonce 0 is the initial state, not a
-  // command — reacting to it would reload the home listing a second time.
+  // Follow the terminal's directory: the terminal pushes a **confirmed
+  // absolute path** whenever the working directory really changed (the shell
+  // reported a new cwd via OSC 7, or a `cd` exited 0) — all we do here is
+  // jump. Nonce 0 is the initial state, not a change — reacting to it would
+  // reload the initial listing a second time.
   const followNonce = follow.nonce;
   const followPath = follow.path;
   useEffect(() => {

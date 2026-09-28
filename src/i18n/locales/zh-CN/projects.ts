@@ -115,4 +115,78 @@ export default {
   "Deploy files": "部署文件",
   "(none)": "（无）",
   "All candidates are confirmed or ignored.": "所有候选都已确认或忽略。",
+
+  // ───────────────────────────────────────────────────────────────────────
+  // 以下这批 key **不写在 `t("...")` 里**，而是存在模块级常量中
+  // （`labelKey: "..."` / `Record<枚举, string>`），渲染处才 `t(...)`。
+  // 正因如此它们绕过了"正则扫 t(\"...\")"的复查方式，长期漏翻 —— 新增这类
+  // 常量时必须手工补语言文件，或用 `labelKey:` 正则单独扫一遍。
+  // ───────────────────────────────────────────────────────────────────────
+
+  // -- 项目视图 Tab（ProjectView TABS）--
+  "App services": "应用服务",
+  "Needs review": "待确认",
+  Infrastructure: "基础设施",
+  "Basic info": "基本信息",
+
+  // -- 应用服务 Tab 筛选（TabRuntime FILTERS）--
+  "All apps": "全部应用",
+  "Linked to projects": "已关联项目",
+  Unlinked: "未关联",
+
+  // -- 候选卡状态 / 跨扫描状态（CandidateCard STATUS_META / SCAN_STATE_META）--
+  Confirmed: "已确认",
+  Ignored: "已忽略",
+  "High confidence": "高可信",
+  "Possible directory": "可能目录",
+  "Running service": "运行中的服务",
+  "Not a project": "非项目",
+  "Found this scan": "本次扫描发现",
+  "Server unreachable": "服务器不可达",
+
+  // -- 服务分组徽标（badges.tsx GROUP_TONE）--
+  "Business app": "业务应用",
+  Cache: "缓存",
+  "Message queue": "消息队列",
+  "Search engine": "搜索引擎",
+  Gateway: "网关",
+  "Object storage": "对象存储",
+  "Config & coordination": "配置与协调",
+  Observability: "可观测性",
+  "DevOps platform": "DevOps 平台",
+  "Container infrastructure": "容器基础设施",
+  "Security & identity": "安全与身份",
+  "AI runtime": "AI 运行时",
+
+  // -- 基础设施分组（classify.ts INFRA_CATEGORY_LABELS）--
+  "Messaging & streams": "消息与流",
+  "Search & indexing": "搜索与索引",
+  "Gateway & proxy": "网关与代理",
+  DevOps: "DevOps",
+  "Container platform": "容器平台",
+  Other: "其他",
+
+  // -- 角色 / 归属 / 置信度标签（classify.ts）--
+  "System components": "系统组件",
+  Frontend: "前端",
+  Backend: "后端",
+  Worker: "工作进程",
+  "Scheduled job": "定时任务",
+  "AI inference": "AI 推理",
+  "Role unknown": "角色未知",
+  Shared: "共享",
+  "Project-scoped": "项目专属",
+  "Ownership unknown": "归属未知",
+  "Confidence: high": "置信度：高",
+  "Confidence: medium": "置信度：中",
+  "Confidence: low": "置信度：低",
+
+  // -- 运行环境徽标 / 端口提示（badges.tsx）--
+  "Host machine": "宿主机",
+  "Docker container": "Docker 容器",
+  "Common app port": "常用应用端口",
+  "RabbitMQ admin": "RabbitMQ 管理台",
+  "No listening ports": "无监听端口",
+  "No exposed ports": "未暴露端口",
+  "systemd unit": "unit 文件",
 } as const;

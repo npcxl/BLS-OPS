@@ -115,4 +115,77 @@ export default {
   "Deploy files": "部署檔案",
   "(none)": "（無）",
   "All candidates are confirmed or ignored.": "所有候選都已確認或忽略。",
+
+  // ───────────────────────────────────────────────────────────────────────
+  // 以下這批 key 存在**模組層級常數**裡（`labelKey: "..."` /
+  // `Record<列舉, string>`），渲染處才 `t(...)` —— 因此繞過了
+  // 「正則掃 t(\"...\")」的複查方式，長期漏翻。
+  // ───────────────────────────────────────────────────────────────────────
+
+  // -- 專案檢視 Tab（ProjectView TABS）--
+  "App services": "應用服務",
+  "Needs review": "待確認",
+  Infrastructure: "基礎設施",
+  "Basic info": "基本資訊",
+
+  // -- 應用服務 Tab 篩選（TabRuntime FILTERS）--
+  "All apps": "全部應用",
+  "Linked to projects": "已關聯專案",
+  Unlinked: "未關聯",
+
+  // -- 候選卡狀態 / 跨掃描狀態（CandidateCard）--
+  Confirmed: "已確認",
+  Ignored: "已忽略",
+  "High confidence": "高可信",
+  "Possible directory": "可能目錄",
+  "Running service": "執行中的服務",
+  "Not a project": "非專案",
+  "Found this scan": "本次掃描發現",
+  "Server unreachable": "伺服器不可達",
+
+  // -- 服務分組徽標（badges.tsx GROUP_TONE）--
+  "Business app": "業務應用",
+  Cache: "快取",
+  "Message queue": "訊息佇列",
+  "Search engine": "搜尋引擎",
+  Gateway: "閘道",
+  "Object storage": "物件儲存",
+  "Config & coordination": "設定與協調",
+  Observability: "可觀測性",
+  "DevOps platform": "DevOps 平台",
+  "Container infrastructure": "容器基礎設施",
+  "Security & identity": "安全與身分",
+  "AI runtime": "AI 執行環境",
+
+  // -- 基礎設施分組（classify.ts INFRA_CATEGORY_LABELS）--
+  "Messaging & streams": "訊息與串流",
+  "Search & indexing": "搜尋與索引",
+  "Gateway & proxy": "閘道與代理",
+  DevOps: "DevOps",
+  "Container platform": "容器平台",
+  Other: "其他",
+
+  // -- 角色 / 歸屬 / 信心度標籤（classify.ts）--
+  "System components": "系統元件",
+  Frontend: "前端",
+  Backend: "後端",
+  Worker: "工作程序",
+  "Scheduled job": "排程工作",
+  "AI inference": "AI 推論",
+  "Role unknown": "角色未知",
+  Shared: "共享",
+  "Project-scoped": "專案專屬",
+  "Ownership unknown": "歸屬未知",
+  "Confidence: high": "信心度：高",
+  "Confidence: medium": "信心度：中",
+  "Confidence: low": "信心度：低",
+
+  // -- 執行環境徽標 / 埠提示（badges.tsx）--
+  "Host machine": "主機",
+  "Docker container": "Docker 容器",
+  "Common app port": "常用應用埠",
+  "RabbitMQ admin": "RabbitMQ 管理台",
+  "No listening ports": "無監聽埠",
+  "No exposed ports": "未暴露埠",
+  "systemd unit": "unit 檔案",
 } as const;

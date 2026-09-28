@@ -82,18 +82,19 @@ describe("TerminalSettingsGroup", () => {
     expect(window.localStorage.getItem(TERMINAL_FONT_KEY)).toBe("consolas");
   });
 
-  it("提示符精简开关：默认关，打开后落到存储（下次连接生效）", () => {
+  it("提示符精简开关：默认开，关掉后落到存储（下次连接生效）", () => {
     act(() => {
       root.render(<TerminalSettingsGroup />);
     });
     const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]');
     expect(toggle).not.toBeNull();
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    // 默认开：连上就该是短提示符，不该让用户先去设置里找开关。
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
 
     act(() => {
       toggle?.click();
     });
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
-    expect(window.localStorage.getItem(COMPACT_PROMPT_KEY)).toBe("1");
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(window.localStorage.getItem(COMPACT_PROMPT_KEY)).toBe("0");
   });
 });

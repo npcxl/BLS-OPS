@@ -226,14 +226,28 @@ export const CWD_PROBE_TIMEOUT_MS = 2500;
 
 // -- 追踪器 ----------------------------------------------------------------
 
+/** 一次 OSC 7 上报的结果（见 `feedOutput`）。 */
+export interface CwdReport {
+  /** 本次上报的目录 —— 同步到 UI 状态用；没上报 → null。 */
+  path: string | null;
+  /**
+   * 权威 cwd **发生变化**时的新目录 —— **文件面板跟随的唯一依据**。
+   *
+   * `null` = 没上报 / 与已知值相同 / 此前还不知道（连接后第一次上报不算"变化"，
+   * 否则会和面板挂载时的首次加载撞成两次）。
+   */
+  changed: string | null;
+}
+
 /**
  * 每个 SSH 会话一份 cwd 状态。
  *
  * 用法（TerminalView）：
  * - 连接成功 → `setHome(sessionId, home)`（登录目录，兜底用）；
- * - 收到输出 → `osc7Scanner.feed()` → `setFromOsc7()`；
+ * - 收到输出 → `feedOutput()` → `path` 同步 UI 状态、`changed` 让文件面板跟随；
  * - 提交命令 → `noteCd(sessionId, command)`；
- * - 命令结束（OSC 133 D 的退出码）→ `onCommandEnd(sessionId, exitCode)`。
+ * - 命令结束（OSC 133 D 的退出码）→ `onCommandEnd(sessionId, exitCode)`
+ *   （没有 OSC 7 的 shell 靠它兜底跟随）。
  */
 export class RemoteCwdTracker {
   private states = new Map<string, CwdState>();
@@ -241,8 +255,8 @@ export class RemoteCwdTracker {
   /** 登录/家目录单独存：它是"兜底答案"，不是"追踪到的目录"。 */
   private homes = new Map<string, string>();
 
-  /** 扫描某个会话的输出流，返回本次上报的所有目录（取最后一个）。 */
-  feedOutput(sessionId: string, chunk: string): string | null {
+  /** 扫描某个会话的输出流（OSC 7 上报，取最后一个）。 */
+  feedOutput(sessionId: string, chunk: string): CwdReport {
     let scanner = this.scanners.get(sessionId);
     if (!scanner) {
       scanner = new Osc7Scanner();
@@ -250,22 +264,45 @@ export class RemoteCwdTracker {
     }
     const paths = scanner.feed(chunk);
     const last = paths[paths.length - 1] ?? null;
-    if (last) this.setFromOsc7(sessionId, last);
-    return last;
+    if (!last) return { path: null, changed: null };
+    return { path: last, changed: this.setFromOsc7(sessionId, last) };
   }
 
-  /** Shell Integration 上报：最高优先级，无条件覆盖。 */
-  setFromOsc7(sessionId: string, path: string): void {
+  /**
+   * Shell Integration 上报：最高优先级，无条件覆盖。
+   *
+   * **返回"权威 cwd 真的变了"时的新目录**（没变 → null）—— 文件面板跟随的
+   * **主依据**。shell 自己报的目录不可能不存在，而失败的 `cd` 根本不会改变上报
+   * 值，所以这条链路天生不会把面板带到错的目录上。
+   *
+   * # 为什么不再无条件作废 pending（曾经作废过，是真事故）
+   *
+   * 一次 `cd` 的输出顺序是：**提示符先画（OSC 7 带着新目录）→ 我们注入的 D
+   * 标记后跑**（标记永远是独立的下一行）。曾经这里无条件 `pending: null`，于是
+   * "cd 已生效"被当成"这次结束跟 cd 无关"，`onCommandEnd` 返回 null → 文件面板
+   * 再也不跟随（用户报"右边的文件不跟随命令联动了"）。
+   *
+   * 现在的规则：
+   * - **变了** → 跟随这一条就够，顺手作废 pending（否则 D 标记会再触发一次同样
+   *   的跟随）；
+   * - **没变** → 只保留"上报值与待定目标一致"的 pending（`cd` 到同一个目录，
+   *   仍让面板同步过去）；其余一律作废 —— 典型是 cd 失败（目标不存在、cwd 没
+   *   变），绝不能靠退出码把面板带到一个进不去的目录。
+   */
+  setFromOsc7(sessionId: string, path: string): string | null {
     const state = this.stateOf(sessionId);
     const previous = state.path ?? state.previous;
+    // 此前完全不知道 cwd（连接后第一次上报）**不算变化**：面板挂载时已经加载过
+    // 登录目录，再跟随一次就是重复加载。
+    const changed = state.path !== null && state.path !== path ? path : null;
     this.states.set(sessionId, {
       path,
       source: "osc7",
       previous,
-      // OSC 7 是权威结果，任何待定的 cd 都作废。
-      pending: null,
+      pending: changed === null && state.pending === path ? state.pending : null,
       uncertain: false,
     });
+    return changed;
   }
 
   /** 受控探测的结果。 */
@@ -305,17 +342,15 @@ export class RemoteCwdTracker {
    *
    * 复合命令（`cd /x && ls`）不算 —— 它的退出码不能代表 `cd` 成功。
    *
-   * **返回解析出的绝对目标路径**（`null` = 不是 cd，或家目录/上一个目录未知
-   * 解析不出来）。这个返回值是文件面板跟随的唯一依据：只有终端知道 cwd，
-   * 面板自己拼相对路径会拼到别的目录去。
+   * 这里只**记**，不对外给路径：提交那一刻的目标只是"猜的方向"，能不能进去
+   * 要等 [`onCommandEnd`] 的退出码。文件面板跟随用的必须是确认后的结果。
    */
-  noteCd(sessionId: string, command: string): string | null {
+  noteCd(sessionId: string, command: string): void {
     const arg = parseCdArgument(command);
-    if (arg === null) return null;
+    if (arg === null) return;
     const state = this.stateOf(sessionId);
     const target = resolveCd(state.path, arg, this.home(sessionId), state.previous);
     this.states.set(sessionId, { ...state, pending: target });
-    return target;
   }
 
   /**
@@ -326,20 +361,25 @@ export class RemoteCwdTracker {
    * - `exitCode === null`（没收到 OSC 133 D / OSC 7）→ **无法确认**：path
    *   保留旧值但标 `uncertain` —— 下一次目录补全前由调用方触发受控 pwd
    *   探测刷新（用户裁决，勿回退）。
+   *
+   * **返回"确认后的 cwd"**（`null` = 这次结束跟 cd 无关，或 cd 没成功）——
+   * 文件面板跟随只认这个返回值。提交时乐观跟随会把面板带到**打错字 / 不存在**
+   * 的目录上，用户看到的是"明明 `ll` 有数据，右边却说这个路径不存在"
+   * （事故：`~` 下敲 `cd opt`，shell 报 No such file，面板却跳去 `/root/opt`）。
    */
-  onCommandEnd(sessionId: string, exitCode: number | null): void {
+  onCommandEnd(sessionId: string, exitCode: number | null): string | null {
     const state = this.stateOf(sessionId);
     const pending = state.pending;
-    if (pending === null) return;
+    if (pending === null) return null;
     if (exitCode === null) {
       // 没有任何确认信号：目录可能变了但无法证实 → uncertain。
       this.states.set(sessionId, { ...state, pending: null, uncertain: true });
-      return;
+      return null;
     }
     if (exitCode !== 0) {
       // cd 失败：目录没变，待定目标作废。
       this.states.set(sessionId, { ...state, pending: null, uncertain: false });
-      return;
+      return null;
     }
     const previous = state.path ?? state.previous;
     this.states.set(sessionId, {
@@ -349,6 +389,7 @@ export class RemoteCwdTracker {
       pending: null,
       uncertain: false,
     });
+    return pending;
   }
 
   stateOf(sessionId: string): CwdState {

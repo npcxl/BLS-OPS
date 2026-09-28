@@ -5,6 +5,9 @@ export default {
   Theme: "主题",
   Language: "语言",
   "Follow system": "跟随系统",
+  // 主题分段控件上的**短标签**（THEME_OPTIONS.shortKey）；少一个就会出现
+  // "跟随系统 / System / 深色"这种中英混排。
+  System: "系统",
   Light: "浅色",
   Dark: "深色",
 
@@ -13,8 +16,8 @@ export default {
   "The font is shared by the terminal and the command output panel.":
     "终端与命令输出面板共用同一套字体。",
   "Compact prompt": "精简提示符",
-  "Shows only the current directory (~#, /#). One command is sent to the remote shell after connecting — session only, no server config file is touched.":
-    "提示符只显示当前目录（如 ~#、/#）。连接成功后向远程 shell 发送一条命令生效：仅本次会话有效，不修改服务器上的任何配置文件。",
+  "Shows only the current path instead of user@host (e.g. ~#, /opt#, /opt/app#). One command is sent to the remote shell after connecting — session only, no server config file is touched.":
+    "提示符只保留当前路径、去掉 user@host（如 ~#、/opt#、/opt/app#）。连接成功后向远程 shell 发送一条命令生效：仅本次会话有效，不修改服务器上的任何配置文件。",
 
   // -- 凭据 --
   Credentials: "凭据",

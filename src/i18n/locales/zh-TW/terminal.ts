@@ -24,10 +24,6 @@ export default {
   "Disconnect": "斷開連線",
   "Reconnect": "重新連線",
   "Font": "字型",
-  "Search in scrollback": "在回滾緩衝中查詢",
-  "Search in result": "在結果中搜尋",
-  "{{count}} matches": "{{count}} 處符合",
-  "Close search": "關閉搜尋",
   "No matches": "無匹配",
   "Copy error message": "複製錯誤資訊",
   "Copy output": "複製輸出",
@@ -46,23 +42,19 @@ export default {
   "Connection lost: {{message}}": "連線已斷開：{{message}}",
   "Connection failed: {{message}}": "連線失敗：{{message}}",
 
-  // —— TerminalView：風險確認彈窗 ——
-  "Rerun this command?": "重新執行該命令？",
-  "This command will modify the server state ({{risk}}):\n{{command}}":
-    "该命令会修改服务器状态（{{risk}}）：\n{{command}}",
+  // —— TerminalView：風險確認彈窗（補全候選「補全並立即執行」）——
   "Run this command?": "執行該命令？",
   "This command will modify the server run state ({{risk}}):\n{{command}}":
     "该命令会修改服务器运行状态（{{risk}}）：\n{{command}}",
   "Run": "執行",
-  "Unknown risk": "風險未知",
 
   // —— TerminalSuggest：建議面板 ——
   "Run {{command}}": "執行 {{command}}",
   "Complete and run": "補全並立即執行",
-  "↑↓ select · → or Enter to fill · ← to close · Enter again to run":
-    "↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行",
-  "↑↓ select · → or Enter to fill · ← to close · Enter again to run · ▶ / Ctrl+Enter to run directly":
-    "↑↓ 选择 · → 或 Enter 填入 · ← 关闭 · 再按 Enter 执行 · ▶ / Ctrl+Enter 直接执行",
+  "↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run":
+    "↑↓ 選擇 · → 或 Enter 填入 · ← 或 Esc 關閉（不動已填入的內容）· 再按 Enter 執行",
+  "↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run · ▶ / Ctrl+Enter to run directly":
+    "↑↓ 選擇 · → 或 Enter 填入 · ← 或 Esc 關閉（不動已填入的內容）· 再按 Enter 執行 · ▶ / Ctrl+Enter 直接執行",
 
   // —— ParamPicker：引數取值選擇器 ——
   "Select service unit": "選擇服務單元",
@@ -81,27 +73,8 @@ export default {
     "左侧“服务器”中还没有任何条目，请先新增服务器。",
   "Close this tab": "關閉此標籤",
 
-  // —— TerminalResultDrawer：結果抽屜 ——
-  "View": "檢視",
-  "Rerun": "重新執行",
+  // —— 命令塊懸浮複製（TerminalCommandBlocks）——
   "Copy command": "複製命令",
-  "Close others": "關閉其他",
-  "Close all": "關閉全部",
-  "Expand results panel": "展開結果面板",
-  "Collapse results panel": "摺疊結果面板",
-  "Drag to resize the results panel (double-click to reset)": "拖曳調整結果面板高度（雙擊恢復預設）",
-  "Close result for {{command}}": "關閉 {{command}} 的結果",
-  "Close results panel (results are kept in history)": "關閉結果面板（結果保留在歷史中）",
-
-  // —— TerminalSnapshotView：快照檢視 ——
-  "Exit code {{code}}": "退出碼 {{code}}",
-  "Ended by marker": "受控標記收尾",
-  "Ended by fallback (no marker)": "無標記兜底收尾",
-  "Terminal output": "終端輸出",
-  "Raw stream": "原始流",
-  "Rendered snapshot unavailable (start line evicted or no-marker fallback); degraded from raw output — soft line wraps cannot be restored":
-    "渲染快照不可用（起始行被回滚淘汰或无标记兜底），已从原始输出降级 —— 长行软换行无法还原",
-  "Copy rendered output": "複製渲染輸出",
   "Click to copy this line": "點選複製該行",
 
   // —— CommandHistoryPanel：命令歷史 ——
@@ -114,10 +87,8 @@ export default {
   "Sarasa Mono SC (CJK)": "更紗黑體（中文等寬）",
   "System default mono": "系統預設等寬",
 
-  // —— command-plan：命令來源標籤 ——
-  "Manual input": "手動輸入",
+  // —— ModulePage：區塊標題 ——
   "History": "歷史命令",
-  "Suggestion": "命令建議",
 
   // —— completion/providers：補全提示（notice 顯示在建議面板底部）——
   "Remote working directory is unknown; cannot complete (waiting for Shell Integration or run a cd first)":

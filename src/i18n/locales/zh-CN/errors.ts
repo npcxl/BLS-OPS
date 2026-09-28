@@ -48,6 +48,13 @@ export default {
   "Confirmation Required": "需确认",
   "High Risk": "高风险",
   Destructive: "删除",
+  // 风险等级在**结果面板/命令中心**走的是另一组文案（`RISK_LABEL_KEYS`），
+  // 与上面 `RISK_META` 那组并存；少一个就会出现"命令中心全中文、风险标签英文"。
+  "Read only": "只读",
+  "Low risk": "低风险",
+  "Needs confirmation": "需确认",
+  "High risk": "高风险",
+  "Unknown risk": "风险未知",
   Read: "读取",
   "Modifies the server": "会修改服务器",
   "Deletes data": "会删除数据",

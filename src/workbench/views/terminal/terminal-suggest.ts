@@ -100,15 +100,22 @@ export function keysForReplace(
 //
 // collapsed（ghost 态）：输入框只有灰色 ghost + Tab 徽标，没有面板；
 //   Tab / ↓ = 接受第一条并展开面板；Enter = **原样提交用户敲的那一行**
-//   （穿透给 shell）；Esc = 清空整行。
+//   （穿透给 shell）；Esc = 清空整行（没有面板可关，保持老语义）。
 // expanded（面板态）：↑↓ 选择、Enter 执行当前项、Tab/→ 填入当前项、
-//   Esc = 清空整行。继续编辑（行内容变化）→ 回 collapsed。
+//   **Esc / ← = 只收起面板，行内容一个字都不动**。
+//   继续编辑（行内容变化）→ 回 collapsed。
 //
 // ※ collapsed 的 Enter 曾经是"直接执行第一条候选"，2026-09-24 被用户否掉：
 //   补全是**建议**，不是替用户改命令。用户敲 `git pull` 回车，结果跑的是第
 //   一条候选（`git pull --rebase` 之类），最后发现"在后面加几个空格"才能躲
 //   开 —— 这是把提示做成了强制。要用候选就显式来：Tab/↓ 展开后选，或
 //   Ctrl+Enter 直接执行当前项。
+//
+// ※ expanded 的 Esc 曾经**也是**"清空整行"，2026-09-28 被用户否掉：他按 Tab
+//   把第一条候选填了进来、只是想用 Esc 关掉剩下的候选，结果刚填的命令连同整
+//   行一起被清掉（"非常的不智能"）。规则改成：**有面板可关就只关面板，绝不动
+//   行内容**；没有面板时才保留老的清行语义。面板底栏承诺的 "← to close"
+//   同一时刻补齐（此前 ← 其实什么都没做，直接穿透给 shell 了）。
 // ---------------------------------------------------------------------------
 
 /** 统一状态机的动作。`none` = 不拦截，按键照常发给远程 shell。 */
@@ -118,6 +125,8 @@ export type TerminalCompleteAction =
   | { type: "accept-first" }
   | { type: "accept-active" }
   | { type: "run-active" }
+  /** 收起面板但不碰行内容（expanded 态下 Esc / ←）。 */
+  | { type: "collapse" }
   | { type: "clear-line" };
 
 export interface TerminalCompleteState {
@@ -132,11 +141,16 @@ export function resolveTerminalCompleteKey(
   state: TerminalCompleteState,
 ): TerminalCompleteAction {
   if (event.isComposing) return { type: "none" };
-  // Esc 任何状态都清空整行（用户裁决第七条：清输入、清 ghost、关面板）。
-  if (event.key === "Escape") return { type: "clear-line" };
 
   if (state.expanded) {
     switch (event.key) {
+      // 收起面板，**行内容不动**：Tab 填入第一条后按 Esc 只是想关掉剩下的
+      // 候选，把刚填进来的命令一起清掉是灾难（用户裁决 2026-09-28）。
+      // ← 一并接进来 —— 面板底栏一直写着 "← to close"，此前它其实直接穿透
+      // 给 shell 了（只在行里左移一格，面板还开着），说的是假话。
+      case "Escape":
+      case "ArrowLeft":
+        return { type: "collapse" };
       case "ArrowDown":
         return state.hasItems ? { type: "move", delta: 1 } : { type: "none" };
       case "ArrowUp":
@@ -155,6 +169,10 @@ export function resolveTerminalCompleteKey(
   }
 
   switch (event.key) {
+    // 没有面板可关（ghost 态）：Esc 仍是"清空整行" —— 老语义不变。
+    // （用户裁决第七条：清输入、清 ghost。再按一次 Esc 就是它。）
+    case "Escape":
+      return { type: "clear-line" };
     case "Tab":
     case "ArrowDown":
       // 接受第一条并展开完整面板 —— 面板唯一的出现方式。

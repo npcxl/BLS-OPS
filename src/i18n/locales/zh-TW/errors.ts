@@ -48,6 +48,12 @@ export default {
   "Confirmation Required": "需確認",
   "High Risk": "高風險",
   Destructive: "刪除",
+  // 風險等級在**結果面板 / 命令中心**走另一組文案（`RISK_LABEL_KEYS`）。
+  "Read only": "唯讀",
+  "Low risk": "低風險",
+  "Needs confirmation": "需確認",
+  "High risk": "高風險",
+  "Unknown risk": "風險未知",
   Read: "讀取",
   "Modifies the server": "會修改伺服器",
   "Deletes data": "會刪除資料",

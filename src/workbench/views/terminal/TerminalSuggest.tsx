@@ -151,7 +151,8 @@ export function TerminalSuggest({
                 {/* 只在需要警示时显示标签（只读是默认情况，不占位置）。 */}
                 {risk && risk !== "read_only" && (
                   <span className={cn("shrink-0 rounded px-1 py-0.5 text-9", RISK_META[risk].tone)}>
-                    {RISK_META[risk].label}
+                    {/* label 是英文 key，必须过 t() —— 直接渲染就是永远英文。 */}
+                    {t(RISK_META[risk].label)}
                   </span>
                 )}
                 <span
@@ -188,9 +189,9 @@ export function TerminalSuggest({
             {t(notice)}
           </span>
         ) : onRun ? (
-          t("↑↓ select · → or Enter to fill · ← to close · Enter again to run · ▶ / Ctrl+Enter to run directly")
+          t("↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run · ▶ / Ctrl+Enter to run directly")
         ) : (
-          t("↑↓ select · → or Enter to fill · ← to close · Enter again to run")
+          t("↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run")
         )}
       </div>
     </div>

@@ -222,7 +222,9 @@ export function configFileLabel(path: string): string {
   if (lower.includes("nginx") || lower.endsWith(".conf")) {
     return lower.includes("nginx") ? i18n.t("Nginx config") : name;
   }
-  if (lower.endsWith(".service")) return "systemd unit";
+  // 与本函数里的 `Nginx config` 分支同一口径：**返回前就翻译**（调用方直接
+  // 渲染返回值，不会再过一层 t()）。
+  if (lower.endsWith(".service")) return i18n.t("systemd unit");
   if (lower === "procfile") return "Procfile";
   return name;
 }

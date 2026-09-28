@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Terminal, type IMarker } from "@xterm/xterm";
 import { opsApi } from "@/api/ops-api";
@@ -15,7 +15,6 @@ import {
 } from "./terminal-command-blocks";
 import {
   TerminalCommandCoordinator,
-  type CapturedResult,
   type RenderOutcome,
 } from "./TerminalCommandCoordinator";
 
@@ -23,33 +22,30 @@ export interface TerminalResultsHost {
   sessionId: string;
   terminalRef: RefObject<Terminal | null>;
   boundaryParserRef: RefObject<CommandBoundaryParser | null>;
-  /** 记历史 + `cd` 跟随（任何来源的执行都要留下痕迹）。 */
-  noteExecutedCommand: (command: string) => void;
   /** 参数类可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   setParamHint: (value: string | null) => void;
 }
 
 /**
- * 命令结果面板的全部状态与**唯一提交入口**。
+ * 终端命令的提交入口 + 命令块（悬浮复制）的状态。
  *
- * 从 `TerminalView` 拆出来是为了让"结果怎么产生、怎么关闭、怎么重运行"
- * 有一个完整归属：
- *
- * - 捕获起点 marker 与 xterm 快照的消费；
- * - 结果 Tab 管理与按**真实风险**门控的重运行。
+ * ⚠️ **结果抽屉（命令结果面板）已按用户要求移除**：终端下方不再出现结果列表，
+ * 也不再累积 `CapturedResult`。但**捕获链路整体保留** —— 命令块悬浮复制
+ * （鼠标悬停命令时的复制按钮）要用它的边界退出码与渲染快照。所以每个可捕获
+ * 命令仍会注入受控标记、仍会跑一次知识库匹配与 JSON 检测。
  *
  * 提交链路（唯一入口 `execute`）：
  *
  * ```text
  * execute(command, source, options)
  *   → coordinator.submit(command, source, plan)   // 开始捕获 + 记边界起点
- *   → 注册 xterm 起始行 marker                     // 快照起点（一次一个）
+ *   → 注册 xterm 起始行 marker                     // 块起点（一次一个）
  *   → sshInput(command + 受控标记)                 // 只写一次
- *   → OSC 133 D → 渲染完成后抓快照 → 新建结果 Tab
+ *   → OSC 133 D → 渲染完成后封口命令块
  * ```
  */
 export function useTerminalResults(host: TerminalResultsHost) {
-  const { sessionId, terminalRef, boundaryParserRef, noteExecutedCommand, setParamHint } = host;
+  const { sessionId, terminalRef, boundaryParserRef, setParamHint } = host;
   const { t } = useTranslation();
 
   /**
@@ -101,10 +97,11 @@ export function useTerminalResults(host: TerminalResultsHost) {
    * - 起点：`execute` 里注册捕获 marker 的同一行（提交时光标所在行）；
    * - 终点：`onResult` 时刻再注册一枚 marker —— OSC 133 D 已写完输出、
    *   提示符尚未回写，所以终点正好是输出最后一行；
-   * - 文本 / 退出码来自 `CapturedResult`，复制内容与结果抽屉一致。
+   * - 文本 / 退出码来自 `CapturedResult.renderedText` / `boundary.exitCode`
+   *   （与终端里看到的同一份渲染快照）。
    *
    * `blocksRef` 是写路径的真源（begin/finish 都发生在事件回调里，不在
-   * render 期），与 `enhancedRef` 同款模式。
+   * render 期），组件侧只读 `commandBlocks`。
    */
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
   const blocksRef = useRef<CommandBlock[]>([]);
@@ -132,10 +129,6 @@ export function useTerminalResults(host: TerminalResultsHost) {
         applyBlocks(
           finishBlock(blocksRef.current, result.boundary.exitCode, endMarker, result.renderedText),
         );
-        setResults((current) => [...current, result]);
-        setActiveId(result.id);
-        setDrawerCollapsed(false);
-        setDrawerClosed(false);
       },
       // 护栏兜底（受控标记始终没来）：主动向终端要一次当前快照。
       captureNow: () => consumeTerminalSnapshot(captureMarkerRef.current),
@@ -150,24 +143,6 @@ export function useTerminalResults(host: TerminalResultsHost) {
     [clearCommandBlocks, releaseCaptureMarker],
   );
 
-  /**
-   * 本次会话的命令结果（快照 + 原始流，最新在后）。与是否命中知识库无关：
-   * 只要是可捕获命令（非交互式、不读 stdin）都会产出一条；命令本身的输出
-   * 为空也是有效结果（显示为空，不回落）。
-   */
-  const [results, setResults] = useState<CapturedResult[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
-  const [drawerClosed, setDrawerClosed] = useState(false);
-  /**
-   * 结果面板内容区高度（px）；null = 默认 38vh。顶部把手可拖拽调节：
-   * 默认高度（38vh）就是上限，拖到最低会自动收起（交互见 TerminalResultDrawer）。
-   * 放在 hook 里与 collapsed/closed 同层 —— 抽屉因关闭/清空卸载后再出现时，
-   * 高度不无故回到默认。
-   */
-  const [drawerHeight, setDrawerHeight] = useState<number | null>(null);
-  /** 重运行前的确认（按真实风险门控，依赖唯一提交入口）。 */
-  const [rerunConfirm, setRerunConfirm] = useState<CapturedResult | null>(null);
   /**
    * 补全候选的"补全并立即执行"也要按**真实风险**门控：
    * `nginx -s reload` / `docker compose restart` 是"需确认"，确认前不写 shell。
@@ -240,72 +215,12 @@ export function useTerminalResults(host: TerminalResultsHost) {
     [boundaryParserRef, releaseCaptureMarker, sessionId, setParamHint, t, terminalRef],
   );
 
-  /** 重运行：按**真实风险**门控（只读直接跑；修改型 / 未知必须确认；删除类不提供）。 */
-  const rerun = (item: CapturedResult) => {
-    if (!item.canExecute) return;
-    if (item.mutability === "delete") return; // 删除类走软删除流程（已移出 P4）
-    // 知识库未命中 → `unknown`，同样要确认：绝不把未知命令假装成只读。
-    if (item.mutability === "change" || item.mutability === "unknown") {
-      setRerunConfirm(item);
-      return;
-    }
-    noteExecutedCommand(item.command);
-    execute(item.command, "rerun");
-  };
-  const confirmRerun = () => {
-    const item = rerunConfirm;
-    setRerunConfirm(null);
-    if (!item) return;
-    noteExecutedCommand(item.command);
-    execute(item.command, "rerun");
-  };
-
-  /** 关闭单个结果 Tab：优先选择右侧相邻，没有则选左侧。 */
-  const closeTab = (id: string) => {
-    setResults((current) => {
-      const index = current.findIndex((item) => item.id === id);
-      if (index === -1) return current;
-      const next = current.filter((item) => item.id !== id);
-      setActiveId((activeId) => {
-        if (activeId !== id) return activeId;
-        // 右侧优先，没有则左侧；全部关完 → null（抽屉隐藏）。
-        return next[index] ? next[index].id : (next[index - 1]?.id ?? null);
-      });
-      return next;
-    });
-  };
-  const closeOthers = (id: string) => {
-    setResults((current) => current.filter((item) => item.id === id));
-    setActiveId(id);
-  };
-  const clearAll = () => {
-    setResults([]);
-    setActiveId(null);
-    setDrawerClosed(true);
-  };
-
   return {
-    results,
     commandBlocks,
-    activeId,
-    setActiveId: setActiveId as Dispatch<SetStateAction<string | null>>,
-    drawerCollapsed,
-    setDrawerCollapsed,
-    drawerClosed,
-    setDrawerClosed,
-    drawerHeight,
-    setDrawerHeight,
-    closeTab,
-    closeOthers,
-    clearAll,
     coordinatorRef,
     captureMarkerRef,
     consumeTerminalSnapshot,
     execute,
-    rerun,
-    rerunConfirm,
-    setRerunConfirm,
-    confirmRerun,
     runConfirm,
     setRunConfirm,
   };

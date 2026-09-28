@@ -31,8 +31,8 @@ const PREVIEW_LINES = [
  * 预览块用的是与终端**完全相同**的那套栈（`resolveFontStack`）。
  *
  * 提示符精简是**会话级**的：连接成功后向远程 shell 发一条赋值命令，不写
- * 服务器任何配置文件（细节见 `terminal-prompt.ts`）。默认关 —— 它毕竟改变
- * 了远程会话行为，得用户自己点头。
+ * 服务器任何配置文件（细节见 `terminal-prompt.ts`）。**默认开** —— 连上就该
+ * 是短的，不该让用户先去设置里找开关；这里只是留一个关掉它的入口。
  */
 export function TerminalSettingsGroup() {
   const { t } = useTranslation();
@@ -77,7 +77,7 @@ export function TerminalSettingsGroup() {
             <span className="block text-12 text-fg">{t("Compact prompt")}</span>
             <span className="block text-11 leading-relaxed text-fg-subtle">
               {t(
-                "Shows only the current directory (~#, /#). One command is sent to the remote shell after connecting — session only, no server config file is touched.",
+                "Shows only the current path instead of user@host (e.g. ~#, /opt#, /opt/app#). One command is sent to the remote shell after connecting — session only, no server config file is touched.",
               )}
             </span>
           </div>

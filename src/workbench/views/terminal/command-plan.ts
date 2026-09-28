@@ -15,16 +15,13 @@
 
 import { INJECTED_LINES, MARKER_C_LINE, MARKER_D_LINE } from "./command-boundary";
 
-/** 命令来源（结果 Tab 上可见，便于区分"我敲的"和"重跑的"）。 */
+/**
+ * 命令来源（谁把它提交出去的）。
+ *
+ * 结果抽屉移除后它不再有可见标签，但**保留**：`execute` / 协调器 /
+ * `CapturedResult.source` 都还带着它（诊断与将来恢复面板时都要用）。
+ */
 export type CommandSource = "input" | "rerun" | "history" | "suggest";
-
-/** 模块级常量只存 key（natural keys），渲染处统一 t()。 */
-export const COMMAND_SOURCE_LABELS: Record<CommandSource, string> = {
-  input: "Manual input",
-  rerun: "Rerun",
-  history: "History",
-  suggest: "Suggestion",
-};
 
 /**
  * 交互式全屏程序：alternate screen 内容不可解析，且会吞掉标记行。
@@ -138,6 +135,10 @@ const FILE_OR_STDIN = new Set([
  * `cd` / `export` / `alias` 之类在终端里意义重大，但它们的 stdout 恒为空 ——
  * 给它们弹一个"空结果面板"纯属噪音。注意这里只影响**是否捕获**，命令照常
  * 发往 shell（`cd` 必须生效、文件面板仍会跟随）。
+ *
+ * ⚠️ `cd` 家族虽然也在这个集合里，但 `planCommandSubmission` **会先**用
+ * [`CD_FAMILY`] 拦下它们并注入结束标记 —— 见那里的说明：
+ * "不弹结果面板"和"不注入标记"是两件事，混成一件事会让 cwd 追踪彻底失效。
  */
 const LOCAL_BUILTINS = new Set([
   "cd",
@@ -161,12 +162,32 @@ const LOCAL_BUILTINS = new Set([
   "exit",
 ]);
 
+/**
+ * 会改变 cwd 的内建命令。
+ *
+ * 这些命令**不要结果面板，但必须注入结束标记** —— 追踪当前目录唯一的硬依据
+ * 是 `cd` 的**真实退出码**（成功才更新，失败目录不变）。
+ *
+ * 曾经的实现把"不弹结果面板"和"不注入标记"混成了一件事（都挂在 `capture`
+ * 上），于是 `cd` 的退出码永远拿不到：`noteCd` 记下的待确认目标没人确认，
+ * tracked cwd 一直停在登录目录 —— 之后再敲相对路径 `cd opt`，就会被解析成
+ * `/root/opt`，文件面板跟着跳到一个不存在的目录（用户报的
+ * "明明有路径为什么不存在"就是这条链路）。
+ */
+const CD_FAMILY = new Set(["cd", "chdir", "pushd", "popd"]);
+
+/** 命令行里真正要执行的可执行名 —— 只看管道前的第一段。 */
+function headExecutable(command: string): string {
+  // 管道只有**第一段**可能读 stdin：`ps aux | grep nginx` 的 grep 不读 stdin，
+  // `cat | grep x` 的 cat 才读。
+  const head = command.split("|")[0];
+  return (head.trim().split(/\s+/)[0] ?? "").toLowerCase();
+}
+
 /** 输出是否会被"吞掉"—— 真被吞掉时不能注入标记。 */
 export function blocksCapture(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed) return true;
-  // 管道只有**第一段**可能读 stdin：`ps aux | grep nginx` 的 grep 不读 stdin，
-  // `cat | grep x` 的 cat 才读。所以只看管道前的第一段。
   const head = trimmed.split("|")[0];
   const tokens = head.trim().split(/\s+/);
   const exe = (tokens[0] ?? "").toLowerCase();
@@ -218,6 +239,16 @@ export function planCommandSubmission(command: string, mode: SubmitMode = "full"
   const trimmed = command.trim();
   if (!trimmed) {
     return { capture: false, write: "", markers: [], reason: "空命令" };
+  }
+  // `cd` 家族：不生成结果面板，但照旧注入**结束标记**（唯一目的是拿退出码，
+  // 见 `CD_FAMILY` 的说明）。它必须排在 `blocksCapture` 前面。
+  if (CD_FAMILY.has(headExecutable(trimmed))) {
+    return {
+      capture: false,
+      write: mode === "full" ? `${trimmed}\n ${MARKER_D_LINE}\n` : ` ${MARKER_D_LINE}\n`,
+      markers: [MARKER_D_LINE],
+      reason: "cd 家族：只取退出码用于 cwd 追踪，不生成结果面板",
+    };
   }
   if (blocksCapture(trimmed)) {
     // `line-ready` 时命令行已经写好了 —— 什么都不补（回车由调用方随按键

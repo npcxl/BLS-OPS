@@ -57,6 +57,14 @@ export interface TerminalSessionHost {
   hasTarget: boolean;
   consumeTerminalSnapshot: (held: { marker: IMarker } | null) => RenderOutcome;
   updateSuggestAnchor: () => void;
+  /**
+   * 文件面板跟随：**只有"目录确实变了"才调用**，两个来源 ——
+   * 1. OSC 7 上报值发生变化（**主**：shell 自己报的目录，不可能不存在）；
+   * 2. `cd` 成功（退出码 0）的确认结果（**备**：给没有 OSC 7 的 shell）。
+   * 提交那一刻的**乐观跟随**绝不能用 —— 那会把面板带到打错字 / 不存在的目录上
+   * （事故：`~` 下敲 `cd opt`，shell 报 No such file，面板却跳去 `/root/opt`）。
+   */
+  onCwdConfirmed: (path: string) => void;
   setInAlternate: (value: boolean) => void;
   setDraft: (value: string) => void;
   setCwd: (value: string | null) => void;
@@ -203,13 +211,24 @@ export function useTerminalSession(host: TerminalSessionHost): void {
         };
       // OSC 7（shell 自己上报的 cwd）：扫**原始**输出，不受边界解析的剔除
       // 影响 —— 这是 cwd 的最可信来源（优先级 1）。
-      const reported = host.cwdTrackerRef.current?.feedOutput(sessionId, output) ?? null;
-      if (reported) host.setCwd(reported);
+      const report = host.cwdTrackerRef.current?.feedOutput(sessionId, output) ?? {
+        path: null,
+        changed: null,
+      };
+      if (report.path) host.setCwd(report.path);
+      // 权威 cwd **变了** → 文件面板跟随（主触发点）：shell 自己报的目录不可能
+      // 不存在，失败的 cd 也不会改变上报值 —— 不会把面板带到错的目录。
+      if (report.changed) host.onCwdConfirmed(report.changed);
       // 命令结束（OSC 133 D 带真实退出码）：`cd` 成功才更新 cwd，失败不动。
+      // 这是**没有 OSC 7 时的兜底**跟随 —— 上面已经跟过的那次会把 pending
+      // 作废，所以这里不会重复跟随。
       for (const event of parsed.events) {
         if (event.type === "output_end") {
-          host.cwdTrackerRef.current?.onCommandEnd(sessionId, event.exitCode);
-          host.setCwd(host.cwdTrackerRef.current?.get(sessionId) ?? null);
+          const tracker = host.cwdTrackerRef.current;
+          // 返回值 = **确认成功的** cd 目标；失败 / 不是 cd → null（面板不动）。
+          const confirmed = tracker?.onCommandEnd(sessionId, event.exitCode) ?? null;
+          host.setCwd(tracker?.get(sessionId) ?? null);
+          if (confirmed) host.onCwdConfirmed(confirmed);
         }
       }
       host.coordinatorRef.current?.onOutput(parsed.text, parsed.events);

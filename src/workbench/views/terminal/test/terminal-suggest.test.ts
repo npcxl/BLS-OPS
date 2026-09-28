@@ -151,9 +151,20 @@ describe("统一补全状态机（默认 ghost，Tab/↓ 才展开面板）", ()
     });
   });
 
-  it("任何状态 Esc = 清空整行（清输入/ghost/面板）", () => {
+  it("expanded：Esc / ← 只收起面板，绝不动已填入的内容（用户裁决 2026-09-28）", () => {
+    // 真实事故：Tab 填入第一条候选 → 按 Esc 想关掉剩下的候选 → 刚填进来的
+    // 命令被整行清掉（用户："非常的不智能"）。
+    expect(resolveTerminalCompleteKey({ key: "Escape" }, expanded)).toEqual({ type: "collapse" });
+    // 面板底栏一直写着 "← to close"，此前 ← 其实直接穿透给 shell（假承诺）。
+    expect(resolveTerminalCompleteKey({ key: "ArrowLeft" }, expanded)).toEqual({ type: "collapse" });
+    // 只有 notice、没有候选的面板，同样只是收起。
+    expect(
+      resolveTerminalCompleteKey({ key: "Escape" }, { expanded: true, hasItems: false }),
+    ).toEqual({ type: "collapse" });
+  });
+
+  it("collapsed / 无候选：Esc 仍是清空整行（没有面板可关，老语义）", () => {
     expect(resolveTerminalCompleteKey({ key: "Escape" }, collapsed)).toEqual({ type: "clear-line" });
-    expect(resolveTerminalCompleteKey({ key: "Escape" }, expanded)).toEqual({ type: "clear-line" });
     expect(resolveTerminalCompleteKey({ key: "Escape" }, empty)).toEqual({ type: "clear-line" });
   });
 

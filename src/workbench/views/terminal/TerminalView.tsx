@@ -23,7 +23,6 @@ import {
   placeholdersIn,
 } from "@/workbench/views/command-center/complete";
 import { ParamPicker } from "./ParamPicker";
-import { TerminalResultDrawer } from "./TerminalResultDrawer";
 import { TerminalCommandBlocks } from "./TerminalCommandBlocks";
 import { TerminalSelectionMenu } from "./terminal-selection-menu";
 import type { CommandSearchHit } from "@/api/ops-api";
@@ -33,7 +32,7 @@ import { TerminalPicker } from "./TerminalPicker";
 import { TerminalSuggest } from "./TerminalSuggest";
 import { CommandBoundaryParser } from "./command-boundary";
 import { resolveFontStack } from "./terminal-font";
-import { COMPACT_PROMPT_COMMAND, readCompactPrompt } from "./terminal-prompt";
+import { COMPACT_PROMPT_INPUT, COMPACT_PROMPT_LINE, readCompactPrompt } from "./terminal-prompt";
 import { useTerminalFont } from "@/hooks/use-terminal-font";
 import type { Phase } from "./terminal-phase";
 import { TerminalErrorBanner } from "./terminal-error-banner";
@@ -339,14 +338,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
           .catch(() => undefined);
       }
-      // `cd` 跟踪 + 跟随：目标路径一律由**终端自己的 cwd** 解析（resolveCd，
-      // 与 shell 同语义，支持 ~ / - / 相对路径），解析结果同时交给文件面板。
-      // 绝不能让面板拿命令原文配它自己的 cwd 去拼 —— 面板可能停在完全不同的
-      // 目录，拼出来的路径根本不存在（表现为 cd 后 100% 报 SFTP 路径不存在）。
-      // 先记下"待定目标"，等 OSC 133 D 的真实退出码确认成功才真正更新
-      // （cd 失败 → 目录没变）。
-      const cdTarget = cwdTrackerRef.current?.noteCd(sessionId, command) ?? null;
-      if (cdTarget) setFollow((current) => ({ nonce: current.nonce + 1, path: cdTarget }));
+      // `cd` 跟踪：目标由**终端自己的 cwd** 解析（`resolveCd`，与 shell 同语义，
+      // 支持 ~ / - / 相对路径），先记为"待定"，等真实退出码确认。
+      // 文件面板的跟随**不在这里**：它等 `onCwdConfirmed`（确认成功才跳）——
+      // 提交时就乐观跟随会把面板带到打错字 / 不存在的目录上，用户看到的是
+      // "明明 `ll` 有数据，右边却说这个路径不存在"。
+      cwdTrackerRef.current?.noteCd(sessionId, command);
       // 目录结构被改动的命令 → 远程目录缓存立刻失效：给用户看一份"刚才还
       // 存在、现在已经没了"的候选，比不给补全更糟。
       if (MUTATES_DIRECTORY.test(command)) invalidateDirectoryCache(sessionId);
@@ -354,13 +351,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [sessionId, tab.quickTarget, tab.serverId, tab.title],
   );
 
-  // 命令结果面板：增强终端开关、捕获起点、结果 Tab 管理与**唯一提交入口**
-  // 全部归 `use-terminal-results.ts`（它依赖上面这个 noteExecutedCommand）。
+  // 命令提交入口 + 命令块（悬浮复制）全部归 `use-terminal-results.ts`。
   const results = useTerminalResults({
     sessionId,
     terminalRef,
     boundaryParserRef,
-    noteExecutedCommand,
     setParamHint,
   });
   const executeTerminalCommand = results.execute;
@@ -751,9 +746,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       if (event.isComposing || event.keyCode === 229) return false;
       // 统一补全状态机（见 terminal-suggest.ts）：
       // collapsed（ghost 态）—— Tab/↓ 接受第一条并展开；**Enter 原样提交
-      // 用户敲的行**（提示不替用户改命令，用户裁决 2026-09-24）；
+      // 用户敲的行**（提示不替用户改命令，用户裁决 2026-09-24）；Esc = 清行。
       // expanded（面板态）—— ↑↓ 移动、Enter 执行当前项、Tab/→ 填入当前项；
-      // 任何状态 Esc = 清空整行。其余按键穿透给远程 shell。
+      // **Esc/← = 只收起面板，不动行内容**（用户裁决 2026-09-28）。
+      // 其余按键穿透给远程 shell。
       const { items, activeIndex, setActiveIndex } = suggestions;
       const action = resolveTerminalCompleteKey(
         { key: event.key, isComposing: event.isComposing },
@@ -813,8 +809,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           refocusTerminal();
           return true;
         }
+        case "collapse": {
+          // 展开态 Esc / ←：**只收起面板，行内容一个字都不动**。
+          // 老版本这里是无条件清空整行：用户 Tab 填入第一条后按 Esc 想关掉剩下
+          // 的候选，结果刚填进去的命令一起被清掉（用户裁决 2026-09-28）。
+          event.preventDefault();
+          setSuggestExpanded(false);
+          // 高亮回到第一条：下次 Tab 接受的与面板将显示的首条保持一致。
+          setActiveIndex(0);
+          refocusTerminal();
+          return true;
+        }
         case "clear-line": {
-          // Esc（任何状态）：清空整行 + 关闭面板 + 保持终端焦点。
+          // Esc（**没有面板可关**时的 ghost 态）：清空整行 + 保持终端焦点。
           // 远程发 Ctrl+U（readline 清行），本地 LineEditor 同步清空。
           event.preventDefault();
           writeToShell("\x15");
@@ -871,7 +878,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     paramPicker: Boolean(paramPicker),
     paramHint: Boolean(paramHint),
     runConfirm: Boolean(results.runConfirm),
-    rerunConfirm: Boolean(results.rerunConfirm),
     selectionMenu: Boolean(selectionMenu),
     history: historyOpen,
     files: filesOpen,
@@ -893,7 +899,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     overlays.paramPicker,
     overlays.paramHint,
     overlays.runConfirm,
-    overlays.rerunConfirm,
     overlays.selectionMenu,
     overlays.history,
     overlays.files,
@@ -946,11 +951,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
         // 连接成功只给一行绿色 i18n 状态，host/fingerprint 等细节不再刷屏。
         instance?.writeln(`\r\n\x1b[32m${t("Connected")}\x1b[0m`);
-        // 提示符精简（用户开关，默认关）：只在**连接成功这一瞬间**发一次。
+        // 提示符精简（默认开，设置里可关）：只在**连接成功这一瞬间**发一次。
         // 绝不能改成"设置一变就立即注入"——那会在用户正敲命令时往命令行里
         // 写字，等于替他改输入。设置变更从下一次连接生效。
+        // 发的是 INPUT（带回车）：少了回车这行不会被提交，只会赖在用户的输入
+        // 行里，跟他敲的第一条命令粘在一起。回显同理交给边界解析器剔除，
+        // 终端里不留这行乱码（与受控 pwd 探测同一机制）。
         if (readCompactPrompt()) {
-          void opsApi.sshInput(sessionId, COMPACT_PROMPT_COMMAND).catch(() => undefined);
+          boundaryParserRef.current?.expect([COMPACT_PROMPT_LINE]);
+          void opsApi.sshInput(sessionId, COMPACT_PROMPT_INPUT).catch(() => undefined);
         }
         // 登录目录：cwd 的兜底答案（`cd ~`、以及还没探测到时用它）。
         // 只信 SFTP 的 canonicalize 结果 —— 绝不从提示符文本猜。
@@ -1045,6 +1054,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     hasTarget,
     consumeTerminalSnapshot: results.consumeTerminalSnapshot,
     updateSuggestAnchor,
+    // 文件面板跟随：只在 `cd` **确认成功**后跳（`cd` 失败时 shell 里目录没变，
+    // 面板也不该动）。
+    onCwdConfirmed: (path) => setFollow((current) => ({ nonce: current.nonce + 1, path })),
     setInAlternate,
     setDraft,
     setCwd,
@@ -1222,45 +1234,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         <CopyNotice status={copyStatus} />
       </div>
 
-      {/* 命令结果抽屉：终端内容原样保留，结果面板挂在下方。
-          命令不可捕获（交互式、读 stdin、无输出内建命令）→ 这里不渲染任何东西。 */}
-      {results.results.length > 0 && !results.drawerClosed && (
-        <TerminalResultDrawer
-          results={results.results}
-          activeId={results.activeId}
-          collapsed={results.drawerCollapsed}
-          onToggleCollapse={() => results.setDrawerCollapsed((v) => !v)}
-          height={results.drawerHeight}
-          onHeightChange={results.setDrawerHeight}
-          onSelect={results.setActiveId}
-          onClose={() => results.setDrawerClosed(true)}
-          onCloseTab={results.closeTab}
-          onCloseOthers={results.closeOthers}
-          onCloseAll={results.clearAll}
-          onRerun={results.rerun}
-        />
-      )}
-      {results.rerunConfirm && (
-        <ConfirmDialog
-          open
-          title={t("Rerun this command?")}
-          description={t("This command will modify the server state ({{risk}}):\n{{command}}", {
-            risk: results.rerunConfirm.risk
-              ? RISK_META[results.rerunConfirm.risk].label
-              : t("Unknown risk"),
-            command: results.rerunConfirm.command,
-          })}
-          confirmLabel={t("Rerun")}
-          onConfirm={results.confirmRerun}
-          onCancel={() => results.setRerunConfirm(null)}
-        />
-      )}
       {results.runConfirm && (
         <ConfirmDialog
           open
           title={t("Run this command?")}
           description={t("This command will modify the server run state ({{risk}}):\n{{command}}", {
-            risk: RISK_META[results.runConfirm.risk].label,
+            // label 是英文 key，必须过 t()。
+            risk: t(RISK_META[results.runConfirm.risk].label),
             command: results.runConfirm.command,
           })}
           confirmLabel={t("Run")}

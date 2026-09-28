@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { blocksCapture, planCommandSubmission } from "../command-plan";
-import { INJECTED_LINES, MARKER_C_LINE, MARKER_D_LINE } from "../command-boundary";
+import {
+  CommandBoundaryParser,
+  INJECTED_LINES,
+  MARKER_C_LINE,
+  MARKER_D_LINE,
+} from "../command-boundary";
 
 describe("planCommandSubmission", () => {
   it("普通命令注入受控标记，且**不改写命令本身**", () => {
@@ -59,14 +64,45 @@ describe("planCommandSubmission", () => {
     expect(blocksCapture("cat | grep x")).toBe(true); // 第一段是 cat
   });
 
-  it("无输出内建命令不弹结果面板（但命令照发）", () => {
-    for (const command of ["cd /tmp", "cd", "export FOO=1", "alias ll='ls -l'"]) {
+  it("cd 家族：不弹结果面板，但**必须**注入结束标记（cwd 追踪要退出码）", () => {
+    for (const command of ["cd /tmp", "cd", "cd ..", "pushd /var"]) {
+      const full = planCommandSubmission(command, "full");
+      expect(full.capture).toBe(false);
+      expect(full.write).toContain(command);
+      expect(full.write).toContain(MARKER_D_LINE);
+      expect(full.markers).toEqual([MARKER_D_LINE]);
+      // 不需要 C 标记（没有输出要捕获）。
+      expect(full.write).not.toContain(MARKER_C_LINE);
+
+      // line-ready：命令行已经在终端上了 → 只补结束标记。
+      const ready = planCommandSubmission(command, "line-ready");
+      expect(ready.capture).toBe(false);
+      expect(ready.write).toBe(` ${MARKER_D_LINE}\n`);
+      expect(ready.markers).toEqual([MARKER_D_LINE]);
+    }
+  });
+
+  it("其余无输出内建命令一个标记都不写（不给用户多加空提示符行）", () => {
+    // `fg` / `bg` 尤其不能注入：命令交给前台作业后，注入的文本会变成它的输入。
+    for (const command of ["export FOO=1", "alias ll='ls -l'", "unset FOO", "fg", "jobs"]) {
       const full = planCommandSubmission(command, "full");
       expect(full.capture).toBe(false);
       expect(full.write).toBe(`${command}\n`);
+      expect(full.markers).toEqual([]);
       // line-ready：命令行已经敲好了，什么都不补。
       expect(planCommandSubmission(command, "line-ready").write).toBe("");
     }
+  });
+
+  it("cd 的结束标记能一路解析出退出码（cwd 追踪的完整闭环）", () => {
+    // 这条链路是回归防线：cd → 注入 D 标记 → 解析出 output_end(0) →
+    // `onCommandEnd` 才能把"待确认目录"落实。断了就退化成
+    // "tracked cwd 永远停在登录目录"，相对路径全部解析错。
+    const plan = planCommandSubmission("cd opt", "line-ready");
+    const parser = new CommandBoundaryParser();
+    parser.expect(plan.markers);
+    const parsed = parser.feed(`\x1b]133;D;0\x07`);
+    expect(parsed.events).toEqual([{ type: "output_end", exitCode: 0 }]);
   });
 
   it("空命令不写任何东西", () => {

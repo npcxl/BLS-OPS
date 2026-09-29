@@ -11,8 +11,9 @@ use anyhow::{anyhow, Result};
 
 use super::deploy::validate_deploy_step;
 use super::validate::{
-    is_within, shell_quote, validate_abs_path, validate_container, validate_image, validate_lines,
-    validate_remote_paths, validate_site_name, validate_unit,
+    is_within, shell_quote, validate_abs_path, validate_cert_name, validate_container,
+    validate_email, validate_hostname, validate_http_url, validate_image, validate_lines,
+    validate_octal_mode, validate_port, validate_remote_paths, validate_site_name, validate_unit,
 };
 
 // -- Fixed command constants --------------------------------------------------
@@ -68,7 +69,7 @@ const KUBE_PODS: &str = "kubectl get pods --all-namespaces --no-headers -o custo
 /// Directories an Nginx capability may touch.
 const NGINX_ROOTS: &[&str] = &["/etc/nginx", "/usr/local/nginx/conf"];
 
-pub(crate) fn require_nginx_path(path: &str) -> Result<()> {
+pub fn require_nginx_path(path: &str) -> Result<()> {
     if NGINX_ROOTS.iter().any(|root| is_within(path, root)) {
         Ok(())
     } else {
@@ -225,6 +226,95 @@ pub enum Capability {
         root: String,
     },
 
+    // P5.3 / P5.4 — typed deployment actions.
+    //
+    // 这些是"部署执行器"能做的**全部**远程写操作。每个变体只接受结构化参数，
+    // 命令文本仍然只在这个文件的 `command()` 里生成一次（见模块文档的三条规则）。
+    // 部署动作枚举（`deployment::action::DeploymentAction`）到 capability 的映射
+    // 是显式的、穷尽的，因此"新增一种部署动作"必然触碰这里 —— 审计面没有扩大。
+    /// `mkdir -p` —— 建目录与提升版本的"准备发布目录"。
+    MakeDirs {
+        path: String,
+    },
+    /// `chmod <octal>` —— 只允许 600/640/644/700/750/755，防止把配置放成 777。
+    Chmod {
+        path: String,
+        mode: u32,
+    },
+    /// `sha256sum` —— 制品上传后校验内容。判定在 Rust 侧做，shell 只报数。
+    Checksum {
+        path: String,
+    },
+    /// `ln -sfn` —— 原子切换版本软链（先指新目录，再删旧链接）。
+    SymlinkForce {
+        link: String,
+        target: String,
+    },
+    /// 解包归档到目录（unzip / tar），格式是显式枚举。
+    ExtractArchive {
+        archive: String,
+        dest: String,
+        format: ArchiveFormat,
+    },
+    /// `docker build` —— 上下文与 Dockerfile 都必须是绝对路径，且后者在上下文内。
+    DockerBuild {
+        context: String,
+        dockerfile: String,
+        tag: String,
+    },
+    /// `docker pull` —— 镜像引用走 `validate_image`。
+    DockerPull {
+        image: String,
+    },
+    /// `docker compose up -d` —— 只起指定服务，不做全栈 `up`。
+    ComposeUp {
+        file: String,
+        project: String,
+        services: Vec<String>,
+    },
+    /// `docker compose down` —— 回滚时收掉本次起来的栈。
+    ComposeDown {
+        file: String,
+        project: String,
+    },
+    /// `getent ahosts` —— DNS 解析验证（V1 只做验证，不调用任何 DNS 服务商 API）。
+    ResolveHost {
+        hostname: String,
+    },
+    /// `curl -o /dev/null -w '%{http_code}'` —— HTTP 健康检查，返回状态码。
+    HttpProbe {
+        url: String,
+        timeout_secs: u32,
+    },
+    /// `ss -H -tln 'sport = :<port>'` —— TCP 健康检查（只判本机是否在监听）。
+    ///
+    /// 刻意不支持任意远端地址：`ss` 只能看本机，而"用 bash 的 /dev/tcp 探远端"
+    /// 会把命令文本变成可变的东西。远端可达性交给 HTTP 检查或 Nginx 侧。
+    CheckTcpPort {
+        port: u16,
+    },
+    /// `certbot certonly --webroot` —— HTTP-01 签发。泛域名不允许走这里（见
+    /// `deployment::exec::ssl` 的策略判定：泛域名只允许 DNS-01，而 DNS-01 在 V1
+    /// 只产出人工指引 + 解析验证）。
+    CertbotIssue {
+        domains: Vec<String>,
+        email: String,
+        webroot: String,
+    },
+    /// `certbot renew` —— 续期（幂等：未到期时 certbot 自己跳过）。
+    CertbotRenew {
+        cert_name: Option<String>,
+    },
+    /// `readlink -f` —— 读出"当前版本"软链指向哪里（回滚要靠它定位上一版）。
+    ReadLink {
+        path: String,
+    },
+    /// `rm -rf` —— **只用于清理发布目录里的旧版本**。参数校验之外，
+    /// 执行器还会要求路径落在发布根之下且是一个版本目录名。
+    RemoveDirectory {
+        path: String,
+    },
+
     // P4 command centre — read-only system snapshots (knowledge base exec).
     /// `ps` with **comm only** — never `args`, which would leak passwords and
     /// connection strings from other users' command lines into the UI.
@@ -317,6 +407,22 @@ pub enum ProbeTool {
     // 其他
     Git,
     Journalctl,
+    // P5.4 部署执行需要的工具（探测存在性，命令本身仍是固定模板）
+    Curl,
+    Certbot,
+    Unzip,
+    Tar,
+    Dig,
+    /// `sha256sum`（coreutils）—— 制品校验用。
+    Sha256Sum,
+}
+
+/// 归档格式（解包用）。显式枚举，不做"MIME/扩展名推断"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    Zip,
+    Tar,
+    TarGz,
 }
 
 impl ProbeTool {
@@ -384,6 +490,12 @@ impl ProbeTool {
             ProbeTool::Kafka => "kafka-server-start",
             ProbeTool::Git => "git",
             ProbeTool::Journalctl => "journalctl",
+            ProbeTool::Curl => "curl",
+            ProbeTool::Certbot => "certbot",
+            ProbeTool::Unzip => "unzip",
+            ProbeTool::Tar => "tar",
+            ProbeTool::Dig => "dig",
+            ProbeTool::Sha256Sum => "sha256sum",
         }
     }
 
@@ -494,6 +606,20 @@ impl Capability {
                 Duration::from_secs(45)
             }
             Capability::NginxEffectiveConfig => Duration::from_secs(20),
+            // 部署动作：耗时的都是"下载/构建/解包/签发"，超时给足，
+            // 但不能无限 —— 引擎层还会再套一层动作级超时（取两者较小）。
+            Capability::DockerBuild { .. } => Duration::from_secs(1800),
+            Capability::DockerPull { .. } => Duration::from_secs(900),
+            Capability::ComposeUp { .. } | Capability::ComposeDown { .. } => {
+                Duration::from_secs(600)
+            }
+            Capability::ExtractArchive { .. } => Duration::from_secs(600),
+            Capability::CertbotIssue { .. } | Capability::CertbotRenew { .. } => {
+                Duration::from_secs(300)
+            }
+            Capability::Checksum { .. } => Duration::from_secs(120),
+            Capability::HttpProbe { .. } => Duration::from_secs(90),
+            Capability::RemoveDirectory { .. } => Duration::from_secs(120),
             _ => super::super::remote::DEFAULT_TIMEOUT,
         }
     }
@@ -756,6 +882,166 @@ impl Capability {
                 // shell only ever sees an allowlisted program with arguments.
                 step.trim().to_string()
             }
+
+            // -- P5.3 / P5.4 typed deployment actions ------------------------
+            Capability::MakeDirs { path } => {
+                format!("mkdir -p -- {}", quoted(validate_abs_path(path, "目录路径")?))
+            }
+
+            Capability::Chmod { path, mode } => format!(
+                "chmod {} -- {}",
+                validate_octal_mode(*mode)?,
+                quoted(validate_abs_path(path, "文件路径")?)
+            ),
+
+            Capability::Checksum { path } => {
+                // 输出是 "<hash>  <path>"：哈希由 Rust 侧比对，shell 不参与判定。
+                format!(
+                    "sha256sum -- {}",
+                    quoted(validate_abs_path(path, "文件路径")?)
+                )
+            }
+
+            Capability::SymlinkForce { link, target } => format!(
+                "ln -sfn -- {} {}",
+                quoted(validate_abs_path(target, "链接目标")?),
+                quoted(validate_abs_path(link, "链接路径")?)
+            ),
+
+            Capability::ExtractArchive {
+                archive,
+                dest,
+                format,
+            } => {
+                let archive = quoted(validate_abs_path(archive, "归档路径")?);
+                let dest = quoted(validate_abs_path(dest, "解包目录")?);
+                // 归档路径已在上面校验为绝对路径（不以 `-` 开头）且被引号包住，
+                // 因此不需要 `--`；tar 的 `--` 反而会把后续选项当成成员名。
+                match format {
+                    ArchiveFormat::Zip => format!("unzip -o -q -d {dest} {archive}"),
+                    ArchiveFormat::TarGz => format!("tar -xzf {archive} -C {dest}"),
+                    ArchiveFormat::Tar => format!("tar -xf {archive} -C {dest}"),
+                }
+            }
+
+            Capability::DockerBuild {
+                context,
+                dockerfile,
+                tag,
+            } => {
+                let context = validate_abs_path(context, "构建上下文")?;
+                let dockerfile = validate_abs_path(dockerfile, "Dockerfile 路径")?;
+                if !is_within(dockerfile, context) {
+                    return Err(anyhow!("Dockerfile 必须位于构建上下文目录内"));
+                }
+                format!(
+                    "docker build -f {} -t {} -- {}",
+                    quoted(dockerfile),
+                    quoted(validate_image(tag)?),
+                    quoted(context)
+                )
+            }
+
+            Capability::DockerPull { image } => {
+                format!("docker pull -- {}", quoted(validate_image(image)?))
+            }
+
+            Capability::ComposeUp {
+                file,
+                project,
+                services,
+            } => {
+                if services.is_empty() {
+                    return Err(anyhow!("compose up 至少需要指定一个服务"));
+                }
+                if services.len() > 64 {
+                    return Err(anyhow!("compose up 一次最多指定 64 个服务"));
+                }
+                let file = quoted(validate_abs_path(file, "Compose 文件")?);
+                let project = quoted(validate_container(project)?);
+                let mut list = String::new();
+                for service in services {
+                    if !list.is_empty() {
+                        list.push(' ');
+                    }
+                    list.push_str(&quoted(validate_container(service)?));
+                }
+                format!("docker compose -f {file} -p {project} up -d {list}")
+            }
+
+            Capability::ComposeDown { file, project } => format!(
+                "docker compose -f {} -p {} down",
+                quoted(validate_abs_path(file, "Compose 文件")?),
+                quoted(validate_container(project)?)
+            ),
+
+            Capability::ResolveHost { hostname } => {
+                // `getent` 不接受 `--`，所以主机名必须**先过白名单**再拼接。
+                format!("getent ahosts {}", validate_hostname(hostname, "域名")?)
+            }
+
+            Capability::HttpProbe { url, timeout_secs } => {
+                let url = validate_http_url(url)?;
+                let seconds = (*timeout_secs).clamp(1, 120);
+                format!(
+                    "curl -sS -o /dev/null -w '%{{http_code}}' --max-time {seconds} -- {}",
+                    quoted(url)
+                )
+            }
+
+            Capability::CheckTcpPort { port } => format!(
+                "ss -H -tln {}",
+                quoted(&format!("sport = :{}", validate_port(*port)?))
+            ),
+
+            Capability::CertbotIssue {
+                domains,
+                email,
+                webroot,
+            } => {
+                if domains.is_empty() {
+                    return Err(anyhow!("签发证书至少需要一个域名"));
+                }
+                if domains.len() > 20 {
+                    return Err(anyhow!("单张证书最多 20 个域名"));
+                }
+                let webroot = quoted(validate_abs_path(webroot, "webroot 目录")?);
+                let email = quoted(validate_email(email)?);
+                let mut list = String::new();
+                for domain in domains {
+                    list.push_str(&format!(" -d {}", quoted(validate_hostname(domain, "域名")?)));
+                }
+                // `--keep-until-expiring` 让它幂等：已有效的证书再跑一遍不会重签。
+                format!(
+                    "certbot certonly --non-interactive --agree-tos --email {email} \
+                     --webroot --webroot-path {webroot} --keep-until-expiring{list}"
+                )
+            }
+
+            Capability::ReadLink { path } => format!(
+                "readlink -f -- {}",
+                quoted(validate_abs_path(path, "链接路径")?)
+            ),
+
+            Capability::RemoveDirectory { path } => {
+                // 这一条是整个枚举里唯一真正"删东西"的动作，因此多守一道：
+                // 路径必须绝对、非根、且至少三层深（`/srv/app/releases/x`）。
+                // 执行器还会再加"必须在发布根之下"的业务约束。
+                let path = validate_abs_path(path, "目录路径")?;
+                let depth = path.split('/').filter(|part| !part.is_empty()).count();
+                if depth < 3 {
+                    return Err(anyhow!("拒绝删除过浅的目录（至少 /a/b/c 的深度）：{path}"));
+                }
+                format!("rm -rf -- {}", quoted(path))
+            }
+
+            Capability::CertbotRenew { cert_name } => match cert_name {
+                Some(name) => format!(
+                    "certbot renew --non-interactive --cert-name {}",
+                    quoted(validate_cert_name(name)?)
+                ),
+                None => "certbot renew --non-interactive".to_string(),
+            },
         })
     }
 }

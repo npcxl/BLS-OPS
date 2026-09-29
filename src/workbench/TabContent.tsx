@@ -48,6 +48,13 @@ const CommandCenterView = lazy(() =>
   })),
 );
 
+/** P5.0 智能部署中心 — 应用 / 环境 / 服务 / 方案的结构化模型（不执行部署）。 */
+const DeployView = lazy(() =>
+  import("@/workbench/views/deploy/DeployView").then((module) => ({
+    default: module.DeployView,
+  })),
+);
+
 function TerminalFallback() {
   return (
     <div className="flex h-full items-center justify-center bg-surface-1">
@@ -97,6 +104,12 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <CommandCenterView tab={tab} />
+        </Suspense>
+      );
+    case "deployment":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <DeployView tab={tab} />
         </Suspense>
       );
     default:

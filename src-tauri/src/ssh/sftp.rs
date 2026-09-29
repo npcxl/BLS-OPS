@@ -695,6 +695,109 @@ impl SshSessionManager {
         }
         Ok(uploaded)
     }
+
+    /// 上传单个文件：**`.part` 临时文件 → 流式写入 → 关闭 → 同目录原子改名**。
+    ///
+    /// 这是制品导入需要的事务语义：中途失败绝不在目标目录留下半截文件 ——
+    /// 目标名要么是完整内容，要么根本不存在。返回实际写入的字节数与
+    /// SHA-256，由调用方与制品指纹比对（哈希不符就不改名，说明传输坏了）。
+    ///
+    /// 流式分块（[`UPLOAD_CHUNK_BYTES`]）而不是一次性读入内存：制品动辄几百
+    /// 兆，整份驻留内存没有意义。
+    pub async fn sftp_upload_file_atomic(
+        &self,
+        session_id: &str,
+        local_path: &std::path::Path,
+        remote_dir: &str,
+        file_name: &str,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<UploadOutcome> {
+        use sha2::{Digest, Sha256};
+
+        let name = file_name.trim();
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            return Err(anyhow!("文件名不能为空，且不能包含路径分隔符"));
+        }
+        if name.chars().any(|ch| ch.is_control()) {
+            return Err(anyhow!("文件名不能包含控制字符"));
+        }
+        crate::safe::validate_abs_path(remote_dir, "目标目录")?;
+
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let directory = remote_dir.trim_end_matches('/');
+        let part_path = format!("{directory}/{name}.part");
+        let final_path = format!("{directory}/{name}");
+        let total = tokio::fs::metadata(local_path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        let mut local = tokio::fs::File::open(local_path)
+            .await
+            .map_err(|error| anyhow!("无法读取本地文件：{error}"))?;
+        let mut remote = sftp
+            .create(&part_path)
+            .await
+            .map_err(|error| sftp_error(&part_path, error))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
+        let mut written: u64 = 0;
+        loop {
+            let read = match local.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) => {
+                    let _ = sftp.remove_file(&part_path).await;
+                    return Err(anyhow!("读取本地文件失败（已清理临时文件）：{error}"));
+                }
+            };
+            hasher.update(&buffer[..read]);
+            if let Err(error) =
+                tokio::io::AsyncWriteExt::write_all(&mut remote, &buffer[..read]).await
+            {
+                let _ = sftp.remove_file(&part_path).await;
+                return Err(anyhow!("上传失败（已清理临时文件）：{error}"));
+            }
+            written += read as u64;
+            on_progress(written, total);
+        }
+        if let Err(error) = remote.shutdown().await {
+            let _ = sftp.remove_file(&part_path).await;
+            return Err(anyhow!("上传未完成（已清理临时文件）：{error}"));
+        }
+
+        let digest = hasher.finalize();
+        let mut sha256 = String::with_capacity(64);
+        for byte in digest.as_slice() {
+            sha256.push_str(&format!("{byte:02x}"));
+        }
+
+        // 只有完整写完才改名 —— 改名前目标名不存在，所以这一步是原子的。
+        if let Err(error) = sftp.rename(&part_path, &final_path).await {
+            let _ = sftp.remove_file(&part_path).await;
+            return Err(sftp_error(&part_path, error));
+        }
+        Ok(UploadOutcome {
+            remote_path: final_path,
+            sha256,
+            size_bytes: written,
+        })
+    }
+}
+
+/// 上传分块大小。
+const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
+
+/// 一次原子上传的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadOutcome {
+    /// 目标文件的最终远程绝对路径。
+    pub remote_path: String,
+    /// 实际上传内容的 SHA-256（十六进制小写）。
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 /// Best-effort MIME type from a file name.

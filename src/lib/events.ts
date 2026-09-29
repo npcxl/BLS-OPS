@@ -32,4 +32,21 @@ export const projectScanResultEvent = (scanId: string) => `project-scan-result-$
  */
 export const editorSyncEvent = "editor-sync-update";
 
+/**
+ * P5.1 制品导入任务的进度 / 结果。Payload: `ArtifactImportTask`。
+ *
+ * Rust 侧由 `commands::deployment_center::artifact_import_event` 拼同一个名字。
+ * 每条任务一个事件名（任务 id 进名字），因此并发导入互不干扰。
+ */
+export const artifactImportEvent = (taskId: string) => `deployment-artifact-import-${taskId}`;
+
+/**
+ * P5.3 部署运行的进度 / 结果。Payload: `DeploymentRunDetail`。
+ *
+ * **按环境订阅**（不是按运行 id）：用户盯的是"这个环境现在怎么样"，而不是
+ * 某一次运行的 id。Rust 侧由 `commands::deployment_run::deployment_run_event`
+ * 拼同一个名字。
+ */
+export const deploymentRunEvent = (environmentId: string) => `deployment-run-env-${environmentId}`;
+
 export { DIRECTORY_SIZE_EVENT } from "@/api/ops-api";

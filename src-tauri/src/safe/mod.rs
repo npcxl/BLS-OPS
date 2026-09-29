@@ -31,12 +31,15 @@ mod capability;
 mod deploy;
 mod validate;
 
-pub use capability::{Capability, ContainerAction, ProbeTool, ServiceAction};
+pub use capability::{
+    require_nginx_path, ArchiveFormat, Capability, ContainerAction, ProbeTool, ServiceAction,
+};
 pub use deploy::validate_deploy_step;
 pub use validate::{
-    is_within, shell_quote, validate_abs_path, validate_container, validate_git_ref,
-    validate_image, validate_lines, validate_remote_paths, validate_repo_url, validate_site_name,
-    validate_unit,
+    is_within, shell_quote, validate_abs_path, validate_cert_name, validate_container,
+    validate_email, validate_git_ref, validate_hostname, validate_http_url, validate_image,
+    validate_lines, validate_octal_mode, validate_port, validate_remote_paths, validate_repo_url,
+    validate_site_name, validate_unit,
 };
 
 #[cfg(test)]

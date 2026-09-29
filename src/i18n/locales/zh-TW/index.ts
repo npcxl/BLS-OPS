@@ -20,6 +20,8 @@ import nginx from "./nginx";
 import settings from "./settings";
 import updater from "./updater";
 import errors from "./errors";
+import deployments from "./deployments";
+import deployExec from "./deployExec";
 
 export default {
   ...common,
@@ -36,4 +38,6 @@ export default {
   ...settings,
   ...updater,
   ...errors,
+  ...deployments,
+  ...deployExec,
 } as const;

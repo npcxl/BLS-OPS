@@ -72,6 +72,38 @@ import {
   type ProjectScanStatus,
   type ReviewState,
 } from "@/api/types/project";
+import {
+  type ArtifactConfirmOutcome,
+  type ArtifactImportConfirmation,
+  type ArtifactImportStartRequest,
+  type ArtifactImportTask,
+  type ArtifactRecord,
+  type CapacityProfile,
+  type ConfigDefinition,
+  type DeploymentApplication,
+  type DeploymentCascadeResult,
+  type DeploymentEnvironment,
+  type DeploymentPlan,
+  type DeploymentPlanGraph,
+  type DeploymentProposal,
+  type DeploymentRun,
+  type DeploymentRunDetail,
+  type DeploymentSecurityPolicy,
+  type DeploymentServiceUnit,
+  type DomainBinding,
+  type ProposalOutcome,
+  type ReleaseRecord,
+  type SecretRef,
+  type ServiceRelation,
+} from "@/api/types/deployment";
+
+// P5.3 / P5.4 的载荷类型：既要在本文件里用于 `invoke<T>()` 的泛型，
+// 也要再导出给页面用，所以这里单独 import 一次（下面那一段是 re-export）。
+import {
+  type CertificatePlan,
+  type DnsGuidance,
+  type PreflightOutcome,
+} from "@/api/types/deployment";
 
 // -- Domain types (re-exported; previously defined in this file) ------------
 export {
@@ -231,6 +263,125 @@ export {
 } from "@/api/types/command";
 
 export { message as toErrorMessage };
+
+// P5.0 智能部署中心（结构化模型；`ServiceUnit` 在此重命名为
+// `DeploymentServiceUnit`，避免与 systemd 的 `ServiceUnit` 撞名）。
+export {
+  type ApplicationKind,
+  type ArtifactKind,
+  type ArtifactRecord,
+  type ArtifactSourceKind,
+  type ArtifactStatus,
+  type CapacityProfile,
+  type ConfigDataType,
+  type ConfigDefinition,
+  type ConfigScope,
+  type ConfigSourceKind,
+  type DeploymentApplication,
+  type DeploymentCascadeResult,
+  type DeploymentEnvironment,
+  type DeploymentPlan,
+  type DeploymentPlanGraph,
+  type DeploymentRun,
+  type DeploymentRunDetail,
+  type DeploymentServiceUnit,
+  type DnsStatus,
+  type DomainBinding,
+  type EdgeCondition,
+  type EnvironmentKind,
+  type EstimationBasis,
+  type FailurePolicy,
+  type PlanActionKind,
+  type PlanEdge,
+  type PlanNode,
+  type PlanRiskLevel,
+  type PlanStatus,
+  type PortMapping,
+  type PortProtocol,
+  type ProposalSource,
+  type ReleaseRecord,
+  type ReleaseStatus,
+  type RunNode,
+  type RunNodeStatus,
+  type RunStatus,
+  type RunTrigger,
+  type SecretRef,
+  type SecretStoreKind,
+  type ServiceKind,
+  type ServiceRelation,
+  type ServiceRelationKind,
+  type ServiceRole,
+  type ServiceRuntime,
+  type SslMode,
+  type SslStatus,
+  type SourceKind,
+  // -- P5.1 制品导入（前缀 `Artifact` 避免与项目识别/监控等模块撞名）--
+  type ArtifactBuildStep,
+  type ArtifactCheckState,
+  type ArtifactConfirmOutcome,
+  type ArtifactDependencyGuess,
+  type ArtifactDependencyKind,
+  type ArtifactEnvKeyGuess,
+  type ArtifactFindingKind,
+  type ArtifactFindingSeverity,
+  type ArtifactFingerprint,
+  type ArtifactFingerprintBasis,
+  type ArtifactHealthGuess,
+  type ArtifactHealthKind,
+  type ArtifactImportConfirmation,
+  type ArtifactImportProgress,
+  type ArtifactImportSource,
+  type ArtifactImportStage,
+  type ArtifactImportStartRequest,
+  type ArtifactImportStatus,
+  type ArtifactImportTask,
+  type ArtifactInspection,
+  type ArtifactInspectionCheck,
+  type ArtifactPackageManager,
+  type ArtifactPortGuess,
+  type ArtifactRedactedEvidence,
+  type ArtifactSecurityFinding,
+  type ArtifactSecurityReport,
+  type ArtifactServiceCandidate,
+  type ArtifactStackLanguage,
+  type ArtifactStackProfile,
+  type ArtifactStartOption,
+  // -- P5.2 部署方案（前缀 `Proposal` / `Deployment` 避免撞名）--
+  type DeploymentProposal,
+  type DeploymentSecurityPolicy,
+  type ProposalAiReview,
+  type ProposalCapacity,
+  type ProposalDependency,
+  type ProposalDomain,
+  type ProposalEvidence,
+  type ProposalEvidenceClass,
+  type ProposalEvidenceSource,
+  type ProposalFingerprint,
+  type ProposalInputSnapshot,
+  type ProposalKnowledgeConflict,
+  type ProposalKnowledgeReference,
+  type ProposalOutcome,
+  type ProposalRisk,
+  type ProposalRollback,
+  type ProposalService,
+  type ProposalStatement,
+  type ProposalStatus,
+  type ProposalSummary,
+  type ProposalTopologyKind,
+  type ProposalTopologyOption,
+  type ProposalUnknown,
+  type ProposalUnknownSeverity,
+  type ProposalValidation,
+  type ProposalViolation,
+  type ProposalViolationKind,
+  type ProposalWorkflow,
+  // -- P5.3 / P5.4 执行与 DNS·SSL 指导 --
+  type CertificatePlan,
+  type DnsGuidance,
+  type PreflightOutcome,
+  type RunActionKind,
+  type RunActionPhase,
+} from "@/api/types/deployment";
 
 export const opsApi = {
   appInfo: () => invoke<AppInfo>("app_info"),
@@ -571,6 +722,249 @@ export const opsApi = {
   nginxReload: (sessionId: string) => invoke<string>("nginx_reload", { sessionId }),
   nginxSetSiteEnabled: (sessionId: string, site: string, enable: boolean) =>
     invoke<string>("nginx_set_site_enabled", { sessionId, site, enable }),
+
+  // -- P5.0 智能部署中心（结构化模型 CRUD） ---------------------------------
+  //
+  // 这一组命令只读写本机 SQLite：**不连 SSH、不跑远程命令、不产生运行记录**。
+  // 传的都是结构化实体或 id；名字里带 `save` 的是 upsert（id 为空时后端生成）。
+  // `deploymentRun*` / `deploymentRelease*` 只读（执行留给后续阶段）。
+
+  deploymentApplicationList: (serverId?: string) =>
+    invoke<DeploymentApplication[]>("deployment_application_list", {
+      serverId: serverId ?? null,
+    }),
+  deploymentApplicationGet: (id: string) =>
+    invoke<DeploymentApplication | null>("deployment_application_get", { id }),
+  deploymentApplicationSave: (application: DeploymentApplication) =>
+    invoke<DeploymentApplication>("deployment_application_save", { application }),
+  deploymentApplicationDelete: (id: string) =>
+    invoke<DeploymentCascadeResult>("deployment_application_delete", { id }),
+
+  deploymentEnvironmentList: (applicationId?: string) =>
+    invoke<DeploymentEnvironment[]>("deployment_environment_list", {
+      applicationId: applicationId ?? null,
+    }),
+  deploymentEnvironmentGet: (id: string) =>
+    invoke<DeploymentEnvironment | null>("deployment_environment_get", { id }),
+  deploymentEnvironmentSave: (environment: DeploymentEnvironment) =>
+    invoke<DeploymentEnvironment>("deployment_environment_save", { environment }),
+  deploymentEnvironmentDelete: (id: string) =>
+    invoke<DeploymentCascadeResult>("deployment_environment_delete", { id }),
+
+  deploymentServiceUnitList: (applicationId?: string, environmentId?: string) =>
+    invoke<DeploymentServiceUnit[]>("deployment_service_unit_list", {
+      applicationId: applicationId ?? null,
+      environmentId: environmentId ?? null,
+    }),
+  deploymentServiceUnitGet: (id: string) =>
+    invoke<DeploymentServiceUnit | null>("deployment_service_unit_get", { id }),
+  deploymentServiceUnitSave: (unit: DeploymentServiceUnit) =>
+    invoke<DeploymentServiceUnit>("deployment_service_unit_save", { unit }),
+  /** 返回被连带删除的关系数量。 */
+  deploymentServiceUnitDelete: (id: string) =>
+    invoke<number>("deployment_service_unit_delete", { id }),
+  /** 把 P3.8 的已确认项目挂到服务上（`projectId` 可空 = 只记路径）。 */
+  deploymentServiceUnitLinkProject: (unitId: string, projectPath: string, projectId?: string) =>
+    invoke<DeploymentServiceUnit>("deployment_service_unit_link_project", {
+      unitId,
+      projectId: projectId ?? null,
+      projectPath,
+    }),
+  deploymentServiceUnitUnlinkProject: (unitId: string) =>
+    invoke<DeploymentServiceUnit>("deployment_service_unit_unlink_project", { unitId }),
+  /** 反查：某个已确认项目被哪些服务引用。 */
+  deploymentServiceUnitsForProject: (projectId: string) =>
+    invoke<string[]>("deployment_service_units_for_project", { projectId }),
+
+  deploymentServiceRelationList: (applicationId?: string) =>
+    invoke<ServiceRelation[]>("deployment_service_relation_list", {
+      applicationId: applicationId ?? null,
+    }),
+  deploymentServiceRelationSave: (relation: ServiceRelation) =>
+    invoke<ServiceRelation>("deployment_service_relation_save", { relation }),
+  deploymentServiceRelationDelete: (id: string) =>
+    invoke<void>("deployment_service_relation_delete", { id }),
+
+  deploymentCapacityGet: (environmentId: string) =>
+    invoke<CapacityProfile | null>("deployment_capacity_get", { environmentId }),
+  deploymentCapacitySave: (profile: CapacityProfile) =>
+    invoke<CapacityProfile>("deployment_capacity_save", { profile }),
+
+  deploymentDomainList: (environmentId?: string) =>
+    invoke<DomainBinding[]>("deployment_domain_list", {
+      environmentId: environmentId ?? null,
+    }),
+  deploymentDomainSave: (binding: DomainBinding) =>
+    invoke<DomainBinding>("deployment_domain_save", { binding }),
+  deploymentDomainDelete: (id: string) => invoke<void>("deployment_domain_delete", { id }),
+
+  deploymentConfigList: (applicationId?: string) =>
+    invoke<ConfigDefinition[]>("deployment_config_list", {
+      applicationId: applicationId ?? null,
+    }),
+  deploymentConfigSave: (config: ConfigDefinition) =>
+    invoke<ConfigDefinition>("deployment_config_save", { config }),
+  deploymentConfigDelete: (id: string) => invoke<void>("deployment_config_delete", { id }),
+
+  /** 只返回密钥**引用**，永远没有明文。 */
+  deploymentSecretList: (applicationId?: string) =>
+    invoke<SecretRef[]>("deployment_secret_list", { applicationId: applicationId ?? null }),
+  deploymentSecretSave: (reference: SecretRef) =>
+    invoke<SecretRef>("deployment_secret_save", { reference }),
+  deploymentSecretDelete: (id: string) => invoke<void>("deployment_secret_delete", { id }),
+
+  deploymentArtifactList: (applicationId?: string, serviceUnitId?: string) =>
+    invoke<ArtifactRecord[]>("deployment_artifact_list", {
+      applicationId: applicationId ?? null,
+      serviceUnitId: serviceUnitId ?? null,
+    }),
+  deploymentArtifactSave: (artifact: ArtifactRecord) =>
+    invoke<ArtifactRecord>("deployment_artifact_save", { artifact }),
+  deploymentArtifactDelete: (id: string) => invoke<void>("deployment_artifact_delete", { id }),
+
+  deploymentPlanList: (applicationId?: string, environmentId?: string) =>
+    invoke<DeploymentPlan[]>("deployment_plan_list", {
+      applicationId: applicationId ?? null,
+      environmentId: environmentId ?? null,
+    }),
+  deploymentPlanGet: (id: string) =>
+    invoke<DeploymentPlanGraph | null>("deployment_plan_get", { id }),
+  /** 保存整个方案图：Rust 侧校验图合法性（唯一 key / 无环 / 风险不下调）后整体替换。 */
+  deploymentPlanSave: (graph: DeploymentPlanGraph) =>
+    invoke<DeploymentPlanGraph>("deployment_plan_save", { graph }),
+  /** 返回被连带删除的运行记录数量。 */
+  deploymentPlanDelete: (id: string) => invoke<number>("deployment_plan_delete", { id }),
+
+  deploymentRunList: (applicationId?: string, planId?: string, limit = 50) =>
+    invoke<DeploymentRun[]>("deployment_run_list", {
+      applicationId: applicationId ?? null,
+      planId: planId ?? null,
+      limit,
+    }),
+  deploymentRunGet: (id: string) =>
+    invoke<DeploymentRunDetail | null>("deployment_run_get", { id }),
+
+  deploymentReleaseList: (environmentId?: string, serviceUnitId?: string) =>
+    invoke<ReleaseRecord[]>("deployment_release_list", {
+      environmentId: environmentId ?? null,
+      serviceUnitId: serviceUnitId ?? null,
+    }),
+  deploymentReleaseGet: (id: string) =>
+    invoke<ReleaseRecord | null>("deployment_release_get", { id }),
+  deploymentReleaseSave: (release: ReleaseRecord) =>
+    invoke<ReleaseRecord>("deployment_release_save", { release }),
+  deploymentReleaseDelete: (id: string) => invoke<void>("deployment_release_delete", { id }),
+  /** 某个服务当前生效的版本（没有则 null）。 */
+  deploymentReleaseActive: (serviceUnitId: string) =>
+    invoke<ReleaseRecord | null>("deployment_release_active", { serviceUnitId }),
+
+  // -- P5.1 制品导入与多服务识别 ---------------------------------------------
+  //
+  // 分析阶段只读本地文件（+ 服务器目录的只读清单），**不执行任何上传内容**。
+  // 上传只在用户点"上传"时发生，且走 `.part` + 哈希校验 + 原子改名。
+  // 进度通过 `artifactImportEvent(taskId)` 推给前端。
+
+  /** 发起一次导入，立即返回任务（分析在后台跑）。 */
+  deploymentArtifactImportStart: (request: ArtifactImportStartRequest) =>
+    invoke<ArtifactImportTask>("deployment_artifact_import_start", { request }),
+  deploymentArtifactImportStatus: (taskId: string) =>
+    invoke<ArtifactImportTask | null>("deployment_artifact_import_status", { taskId }),
+  deploymentArtifactImportList: (applicationId?: string) =>
+    invoke<ArtifactImportTask[]>("deployment_artifact_import_list", {
+      applicationId: applicationId ?? null,
+    }),
+  deploymentArtifactImportCancel: (taskId: string) =>
+    invoke<boolean>("deployment_artifact_import_cancel", { taskId }),
+  deploymentArtifactImportRetry: (taskId: string) =>
+    invoke<ArtifactImportTask>("deployment_artifact_import_retry", { taskId }),
+  /** 用户确认：把识别结果落成多个服务 + 各自独立的制品。 */
+  deploymentArtifactImportConfirm: (confirmation: ArtifactImportConfirmation) =>
+    invoke<ArtifactConfirmOutcome>("deployment_artifact_import_confirm", { confirmation }),
+  deploymentArtifactImportDelete: (taskId: string) =>
+    invoke<void>("deployment_artifact_import_delete", { taskId }),
+  /** 上传制品到服务器；哈希不符会删掉已传文件并报错。 */
+  deploymentArtifactUpload: (artifactId: string, sessionId: string, remoteDir: string) =>
+    invoke<ArtifactRecord>("deployment_artifact_upload", { artifactId, sessionId, remoteDir }),
+
+  // -- P5.3 类型化 Workflow Engine -------------------------------------------
+  //
+  // 执行入口。动作是类型化枚举（没有命令字符串），所有远程命令经
+  // `safe::Capability` 构造；进度通过 `deploymentRunEvent(environmentId)` 推送，
+  // 轮询 `deploymentRunGet` 是兜底。
+
+  /** 执行前预检：本地能判定的都判掉，不能判定的如实标 unknown。 */
+  deploymentRunPreflight: (planId: string, sessionId?: string) =>
+    invoke<PreflightOutcome>("deployment_run_preflight", {
+      planId,
+      sessionId: sessionId ?? null,
+    }),
+  /** 开始一次部署。`approveHighRisk` = 预先批准所有需要确认的节点。 */
+  deploymentRunStart: (planId: string, sessionId: string, approveHighRisk = false) =>
+    invoke<DeploymentRunDetail>("deployment_run_start", {
+      planId,
+      sessionId,
+      approveHighRisk,
+    }),
+  /** 批准一个高风险节点；运行处于暂停时会自动从这个节点继续。 */
+  deploymentRunApproveNode: (runId: string, nodeKey: string, sessionId?: string) =>
+    invoke<DeploymentRunDetail>("deployment_run_approve_node", {
+      runId,
+      nodeKey,
+      sessionId: sessionId ?? null,
+    }),
+  /** 重试失败节点，或从指定节点继续（不指定就从未完成的那个继续）。 */
+  deploymentRunResume: (runId: string, sessionId: string, fromNodeKey?: string) =>
+    invoke<DeploymentRunDetail>("deployment_run_resume", {
+      runId,
+      sessionId,
+      fromNodeKey: fromNodeKey ?? null,
+    }),
+  /** 取消（协作式：当前动作跑完才停）。 */
+  deploymentRunCancel: (runId: string) =>
+    invoke<boolean>("deployment_run_cancel", { runId }),
+  /** 回滚到上一版本（独立入口，同样需要审批）。 */
+  deploymentRunRollback: (runId: string, sessionId: string) =>
+    invoke<DeploymentRunDetail>("deployment_run_rollback", { runId, sessionId }),
+
+  // -- P5.4 DNS / SSL 指导（V1：指引 + 验证，不调服务商 API）-----------------
+  deploymentDnsGuidance: (bindingId: string) =>
+    invoke<DnsGuidance>("deployment_dns_guidance", { bindingId }),
+  deploymentSslPlan: (bindingId: string, sessionId?: string) =>
+    invoke<CertificatePlan>("deployment_ssl_plan", {
+      bindingId,
+      sessionId: sessionId ?? null,
+    }),
+
+  // -- P5.2 部署方案生成（确定性规则引擎 + 知识库；AI 可选）------------------
+  //
+  // 生成只读输入、只写本机 SQLite；`confirm` 落成的是一份 **draft** 计划
+  // （审批标记原样保留），批准与执行属于后续阶段。
+
+  /** 生成方案。`ready = false` 时没有可执行工作流，只有必须回答的问题。 */
+  deploymentProposalGenerate: (applicationId: string, environmentId?: string, sessionId?: string) =>
+    invoke<ProposalOutcome>("deployment_proposal_generate", {
+      applicationId,
+      environmentId: environmentId ?? null,
+      sessionId: sessionId ?? null,
+    }),
+  deploymentProposalList: (applicationId?: string, limit = 20) =>
+    invoke<DeploymentProposal[]>("deployment_proposal_list", {
+      applicationId: applicationId ?? null,
+      limit,
+    }),
+  deploymentProposalGet: (id: string) =>
+    invoke<DeploymentProposal | null>("deployment_proposal_get", { id }),
+  /** 用户确认方案 → 落成草案计划（**不是批准**）。 */
+  deploymentProposalConfirm: (id: string) =>
+    invoke<DeploymentPlanGraph>("deployment_proposal_confirm", { id }),
+  deploymentProposalReject: (id: string) =>
+    invoke<DeploymentProposal>("deployment_proposal_reject", { id }),
+  deploymentProposalDelete: (id: string) => invoke<void>("deployment_proposal_delete", { id }),
+  deploymentPolicyGet: (applicationId: string) =>
+    invoke<DeploymentSecurityPolicy>("deployment_policy_get", { applicationId }),
+  /** 返回的是**被钉硬之后**的策略（某几项不允许关掉）。 */
+  deploymentPolicySave: (applicationId: string, policy: DeploymentSecurityPolicy) =>
+    invoke<DeploymentSecurityPolicy>("deployment_policy_save", { applicationId, policy }),
 
   // -- Legacy project records (P5 foundation) -------------------------------
   projectList: () => invoke<ProjectRecord[]>("project_list"),

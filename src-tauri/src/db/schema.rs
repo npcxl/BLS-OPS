@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -212,6 +212,442 @@ CREATE INDEX IF NOT EXISTS idx_project_merges_server
 /// The project-merges table on its own, for `migrate()`.
 pub const PROJECT_MERGES_SCHEMA_SQL: &str = project_merges_schema_sql!();
 
+/// P5.0 智能部署中心（v9）：应用 / 环境 / 服务 / 关系 / 容量 / 域名 / 配置 /
+/// 密钥引用 / 制品 / 方案图 / 运行 / 版本。
+///
+/// 三条刻意的取舍：
+///
+/// * **`runtime_json` 存的是类型化枚举**（`ServiceRuntime`），不是命令字符串；
+///   模型里没有任何字段能装下一条自由命令（见 `deployment::validate`）。
+/// * **`secret_refs` 没有 value 列**：密钥只会出现在 OS Keyring 或部署期的
+///   运行时临时文件里，库里只有引用。
+/// * **不引用 `projects` / `deployments`**（P3 那套 `commands_json`）：新模型与
+///   旧记录完全解耦，旧表原样保留（legacy）。唯一关联是
+///   `service_units.confirmed_project_id` → P3.8 的已确认项目。
+///
+/// `server_id` 刻意**不加外键**：P3 的 `server_delete` 级联目前只清
+/// sessions/history，加了 FK 会让删除服务器直接失败。删除服务器后残留的部署记录
+/// 由后续阶段一起并入服务器级联（见 P5.0 报告的"已知缺口"）。
+macro_rules! deployment_center_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS deployment_applications (
+    id TEXT PRIMARY KEY NOT NULL,
+    server_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    application_kind TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    default_branch TEXT NOT NULL DEFAULT '',
+    confirmed_project_path TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_applications_server_name
+    ON deployment_applications (server_id, name);
+
+CREATE TABLE IF NOT EXISTS deployment_environments (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    deploy_root TEXT NOT NULL,
+    capacity_profile_id TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_environments_app_name
+    ON deployment_environments (application_id, name);
+
+CREATE TABLE IF NOT EXISTS service_units (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    service_kind TEXT NOT NULL,
+    runtime_json TEXT NOT NULL,
+    deploy_path TEXT,
+    confirmed_project_id TEXT,
+    confirmed_project_path TEXT,
+    artifact_id TEXT,
+    status TEXT NOT NULL DEFAULT 'incomplete',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE,
+    FOREIGN KEY (environment_id) REFERENCES deployment_environments (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_service_units_env_name
+    ON service_units (environment_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_service_units_application
+    ON service_units (application_id);
+
+CREATE INDEX IF NOT EXISTS idx_service_units_confirmed_project
+    ON service_units (confirmed_project_id);
+
+CREATE TABLE IF NOT EXISTS service_relations (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    from_service_id TEXT NOT NULL,
+    to_service_id TEXT NOT NULL,
+    relation_kind TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 1,
+    failure_policy TEXT NOT NULL DEFAULT 'block',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_service_relations_triple
+    ON service_relations (from_service_id, to_service_id, relation_kind);
+
+CREATE INDEX IF NOT EXISTS idx_service_relations_application
+    ON service_relations (application_id);
+
+CREATE TABLE IF NOT EXISTS capacity_profiles (
+    id TEXT PRIMARY KEY NOT NULL,
+    environment_id TEXT NOT NULL,
+    expected_dau INTEGER,
+    concurrent_users INTEGER,
+    peak_qps REAL,
+    avg_qps REAL,
+    websocket_connections INTEGER,
+    response_target_ms INTEGER,
+    monthly_bandwidth_gb REAL,
+    monthly_upload_gb REAL,
+    monthly_data_growth_gb REAL,
+    availability_target TEXT,
+    rpo_minutes INTEGER,
+    rto_minutes INTEGER,
+    monthly_budget REAL,
+    budget_currency TEXT,
+    estimation_basis TEXT NOT NULL DEFAULT 'unknown',
+    assumptions TEXT NOT NULL DEFAULT '[]',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (environment_id) REFERENCES deployment_environments (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capacity_profiles_environment
+    ON capacity_profiles (environment_id);
+
+CREATE TABLE IF NOT EXISTS domain_bindings (
+    id TEXT PRIMARY KEY NOT NULL,
+    environment_id TEXT NOT NULL,
+    service_unit_id TEXT,
+    domain TEXT NOT NULL,
+    listen_port INTEGER NOT NULL,
+    path_prefix TEXT NOT NULL DEFAULT '/',
+    dns_credential_ref TEXT,
+    dns_status TEXT NOT NULL DEFAULT 'unknown',
+    dns_checked_at INTEGER,
+    ssl_mode TEXT NOT NULL DEFAULT 'none',
+    ssl_status TEXT NOT NULL DEFAULT 'not_applicable',
+    ssl_expires_at INTEGER,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (environment_id) REFERENCES deployment_environments (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_domain_bindings_target
+    ON domain_bindings (environment_id, domain, listen_port, path_prefix);
+
+CREATE INDEX IF NOT EXISTS idx_domain_bindings_service
+    ON domain_bindings (service_unit_id);
+
+CREATE TABLE IF NOT EXISTS config_definitions (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    service_unit_id TEXT,
+    key TEXT NOT NULL,
+    data_type TEXT NOT NULL,
+    required INTEGER NOT NULL DEFAULT 0,
+    secret INTEGER NOT NULL DEFAULT 0,
+    scope TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT,
+    default_value TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_config_definitions_key
+    ON config_definitions (application_id, key, COALESCE(service_unit_id, ''));
+
+CREATE TABLE IF NOT EXISTS secret_refs (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT,
+    name TEXT NOT NULL,
+    store_kind TEXT NOT NULL,
+    keyring_service TEXT,
+    keyring_account TEXT,
+    runtime_path TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_refs_name
+    ON secret_refs (COALESCE(application_id, ''), name);
+
+CREATE TABLE IF NOT EXISTS artifact_records (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    service_unit_id TEXT,
+    kind TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL DEFAULT '',
+    file_name TEXT,
+    size_bytes INTEGER,
+    sha256 TEXT,
+    docker_digest TEXT,
+    version_label TEXT,
+    built_at INTEGER,
+    checksum_verified INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_records_application
+    ON artifact_records (application_id, created_at);
+
+CREATE TABLE IF NOT EXISTS deployment_plans (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'draft',
+    proposal_source TEXT NOT NULL DEFAULT 'manual',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE,
+    FOREIGN KEY (environment_id) REFERENCES deployment_environments (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_plans_env_name
+    ON deployment_plans (environment_id, name);
+
+CREATE TABLE IF NOT EXISTS plan_nodes (
+    id TEXT PRIMARY KEY NOT NULL,
+    plan_id TEXT NOT NULL,
+    node_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    action TEXT NOT NULL,
+    service_unit_id TEXT,
+    risk_level TEXT NOT NULL,
+    approval_required INTEGER NOT NULL DEFAULT 0,
+    skippable INTEGER NOT NULL DEFAULT 1,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES deployment_plans (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_nodes_key
+    ON plan_nodes (plan_id, node_key);
+
+CREATE TABLE IF NOT EXISTS plan_edges (
+    id TEXT PRIMARY KEY NOT NULL,
+    plan_id TEXT NOT NULL,
+    from_node_id TEXT NOT NULL,
+    to_node_id TEXT NOT NULL,
+    condition TEXT NOT NULL DEFAULT 'always',
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES deployment_plans (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_edges_pair
+    ON plan_edges (plan_id, from_node_id, to_node_id);
+
+CREATE TABLE IF NOT EXISTS deployment_runs (
+    id TEXT PRIMARY KEY NOT NULL,
+    plan_id TEXT NOT NULL,
+    application_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    server_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    trigger_source TEXT NOT NULL DEFAULT 'manual',
+    plan_version INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    duration_ms INTEGER,
+    log TEXT NOT NULL DEFAULT '',
+    error_message TEXT,
+    snapshot_json TEXT,
+    release_id TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_runs_application
+    ON deployment_runs (application_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_runs_plan
+    ON deployment_runs (plan_id, created_at);
+
+CREATE TABLE IF NOT EXISTS run_nodes (
+    id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    node_key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    started_at INTEGER,
+    finished_at INTEGER,
+    duration_ms INTEGER,
+    exit_code INTEGER,
+    output TEXT NOT NULL DEFAULT '',
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES deployment_runs (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_nodes_run
+    ON run_nodes (run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS release_records (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    service_unit_id TEXT,
+    run_id TEXT,
+    version_label TEXT NOT NULL,
+    artifact_id TEXT,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    activated_at INTEGER,
+    replaced_release_id TEXT,
+    nginx_backup_path TEXT,
+    image_digest TEXT,
+    config_snapshot_json TEXT,
+    status TEXT NOT NULL DEFAULT 'superseded',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES deployment_applications (id) ON DELETE CASCADE,
+    FOREIGN KEY (environment_id) REFERENCES deployment_environments (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_release_records_environment
+    ON release_records (environment_id, created_at);
+
+-- 一个服务在任一时刻只能有一个生效版本（部分唯一索引）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_release_records_active
+    ON release_records (service_unit_id)
+    WHERE is_active = 1 AND service_unit_id IS NOT NULL;
+"#
+    };
+}
+
+/// The P5.0 deployment-centre tables on their own, for `migrate()`.
+pub const DEPLOYMENT_CENTER_SCHEMA_SQL: &str = deployment_center_schema_sql!();
+
+/// P5.1 制品导入任务（v10）：**只保存最终态**。
+///
+/// 中间进度没有持久化价值（应用重启后任务本来就作废），所以这里存的是
+/// 任务的对象快照：来源、指纹、安全报告、识别结果整段 JSON。
+/// 这样"确认导入"在重启之后依然可做 —— 用户看到的东西和库里的一致。
+macro_rules! deployment_import_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS artifact_import_tasks (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT,
+    service_unit_id TEXT,
+    source_json TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    fingerprint_json TEXT,
+    security_json TEXT,
+    inspection_json TEXT,
+    error TEXT,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    artifact_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_import_tasks_application
+    ON artifact_import_tasks (application_id, created_at DESC);
+"#
+    };
+}
+
+/// The P5.1 artifact-import tables on their own, for `migrate()`.
+pub const DEPLOYMENT_IMPORT_SCHEMA_SQL: &str = deployment_import_schema_sql!();
+
+/// P5.2 部署方案与安全策略（v11）。
+///
+/// 方案整份存 JSON（**不可变的审计快照**），指纹关键字段另存列以便按哈希检索；
+/// 安全策略同样存 JSON —— 它是策略不是数据，字段会随引擎演进。
+macro_rules! deployment_proposal_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS deployment_proposals (
+    id TEXT PRIMARY KEY NOT NULL,
+    application_id TEXT NOT NULL,
+    environment_id TEXT,
+    server_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    ready INTEGER NOT NULL DEFAULT 0,
+    approvable INTEGER NOT NULL DEFAULT 0,
+    input_hash TEXT NOT NULL,
+    output_hash TEXT NOT NULL,
+    model TEXT,
+    prompt_version TEXT NOT NULL DEFAULT '',
+    knowledge_version TEXT NOT NULL DEFAULT '',
+    engine_version TEXT NOT NULL DEFAULT '',
+    proposal_json TEXT NOT NULL,
+    plan_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_proposals_application
+    ON deployment_proposals (application_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_proposals_input_hash
+    ON deployment_proposals (input_hash);
+
+CREATE TABLE IF NOT EXISTS deployment_security_policies (
+    application_id TEXT PRIMARY KEY NOT NULL,
+    policy_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+"#
+    };
+}
+
+/// The P5.2 proposal tables on their own, for `migrate()`.
+pub const DEPLOYMENT_PROPOSAL_SCHEMA_SQL: &str = deployment_proposal_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -312,7 +748,10 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     project_reviews_schema_sql!(),
     project_inventory_schema_sql!(),
     confirmed_projects_schema_sql!(),
-    project_merges_schema_sql!()
+    project_merges_schema_sql!(),
+    deployment_center_schema_sql!(),
+    deployment_import_schema_sql!(),
+    deployment_proposal_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -384,6 +823,40 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 结论持久化，后续扫描回填 merged_into 标注，绝不覆盖人工决定。
         conn.execute_batch(PROJECT_MERGES_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 8u32)?;
+    }
+    if version < 9 {
+        // P5.0 部署中心：应用 / 环境 / 服务 / 关系 / 容量 / 域名 / 配置 / 密钥引用 /
+        // 制品 / 方案图 / 运行 / 版本。纯新增，不触碰旧表（老库升级后形状与
+        // 新库完全一致）。
+        conn.execute_batch(DEPLOYMENT_CENTER_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 9u32)?;
+    }
+    if version < 10 {
+        // P5.1 制品导入任务：纯新增一张表，不触碰 P5.0 的任何表。
+        // 旧库升级后形状与新库完全一致（同一段 `CREATE TABLE IF NOT EXISTS`）。
+        conn.execute_batch(DEPLOYMENT_IMPORT_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 10u32)?;
+    }
+    if version < 11 {
+        // P5.2 部署方案与安全策略：同样纯新增，不触碰任何旧表。
+        conn.execute_batch(DEPLOYMENT_PROPOSAL_SCHEMA_SQL)?;
+        // 容量问卷补一个"响应时间目标"：填了它，容量估算就能用真实值，
+        // 而不是"平均响应 0.5 秒"这条假设。老库升级时列不存在，补上即可。
+        add_column(&conn, "capacity_profiles", "response_target_ms", "INTEGER")?;
+        conn.pragma_update(None, "user_version", 11u32)?;
+    }
+    if version < 12 {
+        // P5.3：运行节点要记录**类型化动作标识与风险级别**，否则重启之后历史
+        // 运行只剩一句标题，无法复核"当时执行的是哪个动作、有多危险"。
+        // 纯新增列（旧行取默认值），不触碰任何既有数据。
+        add_column(&conn, "run_nodes", "action", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(
+            &conn,
+            "run_nodes",
+            "risk_level",
+            "TEXT NOT NULL DEFAULT 'low'",
+        )?;
+        conn.pragma_update(None, "user_version", 12u32)?;
     }
     Ok(())
 }

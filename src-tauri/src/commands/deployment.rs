@@ -1,4 +1,15 @@
-//! Legacy project records and deployment execution (retained for P5).
+//! **LEGACY（P5.0 起标记，勿扩展）** —— 基于 `projects.commands_json` 的旧部署路径。
+//!
+//! 保留原因只有一个：P3 期间它是唯一的项目/部署记录载体，P5.0 的新模型
+//! （`crate::deployment`）**不引用它**，两者没有数据往来。
+//!
+//! 明确不做的三件事：
+//! * **不再扩展 `commands_json` 作为正式工作流** —— 新模型用类型化的
+//!   `ServiceUnit.runtime` 与 `PlanNode.action` 表达"怎么跑"，没有任何字段能装下
+//!   一条自由命令字符串。
+//! * 不把 `deployment_execute` 当作部署中心的执行入口（它没注册 IPC，
+//!   见 `lib.rs` 的注释；后续阶段的执行走 `crate::deployment` + Workflow Engine）。
+//! * 不迁移数据：老记录原样保留，UI 上归入"旧记录"。
 //!
 //! The steps come from the project record, **not** from the caller: the
 //! WebView passes only a project id, so it cannot smuggle in a command.
@@ -10,9 +21,10 @@ use super::{open_db, record_audit};
 use crate::{db, state::AppState};
 
 // ---------------------------------------------------------------------------
-// Projects & deployments (legacy records retained for P5)
+// Projects & deployments (LEGACY: P3 records kept only as history)
 // ---------------------------------------------------------------------------
 
+/// 列出旧项目记录（legacy，不在部署中心新模型里使用）。
 #[tauri::command]
 pub async fn project_list(state: State<'_, AppState>) -> Result<Vec<db::ProjectRecord>, String> {
     let conn = open_db(&state)?;

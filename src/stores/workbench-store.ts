@@ -134,6 +134,9 @@ const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
   logs: "logs",
   projects: "project",
   commands: "command_center",
+  // 部署中心不是会话驱动（它只读写本机 SQLite 模型），但同样需要自己的视图 Tab；
+  // 放进这张表就复用了"同类型 Tab 只开一个"的逻辑。
+  deploy: "deployment",
 };
 
 /**

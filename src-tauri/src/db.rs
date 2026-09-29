@@ -16,6 +16,9 @@
 mod audit;
 mod command_center;
 mod credentials;
+mod deployment;
+mod deployment_import;
+mod deployment_proposal;
 mod history;
 mod known_hosts;
 mod model;
@@ -27,17 +30,23 @@ mod sessions;
 pub use audit::*;
 pub use command_center::*;
 pub use credentials::*;
+pub use deployment::*;
+pub use deployment_import::*;
+pub use deployment_proposal::*;
 pub use history::*;
 pub use known_hosts::*;
 pub use model::*;
 pub use projects::*;
-pub use schema::{migrate, AppDb, P3_SCHEMA_SQL, SCHEMA_VERSION};
+pub use schema::{AppDb, SCHEMA_VERSION};
 pub use servers::*;
 pub use sessions::*;
 
 // Re-exported for the unit tests, which live next to this module.
 #[cfg(test)]
-pub(crate) use schema::{column_exists, SCHEMA_SQL};
+pub(crate) use schema::{
+    column_exists, migrate, DEPLOYMENT_CENTER_SCHEMA_SQL, DEPLOYMENT_IMPORT_SCHEMA_SQL,
+    P3_SCHEMA_SQL, SCHEMA_SQL,
+};
 
 #[cfg(test)]
 mod tests;

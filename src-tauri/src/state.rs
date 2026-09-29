@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    db::AppDb, dirsize::DirectorySizeRegistry, editor_sync::SyncRegistry, monitor::MonitorRegistry,
-    project_discovery::ScanRegistry, ssh::SshSessionManager,
+    db::AppDb,
+    deployment::artifact::tasks::TaskRegistry,
+    deployment::run::{EnvironmentLocks, RunRegistry},
+    dirsize::DirectorySizeRegistry,
+    editor_sync::SyncRegistry,
+    monitor::MonitorRegistry,
+    project_discovery::ScanRegistry,
+    ssh::SshSessionManager,
 };
 
 #[derive(Clone)]
@@ -17,6 +23,12 @@ pub struct AppState {
     pub dir_sizes: Arc<DirectorySizeRegistry>,
     /// 本地编辑器同步会话（编辑器保存 → SFTP 回传）。
     pub editor_syncs: SyncRegistry,
+    /// P5.1 制品导入任务（指纹 / 安全扫描 / 识别），内存态 + 可取消。
+    pub artifact_imports: TaskRegistry,
+    /// P5.3 部署运行（取消位 + 本次运行已批准的节点）。
+    pub runs: RunRegistry,
+    /// P5.3 环境锁：**禁止两个部署同时改同一个环境**。
+    pub env_locks: EnvironmentLocks,
 }
 
 impl AppState {
@@ -28,6 +40,9 @@ impl AppState {
             project_scans: ScanRegistry::default(),
             dir_sizes: Arc::new(DirectorySizeRegistry::default()),
             editor_syncs: SyncRegistry::default(),
+            artifact_imports: TaskRegistry::default(),
+            runs: RunRegistry::default(),
+            env_locks: EnvironmentLocks::default(),
         }
     }
 }

@@ -23,7 +23,7 @@ fn is_safe_char(ch: char) -> bool {
 
 /// Rejects empty values, over-long ones, control characters and anything
 /// outside [`is_safe_char`].
-fn validate_token<'a>(value: &'a str, field: &str, max_len: usize) -> Result<&'a str> {
+pub(crate) fn validate_token<'a>(value: &'a str, field: &str, max_len: usize) -> Result<&'a str> {
     if value.is_empty() {
         return Err(anyhow!("{field}不能为空"));
     }
@@ -235,4 +235,104 @@ pub fn validate_repo_url(value: &str) -> Result<&str> {
             "仓库地址必须以 https://、http://、ssh://、git:// 或 git@ 开头"
         ))
     }
+}
+
+// -- Hostnames, e-mail, URLs, file modes (P5.3 / P5.4) -----------------------
+//
+// 这几个判定同时被"命令构造"（`capability.rs`）与"动作校验"
+// （`deployment::action::validate`）使用。**必须只有一份实现**：两处各写一遍
+// 规则，迟早会出现"动作校验放行、命令构造拒绝"（或反过来）的裂缝。
+
+/// 主机名 / 域名：`example.com`、`api.example.com`、`*.example.com`。
+///
+/// 泛域名只允许 `*.` 打头 —— `a.*.b` 在任何 CA 那里都不合法，与其让 certbot
+/// 报错，不如在这里挡住。
+pub fn validate_hostname<'a>(value: &'a str, field: &str) -> Result<&'a str> {
+    let host = validate_token(value, field, 253)?;
+    if host.starts_with('.') || host.ends_with('.') || host.contains("..") {
+        return Err(anyhow!("{field}格式不正确：{value}"));
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return Err(anyhow!("{field}至少需要两段（例如 example.com）"));
+    }
+    for (position, label) in labels.iter().enumerate() {
+        if *label == "*" {
+            if position != 0 {
+                return Err(anyhow!("{field}的通配符只能出现在最左侧"));
+            }
+            continue;
+        }
+        if label.is_empty() || label.len() > 63 {
+            return Err(anyhow!("{field}的每一段长度必须在 1 到 63 之间"));
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(anyhow!("{field}的每一段不能以 - 开头或结尾"));
+        }
+    }
+    Ok(host)
+}
+
+/// HTTP(S) URL：`http://` / `https://` + 主机 + 可选路径。
+///
+/// **不接受查询串与片段** —— 它们会把 `&`、`?` 之类字符带进命令文本。
+pub fn validate_http_url<'a>(value: &'a str) -> Result<&'a str> {
+    let url = validate_token(value, "健康检查地址", 512)?;
+    let rest = match url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        Some(rest) => rest,
+        None => return Err(anyhow!("健康检查地址必须以 http:// 或 https:// 开头")),
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(anyhow!("健康检查地址缺少主机名"));
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    if host.parse::<std::net::IpAddr>().is_err() {
+        validate_hostname(host, "健康检查主机")?;
+    }
+    Ok(url)
+}
+
+/// 邮箱（certbot 注册用）。
+pub fn validate_email<'a>(value: &'a str) -> Result<&'a str> {
+    let email = validate_token(value, "邮箱", 254)?;
+    let (local, domain) = match email.split_once('@') {
+        Some(parts) => parts,
+        None => return Err(anyhow!("邮箱格式不正确：{value}")),
+    };
+    if local.is_empty() || domain.contains('@') {
+        return Err(anyhow!("邮箱格式不正确：{value}"));
+    }
+    validate_hostname(domain, "邮箱域名")?;
+    Ok(email)
+}
+
+/// 文件权限位：只允许这几档常见值。写含密钥的配置文件时**不允许** 777。
+pub fn validate_octal_mode(mode: u32) -> Result<String> {
+    if matches!(mode, 0o600 | 0o640 | 0o644 | 0o700 | 0o750 | 0o755) {
+        Ok(format!("{mode:o}"))
+    } else {
+        Err(anyhow!("文件权限只允许 600 / 640 / 644 / 700 / 750 / 755"))
+    }
+}
+
+/// 端口：1–65535（0 不是可绑定的端口，直接拒绝）。
+pub fn validate_port(port: u16) -> Result<u16> {
+    if port == 0 {
+        Err(anyhow!("端口必须在 1 到 65535 之间"))
+    } else {
+        Ok(port)
+    }
+}
+
+/// certbot 的证书名：一个文件名（不带路径）。
+pub fn validate_cert_name<'a>(value: &'a str) -> Result<&'a str> {
+    let name = validate_container(value)?;
+    if name.contains('/') || name == "." || name == ".." {
+        return Err(anyhow!("证书名不能包含路径分隔符"));
+    }
+    Ok(name)
 }

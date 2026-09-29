@@ -4,6 +4,11 @@ pub mod capability_probe;
 pub mod command_center;
 mod commands;
 mod db;
+/// P5.0 智能部署中心领域模型（应用/环境/服务/方案图/运行/版本）。
+///
+/// 只建模与校验，**不执行任何部署**：模型里没有任何自由文本命令字段，
+/// 校验层拒绝一切含 shell 元字符的输入（见模块文档）。
+pub mod deployment;
 /// Fourth-layer deployment adapter registry.
 pub mod deployment_adapter;
 /// Round 1 of project discovery: enumerate real deployment instances.
@@ -226,6 +231,91 @@ pub fn run() {
             commands::project_save,
             commands::project_delete,
             // deployment IPC is intentionally not exposed in P3; retained as P5 foundation
+            //
+            // ---- P5.0 智能部署中心（结构化模型 CRUD） ----
+            //
+            // 全部是"读写自己的 SQLite 模型"：不连 SSH、不跑命令、不产生运行记录。
+            // `deployment_run_*` / `deployment_release_*` 只读（执行留给后续阶段）。
+            commands::deployment_application_list,
+            commands::deployment_application_get,
+            commands::deployment_application_save,
+            commands::deployment_application_delete,
+            commands::deployment_environment_list,
+            commands::deployment_environment_get,
+            commands::deployment_environment_save,
+            commands::deployment_environment_delete,
+            commands::deployment_service_unit_list,
+            commands::deployment_service_unit_get,
+            commands::deployment_service_unit_save,
+            commands::deployment_service_unit_delete,
+            commands::deployment_service_unit_link_project,
+            commands::deployment_service_unit_unlink_project,
+            commands::deployment_service_units_for_project,
+            commands::deployment_service_relation_list,
+            commands::deployment_service_relation_save,
+            commands::deployment_service_relation_delete,
+            commands::deployment_capacity_get,
+            commands::deployment_capacity_save,
+            commands::deployment_domain_list,
+            commands::deployment_domain_save,
+            commands::deployment_domain_delete,
+            commands::deployment_config_list,
+            commands::deployment_config_save,
+            commands::deployment_config_delete,
+            commands::deployment_secret_list,
+            commands::deployment_secret_save,
+            commands::deployment_secret_delete,
+            commands::deployment_artifact_list,
+            commands::deployment_artifact_save,
+            commands::deployment_artifact_delete,
+            commands::deployment_plan_list,
+            commands::deployment_plan_get,
+            commands::deployment_plan_save,
+            commands::deployment_plan_delete,
+            commands::deployment_run_list,
+            commands::deployment_run_get,
+            commands::deployment_release_list,
+            commands::deployment_release_get,
+            commands::deployment_release_save,
+            commands::deployment_release_delete,
+            commands::deployment_release_active,
+            // ---- P5.1 制品导入与多服务识别 ----
+            //
+            // 分析阶段只读本地文件（+ 服务器目录的只读清单），**不执行任何上传内容**；
+            // 上传只在用户点"上传"时发生，且走 `.part` + 哈希校验 + 原子改名。
+            commands::deployment_artifact_import_start,
+            commands::deployment_artifact_import_status,
+            commands::deployment_artifact_import_list,
+            commands::deployment_artifact_import_cancel,
+            commands::deployment_artifact_import_retry,
+            commands::deployment_artifact_import_confirm,
+            commands::deployment_artifact_import_delete,
+            commands::deployment_artifact_upload,
+            // ---- P5.2 部署方案生成（确定性规则引擎 + 知识库；AI 可选）----
+            //
+            // 只读输入 + 只写本机 SQLite；`confirm` 落成的是一份 **draft** 计划
+            // （审批标记原样保留），批准与执行属于后续阶段。
+            commands::deployment_proposal_generate,
+            commands::deployment_proposal_list,
+            commands::deployment_proposal_get,
+            commands::deployment_proposal_confirm,
+            commands::deployment_proposal_reject,
+            commands::deployment_proposal_delete,
+            commands::deployment_policy_get,
+            commands::deployment_policy_save,
+            // ---- P5.3 类型化 Workflow Engine ----
+            //
+            // 预检与运行：所有远程命令都经 `safe::Capability`，所有动作都是
+            // 类型化枚举（没有命令字符串），Secret 只从钥匙串读取且不进日志。
+            commands::deployment_run_preflight,
+            commands::deployment_run_start,
+            commands::deployment_run_approve_node,
+            commands::deployment_run_resume,
+            commands::deployment_run_cancel,
+            commands::deployment_run_rollback,
+            // ---- P5.4 DNS / SSL 指导（V1：只指引与验证，不调服务商 API）----
+            commands::deployment_dns_guidance,
+            commands::deployment_ssl_plan,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

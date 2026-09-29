@@ -39,7 +39,7 @@ pub use model::{
 pub use paths::{
     base_name, format_size_human, natural_cmp, parent_of, posix_join, posix_normalize,
 };
-pub(crate) use sftp::sftp_error;
+pub(crate) use sftp::{sftp_error, UploadOutcome};
 pub use utf8_stream::Utf8StreamDecoder;
 
 #[cfg(test)]

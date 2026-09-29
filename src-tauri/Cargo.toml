@@ -20,11 +20,22 @@ dirs = "6"
 encoding_rs = "0.8.35"
 keyring = "4.1.6"
 notify = "7"
+# P5.1 制品导入：只用这四个，且都只做"读"。
+# * `sha2`   —— 内容指纹（Artifact 与内容哈希绑定，文件一变分析就失效）。
+# * `zip`    —— 读 ZIP 中央目录 + 按需读单个条目；`default-features = false`
+#   关掉了 bzip2/zstd/aes 等一堆用不到的解码器，只留 deflate。
+# * `tar`/`flate2` —— 读 .tar 与 .tar.gz 的条目头。
+# 绝不用它们**解压到磁盘**：所有读取都是流式的，带字节上限
+# （见 `deployment::artifact::limits`）。
+flate2 = "1"
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 russh = "0.63.1"
 russh-sftp = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
+tar = "0.4"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-clipboard-manager = "2.3.3"
 tauri-plugin-dialog = "2"

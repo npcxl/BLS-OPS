@@ -288,8 +288,12 @@ fn clean_advisor() -> FakeAdvisor {
             notes: vec![AiNote {
                 text: "建议把备份演练写进上线清单，目前方案只覆盖了版本回滚。".to_string(),
                 target: Some("rollback".to_string()),
+                evidence_ids: Vec::new(),
+                confidence: Some(70),
             }],
             alternatives: vec!["如果后续要做多机冗余，可以把静态站点先放到对象存储。".to_string()],
+            open_questions: vec!["备份演练是否已排进上线窗口？".to_string()],
+            knowledge_citations: Vec::new(),
         }),
     }
 }
@@ -1012,18 +1016,33 @@ fn an_ai_note_can_be_added_but_never_changes_the_decision() {
         without.proposal.recommended_topology.kind, with_ai.proposal.recommended_topology.kind,
         "AI 不允许改动推荐形态"
     );
+
     assert_eq!(
         without.proposal.workflow.nodes.len(),
         with_ai.proposal.workflow.nodes.len()
     );
+
     assert_eq!(without.proposal.approvals, with_ai.proposal.approvals);
 
     let review = with_ai.proposal.ai_review.expect("应当有 AI 记录");
     assert_eq!(review.model, "fake-model-1");
     assert_eq!(review.prompt_version, super::PROMPT_VERSION);
     assert_eq!(review.prompt_hash.len(), 64);
-    assert_eq!(review.accepted, 2);
+    // 批注 + 备选考虑 + 待确认问题各一条。
+    assert_eq!(review.accepted, 3);
     assert!(review.rejected.is_empty());
+    assert_eq!(
+        review.status,
+        crate::deployment::proposal::model::AiReviewStatus::Succeeded
+    );
+    // AI 提的"待确认问题"只进批注，**不会**变成方案的 open_questions ——
+    // 那一份是确定性结论，AI 改不动它。
+    assert_eq!(
+        without.proposal.unknowns.len(),
+        with_ai.proposal.unknowns.len(),
+        "AI 不能往方案的 unknowns 里塞东西"
+    );
+
     assert!(with_ai
         .proposal
         .summary
@@ -1045,13 +1064,19 @@ fn an_ai_note_that_contains_a_command_is_rejected_and_recorded() {
                 AiNote {
                     text: "直接执行 rm -rf /opt/shop/old 清理旧版本即可。".to_string(),
                     target: Some("rollback".to_string()),
+                    evidence_ids: Vec::new(),
+                    confidence: Some(90),
                 },
                 AiNote {
                     text: "建议把健康检查的超时从 5 秒调到 3 秒。".to_string(),
-                    target: Some("topology".to_string()),
+                    target: Some("health_check".to_string()),
+                    evidence_ids: Vec::new(),
+                    confidence: Some(55),
                 },
             ],
             alternatives: Vec::new(),
+            open_questions: Vec::new(),
+            knowledge_citations: Vec::new(),
         }),
     };
     let outcome = engine::generate(&inputs(Params::default()), Some(&advisor));

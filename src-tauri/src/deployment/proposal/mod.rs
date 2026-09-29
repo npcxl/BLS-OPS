@@ -50,4 +50,7 @@ pub const ENGINE_VERSION: &str = "p5.2-engine-1";
 pub const PROPOSAL_SCHEMA_VERSION: &str = "deployment-proposal/1";
 
 /// 提示词版本（AI 增强用）。与模型名一起进方案指纹。
-pub const PROMPT_VERSION: &str = "p5.2-prompt-1";
+///
+/// * `p5.2-prompt-1`：初版（只带确定性方案摘要）。
+/// * `p5.5-prompt-2`：分区提示词 + 用户知识块 + 引用/证据要求 + 输出 Schema 版本。
+pub const PROMPT_VERSION: &str = "p5.5-prompt-2";

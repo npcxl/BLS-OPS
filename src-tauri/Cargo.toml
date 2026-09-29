@@ -28,6 +28,20 @@ notify = "7"
 # 绝不用它们**解压到磁盘**：所有读取都是流式的，带字节上限
 # （见 `deployment::artifact::limits`）。
 flate2 = "1"
+# P5.5 部署方案 AI 复核：唯一的 HTTP 客户端。
+#  
+# * 只用 `default-tls`（= rustls）与 `json`：**不启用** gzip/cookies/multipart
+#   等本项目用不到的能力（少一个能力就少一处攻击面）。
+# * 版本与 `Cargo.lock` 里已有的 reqwest 一致（tauri 的 updater 已经用它），
+#   因此不需要下载新的 crate 树。
+
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "charset",
+    "http2",
+    "default-tls",
+] }
+
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
 russh = "0.63.1"
 russh-sftp = "2"

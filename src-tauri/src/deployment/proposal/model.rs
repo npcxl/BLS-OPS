@@ -552,6 +552,31 @@ pub struct KnowledgeReference {
     pub source: String,
     /// 这条知识为什么被用上（匹配到什么）。
     pub applies: String,
+    /// 发给模型的片段（已按预算截断）。**必填可空**：方案里只登记"引用了什么"，
+    /// 片段本身在这里也留着，便于事后核对"当时给模型看的到底是什么"。
+    #[serde(default)]
+    pub excerpt: String,
+    /// 片段哈希 —— 提示词哈希要覆盖它（片段变了哈希就得变）。
+    #[serde(default)]
+    pub excerpt_hash: String,
+    /// 最后验证时间（过期知识必须被标注，不能当新知识用）。
+    #[serde(default)]
+    pub last_verified_at: Option<i64>,
+    /// 来源：系统内置规则，还是用户维护的知识。
+    #[serde(default)]
+    pub origin: KnowledgeOrigin,
+}
+
+/// 知识的来源层级。
+///
+/// **用户知识永远不能覆盖系统安全规则**（审批、Secret 保护、路径围栏、
+/// 命令限制），因此这个区分必须进模型、进提示词、进审计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeOrigin {
+    #[default]
+    System,
+    User,
 }
 
 /// 冲突怎么裁定的。
@@ -604,6 +629,35 @@ pub struct AiReview {
     /// 被拒的建议（含原因）——**不许静默丢弃**。
     pub rejected: Vec<AiRejection>,
     pub notes: Vec<Statement>,
+    /// P5.5：这次复核的最终状态（供界面显示"成功/失败/部分被拒"）。
+    #[serde(default)]
+    pub status: AiReviewStatus,
+    /// 实际发起的请求次数（含有限重试）。
+    #[serde(default)]
+    pub attempts: u32,
+    /// 模型调用耗时（毫秒）。失败时是"失败前花了多久"。
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    /// 本次发送给模型的知识条目（**方案指纹要能追溯到版本**）。
+    #[serde(default)]
+    pub knowledge_refs: Vec<KnowledgeReference>,
+}
+
+/// AI 复核的状态（与后台任务状态一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiReviewStatus {
+    /// 还没跑过复核。
+    #[default]
+    Idle,
+    Queued,
+    Running,
+    Succeeded,
+    /// 请求失败（网络 / 认证 / 超时）——确定性方案不受影响。
+    Failed,
+    /// 答复全部被安全校验拒绝（模型说了不该说的话）。
+    Rejected,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +665,37 @@ pub struct AiReview {
 pub struct AiRejection {
     pub text: String,
     pub reason: String,
+    /// 拒绝的分类（界面按类型折叠展示，也便于统计）。
+    #[serde(default)]
+    pub kind: AiRejectionKind,
+}
+
+/// 拒绝原因分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiRejectionKind {
+    /// 含 Markdown 代码块。
+    Markdown,
+    /// 含命令 / 命令替换。
+    Command,
+    /// 含 shell 元字符组成的片段。
+    ShellSymbol,
+    /// 内容过长。
+    TooLong,
+    /// 空内容。
+    Empty,
+    /// 不是有效 JSON。
+    InvalidJson,
+    /// 出现了约定的结构里没有的字段。
+    UnknownField,
+    /// 引用了不存在的知识条目。
+    FakeCitation,
+    /// 试图修改确定性结论（拓扑 / 容量 / 工作流 / 审批 / 风险）。
+    ModificationAttempt,
+    /// 请求失败（网络 / 认证 / 超时）。
+    ProviderError,
+    #[default]
+    Other,
 }
 
 // -- 校验 -------------------------------------------------------------------
@@ -737,6 +822,10 @@ pub struct ProposalFingerprint {
     /// AI 模型名；未启用时为空。
     pub model: Option<String>,
     pub prompt_version: String,
+    /// 本次 AI 复核的提示词哈希（含知识条目 id/版本/片段哈希与输出 Schema 版本）。
+    /// 没跑过复核就是 `None` —— 与 `model` 成对出现。
+    #[serde(default)]
+    pub ai_prompt_hash: Option<String>,
     pub knowledge_version: String,
     /// 输入快照的哈希（同样的输入一定得到同样的值）。
     pub input_hash: String,

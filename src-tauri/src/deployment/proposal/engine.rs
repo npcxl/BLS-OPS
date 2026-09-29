@@ -227,6 +227,8 @@ pub fn generate(inputs: &ProposalInputs, advisor: Option<&dyn ProposalAdvisor>) 
             schema_version: PROPOSAL_SCHEMA_VERSION.to_string(),
             model: advisor.map(|advisor| advisor.model()),
             prompt_version: PROMPT_VERSION.to_string(),
+            // 同步路径（测试 / 本地复核）不记录提示词哈希：它只由异步复核写入。
+            ai_prompt_hash: None,
             knowledge_version: knowledge.version.clone(),
             input_hash: input_hash(inputs, &knowledge),
             output_hash: String::new(),
@@ -593,12 +595,20 @@ pub fn input_hash(inputs: &ProposalInputs, knowledge: &KnowledgeResult) -> Strin
 }
 
 /// 输出哈希：**去掉 id / 时间戳**后的方案正文。
+///
+/// P5.5 起还会**剥掉 AI 层**（`ai_review` 与指纹里的模型 / 提示词字段）：
+/// AI 复核是事后附加的批注层，同一份输入配不同模型会得到不同批注 —— 如果把它
+/// 算进哈希，"可复现"就变成了"必须用同一个模型问出同一段话来"。
+/// 确定性产物（拓扑、容量、工作流、风险、审批、回滚）仍逐字节参与哈希。
 pub fn output_hash(proposal: &DeploymentProposal) -> String {
     let mut clone = proposal.clone();
     clone.id = String::new();
     clone.created_at = 0;
     clone.fingerprint.generated_at = 0;
     clone.fingerprint.output_hash = String::new();
+    clone.fingerprint.model = None;
+    clone.fingerprint.ai_prompt_hash = None;
+    clone.ai_review = None;
     let text = serde_json::to_string(&clone).unwrap_or_default();
     fingerprint::hash_bytes(text.as_bytes())
 }

@@ -671,6 +671,12 @@ pub fn retrieve(query: &KnowledgeQuery) -> KnowledgeResult {
             version: KNOWLEDGE_VERSION.to_string(),
             source: hit.entry.source.to_string(),
             applies: hit.matched.join(", "),
+            // 系统内置知识不给"片段"：它的作用是参与确定性评分，
+            // 发给模型看的是**用户知识**（见 `deployment::knowledge`）。
+            excerpt: String::new(),
+            excerpt_hash: String::new(),
+            last_verified_at: None,
+            origin: super::model::KnowledgeOrigin::System,
         });
         for claim in hit.entry.claims {
             match claim.payload {

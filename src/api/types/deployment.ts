@@ -633,6 +633,168 @@ export interface DeploymentCascadeResult {
 }
 
 // ===========================================================================
+// P5.5 AI 提供方与用户知识库
+// ===========================================================================
+
+/** 提供方类型。第一版只有 OpenAI 兼容协议。 */
+export type AiProviderKind = "openai_compatible";
+
+/** 前端可见的提供方 —— **密钥只有一个布尔值**。 */
+export interface AiProviderView {
+  id: string;
+  name: string;
+  provider_kind: AiProviderKind;
+  base_url: string;
+  model: string;
+  /** 钥匙串里是否已保存密钥（不会给出 Key 本身，也不给长度）。 */
+  has_api_key: boolean;
+  enabled: boolean;
+  is_default: boolean;
+  allow_insecure_http: boolean;
+  timeout_seconds: number;
+  max_output_tokens: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** 保存入参。`api_key` 留空 = 保留原密钥。 */
+export interface AiProviderSaveRequest {
+  id?: string | null;
+  name: string;
+  provider_kind: AiProviderKind;
+  base_url: string;
+  model: string;
+  api_key?: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  allow_insecure_http: boolean;
+  timeout_seconds: number;
+  max_output_tokens: number;
+}
+
+export interface AiProviderTestResult {
+  ok: boolean;
+  latency_ms: number;
+  model: string;
+  message: string;
+  error_code: string | null;
+}
+
+export type AiTaskStatus = "idle" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AiReviewTask {
+  id: string;
+  proposal_id: string;
+  provider_id: string | null;
+  model: string | null;
+  status: AiTaskStatus;
+  started_at: number | null;
+  finished_at: number | null;
+  duration_ms: number | null;
+  attempts: number;
+  error: string | null;
+  error_code: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+// -- 知识库 ------------------------------------------------------------------
+
+export type KnowledgeScope = "global" | "application" | "environment";
+
+export type KnowledgeCategory =
+  | "platform"
+  | "deployment_pattern"
+  | "sizing"
+  | "dns"
+  | "ssl"
+  | "health_check"
+  | "rollback"
+  | "security"
+  | "troubleshooting"
+  | "project_context"
+  | "custom";
+
+export type KnowledgeSourceType = "manual" | "markdown_file" | "imported_text";
+
+export type KnowledgeDocStatus = "draft" | "active" | "archived";
+
+export interface KnowledgeDocument {
+  id: string;
+  title: string;
+  scope: KnowledgeScope;
+  application_id: string | null;
+  environment_id: string | null;
+  category: KnowledgeCategory;
+  tags: string[];
+  source_type: KnowledgeSourceType;
+  source_name: string;
+  version: number;
+  status: KnowledgeDocStatus;
+  content: string;
+  content_hash: string;
+  enabled: boolean;
+  last_verified_at: number | null;
+  note: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface KnowledgeVersion {
+  id: string;
+  document_id: string;
+  version: number;
+  title: string;
+  content: string;
+  content_hash: string;
+  source_type: KnowledgeSourceType;
+  note: string;
+  created_at: number;
+}
+
+export interface KnowledgeUsageRecord {
+  id: string;
+  document_id: string;
+  version: number;
+  proposal_id: string;
+  used_by: string;
+  created_at: number;
+}
+
+/** 任务是否还在跑（前端便利判断；Rust 侧是 `is_active()`）。 */
+export function isAiTaskActive(task: AiReviewTask | null): boolean {
+  return task?.status === "queued" || task?.status === "running";
+}
+
+export interface KnowledgeHit {
+  document_id: string;
+  version: number;
+  title: string;
+  excerpt: string;
+  score: number;
+  matched_terms: string[];
+  source_name: string;
+  last_verified_at: number | null;
+  scope: KnowledgeScope;
+  category: KnowledgeCategory;
+  conflicts_with: string[];
+  /** 正文里有"忽略系统规则"这类文字 —— 只能当引用数据。 */
+  suspicious: boolean;
+  suspicious_markers: string[];
+  /** 派生字段（前端算）：提示词里的条目 id。 */
+  entry_id?: string;
+}
+
+export interface KnowledgeQueryInput {
+  application_id?: string | null;
+  environment_id?: string | null;
+  terms?: string[];
+  categories?: KnowledgeCategory[];
+  tags?: string[];
+  limit?: number;
+}
+
+// ===========================================================================
 // P5.1 制品导入与多服务识别
 // ===========================================================================
 //
@@ -1154,9 +1316,24 @@ export interface ProposalKnowledgeConflict {
   explanation: string;
 }
 
+/** P5.5：拒绝原因的分类（界面按它折叠展示）。 */
+export type ProposalAiRejectionKind =
+  | "markdown"
+  | "command"
+  | "shell_symbol"
+  | "too_long"
+  | "empty"
+  | "invalid_json"
+  | "unknown_field"
+  | "fake_citation"
+  | "modification_attempt"
+  | "provider_error"
+  | "other";
+
 export interface ProposalAiRejection {
   text: string;
   reason: string;
+  kind: ProposalAiRejectionKind;
 }
 
 export interface ProposalAiReview {
@@ -1166,6 +1343,12 @@ export interface ProposalAiReview {
   accepted: number;
   rejected: ProposalAiRejection[];
   notes: ProposalStatement[];
+  /** P5.5：这次复核的最终状态。 */
+  status: "idle" | "queued" | "running" | "succeeded" | "failed" | "rejected" | "cancelled";
+  attempts: number;
+  duration_ms: number | null;
+  /** 本次发送给模型的知识条目（可跳转到对应版本）。 */
+  knowledge_refs: ProposalKnowledgeReference[];
 }
 
 export type ProposalViolationKind =

@@ -4,12 +4,14 @@
 //! re-exports below keep every path `commands::server_list`-style working, so
 //! `lib.rs`'s `invoke_handler` list is untouched by this refactor.
 
+mod ai_provider;
 mod app;
 mod command_center;
 mod containers;
 mod credentials;
 mod deployment;
 mod deployment_center;
+mod deployment_knowledge;
 mod deployment_proposal;
 mod deployment_run;
 mod editor_sync;
@@ -25,12 +27,14 @@ mod sftp;
 mod ssh;
 mod vscode;
 
+pub use ai_provider::*;
 pub use app::*;
 pub use command_center::*;
 pub use containers::*;
 pub use credentials::*;
 pub use deployment::*;
 pub use deployment_center::*;
+pub use deployment_knowledge::*;
 pub use deployment_proposal::*;
 pub use deployment_run::*;
 pub use editor_sync::*;

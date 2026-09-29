@@ -52,7 +52,9 @@ impl Default for BaseUrlPolicy {
 
 /// 环回 / 本机别名。这些地址上的 `http` 是允许的（本地模型）。
 pub fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim_matches(|ch| ch == '[' || ch == ']').to_ascii_lowercase();
+    let host = host
+        .trim_matches(|ch| ch == '[' || ch == ']')
+        .to_ascii_lowercase();
     if host == "localhost" || host.ends_with(".localhost") {
         return true;
     }
@@ -64,13 +66,17 @@ pub fn is_loopback_host(host: &str) -> bool {
 
 /// 私网 / 链路本地地址（只用于给出更准确的提示文案，不用于放行）。
 pub fn is_private_host(host: &str) -> bool {
-    let host = host.trim_matches(|ch| ch == '[' || ch == ']').to_ascii_lowercase();
+    let host = host
+        .trim_matches(|ch| ch == '[' || ch == ']')
+        .to_ascii_lowercase();
     match host.parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V4(address)) => {
             address.is_private() || address.is_link_local() || address.is_unspecified()
         }
         Ok(std::net::IpAddr::V6(address)) => {
-            address.is_loopback() || address.is_unspecified() || (address.segments()[0] & 0xfe00) == 0xfc00
+            address.is_loopback()
+                || address.is_unspecified()
+                || (address.segments()[0] & 0xfe00) == 0xfc00
         }
         Err(_) => false,
     }
@@ -133,9 +139,9 @@ pub fn validate_base_url(raw: &str, policy: BaseUrlPolicy) -> Result<String, AiP
 
     // 主机与端口。IPv6 字面量用 `[::1]` 形式。
     let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-        let (host, tail) = rest.split_once(']').ok_or_else(|| {
-            AiProviderError::InvalidConfig("IPv6 主机名缺少右方括号".to_string())
-        })?;
+        let (host, tail) = rest
+            .split_once(']')
+            .ok_or_else(|| AiProviderError::InvalidConfig("IPv6 主机名缺少右方括号".to_string()))?;
         let port = match tail.strip_prefix(':') {
             Some(port) => Some(port),
             None if tail.is_empty() => None,
@@ -234,9 +240,15 @@ mod tests {
 
     #[test]
     fn https_anywhere_is_fine() {
-        assert_eq!(ok("https://api.example.com/v1"), "https://api.example.com/v1");
+        assert_eq!(
+            ok("https://api.example.com/v1"),
+            "https://api.example.com/v1"
+        );
         // 尾部斜杠会被规范掉（同一份配置不该有两种写法）。
-        assert_eq!(ok("https://api.example.com/v1/"), "https://api.example.com/v1");
+        assert_eq!(
+            ok("https://api.example.com/v1/"),
+            "https://api.example.com/v1"
+        );
         assert_eq!(ok("  https://api.example.com  "), "https://api.example.com");
     }
 
@@ -252,12 +264,20 @@ mod tests {
         let error = validate_base_url("http://api.example.com/v1", BaseUrlPolicy::default())
             .expect_err("公网明文 http 必须被拒");
         assert_eq!(error.code(), "invalid_config");
-        assert!(error.user_message().contains("https"), "{}", error.user_message());
+        assert!(
+            error.user_message().contains("https"),
+            "{}",
+            error.user_message()
+        );
 
         // 内网同样默认拒绝（提示文案会说是内网）。
-        let private =
-            validate_base_url("http://10.0.0.5:8000/v1", BaseUrlPolicy::default()).expect_err("内网明文也要显式允许");
-        assert!(private.user_message().contains("内网"), "{}", private.user_message());
+        let private = validate_base_url("http://10.0.0.5:8000/v1", BaseUrlPolicy::default())
+            .expect_err("内网明文也要显式允许");
+        assert!(
+            private.user_message().contains("内网"),
+            "{}",
+            private.user_message()
+        );
 
         // 显式开启后才放行。
         let allowed = validate_base_url(
@@ -279,8 +299,8 @@ mod tests {
             "data:text/plain,hello",
             "api.example.com/v1",
         ] {
-            let error = validate_base_url(raw, BaseUrlPolicy::default())
-                .expect_err("必须拒绝非 http(s)");
+            let error =
+                validate_base_url(raw, BaseUrlPolicy::default()).expect_err("必须拒绝非 http(s)");
             assert!(
                 error.user_message().contains("https://"),
                 "{raw} → {}",
@@ -291,29 +311,56 @@ mod tests {
 
     #[test]
     fn credentials_in_the_url_are_rejected() {
-        let error = validate_base_url("https://user:pass@api.example.com/v1", BaseUrlPolicy::default())
-            .expect_err("不能携带凭据");
-        assert!(error.user_message().contains("钥匙串"), "{}", error.user_message());
+        let error = validate_base_url(
+            "https://user:pass@api.example.com/v1",
+            BaseUrlPolicy::default(),
+        )
+        .expect_err("不能携带凭据");
+        assert!(
+            error.user_message().contains("钥匙串"),
+            "{}",
+            error.user_message()
+        );
     }
 
     #[test]
     fn query_and_fragment_are_rejected() {
-        assert!(validate_base_url("https://api.example.com/v1?key=abc", BaseUrlPolicy::default()).is_err());
-        assert!(validate_base_url("https://api.example.com/v1#x", BaseUrlPolicy::default()).is_err());
+        assert!(validate_base_url(
+            "https://api.example.com/v1?key=abc",
+            BaseUrlPolicy::default()
+        )
+        .is_err());
+        assert!(
+            validate_base_url("https://api.example.com/v1#x", BaseUrlPolicy::default()).is_err()
+        );
     }
 
     #[test]
     fn malformed_hosts_and_ports_are_rejected() {
         assert!(validate_base_url("https://", BaseUrlPolicy::default()).is_err());
         assert!(validate_base_url("https:///v1", BaseUrlPolicy::default()).is_err());
-        assert!(validate_base_url("https://api.example.com:0/v1", BaseUrlPolicy::default()).is_err());
-        assert!(validate_base_url("https://api.example.com:99999/v1", BaseUrlPolicy::default()).is_err());
-        assert!(validate_base_url("https://api.example.com:abc/v1", BaseUrlPolicy::default()).is_err());
+        assert!(
+            validate_base_url("https://api.example.com:0/v1", BaseUrlPolicy::default()).is_err()
+        );
+        assert!(
+            validate_base_url("https://api.example.com:99999/v1", BaseUrlPolicy::default())
+                .is_err()
+        );
+        assert!(
+            validate_base_url("https://api.example.com:abc/v1", BaseUrlPolicy::default()).is_err()
+        );
         // 路径里的 `..` 会被用来跳出网关前缀。
-        assert!(validate_base_url("https://api.example.com/../admin", BaseUrlPolicy::default()).is_err());
+        assert!(
+            validate_base_url("https://api.example.com/../admin", BaseUrlPolicy::default())
+                .is_err()
+        );
         // 空格与控制字符。
-        assert!(validate_base_url("https://api.example.com/v 1", BaseUrlPolicy::default()).is_err());
-        assert!(validate_base_url("https://api.example.com/v\n1", BaseUrlPolicy::default()).is_err());
+        assert!(
+            validate_base_url("https://api.example.com/v 1", BaseUrlPolicy::default()).is_err()
+        );
+        assert!(
+            validate_base_url("https://api.example.com/v\n1", BaseUrlPolicy::default()).is_err()
+        );
     }
 
     #[test]
@@ -322,7 +369,13 @@ mod tests {
             completions_url("https://api.example.com/v1"),
             "https://api.example.com/v1/chat/completions"
         );
-        assert_eq!(completions_url("https://api.example.com/v1/"), "https://api.example.com/v1/chat/completions");
-        assert_eq!(models_url("https://api.example.com/v1"), "https://api.example.com/v1/models");
+        assert_eq!(
+            completions_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            models_url("https://api.example.com/v1"),
+            "https://api.example.com/v1/models"
+        );
     }
 }

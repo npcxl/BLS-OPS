@@ -34,6 +34,7 @@ import { ArtifactImportPanel } from "./artifact-import";
 import { ProposalPanel } from "./proposal-panel";
 import { RunPanel } from "./run-panel";
 import { ApplicationDialog, EnvironmentDialog, PlanDialog, ServiceDialog } from "./dialogs";
+import { KnowledgePanel } from "./knowledge-panel";
 import { ApplicationsList, EnvironmentsList, PlansList, RunsList, ServicesList } from "./lists";
 import { newApplication, newEnvironment, newServiceUnit } from "./form";
 import { useDeploymentCenter } from "./use-deployment-center";
@@ -44,6 +45,7 @@ type TabId =
   | "services"
   | "artifacts"
   | "proposal"
+  | "knowledge"
   | "execute"
   | "plans"
   | "runs";
@@ -54,6 +56,7 @@ const TAB_ORDER: TabId[] = [
   "services",
   "artifacts",
   "proposal",
+  "knowledge",
   "execute",
   "plans",
   "runs",
@@ -65,6 +68,7 @@ const TAB_LABEL_KEYS: Record<TabId, string> = {
   services: "Deploy services",
   artifacts: "Artifacts",
   proposal: "Proposal",
+  knowledge: "Knowledge base",
   execute: "Deploy run",
   plans: "Plans",
   runs: "Runs",
@@ -298,6 +302,13 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
               // 能力缓存，方案会如实标注"该能力未探测"。
               sessionId={null}
               onConfirmed={() => void center.reload()}
+            />
+          )}
+
+          {activeTab === "knowledge" && (
+            <KnowledgePanel
+              applicationId={center.applicationId}
+              environmentId={center.environmentId}
             />
           )}
 

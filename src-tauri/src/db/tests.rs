@@ -21,7 +21,8 @@ use crate::deployment::model::{
     ServiceRelationKind, ServiceRole, ServiceRuntime, ServiceUnit, SourceKind, SslMode, SslStatus,
 };
 
-fn test_db() -> Connection {
+/// 测试用数据库（其它 db 子模块的单测也用它，因此 `pub(crate)`）。
+pub(crate) fn test_db() -> Connection {
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     conn.execute_batch(SCHEMA_SQL).expect("schema");
     migrate(&conn).expect("migrate");

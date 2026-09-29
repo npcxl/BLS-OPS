@@ -31,8 +31,10 @@
 //! `docs/P5_DEPLOYMENT_CENTER_DESIGN.md`。
 
 pub mod action;
+pub mod ai;
 pub mod artifact;
 pub mod exec;
+pub mod knowledge;
 pub mod model;
 /// P5.2 部署方案生成：确定性规则引擎 + 离线知识库 + **可选**的 AI 增强。
 ///

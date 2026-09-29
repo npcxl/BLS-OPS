@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -648,6 +648,114 @@ CREATE TABLE IF NOT EXISTS deployment_security_policies (
 /// The P5.2 proposal tables on their own, for `migrate()`.
 pub const DEPLOYMENT_PROPOSAL_SCHEMA_SQL: &str = deployment_proposal_schema_sql!();
 
+/// P5.5 AI 提供方、复核任务与用户知识库（v13）。
+///
+/// 三条纪律：
+/// * `ai_providers` **只有 `api_key_ref`**（钥匙串账户名），没有任何能装明文密钥的列；
+/// * `ai_review_tasks` 只存状态 / 耗时 / 次数 / 脱敏错误，**不存提示词与答复原文**；
+/// * 知识库分两张表：当前版本（`knowledge_documents`）+ 历史版本
+///   （`knowledge_document_versions`，只追加不覆盖），删除走归档而不是物理删除，
+///   因此"历史方案引用了哪一版"永远查得到。
+macro_rules! deployment_ai_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS ai_providers (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    provider_kind TEXT NOT NULL,
+    base_url TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    api_key_ref TEXT,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    allow_insecure_http INTEGER NOT NULL DEFAULT 0,
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    max_output_tokens INTEGER NOT NULL DEFAULT 1200,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_providers_default
+    ON ai_providers (enabled, is_default);
+
+CREATE TABLE IF NOT EXISTS ai_review_tasks (
+    id TEXT PRIMARY KEY NOT NULL,
+    proposal_id TEXT NOT NULL,
+    provider_id TEXT,
+    model TEXT,
+    status TEXT NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    duration_ms INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    error_code TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_review_tasks_proposal
+    ON ai_review_tasks (proposal_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    application_id TEXT,
+    environment_id TEXT,
+    category TEXT NOT NULL,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    source_type TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 0,
+    last_verified_at INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_documents_scope
+    ON knowledge_documents (scope, status, enabled);
+
+CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+    id TEXT PRIMARY KEY NOT NULL,
+    document_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE (document_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_versions_document
+    ON knowledge_document_versions (document_id, version);
+
+CREATE TABLE IF NOT EXISTS knowledge_usage_records (
+    id TEXT PRIMARY KEY NOT NULL,
+    document_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    proposal_id TEXT NOT NULL,
+    used_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (document_id, version, proposal_id, used_by)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_usage_document
+    ON knowledge_usage_records (document_id, created_at DESC);
+"#
+    };
+}
+
+/// The P5.5 AI / knowledge tables on their own, for `migrate()`.
+pub const DEPLOYMENT_AI_SCHEMA_SQL: &str = deployment_ai_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -751,7 +859,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     project_merges_schema_sql!(),
     deployment_center_schema_sql!(),
     deployment_import_schema_sql!(),
-    deployment_proposal_schema_sql!()
+    deployment_proposal_schema_sql!(),
+    deployment_ai_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -857,6 +966,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             "TEXT NOT NULL DEFAULT 'low'",
         )?;
         conn.pragma_update(None, "user_version", 12u32)?;
+    }
+    if version < 13 {
+        // P5.5：纯新增表（AI 提供方 / 复核任务 / 用户知识库），
+        // 不触碰任何既有表 —— 没配置 AI 时老功能一行代码都不用改。
+        conn.execute_batch(DEPLOYMENT_AI_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 13u32)?;
     }
     Ok(())
 }

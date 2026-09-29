@@ -97,12 +97,21 @@ import {
   type ServiceRelation,
 } from "@/api/types/deployment";
 
-// P5.3 / P5.4 的载荷类型：既要在本文件里用于 `invoke<T>()` 的泛型，
+// P5.3 / P5.4 / P5.5 的载荷类型：既要在本文件里用于 `invoke<T>()` 的泛型，
 // 也要再导出给页面用，所以这里单独 import 一次（下面那一段是 re-export）。
 import {
   type CertificatePlan,
   type DnsGuidance,
   type PreflightOutcome,
+  type AiProviderSaveRequest,
+  type AiProviderTestResult,
+  type AiProviderView,
+  type AiReviewTask,
+  type KnowledgeDocument,
+  type KnowledgeHit,
+  type KnowledgeQueryInput,
+  type KnowledgeUsageRecord,
+  type KnowledgeVersion,
 } from "@/api/types/deployment";
 
 // -- Domain types (re-exported; previously defined in this file) ------------
@@ -381,6 +390,22 @@ export {
   type PreflightOutcome,
   type RunActionKind,
   type RunActionPhase,
+  // -- P5.5 AI 提供方与知识库（供页面 import）--
+  type AiProviderKind,
+  type AiProviderSaveRequest,
+  type AiProviderTestResult,
+  type AiProviderView,
+  type AiReviewTask,
+  type AiTaskStatus,
+  type KnowledgeCategory,
+  type KnowledgeDocStatus,
+  type KnowledgeDocument,
+  type KnowledgeHit,
+  type KnowledgeQueryInput,
+  type KnowledgeScope,
+  type KnowledgeSourceType,
+  type KnowledgeUsageRecord,
+  type KnowledgeVersion,
 } from "@/api/types/deployment";
 
 export const opsApi = {
@@ -934,6 +959,57 @@ export const opsApi = {
       bindingId,
       sessionId: sessionId ?? null,
     }),
+
+  // -- P5.5 AI 提供方 -------------------------------------------------------
+  //
+  // 密钥只进系统凭据管理器：这里没有任何"读取 API Key"的方法，
+  // 前端拿到的永远是 `has_api_key` 这一个布尔值。
+  aiProviderList: () => invoke<AiProviderView[]>("ai_provider_list"),
+  aiProviderGet: (id: string) => invoke<AiProviderView | null>("ai_provider_get", { id }),
+  aiProviderSave: (request: AiProviderSaveRequest) =>
+    invoke<AiProviderView>("ai_provider_save", { request }),
+  aiProviderDelete: (id: string, deleteSecret: boolean) =>
+    invoke<void>("ai_provider_delete", { id, deleteSecret }),
+  aiProviderSetDefault: (id: string) => invoke<void>("ai_provider_set_default", { id }),
+  /** 连接测试：只回状态 / 耗时 / 脱敏错误。 */
+  aiProviderTest: (id: string) => invoke<AiProviderTestResult>("ai_provider_test", { id }),
+
+  // -- P5.5 用户知识库 -------------------------------------------------------
+  deploymentKnowledgeList: (
+    applicationId?: string,
+    environmentId?: string,
+    includeArchived?: boolean,
+  ) =>
+    invoke<KnowledgeDocument[]>("deployment_knowledge_list", {
+      applicationId: applicationId ?? null,
+      environmentId: environmentId ?? null,
+      includeArchived: includeArchived ?? false,
+    }),
+  deploymentKnowledgeGet: (id: string) =>
+    invoke<KnowledgeDocument | null>("deployment_knowledge_get", { id }),
+  /** 保存 = 产生新版本（旧版本永不覆盖）。 */
+  deploymentKnowledgeSave: (document: KnowledgeDocument, note?: string) =>
+    invoke<KnowledgeDocument>("deployment_knowledge_save", { document, note: note ?? null }),
+  deploymentKnowledgeVersions: (id: string) =>
+    invoke<KnowledgeVersion[]>("deployment_knowledge_versions", { id }),
+  /** 恢复旧版本 —— 作为**新版本**写入。 */
+  deploymentKnowledgeRestore: (id: string, version: number) =>
+    invoke<KnowledgeDocument>("deployment_knowledge_restore", { id, version }),
+  deploymentKnowledgeArchive: (id: string) =>
+    invoke<void>("deployment_knowledge_archive", { id }),
+  deploymentKnowledgeUsage: (id: string) =>
+    invoke<KnowledgeUsageRecord[]>("deployment_knowledge_usage", { id }),
+  /** 检索测试：与 AI 复核同一函数、同一预算。 */
+  deploymentKnowledgeSearchTest: (query: KnowledgeQueryInput) =>
+    invoke<KnowledgeHit[]>("deployment_knowledge_search_test", { query }),
+
+  // -- P5.5 AI 复核（后台任务 + 事件；不阻塞方案）----------------------------
+  deploymentProposalAiReview: (proposalId: string) =>
+    invoke<AiReviewTask>("deployment_proposal_ai_review", { proposalId }),
+  deploymentProposalAiReviewStatus: (proposalId: string) =>
+    invoke<AiReviewTask | null>("deployment_proposal_ai_review_status", { proposalId }),
+  deploymentProposalAiReviewCancel: (proposalId: string) =>
+    invoke<boolean>("deployment_proposal_ai_review_cancel", { proposalId }),
 
   // -- P5.2 部署方案生成（确定性规则引擎 + 知识库；AI 可选）------------------
   //

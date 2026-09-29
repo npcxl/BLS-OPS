@@ -151,6 +151,9 @@ P3 的 `projects` / `deployments`（`commands_json` 那套）**保留但标记 l
 
 1. **没有执行**：`deployment_runs` / `release_records` 只有仓储层与只读 IPC，
    没有 Workflow Engine；页面顶部对此有明确说明。
+   **【已被后续阶段取代】** P5.3 / P5.4 已经实现类型化 Workflow Engine 与
+   Docker / Nginx / DNS / SSL 执行器，见 `docs/p5.3-p5.4-workflow-engine.md`。
+   本行仅作为历史设计记录保留。
 2. **不解析 compose 的完整 YAML**：只读 `services:` 下的服务名 / 镜像 / 端口 /
    `depends_on` / 环境变量名；缩进歧义一律跳过而不是猜。
 3. **不做 Docker 镜像 digest 校验**：只对引用字符串负责。

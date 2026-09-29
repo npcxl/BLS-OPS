@@ -71,6 +71,30 @@ pub struct PromptExtras {
     pub capacity: Option<serde_json::Value>,
 }
 
+/// 一次复核失败：**原因 + 分类**。
+///
+/// 分类决定它算"请求失败"（网络 / 认证 → `Failed`）还是"内容被拒"
+/// （含命令 / 未知字段 / 伪造引用 → `Rejected`）—— 两者在界面与审计里含义不同。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiReviewFailure {
+    pub reason: String,
+    pub kind: AiRejectionKind,
+}
+
+impl AiReviewFailure {
+    pub fn provider(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            kind: AiRejectionKind::ProviderError,
+        }
+    }
+
+    /// 请求层失败（网络 / 认证 / 超时）：方案不变，只是复核没跑成。
+    pub fn is_provider_failure(&self) -> bool {
+        self.kind == AiRejectionKind::ProviderError
+    }
+}
+
 /// 一条 AI 批注。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -347,7 +371,7 @@ pub fn apply(advisor: &dyn ProposalAdvisor, proposal: &mut DeploymentProposal) -
     let prompt = build_prompt(proposal, &[], &PromptExtras::default());
     let hash = prompt_hash(&prompt);
     let model = advisor.model();
-    let result = advisor.review(&prompt);
+    let result = advisor.review(&prompt).map_err(AiReviewFailure::provider);
     Some(merge_into(
         proposal,
         &model,
@@ -371,7 +395,7 @@ pub fn merge_into(
     prompt_version: &str,
     prompt_hash: &str,
     allowed: &[KnowledgeReference],
-    result: Result<AiSuggestion, String>,
+    result: Result<AiSuggestion, AiReviewFailure>,
     attempts: u32,
     duration_ms: Option<i64>,
 ) -> AiReview {
@@ -390,12 +414,21 @@ pub fn merge_into(
 
     let suggestion = match result {
         Ok(suggestion) => suggestion,
-        Err(reason) => {
-            review.status = AiReviewStatus::Failed;
+        Err(failure) => {
+            // 请求层失败 → Failed；模型给了答复但内容不可用 → Rejected。
+            review.status = if failure.is_provider_failure() {
+                AiReviewStatus::Failed
+            } else {
+                AiReviewStatus::Rejected
+            };
             review.rejected.push(AiRejection {
-                text: "(AI 复核请求失败)".to_string(),
-                reason,
-                kind: AiRejectionKind::ProviderError,
+                text: if failure.is_provider_failure() {
+                    "(AI 复核请求失败)".to_string()
+                } else {
+                    "(模型答复被安全校验拒绝)".to_string()
+                },
+                reason: failure.reason,
+                kind: failure.kind,
             });
             apply_review_fields(proposal, model, prompt_version, prompt_hash, review);
             return proposal

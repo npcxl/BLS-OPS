@@ -47,6 +47,15 @@ export const artifactImportEvent = (taskId: string) => `deployment-artifact-impo
  * 某一次运行的 id。Rust 侧由 `commands::deployment_run::deployment_run_event`
  * 拼同一个名字。
  */
+/**
+ * P5.5 AI 复核任务状态。Payload: `AiReviewTask`。
+ *
+ * 按**方案**订阅：复核是"给这份方案加一层批注"，而不是一次独立的聊天。
+ * Rust 侧由 `commands::deployment_proposal::ai_review_event` 拼同一个名字。
+ */
+export const aiReviewEvent = (proposalId: string) =>
+  `deployment-proposal-ai-review-${proposalId}`;
+
 export const deploymentRunEvent = (environmentId: string) => `deployment-run-env-${environmentId}`;
 
 export { DIRECTORY_SIZE_EVENT } from "@/api/ops-api";

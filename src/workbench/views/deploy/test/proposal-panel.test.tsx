@@ -52,6 +52,9 @@ vi.mock("@/api/ops-api", () => ({
     deploymentProposalReject: async () => current.proposal,
     deploymentProposalGet: async () => current.proposal,
     deploymentProposalDelete: async () => undefined,
+    // P5.5：AI 复核区会问一次"有没有可用的提供方"。
+    aiProviderList: async () => [],
+    deploymentProposalAiReviewStatus: async () => null,
   },
 }));
 
@@ -329,7 +332,10 @@ describe("部署方案面板", () => {
     await render();
     expect(document.body.textContent).toContain(i18n.t("Requirements"));
     expect(document.body.textContent).toContain(i18n.t("Daily active users"));
-    expect(document.body.textContent).toContain(i18n.t("AI not enabled (no provider configured)"));
+    // P5.5：没有配置 Provider 时如实写"AI 未配置"，并给出去设置配置的提示；
+    // 绝不显示伪造的 AI 评价。
+    expect(document.body.textContent).toContain(i18n.t("AI not configured"));
+    expect(document.body.textContent).toContain(i18n.t("Add a model in Settings → AI models"));
     expect(document.body.textContent).not.toContain("AI 已分析");
   });
 

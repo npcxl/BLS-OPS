@@ -303,6 +303,26 @@ pub fn run() {
             commands::deployment_proposal_delete,
             commands::deployment_policy_get,
             commands::deployment_policy_save,
+            // ---- P5.5 AI 提供方（密钥只进钥匙串，SQLite 只有引用）----
+            commands::ai_provider_list,
+            commands::ai_provider_get,
+            commands::ai_provider_save,
+            commands::ai_provider_delete,
+            commands::ai_provider_set_default,
+            commands::ai_provider_test,
+            // ---- P5.5 用户知识库 ----
+            commands::deployment_knowledge_list,
+            commands::deployment_knowledge_get,
+            commands::deployment_knowledge_save,
+            commands::deployment_knowledge_versions,
+            commands::deployment_knowledge_restore,
+            commands::deployment_knowledge_archive,
+            commands::deployment_knowledge_usage,
+            commands::deployment_knowledge_search_test,
+            // ---- P5.5 AI 复核（后台任务 + 事件；不阻塞确定性方案）----
+            commands::deployment_proposal_ai_review,
+            commands::deployment_proposal_ai_review_status,
+            commands::deployment_proposal_ai_review_cancel,
             // ---- P5.3 类型化 Workflow Engine ----
             //
             // 预检与运行：所有远程命令都经 `safe::Capability`，所有动作都是

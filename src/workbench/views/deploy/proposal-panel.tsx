@@ -38,6 +38,7 @@ import {
   UNKNOWN_SEVERITY_LABELS,
   VIOLATION_KIND_LABELS,
 } from "./labels";
+import { AiReviewRow } from "./ai-review";
 
 type Props = {
   applicationId: string;
@@ -351,10 +352,9 @@ export function ProposalPanel({
           <span className="text-10 text-fg-subtle">
             {t("Deterministic rule engine — the same inputs always produce the same proposal.")}
           </span>
-          <span className="rounded-full border border-line bg-surface-2 px-1.5 text-10 text-fg-subtle">
-            {t("AI not enabled (no provider configured)")}
-          </span>
         </div>
+        {/* P5.5：有 Provider 才给"运行 AI 复核"；没有就如实说"AI 未配置"。 */}
+        <AiReviewRow applicationId={applicationId} proposal={proposal} />
         {proposal ? (
           <Fingerprint proposal={proposal} />
         ) : (

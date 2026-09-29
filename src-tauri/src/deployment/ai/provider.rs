@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::deployment::proposal::ai::{
-    AiCitation, AiNote, AiPrompt, AiReviewFailure, AiSuggestion, render_prompt,
+    render_prompt, AiCitation, AiNote, AiPrompt, AiReviewFailure, AiSuggestion,
 };
 use crate::deployment::proposal::model::AiRejectionKind;
 
@@ -116,10 +116,7 @@ impl OpenAiCompatibleAdvisor {
             .map_err(|error| AiProviderError::Network(error.to_string()))?;
 
         Ok(Self {
-            config: AiProviderConfig {
-                base_url,
-                ..config
-            },
+            config: AiProviderConfig { base_url, ..config },
             api_key,
             client,
             budget,
@@ -147,7 +144,13 @@ impl OpenAiCompatibleAdvisor {
             },
             Err(first) => {
                 // 404/405 = 这个网关没实现 /models，换成最小生成请求再试一次。
-                if matches!(first, AiProviderError::Http { status: 404 | 405, .. }) {
+                if matches!(
+                    first,
+                    AiProviderError::Http {
+                        status: 404 | 405,
+                        ..
+                    }
+                ) {
                     match self.probe_chat().await {
                         Ok(()) => AiProviderTestResult {
                             ok: true,
@@ -182,20 +185,29 @@ impl OpenAiCompatibleAdvisor {
 
     async fn probe_models(&self) -> Result<(), AiProviderError> {
         let target = url::models_url(&self.config.base_url);
-        let response = self
-            .client
-            .get(&target)
-            .bearer_auth(&self.api_key)
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-        let status = response.status();
-        let body = self.read_limited(response).await?;
-        if status.is_success() {
-            return Ok(());
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let response = self
+                .client
+                .get(&target)
+                .bearer_auth(&self.api_key)
+                .header("accept", "application/json")
+                .send()
+                .await
+                .map_err(map_reqwest)?;
+            let status = response.status().as_u16();
+            let retry_after = retry_after_seconds(&response);
+            let body = self.read_limited(response).await?;
+            if (200..300).contains(&status) {
+                return Ok(());
+            }
+            let error = self.status_error(status, &body, retry_after);
+            if !error.is_retryable() || attempt >= self.budget.max_attempts {
+                return Err(error);
+            }
+            self.sleep_before_retry(attempt, retry_after).await;
         }
-        Err(self.status_error(status.as_u16(), &body, &[]))
     }
 
     async fn probe_chat(&self) -> Result<(), AiProviderError> {
@@ -209,7 +221,7 @@ impl OpenAiCompatibleAdvisor {
         if (200..300).contains(&status) {
             Ok(())
         } else {
-            Err(self.status_error(status, &bytes, &[]))
+            Err(self.status_error(status, &bytes, None))
         }
     }
 
@@ -270,14 +282,14 @@ impl OpenAiCompatibleAdvisor {
                         if (200..300).contains(&retry_status) {
                             return Ok((retry_status, retry_bytes, attempt));
                         }
-                        let error = self.status_error(retry_status, &retry_bytes, &[]);
+                        let error = self.status_error(retry_status, &retry_bytes, None);
                         last_error = Some(error.clone());
                         if !error.is_retryable() || attempt >= self.budget.max_attempts {
                             return Err(error);
                         }
                         continue;
                     }
-                    let error = self.status_error(status, &bytes, &[]);
+                    let error = self.status_error(status, &bytes, retry_after);
                     let retryable = error.is_retryable();
                     last_error = Some(error.clone());
                     if !retryable || attempt >= self.budget.max_attempts {
@@ -335,12 +347,7 @@ impl OpenAiCompatibleAdvisor {
     }
 
     /// 把非 2xx 状态映射成**脱敏**的错误。
-    fn status_error(
-        &self,
-        status: u16,
-        body: &[u8],
-        retry_after: Option<u64>,
-    ) -> AiProviderError {
+    fn status_error(&self, status: u16, body: &[u8], retry_after: Option<u64>) -> AiProviderError {
         let detail = sanitize_server_message(&String::from_utf8_lossy(body), &self.api_key);
         match status {
             401 | 403 => AiProviderError::Auth(detail),
@@ -369,9 +376,7 @@ impl AiAdvisor for OpenAiCompatibleAdvisor {
                 {"role": "user", "content": render_prompt(prompt)},
             ],
         });
-        let (_, bytes, _) = self
-            .post_chat(&body, self.budget.max_output_tokens)
-            .await?;
+        let (_, bytes, _) = self.post_chat(&body, self.budget.max_output_tokens).await?;
 
         let content = extract_content(&bytes).ok_or_else(|| AiProviderError::RejectedContent {
             reason: "模型响应里没有可用的文本内容".to_string(),
@@ -605,15 +610,22 @@ pub fn sanitize_server_message(raw: &str, api_key: &str) -> String {
 /// 把像密钥的片段打掉：`sk-xxxx`、`Bearer xxxx`、长十六进制串。
 fn redact_key_like(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    // `Bearer`/`authorization:` 后面的**下一个**词也要抹掉 ——
+    // 按空格切分后它们是独立的一个 token，只判断前缀会漏掉那个真正的密钥。
+    let mut redact_next = false;
     for token in text.split_inclusive(char::is_whitespace) {
         let body = token.trim_end();
         let suffix = &token[body.len()..];
+        let lower = body.to_ascii_lowercase();
         let looks_like_key = body.starts_with("sk-")
-            || body.starts_with("Bearer ")
-            || body.to_ascii_lowercase().starts_with("api-key")
+            || lower.starts_with("api-key")
             || (body.len() >= 32 && body.chars().all(|ch| ch.is_ascii_hexdigit()));
-        if looks_like_key {
+        let is_bearer_marker = lower.trim_end_matches(':') == "bearer"
+            || lower == "authorization:"
+            || lower == "api-key:";
+        if looks_like_key || redact_next || is_bearer_marker {
             out.push_str("<redacted>");
+            redact_next = is_bearer_marker;
         } else {
             out.push_str(body);
         }

@@ -62,6 +62,9 @@ pub struct AiProviderConfig {
     pub api_key_ref: Option<String>,
     pub enabled: bool,
     pub is_default: bool,
+    /// 是否允许**非本地**的明文 http（默认关闭；自建网关才需要）。
+    #[serde(default)]
+    pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
     pub created_at: i64,
@@ -80,6 +83,7 @@ impl AiProviderConfig {
             api_key_ref: None,
             enabled: true,
             is_default: false,
+            allow_insecure_http: false,
             timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
             created_at: now,
@@ -95,7 +99,9 @@ impl AiProviderConfig {
     /// 发请求时的预算。
     pub fn budget(&self) -> AiRequestBudget {
         AiRequestBudget {
-            timeout_seconds: self.timeout_seconds.clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS),
+            timeout_seconds: self
+                .timeout_seconds
+                .clamp(MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS),
             max_output_tokens: self
                 .max_output_tokens
                 .clamp(MIN_MAX_OUTPUT_TOKENS, MAX_MAX_OUTPUT_TOKENS),
@@ -159,6 +165,9 @@ pub struct AiProviderView {
     pub has_api_key: bool,
     pub enabled: bool,
     pub is_default: bool,
+    /// 是否允许**非本地**的明文 http（默认关闭；自建网关才需要）。
+    #[serde(default)]
+    pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
     pub created_at: i64,
@@ -176,6 +185,7 @@ impl AiProviderView {
             has_api_key,
             enabled: config.enabled,
             is_default: config.is_default,
+            allow_insecure_http: config.allow_insecure_http,
             timeout_seconds: config.timeout_seconds,
             max_output_tokens: config.max_output_tokens,
             created_at: config.created_at,
@@ -200,6 +210,9 @@ pub struct AiProviderSaveRequest {
     pub api_key: Option<String>,
     pub enabled: bool,
     pub is_default: bool,
+    /// 允许**非本地**明文 http（默认 false；只有自建受信内网网关才该开）。
+    #[serde(default)]
+    pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
 }
@@ -238,7 +251,10 @@ pub enum AiProviderError {
     /// 响应体超过预算。
     ResponseTooLarge,
     /// 模型答复无法使用（无效 JSON / 未知字段 / 含命令 …）。
-    RejectedContent { reason: String, kind: super::super::proposal::model::AiRejectionKind },
+    RejectedContent {
+        reason: String,
+        kind: super::super::proposal::model::AiRejectionKind,
+    },
     /// 运行被取消。
     Cancelled,
 }
@@ -282,12 +298,17 @@ impl AiProviderError {
         }
     }
 
-    /// 失败是否值得重试（**认证失败绝不重试**）。
+    /// 失败是否值得重试（**认证失败与"不支持"绝不重试**）。
+    ///
+    /// 只认**明确的临时状态**：408 请求超时、500/502/503/504 服务端抖动。
+    /// 501（未实现）这种是"这个网关根本不支持"，重试一万次也一样。
     pub fn is_retryable(&self) -> bool {
         match self {
             AiProviderError::Timeout | AiProviderError::Network(_) => true,
             AiProviderError::RateLimited { .. } => true,
-            AiProviderError::Http { status, .. } => *status == 408 || *status >= 500,
+            AiProviderError::Http { status, .. } => {
+                matches!(*status, 408 | 500 | 502 | 503 | 504)
+            }
             _ => false,
         }
     }
@@ -295,6 +316,49 @@ impl AiProviderError {
     pub fn rate_limited() -> Self {
         AiProviderError::RateLimited {
             retry_after_seconds: None,
+        }
+    }
+}
+
+/// 内存里的复核任务登记表（取消位）。
+///
+/// 与 P5.1 导入任务同一套做法：后台任务 + 事件 + 轮询兜底，
+/// **不让一个慢模型长时间占用前端 invoke**。
+#[derive(Clone, Default)]
+pub struct AiReviewRegistry {
+    cancels: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        >,
+    >,
+}
+
+impl AiReviewRegistry {
+    pub fn register(&self, task_id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        use std::sync::atomic::AtomicBool;
+        let token = std::sync::Arc::new(AtomicBool::new(false));
+        if let Ok(mut cancels) = self.cancels.lock() {
+            cancels.insert(task_id.to_string(), token.clone());
+        }
+        token
+    }
+
+    pub fn cancel(&self, task_id: &str) -> bool {
+        use std::sync::atomic::Ordering;
+        self.cancels
+            .lock()
+            .ok()
+            .and_then(|cancels| cancels.get(task_id).cloned())
+            .map(|token| {
+                token.store(true, Ordering::Relaxed);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn forget(&self, task_id: &str) {
+        if let Ok(mut cancels) = self.cancels.lock() {
+            cancels.remove(task_id);
         }
     }
 }
@@ -351,6 +415,11 @@ impl AiReviewTask {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// 是否还在跑（界面用它决定"能不能取消"）。
+    pub fn is_active(&self) -> bool {
+        matches!(self.status, AiTaskStatus::Queued | AiTaskStatus::Running)
     }
 
     pub fn is_terminal(&self) -> bool {

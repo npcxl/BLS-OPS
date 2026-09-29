@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     db::AppDb,
+    deployment::ai::model::AiReviewRegistry,
     deployment::artifact::tasks::TaskRegistry,
     deployment::run::{EnvironmentLocks, RunRegistry},
     dirsize::DirectorySizeRegistry,
@@ -29,6 +30,8 @@ pub struct AppState {
     pub runs: RunRegistry,
     /// P5.3 环境锁：**禁止两个部署同时改同一个环境**。
     pub env_locks: EnvironmentLocks,
+    /// P5.5 AI 复核任务（取消位；任务状态本身在数据库里）。
+    pub ai_reviews: AiReviewRegistry,
 }
 
 impl AppState {
@@ -43,6 +46,7 @@ impl AppState {
             artifact_imports: TaskRegistry::default(),
             runs: RunRegistry::default(),
             env_locks: EnvironmentLocks::default(),
+            ai_reviews: AiReviewRegistry::default(),
         }
     }
 }

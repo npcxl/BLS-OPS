@@ -131,6 +131,10 @@ pub async fn ai_provider_save(
         );
     }
 
+    // 停用的提供方不能是默认：显式校正，绝不写入"disabled 且 default"的组合。
+    if !config.enabled {
+        config.is_default = false;
+    }
     db::upsert_provider(&conn, &config).map_err(|error| error.to_string())?;
     if config.is_default {
         db::set_default_provider(&conn, &config.id).map_err(|error| error.to_string())?;
@@ -211,8 +215,9 @@ pub async fn ai_provider_test(
     };
     let api_key = crate::keyring::read_secret(&config.keyring_account())
         .map_err(|_| "这个提供方还没有保存可用的 API Key".to_string())?;
-    let advisor = OpenAiCompatibleAdvisor::new(config, api_key, false)
-        .map_err(|error| error.user_message())?;
+    // 明文 http 的策略来自配置本身（`allow_insecure_http`），与保存校验一致。
+    let advisor =
+        OpenAiCompatibleAdvisor::new(config, api_key).map_err(|error| error.user_message())?;
     let result = advisor.test_connection().await;
     // 审计只记结论，不记任何请求细节。
     record_audit(
@@ -221,9 +226,10 @@ pub async fn ai_provider_test(
         None,
         None,
         &format!(
-            "{{\"provider\":\"{id}\",\"ok\":{},\"code\":\"{}\"}}",
+            "{{\"provider\":\"{id}\",\"ok\":{},\"code\":\"{}\",\"attempts\":{}}}",
             result.ok,
-            result.error_code.clone().unwrap_or_else(|| "-".to_string())
+            result.error_code.clone().unwrap_or_else(|| "-".to_string()),
+            result.attempts
         ),
     );
     Ok(result)

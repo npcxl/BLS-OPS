@@ -203,6 +203,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     () => resolved.filter((c) => c.path).map((c) => ({ path: c.path, name: c.name })),
     [resolved],
   );
+
   // 顶层互斥划分：应用服务 / 基础设施 / 待归类 / 系统组件。
   // 分类以后端 workload_role 为准；MySQL/Redis/MinIO 只出现在基础设施，
   // 待归类绝不进基础设施。系统组件默认隐藏。
@@ -214,11 +215,13 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
       console.error("实例分类重复", duplicatedIds);
     }
   }
+
   // 应用服务 tab：业务应用 + 待归类（待归类作为 tab 内筛选项查看）。
   const runtimeInstances = useMemo(
     () => [...partitioned.applications, ...partitioned.unclassified],
     [partitioned],
   );
+  
   // 基础设施 tab：只收 workload_role === infrastructure 的实例。
   const infraInstances = partitioned.infrastructure;
 

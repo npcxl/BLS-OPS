@@ -1475,3 +1475,94 @@ fn rollback_strategy_is_explicit_about_data() {
         .as_deref()
         .is_some_and(|text| !text.trim().is_empty()));
 }
+
+// -- P5.5.1：AI 提示词里的服务器事实必须来自"生成时的可信快照" -----------------
+
+#[test]
+fn a_missing_capability_snapshot_is_marked_unknown_in_the_prompt() {
+    let mut params = Params::default();
+    params.capability = None;
+    let proposal = engine::generate(&inputs(params), None).proposal;
+
+    // 方案里没有快照 → 取值时明确标 unknown，绝不猜 CPU / 内存 / Docker / Nginx。
+    assert!(proposal.server_capability.is_none());
+    let summary = proposal
+        .server_capability_snapshot()
+        .expect("总会给出一个结构");
+    assert_eq!(summary["status"], "unknown");
+
+    let prompt = super::ai::build_prompt(
+        &proposal,
+        &[],
+        &super::ai::PromptExtras {
+            capability: proposal.server_capability_snapshot(),
+            capacity: None,
+        },
+    );
+    assert_eq!(
+        prompt.payload["server_facts"]["capability_summary"]["status"], "unknown",
+        "缺失能力数据时必须明确标 unknown"
+    );
+}
+
+#[test]
+fn the_prompt_carries_the_capability_snapshot_captured_at_generation() {
+    let proposal = engine::generate(&inputs(Params::default()), None).proposal;
+
+    let snapshot = proposal
+        .server_capability
+        .as_ref()
+        .expect("生成时应当保存快照");
+    assert!(snapshot.installed.iter().any(|name| name == "docker"));
+    assert!(snapshot.installed.iter().any(|name| name == "nginx"));
+    assert_eq!(snapshot.os.as_deref(), Some("Ubuntu 24.04"));
+
+    let prompt = super::ai::build_prompt(
+        &proposal,
+        &[],
+        &super::ai::PromptExtras {
+            capability: proposal.server_capability_snapshot(),
+            capacity: None,
+        },
+    );
+    let installed = prompt.payload["server_facts"]["capability_summary"]["installed"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        installed.iter().any(|item| item == "docker"),
+        "提示词应当带上生成时的能力快照"
+    );
+}
+
+#[test]
+fn the_prompt_hash_reflects_the_server_capability_snapshot() {
+    let proposal = engine::generate(&inputs(Params::default()), None).proposal;
+    let with_capability = super::ai::build_prompt(
+        &proposal,
+        &[],
+        &super::ai::PromptExtras {
+            capability: proposal.server_capability_snapshot(),
+            capacity: None,
+        },
+    );
+    let without_capability = super::ai::build_prompt(
+        &proposal,
+        &[],
+        &super::ai::PromptExtras {
+            capability: None,
+            capacity: None,
+        },
+    );
+
+    // 能力事实不同 → 提示词（以及审计用的哈希）必须不同。
+    assert_ne!(
+        super::ai::prompt_hash(&with_capability),
+        super::ai::prompt_hash(&without_capability)
+    );
+    // 同样的输入重复组装 → 同一个哈希（可复现审计）。
+    assert_eq!(
+        super::ai::prompt_hash(&with_capability),
+        super::ai::prompt_hash(&with_capability)
+    );
+}

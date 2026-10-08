@@ -353,8 +353,15 @@ export function ProposalPanel({
             {t("Deterministic rule engine — the same inputs always produce the same proposal.")}
           </span>
         </div>
-        {/* P5.5：有 Provider 才给"运行 AI 复核"；没有就如实说"AI 未配置"。 */}
-        <AiReviewRow applicationId={applicationId} proposal={proposal} />
+        {/* P5.5：有 Provider 才给"运行 AI 复核"；没有就如实说"AI 未配置"。
+            复核成功后回调把最新方案写回，AI 建议立刻可见（无需刷新）。 */}
+        <AiReviewRow
+          applicationId={applicationId}
+          proposal={proposal}
+          onProposalUpdated={(fresh) =>
+            setOutcome((current) => (current ? { ...current, proposal: fresh } : current))
+          }
+        />
         {proposal ? (
           <Fingerprint proposal={proposal} />
         ) : (

@@ -18,6 +18,7 @@ import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
 import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
+import { AiProviderSettings } from "./settings-ai";
 import { EmptyRow, Group, ListGroup } from "./settings-parts";
 import { TerminalSettingsGroup } from "./settings-terminal";
 import { cn } from "@/lib/cn";
@@ -249,6 +250,9 @@ export function SettingsContextSidebar() {
           )}
         </ListGroup>
       </Group>
+
+      {/* P5.5.1：AI 模型提供方（密钥只进钥匙串；没有"读取 API Key"的入口）。 */}
+      <AiProviderSettings />
 
       <Group title={t("Known hosts")} hint={t("Fingerprints you confirmed on first connect are listed here.")}>
         <ListGroup>

@@ -720,7 +720,7 @@ export function PlanDialog({
       open={open}
       width={380}
       title={t("New plan")}
-      description={t("Read-only in this stage")}
+      description={t("Plans are not executed automatically")}
       onClose={onCancel}
       footer={
         <>

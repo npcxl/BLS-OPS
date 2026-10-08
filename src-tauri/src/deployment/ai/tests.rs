@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use super::model::*;
 use super::provider::{parse_suggestion, AiAdvisor, OpenAiCompatibleAdvisor};
 use super::url::{validate_base_url, BaseUrlPolicy};
-use crate::deployment::proposal::ai::{AiPrompt, AiReviewFailure};
+use crate::deployment::proposal::ai::{AiPrompt, AiReviewFailure, AiSuggestion};
 use crate::deployment::proposal::model::AiRejectionKind;
 
 type Requests = Arc<Mutex<Vec<String>>>;
@@ -160,8 +160,8 @@ fn config(base_url: &str) -> AiProviderConfig {
 }
 
 fn advisor(server: &MockServer, key: &str) -> OpenAiCompatibleAdvisor {
-    OpenAiCompatibleAdvisor::new(config(&server.base_url()), key.to_string(), false)
-        .expect("advisor")
+    // 明文 http 的策略由 `config.allow_insecure_http` 决定（环回地址默认允许）。
+    OpenAiCompatibleAdvisor::new(config(&server.base_url()), key.to_string()).expect("advisor")
 }
 
 fn prompt() -> AiPrompt {
@@ -175,6 +175,19 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     // 仓库没有 tokio 的 dev-dependency；tauri 的 async_runtime 已经提供了
     // 运行时，测试直接复用它。
     tauri::async_runtime::block_on(future)
+}
+
+/// 跑一次复核并**取出结果**（测试里的取消令牌始终"未取消"）。
+///
+/// 只取 `AiReviewOutcome.result`，让测试专注在模型答复上；要断言真实尝试次数
+/// 或取消行为，用 [`review_outcome`]。
+fn run(advisor: &OpenAiCompatibleAdvisor) -> Result<AiSuggestion, AiProviderError> {
+    block_on(advisor.review(&prompt(), &AiCancel::new())).result
+}
+
+/// 跑一次复核并保留**完整结果**（含真实 attempts 与取消状态）。
+fn review_outcome(advisor: &OpenAiCompatibleAdvisor, cancel: &AiCancel) -> AiReviewOutcome {
+    block_on(advisor.review(&prompt(), cancel))
 }
 
 // -- 连接测试 ----------------------------------------------------------------
@@ -313,7 +326,7 @@ fn a_clean_json_answer_is_parsed_into_notes() {
     .to_string();
     let server = MockServer::spawn(vec![Reply::Json(200, chat_body(&content))]);
     let advisor = advisor(&server, "sk-x");
-    let suggestion = block_on(advisor.review(&prompt())).expect("应当解析成功");
+    let suggestion = run(&advisor).expect("应当解析成功");
     assert_eq!(suggestion.notes.len(), 1);
     assert_eq!(suggestion.notes[0].confidence, Some(80));
     assert_eq!(suggestion.alternatives.len(), 1);
@@ -327,7 +340,7 @@ fn the_request_body_carries_the_prompt_but_never_the_key() {
         chat_body("{\"notes\":[],\"alternatives\":[]}"),
     )]);
     let advisor = advisor(&server, "sk-top-secret");
-    let _ = block_on(advisor.review(&prompt()));
+    let _ = run(&advisor);
     let request = server.requests().join("\n");
     // 提示词进去了（system + 分区输入）。
     assert!(request.contains("你是复核者"), "提示词应当发出去");
@@ -342,7 +355,7 @@ fn markdown_code_fences_are_rejected() {
     let content = "```json\n{\"notes\":[],\"alternatives\":[]}\n```";
     let server = MockServer::spawn(vec![Reply::Json(200, chat_body(content))]);
     let advisor = advisor(&server, "sk-x");
-    let error = block_on(advisor.review(&prompt())).expect_err("必须拒绝");
+    let error = run(&advisor).expect_err("必须拒绝");
     match error {
         AiProviderError::RejectedContent { kind, .. } => {
             assert_eq!(kind, AiRejectionKind::Markdown)
@@ -355,7 +368,7 @@ fn markdown_code_fences_are_rejected() {
 fn invalid_json_is_rejected() {
     let server = MockServer::spawn(vec![Reply::Json(200, chat_body("这不是 JSON"))]);
     let advisor = advisor(&server, "sk-x");
-    let error = block_on(advisor.review(&prompt())).expect_err("必须拒绝");
+    let error = run(&advisor).expect_err("必须拒绝");
     match error {
         AiProviderError::RejectedContent { kind, .. } => {
             assert_eq!(kind, AiRejectionKind::InvalidJson)
@@ -413,7 +426,7 @@ fn a_gateway_that_rejects_response_format_gets_a_second_chance_without_it() {
         Reply::Json(200, chat_body("{\"notes\":[],\"alternatives\":[]}")),
     ]);
     let advisor = advisor(&server, "sk-x");
-    let suggestion = block_on(advisor.review(&prompt())).expect("去掉 response_format 后应当成功");
+    let suggestion = run(&advisor).expect("去掉 response_format 后应当成功");
     assert!(suggestion.notes.is_empty());
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -426,7 +439,7 @@ fn an_oversized_response_is_refused_instead_of_being_read_whole() {
     let huge = chat_body(&"x".repeat(200 * 1024));
     let server = MockServer::spawn(vec![Reply::Json(200, huge)]);
     let advisor = advisor(&server, "sk-x");
-    let error = block_on(advisor.review(&prompt())).expect_err("必须拒绝超大响应");
+    let error = run(&advisor).expect_err("必须拒绝超大响应");
     assert_eq!(error.code(), "response_too_large");
 }
 
@@ -439,8 +452,8 @@ fn a_stalled_server_hits_the_timeout_and_is_not_retried_forever() {
     let server = MockServer::spawn(vec![Reply::Slow(8)]);
     let mut config = config(&server.base_url());
     config.timeout_seconds = 5;
-    let advisor = OpenAiCompatibleAdvisor::new(config, "sk-x".to_string(), false).expect("advisor");
-    let error = block_on(advisor.review(&prompt())).expect_err("必须超时");
+    let advisor = OpenAiCompatibleAdvisor::new(config, "sk-x".to_string()).expect("advisor");
+    let error = run(&advisor).expect_err("必须超时");
     assert_eq!(error.code(), "timeout");
     assert_eq!(error.user_message(), "请求模型超时");
 }
@@ -473,9 +486,8 @@ fn server_messages_are_scrubbed_of_key_like_tokens() {
 
 #[test]
 fn a_missing_key_is_a_config_error_not_a_request() {
-    let error =
-        OpenAiCompatibleAdvisor::new(config("https://api.example.com/v1"), String::new(), false)
-            .expect_err("没有密钥就该拒绝");
+    let error = OpenAiCompatibleAdvisor::new(config("https://api.example.com/v1"), String::new())
+        .expect_err("没有密钥就该拒绝");
     assert_eq!(error.code(), "invalid_config");
 }
 
@@ -495,8 +507,109 @@ fn base_url_validation_is_reused_by_the_provider() {
     // 明文公网 http 在默认策略下会被 Provider 构造拦住（不是等到发请求）。
     let mut config = config("http://api.example.com/v1");
     config.model = "m".to_string();
-    let error =
-        OpenAiCompatibleAdvisor::new(config, "sk-x".to_string(), false).expect_err("应当被拒");
+    let error = OpenAiCompatibleAdvisor::new(config, "sk-x".to_string()).expect_err("应当被拒");
     assert_eq!(error.code(), "invalid_config");
     assert!(validate_base_url("https://api.example.com/v1", BaseUrlPolicy::default()).is_ok());
+}
+
+// -- allow_insecure_http：策略只有一个来源（config）---------------------------------
+
+#[test]
+fn non_loopback_http_is_rejected_unless_explicitly_allowed() {
+    // 未允许：构造阶段直接拒绝（不是等到发请求）。
+    let mut blocked = config("http://api.example.com/v1");
+    blocked.allow_insecure_http = false;
+    let error = OpenAiCompatibleAdvisor::new(blocked, "sk-x".to_string()).expect_err("应当被拒");
+    assert_eq!(error.code(), "invalid_config");
+
+    // 显式允许：构造放行 —— 策略只来自 `config.allow_insecure_http`。
+    let mut allowed = config("http://api.example.com/v1");
+    allowed.allow_insecure_http = true;
+    assert!(OpenAiCompatibleAdvisor::new(allowed, "sk-x".to_string()).is_ok());
+}
+
+#[test]
+fn loopback_http_still_works_without_the_flag() {
+    let server = MockServer::spawn(vec![Reply::Json(200, "{\"data\":[]}".to_string())]);
+    let mut config = config(&server.base_url()); // http://127.0.0.1:<port>/v1
+    config.allow_insecure_http = false;
+    let advisor = OpenAiCompatibleAdvisor::new(config, "sk-x".to_string()).expect("环回 http 允许");
+    let result = block_on(advisor.test_connection());
+    assert!(result.ok, "{}", result.message);
+}
+
+#[test]
+fn the_insecure_flag_reaches_both_connection_test_and_review() {
+    // 显式允许后，连接测试与正式复核都不再被配置策略挡下：这里指向一个保留
+    // （必定不解析）的域名，因此结果是 network / timeout，而**不是**
+    // invalid_config —— 证明策略确实放行了。
+    let mut config = config("http://ai-provider.invalid/v1");
+    config.allow_insecure_http = true;
+    let advisor =
+        OpenAiCompatibleAdvisor::new(config, "sk-x".to_string()).expect("显式允许应当放行");
+
+    let probe = block_on(advisor.test_connection());
+    assert_ne!(
+        probe.error_code.as_deref(),
+        Some("invalid_config"),
+        "连接测试应当真的发出请求：{}",
+        probe.message
+    );
+
+    let outcome = review_outcome(&advisor, &AiCancel::new());
+    let code = outcome.result.expect_err("无法解析的主机必然失败").code();
+    assert_ne!(code, "invalid_config", "AI 复核应当真的发出请求");
+    assert!(outcome.attempts >= 1, "attempts 至少要记录一次尝试");
+}
+
+// -- 真实尝试次数与取消 --------------------------------------------------------
+
+#[test]
+fn review_reports_the_real_number_of_attempts() {
+    // 429（retry-after: 0）→ 重试一次后成功：真实尝试次数是 2，不是 1。
+    let server = MockServer::spawn(vec![
+        Reply::Raw {
+            status: 429,
+            headers: vec![("retry-after", "0".to_string())],
+            body: "{\"error\":\"slow down\"}".to_string(),
+        },
+        Reply::Json(200, chat_body("{\"notes\":[],\"alternatives\":[]}")),
+    ]);
+    let advisor = advisor(&server, "sk-x");
+    let outcome = review_outcome(&advisor, &AiCancel::new());
+    assert!(outcome.result.is_ok(), "第二次应当成功");
+    assert_eq!(outcome.attempts, 2, "应当报告真实的请求次数");
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
+fn a_cancelled_review_stops_before_sending_anything() {
+    let server = MockServer::spawn(vec![Reply::Json(200, chat_body("{}"))]);
+    let advisor = advisor(&server, "sk-x");
+    let cancel = AiCancel::new();
+    cancel.cancel();
+    let outcome = review_outcome(&advisor, &cancel);
+    assert_eq!(outcome.result.expect_err("已取消").code(), "cancelled");
+    assert_eq!(server.requests().len(), 0, "取消后一个请求都不该发出");
+}
+
+#[test]
+fn a_cancelled_retry_wait_returns_without_sending_again() {
+    // 第一次 429（可重试），退避等待中取消 → 不应再发第二次请求。
+    let server = MockServer::spawn(vec![Reply::Raw {
+        status: 429,
+        headers: vec![("retry-after", "1".to_string())],
+        body: "{\"error\":\"slow down\"}".to_string(),
+    }]);
+    let advisor = advisor(&server, "sk-x");
+    let cancel = AiCancel::new();
+    let cancel_for_thread = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        cancel_for_thread.cancel();
+    });
+    let outcome = review_outcome(&advisor, &cancel);
+    assert_eq!(outcome.result.expect_err("应当取消").code(), "cancelled");
+    assert_eq!(server.requests().len(), 1, "退避期间取消，第二次没有发出");
+    assert!(outcome.attempts >= 1);
 }

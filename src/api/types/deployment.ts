@@ -678,6 +678,8 @@ export interface AiProviderTestResult {
   model: string;
   message: string;
   error_code: string | null;
+  /** 实际发出的请求次数（与 AI 复核共用同一套重试统计语义）。 */
+  attempts: number;
 }
 
 export type AiTaskStatus = "idle" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -792,6 +794,26 @@ export interface KnowledgeQueryInput {
   categories?: KnowledgeCategory[];
   tags?: string[];
   limit?: number;
+}
+
+/** Markdown 文件导入结果（**只读取，不落库**；用户确认后再保存）。 */
+export interface ImportedMarkdown {
+  /** 原始文件名（作为默认 source_name）。 */
+  file_name: string;
+  /** 去掉扩展名的文件名（作为默认标题）。 */
+  suggested_title: string;
+  /** 正文（已确认是 UTF-8）。 */
+  content: string;
+  bytes: number;
+  source_type: KnowledgeSourceType;
+}
+
+/** 知识文档元数据更新（**完整替换**语义；不改内容、不产生新版本）。 */
+export interface KnowledgeMetaUpdate {
+  enabled: boolean;
+  status: KnowledgeDocStatus;
+  last_verified_at: number | null;
+  note: string;
 }
 
 // ===========================================================================

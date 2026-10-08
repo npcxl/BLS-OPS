@@ -238,6 +238,35 @@ pub fn archive_document(conn: &Connection, id: &str, now: i64) -> Result<()> {
     Ok(())
 }
 
+/// 只更新元数据（`enabled` / `status` / `last_verified_at` / `note`）。
+///
+/// **不改内容、不产生新版本** —— 版本号只由内容变更驱动；"启用 / 标记已核对 /
+/// 归档"这类操作不该污染版本历史。
+pub fn update_document_meta(
+    conn: &Connection,
+    id: &str,
+    enabled: bool,
+    status: KnowledgeDocStatus,
+    last_verified_at: Option<i64>,
+    note: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE knowledge_documents
+         SET enabled = ?2, status = ?3, last_verified_at = ?4, note = ?5, updated_at = ?6
+         WHERE id = ?1",
+        params![
+            id,
+            enabled as i64,
+            status.as_str(),
+            last_verified_at,
+            note,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 /// 记录一次引用（供"被哪些方案引用"与"当时用的是哪一版"查询）。
 pub fn record_usage(conn: &Connection, record: &KnowledgeUsageRecord) -> Result<()> {
     conn.execute(
@@ -450,5 +479,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(usage_by_proposal(&conn, "proposal-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updating_meta_does_not_touch_content_or_create_a_version() {
+        let conn = test_db();
+        let saved = document("d1");
+        upsert_document(&conn, &saved).unwrap();
+
+        update_document_meta(
+            &conn,
+            "d1",
+            true,
+            KnowledgeDocStatus::Active,
+            Some(1_700_000_000_000),
+            "已人工核对",
+            9,
+        )
+        .unwrap();
+
+        let loaded = get_document(&conn, "d1").unwrap().unwrap();
+        assert_eq!(loaded.last_verified_at, Some(1_700_000_000_000));
+        assert_eq!(loaded.note, "已人工核对");
+        assert_eq!(loaded.status, KnowledgeDocStatus::Active);
+        assert!(loaded.enabled);
+        // 正文与版本号**都没变**：元数据更新不该制造新版本。
+        assert_eq!(loaded.content, saved.content);
+        assert_eq!(loaded.version, saved.version);
+        assert_eq!(loaded.content_hash, saved.content_hash);
+        assert!(list_versions(&conn, "d1").unwrap().is_empty());
     }
 }

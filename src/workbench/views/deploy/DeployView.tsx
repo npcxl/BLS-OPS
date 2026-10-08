@@ -169,12 +169,12 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
           <div className="flex items-center gap-2">
             <span className="text-13 font-semibold text-fg">{t("Deployment Center")}</span>
             <span className="rounded-[5px] border border-line bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle">
-              {t("Read-only in this stage")}
+              {t("Plans are not executed automatically")}
             </span>
           </div>
           <p className="mt-0.5 text-11 leading-relaxed text-fg-muted">
             {t(
-              "Plan applications, environments and services. Nothing is executed in this stage — execution arrives with the workflow engine.",
+              "Plan applications, environments and services. Generating a proposal never executes anything — deployment runs only after you confirm and approve it.",
             )}
           </p>
         </div>
@@ -385,7 +385,7 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
               ? t("Deleting an environment also removes its services, plans, domains, capacity data and releases.")
               : pendingDelete?.kind === "service"
                 ? t("Deleting a service also removes its relations with other services.")
-                : t("Read-only in this stage")
+                : t("This action cannot be undone.")
         }
         onConfirm={() => void confirmDelete()}
         onCancel={() => setPendingDelete(null)}

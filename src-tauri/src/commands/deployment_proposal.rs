@@ -419,11 +419,6 @@ pub async fn deployment_proposal_ai_review(
     proposal_id: String,
 ) -> Result<crate::deployment::ai::model::AiReviewTask, String> {
     use crate::deployment::ai::model::{AiReviewTask, AiTaskStatus};
-    use crate::deployment::ai::{AiAdvisor, OpenAiCompatibleAdvisor};
-    use crate::deployment::knowledge::{
-        search, to_references, KnowledgeBudget, KnowledgeQueryInput,
-    };
-    use crate::deployment::proposal::ai::{build_prompt, merge_into, prompt_hash, PromptExtras};
 
     let now = db::AppDb::now();
     let config = {
@@ -457,103 +452,15 @@ pub async fn deployment_proposal_ai_review(
     let token = state.ai_reviews.register(&task_id);
 
     let db = state.db.clone();
+    let registry = state.ai_reviews.clone();
     let emit_event = ai_review_event(&proposal_id);
     tauri::async_runtime::spawn(async move {
         let started = std::time::Instant::now();
-        let api_key = crate::keyring::read_secret(&config.keyring_account());
-        let outcome = match api_key {
-            Err(error) => Err(
-                crate::deployment::ai::model::AiProviderError::InvalidConfig(format!(
-                    "读不到 API Key（可能已被系统凭据管理器清理）：{error}"
-                )),
-            ),
-            Ok(api_key) => match OpenAiCompatibleAdvisor::new(config.clone(), api_key, false) {
-                Err(error) => Err(error),
-                Ok(advisor) => {
-                    // ---- 知识检索（与"检索测试"同一个函数、同一套预算）----
-                    let (documents, capacity) = match db.open() {
-                        Ok(conn) => (
-                            db::list_documents(
-                                &conn,
-                                Some(&proposal.application_id),
-                                proposal.environment_id.as_deref(),
-                                false,
-                            )
-                            .unwrap_or_default(),
-                            proposal
-                                .environment_id
-                                .as_deref()
-                                .and_then(|environment_id| {
-                                    db::get_capacity_profile(&conn, environment_id)
-                                        .ok()
-                                        .flatten()
-                                })
-                                .and_then(|profile| serde_json::to_value(profile).ok()),
-                        ),
-                        Err(_) => (Vec::new(), None),
-                    };
-                    let terms = build_terms(&proposal);
-                    let query = KnowledgeQueryInput {
-                        application_id: Some(proposal.application_id.clone()),
-                        environment_id: proposal.environment_id.clone(),
-                        terms,
-                        categories: Vec::new(),
-                        tags: Vec::new(),
-                        limit: KnowledgeBudget::default().max_hits,
-                    };
-                    let hits = search(&documents, &query, KnowledgeBudget::default());
-                    let references = to_references(&proposal.knowledge_references, &hits);
-
-                    let extras = PromptExtras {
-                        capacity,
-                        capability: None,
-                    };
-                    let prompt = build_prompt(&proposal, &references, &extras);
-                    let hash = prompt_hash(&prompt);
-                    let result = advisor.review(&prompt).await;
-
-                    // ---- 合并：只动 AI 相关字段，确定性结论一个字节不改 ----
-                    let mut updated = proposal.clone();
-                    let review = merge_into(
-                        &mut updated,
-                        &config.model,
-                        crate::deployment::proposal::PROMPT_VERSION,
-                        &hash,
-                        &references,
-                        result.map_err(|error| crate::deployment::proposal::ai::AiReviewFailure {
-                            reason: error.user_message(),
-                            kind: match error {
-                                crate::deployment::ai::model::AiProviderError::RejectedContent {
-                                    kind,
-                                    ..
-                                } => kind,
-                                _ => crate::deployment::proposal::model::AiRejectionKind::ProviderError,
-                            },
-                        }),
-                        task.attempts,
-                        Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)),
-                    );
-
-                    if let Ok(conn) = db.open() {
-                        let _ = db::upsert_proposal(&conn, &updated);
-                        // 知识引用记录：当时用的是哪一版，事后能查。
-                        for reference in &references {
-                            let _ = db::record_usage(
-                                &conn,
-                                &crate::deployment::knowledge::model::KnowledgeUsageRecord {
-                                    id: format!("{}:{}", updated.id, reference.entry_id),
-                                    document_id: reference.entry_id.clone(),
-                                    version: reference.version.parse().unwrap_or(0),
-                                    proposal_id: updated.id.clone(),
-                                    used_by: "ai_review".to_string(),
-                                    created_at: db::AppDb::now(),
-                                },
-                            );
-                        }
-                    }
-                    Ok(review)
-                }
-            },
+        // 取消可能在提交后立刻发生：先看一次，避免无谓地读钥匙串 / 发请求。
+        let run = if token.is_cancelled() {
+            ReviewRun::Cancelled { attempts: 0 }
+        } else {
+            run_review(&db, &config, &proposal, &token, started).await
         };
 
         let finished = db::AppDb::now();
@@ -563,39 +470,33 @@ pub async fn deployment_proposal_ai_review(
         stored.started_at = Some(now);
         stored.finished_at = Some(finished);
         stored.duration_ms = Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX));
-        stored.attempts = task.attempts;
-        match outcome {
-            Ok(review) => {
-                stored.status = if review.status
-                    == crate::deployment::proposal::model::AiReviewStatus::Failed
-                {
-                    AiTaskStatus::Failed
-                } else {
-                    AiTaskStatus::Succeeded
-                };
-                stored.error = review
-                    .rejected
-                    .first()
-                    .map(|rejection| rejection.reason.clone())
-                    .filter(|_| {
-                        review.status == crate::deployment::proposal::model::AiReviewStatus::Failed
-                    });
-                stored.error_code = stored.error.as_ref().map(|_| "provider_error".to_string());
+        match run {
+            ReviewRun::Succeeded { attempts } => {
+                stored.status = AiTaskStatus::Succeeded;
+                stored.attempts = attempts;
             }
-            Err(error) => {
+            ReviewRun::Failed {
+                attempts,
+                message,
+                code,
+            } => {
                 stored.status = AiTaskStatus::Failed;
-                stored.error = Some(error.user_message());
-                stored.error_code = Some(error.code().to_string());
+                stored.attempts = attempts;
+                stored.error = Some(message);
+                stored.error_code = Some(code);
             }
-        }
-        if token.load(std::sync::atomic::Ordering::Relaxed) {
-            stored.status = AiTaskStatus::Cancelled;
-            stored.error = Some("AI 复核已取消".to_string());
-            stored.error_code = Some("cancelled".to_string());
+            ReviewRun::Cancelled { attempts } => {
+                stored.status = AiTaskStatus::Cancelled;
+                stored.attempts = attempts;
+                stored.error = Some("AI 复核已取消".to_string());
+                stored.error_code = Some("cancelled".to_string());
+            }
         }
         if let Ok(conn) = db.open() {
             let _ = db::upsert_review_task(&conn, &stored);
         }
+        // 成功 / 失败 / 取消三种终态都必须释放登记表，否则它只会一直变大。
+        registry.forget(&task_id);
         let _ = app.emit(&emit_event, stored.clone());
     });
 
@@ -648,4 +549,290 @@ fn build_terms(proposal: &crate::deployment::proposal::model::DeploymentProposal
     }
     parts.push(format!("{:?}", proposal.recommended_topology.kind));
     crate::deployment::knowledge::terms_from_context(&parts)
+}
+
+/// 后台复核的最终结果。
+///
+/// **写数据库只发生在 [`run_review`] 内部**：取消路径不会构造 `ReviewRun::Succeeded`
+/// / `Failed`，因此方案里的 AI 字段与知识使用记录都不会被改动。
+enum ReviewRun {
+    /// 成功合并并已落库（`attempts` = 真实请求次数）。
+    Succeeded { attempts: u32 },
+    /// 请求失败 / 答复被安全校验全部拒绝（**未写库**，方案保持原样）。
+    Failed {
+        attempts: u32,
+        message: String,
+        code: String,
+    },
+    /// 被取消（**未写库**）。
+    Cancelled { attempts: u32 },
+}
+
+/// 真正跑一次复核：读密钥 → 检索知识 → 组装提示词 → 调模型 → 合并落库。
+///
+/// # 取消语义（P5.5.1）
+///
+/// 取消不是"跑完再看一眼标志位"：
+/// * Provider 内部在**发请求前**、**退避等待中**、**解析后**都与取消信号竞争
+///   （见 `ai/provider.rs` 的 `tokio::select!`）；
+/// * 本函数在**写数据库之前**再查一次 —— 一旦取消，绝不 `upsert_proposal`、
+///   绝不 `record_usage`、绝不改 AI 指纹。因此不会出现"任务 cancelled，
+///   但方案里已经写进了 AI 内容"。
+///
+/// `attempts` 始终来自 Provider 返回的**真实请求次数**（含重试），
+/// 而不是恒为 1。
+async fn run_review(
+    db: &db::AppDb,
+    config: &crate::deployment::ai::AiProviderConfig,
+    proposal: &DeploymentProposal,
+    token: &crate::deployment::ai::AiCancel,
+    started: std::time::Instant,
+) -> ReviewRun {
+    use crate::deployment::ai::{AiAdvisor, OpenAiCompatibleAdvisor};
+    use crate::deployment::knowledge::model::KnowledgeUsageRecord;
+    use crate::deployment::knowledge::{
+        search, to_references, KnowledgeBudget, KnowledgeQueryInput,
+    };
+    use crate::deployment::proposal::ai::{
+        build_prompt, merge_into, prompt_hash, AiReviewFailure, PromptExtras,
+    };
+
+    if token.is_cancelled() {
+        return ReviewRun::Cancelled { attempts: 0 };
+    }
+
+    let api_key = match crate::keyring::read_secret(&config.keyring_account()) {
+        Ok(api_key) => api_key,
+        Err(error) => {
+            return ReviewRun::Failed {
+                attempts: 0,
+                message: format!("读不到 API Key（可能已被系统凭据管理器清理）：{error}"),
+                code: "invalid_config".to_string(),
+            }
+        }
+    };
+    // 明文 http 的策略**只有一个来源**：`config.allow_insecure_http`。
+    // 保存校验、连接测试、正式复核走同一段代码，不会出现策略错位。
+    let advisor = match OpenAiCompatibleAdvisor::new(config.clone(), api_key) {
+        Ok(advisor) => advisor,
+        Err(error) => {
+            return ReviewRun::Failed {
+                attempts: 0,
+                message: error.user_message(),
+                code: error.code().to_string(),
+            }
+        }
+    };
+
+    // ---- 知识检索（与"检索测试"同一个函数、同一套预算）----
+    let (documents, capacity) = match db.open() {
+        Ok(conn) => (
+            db::list_documents(
+                &conn,
+                Some(&proposal.application_id),
+                proposal.environment_id.as_deref(),
+                false,
+            )
+            .unwrap_or_default(),
+            proposal
+                .environment_id
+                .as_deref()
+                .and_then(|environment_id| {
+                    db::get_capacity_profile(&conn, environment_id)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|profile| serde_json::to_value(profile).ok()),
+        ),
+        Err(_) => (Vec::new(), None),
+    };
+    let terms = build_terms(proposal);
+    let query = KnowledgeQueryInput {
+        application_id: Some(proposal.application_id.clone()),
+        environment_id: proposal.environment_id.clone(),
+        terms,
+        categories: Vec::new(),
+        tags: Vec::new(),
+        limit: KnowledgeBudget::default().max_hits,
+    };
+    let hits = search(&documents, &query, KnowledgeBudget::default());
+    let references = to_references(&proposal.knowledge_references, &hits);
+
+    // 服务器能力摘要来自"生成这份方案时的可信快照"，**不是**临时探测或猜测。
+    let extras = PromptExtras {
+        capacity,
+        capability: proposal.server_capability_snapshot(),
+    };
+    let prompt = build_prompt(proposal, &references, &extras);
+    let hash = prompt_hash(&prompt);
+
+    // Provider 已经能被打断；它返回的是**真实尝试次数**。
+    let outcome = advisor.review(&prompt, token).await;
+    let attempts = outcome.attempts;
+
+    // 解析之后、合并之前再查一次。
+    if token.is_cancelled() {
+        return ReviewRun::Cancelled { attempts };
+    }
+
+    let (merge_result, provider_code) = match outcome.result {
+        Ok(suggestion) => (Ok(suggestion), None),
+        Err(error) => (
+            Err(AiReviewFailure {
+                reason: error.user_message(),
+                kind: rejection_kind_for(&error),
+            }),
+            Some(error.code().to_string()),
+        ),
+    };
+
+    // ---- 合并：只动 AI 相关字段，确定性结论一个字节不改 ----
+    let mut updated = proposal.clone();
+    let review = merge_into(
+        &mut updated,
+        &config.model,
+        crate::deployment::proposal::PROMPT_VERSION,
+        &hash,
+        &references,
+        merge_result,
+        attempts,
+        Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)),
+    );
+
+    // **写数据库之前**最后再查一次：取消后绝不改方案、绝不记使用。
+    if token.is_cancelled() {
+        return ReviewRun::Cancelled { attempts };
+    }
+    if let Ok(conn) = db.open() {
+        let _ = db::upsert_proposal(&conn, &updated);
+        // 知识引用记录：当时用的是哪一版，事后能查。
+        for reference in &references {
+            let _ = db::record_usage(
+                &conn,
+                &KnowledgeUsageRecord {
+                    id: format!("{}:{}", updated.id, reference.entry_id),
+                    document_id: reference.entry_id.clone(),
+                    version: reference.version.parse().unwrap_or(0),
+                    proposal_id: updated.id.clone(),
+                    used_by: "ai_review".to_string(),
+                    created_at: db::AppDb::now(),
+                },
+            );
+        }
+    }
+
+    match review.status {
+        AiReviewStatus::Succeeded => ReviewRun::Succeeded { attempts },
+        // 答复被安全校验全部拒绝：算失败，但保留**真实分类**。
+        AiReviewStatus::Rejected => ReviewRun::Failed {
+            attempts,
+            message: review
+                .rejected
+                .first()
+                .map(|rejection| rejection.reason.clone())
+                .unwrap_or_else(|| "模型答复被安全校验全部拒绝".to_string()),
+            code: review
+                .rejected
+                .first()
+                .map(|rejection| rejection_code(rejection.kind).to_string())
+                .unwrap_or_else(|| "rejected_content".to_string()),
+        },
+        // 请求层失败：用 Provider 的稳定错误码（auth / timeout / network / …）。
+        AiReviewStatus::Failed => ReviewRun::Failed {
+            attempts,
+            message: review
+                .rejected
+                .first()
+                .map(|rejection| rejection.reason.clone())
+                .unwrap_or_else(|| "AI 复核请求失败".to_string()),
+            code: provider_code.unwrap_or_else(|| "provider_error".to_string()),
+        },
+        _ => ReviewRun::Succeeded { attempts },
+    }
+}
+
+/// Provider 错误 → 拒绝原因分类（内容被拒时保留它的细分类型）。
+fn rejection_kind_for(error: &crate::deployment::ai::AiProviderError) -> AiRejectionKind {
+    match error {
+        crate::deployment::ai::AiProviderError::RejectedContent { kind, .. } => *kind,
+        _ => AiRejectionKind::ProviderError,
+    }
+}
+
+/// 拒绝分类 → 稳定错误码。**不把所有失败都写成 `provider_error`。**
+fn rejection_code(kind: AiRejectionKind) -> &'static str {
+    match kind {
+        AiRejectionKind::Markdown => "markdown",
+        AiRejectionKind::Command => "command",
+        AiRejectionKind::ShellSymbol => "shell_symbol",
+        AiRejectionKind::TooLong => "too_long",
+        AiRejectionKind::Empty => "empty",
+        AiRejectionKind::InvalidJson => "invalid_json",
+        AiRejectionKind::UnknownField => "unknown_field",
+        AiRejectionKind::FakeCitation => "fake_citation",
+        AiRejectionKind::ModificationAttempt => "modification_attempt",
+        AiRejectionKind::ProviderError => "provider_error",
+        AiRejectionKind::Other => "rejected_content",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::deployment::ai::{AiCancel, AiProviderConfig};
+
+    /// 建一个临时的文件型数据库（`AppDb` 需要真实路径）。
+    fn temp_db() -> (db::AppDb, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "bls-ops-ai-review-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = db::AppDb::new(path.clone());
+        db.init().expect("初始化测试数据库");
+        (db, path)
+    }
+
+    #[test]
+    fn a_cancelled_review_never_writes_ai_content_into_the_proposal() {
+        let (db, path) = temp_db();
+        let proposal = db::proposal_fixture("proposal-cancel-1");
+        {
+            let conn = db.open().expect("open");
+            db::upsert_proposal(&conn, &proposal).expect("save");
+        }
+        assert!(proposal.ai_review.is_none());
+
+        let config = AiProviderConfig::new("p1", "测试提供方", 1);
+        let token = AiCancel::new();
+        token.cancel(); // 提交后立刻取消
+
+        let run = tauri::async_runtime::block_on(run_review(
+            &db,
+            &config,
+            &proposal,
+            &token,
+            std::time::Instant::now(),
+        ));
+        assert!(
+            matches!(run, ReviewRun::Cancelled { attempts: 0 }),
+            "已取消的复核必须短路：不读密钥、不打开数据库"
+        );
+
+        // 库里那份方案**没有被改动**：没有 AI 内容，也没有 AI 指纹。
+        let conn = db.open().expect("open");
+        let stored = db::get_proposal(&conn, "proposal-cancel-1")
+            .expect("load")
+            .expect("found");
+        assert!(
+            stored.ai_review.is_none(),
+            "取消不得写入 proposal.ai_review"
+        );
+        assert!(
+            stored.fingerprint.model.is_none(),
+            "取消不得修改 AI fingerprint"
+        );
+        assert!(stored.fingerprint.ai_prompt_hash.is_none());
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
 }

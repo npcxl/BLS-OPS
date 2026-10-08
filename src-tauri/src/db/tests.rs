@@ -1175,7 +1175,7 @@ fn artifact_import_task_round_trips_through_json_columns() {
 // -- P5.2 部署方案与安全策略 -------------------------------------------------
 
 /// 用规则引擎现做一份方案（比手搓 20 个字段更不容易写错）。
-fn proposal_fixture(id: &str) -> crate::deployment::proposal::model::DeploymentProposal {
+pub(crate) fn proposal_fixture(id: &str) -> crate::deployment::proposal::model::DeploymentProposal {
     use crate::deployment::proposal::{engine, ProposalInputs, SecurityPolicy};
     let inputs = ProposalInputs {
         application: deployment_application("app-1"),

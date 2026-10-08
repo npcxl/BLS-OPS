@@ -12,9 +12,10 @@
 export default {
   // -- 外壳 --
   "Deployment Center": "部署中心",
-  "Plan applications, environments and services. Nothing is executed in this stage — execution arrives with the workflow engine.":
-    "在这里规划应用、环境与服务。本阶段不执行任何部署 —— 执行能力随工作流引擎一起来。",
-  "Read-only in this stage": "本阶段只读",
+  "Plan applications, environments and services. Generating a proposal never executes anything — deployment runs only after you confirm and approve it.":
+    "在这里规划应用、环境与服务。生成方案不会自动执行任何部署 —— 只有你确认并批准后，才会进入部署运行。",
+  "Plans are not executed automatically": "方案不会自动执行",
+  "This action cannot be undone.": "此操作不可撤销。",
   "Legacy deployment records": "旧部署记录",
 
   // -- Tab --

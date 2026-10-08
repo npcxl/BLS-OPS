@@ -21,8 +21,8 @@ use super::knowledge::{self, KnowledgeQuery, KnowledgeResult};
 use super::model::{
     Assumption, DeploymentProposal, Evidence, EvidenceClass, EvidenceSource, InputSnapshot,
     KnowledgeConflict, ProposalCheck, ProposalFingerprint, ProposalOutcome, ProposalStatus,
-    ProposalSummary, ProposalValidation, ProposedWorkflow, SecurityPolicy, ServerResourceFacts,
-    Statement, Unknown, UnknownSeverity,
+    ProposalSummary, ProposalValidation, ProposedWorkflow, SecurityPolicy,
+    ServerCapabilitySnapshot, ServerResourceFacts, Statement, Unknown, UnknownSeverity,
 };
 use super::rules::{self, ServiceFacts};
 use super::{ENGINE_VERSION, PROMPT_VERSION, PROPOSAL_SCHEMA_VERSION};
@@ -235,6 +235,8 @@ pub fn generate(inputs: &ProposalInputs, advisor: Option<&dyn ProposalAdvisor>) 
             generated_at: inputs.now,
         },
         created_at: inputs.now,
+        // 生成时留一份能力快照：AI 复核将来只依据它，不临时重新探测。
+        server_capability: capability_snapshot(inputs),
     };
 
     // ---- 6. AI 批注（可选，且只加不改）----
@@ -594,6 +596,28 @@ pub fn input_hash(inputs: &ProposalInputs, knowledge: &KnowledgeResult) -> Strin
     fingerprint::hash_bytes(canonical.to_string().as_bytes())
 }
 
+/// 生成时把服务器能力图谱压成一份**可追溯快照**（只给 AI 复核用）。
+///
+/// 只收"已确认安装"的能力（`Some(true)`，见 `enabled_collectors`）；
+/// 无法判定的项（`None`）不进 `installed`，探测告警原样保留。
+fn capability_snapshot(inputs: &ProposalInputs) -> Option<ServerCapabilitySnapshot> {
+    let profile = inputs.capability.as_ref()?;
+    Some(ServerCapabilitySnapshot {
+        captured_at: inputs.now,
+        os: non_empty(&profile.system.os),
+        arch: non_empty(&profile.system.arch),
+        init_system: non_empty(&profile.system.init_system),
+        installed: profile.enabled_collectors(),
+        resources: inputs.observed.clone(),
+        warnings: profile.warnings.clone(),
+    })
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// 输出哈希：**去掉 id / 时间戳**后的方案正文。
 ///
 /// P5.5 起还会**剥掉 AI 层**（`ai_review` 与指纹里的模型 / 提示词字段）：
@@ -609,6 +633,8 @@ pub fn output_hash(proposal: &DeploymentProposal) -> String {
     clone.fingerprint.model = None;
     clone.fingerprint.ai_prompt_hash = None;
     clone.ai_review = None;
+    // 能力快照只服务 AI 复核，不属于确定性产物 —— 不算进"可复现"哈希。
+    clone.server_capability = None;
     let text = serde_json::to_string(&clone).unwrap_or_default();
     fingerprint::hash_bytes(text.as_bytes())
 }

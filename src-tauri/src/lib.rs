@@ -319,6 +319,8 @@ pub fn run() {
             commands::deployment_knowledge_archive,
             commands::deployment_knowledge_usage,
             commands::deployment_knowledge_search_test,
+            commands::deployment_knowledge_update_meta,
+            commands::deployment_knowledge_import_markdown,
             // ---- P5.5 AI 复核（后台任务 + 事件；不阻塞确定性方案）----
             commands::deployment_proposal_ai_review,
             commands::deployment_proposal_ai_review_status,

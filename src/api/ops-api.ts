@@ -107,8 +107,10 @@ import {
   type AiProviderTestResult,
   type AiProviderView,
   type AiReviewTask,
+  type ImportedMarkdown,
   type KnowledgeDocument,
   type KnowledgeHit,
+  type KnowledgeMetaUpdate,
   type KnowledgeQueryInput,
   type KnowledgeUsageRecord,
   type KnowledgeVersion,
@@ -397,10 +399,12 @@ export {
   type AiProviderView,
   type AiReviewTask,
   type AiTaskStatus,
+  type ImportedMarkdown,
   type KnowledgeCategory,
   type KnowledgeDocStatus,
   type KnowledgeDocument,
   type KnowledgeHit,
+  type KnowledgeMetaUpdate,
   type KnowledgeQueryInput,
   type KnowledgeScope,
   type KnowledgeSourceType,
@@ -1002,6 +1006,12 @@ export const opsApi = {
   /** 检索测试：与 AI 复核同一函数、同一预算。 */
   deploymentKnowledgeSearchTest: (query: KnowledgeQueryInput) =>
     invoke<KnowledgeHit[]>("deployment_knowledge_search_test", { query }),
+  /** 只改元数据（启用 / 状态 / 核对时间 / 备注）：不改内容、不产生新版本。 */
+  deploymentKnowledgeUpdateMeta: (id: string, update: KnowledgeMetaUpdate) =>
+    invoke<KnowledgeDocument>("deployment_knowledge_update_meta", { id, update }),
+  /** 受限读取本地 Markdown（扩展名白名单 / 2 MiB / 必须 UTF-8）：只返回内容，不落库。 */
+  deploymentKnowledgeImportMarkdown: (path: string) =>
+    invoke<ImportedMarkdown>("deployment_knowledge_import_markdown", { path }),
 
   // -- P5.5 AI 复核（后台任务 + 事件；不阻塞方案）----------------------------
   deploymentProposalAiReview: (proposalId: string) =>

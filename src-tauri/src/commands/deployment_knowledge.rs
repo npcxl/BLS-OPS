@@ -20,8 +20,9 @@ use tauri::State;
 use crate::db::{self, AppDb};
 use crate::deployment::knowledge;
 use crate::deployment::knowledge::model::{
-    KnowledgeBudget, KnowledgeDocument, KnowledgeHit, KnowledgeQueryInput, KnowledgeUsageRecord,
-    KnowledgeVersion,
+    ImportedMarkdown, KnowledgeBudget, KnowledgeDocStatus, KnowledgeDocument, KnowledgeHit,
+    KnowledgeQueryInput, KnowledgeSourceType, KnowledgeUsageRecord, KnowledgeVersion,
+    MARKDOWN_EXTENSIONS, MAX_MARKDOWN_BYTES,
 };
 use crate::state::AppState;
 
@@ -220,6 +221,149 @@ pub async fn deployment_knowledge_archive(
     Ok(())
 }
 
+/// 元数据更新入参（**完整替换**语义，避免"没传 = 不改"造成的歧义）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct KnowledgeMetaUpdate {
+    pub enabled: bool,
+    pub status: KnowledgeDocStatus,
+    /// `None` = 还没核对过（可清除）。
+    pub last_verified_at: Option<i64>,
+    pub note: String,
+}
+
+/// 只更新元数据：启用开关 / 状态 / 最近核对时间 / 备注。
+///
+/// **不改内容、不产生新版本** —— 版本号只由正文变更驱动；
+/// "启用 / 标记已核对 / 归档"这类操作不该污染版本历史。
+/// 状态设为 `archived` 时会同时停用（归档 = 不参与检索，两者必须一致）。
+#[tauri::command]
+pub async fn deployment_knowledge_update_meta(
+    state: State<'_, AppState>,
+    id: String,
+    update: KnowledgeMetaUpdate,
+) -> Result<KnowledgeDocument, String> {
+    let now = AppDb::now();
+    let conn = state.db.open().map_err(|error| error.to_string())?;
+    let mut document = db::get_document(&conn, &id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "知识文档不存在".to_string())?;
+
+    document.enabled = update.enabled;
+    document.status = update.status;
+    if document.status == KnowledgeDocStatus::Archived {
+        // 归档 = 不可检索：不能出现"已归档但仍启用"。
+        document.enabled = false;
+    }
+    document.last_verified_at = update.last_verified_at;
+    document.note = update.note.clone();
+    document.updated_at = now;
+
+    db::update_document_meta(
+        &conn,
+        &id,
+        document.enabled,
+        document.status,
+        document.last_verified_at,
+        &document.note,
+        now,
+    )
+    .map_err(|error| error.to_string())?;
+
+    record_audit(
+        &state,
+        "deployment_knowledge_update_meta",
+        None,
+        None,
+        &format!(
+            "{{\"document\":\"{id}\",\"enabled\":{},\"status\":\"{}\"}}",
+            document.enabled,
+            document.status.as_str()
+        ),
+    );
+    Ok(document)
+}
+
+/// 导入本地 Markdown 文件。
+///
+/// **受限读取**：只接受 `.md` / `.markdown` / `.txt`，上限 2 MiB，必须是 UTF-8。
+/// 返回内容供编辑器预览，**不落库、不覆盖任何已有文档**（用户确认后再 save）。
+///
+/// 之所以做成 Rust IPC 而不是前端任意读文件：前端拿不到"任意读文件"的能力，
+/// 路径只能来自系统文件选择器，读取范围被上面三条规则限死。
+#[tauri::command]
+pub async fn deployment_knowledge_import_markdown(
+    path: String,
+) -> Result<ImportedMarkdown, String> {
+    read_markdown_file(&path)
+}
+
+/// 受限地读一个 Markdown 文件（纯逻辑，便于单测）。
+fn read_markdown_file(path: &str) -> Result<ImportedMarkdown, String> {
+    let path = std::path::Path::new(path);
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some(ext) if MARKDOWN_EXTENSIONS.contains(&ext) => {}
+        Some(other) => {
+            return Err(format!(
+                "只支持 .md / .markdown / .txt 文件，当前是 .{other}"
+            ))
+        }
+        None => return Err("只支持 .md / .markdown / .txt 文件".to_string()),
+    }
+
+    let metadata = std::fs::metadata(path).map_err(|error| format!("无法读取文件：{error}"))?;
+    if !metadata.is_file() {
+        return Err("选择的不是文件".to_string());
+    }
+    if metadata.len() > MAX_MARKDOWN_BYTES {
+        return Err(format!(
+            "文件太大（{} KiB）：上限 {} KiB",
+            metadata.len() / 1024,
+            MAX_MARKDOWN_BYTES / 1024
+        ));
+    }
+
+    let bytes = std::fs::read(path).map_err(|error| format!("无法读取文件：{error}"))?;
+    // 读入后再查一次大小：避免"检查与读取之间文件被换掉"。
+    let size = bytes.len() as u64;
+    if size > MAX_MARKDOWN_BYTES {
+        return Err(format!(
+            "文件太大（{} KiB）：上限 {} KiB",
+            size / 1024,
+            MAX_MARKDOWN_BYTES / 1024
+        ));
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| "文件不是 UTF-8 编码：请另存为 UTF-8 后再导入".to_string())?;
+    // UTF-8 BOM 不该出现在正文里。
+    let content = content.trim_start_matches('\u{feff}').to_string();
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("knowledge.md")
+        .to_string();
+    let suggested_title = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or("导入的知识")
+        .to_string();
+
+    Ok(ImportedMarkdown {
+        file_name,
+        suggested_title,
+        content,
+        bytes: size,
+        source_type: KnowledgeSourceType::MarkdownFile,
+    })
+}
+
 #[tauri::command]
 pub async fn deployment_knowledge_usage(
     state: State<'_, AppState>,
@@ -250,4 +394,73 @@ pub async fn deployment_knowledge_search_test(
         &query,
         KnowledgeBudget::default(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("bls-ops-kb-test-{}-{name}", uuid::Uuid::new_v4()));
+        let mut file = std::fs::File::create(&path).expect("create");
+        file.write_all(bytes).expect("write");
+        path
+    }
+
+    #[test]
+    fn a_markdown_file_becomes_content_with_a_suggested_title() {
+        let path = temp_file("运维手册.md", "# 标题\n正文".as_bytes());
+        let imported = read_markdown_file(path.to_str().unwrap()).expect("应当导入");
+        // 测试文件带唯一前缀，因此断言"以原名结尾"（标题来自文件名去扩展名）。
+        assert!(
+            imported.suggested_title.ends_with("运维手册"),
+            "{}",
+            imported.suggested_title
+        );
+        assert!(
+            imported.file_name.ends_with("运维手册.md"),
+            "{}",
+            imported.file_name
+        );
+        assert!(imported.content.contains("正文"));
+        assert_eq!(imported.source_type, KnowledgeSourceType::MarkdownFile);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_unsupported_extension_is_rejected() {
+        let path = temp_file("payload.exe", b"binary");
+        let error = read_markdown_file(path.to_str().unwrap()).expect_err("必须拒绝");
+        assert!(error.contains("只支持"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn an_oversized_file_is_rejected() {
+        let huge = vec![b'a'; (MAX_MARKDOWN_BYTES + 1) as usize];
+        let path = temp_file("huge.md", &huge);
+        let error = read_markdown_file(path.to_str().unwrap()).expect_err("必须拒绝");
+        assert!(error.contains("太大"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_non_utf8_file_is_rejected_with_a_clear_message() {
+        // 0xFF 在 UTF-8 里是非法的起始字节。
+        let path = temp_file("gbk.md", &[0xFF, 0xFE, 0x00, 0x41]);
+        let error = read_markdown_file(path.to_str().unwrap()).expect_err("必须拒绝");
+        assert!(error.contains("UTF-8"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_directory_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("bls-ops-kb-dir-{}.md", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let error = read_markdown_file(dir.to_str().unwrap()).expect_err("目录必须被拒");
+        assert!(error.contains("不是文件"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

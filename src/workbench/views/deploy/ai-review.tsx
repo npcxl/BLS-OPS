@@ -4,28 +4,39 @@
  * 三条产品承诺（与需求对应）：
  *
  * 1. **没配 Provider 就直说"AI 未配置"**，确定性方案照常可用，
- *    绝不显示伪造的 AI 评价；
+ *    绝不显示伪造的 AI 评价；"还没有方案"与"没有 Provider"是**两件事** ——
+ *    前者显示"还没有生成方案"，后者才引导去设置。
  * 2. **复核不阻塞**：确定性方案已经展示，复核只是单独的一段进度；
  * 3. **AI 建议与确定性结论视觉上分开**，并明写"仅供人工参考，
  *    不会自动修改部署计划"。
  *
  * 事件是主路径（`aiReviewEvent`），轮询是兜底 —— 慢模型不能占着界面。
+ *
+ * # 状态机（P5.5.1）
+ *
+ * 每个状态**只有一个**主操作按钮：idle/cancelled → 运行；running/queued →
+ * 取消；failed → 重试；succeeded → 再跑一次。成功事件到达后立即把最新方案
+ * 拉回来（`onProposalUpdated`），因此 AI 建议不需要刷新页面就可见。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { opsApi, type AiReviewTask, type AiTaskStatus } from "@/api/ops-api";
 import { aiReviewEvent } from "@/lib/events";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 
 import { isAiTaskActive, type DeploymentProposal } from "@/api/types/deployment";
 
 type Props = {
   applicationId: string;
   proposal: DeploymentProposal | null;
+  /** 复核成功后把**最新方案**写回上层，避免这里持有过期 proposal。 */
+  onProposalUpdated?: (proposal: DeploymentProposal) => void;
 };
 
-export function AiReviewRow({ applicationId, proposal }: Props) {
+export function AiReviewRow({ applicationId, proposal, onProposalUpdated }: Props) {
   const { t } = useTranslation();
+  const openModuleTab = useWorkbenchStore((state) => state.openModuleTab);
   const proposalId = proposal?.id ?? null;
 
   const [hasProvider, setHasProvider] = useState<boolean | null>(null);
@@ -33,14 +44,41 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadProviders = async () => {
+  const loadProviders = useCallback(async () => {
     const providers = await opsApi.aiProviderList();
     setHasProvider(providers.some((provider) => provider.enabled && provider.is_default));
-  };
+  }, []);
 
   useEffect(() => {
-    void loadProviders().catch(() => setHasProvider(false));
-  }, [applicationId]);
+    void (async () => {
+      try {
+        await loadProviders();
+      } catch {
+        // 取不到就说"没有可用提供方"，绝不假装能复核。
+        setHasProvider(false);
+      }
+    })();
+  }, [loadProviders, applicationId]);
+
+  /**
+   * 落地任务状态；**成功时立刻把最新方案拉回来**。
+   *
+   * 这是"AI 建议在成功事件到达后立即显示"的实现：事件 → 拉取方案 →
+   * 写回上层 → 上层把新 proposal 传回本组件。
+   */
+  const applyTask = useCallback(
+    async (next: AiReviewTask) => {
+      setTask(next);
+      if (next.status !== "succeeded" || !proposalId || !onProposalUpdated) return;
+      try {
+        const fresh = await opsApi.deploymentProposalGet(proposalId);
+        if (fresh) onProposalUpdated(fresh);
+      } catch {
+        /* 拉取失败不影响任务状态展示，下一次事件/轮询会再试 */
+      }
+    },
+    [proposalId, onProposalUpdated],
+  );
 
   useEffect(() => {
     if (!proposalId) return;
@@ -48,14 +86,18 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
     let stop: (() => void) | null = null;
 
     void (async () => {
-      const status = await opsApi.deploymentProposalAiReviewStatus(proposalId).catch(() => null);
-      if (!disposed) setTask(status ?? null);
+      let status: AiReviewTask | null = null;
+      try {
+        status = await opsApi.deploymentProposalAiReviewStatus(proposalId);
+      } catch {
+        status = null;
+      }
+      if (!disposed && status) void applyTask(status);
       try {
         const { listen } = await import("@tauri-apps/api/event");
-        const unsubscribe = await listen<AiReviewTask>(
-          aiReviewEvent(proposalId),
-          (event) => setTask(event.payload),
-        );
+        const unsubscribe = await listen<AiReviewTask>(aiReviewEvent(proposalId), (event) => {
+          void applyTask(event.payload);
+        });
         if (disposed) {
           unsubscribe();
           return;
@@ -70,21 +112,23 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
       disposed = true;
       stop?.();
     };
-  }, [proposalId]);
+  }, [proposalId, applyTask]);
 
   // 轮询兜底：只在任务还在跑时每秒问一次。
   useEffect(() => {
     if (!proposalId || !isAiTaskActive(task)) return;
     const timer = window.setInterval(() => {
       void (async () => {
-        const next = await opsApi
-          .deploymentProposalAiReviewStatus(proposalId)
-          .catch(() => null);
-        if (next) setTask(next);
+        try {
+          const next = await opsApi.deploymentProposalAiReviewStatus(proposalId);
+          if (next) await applyTask(next);
+        } catch {
+          /* 轮询失败：下个周期再试 */
+        }
       })();
     }, 1_000);
     return () => window.clearInterval(timer);
-  }, [proposalId, task?.status]);
+  }, [proposalId, task?.status, applyTask]);
 
   const run = async () => {
     if (!proposalId) return;
@@ -92,7 +136,7 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
     setError(null);
     try {
       const created = await opsApi.deploymentProposalAiReview(proposalId);
-      setTask(created);
+      await applyTask(created);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -102,10 +146,15 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
 
   const cancel = async () => {
     if (!proposalId) return;
-    await opsApi.deploymentProposalAiReviewCancel(proposalId).catch(() => undefined);
+    try {
+      await opsApi.deploymentProposalAiReviewCancel(proposalId);
+    } catch {
+      /* 取消失败：最终状态仍以事件 / 轮询为准 */
+    }
   };
 
   const review = proposal?.ai_review ?? null;
+  const active = isAiTaskActive(task);
   const status: AiTaskStatus = task?.status ?? (review ? "succeeded" : "idle");
 
   const label = useMemo(() => {
@@ -121,17 +170,48 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
       case "cancelled":
         return t("AI review cancelled");
       default:
-        return t("AI not configured");
+        return t("AI review idle");
     }
   }, [status, t]);
 
-  if (hasProvider === false) {
+  // **还没有方案** —— 与"没配 Provider"是两件事，这里只说方案的事。
+  if (!proposalId) {
+    return <p className="mt-1.5 text-11 text-fg-subtle">{t("No proposal generated yet")}</p>;
+  }
+
+  // Provider 还在加载：先给加载态，别急着下"未配置"的结论。
+  if (hasProvider === null) {
+    return <p className="mt-1.5 text-11 text-fg-subtle">{t("Loading")}</p>;
+  }
+
+  if (!hasProvider) {
     return (
-      <span className="rounded-full border border-line bg-surface-2 px-1.5 text-10 text-fg-subtle">
-        {t("AI not configured")} · {t("Add a model in Settings → AI models")}
-      </span>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-11 text-fg-subtle">
+        <span className="rounded-full border border-line bg-surface-2 px-1.5 text-10">
+          {t("AI not configured")}
+        </span>
+        {/* 可点击入口（不是纯文本）：直接跳到「设置 → AI 模型」。 */}
+        <button
+          type="button"
+          data-testid="ai-go-to-settings"
+          className="rounded-[7px] border border-line px-2 py-0.5 text-10 hover:bg-surface-hover hover:text-fg"
+          onClick={() => openModuleTab("settings")}
+        >
+          {t("Go to settings → AI models")}
+        </button>
+      </div>
     );
   }
+
+  // 每个状态**只有一个**主操作按钮：失败时不再同时出现"运行"与"重试"。
+  const primary =
+    status === "queued" || status === "running"
+      ? { label: t("Cancel"), onClick: () => void cancel(), disabled: false }
+      : status === "failed"
+        ? { label: t("Retry AI review"), onClick: () => void run(), disabled: busy }
+        : status === "succeeded"
+          ? { label: t("Run again"), onClick: () => void run(), disabled: busy }
+          : { label: t("Run AI review"), onClick: () => void run(), disabled: busy };
 
   return (
     <div className="mt-2 w-full space-y-1.5">
@@ -139,35 +219,15 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
         <span className="rounded-full border border-line bg-surface-2 px-1.5 text-10 text-fg-subtle">
           {label}
         </span>
-        {proposalId && !isAiTaskActive(task) ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void run()}
-            className="rounded-[7px] border border-line px-2 py-0.5 text-10 disabled:opacity-50"
-          >
-            {t("Run AI review")}
-          </button>
-        ) : null}
-        {isAiTaskActive(task) ? (
-          <button
-            type="button"
-            onClick={() => void cancel()}
-            className="rounded-[7px] border border-line px-2 py-0.5 text-10"
-          >
-            {t("Cancel")}
-          </button>
-        ) : null}
-        {status === "failed" && proposalId ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void run()}
-            className="rounded-[7px] border border-line px-2 py-0.5 text-10"
-          >
-            {t("Retry AI review")}
-          </button>
-        ) : null}
+        <button
+          type="button"
+          data-testid="ai-primary-action"
+          disabled={primary.disabled}
+          onClick={primary.onClick}
+          className="rounded-[7px] border border-line px-2 py-0.5 text-10 disabled:opacity-50"
+        >
+          {primary.label}
+        </button>
         <span className="text-10 text-fg-subtle">
           {t("AI suggestions are advisory only and never modify this proposal.")}
         </span>
@@ -175,6 +235,10 @@ export function AiReviewRow({ applicationId, proposal }: Props) {
 
       {error || task?.error ? (
         <p className="text-10 text-danger">{error ?? task?.error}</p>
+      ) : null}
+
+      {active && !review ? (
+        <p className="text-10 text-fg-subtle">{t("AI review running")}…</p>
       ) : null}
 
       {review ? (

@@ -954,6 +954,34 @@ pub struct ServerResourceFacts {
     pub disk_free_gb: f64,
 }
 
+/// **生成方案时**的服务器能力快照（只给 AI 复核用，不参与确定性决策）。
+///
+/// 为什么要有它：AI 复核可能在方案生成很久之后才跑。让复核依据"生成这份方案
+/// 当时记录下来的事实"，而不是临时重新探测（更不许猜 CPU / 内存 / Docker / Nginx）。
+///
+/// 兼容性：旧数据库里的方案没有这个字段，`#[serde(default)]` 保证照样能反序列化
+/// （此时为 `None`，AI 复核会明确标 `unknown`，见
+/// [`DeploymentProposal::server_capability_snapshot`]）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ServerCapabilitySnapshot {
+    /// 快照采集时间（= 生成方案的时间）。
+    pub captured_at: i64,
+    /// 操作系统发行版（如 `Rocky Linux 9.4`）；没探到就是 `None`。
+    pub os: Option<String>,
+    /// 架构（如 `x86_64`）。
+    pub arch: Option<String>,
+    /// init 系统（`systemd` / `openrc` / `windows-service` …）。
+    pub init_system: Option<String>,
+    /// **已确认安装**的部署能力（只列 `Some(true)` 的项，如 `docker` / `nginx`）。
+    pub installed: Vec<String>,
+    /// 实测资源（CPU / 内存 / 磁盘）；没采集就是 `None`。
+    pub resources: Option<ServerResourceFacts>,
+    /// 探测时无法判定的项（原样保留，供界面/AI 看到"哪些是未知的"）。
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
 /// 一份完整的部署方案。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -986,6 +1014,29 @@ pub struct DeploymentProposal {
     pub inputs: InputSnapshot,
     pub fingerprint: ProposalFingerprint,
     pub created_at: i64,
+    /// 生成这份方案时的服务器能力快照（**只用于 AI 复核**）。
+    ///
+    /// `None` = 当时没采集到能力图谱；AI 复核会标 `unknown` 而不是猜。
+    /// 旧数据库缺这个键时照样能反序列化（`#[serde(default)]`）；
+    /// `skip_serializing_if` 保证 `None` 时不写出该键，避免无谓地改变序列化结果。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_capability: Option<ServerCapabilitySnapshot>,
+}
+
+impl DeploymentProposal {
+    /// 给 AI 复核用的服务器能力摘要。
+    ///
+    /// **只认生成方案时保存的快照**：没有就返回一个明确标 `unknown` 的结构，
+    /// 绝不临时探测、绝不猜测 CPU / 内存 / Docker / Nginx 状态。
+    pub fn server_capability_snapshot(&self) -> Option<serde_json::Value> {
+        match &self.server_capability {
+            Some(snapshot) => serde_json::to_value(snapshot).ok(),
+            None => Some(serde_json::json!({
+                "status": "unknown",
+                "reason": "生成方案时没有采集到服务器能力快照；不猜测 CPU / 内存 / Docker / Nginx 状态",
+            })),
+        }
+    }
 }
 
 impl DeploymentProposal {

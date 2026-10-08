@@ -117,13 +117,28 @@ pub fn upsert_provider(conn: &Connection, config: &AiProviderConfig) -> Result<(
     Ok(())
 }
 
-/// 设为默认（同时把其它提供方取消默认 —— 默认只能有一个）。
+/// 设为默认（**先校验，再在事务里切换**）。
+///
+/// 三条硬规则：
+/// 1. 目标提供方必须**存在** —— 一个不存在的 id 不能把现有默认清空
+///    （否则 AI 复核会突然变成"没有可用的提供方"）；
+/// 2. 目标提供方必须**已启用** —— 绝不允许把停用的提供方设为默认；
+/// 3. "取消旧默认 + 设新默认"必须同事务 —— 中途失败不会留下两个默认或零个默认。
 pub fn set_default_provider(conn: &Connection, id: &str) -> Result<()> {
-    conn.execute(
+    match get_provider(conn, id)? {
+        None => anyhow::bail!("提供方不存在：{id}"),
+        Some(config) if !config.enabled => {
+            anyhow::bail!("不能把已停用的提供方「{}」设为默认", config.name)
+        }
+        Some(_) => {}
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE ai_providers SET is_default = 0 WHERE id != ?1",
         [id],
     )?;
-    conn.execute("UPDATE ai_providers SET is_default = 1 WHERE id = ?1", [id])?;
+    tx.execute("UPDATE ai_providers SET is_default = 1 WHERE id = ?1", [id])?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -284,13 +299,49 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_provider_is_not_the_default() {
+    fn a_disabled_provider_cannot_be_made_default() {
         let conn = test_db();
         let mut config = provider("p1", "A");
         config.enabled = false;
         upsert_provider(&conn, &config).unwrap();
-        set_default_provider(&conn, "p1").unwrap();
+
+        let error = set_default_provider(&conn, "p1").expect_err("停用的提供方不能设为默认");
+        assert!(error.to_string().contains("已停用"), "{error}");
         assert!(default_provider(&conn).unwrap().is_none());
+        // 也不该被偷偷写成默认。
+        assert!(!get_provider(&conn, "p1").unwrap().unwrap().is_default);
+    }
+
+    #[test]
+    fn an_invalid_id_never_clears_the_existing_default() {
+        let conn = test_db();
+        upsert_provider(&conn, &provider("p1", "A")).unwrap();
+        set_default_provider(&conn, "p1").unwrap();
+
+        let error = set_default_provider(&conn, "missing").expect_err("不存在的 id 必须报错");
+        assert!(error.to_string().contains("不存在"), "{error}");
+        // 关键：现有默认**没有被清空**。
+        let default = default_provider(&conn).unwrap().expect("原默认必须保留");
+        assert_eq!(default.id, "p1");
+    }
+
+    #[test]
+    fn switching_the_default_keeps_exactly_one_default() {
+        let conn = test_db();
+        upsert_provider(&conn, &provider("p1", "A")).unwrap();
+        upsert_provider(&conn, &provider("p2", "B")).unwrap();
+        set_default_provider(&conn, "p1").unwrap();
+        set_default_provider(&conn, "p2").unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ai_providers WHERE is_default = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "任何时刻只能有一个默认");
+        assert_eq!(default_provider(&conn).unwrap().unwrap().id, "p2");
     }
 
     #[test]

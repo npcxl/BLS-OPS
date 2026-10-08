@@ -155,4 +155,65 @@ export default {
   Restore: "還原",
   "Used by proposals": "被哪些方案引用",
   "Not referenced yet": "還沒有被引用",
+
+  // -- P5.5.1 設定：AI 模型管理 --
+  "AI models": "AI 模型",
+  "Models only review deployment proposals; they never execute anything.":
+    "模型只用於複核部署方案，絕不會執行任何操作。",
+  "Add model": "新增模型",
+  "Edit model": "編輯模型",
+  "No models yet": "還沒有模型提供方",
+  Default: "預設",
+  "Test connection": "連線測試",
+  "Set as default": "設為預設",
+  "Delete model provider": "刪除模型提供方",
+  'Delete "{{name}}"? The saved configuration is removed.':
+    "刪除「{{name}}」？已儲存的設定會被移除。",
+  "Also delete the API key from the system credential manager":
+    "同時從系統認證管理員刪除該 API Key",
+  "Provider type": "提供方類型",
+  "OpenAI compatible": "OpenAI 相容",
+  "Base URL": "Base URL",
+  "For example https://api.example.com/v1; a self-hosted gateway usually allows plain HTTP on the local network.":
+    "例如 https://api.example.com/v1；自建閘道通常於內網使用明文 HTTP。",
+  "API Key": "API Key",
+  "Leave empty to keep the saved key. Keys are only written to the system credential manager.":
+    "留空表示保留已儲存的密鑰；密鑰只會寫入系統認證管理員。",
+  "The key is written to the system credential manager only; the database keeps a reference.":
+    "密鑰只寫入系統認證管理員，資料庫只保存參照。",
+  "Leave empty to keep the saved key": "留空表示保留原密鑰",
+  "Timeout (seconds)": "逾時（秒）",
+  "Max output tokens": "最大輸出 token",
+  "Use as default": "設為預設",
+  "Allow plain HTTP for non-local hosts": "允許非本機主機使用明文 HTTP",
+  "Only enable this for a trusted self-hosted gateway on your own network.":
+    "僅在你自己的網路裡、受信任的自建閘道才開啟。",
+  "Connection OK ({{ms}} ms, {{attempts}} attempt(s))":
+    "連線成功（{{ms}} 毫秒，{{attempts}} 次嘗試）",
+
+  // -- P5.5.1 AI 複核狀態 --
+  "AI review idle": "AI 複核未執行",
+  "Run again": "再跑一次",
+  "Go to settings → AI models": "前往設定 → AI 模型",
+
+  // -- P5.5.1 知識庫管理 --
+  "Import Markdown": "匯入 Markdown",
+  "Show archived": "顯示已封存",
+  "Knowledge draft": "草稿",
+  "Knowledge published": "已發佈",
+  "Knowledge archived": "已封存",
+  Metadata: "中繼資料",
+  "Last verified": "最近核對",
+  "Knowledge note": "備註",
+  "Save metadata": "儲存中繼資料",
+  "Archived or disabled knowledge does not participate in AI retrieval.":
+    "已封存或未啟用的知識不會參與 AI 檢索。",
+  "Archive knowledge": "封存知識",
+  'Archiving "{{title}}" hides it from AI retrieval; its content and version history are kept.':
+    "封存「{{title}}」後它不再參與 AI 檢索，但內容與歷史版本都會保留。",
+  "Preview this version": "預覽該版本",
+  "Previewing version {{version}}": "正在預覽第 {{version}} 版",
+  "Restore version {{version}}": "還原第 {{version}} 版",
+  "Version {{version}} content will be saved as a new version (v{{next}}). History is never rewritten.":
+    "第 {{version}} 版的內容將儲存為一個新版本（v{{next}}），歷史記錄不會被改寫。",
 } as const;

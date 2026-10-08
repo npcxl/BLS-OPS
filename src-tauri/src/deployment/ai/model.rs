@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deployment::proposal::ai::AiSuggestion;
+
 /// 提供方配置的结构版本（进配置指纹，便于将来迁移）。
 pub const AI_PROVIDER_SCHEMA_VERSION: &str = "ai-provider/1";
 
@@ -229,6 +231,9 @@ pub struct AiProviderTestResult {
     pub message: String,
     /// 失败时的稳定错误码（界面按它决定提示语气）。
     pub error_code: Option<String>,
+    /// 实际发出的请求次数（与 AI 复核共用同一套重试统计语义）。
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 /// 提供方错误。**每个变体的消息都必须能直接给用户看**（不含密钥 / 请求头 / 原始响应）。
@@ -320,23 +325,22 @@ impl AiProviderError {
     }
 }
 
-/// 内存里的复核任务登记表（取消位）。
+/// 内存里的复核任务登记表（**真实可取消**）。
 ///
 /// 与 P5.1 导入任务同一套做法：后台任务 + 事件 + 轮询兜底，
 /// **不让一个慢模型长时间占用前端 invoke**。
+///
+/// 取消不是"任务末尾看一眼布尔值"：每个任务持有一个 [`AiCancel`]，
+/// Provider 在**发请求前、重试等待中、解析之后**都会检查它，
+/// 因此取消能真正打断 HTTP 请求与退避等待（见 `provider.rs`）。
 #[derive(Clone, Default)]
 pub struct AiReviewRegistry {
-    cancels: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
-        >,
-    >,
+    cancels: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, AiCancel>>>,
 }
 
 impl AiReviewRegistry {
-    pub fn register(&self, task_id: &str) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        use std::sync::atomic::AtomicBool;
-        let token = std::sync::Arc::new(AtomicBool::new(false));
+    pub fn register(&self, task_id: &str) -> AiCancel {
+        let token = AiCancel::new();
         if let Ok(mut cancels) = self.cancels.lock() {
             cancels.insert(task_id.to_string(), token.clone());
         }
@@ -344,23 +348,89 @@ impl AiReviewRegistry {
     }
 
     pub fn cancel(&self, task_id: &str) -> bool {
-        use std::sync::atomic::Ordering;
         self.cancels
             .lock()
             .ok()
             .and_then(|cancels| cancels.get(task_id).cloned())
             .map(|token| {
-                token.store(true, Ordering::Relaxed);
+                token.cancel();
                 true
             })
             .unwrap_or(false)
     }
 
+    /// 任务结束（成功 / 失败 / 取消）后必须调用：否则登记表会一直涨。
     pub fn forget(&self, task_id: &str) {
         if let Ok(mut cancels) = self.cancels.lock() {
             cancels.remove(task_id);
         }
     }
+
+    /// 当前登记了多少个任务（测试用它证明"完成后会释放"）。
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.cancels.lock().map(|map| map.len()).unwrap_or(0)
+    }
+}
+
+/// **真实可取消**的令牌。
+///
+/// 用 `tokio::sync::watch` 而不是裸 `AtomicBool`：`select!` 能同时等
+/// "网络请求"与"取消信号"，所以取消可以立刻生效，而不是等到这一步跑完。
+#[derive(Clone, Debug)]
+pub struct AiCancel {
+    sender: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+    receiver: tokio::sync::watch::Receiver<bool>,
+}
+
+impl AiCancel {
+    pub fn new() -> Self {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        Self {
+            sender: std::sync::Arc::new(sender),
+            receiver,
+        }
+    }
+
+    pub fn cancel(&self) {
+        // 发送失败只可能是"所有人都退出了"，那时也不需要取消。
+        let _ = self.sender.send(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.receiver.borrow()
+    }
+
+    /// 供 `tokio::select!` 使用：取消触发时这个 Future 立刻完成。
+    pub async fn cancelled(&self) {
+        let mut receiver = self.receiver.clone();
+        // 已经取消就直接返回。
+        if *receiver.borrow_and_update() {
+            return;
+        }
+        while receiver.changed().await.is_ok() {
+            if *receiver.borrow_and_update() {
+                return;
+            }
+        }
+    }
+}
+
+impl Default for AiCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 一次复核的**完整结果**：不管成功失败都带真实尝试次数。
+///
+/// Provider 内部会重试，所以"尝试了几次"只有它知道；把它放在结果里，
+/// 任务表与 `proposal.ai_review.attempts` 才能记到真实值（而不是恒为 1）。
+#[derive(Debug)]
+pub struct AiReviewOutcome {
+    pub result: Result<AiSuggestion, AiProviderError>,
+    /// 实际发出的 HTTP 请求次数（含重试）。
+    pub attempts: u32,
 }
 
 /// AI 复核任务状态（与后台任务一一对应）。
@@ -491,5 +561,23 @@ mod tests {
     fn save_requests_reject_unknown_fields() {
         let json = r#"{"name":"x","provider_kind":"openai_compatible","base_url":"https://a.example/v1","model":"m","enabled":true,"is_default":false,"timeout_seconds":30,"max_output_tokens":800,"evil":1}"#;
         assert!(serde_json::from_str::<AiProviderSaveRequest>(json).is_err());
+    }
+
+    #[test]
+    fn the_registry_releases_a_finished_task() {
+        let registry = AiReviewRegistry::default();
+        let token = registry.register("t1");
+        assert_eq!(registry.len(), 1, "登记后应当有一个可取消任务");
+
+        // 取消会点亮对应令牌……
+        assert!(registry.cancel("t1"));
+        assert!(token.is_cancelled());
+
+        // ……但只有 `forget` 才会把登记项真正移除
+        //（成功 / 失败 / 取消三种终态后都必须调用它）。
+        registry.forget("t1");
+        assert_eq!(registry.len(), 0, "终态后必须释放，否则登记表只增不减");
+        // 再取消一个不存在的任务：返回 false，且不 panic。
+        assert!(!registry.cancel("t1"));
     }
 }

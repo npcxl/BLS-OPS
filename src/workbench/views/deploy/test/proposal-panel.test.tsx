@@ -328,14 +328,14 @@ function button(text: string): HTMLButtonElement | undefined {
 }
 
 describe("部署方案面板", () => {
-  it("展示需求问卷，并如实说明 AI 未启用", async () => {
+  it("展示需求问卷；没有方案时说明还没有生成方案，不伪造 AI 评价", async () => {
     await render();
     expect(document.body.textContent).toContain(i18n.t("Requirements"));
     expect(document.body.textContent).toContain(i18n.t("Daily active users"));
-    // P5.5：没有配置 Provider 时如实写"AI 未配置"，并给出去设置配置的提示；
+    // P5.5.1："还没有方案"与"没配 Provider"是两件事 —— 这里说前者。
+    expect(document.body.textContent).toContain(i18n.t("No proposal generated yet"));
+    expect(document.body.textContent).not.toContain(i18n.t("AI not configured"));
     // 绝不显示伪造的 AI 评价。
-    expect(document.body.textContent).toContain(i18n.t("AI not configured"));
-    expect(document.body.textContent).toContain(i18n.t("Add a model in Settings → AI models"));
     expect(document.body.textContent).not.toContain("AI 已分析");
   });
 

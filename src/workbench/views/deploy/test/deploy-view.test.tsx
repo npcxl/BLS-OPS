@@ -118,7 +118,7 @@ describe("部署中心页面", () => {
     await render();
     const text = container.textContent ?? "";
     expect(text).toContain(i18n.t("Deployment Center"));
-    expect(text).toContain(i18n.t("Read-only in this stage"));
+    expect(text).toContain(i18n.t("Plans are not executed automatically"));
     for (const key of ["Applications", "Environments", "Deploy services", "Plans", "Runs"]) {
       expect(text, `${key} Tab`).toContain(i18n.t(key));
     }

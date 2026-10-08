@@ -11,6 +11,8 @@ interface ConfirmDialogProps {
   cancelLabel?: string;
   danger?: boolean;
   pending?: boolean;
+  /** 附加选项（如"同时删除系统凭据管理器里的密钥"）。 */
+  children?: React.ReactNode;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -24,6 +26,7 @@ export function ConfirmDialog({
   cancelLabel,
   danger = false,
   pending = false,
+  children,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -45,6 +48,7 @@ export function ConfirmDialog({
   return (
     <Modal open={open} width={360} title={title} onClose={onCancel}>
       <p className="text-12 leading-relaxed text-fg-muted">{description}</p>
+      {children}
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={pending} onClick={onCancel}>
           {cancelText}

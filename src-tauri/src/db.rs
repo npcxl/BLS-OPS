@@ -53,6 +53,8 @@ pub(crate) use schema::{
 };
 
 #[cfg(test)]
+pub(crate) use tests::proposal_fixture;
+#[cfg(test)]
 pub(crate) use tests::test_db;
 
 #[cfg(test)]

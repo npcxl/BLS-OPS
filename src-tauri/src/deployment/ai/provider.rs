@@ -38,7 +38,8 @@ use crate::deployment::proposal::ai::{
 use crate::deployment::proposal::model::AiRejectionKind;
 
 use super::model::{
-    AiProviderConfig, AiProviderError, AiProviderKind, AiProviderTestResult, AiRequestBudget,
+    AiCancel, AiProviderConfig, AiProviderError, AiProviderKind, AiProviderTestResult,
+    AiRequestBudget, AiReviewOutcome,
 };
 use super::url;
 
@@ -54,7 +55,11 @@ pub trait AiAdvisor: Send + Sync {
     /// 模型名（进方案指纹）。
     fn model(&self) -> String;
     /// 跑一次复核。
-    async fn review(&self, prompt: &AiPrompt) -> Result<AiSuggestion, AiProviderError>;
+    ///
+    /// 返回 [`AiReviewOutcome`]：**不管成功失败都带真实尝试次数**（Provider
+    /// 内部会重试，所以"试了几次"只有它知道）。
+    /// `cancel` 会作用在请求与退避等待上，不是"跑完再看一眼"。
+    async fn review(&self, prompt: &AiPrompt, cancel: &AiCancel) -> AiReviewOutcome;
 }
 
 /// OpenAI 兼容的提供方。
@@ -80,11 +85,11 @@ impl fmt::Debug for OpenAiCompatibleAdvisor {
 
 impl OpenAiCompatibleAdvisor {
     /// 构造（会校验配置与会话预算）。
-    pub fn new(
-        config: AiProviderConfig,
-        api_key: String,
-        allow_insecure_http: bool,
-    ) -> Result<Self, AiProviderError> {
+    ///
+    /// **明文 http 的策略只有一个来源：`config.allow_insecure_http`。**
+    /// 保存校验、连接测试、正式复核走的是同一段代码，因此不会出现
+    /// "保存时放行、调用时被拒"（或反过来）的错位。
+    pub fn new(config: AiProviderConfig, api_key: String) -> Result<Self, AiProviderError> {
         if config.provider_kind != AiProviderKind::OpenAiCompatible {
             return Err(AiProviderError::InvalidConfig(format!(
                 "暂不支持这种提供方类型：{}",
@@ -97,7 +102,7 @@ impl OpenAiCompatibleAdvisor {
         let base_url = url::validate_base_url(
             &config.base_url,
             url::BaseUrlPolicy {
-                allow_insecure_http,
+                allow_insecure_http: config.allow_insecure_http,
             },
         )?;
         if api_key.trim().is_empty() {
@@ -131,18 +136,27 @@ impl OpenAiCompatibleAdvisor {
     ///
     /// 优先 `GET /models`（最轻、不消耗生成额度）；服务端不支持时退化为
     /// 一次只要求极少输出的 `chat/completions`。
+    /// 连接测试。**尝试次数与 AI 复核同一套统计**（都来自 Provider 的重试循环）。
     pub async fn test_connection(&self) -> AiProviderTestResult {
         let started = Instant::now();
         let model = self.config.model.clone();
-        match self.probe_models().await {
-            Ok(()) => AiProviderTestResult {
-                ok: true,
-                latency_ms: elapsed_ms(started),
-                model,
-                message: "连接成功（GET /models）".to_string(),
-                error_code: None,
-            },
+        let cancel = AiCancel::new();
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let mut used = 0u32;
+        match self.probe_models(&cancel, &attempts).await {
+            Ok(()) => {
+                used = attempts.load(std::sync::atomic::Ordering::Relaxed).max(1);
+                AiProviderTestResult {
+                    ok: true,
+                    latency_ms: elapsed_ms(started),
+                    model,
+                    message: "连接成功（GET /models）".to_string(),
+                    error_code: None,
+                    attempts: used,
+                }
+            }
             Err(first) => {
+                used = attempts.load(std::sync::atomic::Ordering::Relaxed).max(1);
                 // 404/405 = 这个网关没实现 /models，换成最小生成请求再试一次。
                 if matches!(
                     first,
@@ -151,18 +165,19 @@ impl OpenAiCompatibleAdvisor {
                         ..
                     }
                 ) {
-                    match self.probe_chat().await {
+                    match self.probe_chat(&cancel, &attempts).await {
                         Ok(()) => AiProviderTestResult {
                             ok: true,
                             latency_ms: elapsed_ms(started),
                             model,
                             message: "连接成功（最小生成请求）".to_string(),
                             error_code: None,
+                            attempts: attempts.load(std::sync::atomic::Ordering::Relaxed).max(1),
                         },
-                        Err(error) => self.failure(started, model, error),
+                        Err(error) => self.failure(started, model, error, used),
                     }
                 } else {
-                    self.failure(started, model, first)
+                    self.failure(started, model, first, used)
                 }
             }
         }
@@ -173,6 +188,7 @@ impl OpenAiCompatibleAdvisor {
         started: Instant,
         model: String,
         error: AiProviderError,
+        attempts: u32,
     ) -> AiProviderTestResult {
         AiProviderTestResult {
             ok: false,
@@ -180,22 +196,32 @@ impl OpenAiCompatibleAdvisor {
             model,
             message: error.user_message(),
             error_code: Some(error.code().to_string()),
+            attempts,
         }
     }
 
-    async fn probe_models(&self) -> Result<(), AiProviderError> {
+    async fn probe_models(
+        &self,
+        cancel: &AiCancel,
+        attempts: &std::sync::atomic::AtomicU32,
+    ) -> Result<(), AiProviderError> {
         let target = url::models_url(&self.config.base_url);
         let mut attempt = 0u32;
         loop {
+            if cancel.is_cancelled() {
+                return Err(AiProviderError::Cancelled);
+            }
             attempt += 1;
-            let response = self
+            attempts.store(attempt, std::sync::atomic::Ordering::Relaxed);
+            let request = self
                 .client
                 .get(&target)
                 .bearer_auth(&self.api_key)
-                .header("accept", "application/json")
-                .send()
-                .await
-                .map_err(map_reqwest)?;
+                .header("accept", "application/json");
+            let response = tokio::select! {
+                outcome = request.send() => outcome.map_err(map_reqwest)?,
+                _ = cancel.cancelled() => return Err(AiProviderError::Cancelled),
+            };
             let status = response.status().as_u16();
             let retry_after = retry_after_seconds(&response);
             let body = self.read_limited(response).await?;
@@ -206,18 +232,23 @@ impl OpenAiCompatibleAdvisor {
             if !error.is_retryable() || attempt >= self.budget.max_attempts {
                 return Err(error);
             }
-            self.sleep_before_retry(attempt, retry_after).await;
+            self.sleep_before_retry(attempt, retry_after, cancel)
+                .await?;
         }
     }
 
-    async fn probe_chat(&self) -> Result<(), AiProviderError> {
+    async fn probe_chat(
+        &self,
+        cancel: &AiCancel,
+        attempts: &std::sync::atomic::AtomicU32,
+    ) -> Result<(), AiProviderError> {
         let body = serde_json::json!({
             "model": self.config.model,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 8,
             "stream": false,
         });
-        let (status, bytes, _) = self.post_chat(&body, 4).await?;
+        let (status, bytes, _) = self.post_chat(&body, 4, cancel, attempts).await?;
         if (200..300).contains(&status) {
             Ok(())
         } else {
@@ -226,92 +257,106 @@ impl OpenAiCompatibleAdvisor {
     }
 
     /// 一次带有限重试的 `chat/completions` 调用。
+    ///
+    /// 取消点是**真的**：
+    /// * 每轮开始前检查（取消后不会再发请求）；
+    /// * `send()` 与 `select!` 竞争（请求还在飞也能立刻放弃）；
+    /// * 退避等待与 `select!` 竞争（不会干等 8 秒）。
     async fn post_chat(
         &self,
         body: &serde_json::Value,
         max_tokens: u32,
+        cancel: &AiCancel,
+        attempts: &std::sync::atomic::AtomicU32,
     ) -> Result<(u16, Vec<u8>, u32), AiProviderError> {
         let target = url::completions_url(&self.config.base_url);
         let mut attempt = 0u32;
         let mut last_error: Option<AiProviderError> = None;
 
         while attempt < self.budget.max_attempts {
-            attempt += 1;
-            let request = self
-                .client
-                .post(&target)
-                .bearer_auth(&self.api_key)
-                .header("accept", "application/json")
-                .json(&serde_json::json!({
-                    "model": self.config.model,
-                    "max_tokens": max_tokens,
-                    "temperature": 0.2,
-                    "stream": false,
-                    // 要求结构化输出；不支持它的网关会在下面被识别并重试一次。
-                    "response_format": {"type": "json_object"},
-                    "messages": body["messages"].clone(),
-                }));
-
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let retry_after = retry_after_seconds(&response);
-                    let bytes = self.read_limited(response).await?;
-                    if (200..300).contains(&status) {
-                        return Ok((status, bytes, attempt));
-                    }
-                    // 明确说"不认识 response_format"时，去掉它再试一次。
-                    if status == 400 && mentions_response_format(&bytes) {
-                        let retry = self
-                            .client
-                            .post(&target)
-                            .bearer_auth(&self.api_key)
-                            .header("accept", "application/json")
-                            .json(&serde_json::json!({
-                                "model": self.config.model,
-                                "max_tokens": max_tokens,
-                                "temperature": 0.2,
-                                "stream": false,
-                                "messages": body["messages"].clone(),
-                            }))
-                            .send()
-                            .await
-                            .map_err(map_reqwest)?;
-                        let retry_status = retry.status().as_u16();
-                        let retry_bytes = self.read_limited(retry).await?;
-                        if (200..300).contains(&retry_status) {
-                            return Ok((retry_status, retry_bytes, attempt));
-                        }
-                        let error = self.status_error(retry_status, &retry_bytes, None);
-                        last_error = Some(error.clone());
-                        if !error.is_retryable() || attempt >= self.budget.max_attempts {
-                            return Err(error);
-                        }
-                        continue;
-                    }
-                    let error = self.status_error(status, &bytes, retry_after);
-                    let retryable = error.is_retryable();
-                    last_error = Some(error.clone());
-                    if !retryable || attempt >= self.budget.max_attempts {
-                        return Err(error);
-                    }
-                    self.sleep_before_retry(attempt, retry_after).await;
-                }
-                Err(error) => {
-                    let mapped = map_reqwest(error);
-                    let retryable = mapped.is_retryable();
-                    last_error = Some(mapped.clone());
-                    if !retryable || attempt >= self.budget.max_attempts {
-                        return Err(mapped);
-                    }
-                    self.sleep_before_retry(attempt, None).await;
-                }
+            if cancel.is_cancelled() {
+                return Err(AiProviderError::Cancelled);
             }
+            attempt += 1;
+            attempts.store(attempt, std::sync::atomic::Ordering::Relaxed);
+            let message = body["messages"].clone();
+            let response = self
+                .send_once(&target, max_tokens, &message, true, cancel)
+                .await?;
+            let status = response.status().as_u16();
+            let retry_after = retry_after_seconds(&response);
+            let bytes = self.read_limited(response).await?;
+            if (200..300).contains(&status) {
+                return Ok((status, bytes, attempt));
+            }
+            // 明确说"不认识 response_format"时，去掉它再试一次。
+            if status == 400 && mentions_response_format(&bytes) {
+                let retry = self
+                    .send_once(&target, max_tokens, &message, false, cancel)
+                    .await?;
+                let retry_status = retry.status().as_u16();
+                let retry_bytes = self.read_limited(retry).await?;
+                if (200..300).contains(&retry_status) {
+                    return Ok((retry_status, retry_bytes, attempt));
+                }
+                let error = self.status_error(retry_status, &retry_bytes, None);
+                last_error = Some(error.clone());
+                if !error.is_retryable() || attempt >= self.budget.max_attempts {
+                    return Err(error);
+                }
+                continue;
+            }
+            let error = self.status_error(status, &bytes, retry_after);
+            let retryable = error.is_retryable();
+            last_error = Some(error.clone());
+            if !retryable || attempt >= self.budget.max_attempts {
+                return Err(error);
+            }
+            self.sleep_before_retry(attempt, retry_after, cancel)
+                .await?;
         }
         Err(last_error.unwrap_or(AiProviderError::Timeout))
     }
 
-    async fn sleep_before_retry(&self, attempt: u32, retry_after: Option<u64>) {
+    /// 发一次请求（**与取消信号竞争**，因此取消不会被"卡在网络里"耽误）。
+    async fn send_once(
+        &self,
+        target: &str,
+        max_tokens: u32,
+        messages: &serde_json::Value,
+        strict_json: bool,
+        cancel: &AiCancel,
+    ) -> Result<reqwest::Response, AiProviderError> {
+        let mut payload = serde_json::json!({
+            "model": self.config.model,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "stream": false,
+            "messages": messages.clone(),
+        });
+        if strict_json {
+            // 要求结构化输出；不支持它的网关会被识别并去掉它重试一次。
+            payload["response_format"] = serde_json::json!({"type": "json_object"});
+        }
+        let request = self
+            .client
+            .post(target)
+            .bearer_auth(&self.api_key)
+            .header("accept", "application/json")
+            .json(&payload);
+        tokio::select! {
+            outcome = request.send() => outcome.map_err(map_reqwest),
+            _ = cancel.cancelled() => Err(AiProviderError::Cancelled),
+        }
+    }
+
+    /// 退避等待。**取消能打断等待**，不会让"取消"变成等 8 秒之后的迟到通知。
+    async fn sleep_before_retry(
+        &self,
+        attempt: u32,
+        retry_after: Option<u64>,
+        cancel: &AiCancel,
+    ) -> Result<(), AiProviderError> {
         let capped = retry_after
             .map(|seconds| seconds.min(self.budget.max_backoff_seconds))
             .unwrap_or_else(|| {
@@ -320,8 +365,12 @@ impl OpenAiCompatibleAdvisor {
                     .saturating_mul(1 << attempt.min(4))
                     .min(self.budget.max_backoff_seconds)
             });
-        if capped > 0 {
-            tokio::time::sleep(Duration::from_secs(capped)).await;
+        if capped == 0 {
+            return Ok(());
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(capped)) => Ok(()),
+            _ = cancel.cancelled() => Err(AiProviderError::Cancelled),
         }
     }
 
@@ -369,14 +418,41 @@ impl AiAdvisor for OpenAiCompatibleAdvisor {
         self.config.model.clone()
     }
 
-    async fn review(&self, prompt: &AiPrompt) -> Result<AiSuggestion, AiProviderError> {
+    async fn review(&self, prompt: &AiPrompt, cancel: &AiCancel) -> AiReviewOutcome {
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let result = self.review_inner(prompt, cancel, &attempts).await;
+        AiReviewOutcome {
+            result,
+            attempts: attempts.load(std::sync::atomic::Ordering::Relaxed).max(1),
+        }
+    }
+}
+
+impl OpenAiCompatibleAdvisor {
+    async fn review_inner(
+        &self,
+        prompt: &AiPrompt,
+        cancel: &AiCancel,
+        attempts: &std::sync::atomic::AtomicU32,
+    ) -> Result<AiSuggestion, AiProviderError> {
+        // 调用模型**之前**也检查一次：任务可能在准备阶段就被取消了。
+        if cancel.is_cancelled() {
+            return Err(AiProviderError::Cancelled);
+        }
         let body = serde_json::json!({
             "messages": [
                 {"role": "system", "content": prompt.system},
                 {"role": "user", "content": render_prompt(prompt)},
             ],
         });
-        let (_, bytes, _) = self.post_chat(&body, self.budget.max_output_tokens).await?;
+        let (_, bytes, _) = self
+            .post_chat(&body, self.budget.max_output_tokens, cancel, attempts)
+            .await?;
+
+        // 答复到手、还没解析时也可能被取消 —— 此时不该再往下走。
+        if cancel.is_cancelled() {
+            return Err(AiProviderError::Cancelled);
+        }
 
         let content = extract_content(&bytes).ok_or_else(|| AiProviderError::RejectedContent {
             reason: "模型响应里没有可用的文本内容".to_string(),

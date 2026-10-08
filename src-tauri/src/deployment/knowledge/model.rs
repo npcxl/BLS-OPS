@@ -185,6 +185,31 @@ impl KnowledgeDocStatus {
     }
 }
 
+/// Markdown 文件导入的**大小上限**（2 MiB）。
+pub const MAX_MARKDOWN_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 允许导入的文件扩展名（小写，不含点）。
+pub const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "txt"];
+
+/// 从本地文件导入 Markdown 的结果。
+///
+/// **只读取，不落库**：内容先交给编辑器，用户确认后再走
+/// `deployment_knowledge_save`（导入本身绝不覆盖任何已有文档）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ImportedMarkdown {
+    /// 原始文件名（作为默认 `source_name`）。
+    pub file_name: String,
+    /// 去掉扩展名的文件名（作为默认标题）。
+    pub suggested_title: String,
+    /// 正文（**已确认是 UTF-8**）。
+    pub content: String,
+    /// 实际读取的字节数。
+    pub bytes: u64,
+    /// 固定是 `markdown_file`。
+    pub source_type: KnowledgeSourceType,
+}
+
 /// 一份知识文档的**当前版本**（`knowledge_documents`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -17,7 +17,7 @@ import {
   buildQuery,
   clearQuery,
   gotoMatch,
-  scanMatches,
+  MATCH_SCAN_LIMIT,
   replaceMatch,
 } from "@/lib/cm-search";
 
@@ -58,24 +58,78 @@ export function CodeSearchBox({
   const rangesRef = useRef<{ from: number; to: number }[]>([]);
   const scannedDocRef = useRef<unknown>(null);
   const composingRef = useRef(false);
+  /** 分批扫描的代次：新查询 / 卸载都会递增，旧批次据此作废。 */
+  const scanSeqRef = useRef(0);
   const [truncated, setTruncated] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   /** 只同步"当前第几个匹配"，复用已扫描的区间。 */
   const syncIndex = useCallback(() => {
     if (!view) return;
-    setIndex(activeMatchIndex(view, rangesRef.current));
-  }, [view]);
+    setIndex(activeMatchIndex(view, rangesRef.current, truncated));
+  }, [view, truncated]);
 
-  /** 重新扫描全文（有上限；达到上限时 `truncated` 为真）。 */
+  /**
+   * 重新扫描全文：**按时间预算分批**。
+   *
+   * 数量上限（[`MATCH_SCAN_LIMIT`]）只防"命中太多"，防不住"没命中但文档极大"——
+   * 那种情况下同步 `getCursor` 仍会一次扫完整篇。所以每批只算 8ms，然后
+   * `setTimeout(0)` 让出主线程，直到扫完或到达数量上限。
+   *
+   * 新查询到来时 `seq` 递增，旧批次自行作废（不会越扫越积压）。
+   */
   const recompute = useCallback(() => {
     if (!view) return;
-    const scan = scanMatches(view, searchQuery);
-    rangesRef.current = scan.ranges;
-    scannedDocRef.current = view.state.doc;
-    setTotal(scan.ranges.length);
-    setTruncated(scan.truncated);
-    setIndex(activeMatchIndex(view, scan.ranges));
+    const seq = ++scanSeqRef.current;
+    const snapshot = view.state;
+    rangesRef.current = [];
+    setTotal(0);
+    setTruncated(false);
+    if (!searchQuery.valid) {
+      setScanning(false);
+      scannedDocRef.current = snapshot.doc;
+      setIndex(-1);
+      return;
+    }
+
+    setScanning(true);
+    const cursor = searchQuery.getCursor(snapshot);
+    const step = () => {
+      // 新查询 / 卸载：这一批直接作废，不写任何状态。
+      if (seq !== scanSeqRef.current) return;
+      const ranges = rangesRef.current;
+      const deadline = performance.now() + 8;
+      let complete = false;
+      while (ranges.length < MATCH_SCAN_LIMIT) {
+        if (performance.now() > deadline) break;
+        const next = cursor.next();
+        if (next.done) {
+          complete = true;
+          break;
+        }
+        ranges.push(next.value);
+      }
+
+      if (complete || ranges.length >= MATCH_SCAN_LIMIT) {
+        const cut = !complete;
+        scannedDocRef.current = snapshot.doc;
+        setTotal(ranges.length);
+        setTruncated(cut);
+        setIndex(activeMatchIndex(view, ranges, cut));
+        setScanning(false);
+        return;
+      }
+      // 还没扫完：先让已找到的结果可见，再让出主线程继续。
+      setTotal(ranges.length);
+      window.setTimeout(step, 0);
+    };
+    step();
   }, [view, searchQuery]);
+
+  // 卸载时作废在途扫描（`setTimeout` 链不会自己停）。
+  useEffect(() => () => {
+    scanSeqRef.current += 1;
+  }, []);
 
   // 查询变化 → 写进编辑器并重新扫描。
   useEffect(() => {
@@ -152,13 +206,19 @@ export function CodeSearchBox({
     }
   };
 
-  const counter =
-    total === 0
+  // 光标落在"已扫描范围之外"：不能再报一个具体序号（那是错的）。
+  const beyondScan = truncated && index >= total;
+  const counter = scanning
+    ? // 还在分批扫描：不显示会跳动的半成品数字。
+      "…"
+    : total === 0
       ? query
         ? t("No results")
         : ""
-      : // 达到扫描上限时显示 `2000+`：这是下限，不能伪装成精确总数。
-        `${(index >= 0 ? index : 0) + 1}/${total}${truncated ? "+" : ""}`;
+      : beyondScan
+        ? `${total}+/${total}+`
+        : // 达到扫描上限时显示 `2000+`：这是下限，不能伪装成精确总数。
+          `${(index >= 0 ? index : 0) + 1}/${total}${truncated ? "+" : ""}`;
 
   return (
     <div

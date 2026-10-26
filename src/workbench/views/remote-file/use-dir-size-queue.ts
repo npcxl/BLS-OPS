@@ -27,11 +27,54 @@ interface SizeQueueItem {
   force: boolean;
 }
 
+/** 已提交、但还没到终态的任务上限。 */
+export const MAX_IN_FLIGHT_DIR_SIZES = 3;
+
+/**
+ * 每个 `(session, path)` 当前被哪些面板需要。
+ *
+ * 这是"安全取消"的依据：同一 SSH 会话可能开着多个文件面板，取消一个任务
+ * 之前必须确认**没有任何面板**还需要它。放在模块级而不是 React state，
+ * 因为它只用于判定，不参与渲染。
+ */
+const demands = new Map<string, Set<string>>();
+
+function acquireDemand(sessionId: string, path: string, panelId: string): void {
+  const key = `${sessionId}::${path}`;
+  const set = demands.get(key) ?? new Set<string>();
+  set.add(panelId);
+  demands.set(key, set);
+}
+
+/** 返回 `true` 表示：已经没有任何面板需要这个路径，可以安全取消。 */
+function releaseDemand(sessionId: string, path: string, panelId: string): boolean {
+  const key = `${sessionId}::${path}`;
+  const set = demands.get(key);
+  if (!set) return true;
+  set.delete(panelId);
+  if (set.size === 0) {
+    demands.delete(key);
+    return true;
+  }
+  return false;
+}
+
 export function useDirSizeQueue(sessionId: string, onError: (message: string) => void) {
   const sizeQueueRef = useRef<SizeQueueItem[]>([]);
-  const sizeRunningRef = useRef(0);
+  /** 排队 + 在途（去重用）：有它就不重复提交同一路径。 */
   const sizeQueuedRef = useRef(new Set<string>());
+  /**
+   * **已提交、还没到终态**的路径。
+   *
+   * 与旧的 `sizeRunningRef` 的关键差别：旧实现是 IPC 一返回就减计数，
+   * 而 `directorySizeStart` 是"启动后台任务后立刻返回"——于是 12 个请求
+   * 会在一瞬间全部灌进后端排队，前端限流形同虚设。
+   * 现在名额保持到**事件里出现终态**（或请求失败）为止。
+   */
+  const inFlightRef = useRef(new Set<string>());
   const sizePumpRef = useRef<() => void>(() => undefined);
+  /** 本面板的稳定 id，用于多面板需求计数。 */
+  const panelIdRef = useRef<string>(`panel-${crypto.randomUUID()}`);
   const [listenerReady, setListenerReady] = useState(false);
 
   const computeDirSize = useCallback(
@@ -57,47 +100,78 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     [sessionId],
   );
 
+  /** 一个任务真正结束（终态或请求失败）：释放名额并补下一个。 */
+  const finishOne = useCallback((path: string) => {
+    inFlightRef.current.delete(path);
+    sizeQueuedRef.current.delete(path);
+    sizePumpRef.current();
+  }, []);
+
   sizePumpRef.current = () => {
-    while (sizeRunningRef.current < 2 && sizeQueueRef.current.length > 0) {
+    while (
+      inFlightRef.current.size < MAX_IN_FLIGHT_DIR_SIZES &&
+      sizeQueueRef.current.length > 0
+    ) {
       const item = sizeQueueRef.current.shift();
       if (!item) continue;
-      sizeRunningRef.current += 1;
+      inFlightRef.current.add(item.path);
+      acquireDemand(sessionId, item.path, panelIdRef.current);
       void opsApi
         // `force` 必须一路传到后端，否则重新计算只会拿回旧缓存。
         .directorySizeStart(sessionId, item.path, undefined, item.force)
-        .then((initial) => useDirSizeStore.getState().apply(initial))
-        .catch((cause) => onError(toErrorMessage(cause)))
-        .finally(() => {
-          sizeRunningRef.current -= 1;
-          sizeQueuedRef.current.delete(item.path);
-          sizePumpRef.current();
+        .then((initial) => {
+          useDirSizeStore.getState().apply(initial);
+          // 缓存命中 / 立即失败：初始就是终态，不必等事件。
+          if (initial.complete) finishOne(item.path);
+        })
+        .catch((cause) => {
+          onError(toErrorMessage(cause));
+          finishOne(item.path);
         });
+      // 故意没有 `finally`：名额必须保持到**真的到终态**，
+      // 否则又会退化成"IPC 一返回就放行"。
     }
   };
 
   /**
    * 丢弃**还没发出去**的排队项，保留满足 `keep` 的项。
    *
-   * 用途：切换目录时不要把上一个目录剩下的几十个文件夹继续排下去。
-   *
-   * 为什么不动已经提交给后端的任务：同一个 SSH 会话可能开着多个文件面板，
-   * 它们共享后端缓存与并发名额。前端无从知道"另一个面板是不是还要这个
-   * 目录的大小"，贸然 `directorySizeCancel` 会把别人正在等的结果掐掉。
-   * 所以这里只清**本面板自己的待发送队列** —— 已发出的任务要么很快结束，
-   * 要么由会话断开时的 `forget_session` 统一取消。
+   * 只影响待发送队列；在途任务由 [`releaseStale`] 处理（要判断其他面板
+   * 是否还需要，不能在这里直接取消）。
    */
   const dropQueued = useCallback((keep?: (path: string) => boolean) => {
     sizeQueueRef.current = keep
       ? sizeQueueRef.current.filter((item) => keep(item.path))
       : [];
-    if (keep) {
-      for (const path of Array.from(sizeQueuedRef.current)) {
-        if (!keep(path)) sizeQueuedRef.current.delete(path);
-      }
-    } else {
-      sizeQueuedRef.current.clear();
+    const stillQueued = new Set(sizeQueueRef.current.map((item) => item.path));
+    for (const path of Array.from(sizeQueuedRef.current)) {
+      // 在途的路径要等终态才清，否则会重复提交同一个目录。
+      if (inFlightRef.current.has(path)) continue;
+      if (!stillQueued.has(path)) sizeQueuedRef.current.delete(path);
     }
   }, []);
+
+  /**
+   * 不再需要的**在途**任务：先减需求；确实没人需要才真的取消。
+   *
+   * 这是"离开目录 / 关闭面板后不继续占用后端资源"的落点，同时保证
+   * 同会话的另一个面板仍在等的任务不会被误杀。
+   */
+  const releaseStale = useCallback(
+    (keep: (path: string) => boolean) => {
+      for (const path of Array.from(inFlightRef.current)) {
+        if (keep(path)) continue;
+        inFlightRef.current.delete(path);
+        sizeQueuedRef.current.delete(path);
+        const unused = releaseDemand(sessionId, path, panelIdRef.current);
+        if (unused) {
+          void opsApi.directorySizeCancel(sessionId, path).catch(() => undefined);
+        }
+      }
+      sizePumpRef.current();
+    },
+    [sessionId],
+  );
 
   const cancelDirSize = useCallback(
     (path: string) => {
@@ -107,9 +181,31 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     [sessionId],
   );
 
-  // 卸载时清掉待发送队列：面板关了就不该继续提交无用扫描。
-  // （已经提交的任务不在这里取消，理由见 `dropQueued`。）
-  useEffect(() => () => dropQueued(), [dropQueued]);
+  // 任务到终态时（事件驱动的 `apply`）释放名额，补下一个。
+  useEffect(() => {
+    return useDirSizeStore.subscribe(() => {
+      for (const path of Array.from(inFlightRef.current)) {
+        const result = useDirSizeStore.getState().get(sessionId, path);
+        if (result?.complete) finishOne(path);
+      }
+    });
+  }, [sessionId, finishOne]);
+
+  // 卸载：丢弃待发送 + 对在途任务减需求（没人要了才取消）。
+  useEffect(() => {
+    const panelId = panelIdRef.current;
+    return () => {
+      sizeQueueRef.current = [];
+      for (const path of Array.from(inFlightRef.current)) {
+        const unused = releaseDemand(sessionId, path, panelId);
+        if (unused) {
+          void opsApi.directorySizeCancel(sessionId, path).catch(() => undefined);
+        }
+      }
+      inFlightRef.current.clear();
+      sizeQueuedRef.current.clear();
+    };
+  }, [sessionId]);
 
   // Register the global directory-size listener once, and only report the
   // panel ready once registration actually succeeded.
@@ -129,7 +225,7 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     };
   }, [onError]);
 
-  return { computeDirSize, cancelDirSize, dropQueued, listenerReady };
+  return { computeDirSize, cancelDirSize, dropQueued, releaseStale, listenerReady };
 }
 
 /**

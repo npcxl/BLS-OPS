@@ -59,4 +59,15 @@ describe("匹配扫描", () => {
   it("没有匹配时序号为 -1", () => {
     expect(activeMatchIndex(target("abc", 0), [])).toBe(-1);
   });
+
+  it("结果被截断且光标越过已扫描范围时，不回绕成第 1 个", () => {
+    const doc = "a ".repeat(5);
+    const scan = scanMatches(target(doc), query("a"), 3);
+    expect(scan.truncated).toBe(true);
+    // 光标在最后一个已扫描匹配之后：真实位置是"第 4 个"，不能显示成 1。
+    const index = activeMatchIndex(target(doc, doc.length), scan.ranges, true);
+    expect(index).toBe(scan.ranges.length);
+    // 未截断时仍然保持回绕语义（VSCode 行为）。
+    expect(activeMatchIndex(target(doc, doc.length), scan.ranges, false)).toBe(0);
+  });
 });

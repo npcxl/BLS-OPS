@@ -343,12 +343,29 @@ impl DirectorySizeRegistry {
                 let _ = existing.cancel.send(true);
             }
         } else {
-            let tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.lock().unwrap();
             if let Some(existing) = tasks.get(&key) {
-                if let Some(emit) = &emit {
-                    emit(existing.snapshot());
+                let snapshot = existing.snapshot();
+                // 复用只有两种情况：
+                // * **有数字**（completed / partial / permission_denied）——缓存命中；
+                // * **还在跑**（pending / computing）——同一次任务，回放当前进度。
+                //
+                // cancelled / timed_out / failed / session_gone 是"没结果"的终态，
+                // **不能复用**：否则用户离开目录再回来（前端会取消旧任务），
+                // 会永远看到一个空的 cancelled，而且再也不会重算。
+                let has_result = matches!(
+                    snapshot.status,
+                    DirectorySizeStatus::Completed
+                        | DirectorySizeStatus::Partial
+                        | DirectorySizeStatus::PermissionDenied
+                );
+                if has_result || !snapshot.complete {
+                    if let Some(emit) = &emit {
+                        emit(snapshot.clone());
+                    }
+                    return snapshot;
                 }
-                return existing.snapshot();
+                tasks.remove(&key);
             }
         }
 

@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandSearchHit } from "@/api/ops-api";
+import { forgetSessionTools } from "../tool-cache";
 
 // React 19 requires this flag for act() outside react-dom/test-utils.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -150,6 +151,9 @@ async function click(node: Element) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 工具探测现在是**会话级缓存**：不清掉的话，前一个用例探到的
+  // "docker 已安装/未安装" 会漏到下一个用例，断言就不可信了。
+  forgetSessionTools("session-1");
   mocks.session = { ready: true, hasTarget: true, sessionId: "session-1", phase: "connected", error: null };
   searchMock.mockResolvedValue([]);
   probeMock.mockResolvedValue(["docker", "systemctl"]);

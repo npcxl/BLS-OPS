@@ -14,6 +14,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
 import { useActivityTicket } from "@/stores/activity-store";
+import { ensureToolsProbed } from "./tool-cache";
 import type { WorkspaceTab } from "@/workbench/types";
 import { RISK_LABEL_KEYS } from "@/workbench/views/command-result/model";
 import { ResultPanel } from "./ResultPanel";
@@ -86,15 +87,22 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   useEffect(() => {
     if (!session.ready || !session.hasTarget || requiredTools.length === 0) return;
     let cancelled = false;
-    opsApi
-      .commandProbeTools(session.sessionId, requiredTools)
-      .then((installed) => {
-        if (!cancelled) setInstalledTools(new Set(installed));
-      })
-      .catch(() => {
-        // 探测失败：置 null 表示"未知"，不置灰，交给后端硬校验。
-        if (!cancelled) setInstalledTools(null);
-      });
+    // 只探未知项、同会话合并请求：改关键词导致工具集合扩大时，
+    // 已经确定的工具不会重探，在途的也不会重复发。
+    void ensureToolsProbed(session.sessionId, requiredTools).then((known) => {
+      if (cancelled) return;
+      // 只有**全部**工具状态都已知时才启用"未安装"置灰。
+      // 只要还有一个 unknown（探测失败），整体按未知处理 ——
+      // 绝不把"没探到"当成"没安装"，最终仍由后端执行前硬校验兜底。
+      const allKnown = requiredTools.every((tool) => known.has(tool));
+      if (!allKnown) {
+        setInstalledTools(null);
+        return;
+      }
+      setInstalledTools(
+        new Set(requiredTools.filter((tool) => known.get(tool) === "installed")),
+      );
+    });
     return () => {
       cancelled = true;
     };

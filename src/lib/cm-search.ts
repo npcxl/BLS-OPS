@@ -132,11 +132,19 @@ export function matchRanges(
 export function activeMatchIndex(
   target: { state: EditorState },
   ranges: { from: number; to: number }[],
+  /** 传入时：`ranges` 只是**前若干个**匹配，光标可能落在扫描范围之外。 */
+  truncated = false,
 ): number {
   if (ranges.length === 0) return -1;
   const cursor = target.state.selection.main.from;
   const exact = ranges.findIndex((range) => range.from === cursor);
   if (exact >= 0) return exact;
   const next = ranges.findIndex((range) => range.from > cursor);
-  return next >= 0 ? next : 0;
+  if (next >= 0) return next;
+  // 没有更靠后的**已扫描**匹配。
+  //
+  // 如果结果被截断，光标后面可能还有匹配 —— 此时回绕到第 1 个会把
+  // "第 2001 个" 误报成 "第 1 个"（真实存在的计数错误）。
+  // 返回 `ranges.length` 表示"超出已扫描范围"，由调用方显示成 `N+`。
+  return truncated ? ranges.length : 0;
 }

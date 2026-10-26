@@ -568,7 +568,7 @@ function RemoteFilePanelImpl({
     setStatus({ state: "error", message });
   }, []);
 
-  const { computeDirSize, dropQueued, listenerReady } = useDirSizeQueue(
+  const { computeDirSize, dropQueued, releaseStale, listenerReady } = useDirSizeQueue(
     sessionId,
     handleDirSizeError,
   );
@@ -584,28 +584,54 @@ function RemoteFilePanelImpl({
    * - 真正的并发限制在 Rust 端（每会话 2 个），超出的任务报 `pending`，
    *   行内显示"排队中"。
    */
+  /**
+   * 当前目录里**已算出结果**的文件夹数量。
+   *
+   * 订阅它，是为了让自动统计变成"滚动窗口"而不是"只算前 12 个"：
+   * 每完成一个，这个数就变，下面的 effect 重跑并补上下一个。
+   * 50 个文件夹也会陆续算完，只是同时占用的任务数始终有上限。
+   */
+  const completedInView = useDirSizeStore((state) => {
+    let count = 0;
+    for (const entry of entries) {
+      if (entry.kind !== "directory") continue;
+      if (state.get(sessionId, entry.path)?.complete) count += 1;
+    }
+    return count;
+  });
+
   useEffect(() => {
     if (!connected || !listenerReady) return;
-    // 切换目录时，把上一个目录**还没轮到**的排队项丢掉：否则浏览几个目录
-    // 就在前端队列里积压几十个任务，且它们排在本目录前面。
-    // 已提交给后端的任务不动（同会话其他面板可能还要）。
     const current = new Set<string>();
     for (const entry of entries) {
       if (entry.kind === "directory") current.add(entry.path);
     }
+    // 待发送：旧目录的项直接丢；在途：先减需求，**没人需要才真的取消**
+    // （同会话的另一个面板可能还在等同一个目录）。
     dropQueued((path) => current.has(path));
+    releaseStale((path) => current.has(path));
 
-    // 只自动统计最前面的 N 个：保留自动统计能力，但不再"有多少排多少"。
+    // 补到上限。已完成的条目不再占名额，所以窗口会随结果推进。
     let scheduled = 0;
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
+      if (scheduled >= AUTO_DIR_SIZE_LIMIT) break;
       const cached = useDirSizeStore.getState().get(sessionId, entry.path);
       if (cached?.complete) continue;
-      if (scheduled >= AUTO_DIR_SIZE_LIMIT) break;
       scheduled += 1;
-      computeDirSize(entry.path);
+      // 已有状态（排队/在算）说明它已经占了一个名额，不重复提交。
+      if (!cached) computeDirSize(entry.path);
     }
-  }, [connected, listenerReady, entries, sessionId, computeDirSize, dropQueued]);
+  }, [
+    connected,
+    listenerReady,
+    entries,
+    sessionId,
+    computeDirSize,
+    dropQueued,
+    releaseStale,
+    completedInView,
+  ]);
 
   // 低频兜底：事件是主通道；3 秒一次、单轮 ≤20 条的批量查询只捞丢失的事件。
   useDirSizeWatchdog({ connected, listenerReady, sessionId, entries });

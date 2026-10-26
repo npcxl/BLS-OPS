@@ -60,6 +60,28 @@ export interface CredentialDeleteResult {
 }
 
 /**
+ * 从本地文件导入的私钥（**只返回内容，不落库**）。
+ *
+ * 读取是受限的：≤64 KiB、必须是 UTF-8、内容必须真的像私钥
+ * （OpenSSH / PEM / PuTTY）。路径只能来自系统文件选择器。
+ */
+export interface ImportedPrivateKey {
+  /** 原始文件名（用于界面显示来源）。 */
+  file_name: string;
+  /** 私钥文本（已去 BOM）。 */
+  content: string;
+  bytes: number;
+  /** `openssh` / `pem` / `ppk` */
+  format: string;
+  /**
+   * 私钥本身是否需要口令。
+   *
+   * `null` = 无法从文本判断（OpenSSH 的加密信息在 base64 blob 里）。
+   */
+  encrypted: boolean | null;
+}
+
+/**
  * label 存 i18n key（natural keys）：渲染处统一 `t(option.label)`，
  * 语言切换即重渲染 —— 模块级常量不能用 hook。
  */

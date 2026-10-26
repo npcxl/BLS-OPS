@@ -43,6 +43,12 @@ export default {
   "Leave empty to keep the saved password": "留空表示保留已儲存的密碼",
   "e.g. production root": "例如 生產環境 root",
   "Paste the private key content when creating a key credential.": "建立私鑰憑據時必須貼上私鑰內容。",
+  "Select a private key file": "選擇私鑰檔案",
+  "Import from file": "從檔案匯入",
+  "Reading file": "讀取中",
+  "Loaded {{name}}": "已讀取 {{name}}",
+  "Loaded {{name}} — it is encrypted, enter its passphrase below":
+    "已讀取 {{name}} — 該私鑰已加密，請在下方填寫口令",
   "Fill in the password when creating a password credential.": "建立密碼憑據時必須填寫密碼。",
   "Delete credential “{{name}}”? The key in the system credential manager is removed too.":
     "确定删除凭据“{{name}}”吗？此操作会同时清除系统凭据管理器中的密钥。",

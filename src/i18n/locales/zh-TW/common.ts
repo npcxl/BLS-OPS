@@ -50,6 +50,7 @@ export default {
   Processing: "處理中…",
   Deleting: "刪除中…",
   Connecting: "連線中…",
+  "Connecting to server": "正在連線伺服器",
   Connected: "已連線",
   Disconnected: "未連線",
   Reconnecting: "重連中…",

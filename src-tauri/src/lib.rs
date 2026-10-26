@@ -123,6 +123,8 @@ pub fn run() {
             commands::credential_list,
             commands::credential_save,
             commands::credential_delete,
+            // 私钥文件导入：受限读取（大小 + 私钥格式），只返回内容、不落库。
+            commands::credential_read_private_key_file,
             // known hosts
             commands::known_host_list,
             commands::known_host_get,

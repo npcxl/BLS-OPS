@@ -19,6 +19,7 @@ import {
   type CascadeResult,
   type CredentialDeleteResult,
   type CredentialRecord,
+  type ImportedPrivateKey,
   type KnownHostRecord,
   type ServerGroupRecord,
   type ServerRecord,
@@ -131,6 +132,7 @@ export {
   type CascadeResult,
   type CredentialDeleteResult,
   type CredentialRecord,
+  type ImportedPrivateKey,
   type KnownHostRecord,
   type ServerGroupRecord,
   type ServerRecord,
@@ -452,6 +454,14 @@ export const opsApi = {
   ) => invoke<CredentialRecord>("credential_save", { credential, secret, passphrase }),
   deleteCredential: (id: string, force = false) =>
     invoke<CredentialDeleteResult>("credential_delete", { id, force }),
+  /**
+   * 读取本地私钥文件（**受限**：≤64 KiB、必须是 UTF-8、内容必须真的是私钥）。
+   *
+   * 只把内容交给表单，**不落库** —— 用户确认后才会写进系统凭据管理器。
+   * 前端始终没有"任意读文件"的能力：路径只能来自系统文件选择器。
+   */
+  credentialReadPrivateKeyFile: (path: string) =>
+    invoke<ImportedPrivateKey>("credential_read_private_key_file", { path }),
 
   listKnownHosts: () => invoke<KnownHostRecord[]>("known_host_list"),
   getKnownHost: (host: string, port: number) =>

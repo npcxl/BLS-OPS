@@ -6,7 +6,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
+.txt
+docs
 # Shell redirection leftovers from package manager invocations
 *.err
 
@@ -27,6 +28,11 @@ src-tauri/target*/
 *.key.pass
 
 # Local verification leftovers (build / test 输出与临时脚本)
+#
+# 注意：上面那行 `.txt` 只匹配"名为 .txt 的文件"，不是"所有 txt"——
+# 所以 `t.txt` / `vt-b.txt` 这类重定向输出曾经被误提交。根目录的 txt
+# 一律视为临时输出（项目文档都是 .md）。
+/*.txt
 *_out.txt
 scripts/tmp-*
 .tmp-*

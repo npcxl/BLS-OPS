@@ -334,7 +334,7 @@ export function SettingsContextSidebar() {
   );
 }
 
-function CredentialForm({
+export function CredentialForm({
   credential,
   onClose,
 }: {
@@ -348,11 +348,50 @@ function CredentialForm({
   const [form, setForm] = useState<CredentialRecord>(credential);
   const [secret, setSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importedFrom, setImportedFrom] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const submit = useSubmit();
 
   const existing = credentials.find((item) => item.id === form.id);
   const isNew = !existing;
   const isPrivateKey = form.credential_type === "private_key";
+
+  /**
+   * 从本地私钥文件导入。
+   *
+   * 文件选择器只提供路径；真正读取在 Rust 侧（≤64 KiB、必须 UTF-8、
+   * 内容必须真的是私钥）。读到的内容只进当前表单，**不落库** ——
+   * 仍要用户点「保存」才会写进系统凭据管理器。
+   *
+   * 不传 `filters`：`id_rsa` / `id_ed25519` 这类文件**没有扩展名**，
+   * 按扩展名过滤会把最常见的场景挡在外面；内容是主防线。
+   */
+  const importKeyFile = async () => {
+    setImportError(null);
+    setImporting(true);
+    try {
+      const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
+      const path = await openFileDialog({
+        multiple: false,
+        title: t("Select a private key file"),
+      });
+      if (typeof path !== "string" || !path) return;
+      const imported = await opsApi.credentialReadPrivateKeyFile(path);
+      setSecret(imported.content);
+      setImportedFrom(
+        imported.encrypted === true
+          ? t("Loaded {{name}} — it is encrypted, enter its passphrase below", {
+              name: imported.file_name,
+            })
+          : t("Loaded {{name}}", { name: imported.file_name }),
+      );
+    } catch (cause) {
+      setImportError(toErrorMessage(cause));
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const save = () =>
     submit.run(async () => {
@@ -440,6 +479,25 @@ function CredentialForm({
                   : t("Leave unchanged")
             }
           />
+          {isPrivateKey && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                data-testid="credential-import-key"
+                disabled={importing}
+                className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted disabled:opacity-50"
+                onClick={() => void importKeyFile()}
+              >
+                {importing ? t("Reading file") : t("Import from file")}
+              </button>
+              {importedFrom ? (
+                <span className="text-11 text-fg-subtle" data-testid="credential-import-source">
+                  {importedFrom}
+                </span>
+              ) : null}
+            </div>
+          )}
+          {importError ? <ErrorText>{importError}</ErrorText> : null}
         </Field>
 
         {isPrivateKey && (

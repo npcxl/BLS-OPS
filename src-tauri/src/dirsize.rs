@@ -171,12 +171,30 @@ enum DuRun {
     Done(DirectorySizeResult),
     /// 用户取消了：结果作废，直接报 cancelled。
     Cancelled(DirectorySizeResult),
-    /// `du` 没有产出可用数字，回退到 SFTP 递归。
+    /// `du` 在这台机器上不可用（没装 / 不支持该参数 / 输出无法解析）：
+    /// 只有这一种情况值得回退到 SFTP 递归。
     Unavailable,
+    /// `du` 把预算用完了。
+    ///
+    /// **绝不回退**：SFTP 递归比 `du` 慢一个量级，回退等于用一份新预算
+    /// 把"一个本来已经超时的目录"再扫一遍 —— 用户看到的就是"永远在算"。
+    TimedOut,
+    /// 会话 / 连接层面的失败（断开、通道打不开）。回退同样没有意义。
+    Failed,
 }
 
 /// Resolves as soon as `cancel` flips to `true`; also resolves (rather than
 /// hanging) if the sender is dropped, letting the caller re-check the flag.
+/// 距离 `deadline` 还剩多少预算；用完就是零（绝不返回负数）。
+fn remaining_until(deadline: tokio::time::Instant) -> Duration {
+    deadline.saturating_duration_since(tokio::time::Instant::now())
+}
+
+/// 构造一个 `timed_out` 终态（不留下"看起来算完了"的数字）。
+fn timed_out(session_id: &str, path: &str) -> DirectorySizeResult {
+    DirectorySizeResult::computing(session_id, path).terminal(DirectorySizeStatus::TimedOut)
+}
+
 async fn wait_cancel(cancel: &watch::Receiver<bool>) {
     let mut rx = cancel.clone();
     loop {
@@ -379,9 +397,14 @@ impl DirectorySizeRegistry {
                     &registry.emit_fn(),
                     DirectorySizeResult::computing(&session_id, &path),
                 );
-                let flavor = registry.detect_flavor(&manager, &session_id).await;
+                // **整个任务一份预算**：探测 + `du` + 回退都从这同一个
+                // deadline 里扣，谁先用完谁停。回退不再重新计时。
+                let deadline = tokio::time::Instant::now() + timeout;
+                let flavor = registry
+                    .detect_flavor(&manager, &session_id, deadline)
+                    .await;
                 let outcome = registry
-                    .compute(&manager, &session_id, &path, flavor, timeout, &cancel_rx)
+                    .compute(&manager, &session_id, &path, flavor, deadline, &cancel_rx)
                     .await;
                 // 计算/失败/取消后释放名额，等着的下一个任务才能进来。
                 drop(permit);
@@ -487,19 +510,22 @@ impl DirectorySizeRegistry {
         &self,
         manager: &SshSessionManager,
         session_id: &str,
+        deadline: tokio::time::Instant,
     ) -> Option<DuFlavor> {
         if let Some(cached) = self.du_flavor.lock().unwrap().get(session_id).copied() {
             return cached;
+        }
+        // 探测吃**同一份预算**：单次最多 5 秒，但不能超过剩余量；
+        // 预算已经用完就不探测了，直接走剩下的路径（compute 会报超时）。
+        let first = remaining_until(deadline).min(Duration::from_secs(5));
+        if first.is_zero() {
+            return None;
         }
         // GNU prints its version; BusyBox/BSD answer with a usage line to
         // `--version` (or error), so the presence of a version line is a
         // reliable "supports -b" signal. We still validate with a real run.
         let gnu = manager
-            .exec(
-                session_id,
-                "du --version 2>&1 | head -n1",
-                Duration::from_secs(5),
-            )
+            .exec(session_id, "du --version 2>&1 | head -n1", first)
             .await
             .map(|out| out.stdout.contains("GNU coreutils"))
             .unwrap_or(false);
@@ -507,12 +533,16 @@ impl DirectorySizeRegistry {
         let flavor = if gnu {
             Some(DuFlavor::Bytes)
         } else {
+            let second = remaining_until(deadline).min(Duration::from_secs(5));
+            if second.is_zero() {
+                return None;
+            }
             // BusyBox / BSD: try the byte form anyway (some build it), then KB.
             match manager
                 .exec(
                     session_id,
                     "du -sb -- /etc/hostname 2>/dev/null | head -n1",
-                    Duration::from_secs(5),
+                    second,
                 )
                 .await
             {
@@ -529,25 +559,39 @@ impl DirectorySizeRegistry {
     }
 
     /// Runs the actual computation: prefer `du`, fall back to SFTP recursion.
+    ///
+    /// `deadline` 是**整个任务**（含探测与回退）的唯一预算。回退不重新计时：
+    /// 剩余多少就用多少，剩余为零就直接报超时。
     async fn compute(
         &self,
         manager: &SshSessionManager,
         session_id: &str,
         path: &str,
         flavor: Option<DuFlavor>,
-        timeout: Duration,
+        deadline: tokio::time::Instant,
         cancel: &watch::Receiver<bool>,
     ) -> DirectorySizeResult {
         // Try `du` first.
         if let Some(flavor) = flavor {
+            let remaining = remaining_until(deadline);
+            if remaining.is_zero() {
+                return timed_out(session_id, path);
+            }
             match self
-                .compute_du(manager, session_id, path, flavor, timeout, cancel)
+                .compute_du(manager, session_id, path, flavor, remaining, cancel)
                 .await
             {
                 // 拿到数字（completed / partial / permission_denied）或明确取消，
                 // 都不再回退到 SFTP。
                 DuRun::Done(result) | DuRun::Cancelled(result) => return result,
-                DuRun::Unavailable => { /* fall through to SFTP */ }
+                // 超时 / 连接失败：**不回退**。回退只会让"已经花光预算"的目录
+                // 再拿一份新预算重扫一遍，这正是"永远在计算中"的成因。
+                DuRun::TimedOut => return timed_out(session_id, path),
+                DuRun::Failed => {
+                    return DirectorySizeResult::computing(session_id, path)
+                        .terminal(DirectorySizeStatus::Failed)
+                }
+                DuRun::Unavailable => { /* 只有这一种情况值得回退 */ }
             }
         }
 
@@ -556,9 +600,14 @@ impl DirectorySizeRegistry {
                 .terminal(DirectorySizeStatus::Cancelled);
         }
 
-        // SFTP recursive fallback.
+        let remaining = remaining_until(deadline);
+        if remaining.is_zero() {
+            return timed_out(session_id, path);
+        }
+
+        // SFTP recursive fallback（用**剩余**预算，不是新的一份）。
         match self
-            .compute_sftp(manager, session_id, path, timeout, cancel)
+            .compute_sftp(manager, session_id, path, remaining, cancel)
             .await
         {
             Ok(result) => result,
@@ -608,9 +657,33 @@ impl DirectorySizeRegistry {
             DuFlavor::Bytes => format!("du -sb -- {}", shell_quote(path)),
             DuFlavor::Kibibytes => format!("du -sk -- {}", shell_quote(path)),
         };
+        let started = tokio::time::Instant::now();
         let output = match manager.exec(session_id, &cmd, timeout).await {
             Ok(output) => output,
-            Err(_) => return DuRun::Unavailable,
+            Err(error) => {
+                // 把 `exec` 的失败分成三类，**只有"这台机器没有 du"才值得回退**：
+                // * 预算耗尽 → TimedOut（回退会重新拿一份预算，是"永远在算"的根因）；
+                // * 会话/通道断了 → Failed（回退也连不上）；
+                // * 其余（命令不存在、参数不支持）→ Unavailable。
+                //
+                // `exec` 返回的是字符串错误，所以同时看**耗时**与错误文本：
+                // 用掉 80% 以上预算的，按超时处理 —— 这比只看文本更可靠。
+                let text = error.to_string().to_lowercase();
+                if started.elapsed() >= timeout.mul_f32(0.8)
+                    || text.contains("timed out")
+                    || text.contains("timeout")
+                {
+                    return DuRun::TimedOut;
+                }
+                if text.contains("not connected")
+                    || text.contains("no session")
+                    || text.contains("channel")
+                    || text.contains("closed")
+                {
+                    return DuRun::Failed;
+                }
+                return DuRun::Unavailable;
+            }
         };
         // 取消信号可能在 `du` 运行期间到达：此时结果已经没有意义，必须丢掉。
         if *cancel.borrow() {

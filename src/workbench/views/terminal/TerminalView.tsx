@@ -91,6 +91,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(true);
+  // 稳定引用：`RemoteFilePanel` 是 memo 的，内联箭头函数会让它每次父渲染都失效
+  // （终端每敲一个字都会重渲染父组件）。
+  const closeFiles = useCallback(() => setFilesOpen(false), []);
   /**
    * Shell-to-panel sync: every `cd` typed in the terminal bumps this nonce with
    * the **absolute target the terminal resolved** (never the raw argument —
@@ -1256,7 +1259,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           sessionId={sessionId}
           connected={phase === "connected"}
           follow={follow}
-          onClose={() => setFilesOpen(false)}
+          onClose={closeFiles}
         />
       )}
 

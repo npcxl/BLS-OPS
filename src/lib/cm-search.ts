@@ -16,7 +16,7 @@
  * - 高亮靠 `setSearchQuery`，跳转/替换靠官方 `findNext` / `replaceAll` 等命令，
  *   语义与默认面板一致，只是外壳换成我们自己画的。
  */
-import type { EditorView } from "@uiw/react-codemirror";
+import type { EditorState, EditorView } from "@uiw/react-codemirror";
 import {
   SearchQuery,
   findNext,
@@ -68,19 +68,59 @@ export function replaceMatch(view: EditorView, all: boolean): void {
 }
 
 /**
- * 当前查询的全部匹配区间。
+ * 单次扫描的匹配数量上限。
+ *
+ * 为什么要有上限：`getCursor` 是同步遍历，命中越多、文档越大，这次遍历
+ * 就越久 —— 它跑在主线程上，直接决定输入跟不跟手。上限把最坏情况钉住。
+ *
+ * 达到上限就停止，调用方**必须**把 `truncated` 显示出来（例如 `2000+`），
+ * 不能把"下限"伪装成精确总数。
+ */
+export const MATCH_SCAN_LIMIT = 2000;
+
+/** 一次扫描的结果。`truncated` 为真时 `ranges.length` 只是下限。 */
+export interface MatchScan {
+  ranges: { from: number; to: number }[];
+  truncated: boolean;
+}
+
+/**
+ * 扫描当前查询的匹配区间（最多 [`MATCH_SCAN_LIMIT`] 个）。
  *
  * `getCursor` 返回的是裸 `Iterator`（不带 `Symbol.iterator`），只能手动
  * `next()` —— 不要用 `for...of` / 展开运算符。
  */
-export function matchRanges(view: EditorView, query: SearchQuery): { from: number; to: number }[] {
-  if (!query.valid) return [];
+export function scanMatches(
+  // 只要 `state`：这样测试可以只造一个 `EditorState`，不必挂真实编辑器。
+  target: { state: EditorState },
+  query: SearchQuery,
+  limit = MATCH_SCAN_LIMIT,
+): MatchScan {
+  if (!query.valid) return { ranges: [], truncated: false };
   const ranges: { from: number; to: number }[] = [];
-  const cursor = query.getCursor(view.state);
+  const cursor = query.getCursor(target.state);
+  let truncated = false;
   for (let next = cursor.next(); !next.done; next = cursor.next()) {
+    if (ranges.length >= limit) {
+      truncated = true;
+      break;
+    }
     ranges.push(next.value);
   }
-  return ranges;
+  return { ranges, truncated };
+}
+
+/**
+ * 当前查询的全部匹配区间（不限数量）。
+ *
+ * 保留给"必须拿到完整集合"的调用方（如替换前的统计）；搜索框走
+ * [`scanMatches`]，避免在大文档上把主线程卡住。
+ */
+export function matchRanges(
+  target: { state: EditorState },
+  query: SearchQuery,
+): { from: number; to: number }[] {
+  return scanMatches(target, query, Number.POSITIVE_INFINITY).ranges;
 }
 
 /**
@@ -90,11 +130,11 @@ export function matchRanges(view: EditorView, query: SearchQuery): { from: numbe
  * 匹配；光标已在全部匹配之后时回绕到第一个 —— 与 VSCode 的计数行为一致。
  */
 export function activeMatchIndex(
-  view: EditorView,
+  target: { state: EditorState },
   ranges: { from: number; to: number }[],
 ): number {
   if (ranges.length === 0) return -1;
-  const cursor = view.state.selection.main.from;
+  const cursor = target.state.selection.main.from;
   const exact = ranges.findIndex((range) => range.from === cursor);
   if (exact >= 0) return exact;
   const next = ranges.findIndex((range) => range.from > cursor);

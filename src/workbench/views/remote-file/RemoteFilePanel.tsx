@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -47,6 +48,7 @@ import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
 import {
+  AUTO_DIR_SIZE_LIMIT,
   useAutoDismiss,
   useDirSizeQueue,
   useDirSizeWatchdog,
@@ -110,7 +112,7 @@ export interface RemoteFilePanelProps {
  * double-click editing of text/code files (SQL, conf, JS, Java, …) with
  * syntax highlighting.
  */
-export function RemoteFilePanel({
+function RemoteFilePanelImpl({
   sessionId,
   connected,
   follow,
@@ -566,7 +568,10 @@ export function RemoteFilePanel({
     setStatus({ state: "error", message });
   }, []);
 
-  const { computeDirSize, listenerReady } = useDirSizeQueue(sessionId, handleDirSizeError);
+  const { computeDirSize, dropQueued, listenerReady } = useDirSizeQueue(
+    sessionId,
+    handleDirSizeError,
+  );
 
   /**
    * 每次列出目录就自动计算列表里每个子文件夹的大小，结果通过
@@ -581,13 +586,26 @@ export function RemoteFilePanel({
    */
   useEffect(() => {
     if (!connected || !listenerReady) return;
+    // 切换目录时，把上一个目录**还没轮到**的排队项丢掉：否则浏览几个目录
+    // 就在前端队列里积压几十个任务，且它们排在本目录前面。
+    // 已提交给后端的任务不动（同会话其他面板可能还要）。
+    const current = new Set<string>();
+    for (const entry of entries) {
+      if (entry.kind === "directory") current.add(entry.path);
+    }
+    dropQueued((path) => current.has(path));
+
+    // 只自动统计最前面的 N 个：保留自动统计能力，但不再"有多少排多少"。
+    let scheduled = 0;
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
       const cached = useDirSizeStore.getState().get(sessionId, entry.path);
       if (cached?.complete) continue;
+      if (scheduled >= AUTO_DIR_SIZE_LIMIT) break;
+      scheduled += 1;
       computeDirSize(entry.path);
     }
-  }, [connected, listenerReady, entries, sessionId, computeDirSize]);
+  }, [connected, listenerReady, entries, sessionId, computeDirSize, dropQueued]);
 
   // 低频兜底：事件是主通道；3 秒一次、单轮 ≤20 条的批量查询只捞丢失的事件。
   useDirSizeWatchdog({ connected, listenerReady, sessionId, entries });
@@ -1136,3 +1154,16 @@ export function RemoteFilePanel({
     </aside>
   );
 }
+
+/**
+ * 文件面板的整体渲染隔离。
+ *
+ * 它是 `TerminalView` 的子组件，而终端**每个按键**都会更新 draft 触发父组件
+ * 重渲染。没有这层 memo，父组件每敲一个字，面板就要重跑一遍渲染函数
+ * （包括对全部 `entries` 的遍历），这正是"同时开着文件面板时输入不跟手"的
+ * 直接原因。
+ *
+ * 生效前提是 props 引用稳定 —— 调用方必须传 `useCallback` 包过的 `onClose`。
+ * 面板内部从 zustand 读的数据变化时仍会正常重渲染（那是它自己的订阅）。
+ */
+export const RemoteFilePanel = memo(RemoteFilePanelImpl);

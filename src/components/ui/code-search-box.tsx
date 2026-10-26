@@ -17,7 +17,7 @@ import {
   buildQuery,
   clearQuery,
   gotoMatch,
-  matchRanges,
+  scanMatches,
   replaceMatch,
 } from "@/lib/cm-search";
 
@@ -48,32 +48,59 @@ export function CodeSearchBox({
 
   const searchQuery = useMemo(() => buildQuery(query, caseSensitive), [query, caseSensitive]);
 
-  /** 重算匹配总数与当前序号。 */
-  const refresh = useCallback(() => {
+  /**
+   * 已扫描出的匹配区间 + 扫描时的文档快照。
+   *
+   * 光标移动（按键、点击）**不重新扫描**：全文遍历是这里唯一的大开销，
+   * 而"第几个匹配"只需要在已有区间里找位置。只有查询/选项变化，或文档
+   * 真的被编辑过（CodeMirror 的 `Text` 不可变，换实例即变更），才重新扫。
+   */
+  const rangesRef = useRef<{ from: number; to: number }[]>([]);
+  const scannedDocRef = useRef<unknown>(null);
+  const composingRef = useRef(false);
+  const [truncated, setTruncated] = useState(false);
+
+  /** 只同步"当前第几个匹配"，复用已扫描的区间。 */
+  const syncIndex = useCallback(() => {
     if (!view) return;
-    const ranges = matchRanges(view, searchQuery);
-    setTotal(ranges.length);
-    setIndex(activeMatchIndex(view, ranges));
+    setIndex(activeMatchIndex(view, rangesRef.current));
+  }, [view]);
+
+  /** 重新扫描全文（有上限；达到上限时 `truncated` 为真）。 */
+  const recompute = useCallback(() => {
+    if (!view) return;
+    const scan = scanMatches(view, searchQuery);
+    rangesRef.current = scan.ranges;
+    scannedDocRef.current = view.state.doc;
+    setTotal(scan.ranges.length);
+    setTruncated(scan.truncated);
+    setIndex(activeMatchIndex(view, scan.ranges));
   }, [view, searchQuery]);
 
-  // 查询变化 → 写进编辑器并刷新计数。
+  // 查询变化 → 写进编辑器并重新扫描。
   useEffect(() => {
     if (!view) return;
     applyQuery(view, searchQuery);
-    refresh();
-  }, [view, searchQuery, refresh]);
+    // 输入法组合期间不扫全文：中文每个键都会改 query，扫了也没用，
+    // 等 compositionend 再扫一次即可。
+    if (composingRef.current) return;
+    recompute();
+  }, [view, searchQuery, recompute]);
 
-  // 光标移动（逐个跳转、点击文档）后刷新序号：编辑器内没有 React 层，
-  // 用 DOM 事件捕获即可，无需订阅 CodeMirror 的 update 流。
+  // 光标移动只更新序号；文档被编辑过才重新扫描。
   useEffect(() => {
     if (!view) return;
-    view.dom.addEventListener("keyup", refresh);
-    view.dom.addEventListener("mouseup", refresh);
-    return () => {
-      view.dom.removeEventListener("keyup", refresh);
-      view.dom.removeEventListener("mouseup", refresh);
+    const sync = () => {
+      if (view.state.doc !== scannedDocRef.current) recompute();
+      else syncIndex();
     };
-  }, [view, refresh]);
+    view.dom.addEventListener("keyup", sync);
+    view.dom.addEventListener("mouseup", sync);
+    return () => {
+      view.dom.removeEventListener("keyup", sync);
+      view.dom.removeEventListener("mouseup", sync);
+    };
+  }, [view, recompute, syncIndex]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -83,9 +110,10 @@ export function CodeSearchBox({
     (backward: boolean) => {
       if (!view || total === 0) return;
       gotoMatch(view, backward);
-      refresh();
+      // 跳转只移动光标，区间没变 —— 不能为此重扫全文。
+      syncIndex();
     },
-    [view, total, refresh],
+    [view, total, syncIndex],
   );
 
   const replace = useCallback(
@@ -94,9 +122,10 @@ export function CodeSearchBox({
       // 替换动作要求查询自带 replace 文本。
       applyQuery(view, buildQuery(query, caseSensitive, replaceText));
       replaceMatch(view, all);
-      refresh();
+      // 替换改动了文档 → 必须重扫。
+      recompute();
     },
-    [view, readOnly, total, query, caseSensitive, replaceText, refresh],
+    [view, readOnly, total, query, caseSensitive, replaceText, recompute],
   );
 
   const close = useCallback(() => {
@@ -124,7 +153,12 @@ export function CodeSearchBox({
   };
 
   const counter =
-    total === 0 ? (query ? t("No results") : "") : `${(index >= 0 ? index : 0) + 1}/${total}`;
+    total === 0
+      ? query
+        ? t("No results")
+        : ""
+      : // 达到扫描上限时显示 `2000+`：这是下限，不能伪装成精确总数。
+        `${(index >= 0 ? index : 0) + 1}/${total}${truncated ? "+" : ""}`;
 
   return (
     <div
@@ -151,6 +185,14 @@ export function CodeSearchBox({
           ref={inputRef}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          // 输入法组合期间不扫全文（见上面的 effect）；结束后补一次。
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+            recompute();
+          }}
           placeholder={t("Find")}
           spellCheck={false}
           className={cn(

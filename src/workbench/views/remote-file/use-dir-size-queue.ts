@@ -75,6 +75,30 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     }
   };
 
+  /**
+   * 丢弃**还没发出去**的排队项，保留满足 `keep` 的项。
+   *
+   * 用途：切换目录时不要把上一个目录剩下的几十个文件夹继续排下去。
+   *
+   * 为什么不动已经提交给后端的任务：同一个 SSH 会话可能开着多个文件面板，
+   * 它们共享后端缓存与并发名额。前端无从知道"另一个面板是不是还要这个
+   * 目录的大小"，贸然 `directorySizeCancel` 会把别人正在等的结果掐掉。
+   * 所以这里只清**本面板自己的待发送队列** —— 已发出的任务要么很快结束，
+   * 要么由会话断开时的 `forget_session` 统一取消。
+   */
+  const dropQueued = useCallback((keep?: (path: string) => boolean) => {
+    sizeQueueRef.current = keep
+      ? sizeQueueRef.current.filter((item) => keep(item.path))
+      : [];
+    if (keep) {
+      for (const path of Array.from(sizeQueuedRef.current)) {
+        if (!keep(path)) sizeQueuedRef.current.delete(path);
+      }
+    } else {
+      sizeQueuedRef.current.clear();
+    }
+  }, []);
+
   const cancelDirSize = useCallback(
     (path: string) => {
       if (!path) return;
@@ -82,6 +106,10 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     },
     [sessionId],
   );
+
+  // 卸载时清掉待发送队列：面板关了就不该继续提交无用扫描。
+  // （已经提交的任务不在这里取消，理由见 `dropQueued`。）
+  useEffect(() => () => dropQueued(), [dropQueued]);
 
   // Register the global directory-size listener once, and only report the
   // panel ready once registration actually succeeded.
@@ -101,8 +129,18 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     };
   }, [onError]);
 
-  return { computeDirSize, cancelDirSize, listenerReady };
+  return { computeDirSize, cancelDirSize, dropQueued, listenerReady };
 }
+
+/**
+ * 每个目录**自动**统计的文件夹数量上限。
+ *
+ * 为什么需要上限：以前是"列出多少子文件夹就统计多少"。浏览十个目录就会
+ * 往后端塞上百个任务，每个都要排队（后端每会话并发 2），用户看到的就是
+ * "一直在计算/排队"。现在的语义是"先算最前面的这些，剩下的等用户滚动或
+ * 手动刷新时再说"——不取消自动统计能力，只是不再无限堆积。
+ */
+export const AUTO_DIR_SIZE_LIMIT = 12;
 
 /** Watchdog tick interval — the event stream is primary; this is a fallback. */
 export const DIR_SIZE_WATCHDOG_INTERVAL_MS = 3_000;

@@ -251,14 +251,10 @@ fn read_private_key_file(path: &str) -> Result<ImportedPrivateKey, String> {
     let content = content.trim_start_matches('\u{feff}').to_string();
 
     // **主防线**：内容必须真的像私钥。
-    let is_pem = PEM_MARKERS
-        .iter()
-        .any(|marker| content.contains(marker));
+    let is_pem = PEM_MARKERS.iter().any(|marker| content.contains(marker));
     let is_ppk = content.contains(PPK_MARKER);
     if !is_pem && !is_ppk {
-        return Err(
-            "这个文件看起来不是私钥（找不到 OpenSSH / PEM / PuTTY 的私钥头）".to_string(),
-        );
+        return Err("这个文件看起来不是私钥（找不到 OpenSSH / PEM / PuTTY 的私钥头）".to_string());
     }
 
     let format = if content.contains("-----BEGIN OPENSSH PRIVATE KEY-----") {
@@ -303,10 +299,8 @@ mod tests {
     use std::io::Write;
 
     fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "bls-ops-key-test-{}-{name}",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("bls-ops-key-test-{}-{name}", uuid::Uuid::new_v4()));
         let mut file = std::fs::File::create(&path).expect("create");
         file.write_all(bytes).expect("write");
         path
@@ -330,7 +324,8 @@ mod tests {
 
     #[test]
     fn an_encrypted_pem_key_is_flagged() {
-        let pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIB\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        let pem =
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIB\n-----END ENCRYPTED PRIVATE KEY-----\n";
         let path = temp_file("key.pem", pem.as_bytes());
         let imported = read_private_key_file(path.to_str().unwrap()).expect("应当读取成功");
         assert_eq!(imported.format, "pem");
@@ -376,10 +371,7 @@ mod tests {
 
     #[test]
     fn a_directory_is_rejected() {
-        let dir = std::env::temp_dir().join(format!(
-            "bls-ops-key-dir-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("bls-ops-key-dir-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let error = read_private_key_file(dir.to_str().unwrap()).expect_err("目录必须被拒");
         assert!(error.contains("不是文件"), "{error}");

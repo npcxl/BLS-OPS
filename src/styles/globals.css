@@ -68,6 +68,22 @@
     cursor: text;
   }
 
+  /*
+   * 可编辑的 contenteditable 也要 I-beam。
+   *
+   * `body` 上是 `cursor: default`，例外只开给了 input/textarea；CodeMirror 的
+   * `.cm-content` 是 `contenteditable="true"` 的 div，不在例外里 ——
+   * 所以打开文件后鼠标一直是箭头，看起来"不能输入"。
+   *
+   * `user-select: text` 一并补上：`body` 的 `user-select: none` 会继承进编辑器，
+   * 让鼠标选不了文本。只读编辑器是 `contenteditable="false"`，不匹配这条规则，
+   * 保持箭头与不可选的预览语义。
+   */
+  [contenteditable="true"] {
+    cursor: text;
+    user-select: text;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: rgb(var(--line-strong)) transparent;

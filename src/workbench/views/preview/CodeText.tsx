@@ -4,7 +4,7 @@ import CodeMirror, { EditorState, EditorView } from "@uiw/react-codemirror";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { CodeSearchBox } from "@/components/ui/code-search-box";
-import { useEditorTheme } from "@/lib/cm-theme";
+import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 
 /**
@@ -24,6 +24,8 @@ export default function CodeText({ text }: { text: string }) {
     () => [
       EditorView.editable.of(false),
       EditorState.readOnly.of(true),
+      // 只读也显示 I-beam：能选中复制，与 VSCode 的预览一致。
+      editorCursorTheme,
       opsSearch(),
       ...(wrap ? [EditorView.lineWrapping] : []),
     ],

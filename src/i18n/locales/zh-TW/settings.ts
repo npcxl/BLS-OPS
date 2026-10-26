@@ -49,6 +49,7 @@ export default {
   "Loaded {{name}}": "已讀取 {{name}}",
   "Loaded {{name}} — it is encrypted, enter its passphrase below":
     "已讀取 {{name}} — 該私鑰已加密，請在下方填寫口令",
+  "Clear the saved passphrase": "清除已儲存的口令",
   "Fill in the password when creating a password credential.": "建立密碼憑據時必須填寫密碼。",
   "Delete credential “{{name}}”? The key in the system credential manager is removed too.":
     "确定删除凭据“{{name}}”吗？此操作会同时清除系统凭据管理器中的密钥。",

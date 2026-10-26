@@ -561,17 +561,7 @@ impl SshSessionManager {
             .canonicalize(path)
             .await
             .map_err(|error| sftp_error(path, error))?;
-        let mut file = sftp
-            .create(&canonical)
-            .await
-            .map_err(|error| sftp_error(&canonical, error))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, content.as_bytes())
-            .await
-            .map_err(|error| anyhow!("写入文件失败：{error}"))?;
-        file.shutdown()
-            .await
-            .map_err(|error| anyhow!("保存文件失败：{error}"))?;
-        Ok(())
+        atomic_write(&sftp, &canonical, content.as_bytes()).await
     }
 
     /// Reads any remote file as raw bytes for the in-app preview.
@@ -785,6 +775,87 @@ impl SshSessionManager {
             size_bytes: written,
         })
     }
+}
+
+/// 把内容**原子地**写到 `canonical`。
+///
+/// # 为什么不能直接 `create()` 写
+///
+/// `create()` 对已存在的文件会**先截断**。改 `nginx.conf` 时断网，原文件
+/// 就变成空文件或半截文件 —— 这不是"保存失败"，是"原配置被破坏"。
+///
+/// # 顺序（跨 SFTP 服务器都成立）
+///
+/// 1. 写到同目录临时文件（写坏只坏临时文件）；
+/// 2. 校验字节数；
+/// 3. 原文件改名 `.bls-bak`（原子），临时文件改名目标（原子）；
+/// 4. 成功后删备份；任一步失败都把备份改回原名。
+///
+/// 不能"直接 rename 覆盖目标"：SFTP v3 的 rename 不覆盖已存在文件
+/// （见 [`SshSessionManager::sftp_rename`] 的说明）。
+///
+/// 最坏情况下原内容仍在 `.bls-bak` 里，不会凭空消失。
+async fn atomic_write(sftp: &SftpSession, canonical: &str, content: &[u8]) -> Result<()> {
+    let temp = format!("{canonical}.bls-tmp");
+    let backup = format!("{canonical}.bls-bak");
+
+    // 上次异常退出留下的临时文件不该阻止这次写入。
+    let _ = sftp.remove_file(&temp).await;
+
+    let written: Result<()> = async {
+        let mut file = sftp
+            .create(&temp)
+            .await
+            .map_err(|error| sftp_error(&temp, error))?;
+        if let Err(error) = tokio::io::AsyncWriteExt::write_all(&mut file, content).await {
+            let _ = file.shutdown().await;
+            return Err(anyhow!("写入临时文件失败：{error}"));
+        }
+        if let Err(error) = file.shutdown().await {
+            return Err(anyhow!("写入临时文件失败：{error}"));
+        }
+        let meta = sftp
+            .metadata(&temp)
+            .await
+            .map_err(|error| sftp_error(&temp, error))?;
+        if meta.len() != content.len() as u64 {
+            return Err(anyhow!(
+                "写入不完整（{} / {} 字节），原文件未改动",
+                meta.len(),
+                content.len()
+            ));
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(error) = written {
+        let _ = sftp.remove_file(&temp).await;
+        return Err(error);
+    }
+
+    let had_target = sftp.symlink_metadata(canonical).await.is_ok();
+    if had_target {
+        let _ = sftp.remove_file(&backup).await;
+        if let Err(error) = sftp.rename(canonical, &backup).await {
+            let _ = sftp.remove_file(&temp).await;
+            return Err(anyhow!("无法替换原文件（原内容未改动）：{error}"));
+        }
+    }
+
+    if let Err(error) = sftp.rename(&temp, canonical).await {
+        if had_target {
+            // 把原文件改回去：宁可这次保存失败，也不能让配置消失。
+            let _ = sftp.rename(&backup, canonical).await;
+        }
+        let _ = sftp.remove_file(&temp).await;
+        return Err(anyhow!("替换文件失败（已恢复原内容）：{error}"));
+    }
+
+    if had_target {
+        let _ = sftp.remove_file(&backup).await;
+    }
+    Ok(())
 }
 
 /// 上传分块大小。

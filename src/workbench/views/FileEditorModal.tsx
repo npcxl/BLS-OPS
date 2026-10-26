@@ -16,7 +16,7 @@ import { CodeSearchBox } from "@/components/ui/code-search-box";
 import { ErrorText, Modal } from "@/components/ui/modal";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import type { EditorLanguage } from "@/lib/file-kind";
-import { useEditorTheme } from "@/lib/cm-theme";
+import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
 
@@ -175,7 +175,8 @@ export default function FileEditorModal({
 
 function buildExtensions(language?: EditorLanguage) {
   // opsSearch()：Ctrl+F 打开自定义查找/替换面板（替换默认原生样式）。
-  const extensions = [opsSearch()];
+  // editorCursorTheme：正文 I-beam（body 上的 cursor: default 会继承进来）。
+  const extensions = [opsSearch(), editorCursorTheme];
   if (!language) return extensions;
   switch (language) {
     case "sql":

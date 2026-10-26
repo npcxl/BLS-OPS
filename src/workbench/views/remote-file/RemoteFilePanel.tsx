@@ -177,12 +177,24 @@ function RemoteFilePanelImpl({
     setHideCrumbs(el.scrollWidth > 150);
   }, [selectedEntry, width]);
 
+  /**
+   * 目录加载的请求序号。
+   *
+   * 快速切换目录时会同时有多个 `sftpListDir` 在飞。没有序号时，**先发后到**
+   * 的旧响应会把用户最后选择的目录覆盖掉（页面"跳回"旧目录）。
+   * 只允许最新一次请求更新列表、路径与错误。
+   */
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(
     async (path: string) => {
+      const seq = ++loadSeqRef.current;
       setStatus({ state: "loading" });
       setSelected(null);
       try {
         const result = await opsApi.sftpListDir(sessionId, path);
+        // 过期响应：直接丢弃，什么状态都不写。
+        if (seq !== loadSeqRef.current) return;
         setEntries(result.entries);
         setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
         // Reconcile with the canonical path the server actually resolved.
@@ -194,6 +206,7 @@ function RemoteFilePanelImpl({
           };
         });
       } catch (cause) {
+        if (seq !== loadSeqRef.current) return;
         setStatus({ state: "error", message: toErrorMessage(cause) });
       }
     },

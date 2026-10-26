@@ -397,8 +397,27 @@ export function CredentialForm({
     submit.run(async () => {
       await saveCredential(
         { ...form, name: form.name.trim(), username: form.username.trim() },
-        secret.trim() || undefined,
-        isPrivateKey ? passphrase.trim() || undefined : undefined,
+        // **秘密值不 trim**：首尾空格可以是密码本身的一部分，去掉就是另一个密码。
+        // 空字符串在这里表示"这次没提供"，后端会保留原值。
+        secret || undefined,
+        // 口令三态：留空 = 保留原值；清除必须走显式按钮（见下）。
+        isPrivateKey ? passphrase || undefined : undefined,
+      );
+      onClose();
+    });
+
+  /**
+   * 显式清除已保存的私钥口令。
+   *
+   * 为什么需要它：空输入已改为"保留原值"，所以"清除"不能靠留空表达 ——
+   * 必须有一个明确的动作，否则用户没有办法删掉旧口令。
+   */
+  const clearPassphrase = () =>
+    submit.run(async () => {
+      await saveCredential(
+        { ...form, name: form.name.trim(), username: form.username.trim() },
+        undefined,
+        "",
       );
       onClose();
     });
@@ -512,6 +531,17 @@ export function CredentialForm({
               onChange={(event) => setPassphrase(event.target.value)}
               placeholder={t("Optional")}
             />
+            {!isNew && existing?.passphrase_ref ? (
+              <button
+                type="button"
+                data-testid="credential-clear-passphrase"
+                disabled={submit.pending}
+                onClick={() => void clearPassphrase()}
+                className="mt-1.5 text-11 text-fg-subtle underline-offset-2 hover:text-fg hover:underline disabled:opacity-50"
+              >
+                {t("Clear the saved passphrase")}
+              </button>
+            ) : null}
           </Field>
         )}
 

@@ -42,62 +42,67 @@ pub fn credential_save(
     credential.username = credential.username.trim().to_string();
     credential.updated_at = db::AppDb::now();
 
-    let trimmed_secret = secret
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let trimmed_passphrase = passphrase
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let is_new_secret = trimmed_secret.is_some();
+    // **密码 / 私钥 / 口令一律不 trim**：首尾空格可以是密码的一部分，
+    // 去掉之后就是另一个密码（表现为"手动 ssh 能连，工具连不上"）。
+    // 只有**空字符串**才表示"这次没有提供"。
+    let provided_secret = secret.as_deref().filter(|value| !value.is_empty());
+    let provided_passphrase = passphrase.as_deref().filter(|value| !value.is_empty());
+    // 口令三态：`None` 保留原值 / `Some("")` 主动清除 / `Some(x)` 设置新值。
+    // 空输入**不能**自动等于删除 —— 否则只改个名字就会把口令删掉。
+    let clear_passphrase = matches!(passphrase.as_deref(), Some(""));
+    let is_new_secret = provided_secret.is_some();
 
-    if existing.is_none() && trimmed_secret.is_none() {
+    if existing.is_none() && provided_secret.is_none() {
         return Err(match credential.credential_type.as_str() {
             "private_key" => "请粘贴私钥内容".to_string(),
             _ => "请填写密码".to_string(),
         });
     }
-    if trimmed_passphrase.is_some() && credential.credential_type != "private_key" {
+    if (provided_passphrase.is_some() || clear_passphrase)
+        && credential.credential_type != "private_key"
+    {
         return Err("只有私钥凭据可以设置私钥口令".to_string());
     }
 
-    // Keyring first: if it fails nothing has been persisted yet, and if the DB
-    // write fails below we roll the keyring entry back instead of orphaning it.
-    let mut written: Vec<String> = Vec::new();
-    let secret_ref = credential
-        .secret_ref
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("cred-{}", uuid::Uuid::new_v4()));
-    let passphrase_ref = credential
-        .passphrase_ref
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("cred-{}-pass", uuid::Uuid::new_v4()));
+    // **新值一律写进新引用**，数据库提交成功后才删旧的。
+    //
+    // 旧实现复用旧引用：keyring 里覆盖掉旧值 → DB 写入失败 → 回滚时把
+    // 这个引用删掉。结果数据库还指着它，原来的密码却没了。
+    let old_secret_ref = credential.secret_ref.clone();
+    let old_passphrase_ref = credential.passphrase_ref.clone();
 
-    if let Some(value) = trimmed_secret {
-        keyring::save_secret(&secret_ref, value).map_err(|error| error.to_string())?;
-        written.push(secret_ref.clone());
-        credential.secret_ref = Some(secret_ref);
+    let mut written: Vec<String> = Vec::new();
+    if let Some(value) = provided_secret {
+        let reference = format!("cred-{}", uuid::Uuid::new_v4());
+        keyring::save_secret(&reference, value).map_err(|error| error.to_string())?;
+        written.push(reference.clone());
+        credential.secret_ref = Some(reference);
     }
-    if let Some(value) = trimmed_passphrase {
-        keyring::save_secret(&passphrase_ref, value).map_err(|error| error.to_string())?;
-        written.push(passphrase_ref.clone());
-        credential.passphrase_ref = Some(passphrase_ref);
+    if let Some(value) = provided_passphrase {
+        let reference = format!("cred-{}-pass", uuid::Uuid::new_v4());
+        keyring::save_secret(&reference, value).map_err(|error| error.to_string())?;
+        written.push(reference.clone());
+        credential.passphrase_ref = Some(reference);
+    }
+    if clear_passphrase {
+        credential.passphrase_ref = None;
     }
 
     match db::insert_or_replace_credential(&conn, &credential) {
         Ok(()) => {
-            // Drop passphrase entries that are no longer wanted.
-            if trimmed_passphrase.is_none() {
-                if let Some(reference) = credential.passphrase_ref.as_deref() {
-                    if !written.iter().any(|item| item == reference) {
-                        let _ = keyring::delete_secret(reference);
-                    }
+            // 数据库已提交：现在才清理**不再被引用**的旧值。
+            //
+            // 新值走的是新引用，所以删旧引用不会影响刚保存的内容；
+            // 反过来（先删后写）在中间失败时就会把仍在使用的密码弄丢。
+            if let Some(old) = old_secret_ref {
+                if credential.secret_ref.as_deref() != Some(old.as_str()) {
+                    let _ = keyring::delete_secret(&old);
                 }
-                credential.passphrase_ref = None;
-                let _ = db::insert_or_replace_credential(&conn, &credential);
+            }
+            if let Some(old) = old_passphrase_ref {
+                if credential.passphrase_ref.as_deref() != Some(old.as_str()) {
+                    let _ = keyring::delete_secret(&old);
+                }
             }
             record_audit(
                 &state,

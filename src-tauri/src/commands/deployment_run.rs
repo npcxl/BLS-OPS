@@ -158,13 +158,23 @@ pub async fn deployment_run_preflight(
     plan_id: String,
     session_id: Option<String>,
 ) -> Result<PreflightOutcome, String> {
+    preflight_plan(&state, &plan_id, session_id.as_deref()).await
+}
+
+/// 预检实现 —— `deployment_session_confirm_and_start` 走**同一份**逻辑，
+/// 保证"用户手动点预检"和"确认后自动预检"结论永远一致。
+pub(crate) async fn preflight_plan(
+    state: &AppState,
+    plan_id: &str,
+    session_id: Option<&str>,
+) -> Result<PreflightOutcome, String> {
     let (plan, setup, compiled, connected, locked) = {
-        let conn = open_db(&state)?;
-        let plan = load_plan(&conn, &plan_id)?;
+        let conn = open_db(state)?;
+        let plan = load_plan(&conn, plan_id)?;
         let version = next_version_label(&conn, &plan);
         let setup = load_setup(&conn, &plan, &version)?;
         let compiled = setup.compile(&plan)?;
-        let connected = match session_id.as_deref().filter(|id| !id.trim().is_empty()) {
+        let connected = match session_id.filter(|id| !id.trim().is_empty()) {
             Some(session_id) => state.ssh.is_connected(session_id).await,
             None => false,
         };
@@ -210,12 +220,23 @@ pub async fn deployment_run_start(
     // 是否预先批准本次运行里所有需要确认的节点（"这个计划我已经审过"）。
     approve_high_risk: bool,
 ) -> Result<DeploymentRunDetail, String> {
-    if !state.ssh.is_connected(&session_id).await {
+    start_run(app, &state, &plan_id, &session_id, approve_high_risk).await
+}
+
+/// 启动实现 —— 会话确认复用（**同一份安全检查**，不允许出现两条不同逻辑）。
+pub(crate) async fn start_run(
+    app: AppHandle,
+    state: &AppState,
+    plan_id: &str,
+    session_id: &str,
+    approve_high_risk: bool,
+) -> Result<DeploymentRunDetail, String> {
+    if !state.ssh.is_connected(session_id).await {
         return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
     }
     let (plan, setup, server_id, environment_id) = {
-        let conn = open_db(&state)?;
-        let plan = load_plan(&conn, &plan_id)?;
+        let conn = open_db(state)?;
+        let plan = load_plan(&conn, plan_id)?;
         let version = next_version_label(&conn, &plan);
         let setup = load_setup(&conn, &plan, &version)?;
         let environment = db::get_environment(&conn, &plan.plan.environment_id)
@@ -253,7 +274,7 @@ pub async fn deployment_run_start(
         Vec::new()
     };
     let options = StartOptions {
-        session_id: session_id.clone(),
+        session_id: session_id.to_string(),
         trigger: RunTrigger::Manual,
         approved_nodes: approvals,
         skip_preflight: false,
@@ -261,7 +282,7 @@ pub async fn deployment_run_start(
 
     let run = executor.prepare(&options)?;
     record_audit(
-        &state,
+        state,
         "deployment_run_start",
         Some(&server_id),
         None,
@@ -272,7 +293,7 @@ pub async fn deployment_run_start(
     );
 
     let nodes = {
-        let conn = open_db(&state)?;
+        let conn = open_db(state)?;
         db::list_run_nodes(&conn, &run.id).map_err(|error| error.to_string())?
     };
     let detail = DeploymentRunDetail {

@@ -321,10 +321,27 @@ pub fn run() {
             commands::deployment_knowledge_search_test,
             commands::deployment_knowledge_update_meta,
             commands::deployment_knowledge_import_markdown,
+            // ---- P5.6 用户 Memory（主界面以它为主，Knowledge 在高级管理）----
+            commands::deployment_memory_list,
+            commands::deployment_memory_upsert,
+            commands::deployment_memory_set_status,
+            commands::deployment_memory_delete,
+            commands::deployment_memory_clear,
+            commands::deployment_memory_record_result,
             // ---- P5.5 AI 复核（后台任务 + 事件；不阻塞确定性方案）----
             commands::deployment_proposal_ai_review,
             commands::deployment_proposal_ai_review_status,
             commands::deployment_proposal_ai_review_cancel,
+            // ---- P5.6 统一部署会话（"确认并开始部署"的唯一入口）----
+            commands::deployment_session_create,
+            commands::deployment_session_get,
+            commands::deployment_session_list,
+            commands::deployment_session_events,
+            commands::deployment_session_ask,
+            commands::deployment_session_answer,
+            commands::deployment_session_confirm_and_start,
+            // P5.6：AI 分析（组装提示词 → 七道校验 → 确定性计划图；**不部署**）。
+            commands::deployment_session_analyze,
             // ---- P5.3 类型化 Workflow Engine ----
             //
             // 预检与运行：所有远程命令都经 `safe::Capability`，所有动作都是

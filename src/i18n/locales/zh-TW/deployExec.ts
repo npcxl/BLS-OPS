@@ -216,4 +216,47 @@ export default {
   "Restore version {{version}}": "還原第 {{version}} 版",
   "Version {{version}} content will be saved as a new version (v{{next}}). History is never rewritten.":
     "第 {{version}} 版的內容將儲存為一個新版本（v{{next}}），歷史記錄不會被改寫。",
+
+  // -- P5.6 部署精靈 --
+  "Deployment wizard": "部署精靈",
+  "Advanced management": "進階管理",
+  "Import a project, describe what you need, and confirm before anything is deployed.":
+    "匯入專案、描述需求，**確認之後**才會真正部署。",
+  "Project source": "專案來源",
+  Target: "目標",
+  Describe: "描述",
+  Analyzing: "分析",
+  Questions: "追問",
+  Execute: "執行",
+  "Git repository": "Git 儲存庫",
+  "Local folder": "本機資料夾",
+  "Repository or path": "儲存庫網址或路徑",
+  "For Git repositories the URL must not contain any username or token.":
+    "Git 儲存庫網址裡不能帶使用者名稱或 Token（憑證只從系統金鑰讀取）。",
+  Server: "伺服器",
+  "The server is probed read-only; nothing is changed here.":
+    "這裡只做唯讀探測，不會改動伺服器。",
+  "What do you want to deploy?": "你想部署什麼？",
+  "For example: a front-end and back-end split project, 100 QPS at peak, Docker + Nginx + HTTPS.":
+    "例如：前後端分離專案，峰值 100 QPS，希望 Docker + Nginx + HTTPS。",
+  "Create deployment session": "建立部署會話",
+  "Creating a session never touches the server.": "建立會話不會對伺服器做任何改動。",
+  Working: "處理中",
+  "Start over": "重新開始",
+  "Next step": "下一步",
+  Session: "會話",
+  "Current stage": "目前階段",
+  "Analyzing the project and drafting a plan; nothing is deployed in this step.":
+    "正在分析專案並產生部署方案；這一步不會部署任何東西。",
+  "Start analysis": "開始分析",
+  Answer: "回答",
+  "not compiled yet": "尚未編譯",
+  "not started": "尚未開始",
+  Run: "執行記錄",
+  "Review the plan in the Plan tab; nothing has been deployed yet.":
+    "請在「方案」頁查看方案；目前還沒有部署任何東西。",
+  "High-risk steps still need your explicit approval; the AI can never approve for you.":
+    "高風險步驟仍需要你明確批准，AI 絕不會替你審核。",
+  "Live steps, logs and health checks live in the Runs tab.":
+    "即時步驟、日誌與健康檢查在「執行記錄」頁。",
 } as const;

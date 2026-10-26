@@ -38,8 +38,8 @@ use crate::deployment::proposal::ai::{
 use crate::deployment::proposal::model::AiRejectionKind;
 
 use super::model::{
-    AiCancel, AiProviderConfig, AiProviderError, AiProviderKind, AiProviderTestResult,
-    AiRequestBudget, AiReviewOutcome,
+    AiCancel, AiDraftOutcome, AiProviderConfig, AiProviderError, AiProviderKind,
+    AiProviderTestResult, AiRequestBudget, AiReviewOutcome,
 };
 use super::url;
 
@@ -60,6 +60,13 @@ pub trait AiAdvisor: Send + Sync {
     /// 内部会重试，所以"试了几次"只有它知道）。
     /// `cancel` 会作用在请求与退避等待上，不是"跑完再看一眼"。
     async fn review(&self, prompt: &AiPrompt, cancel: &AiCancel) -> AiReviewOutcome;
+
+    /// 让模型产出**部署草案**（P5.6）。
+    ///
+    /// 分工很明确：`review` 只能对**既有方案**提意见；`draft` 产出的是
+    /// "打算怎么部署"，而且必须再过 [`crate::deployment::planner::validate_draft`]
+    /// 与确定性编译器才能变成计划图 —— AI 在任何一环都拿不到执行入口。
+    async fn draft(&self, prompt: &AiPrompt, cancel: &AiCancel) -> AiDraftOutcome;
 }
 
 /// OpenAI 兼容的提供方。
@@ -426,6 +433,15 @@ impl AiAdvisor for OpenAiCompatibleAdvisor {
             attempts: attempts.load(std::sync::atomic::Ordering::Relaxed).max(1),
         }
     }
+
+    async fn draft(&self, prompt: &AiPrompt, cancel: &AiCancel) -> AiDraftOutcome {
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let draft = self.draft_inner(prompt, cancel, &attempts).await;
+        AiDraftOutcome {
+            draft,
+            attempts: attempts.load(std::sync::atomic::Ordering::Relaxed).max(1),
+        }
+    }
 }
 
 impl OpenAiCompatibleAdvisor {
@@ -463,6 +479,47 @@ impl OpenAiCompatibleAdvisor {
             reason: failure.reason.clone(),
             kind: failure.kind,
         })
+    }
+
+    /// 让模型产出部署草案（`draft` 的实现体）。
+    ///
+    /// 与 [`Self::review_inner`] 的关键区别：**不共用宽松解析器**。
+    /// 草案必须是严格 Schema 的 JSON —— 未知字段、缺字段、包裹在 markdown 代码块里
+    /// 都判为 `RejectedContent`，绝不"尽力修复"。理由：部署草案会直接变成计划图，
+    /// 这里放过一个字段歧义，后面就没有第二道确定性校验能兜住。
+    async fn draft_inner(
+        &self,
+        prompt: &AiPrompt,
+        cancel: &AiCancel,
+        attempts: &std::sync::atomic::AtomicU32,
+    ) -> Result<crate::deployment::planner::AiDeploymentDraft, AiProviderError> {
+        // 调用模型之前先看一次：任务可能在准备阶段就被取消。
+        if cancel.is_cancelled() {
+            return Err(AiProviderError::Cancelled);
+        }
+        let body = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": prompt.system},
+                {"role": "user", "content": render_prompt(prompt)},
+            ],
+        });
+        let (_, bytes, _) = self
+            .post_chat(&body, self.budget.max_output_tokens, cancel, attempts)
+            .await?;
+        // 答复到手、还没解析时也可能被取消。
+        if cancel.is_cancelled() {
+            return Err(AiProviderError::Cancelled);
+        }
+        let content = extract_content(&bytes).ok_or_else(|| AiProviderError::RejectedContent {
+            reason: "模型响应里没有可用的文本内容".to_string(),
+            kind: AiRejectionKind::Other,
+        })?;
+        serde_json::from_str::<crate::deployment::planner::AiDeploymentDraft>(&content).map_err(
+            |error| AiProviderError::RejectedContent {
+                reason: format!("部署草案不符合严格 Schema：{error}"),
+                kind: AiRejectionKind::InvalidJson,
+            },
+        )
     }
 }
 

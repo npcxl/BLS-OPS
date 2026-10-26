@@ -350,7 +350,9 @@ function AiProviderForm({
       title={editing ? t("Edit model") : t("Add model")}
       onClose={onClose}
     >
-      <div className="flex max-h-[70vh] flex-col gap-3 overflow-auto ops-scroll">
+      {/* 滚动交给 Modal 自己的内容区（`max-h-[60vh] overflow-y-auto`）——
+          这里再套一层 overflow 会同时出现内外两个滚动条。 */}
+      <div className="flex flex-col gap-3">
         {error ? <ErrorText>{error}</ErrorText> : null}
 
         <Field label={t("Name")}>

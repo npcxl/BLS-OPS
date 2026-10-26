@@ -38,8 +38,12 @@ import { KnowledgePanel } from "./knowledge-panel";
 import { ApplicationsList, EnvironmentsList, PlansList, RunsList, ServicesList } from "./lists";
 import { newApplication, newEnvironment, newServiceUnit } from "./form";
 import { useDeploymentCenter } from "./use-deployment-center";
+// P5.6：部署向导是默认入口；其余页面归入「高级管理」。
+import { DeploymentWizard } from "./deployment-wizard";
 
 type TabId =
+  // P5.6：向导是默认入口 —— 普通用户不需要逐个操作 Applications / Artifacts / Plans。
+  | "wizard"
   | "applications"
   | "environments"
   | "services"
@@ -51,6 +55,7 @@ type TabId =
   | "runs";
 
 const TAB_ORDER: TabId[] = [
+  "wizard",
   "applications",
   "environments",
   "services",
@@ -63,6 +68,7 @@ const TAB_ORDER: TabId[] = [
 ];
 
 const TAB_LABEL_KEYS: Record<TabId, string> = {
+  wizard: "Deployment wizard",
   applications: "Applications",
   environments: "Environments",
   services: "Deploy services",
@@ -84,7 +90,7 @@ type PendingDelete =
 export function DeployView({ tab }: { tab: WorkspaceTab }) {
   const { t } = useTranslation();
   const center = useDeploymentCenter();
-  const [activeTab, setActiveTab] = useState<TabId>("applications");
+  const [activeTab, setActiveTab] = useState<TabId>("wizard");
   const [applicationDraft, setApplicationDraft] = useState<DeploymentApplication | null>(null);
   const [environmentDraft, setEnvironmentDraft] = useState<DeploymentEnvironment | null>(null);
   const [serviceDraft, setServiceDraft] = useState<DeploymentServiceUnit | null>(null);
@@ -199,25 +205,34 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
       {/* Tab 条 */}
       <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1">
         {TAB_ORDER.map((id) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            aria-current={activeTab === id ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-1.5 rounded-[7px] px-2 py-1 text-12 transition-colors",
-              activeTab === id
-                ? "bg-surface-2 text-fg"
-                : "text-fg-muted hover:bg-surface-hover hover:text-fg",
-            )}
-          >
-            {t(TAB_LABEL_KEYS[id])}
-            {counts[id] === undefined ? null : (
-              <span className="rounded-full bg-surface-3 px-1.5 text-10 text-fg-subtle">
-                {counts[id]}
-              </span>
-            )}
-          </button>
+          <span key={id} className="flex items-center gap-1">
+            {/* P5.6：向导之后的页面统一标为「高级管理」。 */}
+            {id === "applications" ? (
+              <span
+                className="mx-1 h-4 w-px shrink-0 bg-line"
+                title={t("Advanced management")}
+                aria-hidden
+              />
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setActiveTab(id)}
+              aria-current={activeTab === id ? "page" : undefined}
+              className={cn(
+                "flex items-center gap-1.5 rounded-[7px] px-2 py-1 text-12 transition-colors",
+                activeTab === id
+                  ? "bg-surface-2 text-fg"
+                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+              )}
+            >
+              {t(TAB_LABEL_KEYS[id])}
+              {counts[id] === undefined ? null : (
+                <span className="rounded-full bg-surface-3 px-1.5 text-10 text-fg-subtle">
+                  {counts[id]}
+                </span>
+              )}
+            </button>
+          </span>
         ))}
         {selectedApplication && (
           <span className="ml-auto truncate pr-1 text-11 text-fg-subtle">
@@ -237,6 +252,14 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
         <LoadingState />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col pt-2">
+          {activeTab === "wizard" && (
+            <DeploymentWizard
+              servers={center.servers}
+              applicationId={selectedApplication?.id ?? null}
+              environmentId={activeEnvironment?.id ?? null}
+            />
+          )}
+
           {activeTab === "applications" && (
             <ApplicationsList
               center={center}

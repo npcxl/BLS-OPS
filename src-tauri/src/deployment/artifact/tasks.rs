@@ -172,6 +172,9 @@ pub struct PreparedSource {
 /// 打开一个本地来源（目录 / 归档 / 单文件）。
 pub fn prepare_local(source: &ImportSource) -> Result<PreparedSource, String> {
     match source {
+        // Git 来源必须先克隆到应用缓存（P5.6 会话流程负责那一步），
+        // 这里不接受"直接导入一个还没检出的仓库地址"。
+        ImportSource::GitRepository { .. } => Err("Git 仓库需要先克隆到本地缓存再导入".to_string()),
         ImportSource::LocalFolder { path } => {
             let directory =
                 DirectorySource::scan(Path::new(path)).map_err(|error| error.to_string())?;
@@ -466,9 +469,10 @@ pub fn artifact_kind_of(source: &ImportSource) -> ArtifactKind {
             _ => ArtifactKind::Zip,
         },
         ImportSource::DockerImageRef { .. } => ArtifactKind::DockerImage,
-        ImportSource::LocalFolder { .. } | ImportSource::RemoteDirectory { .. } => {
-            ArtifactKind::Folder
-        }
+        ImportSource::LocalFolder { .. }
+        | ImportSource::RemoteDirectory { .. }
+        // Git 检出之后就是一个目录。
+        | ImportSource::GitRepository { .. } => ArtifactKind::Folder,
     }
 }
 

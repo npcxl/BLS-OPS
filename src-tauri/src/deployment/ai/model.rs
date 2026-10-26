@@ -433,6 +433,18 @@ pub struct AiReviewOutcome {
     pub attempts: u32,
 }
 
+/// 让模型产出**部署草案**的结果。
+///
+/// 与 [`AiReviewOutcome`] 分开的原因：草案走的是**严格 Schema**（不接受
+/// 未知字段、不从自然语言里"猜"字段），失败原因也必须能区分"网络/鉴权"
+/// 与"内容不合规"，所以错误类型仍然是同一个 `AiProviderError`，但不共用解析器。
+#[derive(Debug)]
+pub struct AiDraftOutcome {
+    pub draft: Result<crate::deployment::planner::AiDeploymentDraft, AiProviderError>,
+    /// 实际发出的 HTTP 请求次数（含重试）。
+    pub attempts: u32,
+}
+
 /// AI 复核任务状态（与后台任务一一对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -26,10 +26,10 @@ pub mod provider;
 pub mod url;
 
 pub use model::{
-    AiCancel, AiProviderConfig, AiProviderError, AiProviderKind, AiProviderSaveRequest,
-    AiProviderTestResult, AiProviderView, AiRequestBudget, AiReviewOutcome, AiReviewRegistry,
-    AiReviewTask, AiTaskStatus, AI_PROVIDER_SCHEMA_VERSION, DEFAULT_MAX_OUTPUT_TOKENS,
-    DEFAULT_TIMEOUT_SECONDS, KEYRING_ACCOUNT_PREFIX,
+    AiCancel, AiDraftOutcome, AiProviderConfig, AiProviderError, AiProviderKind,
+    AiProviderSaveRequest, AiProviderTestResult, AiProviderView, AiRequestBudget, AiReviewOutcome,
+    AiReviewRegistry, AiReviewTask, AiTaskStatus, AI_PROVIDER_SCHEMA_VERSION,
+    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_SECONDS, KEYRING_ACCOUNT_PREFIX,
 };
 pub use provider::{parse_suggestion, AiAdvisor, OpenAiCompatibleAdvisor};
 pub use url::{validate_base_url, BaseUrlPolicy};

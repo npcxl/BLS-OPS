@@ -45,7 +45,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -756,6 +756,75 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_usage_document
 /// The P5.5 AI / knowledge tables on their own, for `migrate()`.
 pub const DEPLOYMENT_AI_SCHEMA_SQL: &str = deployment_ai_schema_sql!();
 
+/// P5.6：统一部署会话 + 会话事件 + 用户 Memory（纯新增，不触碰任何旧表）。
+macro_rules! deployment_session_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS deployment_sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    source_snapshot_id TEXT,
+    application_id TEXT,
+    environment_id TEXT,
+    server_id TEXT,
+    user_description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    current_question_json TEXT,
+    proposal_id TEXT,
+    plan_id TEXT,
+    run_id TEXT,
+    input_fingerprint TEXT NOT NULL DEFAULT '',
+    -- 幂等键：同一次确认只允许产生一个 Plan / Run（防双击）。
+    confirm_idempotency_key TEXT,
+    confirm_result_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_sessions_status
+    ON deployment_sessions (status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS deployment_session_events (
+    id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    -- 只允许脱敏摘要；任何 Secret 明文都不得写入。
+    detail TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_session_events_session
+    ON deployment_session_events (session_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS deployment_memory (
+    id TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    scope_id TEXT,
+    key TEXT NOT NULL,
+    -- 受控 key 的类型化值（写入前已过 validate_value）。
+    value_json TEXT NOT NULL,
+    confidence INTEGER NOT NULL DEFAULT 0,
+    source_type TEXT NOT NULL,
+    source_event_id TEXT,
+    status TEXT NOT NULL,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deployment_memory_lookup
+    ON deployment_memory (status, key, scope, scope_id);
+"#
+    };
+}
+
+/// The P5.6 session / memory tables on their own, for `migrate()`.
+pub const DEPLOYMENT_SESSION_SCHEMA_SQL: &str = deployment_session_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -860,7 +929,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     deployment_center_schema_sql!(),
     deployment_import_schema_sql!(),
     deployment_proposal_schema_sql!(),
-    deployment_ai_schema_sql!()
+    deployment_ai_schema_sql!(),
+    deployment_session_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -972,6 +1042,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 不触碰任何既有表 —— 没配置 AI 时老功能一行代码都不用改。
         conn.execute_batch(DEPLOYMENT_AI_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 13u32)?;
+    }
+    if version < 14 {
+        // P5.6：统一部署会话 / 会话事件 / 用户 Memory。同样是纯新增表 ——
+        // 老库就地升级，旧功能一行代码都不用改。
+        conn.execute_batch(DEPLOYMENT_SESSION_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 14u32)?;
     }
     Ok(())
 }

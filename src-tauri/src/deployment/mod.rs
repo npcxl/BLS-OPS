@@ -32,16 +32,22 @@
 
 pub mod action;
 pub mod ai;
+/// P5.6 统一项目分析（复用 artifact::inspect，产出给 AI 的脱敏投影）。
+pub mod analysis;
 pub mod artifact;
 pub mod exec;
 pub mod knowledge;
 pub mod model;
+/// P5.6 AI 部署规划器（严格草案 Schema + 校验 + 确定性编译输入）。
+pub mod planner;
 /// P5.2 部署方案生成：确定性规则引擎 + 离线知识库 + **可选**的 AI 增强。
 ///
 /// AI 不是决策来源：方案由规则引擎算出来，AI 只能以 `Recommendation` 等级
 /// 补充说明，且要过与规则引擎同一套校验（见 [`proposal::ai`]）。
 pub mod proposal;
 pub mod run;
+/// P5.6 统一部署会话 + 用户 Memory（编排层，不给 AI 执行入口）。
+pub mod session;
 pub mod validate;
 
 pub use model::*;

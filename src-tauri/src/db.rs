@@ -20,6 +20,9 @@ mod credentials;
 mod deployment;
 mod deployment_import;
 mod deployment_proposal;
+/// P5.6 部署会话与用户 Memory。`pub` 以便命令层按 `db::deployment_session::…`
+/// 访问；**不** re-export，避免与 `sessions`（终端会话）的符号撞名。
+pub mod deployment_session;
 mod history;
 mod knowledge;
 mod known_hosts;

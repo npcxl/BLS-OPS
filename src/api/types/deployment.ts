@@ -817,6 +817,108 @@ export interface KnowledgeMetaUpdate {
 }
 
 // ===========================================================================
+// P5.6 统一部署会话 + 用户 Memory
+// ===========================================================================
+
+export type SessionStatus =
+  | "created"
+  | "importing"
+  | "analyzing"
+  | "needs_input"
+  | "draft_ready"
+  | "confirming"
+  | "preflight"
+  | "deploying"
+  | "succeeded"
+  | "failed"
+  | "rolled_back"
+  | "cancelled";
+
+export interface SessionQuestion {
+  id: string;
+  /** 受控种类（environment_kind / domain / capacity / port / …）。 */
+  kind: string;
+  question: string;
+  options: string[];
+}
+
+export interface DeploymentSession {
+  id: string;
+  source_snapshot_id: string | null;
+  application_id: string | null;
+  environment_id: string | null;
+  server_id: string | null;
+  user_description: string;
+  status: SessionStatus;
+  current_question: SessionQuestion | null;
+  proposal_id: string | null;
+  plan_id: string | null;
+  run_id: string | null;
+  /** 草案输入指纹：变了就说明旧草案作废。 */
+  input_fingerprint: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DeploymentSessionEvent {
+  id: string;
+  session_id: string;
+  kind: string;
+  from_status: SessionStatus | null;
+  to_status: SessionStatus | null;
+  detail: string;
+  created_at: number;
+}
+
+/** 确认结果：`started` / `replayed` / `needs_input` / `needs_approval`。 */
+export interface ConfirmOutcome {
+  status: string;
+  run_id: string | null;
+  blocked_checks: string[];
+  approval_nodes: string[];
+  message: string;
+  session: DeploymentSession;
+}
+
+/** 受控 Memory key（后端封闭枚举，**不含**命令 / 审批 / Secret）。 */
+export type MemoryKey =
+  | "preferred_runtime"
+  | "preferred_topology"
+  | "preferred_deploy_root"
+  | "preferred_health_path"
+  | "preferred_ssl_mode"
+  | "preferred_package_manager"
+  | "preferred_release_retention"
+  | "preferred_nginx_layout"
+  | "avoid_topology";
+
+export type MemoryKind = "preference" | "correction" | "project_fact" | "outcome" | "avoidance";
+export type MemoryScope = "global" | "server" | "application" | "environment";
+export type MemoryStatus = "pending" | "active" | "rejected" | "superseded";
+
+export interface DeploymentMemory {
+  id: string;
+  kind: MemoryKind;
+  scope: MemoryScope;
+  scope_id: string | null;
+  key: MemoryKey;
+  value_json: unknown;
+  confidence: number;
+  source_type: string;
+  source_event_id: string | null;
+  status: MemoryStatus;
+  success_count: number;
+  failure_count: number;
+  last_used_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export function isSessionActive(status: SessionStatus): boolean {
+  return status !== "succeeded" && status !== "failed" && status !== "rolled_back" && status !== "cancelled";
+}
+
+// ===========================================================================
 // P5.1 制品导入与多服务识别
 // ===========================================================================
 //

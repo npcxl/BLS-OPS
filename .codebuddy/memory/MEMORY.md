@@ -43,6 +43,8 @@ Tauri 2 + React 19 + Rust 桌面 SSH 运维工具（Windows 为主）。P0 真 S
 - **禁裸 `navigator.clipboard`**：WebView2 读剪贴板会弹原生权限窗 → 走 `tauri-plugin-clipboard-manager`（Rust 读写）。测试替身 `src/test/setup-clipboard.ts`（vite `test.setupFiles`）mock 插件并转发到 `navigator.clipboard`，保既有 spy 用例有效。
 - 窗口按钮：macOS 原生（顶栏 pl-[76px]）；Win/Linux 自绘 window-controls.tsx；平台判定 `lib/platform.ts::isMacOS()`。Tauri 平台配置 JSON Merge Patch、数组整体替换。
 - 浮层纯白实色（.glass-panel）；限高 calc(vh)；CSS 禁写死十六进制背景色，用 --surface-*/--app 令牌。**嵌套 flex 里 height 百分比脆弱：面板高度必须全走 style**。
+- **Modal 内容区自带滚动**（components/ui/modal.tsx 的 children 容器已 max-h-[60vh] overflow-y-auto）：表单里禁止再套一层 max-h-* + overflow-auto，否则出现内外双滚动条。
+- **i18n 是全局合并命名空间**：新增 t("...") 前先确认裸词没被占用（Archive=压缩包、Published=发布时间、Note=提示）；新功能用带前缀的具体 key（如 Archive knowledge / Knowledge published / Knowledge note）。
 - lucide v1.x：AlertTriangle→TriangleAlert、Loader→LoaderCircle；arr.at(-1) 不可用（lib<es2022）。
 - xterm：测量容器禁 padding（FitAddon 裁行）；.xterm 禁 user-select（破坏 IME）；非活动 tab inert。
 - 文件图标：file-kind.ts+vscode-file-icons.ts（pnpm icons:regen）+ @iconify/react 离线，禁联网。

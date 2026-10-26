@@ -107,8 +107,17 @@ import {
   type AiProviderTestResult,
   type AiProviderView,
   type AiReviewTask,
+  type ConfirmOutcome,
+  type DeploymentMemory,
+  type DeploymentSession,
+  type DeploymentSessionEvent,
   type ImportedMarkdown,
   type KnowledgeDocument,
+  type MemoryKey,
+  type MemoryKind,
+  type MemoryScope,
+  type MemoryStatus,
+  type SessionQuestion,
   type KnowledgeHit,
   type KnowledgeMetaUpdate,
   type KnowledgeQueryInput,
@@ -1012,6 +1021,96 @@ export const opsApi = {
   /** 受限读取本地 Markdown（扩展名白名单 / 2 MiB / 必须 UTF-8）：只返回内容，不落库。 */
   deploymentKnowledgeImportMarkdown: (path: string) =>
     invoke<ImportedMarkdown>("deployment_knowledge_import_markdown", { path }),
+
+  // -- P5.6 统一部署会话（"确认并开始部署"的唯一入口）------------------------
+  /** 新建会话（什么都不部署，只记录意图与目标）。 */
+  deploymentSessionCreate: (input: {
+    applicationId?: string | null;
+    environmentId?: string | null;
+    serverId?: string | null;
+    userDescription: string;
+  }) =>
+    invoke<DeploymentSession>("deployment_session_create", {
+      applicationId: input.applicationId ?? null,
+      environmentId: input.environmentId ?? null,
+      serverId: input.serverId ?? null,
+      userDescription: input.userDescription,
+    }),
+  deploymentSessionGet: (id: string) =>
+    invoke<DeploymentSession | null>("deployment_session_get", { id }),
+  deploymentSessionList: (limit?: number) =>
+    invoke<DeploymentSession[]>("deployment_session_list", { limit: limit ?? null }),
+  deploymentSessionEvents: (id: string) =>
+    invoke<DeploymentSessionEvent[]>("deployment_session_events", { id }),
+  deploymentSessionAsk: (id: string, question: SessionQuestion) =>
+    invoke<DeploymentSession>("deployment_session_ask", { id, question }),
+  /** 回答阻塞问题（回答后回到分析）。 */
+  deploymentSessionAnswer: (id: string, questionId: string, answer: string) =>
+    invoke<DeploymentSession>("deployment_session_answer", { id, questionId, answer }),
+  /**
+   * 确认并开始部署。
+   *
+   * `idempotencyKey` 防双击：同键第二次直接回放上次结果，不产生第二次部署。
+   * `currentFingerprint` 必须与界面看到的草案一致，否则旧草案作废。
+   */
+  deploymentSessionConfirmAndStart: (input: {
+    id: string;
+    planId: string;
+    currentFingerprint: string;
+    sessionId: string;
+    idempotencyKey: string;
+    approveHighRisk: boolean;
+  }) =>
+    invoke<ConfirmOutcome>("deployment_session_confirm_and_start", {
+      id: input.id,
+      planId: input.planId,
+      currentFingerprint: input.currentFingerprint,
+      sessionId: input.sessionId,
+      idempotencyKey: input.idempotencyKey,
+      approveHighRisk: input.approveHighRisk,
+    }),
+  /**
+   * 分析会话：组装提示词 → 七道校验 → 确定性计划图。
+   *
+   * **不部署任何东西** —— 产出的是一份待确认的计划图；真正启动必须另走
+   * `deploymentSessionConfirmAndStart`（含指纹校验与幂等键）。
+   */
+  deploymentSessionAnalyze: (id: string) =>
+    invoke<DeploymentSession>("deployment_session_analyze", { id }),
+
+  // -- P5.6 用户 Memory（主界面以它为主，Knowledge 在高级管理）----------------
+  deploymentMemoryList: (includeInactive?: boolean) =>
+    invoke<DeploymentMemory[]>("deployment_memory_list", {
+      includeInactive: includeInactive ?? false,
+    }),
+  /** 新建 / 更新一条 Memory（后端按 key 做类型校验）。 */
+  deploymentMemoryUpsert: (input: {
+    id?: string | null;
+    kind: MemoryKind;
+    scope: MemoryScope;
+    scopeId?: string | null;
+    key: MemoryKey;
+    valueJson: unknown;
+    explicit?: boolean;
+  }) =>
+    invoke<DeploymentMemory>("deployment_memory_upsert", {
+      id: input.id ?? null,
+      kind: input.kind,
+      scope: input.scope,
+      scopeId: input.scopeId ?? null,
+      key: input.key,
+      valueJson: input.valueJson,
+      explicit: input.explicit ?? false,
+    }),
+  deploymentMemorySetStatus: (id: string, status: MemoryStatus) =>
+    invoke<DeploymentMemory>("deployment_memory_set_status", { id, status }),
+  deploymentMemoryDelete: (id: string) => invoke<void>("deployment_memory_delete", { id }),
+  /** 清空；默认不动生效中的条目。 */
+  deploymentMemoryClear: (includeActive?: boolean) =>
+    invoke<number>("deployment_memory_clear", { includeActive: includeActive ?? false }),
+  /** 部署结束后按结果更新计数与置信度（确定性规则）。 */
+  deploymentMemoryRecordResult: (memoryIds: string[], succeeded: boolean) =>
+    invoke<DeploymentMemory[]>("deployment_memory_record_result", { memoryIds, succeeded }),
 
   // -- P5.5 AI 复核（后台任务 + 事件；不阻塞方案）----------------------------
   deploymentProposalAiReview: (proposalId: string) =>

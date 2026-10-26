@@ -16,6 +16,7 @@
 //! 3. **失败留现场**：动作失败就返回错误，不擅自回滚。回滚是引擎的事，由人决定。
 //! 4. **可取消**：长动作在每个阶段边界检查取消位（`ctx.cancelled()`）。
 
+pub mod dns;
 pub mod guidance;
 pub mod render;
 pub mod steps;

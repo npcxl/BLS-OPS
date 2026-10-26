@@ -23,6 +23,11 @@ pub type InspectionCheckState = CheckState;
 
 // -- 导入来源 ---------------------------------------------------------------
 
+/// Git 来源默认 shallow（`serde(default = ...)` 要一个函数）。
+fn git_default_shallow() -> bool {
+    true
+}
+
 /// 用户从哪里把制品交给我们。
 ///
 /// 注意 [`ImportSource::RemoteDirectory`]：**只读**。服务器上已有的目录不需要
@@ -41,6 +46,24 @@ pub enum ImportSource {
     },
     /// 镜像引用（不搬运，只登记 digest/引用）。
     DockerImageRef { reference: String },
+    /// Git 仓库（P5.6）。
+    ///
+    /// * `url` **禁止**携带用户名 / 密码 / Token（见 `git::validate_git_url`）；
+    /// * `credential_ref` 只是**钥匙串账户名**，不是凭据本身；
+    /// * 默认 shallow、不递归子模块、不执行 hooks / LFS 自动下载。
+    GitRepository {
+        url: String,
+        /// branch / tag / commit（原文）。
+        revision: String,
+        #[serde(default)]
+        subdirectory: Option<String>,
+        #[serde(default)]
+        credential_ref: Option<String>,
+        #[serde(default = "git_default_shallow")]
+        shallow: bool,
+        #[serde(default)]
+        include_submodules: bool,
+    },
     /// 服务器上已有目录（只读探测）。
     RemoteDirectory { server_id: String, path: String },
 }
@@ -58,6 +81,8 @@ impl ImportSource {
             | ImportSource::LocalFile { path, .. }
             | ImportSource::RemoteDirectory { path, .. } => path,
             ImportSource::DockerImageRef { reference } => reference,
+            // Git URL 不含凭据（入库前已校验），可直接作为连接键的一部分。
+            ImportSource::GitRepository { url, .. } => url,
         }
     }
 
@@ -68,6 +93,14 @@ impl ImportSource {
             ImportSource::LocalArchive { path } => leaf(path),
             ImportSource::LocalFile { path, .. } => leaf(path),
             ImportSource::DockerImageRef { reference } => reference.clone(),
+            ImportSource::GitRepository { url, revision, .. } => {
+                let name = url
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(url)
+                    .trim_end_matches(".git");
+                format!("{name}@{revision}")
+            }
             ImportSource::RemoteDirectory { path, .. } => leaf(path),
         }
     }
@@ -79,6 +112,8 @@ impl ImportSource {
             ImportSource::LocalFolder { .. }
                 | ImportSource::LocalArchive { .. }
                 | ImportSource::LocalFile { .. }
+                // Git 在本地缓存里检出后同样要读内容做扫描与识别。
+                | ImportSource::GitRepository { .. }
         )
     }
 }

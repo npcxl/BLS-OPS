@@ -26,16 +26,27 @@ interface NavItem {
   divider?: boolean;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: "ssh", label: "Module: Terminal", icon: TerminalIcon },
-  { id: "services", label: "Module: Services", icon: WorldIcon },
-  { id: "logs", label: "Module: Logs", icon: FileDescriptionIcon },
-  { id: "projects", label: "Module: Projects", icon: Stack3Icon },
-  { id: "deploy", label: "Module: Deploy", icon: RocketIcon },
-  { id: "tasks", label: "Module: Tasks", icon: UnorderedListIcon },
-  { id: "ai", label: "Module: AI", icon: SparklesIcon, divider: true },
-  { id: "settings", label: "Module: Settings", icon: GearIcon },
-];
+/**
+ * 暂时不上的模块：**只隐藏入口**，不动类型、store 与视图。
+ *
+ * 「部署」和「任务」后期再上；恢复时把 id 从这张表里删掉即可，
+ * 不需要改任何别的地方（后端命令与页面都还在）。
+ */
+const HIDDEN_MODULES: ReadonlySet<NavModule> = new Set<NavModule>(["deploy", "tasks"]);
+
+/** 导出给测试用：确保被隐藏的模块不会悄悄回到导航里。 */
+export const NAV_ITEMS: NavItem[] = (
+  [
+    { id: "ssh", label: "Module: Terminal", icon: TerminalIcon },
+    { id: "services", label: "Module: Services", icon: WorldIcon },
+    { id: "logs", label: "Module: Logs", icon: FileDescriptionIcon },
+    { id: "projects", label: "Module: Projects", icon: Stack3Icon },
+    { id: "deploy", label: "Module: Deploy", icon: RocketIcon },
+    { id: "tasks", label: "Module: Tasks", icon: UnorderedListIcon },
+    { id: "ai", label: "Module: AI", icon: SparklesIcon, divider: true },
+    { id: "settings", label: "Module: Settings", icon: GearIcon },
+  ] satisfies NavItem[]
+).filter((item) => !HIDDEN_MODULES.has(item.id));
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
   const { t } = useTranslation();

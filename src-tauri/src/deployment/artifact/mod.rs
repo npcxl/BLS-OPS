@@ -35,9 +35,13 @@ pub mod limits;
 pub mod model;
 
 pub mod fingerprint;
+/// P5.6：Git 仓库来源（结构化调用、凭据只走 Keyring、默认 shallow）。
+pub mod git;
 pub mod inspect;
 pub mod remote;
 pub mod secrets;
+/// P5.6：统一来源快照（Git / 本地目录 / 压缩包 → 同一种不可变快照）。
+pub mod snapshot;
 pub mod source;
 pub mod tasks;
 
@@ -45,6 +49,7 @@ pub mod tasks;
 mod tests;
 
 pub use model::*;
+pub use snapshot::{SourceOrigin, SourceSnapshot};
 pub use source::{
     scan_directory, ArchiveFormat, ArchiveSource, ContentSource, DirectorySource, FileSource,
     Inventory, SourceEntry,

@@ -218,4 +218,47 @@ export default {
   "Restore version {{version}}": "恢复第 {{version}} 版",
   "Version {{version}} content will be saved as a new version (v{{next}}). History is never rewritten.":
     "第 {{version}} 版的内容将保存为一个新版本（v{{next}}），历史记录不会被改写。",
+
+  // -- P5.6 部署向导 --
+  "Deployment wizard": "部署向导",
+  "Advanced management": "高级管理",
+  "Import a project, describe what you need, and confirm before anything is deployed.":
+    "导入项目、描述需求，**确认之后**才会真正部署。",
+  "Project source": "项目来源",
+  Target: "目标",
+  Describe: "描述",
+  Analyzing: "分析",
+  Questions: "追问",
+  Execute: "执行",
+  "Git repository": "Git 仓库",
+  "Local folder": "本地文件夹",
+  "Repository or path": "仓库地址或路径",
+  "For Git repositories the URL must not contain any username or token.":
+    "Git 仓库地址里不能带用户名或 Token（凭据只从系统钥匙串读取）。",
+  Server: "服务器",
+  "The server is probed read-only; nothing is changed here.":
+    "这里只做只读探测，不会改动服务器。",
+  "What do you want to deploy?": "你想部署什么？",
+  "For example: a front-end and back-end split project, 100 QPS at peak, Docker + Nginx + HTTPS.":
+    "例如：前后端分离项目，峰值 100 QPS，希望 Docker + Nginx + HTTPS。",
+  "Create deployment session": "创建部署会话",
+  "Creating a session never touches the server.": "创建会话不会对服务器做任何改动。",
+  Working: "处理中",
+  "Start over": "重新开始",
+  "Next step": "下一步",
+  Session: "会话",
+  "Current stage": "当前阶段",
+  "Analyzing the project and drafting a plan; nothing is deployed in this step.":
+    "正在分析项目并生成部署方案；这一步不会部署任何东西。",
+  "Start analysis": "开始分析",
+  Answer: "回答",
+  "not compiled yet": "尚未编译",
+  "not started": "尚未开始",
+  Run: "运行记录",
+  "Review the plan in the Plan tab; nothing has been deployed yet.":
+    "请在「方案」页查看方案；目前还没有部署任何东西。",
+  "High-risk steps still need your explicit approval; the AI can never approve for you.":
+    "高风险步骤仍需要你显式批准，AI 绝不会替你审批。",
+  "Live steps, logs and health checks live in the Runs tab.":
+    "实时步骤、日志与健康检查在「运行记录」页。",
 } as const;

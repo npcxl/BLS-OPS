@@ -27,6 +27,7 @@ mod services;
 mod sessions;
 mod sftp;
 mod ssh;
+mod system;
 mod vscode;
 
 pub use ai_provider::*;
@@ -52,6 +53,7 @@ pub use services::*;
 pub use sessions::*;
 pub use sftp::*;
 pub use ssh::*;
+pub use system::*;
 pub use vscode::*;
 
 use rusqlite::Connection;

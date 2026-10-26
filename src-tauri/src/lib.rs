@@ -105,6 +105,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
+            // 外部链接兜底：opener 插件失败时由 Rust 调系统命令打开
+            commands::open_external_url,
             // tray menu labels follow the frontend locale
             commands::tray_set_labels,
             // servers

@@ -89,7 +89,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
     let cancelled = false;
     // 只探未知项、同会话合并请求：改关键词导致工具集合扩大时，
     // 已经确定的工具不会重探，在途的也不会重复发。
-    void ensureToolsProbed(session.sessionId, requiredTools).then((known) => {
+    void ensureToolsProbed(session.sessionId, session.epoch, requiredTools).then((known) => {
       if (cancelled) return;
       // 只有**全部**工具状态都已知时才启用"未安装"置灰。
       // 只要还有一个 unknown（探测失败），整体按未知处理 ——
@@ -106,7 +106,7 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
     return () => {
       cancelled = true;
     };
-  }, [session.ready, session.hasTarget, session.sessionId, requiredTools]);
+  }, [session.ready, session.hasTarget, session.sessionId, session.epoch, requiredTools]);
 
   const runExecution = useCallback(
     async (hit: CommandSearchHit, params = buildArgs(hit)) => {

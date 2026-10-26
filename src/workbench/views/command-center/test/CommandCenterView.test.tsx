@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     ready: true,
     hasTarget: true,
     sessionId: "session-1",
+    epoch: 1 as number,
     phase: "connected" as "connected" | "connecting" | "closed",
     error: null as string | null,
   },
@@ -154,7 +155,16 @@ beforeEach(() => {
   // 工具探测现在是**会话级缓存**：不清掉的话，前一个用例探到的
   // "docker 已安装/未安装" 会漏到下一个用例，断言就不可信了。
   forgetSessionTools("session-1");
-  mocks.session = { ready: true, hasTarget: true, sessionId: "session-1", phase: "connected", error: null };
+  mocks.session = {
+    ready: true,
+    hasTarget: true,
+    sessionId: "session-1",
+    // 连接代次：工具缓存按 (sessionId, epoch) 存，缺了它缓存 key 会变成
+    // `session-1@undefined`（能跑，但测试就不再反映真实结构）。
+    epoch: 1,
+    phase: "connected",
+    error: null,
+  };
   searchMock.mockResolvedValue([]);
   probeMock.mockResolvedValue(["docker", "systemctl"]);
 });

@@ -19,6 +19,7 @@ import {
   gotoMatch,
   MATCH_SCAN_LIMIT,
   replaceMatch,
+  scanChunk,
 } from "@/lib/cm-search";
 
 /**
@@ -93,35 +94,56 @@ export function CodeSearchBox({
     }
 
     setScanning(true);
-    const cursor = searchQuery.getCursor(snapshot);
+
+    // **按文本区间分块**，而不是"同一个 cursor 反复 next()"。
+    //
+    // 原因：`cursor.next()` 会一直找到下一个匹配**或文档结束**才返回。
+    // 大文件里搜一个不存在的词，单次 `next()` 就会同步扫完全文 ——
+    // 外面再怎么算 8ms 预算也打断不了它。
+    //
+    // `getCursor(state, from, to)` 把查找限制在块内，单次 `next()` 最多扫
+    // 一个块（64 KiB），耗时可控。跨块匹配靠 **4 KiB 重叠**覆盖：
+    // 搜索词加上下文超过 4 KiB 的极端情况会漏，这个限制写在注释里，
+    // 不假装能处理任意长度的正则。
+    const ranges = rangesRef.current;
+    let position = 0;
+    /** 已收录的最后一个匹配起点，用于重叠区去重。 */
+    let lastFrom = -1;
+
     const step = () => {
       // 新查询 / 卸载：这一批直接作废，不写任何状态。
       if (seq !== scanSeqRef.current) return;
-      const ranges = rangesRef.current;
       const deadline = performance.now() + 8;
-      let complete = false;
-      while (ranges.length < MATCH_SCAN_LIMIT) {
+      let done = false;
+
+      // 每轮最多算 8ms；每次 `scanChunk` 只碰一个 64 KiB 块，
+      // 所以单次 `next()` 不会扫完整篇（零命中的大文件也不会）。
+      while (!done && ranges.length < MATCH_SCAN_LIMIT) {
         if (performance.now() > deadline) break;
-        const next = cursor.next();
-        if (next.done) {
-          complete = true;
-          break;
+        const chunk = scanChunk({ state: snapshot }, searchQuery, position, { lastFrom });
+        for (const range of chunk.ranges) ranges.push(range);
+        if (chunk.ranges.length > 0) {
+          lastFrom = chunk.ranges[chunk.ranges.length - 1].from;
         }
-        ranges.push(next.value);
+        position = chunk.position;
+        done = chunk.done;
       }
 
-      if (complete || ranges.length >= MATCH_SCAN_LIMIT) {
-        const cut = !complete;
-        scannedDocRef.current = snapshot.doc;
+      const hitLimit = ranges.length >= MATCH_SCAN_LIMIT;
+      if (!done && !hitLimit) {
+        // 还没扫完：先让已找到的结果可见，再让出主线程继续。
         setTotal(ranges.length);
-        setTruncated(cut);
-        setIndex(activeMatchIndex(view, ranges, cut));
-        setScanning(false);
+        window.setTimeout(step, 0);
         return;
       }
-      // 还没扫完：先让已找到的结果可见，再让出主线程继续。
+
+      // 到了数量上限但文档还没扫完 → 结果只是下限。
+      const cut = hitLimit;
+      scannedDocRef.current = snapshot.doc;
       setTotal(ranges.length);
-      window.setTimeout(step, 0);
+      setTruncated(cut);
+      setIndex(activeMatchIndex(view, ranges, cut));
+      setScanning(false);
     };
     step();
   }, [view, searchQuery]);

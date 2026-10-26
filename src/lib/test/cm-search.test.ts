@@ -11,7 +11,7 @@ import { EditorSelection, EditorState } from "@uiw/react-codemirror";
 import { SearchQuery } from "@codemirror/search";
 import { describe, expect, it } from "vitest";
 
-import { activeMatchIndex, matchRanges, scanMatches } from "../cm-search";
+import { activeMatchIndex, matchRanges, scanChunk, scanMatches } from "../cm-search";
 
 const target = (doc: string, cursor = 0) => ({
   state: EditorState.create({ doc, selection: EditorSelection.single(cursor) }),
@@ -58,6 +58,67 @@ describe("匹配扫描", () => {
 
   it("没有匹配时序号为 -1", () => {
     expect(activeMatchIndex(target("abc", 0), [])).toBe(-1);
+  });
+
+  it("大文件 + 零命中：分块能扫完，不会一次扫全文", () => {
+    // 200 KiB，没有任何 "zzzz"。默认块 64 KiB → 至少 4 轮。
+    const doc = "x".repeat(200 * 1024);
+    const state = target(doc);
+    let position = 0;
+    let lastFrom = -1;
+    let rounds = 0;
+    for (;;) {
+      const chunk = scanChunk(state, query("zzzz"), position, { lastFrom });
+      expect(chunk.ranges).toHaveLength(0);
+      position = chunk.position;
+      rounds += 1;
+      if (chunk.done) break;
+      expect(rounds).toBeLessThan(50);
+    }
+    expect(position).toBe(doc.length);
+    expect(rounds).toBeGreaterThan(1);
+  });
+
+  it("分块扫描与整篇扫描结果一致（含跨块匹配、不重复）", () => {
+    // 故意用很小的块和重叠，逼出跨块场景。
+    const doc = "abc 123 abc 456 abc 789 abc";
+    const full = matchRanges(target(doc), query("abc"));
+
+    let position = 0;
+    let lastFrom = -1;
+    const collected: { from: number; to: number }[] = [];
+    for (;;) {
+      const chunk = scanChunk(target(doc), query("abc"), position, {
+        chunkChars: 7,
+        overlapChars: 4,
+        lastFrom,
+      });
+      collected.push(...chunk.ranges);
+      if (chunk.ranges.length > 0) lastFrom = chunk.ranges[chunk.ranges.length - 1].from;
+      position = chunk.position;
+      if (chunk.done) break;
+    }
+    expect(collected).toEqual(full);
+  });
+
+  it("跨块边界的匹配不会被漏掉（长度 ≤ 重叠区）", () => {
+    // 块 6、重叠 4：把 "abcdef" 切成若干段，"cdef" 必然跨边界。
+    const doc = "xxabcdefyy";
+    let position = 0;
+    let lastFrom = -1;
+    const collected: { from: number; to: number }[] = [];
+    for (;;) {
+      const chunk = scanChunk(target(doc), query("cdef"), position, {
+        chunkChars: 6,
+        overlapChars: 4,
+        lastFrom,
+      });
+      collected.push(...chunk.ranges);
+      if (chunk.ranges.length > 0) lastFrom = chunk.ranges[chunk.ranges.length - 1].from;
+      position = chunk.position;
+      if (chunk.done) break;
+    }
+    expect(collected).toEqual(matchRanges(target(doc), query("cdef")));
   });
 
   it("结果被截断且光标越过已扫描范围时，不回绕成第 1 个", () => {

@@ -34,6 +34,13 @@ export type CommandSessionPhase =
 
 export interface CommandSession {
   sessionId: string;
+  /**
+   * 连接代次：每次发起连接（含重连）都 +1。
+   *
+   * 用于让"按会话缓存"的东西（例如工具存在性探测）随连接失效 ——
+   * `sessionId` 在重连时**不会变**，只看它会让缓存永远不刷新。
+   */
+  epoch: number;
   phase: CommandSessionPhase;
   error: string | null;
   /** True only when commands can actually be sent. */
@@ -53,6 +60,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
 
   const [phase, setPhase] = useState<CommandSessionPhase>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState(0);
   const connectingRef = useRef(false);
 
   const register = useSessionStore((s) => s.register);
@@ -66,6 +74,8 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
     connectingRef.current = true;
+    // 新代次：上一次连接期间探到的工具状态全部作废（服务器可能已经变了）。
+    setEpoch((current) => current + 1);
     setPhase("connecting");
     setError(null);
 
@@ -189,6 +199,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
 
   return {
     sessionId,
+    epoch,
     phase,
     error,
     ready: phase === "connected",

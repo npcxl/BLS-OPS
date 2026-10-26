@@ -110,6 +110,70 @@ export function scanMatches(
   return { ranges, truncated };
 }
 
+/** 一次分块扫描的结果。 */
+export interface ChunkScan {
+  /** 本次块内新增的匹配（已按 `from` 去重，保证单调递增）。 */
+  ranges: { from: number; to: number }[];
+  /** 下一次从这里继续（已回退重叠区）；`>= doc.length` 表示扫完。 */
+  position: number;
+  done: boolean;
+}
+
+/**
+ * 扫描**一个文本块**，而不是让同一个 cursor 反复 `next()`。
+ *
+ * `cursor.next()` 会一直找到下一个匹配或文档结束才返回 —— 大文件里搜一个
+ * 不存在的词，单次调用就会同步扫完全文，外层再怎么算时间预算也打断不了。
+ * 把查找范围限制在 `[from, to)` 之后，单次 `next()` 最多扫一个块。
+ *
+ * 跨块匹配靠 `overlapChars` 重叠覆盖：**长度超过重叠区的匹配会漏**，
+ * 这是明确的取舍（默认 4 KiB，覆盖正常搜索词），不假装能处理任意正则。
+ */
+export function scanChunk(
+  target: { state: EditorState },
+  query: SearchQuery,
+  position: number,
+  options: {
+    chunkChars?: number;
+    overlapChars?: number;
+    limit?: number;
+    /** 已收录的最后一个匹配起点：重叠区里的重复匹配据此跳过。 */
+    lastFrom?: number;
+  } = {},
+): ChunkScan {
+  const chunkChars = options.chunkChars ?? 64 * 1024;
+  const overlapChars = options.overlapChars ?? 4 * 1024;
+  const limit = options.limit ?? MATCH_SCAN_LIMIT;
+  let lastFrom = options.lastFrom ?? -1;
+
+  const docLength = target.state.doc.length;
+  const ranges: { from: number; to: number }[] = [];
+  if (!query.valid) return { ranges, position: docLength, done: true };
+
+  // **只扫一个块**。调用方按时间预算反复调用，这样 8ms 预算才真的能打断
+  // 一篇超大文档的扫描（一次调用扫完所有块就等于没分块）。
+  if (position >= docLength) return { ranges, position: docLength, done: true };
+
+  const from = position === 0 ? 0 : position - overlapChars;
+  const to = Math.min(position + chunkChars, docLength);
+  const cursor = query.getCursor(target.state, from, to);
+  for (;;) {
+    const step = cursor.next();
+    if (step.done) break;
+    // 重叠区里的匹配上一块已经收过：按起点单调递增去重。
+    if (step.value.from <= lastFrom) continue;
+    ranges.push(step.value);
+    lastFrom = step.value.from;
+    if (ranges.length >= limit) break;
+  }
+
+  return {
+    ranges,
+    position: to,
+    done: to >= docLength || ranges.length >= limit,
+  };
+}
+
 /**
  * 当前查询的全部匹配区间（不限数量）。
  *

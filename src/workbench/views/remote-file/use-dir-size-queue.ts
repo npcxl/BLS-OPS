@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
+import {
+  opsApi,
+  toErrorMessage,
+  type DirectorySizeResult,
+  type RemoteFileEntry,
+} from "@/api/ops-api";
 import { useDirSizeStore } from "@/stores/dir-size-store";
 
 /**
@@ -29,6 +34,23 @@ interface SizeQueueItem {
 
 /** 已提交、但还没到终态的任务上限。 */
 export const MAX_IN_FLIGHT_DIR_SIZES = 3;
+
+/**
+ * 缓存里是否已经有**可用结果**。
+ *
+ * 关键区别：`complete` 只表示"任务结束了"，**不表示"算出了东西"**。
+ * `cancelled` / `timed_out` / `failed` / `session_gone` 同样是 complete，
+ * 但它们没有数字。如果把它们当缓存跳过，用户离开目录再回来（前端会取消
+ * 旧任务）就永远看不到大小，后端"允许重建"的修复也不会被触发。
+ */
+export function hasUsableSize(result: DirectorySizeResult | undefined): boolean {
+  if (!result?.complete) return false;
+  return (
+    result.status === "completed" ||
+    result.status === "partial" ||
+    result.status === "permission_denied"
+  );
+}
 
 /**
  * 每个 `(session, path)` 当前被哪些面板需要。
@@ -75,11 +97,32 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
   const sizePumpRef = useRef<() => void>(() => undefined);
   /** 本面板的稳定 id，用于多面板需求计数。 */
   const panelIdRef = useRef<string>(`panel-${crypto.randomUUID()}`);
+  /**
+   * 本面板登记过需求的**全部**路径 —— 包括已有缓存、因此不会启动任务的目录。
+   *
+   * 需求登记必须独立于"是否启动任务"：面板 B 打开一个 A 正在算的目录时，
+   * 因为命中缓存不会启动任务；如果不登记 B 的需求，A 离开时就会把 B 仍需
+   * 要的任务取消掉。
+   */
+  const requiredRef = useRef(new Set<string>());
+  /** 失败终态的退避：path -> { attempt, until }。防止无限重试。 */
+  const retryRef = useRef(new Map<string, { attempt: number; until: number }>());
   const [listenerReady, setListenerReady] = useState(false);
 
+  /**
+   * 请求统计一个目录。
+   *
+   * 返回 `true` 表示**真的入了队**（调用方据此判断是否占用一个窗口名额）；
+   * 返回 `false` 表示已在队列里、或正处在失败退避中 —— 两种都不该占用名额。
+   */
   const computeDirSize = useCallback(
-    (path: string, force = false) => {
-      if (!path || sizeQueuedRef.current.has(path)) return;
+    (path: string, force = false): boolean => {
+      if (!path || sizeQueuedRef.current.has(path)) return false;
+      // 失败退避：cancelled 只等 500ms（用户可能立刻回来），
+      // timed_out / failed 走指数退避，避免空转。
+      const backoff = retryRef.current.get(path);
+      if (!force && backoff && backoff.until > Date.now()) return false;
+      if (force) retryRef.current.delete(path);
       if (force) {
         useDirSizeStore.getState().apply({
           sessionId,
@@ -96,16 +139,56 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
       sizeQueuedRef.current.add(path);
       sizeQueueRef.current.push({ path, force });
       sizePumpRef.current();
+      return true;
     },
     [sessionId],
   );
 
-  /** 一个任务真正结束（终态或请求失败）：释放名额并补下一个。 */
-  const finishOne = useCallback((path: string) => {
-    inFlightRef.current.delete(path);
-    sizeQueuedRef.current.delete(path);
-    sizePumpRef.current();
-  }, []);
+  /**
+   * 一个任务真正结束（终态或请求失败）：释放名额、结束本面板对该任务的
+   * 需求，并记录失败退避。
+   *
+   * 这里**必须**释放需求：完成后遗留的登记会让 `releaseDemand` 永远返回
+   * false，之后所有取消都失效（评审指出的漏洞之一）。
+   */
+  const finishOne = useCallback(
+    (path: string) => {
+      inFlightRef.current.delete(path);
+      sizeQueuedRef.current.delete(path);
+      requiredRef.current.delete(path);
+      releaseDemand(sessionId, path, panelIdRef.current);
+
+      // 没有结果的终态 → 退避，防止"离开→回来→立刻失败→再离开"空转。
+      const result = useDirSizeStore.getState().get(sessionId, path);
+      if (result?.complete && !hasUsableSize(result)) {
+        const attempt = (retryRef.current.get(path)?.attempt ?? 0) + 1;
+        // cancelled 是用户行为（离开目录），短暂等待即可；
+        // timed_out / failed 则需要真的退避。
+        const base = result.status === "cancelled" ? 500 : 1000;
+        const delay = Math.min(base * 2 ** (attempt - 1), 30_000);
+        retryRef.current.set(path, { attempt, until: Date.now() + delay });
+      } else {
+        retryRef.current.delete(path);
+      }
+      sizePumpRef.current();
+    },
+    [sessionId],
+  );
+
+  /**
+   * 声明"本面板需要这个目录的结果"。**不一定会启动任务**。
+   *
+   * 已有有效缓存时只是登记需求 —— 这样另一个面板离开目录时，才不会被
+   * 误判成"没人需要"而把任务取消掉。
+   */
+  const requireDirSize = useCallback(
+    (path: string) => {
+      if (!path || requiredRef.current.has(path)) return;
+      requiredRef.current.add(path);
+      acquireDemand(sessionId, path, panelIdRef.current);
+    },
+    [sessionId],
+  );
 
   sizePumpRef.current = () => {
     while (
@@ -159,13 +242,18 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
    */
   const releaseStale = useCallback(
     (keep: (path: string) => boolean) => {
-      for (const path of Array.from(inFlightRef.current)) {
+      // 遍历**登记过的全部路径**（含已完成、从来没启动过任务的），
+      // 否则旧面板的登记会一直留着，让取消永远失败。
+      for (const path of Array.from(requiredRef.current)) {
         if (keep(path)) continue;
-        inFlightRef.current.delete(path);
-        sizeQueuedRef.current.delete(path);
+        requiredRef.current.delete(path);
         const unused = releaseDemand(sessionId, path, panelIdRef.current);
-        if (unused) {
-          void opsApi.directorySizeCancel(sessionId, path).catch(() => undefined);
+        if (inFlightRef.current.has(path)) {
+          inFlightRef.current.delete(path);
+          sizeQueuedRef.current.delete(path);
+          if (unused) {
+            void opsApi.directorySizeCancel(sessionId, path).catch(() => undefined);
+          }
         }
       }
       sizePumpRef.current();
@@ -196,14 +284,18 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     const panelId = panelIdRef.current;
     return () => {
       sizeQueueRef.current = [];
-      for (const path of Array.from(inFlightRef.current)) {
+      // 遍历**全部登记**（不只是在途）：删掉本面板的每一条需求。
+      // 只有确实在途、且没有其他面板需要时才真的取消。
+      for (const path of Array.from(requiredRef.current)) {
         const unused = releaseDemand(sessionId, path, panelId);
-        if (unused) {
+        if (unused && inFlightRef.current.has(path)) {
           void opsApi.directorySizeCancel(sessionId, path).catch(() => undefined);
         }
       }
+      requiredRef.current.clear();
       inFlightRef.current.clear();
       sizeQueuedRef.current.clear();
+      retryRef.current.clear();
     };
   }, [sessionId]);
 
@@ -225,7 +317,14 @@ export function useDirSizeQueue(sessionId: string, onError: (message: string) =>
     };
   }, [onError]);
 
-  return { computeDirSize, cancelDirSize, dropQueued, releaseStale, listenerReady };
+  return {
+    computeDirSize,
+    cancelDirSize,
+    dropQueued,
+    releaseStale,
+    requireDirSize,
+    listenerReady,
+  };
 }
 
 /**

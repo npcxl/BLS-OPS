@@ -49,6 +49,7 @@ import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
 import {
   AUTO_DIR_SIZE_LIMIT,
+  hasUsableSize,
   useAutoDismiss,
   useDirSizeQueue,
   useDirSizeWatchdog,
@@ -568,10 +569,8 @@ function RemoteFilePanelImpl({
     setStatus({ state: "error", message });
   }, []);
 
-  const { computeDirSize, dropQueued, releaseStale, listenerReady } = useDirSizeQueue(
-    sessionId,
-    handleDirSizeError,
-  );
+  const { computeDirSize, dropQueued, releaseStale, requireDirSize, listenerReady } =
+    useDirSizeQueue(sessionId, handleDirSizeError);
 
   /**
    * 每次列出目录就自动计算列表里每个子文件夹的大小，结果通过
@@ -606,21 +605,29 @@ function RemoteFilePanelImpl({
     for (const entry of entries) {
       if (entry.kind === "directory") current.add(entry.path);
     }
-    // 待发送：旧目录的项直接丢；在途：先减需求，**没人需要才真的取消**
-    // （同会话的另一个面板可能还在等同一个目录）。
+    // **需求登记独立于是否启动任务**：已有缓存的目录也要登记，
+    // 否则另一个面板离开目录时会把我们还需要的结果当成"没人要"取消掉。
+    for (const path of current) requireDirSize(path);
+
+    // 待发送：旧目录的项直接丢；在途/已完成：减需求，没人需要才真的取消。
     dropQueued((path) => current.has(path));
     releaseStale((path) => current.has(path));
 
-    // 补到上限。已完成的条目不再占名额，所以窗口会随结果推进。
+    // 补到上限。只有**有数字的结果**才跳过；cancelled / timed_out / failed
+    // 会重新入队（内部有退避，不会空转）。
     let scheduled = 0;
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
       if (scheduled >= AUTO_DIR_SIZE_LIMIT) break;
       const cached = useDirSizeStore.getState().get(sessionId, entry.path);
-      if (cached?.complete) continue;
-      scheduled += 1;
-      // 已有状态（排队/在算）说明它已经占了一个名额，不重复提交。
-      if (!cached) computeDirSize(entry.path);
+      if (hasUsableSize(cached)) continue;
+      // 排队中 / 计算中：已经占着名额，不重复提交。
+      if (cached && !cached.complete) {
+        scheduled += 1;
+        continue;
+      }
+      // 没有状态，或"结束了但没结果"：入队。退避中的不占名额。
+      if (computeDirSize(entry.path)) scheduled += 1;
     }
   }, [
     connected,

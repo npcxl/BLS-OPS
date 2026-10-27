@@ -9,7 +9,6 @@ import { readText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
-import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -1146,11 +1145,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     onReconnect: () => void connect(),
   });
 
-  const serverEnvironment = useDomainStore((state) =>
-    tab.serverId
-      ? state.servers.find((item) => item.id === tab.serverId)?.environment ?? null
-      : null,
-  );
   const inspection = useInspectionMode();
 
   if (!hasTarget) {
@@ -1173,16 +1167,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         onReconnect={() => void connect()}
       />
 
-      {/* 身份条：环境与只读状态常驻，切换终端时不用回想"这是哪台机器"。 */}
-      {(serverEnvironment || inspection) && (
+      {/* 巡检模式提示条：只读状态必须显眼，否则用户会以为保存失败是 bug。 */}
+      {inspection && (
         <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-line bg-surface-2/40 px-2 text-10">
           <span className="min-w-0 truncate text-fg-muted">{tab.title}</span>
-          {serverEnvironment && <EnvironmentBadge environment={serverEnvironment} />}
-          {inspection && (
-            <span className="ml-auto shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-warning">
-              {t("Read-only")}
-            </span>
-          )}
+          <span className="ml-auto shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-warning">
+            {t("Read-only")}
+          </span>
         </div>
       )}
 

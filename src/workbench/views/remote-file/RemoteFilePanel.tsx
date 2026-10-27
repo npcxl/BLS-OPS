@@ -31,7 +31,6 @@ import {
 } from "lucide-react";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
@@ -1084,7 +1083,6 @@ function RemoteFilePanelImpl({
           >
             {server.name}
           </span>
-          <EnvironmentBadge environment={server.environment} />
           <span className="ml-auto min-w-0 truncate font-mono text-fg-subtle" title={server.host}>
             {server.host}
           </span>

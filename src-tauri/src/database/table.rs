@@ -176,6 +176,17 @@ pub fn to_browse_value(
                 "time" => DbValue::Time {
                     value: String::from_utf8_lossy(&bytes).to_string(),
                 },
+                "float" | "double" | "real" => {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    match text.parse::<f64>() {
+                        Ok(value) => DbValue::Float { value },
+                        Err(_) => DbValue::Text {
+                            value: text,
+                            bytes: total,
+                            truncated,
+                        },
+                    }
+                }
                 "bit" => {
                     let mut bits = String::from("0b");
                     for byte in &bytes {

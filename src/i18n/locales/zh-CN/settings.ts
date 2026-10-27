@@ -113,12 +113,12 @@ export default {
   "Inspection mode (read-only)": "巡检模式（只读）",
   "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
     "在本应用内禁用上传、编辑、删除与服务变更。它无法把自由终端变成只读。",
-  "Not specified": "未指定",
+  "Not specified": "未标记",
   Production: "生产",
   Staging: "预发",
   Development: "开发",
   "Server environment: {{environment}}": "服务器环境：{{environment}}",
   Environment: "环境",
   "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
-    "生产服务器会在各处高亮；确认框也会先说明目标服务器。",
+    "生产服务器会在各处高亮；确认框也会先说明目标服务器。「未标记」表示这台机器还没分类。",
 } as const;

@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
-import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { cn } from "@/lib/cn";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { UNGROUPED_LABEL } from "./sections";
@@ -146,10 +145,6 @@ export const ServerRow = memo(function ServerRow({
       >
         <span className="flex items-center gap-1.5">
           <span className="truncate text-12 text-fg">{server.name}</span>
-          {/* 未指定不显示徽标：列表里每行都挂一个"未指定"只会变成噪音。 */}
-          {server.environment !== "unspecified" && (
-            <EnvironmentBadge environment={server.environment} />
-          )}
           {server.proxy_jump_id && (
             <span className="shrink-0 rounded-[4px] border border-line px-1 text-10 text-fg-subtle">
               {t("Jump")}

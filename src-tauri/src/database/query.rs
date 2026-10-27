@@ -218,18 +218,19 @@ impl QueryRegistry {
             *state = STATE_CANCELLING.to_string();
         }
 
+        // **先**通知任务"用户要取消"，**再**发 KILL。
+        // 反过来的话，KILL 往往先让服务器结束语句，任务在看到 cancel 信号前
+        // 就已经收尾，终态会变成 completed/failed —— 用户会以为取消没生效。
+        let _ = entry.handle.cancel.send(true);
+
         match entry.runtime.kill_query(entry.handle.thread_id).await {
-            Ok(()) => {
-                let _ = entry.handle.cancel.send(true);
-                Ok(STATE_CANCELLING.to_string())
-            }
+            Ok(()) => Ok(STATE_CANCELLING.to_string()),
             Err(error) => {
                 // 取消请求没能发出去：这条连接上的语句/事务状态不可信。
                 {
                     let mut state = entry.handle.state.write().await;
                     *state = STATE_OUTCOME_UNKNOWN.to_string();
                 }
-                let _ = entry.handle.cancel.send(true);
                 Err(error)
             }
         }
@@ -601,6 +602,12 @@ async fn run_script(
             .await;
 
         set_index += 1;
+    }
+
+    // 取消信号可能与"服务器已结束"同时到达：结束前再看一眼标志，
+    // 否则用户点了取消却看到 completed。
+    if !outcome_unknown && !timed_out && *cancel_rx.borrow() {
+        cancelled = true;
     }
 
     let final_state = if outcome_unknown {

@@ -207,26 +207,6 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         </Field>
 
         <Field
-          label={t("Environment")}
-          hint={t(
-            "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.",
-          )}
-        >
-          <select
-            className={selectClass}
-            value={form.environment}
-            onChange={(event) =>
-              setForm({ ...form, environment: event.target.value as ServerRecord["environment"] })
-            }
-          >
-            <option value="unspecified">{t("Not specified")}</option>
-            <option value="production">{t("Production")}</option>
-            <option value="staging">{t("Staging")}</option>
-            <option value="development">{t("Development")}</option>
-          </select>
-        </Field>
-
-        <Field
           label={t("Jump host (ProxyJump)")}
           hint={t("Leave empty for direct connection; the jump host itself also needs a credential")}
         >

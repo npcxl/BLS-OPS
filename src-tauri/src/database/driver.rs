@@ -38,6 +38,17 @@ pub fn next_generation() -> u64 {
     GENERATION.fetch_add(1, Ordering::AcqRel)
 }
 
+/// rustls 需要进程级 CryptoProvider；没有它，第一次 TLS 握手会 panic。
+/// `run()` 里已经装过一次，这里再用 `Once` 兜底，让集成测试/纯驱动调用
+/// 也不依赖 Tauri 启动流程。
+static CRYPTO_PROVIDER: std::sync::Once = std::sync::Once::new();
+
+fn ensure_crypto_provider() {
+    CRYPTO_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// 已解析的物理端点。SSH 隧道时 `connect_host` 是回环地址，
 /// 而 `tls_server_name` / `profile.host` 仍然是用户填的数据库地址。
 pub struct ResolvedEndpoint {
@@ -177,16 +188,19 @@ fn build_ssl_opts(endpoint: &ResolvedEndpoint) -> Result<Option<SslOpts>, DbErro
     }
 
     let mut ssl = SslOpts::default();
-    if mode == TLS_VERIFY_CA {
-        // 只跳过"证书名字是否等于连接地址"这一项；证书链仍然验证。
-        // 这是 SSH 隧道场景必须的：连接地址是 127.0.0.1。
-        ssl = ssl.with_danger_skip_domain_validation(true);
-    } else if mode != TLS_VERIFY_IDENTITY {
+    if mode != TLS_VERIFY_CA && mode != TLS_VERIFY_IDENTITY {
         return Err(DbErrorInfo::new(
             "config",
             format!("未知的 TLS 模式：{mode}"),
         ));
     }
+
+    // 已知限制（实测，不隐藏）：mysql_async 0.37.1 的
+    // `with_danger_skip_domain_validation` 靠匹配 rustls 旧版错误文本
+    // "NotValidForName" 实现，而 rustls 0.23 的错误文本已变化，开关
+    // **实际不会跳过域名验证**。因此我们不做"verify_ca 假装只验证链"：
+    // 两种模式都使用明确的验证名，SSH 隧道场景请填写 `tls_server_name`。
+    // 绝不使用 `accept_invalid_certs` 来"解决"连接失败。
 
     if let Some(ca_path) = endpoint
         .profile
@@ -209,9 +223,7 @@ fn build_ssl_opts(endpoint: &ResolvedEndpoint) -> Result<Option<SslOpts>, DbErro
 
     // 无论是否走隧道，都给驱动一个明确的校验名字：
     // 隧道场景下这是用户填的数据库域名，而不是 127.0.0.1。
-    if mode == TLS_VERIFY_IDENTITY {
-        ssl = ssl.with_danger_tls_hostname_override(Some(endpoint.tls_server_name()));
-    }
+    ssl = ssl.with_danger_tls_hostname_override(Some(endpoint.tls_server_name()));
 
     Ok(Some(ssl))
 }
@@ -286,6 +298,7 @@ pub fn build_export_pool(opts: Opts) -> Pool {
 
 /// 建立一条独占连接。连接超时是**客户端**强制的：服务器不响应时不会挂死。
 pub async fn connect_once(opts: Opts, timeout: Duration) -> Result<Conn, DbErrorInfo> {
+    ensure_crypto_provider();
     let started = Instant::now();
     match tokio::time::timeout(timeout, Conn::new(opts)).await {
         Ok(Ok(conn)) => Ok(conn),

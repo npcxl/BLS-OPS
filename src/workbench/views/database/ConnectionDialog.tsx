@@ -312,7 +312,7 @@ export function ConnectionDialog({
                 onChange={(event) => patch({ tls_mode: event.target.value as TlsMode })}
               >
                 <option value="disabled">{t("不加密（明文）")}</option>
-                <option value="verify_ca">{t("验证证书链（允许域名不同）")}</option>
+                <option value="verify_ca">{t("验证证书链（名称按下方验证名称）")}</option>
                 <option value="verify_identity">{t("验证证书链 + 主机名")}</option>
               </select>
             </Field>

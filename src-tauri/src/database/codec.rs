@@ -78,6 +78,31 @@ fn is_time_like(kind: ColumnType) -> bool {
     )
 }
 
+fn is_integer_like(kind: ColumnType) -> bool {
+    matches!(
+        kind,
+        ColumnType::MYSQL_TYPE_TINY
+            | ColumnType::MYSQL_TYPE_SHORT
+            | ColumnType::MYSQL_TYPE_LONG
+            | ColumnType::MYSQL_TYPE_LONGLONG
+            | ColumnType::MYSQL_TYPE_INT24
+            | ColumnType::MYSQL_TYPE_YEAR
+    )
+}
+
+fn is_float_like(kind: ColumnType) -> bool {
+    matches!(
+        kind,
+        ColumnType::MYSQL_TYPE_FLOAT | ColumnType::MYSQL_TYPE_DOUBLE
+    )
+}
+
+/// 文本协议（`query_iter`）把**所有**值都放进 `Value::Bytes`。
+/// 因此"是不是数字"必须由列的 `ColumnType` 决定，不能靠值的内容猜。
+fn text_of(bytes: &[u8]) -> Option<String> {
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
 fn base64_of(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
@@ -182,7 +207,33 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
             bytes: bytes.len(),
         };
     }
-    if is_blob_like(kind) || column.flags().contains(ColumnFlags::BINARY_FLAG) {
+    if is_integer_like(kind) {
+        let text = text_of(&bytes).unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string());
+        // 校验是数字；被服务器格式化成别的样子时按文本显示，绝不猜。
+        if text
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '-' || ch == '+')
+            && !text.is_empty()
+        {
+            return super::model::DbValue::Int {
+                value: text,
+                unsigned: column.flags().contains(ColumnFlags::UNSIGNED_FLAG),
+            };
+        }
+        return text_value(text, preview_bytes);
+    }
+    if is_float_like(kind) {
+        let text = text_of(&bytes).unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string());
+        return match text.parse::<f64>() {
+            Ok(value) => super::model::DbValue::Float { value },
+            Err(_) => text_value(text, preview_bytes),
+        };
+    }
+    // BLOB 系列里既有 BLOB（二进制）也有 TEXT（字符集 63 = binary）。
+    // 只看类型名会把 LONGTEXT 误判成二进制，必须再看列的字符集/标志。
+    let binary_column =
+        column.character_set() == 63 || column.flags().contains(ColumnFlags::BINARY_FLAG);
+    if is_blob_like(kind) && binary_column {
         return binary_value(&bytes, preview_bytes);
     }
 

@@ -475,6 +475,7 @@ async function drainQuery(args: DrainArgs): Promise<{
     }
 
     state = batch.state;
+    let finished = false;
     if (batch.batch) {
       const payload = batch.batch;
       if (payload.kind === "result_set") {
@@ -554,6 +555,7 @@ async function drainQuery(args: DrainArgs): Promise<{
           };
         });
       } else if (payload.kind === "finished") {
+        finished = true;
         rows = payload.rows;
         elapsedMs = payload.elapsed_ms;
         args.onUpdate((tab) => ({
@@ -568,7 +570,10 @@ async function drainQuery(args: DrainArgs): Promise<{
       }
     }
 
-    if (TERMINAL.includes(state)) break;
+    // 只有"收到 Finished"或"终态且没有批次"才算结束：
+    // 否则状态先变终态时会把 Finished 里的行数/截断信息丢掉。
+    if (finished) break;
+    if (!batch.batch && TERMINAL.includes(state)) break;
     // 服务端还在跑但暂时没有数据：`queryNext` 20 秒后返回空批次，继续拉。
   }
 

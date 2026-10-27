@@ -176,13 +176,23 @@ async fn drain(
     let mut batches = Vec::new();
     for _ in 0..10_000 {
         let response = registry.next(query_id).await.expect("next batch");
-        if let Some(batch) = response.batch {
-            batches.push(batch);
+        let mut finished = false;
+        match response.batch {
+            Some(batch) => {
+                finished = matches!(batch, DbBatch::Finished { .. });
+                batches.push(batch);
+            }
+            // 状态可能先于最后一批被观察到；无批次 + 终态才表示队列已空。
+            None if matches!(
+                response.state.as_str(),
+                "completed" | "cancelled" | "failed" | "outcome_unknown"
+            ) =>
+            {
+                break;
+            }
+            None => {}
         }
-        if matches!(
-            response.state.as_str(),
-            "completed" | "cancelled" | "failed" | "outcome_unknown"
-        ) {
+        if finished {
             break;
         }
     }
@@ -582,6 +592,190 @@ async fn mysql_paging_mutation_and_export() {
     assert!(content.contains("id,name,note"));
     assert!(content.contains("已修改"));
     let _ = std::fs::remove_file(&target);
+
+    runtime.close().await;
+    let _ = std::fs::remove_file(path);
+}
+
+/// TLS 验证必须是"真的在验证"：
+/// * 自签 CA 不在系统/内置根里 → verify_ca 无自定义 CA 时必须失败；
+/// * 提供 CA 后 verify_ca 必须成功，且 `Ssl_cipher` 非空；
+/// * verify_identity 在 127.0.0.1 上必须失败（证书 SAN 不是这个地址）。
+///
+/// 这三条合起来证明我们没有"连不上就关闭验证"。
+#[tokio::test]
+async fn mysql_tls_verification_is_real() {
+    let (path, conn) = temp_app_db();
+    let ca_path = env("BLS_TEST_MYSQL_CA", "target/test-mysql-ca.pem");
+    if !std::path::Path::new(&ca_path).is_file() {
+        eprintln!("skip TLS: CA 文件不存在（{ca_path}）");
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+
+    let base = profile();
+    let plan = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let endpoint = match driver::resolve_plan(&TunnelRegistry::default(), plan).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("skip: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await;
+
+    async fn try_connect(
+        conn: &rusqlite::Connection,
+        profile: &DatabaseProfile,
+    ) -> Result<mysql_async::Conn, DbErrorInfo> {
+        let plan = driver::plan_from_profile(conn, profile, Some("bls_test_pw")).expect("plan");
+        let endpoint = driver::resolve_plan(&TunnelRegistry::default(), plan)
+            .await
+            .expect("endpoint");
+        let opts = driver::build_opts(&endpoint, false).expect("opts");
+        driver::connect_once(opts, Duration::from_secs(10)).await
+    }
+
+    let mut without_ca = base.clone();
+    without_ca.tls_mode = "verify_ca".to_string();
+    without_ca.tls_ca_path = None;
+    let error = try_connect(&conn, &without_ca)
+        .await
+        .expect_err("自签 CA 不应被默认信任");
+    assert_eq!(error.stage, "tls", "应为 TLS 阶段错误，实际 {error:?}");
+
+    let mut with_ca = base.clone();
+    with_ca.tls_mode = "verify_identity".to_string();
+    with_ca.tls_ca_path = Some(ca_path.clone());
+    // 证书 SAN 含 IP:127.0.0.1，默认用数据库 host 作为验证名 → 必须成功。
+    let mut tls_conn = match try_connect(&conn, &with_ca).await {
+        Ok(conn) => conn,
+        Err(error) => panic!("自定义 CA 应成功，实际：{error:?}"),
+    };
+    let status = driver::read_tls_status(&mut tls_conn).await;
+    assert!(status.active, "TLS 必须真的启用");
+    assert!(status.cipher.is_some());
+    let _ = tokio::time::timeout(Duration::from_secs(2), tls_conn.disconnect()).await;
+
+    // 明确填一个证书里不存在的名字 → 必须失败（证明名称校验没被关闭）。
+    let mut wrong_name = base.clone();
+    wrong_name.tls_mode = "verify_identity".to_string();
+    wrong_name.tls_ca_path = Some(ca_path.clone());
+    wrong_name.tls_server_name = Some("wrong.example".to_string());
+    let error = try_connect(&conn, &wrong_name)
+        .await
+        .expect_err("验证名与证书不匹配时必须失败");
+    assert_eq!(error.stage, "tls", "域名验证必须真实生效，实际 {error:?}");
+
+    // SSH 隧道场景：连 127.0.0.1，但用证书里的 DNS 名验证。
+    let mut tunnel_like = base.clone();
+    tunnel_like.tls_mode = "verify_ca".to_string();
+    tunnel_like.tls_ca_path = Some(ca_path);
+    tunnel_like.tls_server_name = Some("localhost".to_string());
+    let mut conn = try_connect(&conn, &tunnel_like)
+        .await
+        .expect("TLS 验证名称应独立于连接地址");
+    let status = driver::read_tls_status(&mut conn).await;
+    assert!(status.active);
+    let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn mysql_million_rows_keyset_stays_bounded() {
+    let (path, conn) = temp_app_db();
+    let base = profile();
+    let plan = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let endpoint = match driver::resolve_plan(&TunnelRegistry::default(), plan).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("skip: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await;
+
+    let (runtime, session) = runtime_for(&conn).await;
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "ops_test", "big_table")
+        .await
+        .expect("detail");
+    assert_eq!(detail.reliable_key.as_deref(), Some(["id".to_string()].as_slice()));
+
+    // 200,000 行是 setup_schema 建好的；再验证一次大表分页只取一页。
+    let started = std::time::Instant::now();
+    let page1 = table::browse(
+        &runtime,
+        &detail,
+        &BrowseRequest {
+            session_id: session.session_id.clone(),
+            database: "ops_test".to_string(),
+            table: "big_table".to_string(),
+            page_size: Some(200),
+            offset: Some(0),
+            after: None,
+            sorts: None,
+            filters: None,
+            pagination: Some("auto".to_string()),
+            exact_count: Some(false),
+        },
+        &ResolvedBudget::resolve(None),
+    )
+    .await
+    .expect("page1");
+    eprintln!(
+        "[perf] big_table page1 rows={} elapsed={}ms",
+        page1.rows.len(),
+        started.elapsed().as_millis()
+    );
+    assert_eq!(page1.rows.len(), 200);
+    assert_eq!(page1.pagination, "keyset");
+
+    let cursor = page1.next_cursor.clone().expect("cursor");
+    let started = std::time::Instant::now();
+    let page2 = table::browse(
+        &runtime,
+        &detail,
+        &BrowseRequest {
+            session_id: session.session_id.clone(),
+            database: "ops_test".to_string(),
+            table: "big_table".to_string(),
+            page_size: Some(200),
+            offset: Some(0),
+            after: Some(cursor),
+            sorts: None,
+            filters: None,
+            pagination: Some("keyset".to_string()),
+            exact_count: Some(false),
+        },
+        &ResolvedBudget::resolve(None),
+    )
+    .await
+    .expect("page2");
+    eprintln!(
+        "[perf] big_table page2 rows={} elapsed={}ms",
+        page2.rows.len(),
+        started.elapsed().as_millis()
+    );
+    assert_eq!(page2.rows.len(), 200);
+    assert_ne!(page1.rows[0][0], page2.rows[0][0]);
 
     runtime.close().await;
     let _ = std::fs::remove_file(path);

@@ -112,12 +112,12 @@ export default {
   "Inspection mode (read-only)": "巡檢模式（唯讀）",
   "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
     "在本應用內停用上傳、編輯、刪除與服務變更。它無法把自由終端變成唯讀。",
-  "Not specified": "未指定",
+  "Not specified": "未標記",
   Production: "生產",
   Staging: "預發",
   Development: "開發",
   "Server environment: {{environment}}": "伺服器環境：{{environment}}",
   Environment: "環境",
   "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
-    "生產伺服器會在各處高亮；確認框也會先說明目標伺服器。",
+    "生產伺服器會在各處高亮；確認框也會先說明目標伺服器。「未標記」表示這台機器還沒分類。",
 } as const;

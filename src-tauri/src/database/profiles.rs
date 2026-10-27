@@ -63,9 +63,13 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
         return Err(DbErrorInfo::new(
             "unsupported",
             if profile.engine == ENGINE_POSTGRES {
-                "PostgreSQL 适配尚未实现：本版本只支持 MySQL 8.0 / 8.4".to_string()
+                "PostgreSQL 适配尚未实现：本版本只支持 MySQL 协议（不区分 8.0/8.4 小版本）"
+                    .to_string()
             } else {
-                format!("不支持的数据库类型：{}", profile.engine)
+                format!(
+                    "不支持的数据库类型：{}（当前只实现 MySQL 协议，不区分 8.0/8.4 小版本）",
+                    profile.engine
+                )
             },
         ));
     }

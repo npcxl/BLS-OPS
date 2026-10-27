@@ -51,6 +51,9 @@ function sameValue(a: AssignValue, b: AssignValue): boolean {
   return true;
 }
 
+/** 稳定引用：否则每次 render 都生成新数组，`useMemo`/`useEffect` 会反复重置输入。 */
+const EMPTY_COLUMNS: DbTableDetail["columns"] = [];
+
 export function EditRowDialog({
   open,
   mode,
@@ -61,7 +64,8 @@ export function EditRowDialog({
 }: {
   open: boolean;
   mode: "insert" | "update";
-  detail: DbTableDetail;
+  /** 表结构可能还没加载完：`null` 时对话框只显示"加载中"，绝不读 undefined。 */
+  detail: DbTableDetail | null;
   /** update：当前行的值，顺序与 `detail.columns` 一致。 */
   row: DbValue[] | null;
   onClose: () => void;
@@ -70,10 +74,11 @@ export function EditRowDialog({
   const { t } = useTranslation();
   const [draft, setDraft] = useState<Record<string, AssignValue>>({});
   const [error, setError] = useState<string | null>(null);
+  const columns = detail?.columns ?? EMPTY_COLUMNS;
 
   const initial = useMemo(() => {
     const result: Record<string, AssignValue> = {};
-    detail.columns.forEach((column, index) => {
+    columns.forEach((column, index) => {
       if (mode === "update" && row) {
         result[column.name] = fromValue(row[index] ?? { kind: "null" });
       } else {
@@ -81,7 +86,7 @@ export function EditRowDialog({
       }
     });
     return result;
-  }, [detail.columns, mode, row]);
+  }, [columns, mode, row]);
 
   useEffect(() => {
     if (open) {
@@ -92,7 +97,7 @@ export function EditRowDialog({
 
   const submit = () => {
     const assignments: ColumnAssignment[] = [];
-    for (const column of detail.columns) {
+    for (const column of columns) {
       const value = draft[column.name] ?? { kind: "default" as const };
       if (mode === "update") {
         if (column.primary_key) continue;
@@ -135,7 +140,12 @@ export function EditRowDialog({
       }
     >
       <div className="flex max-h-[56vh] flex-col gap-1 overflow-y-auto">
-        {detail.columns.map((column) => {
+        {columns.length === 0 && (
+          <p className="py-4 text-center text-11 text-fg-subtle">
+            {t("表结构还在加载，请稍候…")}
+          </p>
+        )}
+        {columns.map((column) => {
           const value = draft[column.name] ?? { kind: "default" as const };
           const binary = /blob|binary/i.test(column.data_type);
           const locked = mode === "update" && column.primary_key;

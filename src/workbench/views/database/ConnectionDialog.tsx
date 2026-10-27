@@ -195,13 +195,38 @@ export function ConnectionDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between rounded-[8px] border border-line bg-surface-2/60 px-2 py-1.5">
-          <div className="text-11 text-fg-muted">
-            {t("引擎")}：<span className="text-fg">MySQL 8.0 / 8.4</span>
-          </div>
-          <span className="rounded bg-surface-1 px-1.5 py-0.5 text-[10px] text-fg-subtle">
-            {t("PostgreSQL 尚未实现")}
-          </span>
+        <div className="grid grid-cols-[150px_1fr] items-end gap-2 rounded-[8px] border border-line bg-surface-2/60 p-2">
+          <Field label={t("数据库类型")}>
+            <select
+              className={selectClass}
+              value={draft.engine}
+              onChange={(event) =>
+                patch({ engine: event.target.value as DatabaseProfile["engine"] })
+              }
+            >
+              <option value="mysql">{t("MySQL（不区分版本）")}</option>
+              <option value="mariadb" disabled>
+                {t("MariaDB（尚未实现）")}
+              </option>
+              <option value="postgres" disabled>
+                {t("PostgreSQL（尚未实现）")}
+              </option>
+              <option value="sqlite" disabled>
+                {t("SQLite（尚未实现）")}
+              </option>
+              <option value="sqlserver" disabled>
+                {t("SQL Server（尚未实现）")}
+              </option>
+              <option value="oracle" disabled>
+                {t("Oracle（尚未实现）")}
+              </option>
+            </select>
+          </Field>
+          <p className="pb-0.5 text-[10px] leading-relaxed text-fg-subtle">
+            {t(
+              "MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。其它引擎只保留适配器边界，当前版本不可选。",
+            )}
+          </p>
         </div>
 
         <Field label={t("连接名称")}>

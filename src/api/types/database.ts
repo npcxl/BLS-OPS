@@ -8,7 +8,18 @@
  * 3. 行是数组、列有 `index`：重复列名（`SELECT a.id, b.id`）靠序号区分。
  */
 
-export type DbEngine = "mysql" | "postgres";
+/**
+ * 常用关系型数据库。当前只有 `mysql` 有真实适配器；其余值出现在连接表单
+ * 里是为了让"支持边界"可见，UI 会禁用并标注"尚未实现"——不能在还没有
+ * 驱动/类型/取消实现时假装可选。
+ */
+export type DbEngine =
+  | "mysql"
+  | "mariadb"
+  | "postgres"
+  | "sqlite"
+  | "sqlserver"
+  | "oracle";
 
 export type TlsMode = "disabled" | "verify_ca" | "verify_identity";
 

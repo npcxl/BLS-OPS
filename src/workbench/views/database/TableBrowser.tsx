@@ -793,7 +793,7 @@ export function TableBrowser({
       <EditRowDialog
         open={editor !== null}
         mode={editor?.mode ?? "insert"}
-        detail={detail ?? ({} as DbTableDetail)}
+        detail={detail}
         row={editor?.row ?? null}
         onClose={() => setEditor(null)}
         onSubmit={(values) => {

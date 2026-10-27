@@ -85,6 +85,19 @@ fn remote_entry(parent: &str, entry: DirEntry) -> (RemoteFileEntry, bool) {
     )
 }
 
+/// 目录大小遍历专用的条目：只有遍历需要的三个字段。
+///
+/// 不复用 [`RemoteFileEntry`] 是有意的 —— 那会多算 permissions / modified /
+/// hidden 等展示字段，还要为此做一次 `canonicalize`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkEntry {
+    pub name: String,
+    /// `KIND_DIRECTORY` / `KIND_FILE` / 其它（符号链接等，不跟随）。
+    pub kind: String,
+    /// 服务器未上报时为 `None`（普通文件会补查，目录不补）。
+    pub size: Option<u64>,
+}
+
 /// Builds an entry for a single path (used by `sftp_stat`).
 ///
 /// Paths are always absolute remote paths, so the name is the last segment.
@@ -498,6 +511,62 @@ impl SshSessionManager {
             .await
             .map_err(|error| sftp_error(&target, error))?;
         Ok(target)
+    }
+
+    /// 列出目录，**只取大小遍历需要的字段**。
+    ///
+    /// 与 [`Self::sftp_list_dir`] 相比省掉的活：
+    /// * 不 `canonicalize`（调用方给的是拼接出来的真实路径）；
+    /// * 不构建 `RemoteFileEntry`（permissions / modified / hidden）；
+    /// * **不排序** —— 遍历不需要顺序，排序是 O(n log n)；
+    /// * **不对缺失 size 的目录做 lstat** —— 目录本身的大小对求和没用。
+    ///
+    /// 唯一保留的额外请求：缺失 size 的**普通文件**补一次 `symlink_metadata`，
+    /// 否则会少算字节。符号链接不跟随、不补查。
+    pub async fn sftp_walk_dir(&self, session_id: &str, path: &str) -> Result<Vec<WalkEntry>> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let mut out: Vec<WalkEntry> = Vec::with_capacity(32);
+        let mut missing: Vec<usize> = Vec::new();
+
+        for entry in sftp
+            .read_dir(path)
+            .await
+            .map_err(|error| sftp_error(path, error))?
+        {
+            let name = entry.file_name();
+            let meta = entry.metadata();
+            let kind = sftp_kind(meta.file_type()).to_string();
+            let size = meta.size;
+            if size.is_none() && kind == KIND_FILE {
+                missing.push(out.len());
+            }
+            out.push(WalkEntry { name, kind, size });
+        }
+
+        // 普通文件补 size：与列目录一样按批并发。
+        const STAT_CONCURRENCY: usize = 8;
+        for chunk in missing.chunks(STAT_CONCURRENCY) {
+            let mut set = tokio::task::JoinSet::new();
+            for &index in chunk {
+                let sftp = Arc::clone(&sftp);
+                let full = posix_join(path, &out[index].name);
+                set.spawn(async move {
+                    let size = sftp
+                        .symlink_metadata(&full)
+                        .await
+                        .map(|meta| meta.len())
+                        .ok();
+                    (index, size)
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                if let Ok((index, Some(size))) = joined {
+                    out[index].size = Some(size);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Creates an empty remote file (fails if it already exists).

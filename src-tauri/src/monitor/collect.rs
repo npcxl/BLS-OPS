@@ -221,27 +221,38 @@ pub async fn collect_snapshot(
     registry: &MonitorRegistry,
     session_id: &str,
 ) -> Result<MonitorSnapshot> {
-    let (system, kernel, architecture) = parse_uname(&run(manager, session_id, CMD_UNAME).await?);
+    // 主机静态信息在**一个连接内不会变**：命中缓存就不再跑 `uname` /
+    // `/etc/os-release`。每次快照省两次 exec，1 秒刷新的页面能明显少开通道。
+    let cached = registry.host_info(session_id).await;
+    let cached_os = cached
+        .as_ref()
+        .map(|info| (info.os_name.clone(), info.os_version.clone()));
+    let (system, kernel, architecture) = match &cached {
+        Some(info) => (
+            info.system.clone(),
+            info.kernel.clone(),
+            info.architecture.clone(),
+        ),
+        None => parse_uname(&run(manager, session_id, CMD_UNAME).await?),
+    };
     if !system.eq_ignore_ascii_case(SUPPORTED_OS) {
         return Ok(unsupported_snapshot(session_id, &system));
     }
 
-    let outputs = run_all(
-        manager,
-        session_id,
-        &[
-            CMD_HOSTNAME,
-            CMD_UPTIME,
-            CMD_LOADAVG,
-            CMD_CPU,
-            CMD_MEMORY,
-            CMD_DISKS,
-            CMD_NETWORK,
-            CMD_PROCESSES,
-            CMD_OS_RELEASE[0],
-        ],
-    )
-    .await;
+    let mut commands: Vec<&str> = vec![
+        CMD_HOSTNAME,
+        CMD_UPTIME,
+        CMD_LOADAVG,
+        CMD_CPU,
+        CMD_MEMORY,
+        CMD_DISKS,
+        CMD_NETWORK,
+        CMD_PROCESSES,
+    ];
+    if cached_os.is_none() {
+        commands.push(CMD_OS_RELEASE[0]);
+    }
+    let outputs = run_all(manager, session_id, &commands).await;
 
     let hostname = result_for(&outputs, CMD_HOSTNAME)?.trim().to_string();
     let uptime_seconds = parse_uptime(&result_for(&outputs, CMD_UPTIME)?);
@@ -267,14 +278,32 @@ pub async fn collect_snapshot(
     )
     .await?;
 
-    // `/etc/os-release` is optional; only fall back when it is missing.
-    let (os_name, os_version) = match outputs.get(CMD_OS_RELEASE[0]) {
-        Some(Ok(text)) => parse_os_release(text),
-        _ => run_first(manager, session_id, CMD_OS_RELEASE)
-            .await
-            .as_deref()
-            .map(parse_os_release)
-            .unwrap_or((None, None)),
+    // `/etc/os-release` 只在第一次（没有缓存）时取；取到后连同 uname 一起缓存。
+    let (os_name, os_version) = match cached_os {
+        Some(pair) => pair,
+        None => {
+            let parsed = match outputs.get(CMD_OS_RELEASE[0]) {
+                Some(Ok(text)) => parse_os_release(text),
+                _ => run_first(manager, session_id, CMD_OS_RELEASE)
+                    .await
+                    .as_deref()
+                    .map(parse_os_release)
+                    .unwrap_or((None, None)),
+            };
+            registry
+                .store_host_info(
+                    session_id,
+                    super::registry::HostInfo {
+                        system: system.clone(),
+                        kernel: kernel.clone(),
+                        architecture: architecture.clone(),
+                        os_name: parsed.0.clone(),
+                        os_version: parsed.1.clone(),
+                    },
+                )
+                .await;
+            parsed
+        }
     };
 
     Ok(MonitorSnapshot {

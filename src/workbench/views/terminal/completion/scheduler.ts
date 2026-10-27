@@ -41,8 +41,14 @@ export class CompletionScheduler {
     return Math.min(Math.max(value, DEBOUNCE_MIN_MS), DEBOUNCE_MAX_MS);
   }
 
-  /** 请求一次补全（重复调用会取消上一次未发出的请求）。 */
-  request(ctx: CompletionContext): void {
+  /**
+   * 请求一次补全（重复调用会取消上一次未发出的请求）。
+   *
+   * `immediate` 用于**纯本地**的补全（命令名 → 内置知识库）：它不需要 SSH
+   * 往返，没理由跟着远程目录/Docker 一起等 150–250ms。仍然走一次 `setTimeout(0)`，
+   * 把同一轮输入里的多次按键合并成一次查询。
+   */
+  request(ctx: CompletionContext, options: { immediate?: boolean } = {}): void {
     if (this.disposed) return;
     this.pending = ctx;
     this.clear();
@@ -53,10 +59,11 @@ export class CompletionScheduler {
       if (!target) return;
       void this.dispatch(seq, target);
     };
+    const delay = options.immediate ? 0 : this.debounceMs;
     if (this.options.setTimer) {
-      this.timer = this.options.setTimer(fire, this.debounceMs);
+      this.timer = this.options.setTimer(fire, delay);
     } else {
-      this.timer = window.setTimeout(fire, this.debounceMs);
+      this.timer = window.setTimeout(fire, delay);
     }
   }
 

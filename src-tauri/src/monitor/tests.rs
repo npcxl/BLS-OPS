@@ -392,3 +392,44 @@ fn system_info_defaults_to_empty_strings() {
     assert!(info.hostname.is_empty());
     assert_eq!(info.uptime_seconds, 0);
 }
+
+/// 主机静态信息在连接内缓存：重复快照不再跑 `uname` / `/etc/os-release`。
+#[tokio::test]
+async fn host_info_is_cached_until_the_session_is_forgotten() {
+    use super::registry::{HostInfo, MonitorRegistry};
+
+    let registry = MonitorRegistry::default();
+    assert!(registry.host_info("s1").await.is_none());
+
+    let first = HostInfo {
+        system: "Linux".to_string(),
+        kernel: "6.8.0".to_string(),
+        architecture: "x86_64".to_string(),
+        os_name: Some("Rocky Linux".to_string()),
+        os_version: Some("9.4".to_string()),
+    };
+    registry.store_host_info("s1", first.clone()).await;
+    assert_eq!(registry.host_info("s1").await, Some(first));
+
+    // 同会话只写一次：第二次不覆盖（连接内信息不会变）。
+    registry
+        .store_host_info(
+            "s1",
+            HostInfo {
+                system: "Other".to_string(),
+                kernel: String::new(),
+                architecture: String::new(),
+                os_name: None,
+                os_version: None,
+            },
+        )
+        .await;
+    assert_eq!(
+        registry.host_info("s1").await.map(|info| info.system),
+        Some("Linux".to_string())
+    );
+
+    // 断开 → 清空，重连从新测量。
+    registry.forget("s1").await;
+    assert!(registry.host_info("s1").await.is_none());
+}

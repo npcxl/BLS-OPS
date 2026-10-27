@@ -707,7 +707,19 @@ impl DirectorySizeRegistry {
             DuFlavor::Kibibytes => format!("du -sk -- {}", shell_quote(path)),
         };
         let started = tokio::time::Instant::now();
-        let output = match manager.exec(session_id, &cmd, timeout).await {
+        // `du` 是一次性 exec，没有信号通道能"叫停"远端进程；但本地**不必继续等**。
+        // 取消时放弃等待 → exec future 被 drop → channel 关闭（远端通常因此收到
+        // SIGHUP），同时扫描名额立即释放。这比"取消后还占着名额等它跑完"有用得多。
+        let output = tokio::select! {
+            result = manager.exec(session_id, &cmd, timeout) => result,
+            _ = wait_cancel(cancel) => {
+                return DuRun::Cancelled(
+                    DirectorySizeResult::computing(session_id, path)
+                        .terminal(DirectorySizeStatus::Cancelled),
+                );
+            }
+        };
+        let output = match output {
             Ok(output) => output,
             Err(error) => {
                 // 把 `exec` 的失败分成三类，**只有"这台机器没有 du"才值得回退**：
@@ -817,11 +829,10 @@ impl DirectorySizeRegistry {
             return Err(DirectorySizeStatus::TimedOut);
         }
 
-        let entries = match manager
-            .sftp_list_dir(session_id, Some(root.to_string()))
-            .await
-        {
-            Ok((_, entries)) => entries,
+        // 用遍历专用接口：不 canonicalize、不建展示字段、不排序，
+        // 也不对缺失 size 的**目录**做 lstat（目录大小对求和没用）。
+        let entries = match manager.sftp_walk_dir(session_id, root).await {
+            Ok(entries) => entries,
             Err(_) => return Err(DirectorySizeStatus::PermissionDenied),
         };
 
@@ -832,29 +843,24 @@ impl DirectorySizeRegistry {
             if tokio::time::Instant::now() >= *deadline {
                 return Err(DirectorySizeStatus::TimedOut);
             }
-            match entry.kind.as_str() {
-                ssh::KIND_DIRECTORY => {
-                    let child = format!("{}/{}", root.trim_end_matches('/'), entry.name);
-                    if let Err(status) =
-                        Box::pin(self.walk(manager, session_id, &child, result, deadline, cancel))
-                            .await
-                    {
-                        match status {
-                            DirectorySizeStatus::Cancelled | DirectorySizeStatus::TimedOut => {
-                                return Err(status)
-                            }
-                            // A child we cannot read does not abort the whole
-                            // tree — it makes the result partial.
-                            DirectorySizeStatus::PermissionDenied => result.skipped_count += 1,
-                            _ => result.skipped_count += 1,
+            if entry.kind == ssh::KIND_DIRECTORY {
+                let child = format!("{}/{}", root.trim_end_matches('/'), entry.name);
+                if let Err(status) =
+                    Box::pin(self.walk(manager, session_id, &child, result, deadline, cancel)).await
+                {
+                    match status {
+                        DirectorySizeStatus::Cancelled | DirectorySizeStatus::TimedOut => {
+                            return Err(status)
                         }
+                        // A child we cannot read does not abort the whole
+                        // tree — it makes the result partial.
+                        DirectorySizeStatus::PermissionDenied => result.skipped_count += 1,
+                        _ => result.skipped_count += 1,
                     }
                 }
-                // Files and everything else funnel through `record_entry`,
-                // which sums sizes, counts directories, and skips symlinks.
-                _ => {
-                    record_entry(result, &entry.kind, entry.size);
-                }
+            } else {
+                // 缺失 size 的普通文件已由接口补查；仍未拿到就按 0 计（与旧行为一致）。
+                record_entry(result, &entry.kind, entry.size.unwrap_or(0));
             }
         }
         Ok(())

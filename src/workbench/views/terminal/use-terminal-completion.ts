@@ -105,7 +105,10 @@ export function useTerminalCompletion(options: TerminalCompletionOptions): Termi
       return;
     }
     setSearching(true);
-    scheduler.request(context);
+    // 光标前只有一个词（还没有参数）→ 只能是命令名补全，走内置知识库，
+    // 不经过任何远程请求。这种输入不该跟着远程目录/Docker 一起等防抖。
+    const typed = context.line.slice(0, context.cursor).trim();
+    scheduler.request(context, { immediate: !typed.includes(" ") });
   }, [context, enabled]);
 
   // setState 是稳定的，这里可以安全地空依赖。

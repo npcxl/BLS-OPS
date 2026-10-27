@@ -174,4 +174,26 @@ describe("CompletionScheduler", () => {
     expect(onResult.mock.calls[0][0].notice).toBe("连接已断开");
     scheduler.dispose();
   });
+
+  it("本地补全立即触发，需要远程的仍然走防抖", () => {
+    const delays: number[] = [];
+    const scheduler = new CompletionScheduler({
+      run: async () => result([], "x"),
+      onResult: () => undefined,
+      setTimer: (_fn: () => void, ms: number) => {
+        delays.push(ms);
+        return delays.length;
+      },
+      clearTimer: () => undefined,
+    });
+
+    // 命令名 → 内置知识库，不需要等 SSH。
+    scheduler.request(ctx("doc"), { immediate: true });
+    // 参数位 → 可能查远程目录，保留防抖。
+    scheduler.request(ctx("cd /var"));
+
+    expect(delays[0]).toBe(0);
+    expect(delays[1]).toBe(scheduler.debounceMs);
+    scheduler.dispose();
+  });
 });

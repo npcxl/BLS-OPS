@@ -15,6 +15,7 @@ const MODULE_TITLE: Record<NavModule, string> = {
   logs: "Logs",
   projects: "Projects",
   commands: "Commands",
+  database: "Database assets",
   deploy: "Deploy",
   tasks: "Tasks",
   ai: "AI assistant",
@@ -34,7 +35,12 @@ export function isServerListModule(module: NavModule): boolean {
  * decides *whether* anything would be rendered. Keeping them on one list is
  * what stops the top bar from offering to expand a sidebar that does not exist.
  */
-export const CONTEXT_SIDEBAR_MODULES: NavModule[] = ["ssh", ...SERVER_LIST_MODULES];
+export const CONTEXT_SIDEBAR_MODULES: NavModule[] = [
+  "ssh",
+  ...SERVER_LIST_MODULES,
+  // 数据库有独立的资产侧栏（连接 → 库 → 表），不是服务器列表。
+  "database",
+];
 
 export function hasContextSidebar(module: NavModule): boolean {
   return CONTEXT_SIDEBAR_MODULES.includes(module);

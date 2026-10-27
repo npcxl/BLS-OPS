@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Activity, Boxes, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Workflow } from "lucide-react";
+import { Activity, Boxes, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Table2, Workflow } from "lucide-react";
 import type { WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
 
 /** Generic placeholder for tab types that land in later phases. phase 存 i18n key。 */
@@ -17,6 +17,7 @@ const META: Record<WorkspaceTabType, { icon: LucideIcon; phase: string }> = {
   command_center: { icon: Boxes, phase: "Phase 4" },
   workflow: { icon: Workflow, phase: "Phase 6" },
   deployment: { icon: Rocket, phase: "Phase 6" },
+  database: { icon: Table2, phase: "Phase 7" },
 };
 
 export function PlaceholderView({ tab }: { tab: WorkspaceTab }) {

@@ -10,6 +10,7 @@ mod backup;
 mod command_center;
 mod containers;
 mod credentials;
+mod database;
 mod deployment;
 mod deployment_center;
 mod deployment_knowledge;
@@ -29,6 +30,7 @@ mod sessions;
 mod sftp;
 mod ssh;
 mod system;
+mod transfer;
 mod trash;
 mod vscode;
 
@@ -38,6 +40,7 @@ pub use backup::*;
 pub use command_center::*;
 pub use containers::*;
 pub use credentials::*;
+pub use database::*;
 pub use deployment::*;
 pub use deployment_center::*;
 pub use deployment_knowledge::*;
@@ -57,6 +60,7 @@ pub use sessions::*;
 pub use sftp::*;
 pub use ssh::*;
 pub use system::*;
+pub use transfer::*;
 pub use trash::*;
 pub use vscode::*;
 
@@ -119,7 +123,8 @@ pub(crate) mod test_support {
                 port INTEGER NOT NULL, username TEXT NOT NULL, credential_id TEXT,
                 group_id TEXT, tags TEXT NOT NULL DEFAULT '[]', proxy_jump_id TEXT,
                 favorite INTEGER NOT NULL DEFAULT 0, last_connected_at INTEGER,
-                status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                status TEXT NOT NULL, environment TEXT NOT NULL DEFAULT 'unspecified',
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
             );
             CREATE TABLE server_groups (
                 id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0,

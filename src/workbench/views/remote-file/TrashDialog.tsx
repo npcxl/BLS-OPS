@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorText, Modal } from "@/components/ui/modal";
 import { opsApi, toErrorMessage, type TrashEntry } from "@/api/ops-api";
+import { useInspectionMode } from "@/stores/inspection-store";
 
 export function TrashDialog({
   open,
@@ -25,6 +26,8 @@ export function TrashDialog({
   onChanged: () => void;
 }) {
   const { t } = useTranslation();
+  // 巡检模式：恢复会写回原路径、永久删除不可撤销 —— 都算"改动"。
+  const inspection = useInspectionMode();
   const [entries, setEntries] = useState<TrashEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -105,7 +108,7 @@ export function TrashDialog({
           <Button
             variant="ghost"
             size="sm"
-            disabled={busy || !entries?.length}
+            disabled={busy || inspection || !entries?.length}
             onClick={() => setEmptyOpen(true)}
           >
             {t("Empty recycle bin")}
@@ -146,7 +149,7 @@ export function TrashDialog({
             <Button
               variant="secondary"
               size="xs"
-              disabled={busy}
+              disabled={busy || inspection}
               onClick={() => void restore(entry)}
             >
               <RotateCcw size={11} />
@@ -156,7 +159,7 @@ export function TrashDialog({
               variant="ghost"
               size="xs"
               className="hover:text-danger"
-              disabled={busy}
+              disabled={busy || inspection}
               onClick={() => setPurgeTarget(entry)}
             >
               <Trash2 size={11} />

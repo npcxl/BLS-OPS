@@ -18,7 +18,9 @@ export type WorkspaceTabType =
   /** P4 命令智能中心 — per-server, session-driven. */
   | "command_center"
   | "workflow"
-  | "deployment";
+  | "deployment"
+  /** 数据库工作台：一个标签管理一个数据库连接（SQL + 表数据）。 */
+  | "database";
 
 export interface WorkspaceTab {
   id: string;
@@ -30,6 +32,8 @@ export interface WorkspaceTab {
   /** Server/session context. */
   serverId?: string;
   sessionId?: string;
+  /** 数据库标签绑定的连接配置（`type === "database"`）。 */
+  profileId?: string;
   /** `user@host[:port]` typed into quick connect (no saved server). */
   quickTarget?: string;
   /** Credential chosen for a quick connect. */
@@ -72,6 +76,8 @@ export type NavModule =
   | "projects"
   /** P4 命令智能中心 — 命令知识库 + 检索 + 结构化结果。 */
   | "commands"
+  /** 数据库工作台 — 左侧数据库资产，右侧每个标签一个连接。 */
+  | "database"
   | "deploy"
   | "tasks"
   | "ai"

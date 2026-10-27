@@ -57,7 +57,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -837,6 +837,58 @@ CREATE INDEX IF NOT EXISTS idx_deployment_memory_lookup
 /// The P5.6 session / memory tables on their own, for `migrate()`.
 pub const DEPLOYMENT_SESSION_SCHEMA_SQL: &str = deployment_session_schema_sql!();
 
+/// 高性能数据库工作台（v16，纯新增）。
+///
+/// * `database_profiles` **没有密码列**：`secret_ref` 是钥匙串账户名。
+/// * `database_query_history` 是可选的（前端显式写入，可清空）：
+///   SQL 文本可能含敏感信息，后端不自动记录。
+macro_rules! database_schema_sql {
+    () => {
+        r#"
+CREATE TABLE IF NOT EXISTS database_profiles (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    engine TEXT NOT NULL DEFAULT 'mysql',
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    default_database TEXT,
+    secret_ref TEXT,
+    ssh_server_id TEXT,
+    tls_mode TEXT NOT NULL DEFAULT 'disabled',
+    tls_ca_path TEXT,
+    tls_server_name TEXT,
+    read_only INTEGER NOT NULL DEFAULT 1,
+    connect_timeout_ms INTEGER NOT NULL DEFAULT 10000,
+    query_timeout_ms INTEGER NOT NULL DEFAULT 60000,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_database_profiles_updated
+    ON database_profiles (updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS database_query_history (
+    id TEXT PRIMARY KEY NOT NULL,
+    profile_id TEXT NOT NULL,
+    session_id TEXT,
+    sql TEXT NOT NULL,
+    succeeded INTEGER NOT NULL DEFAULT 0,
+    rows INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_database_query_history_profile
+    ON database_query_history (profile_id, created_at DESC);
+"#
+    };
+}
+
+/// 数据库连接的配置表，供 `migrate()` 与新库初始化共用。
+pub const DATABASE_SCHEMA_SQL: &str = database_schema_sql!();
+
 pub(crate) const SCHEMA_SQL: &str = concat!(
     r#"
 CREATE TABLE IF NOT EXISTS servers (
@@ -852,6 +904,8 @@ CREATE TABLE IF NOT EXISTS servers (
     favorite INTEGER NOT NULL DEFAULT 0,
     last_connected_at INTEGER,
     status TEXT NOT NULL,
+    -- `unspecified` / `production` / `staging` / `development`
+    environment TEXT NOT NULL DEFAULT 'unspecified',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -942,7 +996,8 @@ CREATE TABLE IF NOT EXISTS known_hosts (
     deployment_import_schema_sql!(),
     deployment_proposal_schema_sql!(),
     deployment_ai_schema_sql!(),
-    deployment_session_schema_sql!()
+    deployment_session_schema_sql!(),
+    database_schema_sql!()
 );
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -1060,6 +1115,33 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 老库就地升级，旧功能一行代码都不用改。
         conn.execute_batch(DEPLOYMENT_SESSION_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 14u32)?;
+    }
+    if version < 15 {
+        // 生产环境保护：服务器要能标记生产 / 预发 / 开发。纯新增列，
+        // 老服务器一律 `unspecified`（不替用户猜哪台是生产）。
+        //
+        // **表可能不存在**：有些测试库只建了部分表（只验证别的迁移步骤），
+        // `ALTER TABLE` 在缺表时会报错，所以先确认表在不在。
+        let has_servers: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'servers'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_servers > 0 {
+            add_column(
+                &conn,
+                "servers",
+                "environment",
+                "TEXT NOT NULL DEFAULT 'unspecified'",
+            )?;
+        }
+        conn.pragma_update(None, "user_version", 15u32)?;
+    }
+    if version < 16 {
+        // 数据库工作台：连接配置 + 可选 SQL 历史。纯新增表，
+        // 老库就地升级，SSH / 部署 / 监控一行代码都不用改。
+        conn.execute_batch(DATABASE_SCHEMA_SQL)?;
+        conn.pragma_update(None, "user_version", 16u32)?;
     }
     Ok(())
 }

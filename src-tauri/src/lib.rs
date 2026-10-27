@@ -5,7 +5,11 @@ pub mod capability_probe;
 /// P4 Linux 命令智能中心：知识库、检索与安全执行（P4.0–P4.3）。
 pub mod command_center;
 mod commands;
-mod db;
+/// 本地 SQLite 持久化。`pub` 是为了让 `tests/` 里的真实集成测试能用与
+/// 生产完全相同的 schema/迁移，而不是在测试里手抄一份建表 SQL。
+pub mod db;
+/// 高性能数据库工作台（MySQL 原生协议、SSH 隧道、查询任务、CSV 导出）。
+pub mod database;
 /// P5.0 智能部署中心领域模型（应用/环境/服务/方案图/运行/版本）。
 ///
 /// 只建模与校验，**不执行任何部署**：模型里没有任何自由文本命令字段，
@@ -49,6 +53,8 @@ pub mod ssh;
 mod state;
 /// systemd service management (P3-1.1).
 pub mod systemd;
+/// 文件传输任务中心（上传 / 下载队列，可取消、可重试）。
+pub mod transfer;
 /// 远程回收站（删除先移动，可恢复）。
 pub mod trash;
 /// 系统托盘：点 X 隐藏窗口到托盘（不退出），托盘恢复/退出。
@@ -61,6 +67,11 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // rustls 需要一个进程级 CryptoProvider。reqwest（updater）与 mysql_async
+    // 共用同一个 rustls；这里显式安装 ring，避免第一次数据库 TLS 握手时
+    // rustls 因“没有默认 provider”而 panic。重复安装返回 Err，忽略即可。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         // Native open/save dialogs: the file panel needs "upload" to work from
         // a click, not only from a drag & drop.
@@ -85,6 +96,29 @@ pub fn run() {
         // Only used to relaunch the app once an update has been installed.
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // 窗口毛玻璃（Windows Acrylic）。
+            //
+            // 为什么必须在这一层做：CSS 的 `backdrop-filter` 只能模糊 WebView
+            // **内部**的内容，模糊不了窗口背后的桌面 —— 纯 CSS 永远做不出磨砂。
+            // Acrylic 由 DWM 把窗口背后的桌面模糊掉，页面上的半透明底色只负责
+            // 染色（`--app` 的 alpha 越小越透）。
+            //
+            // 失败不致命：某些 Windows 版本 / 远程桌面会话不支持 Acrylic，
+            // 此时退化成普通的半透明背景，界面仍然可用。
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::window::{Effect, EffectState, EffectsBuilder};
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let effects = EffectsBuilder::new()
+                        .effect(Effect::Acrylic)
+                        .state(EffectState::Active)
+                        .build();
+                    if let Err(error) = window.set_effects(effects) {
+                        eprintln!("[setup] acrylic unavailable, falling back: {error}");
+                    }
+                }
+            }
             let base_dir = dirs::data_local_dir()
                 .or_else(dirs::data_dir)
                 .unwrap_or_else(|| {
@@ -186,6 +220,13 @@ pub fn run() {
             commands::editor_history_read,
             commands::sftp_read_binary,
             commands::sftp_download_file,
+            // 文件传输任务中心
+            commands::transfer_upload,
+            commands::transfer_download,
+            commands::transfer_list,
+            commands::transfer_cancel,
+            commands::transfer_retry,
+            commands::transfer_clear_finished,
             // 回收站：删除默认移动，恢复与永久删除分开
             commands::trash_move,
             commands::trash_list,
@@ -380,6 +421,41 @@ pub fn run() {
             // ---- P5.4 DNS / SSL 指导（V1：只指引与验证，不调服务商 API）----
             commands::deployment_dns_guidance,
             commands::deployment_ssl_plan,
+            // ---- 数据库工作台（MySQL 原生协议）----
+            //
+            // 密码只在钥匙串；查询结果走 pull 批次；取消走独立控制连接。
+            commands::db_profile_list,
+            commands::db_profile_get,
+            commands::db_profile_save,
+            commands::db_profile_delete,
+            commands::db_test_connection,
+            commands::db_connect,
+            commands::db_session_info,
+            commands::db_disconnect,
+            commands::db_profile_status,
+            commands::db_profile_close,
+            commands::db_use_database,
+            commands::db_metadata_databases,
+            commands::db_metadata_tables,
+            commands::db_metadata_table,
+            commands::db_metadata_invalidate,
+            commands::db_table_browse,
+            commands::db_read_cell,
+            commands::db_query_start,
+            commands::db_query_next,
+            commands::db_query_cancel,
+            commands::db_query_release,
+            commands::db_query_state,
+            commands::db_mutate_apply,
+            commands::db_export_start,
+            commands::db_export_status,
+            commands::db_export_outcome,
+            commands::db_export_cancel,
+            commands::db_export_remove,
+            commands::db_history_list,
+            commands::db_history_record,
+            commands::db_history_clear,
+            commands::db_module_info,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -9,6 +9,34 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+import type {
+  BrowseRequest,
+  BrowseResult,
+  ConnectionTestResult,
+  DatabaseProfile,
+  DbDatabase,
+  DbErrorInfo,
+  DbQueryState,
+  DbSessionInfo,
+  DbTable,
+  DbTableDetail,
+  DbValue,
+  ExportOutcome,
+  ExportProgress,
+  ExportRequest,
+  ExportStarted,
+  HistoryWrite,
+  MetadataCacheStatus,
+  MutationResult,
+  ProfileRuntimeStatus,
+  QueryBatchResponse,
+  QueryBudget,
+  QueryHistoryEntry,
+  QueryStarted,
+  RowMutation,
+  SaveProfileRequest,
+} from "@/api/types/database";
+
 import {
   type CommandCatalogMeta,
   type CommandExecutionResult,
@@ -33,6 +61,7 @@ import {
 } from "@/api/types/sessions";
 import { type SshConnectResult, type TerminalEncoding } from "@/api/types/ssh";
 import { type TrashEntry } from "@/api/types/trash";
+import { type ConflictPolicy, type TransferTask } from "@/api/types/transfer";
 import {
   type DirectorySizeResult,
   type EditorHistoryEntry,
@@ -175,6 +204,13 @@ export {
   type SftpListResult,
 } from "@/api/types/sftp";
 export { type TrashEntry } from "@/api/types/trash";
+export {
+  TRANSFER_EVENT,
+  type ConflictPolicy,
+  type TransferKind,
+  type TransferState,
+  type TransferTask,
+} from "@/api/types/transfer";
 export {
   type CpuMetrics,
   type DiskMetrics,
@@ -633,6 +669,40 @@ export const opsApi = {
   /** 读取一份历史版本的内容。 */
   editorHistoryRead: (path: string, id: string) =>
     invoke<string>("editor_history_read", { path, id }),
+
+  // -- 文件传输任务中心 -------------------------------------------------------
+  /**
+   * 上传本地文件 / 目录（目录递归展开成多个任务）。
+   * 立刻返回任务列表，真正的传输在后台队列里跑。
+   */
+  transferUpload: (
+    sessionId: string,
+    localPaths: string[],
+    remoteDir: string,
+    conflict?: ConflictPolicy,
+  ) =>
+    invoke<TransferTask[]>("transfer_upload", {
+      sessionId,
+      localPaths,
+      remoteDir,
+      conflict: conflict ?? "rename",
+    }),
+  transferDownload: (
+    sessionId: string,
+    path: string,
+    localPath: string,
+    conflict?: ConflictPolicy,
+  ) =>
+    invoke<TransferTask>("transfer_download", {
+      sessionId,
+      path,
+      localPath,
+      conflict: conflict ?? "rename",
+    }),
+  transferList: () => invoke<TransferTask[]>("transfer_list"),
+  transferCancel: (id: string) => invoke<TransferTask>("transfer_cancel", { id }),
+  transferRetry: (id: string) => invoke<TransferTask>("transfer_retry", { id }),
+  transferClearFinished: () => invoke<number>("transfer_clear_finished"),
 
   // -- 回收站（删除先移动，可恢复）--------------------------------------------
   /** 移入回收区；跨文件系统 / 无权限时**报错**，不会退化成永久删除。 */
@@ -1301,3 +1371,113 @@ export const opsApi = {
   directorySizeStatusMany: (sessionId: string, paths: string[]) =>
     invoke<DirectorySizeResult[]>("directory_size_status_many", { sessionId, paths }),
 };
+
+/**
+ * 数据库工作台 API。
+ *
+ * 独立对象而不是塞进 `opsApi`：数据库模块有 30 个方法，混进已有一个 800 行
+ * 的对象里会让"这条命令属于哪个模块"更难查。命令名统一以 `db_` 开头。
+ */
+export const databaseApi = {
+  // -- 连接配置 ------------------------------------------------------------
+  listProfiles: () => invoke<DatabaseProfile[]>("db_profile_list"),
+  getProfile: (id: string) => invoke<DatabaseProfile | null>("db_profile_get", { id }),
+  saveProfile: (request: SaveProfileRequest) =>
+    invoke<DatabaseProfile>("db_profile_save", { request }),
+  deleteProfile: (id: string) => invoke<void>("db_profile_delete", { id }),
+  testConnection: (profile: DatabaseProfile, password: string | null) =>
+    invoke<ConnectionTestResult>("db_test_connection", {
+      request: { profile, password },
+    }),
+
+  // -- 运行时 / 会话 --------------------------------------------------------
+  connect: (profileId: string, sessionId: string) =>
+    invoke<DbSessionInfo>("db_connect", { profileId, sessionId }),
+  sessionInfo: (sessionId: string) => invoke<DbSessionInfo>("db_session_info", { sessionId }),
+  disconnect: (sessionId: string) => invoke<void>("db_disconnect", { sessionId }),
+  profileStatus: (profileId: string) =>
+    invoke<ProfileRuntimeStatus>("db_profile_status", { profileId }),
+  profileClose: (profileId: string) => invoke<void>("db_profile_close", { profileId }),
+  useDatabase: (sessionId: string, database: string) =>
+    invoke<DbSessionInfo>("db_use_database", { sessionId, database }),
+
+  // -- 元数据 --------------------------------------------------------------
+  databases: (profileId: string) =>
+    invoke<DbDatabase[]>("db_metadata_databases", { profileId }),
+  tables: (profileId: string, database: string) =>
+    invoke<DbTable[]>("db_metadata_tables", { profileId, database }),
+  tableDetail: (profileId: string, database: string, table: string) =>
+    invoke<DbTableDetail>("db_metadata_table", { profileId, database, table }),
+  invalidateMetadata: (profileId: string | null) =>
+    invoke<MetadataCacheStatus>("db_metadata_invalidate", { profileId }),
+
+  // -- 表数据 --------------------------------------------------------------
+  browse: (request: BrowseRequest) => invoke<BrowseResult>("db_table_browse", { request }),
+  readCell: (args: {
+    profileId: string;
+    database: string;
+    table: string;
+    keyValues: (string | null)[];
+    column: string;
+    maxBytes?: number;
+  }) =>
+    invoke<DbValue>("db_read_cell", {
+      profileId: args.profileId,
+      database: args.database,
+      table: args.table,
+      keyValues: args.keyValues,
+      column: args.column,
+      maxBytes: args.maxBytes ?? null,
+    }),
+
+  // -- 查询任务 ------------------------------------------------------------
+  queryStart: (sessionId: string, sql: string, budget?: QueryBudget) =>
+    invoke<QueryStarted>("db_query_start", { sessionId, sql, budget: budget ?? null }),
+  queryNext: (queryId: string) =>
+    invoke<QueryBatchResponse>("db_query_next", { queryId }),
+  queryCancel: (queryId: string) => invoke<string>("db_query_cancel", { queryId }),
+  queryRelease: (queryId: string) => invoke<void>("db_query_release", { queryId }),
+  queryState: (queryId: string) =>
+    invoke<DbQueryState | null>("db_query_state", { queryId }),
+
+  // -- 数据修改 ------------------------------------------------------------
+  mutate: (args: {
+    sessionId: string;
+    database: string;
+    table: string;
+    rows: RowMutation[];
+    allowNonTransactional?: boolean;
+  }) =>
+    invoke<MutationResult>("db_mutate_apply", {
+      sessionId: args.sessionId,
+      database: args.database,
+      table: args.table,
+      rows: args.rows,
+      allowNonTransactional: args.allowNonTransactional ?? null,
+    }),
+
+  // -- 导出 ----------------------------------------------------------------
+  exportStart: (profileId: string, request: ExportRequest) =>
+    invoke<ExportStarted>("db_export_start", { profileId, request }),
+  exportStatus: (exportId: string) =>
+    invoke<ExportProgress>("db_export_status", { exportId }),
+  exportOutcome: (exportId: string) =>
+    invoke<ExportOutcome>("db_export_outcome", { exportId }),
+  exportCancel: (exportId: string) => invoke<void>("db_export_cancel", { exportId }),
+  exportRemove: (exportId: string) => invoke<void>("db_export_remove", { exportId }),
+
+  // -- 历史 ----------------------------------------------------------------
+  historyList: (profileId: string) =>
+    invoke<QueryHistoryEntry[]>("db_history_list", { profileId }),
+  historyRecord: (request: HistoryWrite) =>
+    invoke<QueryHistoryEntry>("db_history_record", { request }),
+  historyClear: (profileId: string | null) =>
+    invoke<void>("db_history_clear", { profileId }),
+
+  moduleInfo: () =>
+    invoke<{ engine: string; driver: string; supports: string[]; postgres: string }>(
+      "db_module_info",
+    ),
+};
+
+export type DatabaseApiError = DbErrorInfo;

@@ -21,6 +21,10 @@ pub fn server_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRecord
         favorite: row.get::<_, i64>("favorite")? != 0,
         last_connected_at: row.get("last_connected_at")?,
         status: row.get("status")?,
+        // 老库升级后一定有这一列；真读不到时按"没说"处理，绝不当成非生产。
+        environment: row
+            .get::<_, String>("environment")
+            .unwrap_or_else(|_| "unspecified".to_string()),
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -30,8 +34,8 @@ pub fn insert_or_replace_server(conn: &Connection, server: &ServerRecord) -> Res
     let tags = serde_json::to_string(&server.tags)?;
     conn.execute(
         r#"
-        INSERT INTO servers (id, name, host, port, username, credential_id, group_id, tags, proxy_jump_id, favorite, last_connected_at, status, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        INSERT INTO servers (id, name, host, port, username, credential_id, group_id, tags, proxy_jump_id, favorite, last_connected_at, status, environment, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             host=excluded.host,
@@ -44,6 +48,7 @@ pub fn insert_or_replace_server(conn: &Connection, server: &ServerRecord) -> Res
             favorite=excluded.favorite,
             last_connected_at=excluded.last_connected_at,
             status=excluded.status,
+            environment=excluded.environment,
             updated_at=excluded.updated_at
         "#,
         params![
@@ -59,6 +64,7 @@ pub fn insert_or_replace_server(conn: &Connection, server: &ServerRecord) -> Res
             i64::from(server.favorite),
             server.last_connected_at,
             server.status,
+            server.environment,
             server.created_at,
             server.updated_at,
         ],

@@ -5,6 +5,7 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 import { SshContextSidebar } from "./ssh-context-sidebar";
 import { ModuleServerSidebar, hasContextSidebar, isServerListModule } from "./module-server-sidebar";
+import { DatabaseAssetSidebar } from "./views/database/DatabaseAssetSidebar";
 
 /** 值是 i18n key，渲染处 `t(...)`。 */
 const MODULE_TITLES: Record<string, string> = {
@@ -52,6 +53,34 @@ export function ContextSidebar() {
   // No rail for 设置 / 命令 / 部署 / … — the top bar reads the same predicate,
   // so it will not offer to expand a sidebar that was never here.
   if (!hasContextSidebar(activeModule)) return null;
+
+  // 数据库有独立的资产树（连接 → 库 → 表），布局与服务器面板一致：
+  // 同一个宽度、同一个拖拽手柄、同一套页面外壳。
+  if (activeModule === "database") {
+    if (collapsed) return <div className="w-0 shrink-0" aria-hidden="true" />;
+    return (
+      <aside
+        className="relative flex shrink-0 flex-col overflow-hidden"
+        style={{ width }}
+        aria-label={t("数据库资产")}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <DatabaseAssetSidebar />
+        </div>
+
+        <div
+          className={cn(
+            "absolute right-0 top-0 flex h-full w-[5px] cursor-col-resize items-center justify-center",
+            dragging ? "bg-accent/25" : "hover:bg-accent/15",
+          )}
+          onMouseDown={onResizeStart}
+          onDoubleClick={() => setWidth(280)}
+        >
+          <GripVertical size={12} className="text-fg-subtle" />
+        </div>
+      </aside>
+    );
+  }
 
   if (isServerListModule(activeModule)) {
     // Session-driven modules (日志 / 服务 / 项目) operate on a chosen server, so

@@ -19,6 +19,7 @@ import updater from "./updater";
 import errors from "./errors";
 import deployments from "./deployments";
 import deployExec from "./deployExec";
+import database from "./database";
 
 export default {
   ...common,
@@ -37,4 +38,5 @@ export default {
   ...errors,
   ...deployments,
   ...deployExec,
+  ...database,
 } as const;

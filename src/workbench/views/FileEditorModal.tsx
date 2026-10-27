@@ -24,6 +24,7 @@ import type { EditorLanguage } from "@/lib/file-kind";
 import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
+import { useInspectionMode } from "@/stores/inspection-store";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -72,6 +73,8 @@ export default function FileEditorModal({
   const { t } = useTranslation();
   const theme = useEditorTheme();
   const viewRef = useRef<EditorView | null>(null);
+  // 巡检模式：可以看、可以搜，但不能写回。
+  const inspection = useInspectionMode();
 
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +107,10 @@ export default function FileEditorModal({
    */
   const save = async (expected?: RemoteFileVersion | null) => {
     if (content === null || saving) return;
+    if (inspection) {
+      setError(t("Inspection mode: saving is disabled."));
+      return;
+    }
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -229,7 +236,12 @@ export default function FileEditorModal({
           <Button variant="ghost" size="sm" disabled={saving} onClick={onClose}>
             {dirty ? t("Cancel") : t("Close")}
           </Button>
-          <Button variant="primary" size="sm" disabled={saving || content === null} onClick={() => void save()}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={saving || content === null || inspection}
+            onClick={() => void save()}
+          >
             <Save size={13} />
             {saving ? t("Saving") : t("Save (Ctrl+S)")}
           </Button>
@@ -244,6 +256,11 @@ export default function FileEditorModal({
           </div>
         )}
         {error && <ErrorText>{error}</ErrorText>}
+        {inspection && (
+          <p className="text-11 leading-relaxed text-warning">
+            {t("Inspection mode: editing is view-only. Turn it off in Settings to save changes.")}
+          </p>
+        )}
         {notice && <p className="text-11 leading-relaxed text-success">{notice}</p>}
         {content !== null && (
           <div

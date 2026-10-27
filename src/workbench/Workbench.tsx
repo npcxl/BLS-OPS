@@ -2,6 +2,8 @@ import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
+import { useDatabaseStore } from "@/stores/database-store";
+import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 import { useAutoUpdateCheck } from "@/hooks/use-updater";
 import { UpdateNotification } from "./updater/UpdateNotification";
@@ -52,10 +54,38 @@ export function Workbench() {
   const refreshAll = useDomainStore((s) => s.refreshAll);
   const servers = useDomainStore((s) => s.servers);
   const sessions = useDomainStore((s) => s.sessions);
+  const rootPane = useWorkbenchStore((s) => s.rootPane);
 
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  /**
+   * 关闭数据库标签时清理它拥有的资源：
+   * 1. `dispose` → 释放仍在运行的查询（Rust 端会 KILL + 丢弃连接）；
+   * 2. `pruneSessions` → 断开已经没有任何标签引用的连接。
+   *
+   * 切换标签不会触发断开：标签还在，连接就还在。
+   */
+  useEffect(() => {
+    const tabs: { id: string; type: string; profileId?: string }[] = [];
+    const walk = (pane: typeof rootPane) => {
+      tabs.push(...pane.tabs);
+      for (const child of pane.children ?? []) walk(child);
+    };
+    walk(rootPane);
+
+    const dbTabs = tabs.filter((tab) => tab.type === "database");
+    const tabIds = new Set(dbTabs.map((tab) => tab.id));
+    const workbench = useDatabaseWorkbenchStore.getState();
+    for (const tabId of Object.keys(workbench.tabs)) {
+      if (!tabIds.has(tabId)) workbench.dispose(tabId);
+    }
+    const activeProfiles = dbTabs
+      .map((tab) => tab.profileId)
+      .filter((id): id is string => !!id);
+    void useDatabaseStore.getState().pruneSessions(activeProfiles);
+  }, [rootPane]);
 
   const actions = useMemo<PaletteAction[]>(() => {
     const connectActions: PaletteAction[] = servers.map((server) => ({
@@ -158,8 +188,9 @@ export function Workbench() {
     ];
   }, [openTab, openModuleTab, servers, sessions, t]);
 
+  // 外层外壳半透明磨砂；内层白卡片与命令面板保持实色（见 `.app-shell`）。
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app text-fg">
+    <div className="app-shell flex h-full min-h-0 flex-col text-fg">
       <AppTopBar />
       <div className="flex min-h-0 flex-1">
         <NavigationRail />

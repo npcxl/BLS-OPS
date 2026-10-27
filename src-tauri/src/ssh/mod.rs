@@ -31,6 +31,9 @@ pub mod utf8_stream;
 pub use decoder::{OutputDecoder, SessionEncoding};
 pub use host_key::{evaluate_host_key, HostKeyVerdict};
 pub use manager::SshSessionManager;
+// 数据库模块的 SSH 隧道要复用同一条握手路径（含 ProxyJump 与主机指纹校验），
+// 而不是另写一套 `russh` 客户端。只暴露给 crate 内部。
+pub(crate) use handshake::{connect_hop, HopConnection, HopResult};
 pub use model::{
     parse_ssh_target, ConnectOutcome, ConnectTarget, CredentialSecrets, Endpoint, ExecOutput,
     HostKeyInfo, RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, RemoteFileVersion,

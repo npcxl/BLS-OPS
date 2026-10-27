@@ -1106,6 +1106,176 @@ impl SshSessionManager {
             size_bytes: written,
         })
     }
+
+    /// 远程路径是否存在（符号链接也算存在）。
+    pub async fn sftp_exists(&self, session_id: &str, path: &str) -> Result<bool> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        Ok(remote_exists(&sftp, path).await)
+    }
+
+    /// 逐级确保远程目录存在（已存在的段直接跳过）。
+    pub async fn ensure_remote_dir(&self, session_id: &str, dir: &str) -> Result<()> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let normalized = posix_normalize(dir);
+        if normalized == "/" {
+            return Ok(());
+        }
+        let mut current = String::new();
+        for segment in normalized.split('/').filter(|part| !part.is_empty()) {
+            current.push('/');
+            current.push_str(segment);
+            if sftp.metadata(&current).await.is_ok() {
+                continue;
+            }
+            sftp.create_dir(&current)
+                .await
+                .map_err(|error| sftp_error(&current, error))?;
+        }
+        Ok(())
+    }
+
+    /// 带取消的整文件上传：写 `<remote>.bls-part` → 完成 → 原子改名。
+    ///
+    /// 取消时**删掉临时文件**并把错误抛回去：目标名要么是完整内容，要么根本
+    /// 不存在，绝不留下半截文件。
+    pub async fn upload_to_path(
+        &self,
+        session_id: &str,
+        local_path: &std::path::Path,
+        remote_path: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<u64> {
+        use std::sync::atomic::Ordering;
+        crate::safe::validate_abs_path(remote_path, "目标文件")?;
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let part_path = format!("{remote_path}.bls-part");
+        let total = tokio::fs::metadata(local_path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let mut local = tokio::fs::File::open(local_path)
+            .await
+            .map_err(|error| anyhow!("无法读取本地文件：{error}"))?;
+        let mut remote = sftp
+            .create(&part_path)
+            .await
+            .map_err(|error| sftp_error(&part_path, error))?;
+        let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
+        let mut written: u64 = 0;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = remote.shutdown().await;
+                let _ = sftp.remove_file(&part_path).await;
+                return Err(anyhow!("已取消"));
+            }
+            let read = match local.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) => {
+                    let _ = sftp.remove_file(&part_path).await;
+                    return Err(anyhow!("读取本地文件失败（已清理临时文件）：{error}"));
+                }
+            };
+            if let Err(error) =
+                tokio::io::AsyncWriteExt::write_all(&mut remote, &buffer[..read]).await
+            {
+                let _ = sftp.remove_file(&part_path).await;
+                return Err(anyhow!("上传失败（已清理临时文件）：{error}"));
+            }
+            written += read as u64;
+            on_progress(written, total);
+        }
+        if let Err(error) = remote.shutdown().await {
+            let _ = sftp.remove_file(&part_path).await;
+            return Err(anyhow!("上传未完成（已清理临时文件）：{error}"));
+        }
+        if let Err(error) = sftp.rename(&part_path, remote_path).await {
+            let _ = sftp.remove_file(&part_path).await;
+            return Err(sftp_error(remote_path, error));
+        }
+        Ok(written)
+    }
+
+    /// 带取消的整文件下载：写 `<local>.bls-part` → 完成 → 原子改名。
+    pub async fn download_to_path(
+        &self,
+        session_id: &str,
+        remote_path: &str,
+        local_path: &std::path::Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+    ) -> Result<u64> {
+        use std::sync::atomic::Ordering;
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let canonical = sftp
+            .canonicalize(remote_path)
+            .await
+            .map_err(|error| sftp_error(remote_path, error))?;
+        let meta = sftp
+            .symlink_metadata(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
+        let total = meta.len();
+        if meta.file_type() == FileType::Dir {
+            return Err(anyhow!("这是一个目录，暂不支持整目录下载任务"));
+        }
+
+        let part = local_path.with_extension(format!(
+            "{}.bls-part",
+            local_path
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ));
+        let _ = tokio::fs::remove_file(&part).await;
+        let mut remote = sftp
+            .open(&canonical)
+            .await
+            .map_err(|error| sftp_error(&canonical, error))?;
+        let mut local = tokio::fs::File::create(&part)
+            .await
+            .map_err(|error| anyhow!("创建本地文件失败：{error}"))?;
+
+        let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
+        let mut written: u64 = 0;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = local.shutdown().await;
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(anyhow!("已取消"));
+            }
+            let read = match tokio::io::AsyncReadExt::read(&mut remote, &mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&part).await;
+                    return Err(anyhow!("下载失败（已清理临时文件）：{error}"));
+                }
+            };
+            if let Err(error) =
+                tokio::io::AsyncWriteExt::write_all(&mut local, &buffer[..read]).await
+            {
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(anyhow!("写入本地文件失败（已清理临时文件）：{error}"));
+            }
+            written += read as u64;
+            on_progress(written, total);
+        }
+        if let Err(error) = local.shutdown().await {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(anyhow!("写入本地文件失败（已清理临时文件）：{error}"));
+        }
+        if let Err(error) = tokio::fs::rename(&part, local_path).await {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(anyhow!("无法替换目标文件：{error}"));
+        }
+        Ok(written)
+    }
 }
 
 // -- 回收站辅助 ---------------------------------------------------------------

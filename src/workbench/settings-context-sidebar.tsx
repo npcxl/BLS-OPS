@@ -19,7 +19,8 @@ import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
 import { AiProviderSettings } from "./settings-ai";
-import { EmptyRow, Group, ListGroup } from "./settings-parts";
+import { EmptyRow, Group, ListGroup, Switch } from "./settings-parts";
+import { setInspectionMode, useInspectionMode } from "@/stores/inspection-store";
 import { TerminalSettingsGroup } from "./settings-terminal";
 import { BackupSettingsGroup } from "./settings-backup";
 import { cn } from "@/lib/cn";
@@ -104,6 +105,7 @@ export function SettingsContextSidebar() {
   const appInfo = useDomainStore((s) => s.appInfo);
 
   const [themeMode, setThemeMode] = useThemeMode();
+  const inspection = useInspectionMode();
   const [editing, setEditing] = useState<CredentialRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -191,6 +193,31 @@ export function SettingsContextSidebar() {
       </Group>
 
       <TerminalSettingsGroup />
+
+      <Group
+        title={t("Safety")}
+        hint={t(
+          "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.",
+        )}
+      >
+        <ListGroup>
+          <div className="flex items-center justify-between gap-3 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-12 text-fg">{t("Inspection mode (read-only)")}</div>
+              <div className="text-11 leading-relaxed text-fg-subtle">
+                {t(
+                  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.",
+                )}
+              </div>
+            </div>
+            <Switch
+              checked={inspection}
+              onChange={setInspectionMode}
+              label={t("Inspection mode (read-only)")}
+            />
+          </div>
+        </ListGroup>
+      </Group>
 
       <BackupSettingsGroup />
 

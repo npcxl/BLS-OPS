@@ -11,6 +11,7 @@
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { copyText } from "@/lib/clipboard";
+import { isInspectionMode } from "@/stores/inspection-store";
 import { opsApi, toErrorMessage, type ContainerConfig } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -136,22 +137,35 @@ export function useCandidateActions(serverId: string, sessionId: string) {
    * 用 reload 而不是 restart —— 平滑接管连接，不会把正在访问的用户切掉；
    * `nginx -t` 失败时返回原文，让用户知道是哪一行配置坏了。
    */
+  /**
+   * 巡检模式闸门：**只拦会改服务器状态的入口**（重启 / 停止 / reload）。
+   * 看容器配置、复制路径、在终端跟踪这些只读动作照常可用。
+   */
+  const blockedByInspection = useCallback((): boolean => {
+    if (!isInspectionMode()) return false;
+    setNotice({ tone: "danger", text: t("Inspection mode: changes are disabled") });
+    return true;
+  }, [t]);
+
   const reloadNginx = useCallback(
-    () =>
-      run(async () => {
+    () => {
+      if (blockedByInspection()) return;
+      void run(async () => {
         const test = await opsApi.nginxTest(sessionId);
         if (!test.success) {
           throw new Error(test.output || t("nginx -t failed; the running config was left untouched"));
         }
         await opsApi.nginxReload(sessionId);
         return { tone: "success", text: t("Nginx reloaded") };
-      }),
-    [run, sessionId, t],
+      });
+    },
+    [blockedByInspection, run, sessionId, t],
   );
 
   const controlContainer = useCallback(
-    (action: "stop" | "restart", container: string) =>
-      run(async () => {
+    (action: "stop" | "restart", container: string) => {
+      if (blockedByInspection()) return;
+      void run(async () => {
         await opsApi.dockerContainerAction(sessionId, action, container);
         return {
           tone: "success",
@@ -160,8 +174,9 @@ export function useCandidateActions(serverId: string, sessionId: string) {
               ? t("Container {{name}} stopped", { name: container })
               : t("Container {{name}} restarted", { name: container }),
         };
-      }),
-    [run, sessionId, t],
+      });
+    },
+    [blockedByInspection, run, sessionId, t],
   );
 
   /** 读容器配置（只读）。内容进弹窗，不在菜单里回显 —— 字段多，塞不下。 */

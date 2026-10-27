@@ -12,6 +12,7 @@ import {
   UnorderedListIcon,
   SparklesIcon,
 } from "@/components/its-hover";
+import { Database } from "lucide-react";
 import type { ComponentType } from "react";
 
 /**
@@ -40,6 +41,7 @@ export const NAV_ITEMS: NavItem[] = (
     { id: "ssh", label: "Module: Terminal", icon: TerminalIcon },
     { id: "services", label: "Module: Services", icon: WorldIcon },
     { id: "logs", label: "Module: Logs", icon: FileDescriptionIcon },
+    { id: "database", label: "Module: Database", icon: Database },
     { id: "projects", label: "Module: Projects", icon: Stack3Icon },
     { id: "deploy", label: "Module: Deploy", icon: RocketIcon },
     { id: "tasks", label: "Module: Tasks", icon: UnorderedListIcon },

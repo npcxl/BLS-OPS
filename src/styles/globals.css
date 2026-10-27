@@ -199,6 +199,39 @@
     color: rgb(var(--fg));
   }
 
+  /*
+   * 应用外壳：**半透明 + 背景模糊**。
+   *
+   * 窗口本身是 `transparent: true`（tauri.conf.json），所以这里透出的是桌面。
+   * 但**不要透太多**：0.86~0.92 的底色保证任何壁纸下文字对比度都够；
+   * `saturate` 让透出来的颜色不发灰。
+   *
+   * 边界：内层（`Workspace` 的白卡片、命令面板）保持实色 —— 沿用
+   * "外层是背景，内层是白纸"的既有决定，只有外壳这一圈参与模糊。
+   */
+  .app-shell {
+    /* 模糊由 Windows Acrylic（lib.rs 的 `set_effects`）负责 —— 它模糊窗口
+       **背后**的桌面，CSS 做不到。这里只做染色。
+       alpha 必须留出"能看见磨砂"的余量：0.9 以上等于把 Acrylic 盖死
+       （刷新瞬间能看到磨砂、加载完就没了，就是这个原因）。 */
+    background: linear-gradient(
+      180deg,
+      rgb(var(--app) / 0.62) 0%,
+      rgb(var(--app) / 0.54) 100%
+    );
+    /* 顶部一道极淡的内高光：让外壳与内容区之间有"玻璃厚度"。 */
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18);
+  }
+
+  :root[data-theme="dark"] .app-shell {
+    background: linear-gradient(
+      180deg,
+      rgb(var(--app) / 0.7) 0%,
+      rgb(var(--app) / 0.62) 100%
+    );
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+
   /* 浮层面板统一为**纯白实色**（2026-09-03 UI 重构）：与内容区白卡片同一
      份表面色，去掉半透明与 backdrop blur —— "外层是背景，内层是白纸"。 */
   .glass-panel {

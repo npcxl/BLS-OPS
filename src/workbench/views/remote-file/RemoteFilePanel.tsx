@@ -11,6 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ArrowUpDown,
   ChevronLeft,
   ClipboardCopy,
   CornerDownLeft,
@@ -22,6 +23,7 @@ import {
   Loader2,
   MoreHorizontal,
   Pause,
+  Server as ServerIcon,
   Pencil,
   RefreshCw,
   Trash2,
@@ -29,7 +31,9 @@ import {
 } from "lucide-react";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { EnvironmentBadge } from "@/components/ui/environment-badge";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
+import { useInspectionMode } from "@/stores/inspection-store";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
 import type { EditorSyncEventPayload } from "@/api/types/editor-sync";
 import { editorSyncEvent } from "@/lib/events";
@@ -37,15 +41,14 @@ import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
 import { copyText } from "@/lib/clipboard";
-import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
 import { useDirSizeStore } from "@/stores/dir-size-store";
-import { useActivityTicket } from "@/stores/activity-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
 import { TrashDialog } from "./TrashDialog";
+import { TransferCenterDialog } from "./TransferCenterDialog";
 import {
   AUTO_DIR_SIZE_LIMIT,
   hasUsableSize,
@@ -149,14 +152,20 @@ function RemoteFilePanelImpl({
     [setNotice],
   );
   const [dragging, setDraggingState] = useState(false);
-  const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  /** 巡检模式（只读）：所有写入口都要过它。 */
+  const inspection = useInspectionMode();
+
   /**
-   * Restart guard: an in-flight upload/download would be killed by an update
-   * restart, so the work is registered while it runs (see §P5.1 重启保护).
+   * 巡检模式的统一闸门：写操作先过这里，并说清为什么没执行。
+   * 只挡客户端入口 —— 自由终端里照样能 `rm`，所以 UI 文案不承诺"安全"。
    */
-  useActivityTicket("transfer", uploads !== null || downloading);
+  const blockedByInspection = useCallback((): boolean => {
+    if (!inspection) return false;
+    showNotice(t("Inspection mode: changes are disabled"), "danger");
+    return true;
+  }, [inspection, showNotice, t]);
 
   /**
    * `over` fires on every mouse move while dragging. Writing the highlight
@@ -431,6 +440,7 @@ function RemoteFilePanelImpl({
   const [trashOpen, setTrashOpen] = useState(false);
 
   const removeEntry = (entry: RemoteFileEntry) => {
+    if (blockedByInspection()) return;
     setDeleteTarget(entry);
   };
 
@@ -444,13 +454,11 @@ function RemoteFilePanelImpl({
       const { save } = await import("@tauri-apps/plugin-dialog");
       const destination = await save({ title: t("Download {{name}}", { name: entry.name }), defaultPath: entry.name });
       if (!destination) return;
-      setDownloading(true);
-      const written = await opsApi.sftpDownloadFile(sessionId, entry.path, destination);
-      setNotice(t("Downloaded {{name}} ({{size}})", { name: entry.name, size: formatSize(written) }));
+      // 任务化：立刻返回，进度在传输中心看；同名默认重命名，不静默覆盖本地文件。
+      await opsApi.transferDownload(sessionId, entry.path, destination, "rename");
+      setNotice(t("Download queued: {{name}}", { name: entry.name }));
     } catch (cause) {
-      setStatus({ state: "error", message: toErrorMessage(cause) });
-    } finally {
-      setDownloading(false);
+      showNotice(toErrorMessage(cause), "danger");
     }
   };
 
@@ -464,6 +472,10 @@ function RemoteFilePanelImpl({
   const savedServerId = useSessionStore((state) => state.sessions[sessionId]?.serverId);
   const usesJumpHost = useDomainStore((state) =>
     savedServerId ? state.servers.find((server) => server.id === savedServerId)?.proxy_jump_id != null : false,
+  );
+  /** 面板顶部固定的身份条：文件名再像，也不能搞错自己在哪台机器上。 */
+  const server = useDomainStore((state) =>
+    savedServerId ? state.servers.find((item) => item.id === savedServerId) ?? null : null,
   );
   const canOpenInVscode = Boolean(savedServerId) && !usesJumpHost;
 
@@ -544,7 +556,7 @@ function RemoteFilePanelImpl({
   }, [connected, sessionId, t]);
 
   const confirmRemove = () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || blockedByInspection()) return;
     const target = deleteTarget;
     setDeleteTarget(null);
     // 删除 = 移入服务器回收区。移不过去（跨文件系统 / 无权限）时如实报错，
@@ -553,7 +565,7 @@ function RemoteFilePanelImpl({
   };
 
   const confirmPurge = () => {
-    if (!purgeTarget) return;
+    if (!purgeTarget || blockedByInspection()) return;
     const target = purgeTarget;
     setPurgeTarget(null);
     runAndRefresh(() => opsApi.sftpRemove(sessionId, target.path));
@@ -561,6 +573,7 @@ function RemoteFilePanelImpl({
 
   /** 进入就地重命名：选中该行，名字输入框会出现在行内。 */
   const renameEntry = (entry: RemoteFileEntry) => {
+    if (blockedByInspection()) return;
     setSelected(entry.path);
     setRenaming({ path: entry.path, name: entry.name });
   };
@@ -596,6 +609,7 @@ function RemoteFilePanelImpl({
   );
 
   const copyEntry = (entry: RemoteFileEntry) => {
+    if (blockedByInspection()) return;
     const dot = entry.name.lastIndexOf(".");
     // 建议副本名是数据（会创建的文件名），扩展名只是纯数据拼接；" - 副本"
     // 这段建议文案本身走插值 key。
@@ -613,7 +627,7 @@ function RemoteFilePanelImpl({
   };
 
   const createFolder = () => {
-    if (!cwd) return;
+    if (!cwd || blockedByInspection()) return;
     setNameDialog({
       title: "New folder",
       label: "Folder name",
@@ -625,7 +639,7 @@ function RemoteFilePanelImpl({
   };
 
   const createFile = () => {
-    if (!cwd) return;
+    if (!cwd || blockedByInspection()) return;
     setNameDialog({
       title: "New file",
       label: "File name",
@@ -639,24 +653,25 @@ function RemoteFilePanelImpl({
   const uploadFiles = useCallback(
     async (paths: string[]) => {
       if (!cwd || paths.length === 0) return;
+      if (blockedByInspection()) return;
       setUploadNotice(null);
-      setUploads({ total: paths.length, done: 0 });
       try {
-        await opsApi.sftpUpload(sessionId, paths, cwd);
-        // 静默刷新：新文件直接出现在列表里，不再先清空整块区域。
-        await load(cwd, { silent: true });
+        // 任务化：入队后立刻返回，面板不再干等整个传输。
+        // 同名默认重命名（不静默覆盖服务器上的文件）。
+        const tasks = await opsApi.transferUpload(sessionId, paths, cwd, "rename");
+        const skipped = tasks.filter((task) => task.state === "skipped").length;
+        const queued = tasks.length - skipped;
         setUploadNotice(
-          paths.length === 1
-            ? t("Upload complete")
-            : t("{{count}} files uploaded", { count: paths.length }),
+          skipped > 0
+            ? t("{{count}} queued, {{skipped}} skipped (already exist)", { count: queued, skipped })
+            : t("{{count}} files queued for upload", { count: queued }),
         );
+        setTransferOpen(true);
       } catch (cause) {
         showNotice(toErrorMessage(cause), "danger");
-      } finally {
-        setUploads(null);
       }
     },
-    [cwd, load, sessionId, t, showNotice],
+    [cwd, sessionId, t, showNotice, blockedByInspection],
   );
 
   // The drag listener is registered once, so it calls through this ref rather
@@ -923,8 +938,21 @@ function RemoteFilePanelImpl({
     items.push({ id: "sep1", separator: true });
     return [
       ...items,
-      { id: "rename", label: t("Rename"), icon: Pencil, hint: "F2", onSelect: () => renameEntry(entry) },
-      { id: "duplicate", label: t("Create a copy"), icon: Copy, onSelect: () => copyEntry(entry) },
+      {
+        id: "rename",
+        label: t("Rename"),
+        icon: Pencil,
+        hint: "F2",
+        disabled: inspection,
+        onSelect: () => renameEntry(entry),
+      },
+      {
+        id: "duplicate",
+        label: t("Create a copy"),
+        icon: Copy,
+        disabled: inspection,
+        onSelect: () => copyEntry(entry),
+      },
       {
         id: "copy-path",
         label: t("Copy full path"),
@@ -943,6 +971,7 @@ function RemoteFilePanelImpl({
         label: t("Move to recycle bin"),
         icon: Trash2,
         hint: "Delete",
+        disabled: inspection,
         onSelect: () => removeEntry(entry),
       },
       {
@@ -950,6 +979,7 @@ function RemoteFilePanelImpl({
         label: t("Delete permanently…"),
         icon: Trash2,
         danger: true,
+        disabled: inspection,
         onSelect: () => setPurgeTarget(entry),
       },
     ];
@@ -999,13 +1029,31 @@ function RemoteFilePanelImpl({
       id: "upload",
       label: t("Upload files…"),
       icon: Upload,
-      disabled: !cwd || picking,
+      disabled: !cwd || picking || inspection,
       onSelect: () => void pickFilesToUpload(),
     },
-    { id: "mkdir", label: t("New folder"), icon: FolderPlus, disabled: !cwd, onSelect: createFolder },
-    { id: "touch", label: t("New file"), icon: FilePlus2, disabled: !cwd, onSelect: createFile },
+    {
+      id: "mkdir",
+      label: t("New folder"),
+      icon: FolderPlus,
+      disabled: !cwd || inspection,
+      onSelect: createFolder,
+    },
+    {
+      id: "touch",
+      label: t("New file"),
+      icon: FilePlus2,
+      disabled: !cwd || inspection,
+      onSelect: createFile,
+    },
     { id: "sep-tools", separator: true },
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, disabled: !cwd, onSelect: refresh },
+    {
+      id: "transfers",
+      label: t("Transfers"),
+      icon: ArrowUpDown,
+      onSelect: () => setTransferOpen(true),
+    },
     { id: "trash", label: t("Recycle bin"), icon: Trash2, onSelect: () => setTrashOpen(true) },
     { id: "collapse", label: t("Collapse panel"), icon: Pause, onSelect: onClose },
   ];
@@ -1025,6 +1073,28 @@ function RemoteFilePanelImpl({
         className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-accent/40"
         onPointerDown={startDrag}
       />
+
+      {/* 身份条：服务器与环境始终可见 —— 路径再像，也不能搞错在哪台机器上。 */}
+      {server && (
+        <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-line bg-surface-2/40 px-2 text-10">
+          <ServerIcon size={11} className="shrink-0 text-fg-subtle" />
+          <span
+            className="min-w-0 truncate text-fg-muted"
+            title={`${server.username}@${server.host}:${server.port}`}
+          >
+            {server.name}
+          </span>
+          <EnvironmentBadge environment={server.environment} />
+          <span className="ml-auto min-w-0 truncate font-mono text-fg-subtle" title={server.host}>
+            {server.host}
+          </span>
+          {inspection && (
+            <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-warning">
+              {t("Read-only")}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-1.5">
         {/* 上一级与"返回"合并为一个：文件树里最常用的后退就是回父目录。 */}
@@ -1105,11 +1175,22 @@ function RemoteFilePanelImpl({
                 />
               </>
             )}
-            <PanelButton label="Rename" icon={Pencil} onClick={() => renameEntry(selectedEntry)} />
-            <PanelButton label="Create a copy" icon={Copy} onClick={() => copyEntry(selectedEntry)} />
+            <PanelButton
+              label="Rename"
+              icon={Pencil}
+              disabled={inspection}
+              onClick={() => renameEntry(selectedEntry)}
+            />
+            <PanelButton
+              label="Create a copy"
+              icon={Copy}
+              disabled={inspection}
+              onClick={() => copyEntry(selectedEntry)}
+            />
             <PanelButton
               label="Move to recycle bin"
               icon={Trash2}
+              disabled={inspection}
               onClick={() => removeEntry(selectedEntry)}
               className="hover:text-danger"
             />
@@ -1141,13 +1222,6 @@ function RemoteFilePanelImpl({
           if (event.target === event.currentTarget) setSelected(null);
         }}
       >
-        {uploads && (
-          <div className="flex items-center gap-2 border-b border-line bg-accent/10 px-3 py-2 text-11 text-fg">
-            <Loader2 size={12} className="animate-spin" />
-            <span className="min-w-0 flex-1">{t("Uploading {{count}} files…", { count: uploads.total })}</span>
-            <span className="text-fg-subtle">{t("Do not close this panel")}</span>
-          </div>
-        )}
 
         {uploadNotice && (
           <div className="flex items-center justify-between border-b border-line bg-success/10 px-3 py-2 text-11 text-success">
@@ -1273,6 +1347,8 @@ function RemoteFilePanelImpl({
         onClose={() => setTrashOpen(false)}
         onChanged={refreshSilently}
       />
+
+      <TransferCenterDialog open={transferOpen} onClose={() => setTransferOpen(false)} />
 
       {nameDialog && (
         <NamePromptModal

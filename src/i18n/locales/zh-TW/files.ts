@@ -192,4 +192,24 @@ export default {
   "Every entry is deleted permanently. This cannot be undone.":
     "所有項目都會被永久刪除，此操作不可復原。",
   Restore: "還原",
+
+  // -- 傳輸任務中心（TransferCenterDialog）--
+  Transfers: "傳輸任務",
+  "Uploads and downloads run in the background. Temporary files are renamed into place only after they are complete.":
+    "上傳與下載在背景進行；暫存檔案只有完整寫完才會取代目標檔案。",
+  "No transfers yet.": "還沒有傳輸任務。",
+  "Transferring": "傳輸中",
+  "Skipped (already exists)": "已略過（同名檔案已存在）",
+  "Clear finished": "清理已結束",
+  "{{count}} files queued for upload": "已排隊 {{count}} 個上傳任務",
+  "{{count}} queued, {{skipped}} skipped (already exist)":
+    "已排隊 {{count}} 個，略過 {{skipped}} 個（同名檔案已存在）",
+  "Download queued: {{name}}": "已加入下載佇列：{{name}}",
+
+  // -- 巡檢模式（唯讀）--
+  "Inspection mode: changes are disabled": "巡檢模式：寫入操作已停用",
+  "Read-only": "唯讀",
+  "Inspection mode: saving is disabled.": "巡檢模式：儲存已停用。",
+  "Inspection mode: editing is view-only. Turn it off in Settings to save changes.":
+    "巡檢模式下只能檢視。要儲存請先在設定裡關閉巡檢模式。",
 } as const;

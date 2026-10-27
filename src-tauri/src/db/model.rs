@@ -16,8 +16,18 @@ pub struct ServerRecord {
     pub favorite: bool,
     pub last_connected_at: Option<i64>,
     pub status: String,
+    /// `unspecified` | `production` | `staging` | `development`。
+    ///
+    /// 显式区分"没说"与"非生产"：老备份里没有这个字段时落到 `unspecified`，
+    /// 界面不能把它当成"安全"来对待。
+    #[serde(default = "default_environment")]
+    pub environment: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_environment() -> String {
+    "unspecified".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

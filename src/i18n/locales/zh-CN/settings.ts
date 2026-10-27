@@ -105,4 +105,20 @@ export default {
   "Credentials are exported without secrets — rebind them after importing":
     "凭据导出时不带密钥 —— 导入后需要重新绑定。",
   "This backup was written by an older format version": "这份备份由较旧的格式版本写出。",
+
+  // -- 生产环境保护（巡检模式 / 环境标记）--
+  Safety: "安全",
+  "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.":
+    "只是客户端的防误操作：能挡住误点，挡不住执意执行的人。真正的只读终端需要服务器上配受限账号。",
+  "Inspection mode (read-only)": "巡检模式（只读）",
+  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
+    "在本应用内禁用上传、编辑、删除与服务变更。它无法把自由终端变成只读。",
+  "Not specified": "未指定",
+  Production: "生产",
+  Staging: "预发",
+  Development: "开发",
+  "Server environment: {{environment}}": "服务器环境：{{environment}}",
+  Environment: "环境",
+  "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
+    "生产服务器会在各处高亮；确认框也会先说明目标服务器。",
 } as const;

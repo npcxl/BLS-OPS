@@ -117,6 +117,7 @@ const MODULE_LABELS: Record<NavModule, string> = {
   logs: "Logs",
   projects: "Projects",
   commands: "Commands",
+  database: "Database",
   deploy: "Deploy",
   tasks: "Tasks",
   ai: "AI Assistant",
@@ -134,6 +135,8 @@ const MODULE_TAB_TYPES: Partial<Record<NavModule, WorkspaceTabType>> = {
   logs: "logs",
   projects: "project",
   commands: "command_center",
+  // 数据库：同一个连接只开一个标签；标签内部再切 SQL / 表数据。
+  database: "database",
   // 部署中心不是会话驱动（它只读写本机 SQLite 模型），但同样需要自己的视图 Tab；
   // 放进这张表就复用了"同类型 Tab 只开一个"的逻辑。
   deploy: "deployment",
@@ -156,6 +159,7 @@ const TAB_TYPE_TO_MODULE: Partial<Record<WorkspaceTabType, NavModule>> = {
   command_center: "commands",
   workflow: "deploy",
   deployment: "deploy",
+  database: "database",
 };
 
 const createInitialRootPane = (): WorkbenchPane => {
@@ -203,6 +207,16 @@ interface WorkbenchState {
    * module's left server-list sidebar so picking a server loads its view directly.
    */
   openModuleTabForServer: (module: NavModule, serverId: string) => void;
+  /**
+   * 打开（或聚焦）一个数据库连接的标签。**一个连接一个标签**：
+   * 左侧资产树点两次不会开出两个会话。
+   */
+  openDatabaseTab: (profile: {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+  }) => void;
   closeTab: (paneId: string, tabId: string) => void;
   closeTabById: (tabId: string) => void;
   closeOtherTabs: (paneId: string, tabId: string) => void;
@@ -489,6 +503,54 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
 
       return {
         activeModule: module,
+        rootPane: replacePane(state.rootPane, paneId, {
+          ...pane,
+          tabs,
+          activeTabId: tab.id,
+        }),
+        focusedPaneId: paneId,
+      };
+    }),
+
+  openDatabaseTab: (profile) =>
+    set((state) => {
+      const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+      const pane = findPane(state.rootPane, paneId);
+      if (!pane || !isLeafPane(pane)) return state;
+
+      const existing = pane.tabs.find(
+        (tab) => tab.type === "database" && tab.profileId === profile.id,
+      );
+      if (existing) {
+        return {
+          activeModule: "database",
+          rootPane: replacePane(state.rootPane, paneId, {
+            ...pane,
+            activeTabId: existing.id,
+          }),
+          focusedPaneId: paneId,
+        };
+      }
+
+      const tab = normalizeTab({
+        id: uuid(),
+        type: "database",
+        module: "database",
+        title: profile.name,
+        subtitle: `${profile.host}:${profile.port}`,
+        profileId: profile.id,
+      });
+
+      // "从左侧选择一个连接"的占位标签被这次真实选择替换掉。
+      const active = pane.tabs.find((item) => item.id === pane.activeTabId);
+      const isPicker =
+        !!active && active.type === "database" && !active.profileId;
+      const tabs = isPicker
+        ? pane.tabs.map((item) => (item.id === active!.id ? tab : item))
+        : [...pane.tabs, tab];
+
+      return {
+        activeModule: "database",
         rootPane: replacePane(state.rootPane, paneId, {
           ...pane,
           tabs,

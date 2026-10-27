@@ -13,9 +13,17 @@ export interface ServerRecord {
   favorite: boolean;
   last_connected_at?: number | null;
   status: string;
+  /**
+   * `unspecified` | `production` | `staging` | `development`。
+   *
+   * `unspecified` 是"没说"，不是"安全"：界面不能把它当非生产对待。
+   */
+  environment: ServerEnvironment;
   created_at: number;
   updated_at: number;
 }
+
+export type ServerEnvironment = "unspecified" | "production" | "staging" | "development";
 
 export interface ServerGroupRecord {
 

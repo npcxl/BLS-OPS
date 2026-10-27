@@ -6,6 +6,7 @@ import {
   Rows2,
   Columns2,
   Server,
+  Table2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -36,6 +37,7 @@ const MODULE_ICONS: Record<NavModule, TabIcon> = {
   logs: FileDescriptionIcon,
   projects: Stack3Icon,
   commands: CommandCenterIcon,
+  database: Table2,
   deploy: RocketIcon,
   tasks: UnorderedListIcon,
   ai: SparklesIcon,

@@ -416,14 +416,16 @@ pub fn apply(
         let changed = if overwrite {
             tx.execute(
                 "INSERT INTO servers (id, name, host, port, username, credential_id, group_id, tags,
-                                      proxy_jump_id, favorite, last_connected_at, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                                      proxy_jump_id, favorite, last_connected_at, status, environment,
+                                      created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, host=excluded.host, port=excluded.port,
                      username=excluded.username, credential_id=excluded.credential_id,
                      group_id=excluded.group_id, tags=excluded.tags,
                      proxy_jump_id=excluded.proxy_jump_id, favorite=excluded.favorite,
-                     status=excluded.status, updated_at=excluded.updated_at",
+                     status=excluded.status, environment=excluded.environment,
+                     updated_at=excluded.updated_at",
                 params![
                     server.id,
                     server.name,
@@ -437,6 +439,7 @@ pub fn apply(
                     server.favorite,
                     server.last_connected_at,
                     server.status,
+                    server.environment,
                     server.created_at,
                     server.updated_at
                 ],
@@ -444,8 +447,9 @@ pub fn apply(
         } else {
             tx.execute(
                 "INSERT OR IGNORE INTO servers (id, name, host, port, username, credential_id, group_id, tags,
-                                                proxy_jump_id, favorite, last_connected_at, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                                proxy_jump_id, favorite, last_connected_at, status, environment,
+                                                created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     server.id,
                     server.name,
@@ -459,6 +463,7 @@ pub fn apply(
                     server.favorite,
                     server.last_connected_at,
                     server.status,
+                    server.environment,
                     server.created_at,
                     server.updated_at
                 ],
@@ -683,6 +688,9 @@ fn read_servers(conn: &Connection) -> Result<Vec<ServerRecord>> {
             favorite: row.get("favorite")?,
             last_connected_at: row.get("last_connected_at")?,
             status: row.get("status")?,
+            environment: row
+                .get::<_, String>("environment")
+                .unwrap_or_else(|_| "unspecified".to_string()),
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })

@@ -53,6 +53,7 @@ fn server(id: &str, name: &str) -> ServerRecord {
         favorite: false,
         last_connected_at: None,
         status: "idle".to_string(),
+        environment: "unspecified".to_string(),
         created_at: 1,
         updated_at: 1,
     }

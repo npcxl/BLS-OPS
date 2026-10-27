@@ -192,4 +192,24 @@ export default {
   "Every entry is deleted permanently. This cannot be undone.":
     "所有条目都会被永久删除，此操作不可撤销。",
   Restore: "恢复",
+
+  // -- 传输任务中心（TransferCenterDialog）--
+  Transfers: "传输任务",
+  "Uploads and downloads run in the background. Temporary files are renamed into place only after they are complete.":
+    "上传与下载在后台进行；临时文件只有完整写完才会替换目标文件。",
+  "No transfers yet.": "还没有传输任务。",
+  "Transferring": "传输中",
+  "Skipped (already exists)": "已跳过（同名文件已存在）",
+  "Clear finished": "清理已结束",
+  "{{count}} files queued for upload": "已排队 {{count}} 个上传任务",
+  "{{count}} queued, {{skipped}} skipped (already exist)":
+    "已排队 {{count}} 个，跳过 {{skipped}} 个（同名文件已存在）",
+  "Download queued: {{name}}": "已加入下载队列：{{name}}",
+
+  // -- 巡检模式（只读）--
+  "Inspection mode: changes are disabled": "巡检模式：写操作已禁用",
+  "Read-only": "只读",
+  "Inspection mode: saving is disabled.": "巡检模式：保存已禁用。",
+  "Inspection mode: editing is view-only. Turn it off in Settings to save changes.":
+    "巡检模式下只能查看。要保存请先在设置里关闭巡检模式。",
 } as const;

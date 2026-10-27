@@ -20,6 +20,24 @@ dirs = "6"
 encoding_rs = "0.8.35"
 keyring = "4.1.6"
 notify = "7"
+# 高性能数据库工作台（第二阶段）：原生 MySQL 协议驱动。
+#
+# * 选 `mysql_async` 而不是 `sqlx`：前者提供**运行时文本协议**（`query_iter`）
+#   与逐行 `stream`，多结果集、affected_rows、连接 id 都是一等公民；
+#   `sqlx::query()` 也能动态查询，但多结果集与流式取消没有这么直接。
+# * 只启用 rustls（ring provider）：项目其余部分已经用 rustls，不引入 OpenSSL。
+#   `default-rustls-ring` = derive + rust_backend + rustls-tls + tls12 + ring，
+#   不启用 native-tls，也没有任何“默认不验证证书”的开关。
+# * 绝不用 `sqlx::query!` 这类编译期宏：本工具连接的是用户自己的库，
+#   构建期没有、也不应该有那个库的连接串。
+mysql_async = { version = "0.37", default-features = false, features = [
+    "default-rustls-ring",
+] }
+# 查询结果以 `TryStream` 拉取，用 `next()` 逐行推进 —— 这是背压的基础。
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# 显式安装 rustls provider：同一进程里 reqwest 与 mysql_async 都会用 rustls，
+# 没有进程级默认 provider 时 rustls 会在第一次握手 panic。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # P5.1 制品导入：只用这四个，且都只做"读"。
 # * `sha2`   —— 内容指纹（Artifact 与内容哈希绑定，文件一变分析就失效）。
 # * `zip`    —— 读 ZIP 中央目录 + 按需读单个条目；`default-features = false`
@@ -50,7 +68,9 @@ serde_json = "1"
 sha2 = "0.11"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable`：启用 `WebviewWindow::set_effects`（Windows Acrylic 毛玻璃）。
+# CSS 的 `backdrop-filter` 模糊不了窗口背后的桌面，真正的磨砂只能交给 DWM。
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-clipboard-manager = "2.3.3"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.5"

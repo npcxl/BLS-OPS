@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    database::DatabaseManager,
     db::AppDb,
     deployment::ai::model::AiReviewRegistry,
     deployment::artifact::tasks::TaskRegistry,
@@ -34,6 +35,10 @@ pub struct AppState {
     pub ai_reviews: AiReviewRegistry,
     /// 命令检索的收藏/使用快照：避免每次按键都开库查两张表。
     pub command_search: crate::command_center::CommandSearchCache,
+    /// 文件传输任务中心（上传 / 下载队列，内存态 + 可取消）。
+    pub transfers: Arc<crate::transfer::TransferCenter>,
+    /// 数据库工作台：连接运行时、隧道、会话、查询与导出。
+    pub database: DatabaseManager,
 }
 
 impl AppState {
@@ -50,6 +55,8 @@ impl AppState {
             env_locks: EnvironmentLocks::default(),
             ai_reviews: AiReviewRegistry::default(),
             command_search: crate::command_center::CommandSearchCache::default(),
+            transfers: Arc::new(crate::transfer::TransferCenter::new()),
+            database: DatabaseManager::default(),
         }
     }
 }

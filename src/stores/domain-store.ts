@@ -198,6 +198,8 @@ export function emptyServer(): ServerRecord {
     favorite: false,
     last_connected_at: null,
     status: "idle",
+    // 新服务器先标"没说"：不替用户猜它是生产还是测试。
+    environment: "unspecified",
     created_at: now,
     updated_at: now,
   };

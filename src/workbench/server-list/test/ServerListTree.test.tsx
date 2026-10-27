@@ -39,6 +39,7 @@ function server(id: string, overrides: Partial<ServerRecord> = {}): ServerRecord
     favorite: false,
     last_connected_at: null,
     status: "idle",
+    environment: "unspecified",
     created_at: 0,
     updated_at: 0,
     ...overrides,

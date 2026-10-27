@@ -55,6 +55,13 @@ const DeployView = lazy(() =>
   })),
 );
 
+/** 数据库工作台：一个标签 = 一个连接（SQL 编辑器 + 表数据）。 */
+const DatabaseView = lazy(() =>
+  import("@/workbench/views/database/DatabaseView").then((module) => ({
+    default: module.DatabaseView,
+  })),
+);
+
 function TerminalFallback() {
   return (
     <div className="flex h-full items-center justify-center bg-surface-1">
@@ -110,6 +117,12 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
       return (
         <Suspense fallback={<TerminalFallback />}>
           <DeployView tab={tab} />
+        </Suspense>
+      );
+    case "database":
+      return (
+        <Suspense fallback={<TerminalFallback />}>
+          <DatabaseView tab={tab} />
         </Suspense>
       );
     default:

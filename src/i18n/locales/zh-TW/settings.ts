@@ -104,4 +104,20 @@ export default {
   "Credentials are exported without secrets — rebind them after importing":
     "憑證匯出時不帶金鑰 —— 匯入後需要重新綁定。",
   "This backup was written by an older format version": "這份備份由較舊的格式版本寫出。",
+
+  // -- 生產環境保護（巡檢模式 / 環境標記）--
+  Safety: "安全",
+  "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.":
+    "只是客戶端的防誤操作：能擋住誤點，擋不住執意執行的人。真正的唯讀終端需要伺服器上設定受限帳號。",
+  "Inspection mode (read-only)": "巡檢模式（唯讀）",
+  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
+    "在本應用內停用上傳、編輯、刪除與服務變更。它無法把自由終端變成唯讀。",
+  "Not specified": "未指定",
+  Production: "生產",
+  Staging: "預發",
+  Development: "開發",
+  "Server environment: {{environment}}": "伺服器環境：{{environment}}",
+  Environment: "環境",
+  "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
+    "生產伺服器會在各處高亮；確認框也會先說明目標伺服器。",
 } as const;

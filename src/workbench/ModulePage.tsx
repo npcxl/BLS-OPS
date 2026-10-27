@@ -40,6 +40,12 @@ const MODULES: Record<NavModule, ModuleSpec> = {
     description: "Linux command intelligence center",
     sections: ["Command knowledge base", "Structured results", "Raw output"],
   },
+  database: {
+    title: "Module: Database",
+    icon: SquareTerminal,
+    description: "MySQL workbench: browse, query, edit, export",
+    sections: ["Connections", "SQL editor", "Table data"],
+  },
   deploy: {
     title: "Module: Deploy",
     icon: Rocket,

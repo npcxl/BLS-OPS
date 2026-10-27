@@ -29,7 +29,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ErrorText, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
 import type {
   AssignValue,
@@ -522,41 +523,45 @@ export function TableBrowser({
         <>
           <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
             <Filter size={11} className="shrink-0 text-fg-subtle" />
-            <select
-              className={cn(selectClass, "h-[24px] w-[130px] !pr-6 text-10")}
+            <Select
+              className="w-[140px]"
+              size="sm"
               value={draftFilter.column}
-              onChange={(event) =>
-                setDraftFilter((current) => ({ ...current, column: event.target.value }))
+              placeholder={t("选择列")}
+              ariaLabel={t("选择列")}
+              onChange={(value) =>
+                setDraftFilter((current) => ({ ...current, column: value }))
               }
-            >
-              <option value="">{t("选择列")}</option>
-              {columns.map((column) => (
-                <option key={column.name} value={column.name}>
-                  {column.name}
-                </option>
-              ))}
-            </select>
-            <select
-              className={cn(selectClass, "h-[24px] w-[110px] !pr-6 text-10")}
+              options={columns.map((column) => ({
+                value: column.name,
+                label: column.name,
+                hint: column.data_type,
+              }))}
+            />
+            <Select
+              className="w-[112px]"
+              size="sm"
               value={draftFilter.op}
-              onChange={(event) =>
+              ariaLabel={t("筛选条件")}
+              onChange={(value) =>
                 setDraftFilter((current) => ({
                   ...current,
-                  op: event.target.value as BrowseFilter["op"],
+                  op: value as BrowseFilter["op"],
                 }))
               }
-            >
-              <option value="contains">{t("包含")}</option>
-              <option value="eq">=</option>
-              <option value="ne">≠</option>
-              <option value="starts_with">{t("开头是")}</option>
-              <option value="gt">&gt;</option>
-              <option value="gte">≥</option>
-              <option value="lt">&lt;</option>
-              <option value="lte">≤</option>
-              <option value="is_null">IS NULL</option>
-              <option value="not_null">IS NOT NULL</option>
-            </select>
+              options={[
+                { value: "contains", label: t("包含") },
+                { value: "eq", label: "=" },
+                { value: "ne", label: "≠" },
+                { value: "starts_with", label: t("开头是") },
+                { value: "gt", label: ">" },
+                { value: "gte", label: "≥" },
+                { value: "lt", label: "<" },
+                { value: "lte", label: "≤" },
+                { value: "is_null", label: "IS NULL" },
+                { value: "not_null", label: "IS NOT NULL" },
+              ]}
+            />
             <input
               className={cn(fieldClass, "h-[24px] w-[150px] text-10")}
               value={draftFilter.value}
@@ -602,20 +607,20 @@ export function TableBrowser({
 
             <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-fg-subtle">
               {result?.pagination === "keyset" ? "keyset" : "offset"}
-              <select
-                className={cn(selectClass, "h-[22px] w-[70px] !pr-5 text-10")}
-                value={pageSize}
-                onChange={(event) => {
-                  setPageSize(Number(event.target.value));
+              <Select
+                className="w-[86px]"
+                size="sm"
+                value={String(pageSize)}
+                ariaLabel={t("每页行数")}
+                onChange={(value) => {
+                  setPageSize(Number(value));
                   resetPaging();
                 }}
-              >
-                {PAGE_SIZES.map((size) => (
-                  <option key={size} value={size}>
-                    {size} {t("行")}
-                  </option>
-                ))}
-              </select>
+                options={PAGE_SIZES.map((size) => ({
+                  value: String(size),
+                  label: `${size} ${t("行")}`,
+                }))}
+              />
               <Button
                 variant="ghost"
                 size="xs"

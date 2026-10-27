@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import { databaseApi } from "@/api/ops-api";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
@@ -244,21 +245,25 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
               </span>
             )}
 
-            <select
-              className="ops-select h-[24px] max-w-[190px] cursor-default rounded-[6px] border border-line bg-surface-2 py-0 pl-2 pr-6 text-11 text-fg outline-none focus:border-accent"
+            <Select
+              className="w-[190px]"
+              size="sm"
               value={currentDatabase ?? ""}
-              onChange={(event) => void switchDatabase(event.target.value)}
+              ariaLabel={t("切换当前数据库（USE）")}
               title={t("切换当前数据库（USE）")}
-            >
-              <option value="">{t("（未选择数据库）")}</option>
-              {dbList
-                .filter((database) => !database.system)
-                .map((database) => (
-                  <option key={database.name} value={database.name}>
-                    {database.name}
-                  </option>
-                ))}
-            </select>
+              onChange={(value) => {
+                if (value) void switchDatabase(value);
+              }}
+              options={[
+                { value: "", label: t("（未选择数据库）") },
+                ...dbList
+                  .filter((database) => !database.system)
+                  .map((database) => ({
+                    value: database.name,
+                    label: database.name,
+                  })),
+              ]}
+            />
             {switching && <Loader2 size={11} className="animate-spin text-accent" />}
             {switchError && (
               <span className="max-w-[220px] truncate text-[10px] text-danger" title={switchError}>

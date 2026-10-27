@@ -349,7 +349,13 @@ pub fn csv_field(value: &str) -> String {
 }
 
 fn csv_quote(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+    // 空字符串必须写成 `""`，否则会和 NULL 的"空字段"混在一起。
+    if value.is_empty()
+        || value.contains(',')
+        || value.contains('"')
+        || value.contains('\n')
+        || value.contains('\r')
+    {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()

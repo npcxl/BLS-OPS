@@ -10,7 +10,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, FolderOpen, Loader2, ShieldCheck, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import type {
   ConnectionTestResult,
   DatabaseProfile,
@@ -197,30 +198,33 @@ export function ConnectionDialog({
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-[150px_1fr] items-end gap-2 rounded-[8px] border border-line bg-surface-2/60 p-2">
           <Field label={t("数据库类型")}>
-            <select
-              className={selectClass}
+            <Select
               value={draft.engine}
-              onChange={(event) =>
-                patch({ engine: event.target.value as DatabaseProfile["engine"] })
+              ariaLabel={t("数据库类型")}
+              onChange={(value) =>
+                patch({ engine: value as DatabaseProfile["engine"] })
               }
-            >
-              <option value="mysql">{t("MySQL（不区分版本）")}</option>
-              <option value="mariadb" disabled>
-                {t("MariaDB（尚未实现）")}
-              </option>
-              <option value="postgres" disabled>
-                {t("PostgreSQL（尚未实现）")}
-              </option>
-              <option value="sqlite" disabled>
-                {t("SQLite（尚未实现）")}
-              </option>
-              <option value="sqlserver" disabled>
-                {t("SQL Server（尚未实现）")}
-              </option>
-              <option value="oracle" disabled>
-                {t("Oracle（尚未实现）")}
-              </option>
-            </select>
+              options={[
+                { value: "mysql", label: t("MySQL（不区分版本）"), hint: "MySQL 8.x" },
+                {
+                  value: "mariadb",
+                  label: t("MariaDB（尚未实现）"),
+                  disabled: true,
+                },
+                {
+                  value: "postgres",
+                  label: t("PostgreSQL（尚未实现）"),
+                  disabled: true,
+                },
+                { value: "sqlite", label: t("SQLite（尚未实现）"), disabled: true },
+                {
+                  value: "sqlserver",
+                  label: t("SQL Server（尚未实现）"),
+                  disabled: true,
+                },
+                { value: "oracle", label: t("Oracle（尚未实现）"), disabled: true },
+              ]}
+            />
           </Field>
           <p className="pb-0.5 text-[10px] leading-relaxed text-fg-subtle">
             {t(
@@ -315,31 +319,34 @@ export function ConnectionDialog({
           <div className="mb-1.5 text-11 font-medium text-fg-muted">{t("SSH 隧道")}</div>
           <div className="grid grid-cols-2 gap-2">
             <Field label={t("SSH 服务器")} hint={t("复用已保存的 SSH 凭据与主机指纹") }>
-              <select
-                className={selectClass}
+              <Select
                 value={draft.ssh_server_id ?? ""}
-                onChange={(event) =>
-                  patch({ ssh_server_id: event.target.value || null })
-                }
-              >
-                <option value="">{t("直连（不使用隧道）")}</option>
-                {sshServers.map((server) => (
-                  <option key={server.id} value={server.id}>
-                    {server.name} · {server.username}@{server.host}:{server.port}
-                  </option>
-                ))}
-              </select>
+                ariaLabel={t("SSH 服务器")}
+                onChange={(value) => patch({ ssh_server_id: value || null })}
+                options={[
+                  { value: "", label: t("直连（不使用隧道）") },
+                  ...sshServers.map((server) => ({
+                    value: server.id,
+                    label: server.name,
+                    hint: `${server.username}@${server.host}:${server.port}`,
+                  })),
+                ]}
+              />
             </Field>
             <Field label={t("TLS 模式")} hint={t("选择 required 后绝不自动降级为明文") }>
-              <select
-                className={selectClass}
+              <Select
                 value={draft.tls_mode}
-                onChange={(event) => patch({ tls_mode: event.target.value as TlsMode })}
-              >
-                <option value="disabled">{t("不加密（明文）")}</option>
-                <option value="verify_ca">{t("验证证书链（名称按下方验证名称）")}</option>
-                <option value="verify_identity">{t("验证证书链 + 主机名")}</option>
-              </select>
+                ariaLabel={t("TLS 模式")}
+                onChange={(value) => patch({ tls_mode: value as TlsMode })}
+                options={[
+                  { value: "disabled", label: t("不加密（明文）") },
+                  {
+                    value: "verify_ca",
+                    label: t("验证证书链（名称按下方验证名称）"),
+                  },
+                  { value: "verify_identity", label: t("验证证书链 + 主机名") },
+                ]}
+              />
             </Field>
           </div>
 

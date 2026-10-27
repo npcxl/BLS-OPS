@@ -8,7 +8,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import type {
   AssignValue,
   ColumnAssignment,
@@ -163,22 +164,23 @@ export function EditRowDialog({
                   <span className="rounded bg-accent/15 px-1 text-[9px] text-accent">PK</span>
                 )}
               </div>
-              <select
-                className={selectClass}
+              <Select
                 value={value.kind}
                 disabled={locked}
-                onChange={(event) => {
-                  const kind = event.target.value as AssignValue["kind"];
+                ariaLabel={t("字段值类型")}
+                onChange={(next) => {
+                  const kind = next as AssignValue["kind"];
                   setDraft((current) => ({
                     ...current,
                     [column.name]: kind === "value" ? { kind: "value", value: "" } : { kind },
                   }));
                 }}
-              >
-                <option value="value">{t("值")}</option>
-                <option value="null">NULL</option>
-                <option value="default">DEFAULT</option>
-              </select>
+                options={[
+                  { value: "value", label: t("值") },
+                  { value: "null", label: "NULL" },
+                  { value: "default", label: "DEFAULT" },
+                ]}
+              />
               <input
                 className={fieldClass}
                 disabled={locked || value.kind !== "value" || binary}

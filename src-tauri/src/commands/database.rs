@@ -6,9 +6,9 @@
 use tauri::State;
 
 use super::open_db;
-use crate::database::{driver, metadata, model::*, mutate, profiles, query, table};
 use crate::database::runtime::ProfileRuntime;
 use crate::database::session::SessionEntry;
+use crate::database::{driver, metadata, model::*, mutate, profiles, query, table};
 use crate::state::AppState;
 use std::sync::Arc;
 
@@ -82,12 +82,8 @@ pub async fn db_profile_save(
         let conn = open_db(&state).map_err(db_error)?;
         profiles::validate_profile(&conn, &request.profile)?;
         let old = profiles::get_profile(&conn, &request.profile.id).map_err(db_error)?;
-        let saved = profiles::save_profile(
-            &conn,
-            &request.profile,
-            request.password.as_deref(),
-        )
-        .map_err(db_error)?;
+        let saved = profiles::save_profile(&conn, &request.profile, request.password.as_deref())
+            .map_err(db_error)?;
         (saved, old)
     };
 
@@ -104,10 +100,7 @@ pub async fn db_profile_save(
 }
 
 #[tauri::command]
-pub async fn db_profile_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), DbErrorInfo> {
+pub async fn db_profile_delete(state: State<'_, AppState>, id: String) -> Result<(), DbErrorInfo> {
     state.database.close_profile(&id).await;
     let conn = open_db(&state).map_err(db_error)?;
     profiles::delete_profile(&conn, &id).map_err(db_error)
@@ -226,7 +219,11 @@ pub async fn db_metadata_invalidate(
     state
         .database
         .metadata
-        .invalidate(if target.is_empty() { None } else { Some(&target) })
+        .invalidate(if target.is_empty() {
+            None
+        } else {
+            Some(&target)
+        })
         .await;
     Ok(state.database.metadata.status(&target).await)
 }

@@ -63,10 +63,7 @@ fn expected_sql(assignment: &ColumnAssignment) -> Result<(String, Option<Value>)
 
 fn key_sql(key: &[AssignValue], columns: &[String]) -> Result<(String, Vec<Value>), DbErrorInfo> {
     if key.len() != columns.len() {
-        return Err(DbErrorInfo::new(
-            "query",
-            "行定位键与表的主键列数量不一致",
-        ));
+        return Err(DbErrorInfo::new("query", "行定位键与表的主键列数量不一致"));
     }
     let mut clauses = Vec::new();
     let mut params = Vec::new();
@@ -124,14 +121,17 @@ pub async fn apply(
     }
 
     // 校验列名：只能来自这次读取到的元数据。
-    let known_columns: Vec<&str> = detail.columns.iter().map(|column| column.name.as_str()).collect();
+    let known_columns: Vec<&str> = detail
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
     for row in &request.rows {
-        for assignment in row.values.iter().chain(
-            row.expected
-                .as_deref()
-                .unwrap_or(&[])
-                .iter(),
-        ) {
+        for assignment in row
+            .values
+            .iter()
+            .chain(row.expected.as_deref().unwrap_or(&[]).iter())
+        {
             if !known_columns.contains(&assignment.column.as_str()) {
                 return Err(DbErrorInfo::new(
                     "query",
@@ -213,9 +213,7 @@ pub async fn apply(
         .count() as u64;
 
     let warning = if !transactional {
-        Some(
-            "非事务表：已执行的行无法回滚；失败行的后续操作已停止".to_string(),
-        )
+        Some("非事务表：已执行的行无法回滚；失败行的后续操作已停止".to_string())
     } else {
         None
     };

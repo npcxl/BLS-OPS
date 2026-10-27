@@ -268,10 +268,7 @@ fn build_csv_plan(
         return Ok((sql, Params::Positional(params)));
     }
 
-    Ok((
-        request.sql.clone(),
-        Params::Empty,
-    ))
+    Ok((request.sql.clone(), Params::Empty))
 }
 
 async fn run_export(
@@ -282,33 +279,28 @@ async fn run_export(
     cancel_rx: watch::Receiver<bool>,
 ) {
     let started = Instant::now();
-    let part_path = std::path::PathBuf::from(format!(
-        "{}.part-{}",
-        request.target_path, task.export_id
-    ));
+    let part_path =
+        std::path::PathBuf::from(format!("{}.part-{}", request.target_path, task.export_id));
     let target_path = std::path::PathBuf::from(&request.target_path);
 
-    let mut conn: mysql_async::Conn = match tokio::time::timeout(
-        Duration::from_secs(15),
-        profile.export_pool().get_conn(),
-    )
-    .await
-    {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(error)) => {
-            fail(&task, map_error(&error, "tcp"), &part_path).await;
-            return;
-        }
-        Err(_) => {
-            fail(
-                &task,
-                DbErrorInfo::new("tcp", "导出连接超时").retryable(true),
-                &part_path,
-            )
-            .await;
-            return;
-        }
-    };
+    let mut conn: mysql_async::Conn =
+        match tokio::time::timeout(Duration::from_secs(15), profile.export_pool().get_conn()).await
+        {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(error)) => {
+                fail(&task, map_error(&error, "tcp"), &part_path).await;
+                return;
+            }
+            Err(_) => {
+                fail(
+                    &task,
+                    DbErrorInfo::new("tcp", "导出连接超时").retryable(true),
+                    &part_path,
+                )
+                .await;
+                return;
+            }
+        };
 
     let (sql, params) = match build_csv_plan(&request, detail.as_ref()) {
         Ok(plan) => plan,

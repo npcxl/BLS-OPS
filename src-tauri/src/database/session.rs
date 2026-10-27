@@ -143,7 +143,8 @@ impl SessionEntry {
             inner.transaction = "unknown".to_string();
             drop(inner);
             // 关闭 socket：服务器会终止这条连接上的查询。
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
             return;
         }
 
@@ -162,7 +163,8 @@ impl SessionEntry {
             inner.conn.take()
         };
         if let Some(conn) = conn {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
         }
     }
 

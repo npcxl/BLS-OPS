@@ -165,10 +165,17 @@ pub struct DbSessionInfo {
 pub enum DbValue {
     Null,
     /// 有符号/无符号整数一律字符串，避免 JS 精度丢失。
-    Int { value: String, unsigned: bool },
+    Int {
+        value: String,
+        unsigned: bool,
+    },
     /// DECIMAL 精确字符串，绝不转 f64。
-    Decimal { value: String },
-    Float { value: f64 },
+    Decimal {
+        value: String,
+    },
+    Float {
+        value: f64,
+    },
     /// 文本（VARCHAR/TEXT/ENUM/SET…）。`truncated` 表示预览被截断。
     Text {
         value: String,
@@ -181,11 +188,18 @@ pub enum DbValue {
         truncated: bool,
     },
     /// `DATE`（无时区）。
-    Date { value: String },
+    Date {
+        value: String,
+    },
     /// `DATETIME` / `TIMESTAMP`：原样展示服务器给出的字面值，不做时区换算。
-    DateTime { value: String, timezone: String },
+    DateTime {
+        value: String,
+        timezone: String,
+    },
     /// `TIME`，可能超过 24 小时。
-    Time { value: String },
+    Time {
+        value: String,
+    },
     Binary {
         /// base64（IPC 是 JSON）。
         base64: String,
@@ -193,7 +207,10 @@ pub enum DbValue {
         truncated: bool,
     },
     /// BIT(n)：按位串展示，同时给十进制。
-    Bit { bits: String, value: String },
+    Bit {
+        bits: String,
+        value: String,
+    },
     /// 驱动无法安全解码的类型：绝不丢列，给出类型名与受限预览。
     Unsupported {
         type_name: String,

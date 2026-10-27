@@ -34,11 +34,7 @@ async fn pooled(profile: &ProfileRuntime) -> Result<Conn, DbErrorInfo> {
     }
 }
 
-async fn fetch<T>(
-    conn: &mut Conn,
-    sql: &str,
-    params: Params,
-) -> Result<Vec<T>, DbErrorInfo>
+async fn fetch<T>(conn: &mut Conn, sql: &str, params: Params) -> Result<Vec<T>, DbErrorInfo>
 where
     T: FromRow + Send + 'static,
 {
@@ -111,7 +107,10 @@ impl MetadataCache {
         let prefix = format!("{profile_id}\u{1}");
         MetadataCacheStatus {
             profile_id: profile_id.to_string(),
-            entries: entries.keys().filter(|key| key.starts_with(&prefix)).count(),
+            entries: entries
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .count(),
             last_invalidated_at: *self.invalidated_at.lock().await,
         }
     }
@@ -181,17 +180,19 @@ pub async fn list_tables(
 
     let tables: Vec<DbTable> = rows
         .into_iter()
-        .map(|(name, table_type, engine, estimated_rows, comment)| DbTable {
-            kind: if table_type.to_ascii_uppercase().contains("VIEW") {
-                "view".to_string()
-            } else {
-                "table".to_string()
+        .map(
+            |(name, table_type, engine, estimated_rows, comment)| DbTable {
+                kind: if table_type.to_ascii_uppercase().contains("VIEW") {
+                    "view".to_string()
+                } else {
+                    "table".to_string()
+                },
+                name,
+                engine,
+                estimated_rows: estimated_rows.and_then(|value| u64::try_from(value).ok()),
+                comment: comment.unwrap_or_default(),
             },
-            name,
-            engine,
-            estimated_rows: estimated_rows.and_then(|value| u64::try_from(value).ok()),
-            comment: comment.unwrap_or_default(),
-        })
+        )
         .collect();
 
     cache.put(key, &tables).await;
@@ -313,19 +314,26 @@ pub async fn table_detail(
         )
         .collect();
 
-    let index_rows: Vec<(String, i64, i64, Option<String>, Option<i64>, Option<String>, String)> =
-        fetch(
-            &mut conn,
-            r#"
+    let index_rows: Vec<(
+        String,
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        String,
+    )> = fetch(
+        &mut conn,
+        r#"
             SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME,
                    SUB_PART, COLLATION, INDEX_TYPE
             FROM information_schema.STATISTICS
             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
             ORDER BY INDEX_NAME, SEQ_IN_INDEX
             "#,
-            positional(),
-        )
-        .await?;
+        positional(),
+    )
+    .await?;
 
     let mut indexes: Vec<DbIndex> = Vec::new();
     for (name, non_unique, seq, column, sub_part, collation, index_type) in index_rows {
@@ -368,7 +376,13 @@ pub async fn table_detail(
     let primary_key: Vec<String> = indexes
         .iter()
         .find(|index| index.primary)
-        .map(|index| index.columns.iter().map(|column| column.name.clone()).collect())
+        .map(|index| {
+            index
+                .columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect()
+        })
         .unwrap_or_default();
 
     // keyset 的可靠键：主键优先；否则找一个"唯一 + 全列 NOT NULL + 无前缀 +
@@ -385,8 +399,16 @@ pub async fn table_detail(
             .map(|column| {
                 !matches!(
                     column.data_type.to_ascii_lowercase().as_str(),
-                    "text" | "mediumtext" | "longtext" | "tinytext" | "blob" | "mediumblob"
-                        | "longblob" | "tinyblob" | "json" | "geometry"
+                    "text"
+                        | "mediumtext"
+                        | "longtext"
+                        | "tinytext"
+                        | "blob"
+                        | "mediumblob"
+                        | "longblob"
+                        | "tinyblob"
+                        | "json"
+                        | "geometry"
                 )
             })
             .unwrap_or(false)
@@ -405,7 +427,13 @@ pub async fn table_detail(
                         && stable_type(&column.name)
                 })
             })
-            .map(|index| index.columns.iter().map(|column| column.name.clone()).collect())
+            .map(|index| {
+                index
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect()
+            })
     };
 
     // `SHOW CREATE TABLE` 是用户明确要求"查看表定义"时才打开的面板里的一部分。

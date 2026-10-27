@@ -5,11 +5,11 @@ pub mod capability_probe;
 /// P4 Linux 命令智能中心：知识库、检索与安全执行（P4.0–P4.3）。
 pub mod command_center;
 mod commands;
+/// 高性能数据库工作台（MySQL 原生协议、SSH 隧道、查询任务、CSV 导出）。
+pub mod database;
 /// 本地 SQLite 持久化。`pub` 是为了让 `tests/` 里的真实集成测试能用与
 /// 生产完全相同的 schema/迁移，而不是在测试里手抄一份建表 SQL。
 pub mod db;
-/// 高性能数据库工作台（MySQL 原生协议、SSH 隧道、查询任务、CSV 导出）。
-pub mod database;
 /// P5.0 智能部署中心领域模型（应用/环境/服务/方案图/运行/版本）。
 ///
 /// 只建模与校验，**不执行任何部署**：模型里没有任何自由文本命令字段，

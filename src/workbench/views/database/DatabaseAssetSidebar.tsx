@@ -524,7 +524,10 @@ export function DatabaseAssetSidebar() {
         onClose={() => setDialog(null)}
         onSaved={(saved) => {
           open(saved);
-          void toggleProfile(saved.id);
+          // 已经展开的不要因为保存再收起（toggle 会翻转）。
+          if (!useDatabaseStore.getState().expandedProfiles[saved.id]) {
+            void toggleProfile(saved.id);
+          }
         }}
       />
     </div>

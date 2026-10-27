@@ -149,7 +149,6 @@ export function TableBrowser({
   } | null>(null);
   const requestNonce = useRef(0);
 
-  const filterColumn = useRef("");
   const [draftFilter, setDraftFilter] = useState<{
     column: string;
     op: BrowseFilter["op"];
@@ -281,8 +280,9 @@ export function TableBrowser({
     ]);
   };
 
-  const submit = async () => {
+  const submit = async (allowOverride?: boolean) => {
     if (!session || pending.length === 0) return;
+    const allow = allowOverride ?? allowNonTransactional;
     setSubmitting(true);
     setMutationError(null);
     setMutation(null);
@@ -312,7 +312,7 @@ export function TableBrowser({
         database,
         table,
         rows,
-        allowNonTransactional,
+        allowNonTransactional: allow,
       });
       setMutation(outcome);
       if (outcome.state === "committed") {
@@ -525,10 +525,9 @@ export function TableBrowser({
             <select
               className={cn(selectClass, "h-[24px] w-[130px] !pr-6 text-10")}
               value={draftFilter.column}
-              onChange={(event) => {
-                filterColumn.current = event.target.value;
-                setDraftFilter((current) => ({ ...current, column: event.target.value }));
-              }}
+              onChange={(event) =>
+                setDraftFilter((current) => ({ ...current, column: event.target.value }))
+              }
             >
               <option value="">{t("选择列")}</option>
               {columns.map((column) => (
@@ -775,20 +774,19 @@ export function TableBrowser({
               {t("发生冲突：放弃暂存并刷新")}
             </Button>
           )}
-          {mutationError === null &&
-            mutation.outcomes.some((outcome) => outcome.error?.message.includes("事务")) && (
-              <Button
-                variant="ghost"
-                size="xs"
-                className="mt-1"
-                onClick={() => {
-                  setAllowNonTransactional(true);
-                  void submit();
-                }}
-              >
-                {t("该表不支持事务：仍要执行（无法回滚）")}
-              </Button>
-            )}
+          {mutationError?.includes("事务") && (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="mt-1"
+              onClick={() => {
+                setAllowNonTransactional(true);
+                void submit(true);
+              }}
+            >
+              {t("该表不支持事务：仍要执行（无法回滚）")}
+            </Button>
+          )}
         </div>
       )}
 

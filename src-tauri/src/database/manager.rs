@@ -18,9 +18,7 @@ use tokio::sync::Mutex;
 use super::driver::{self, EndpointPlan};
 use super::export::ExportRegistry;
 use super::metadata::MetadataCache;
-use super::model::{
-    ConnectionTestResult, DbErrorInfo, DbSessionInfo, ProfileRuntimeStatus,
-};
+use super::model::{ConnectionTestResult, DbErrorInfo, DbSessionInfo, ProfileRuntimeStatus};
 use super::profiles;
 use super::query::QueryRegistry;
 use super::runtime::ProfileRuntime;
@@ -235,9 +233,7 @@ impl DatabaseManager {
             }
         };
 
-        if let Err(error) =
-            driver::apply_session_settings(&mut conn, endpoint.read_only).await
-        {
+        if let Err(error) = driver::apply_session_settings(&mut conn, endpoint.read_only).await {
             let tunnel_local_port = endpoint.tunnel_local_port();
             let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
             return ConnectionTestResult {

@@ -271,7 +271,8 @@ pub fn to_value(column: &Column, value: Value, preview_bytes: usize) -> super::m
                     value: format!("{hour:02}:{minute:02}:{second:02}.{micros:06}"),
                 }
             } else {
-                let mut text = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
+                let mut text =
+                    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
                 if micros > 0 {
                     text.push_str(&format!(".{micros:06}"));
                 }
@@ -348,11 +349,7 @@ pub fn csv_field(value: &str) -> String {
 }
 
 fn csv_quote(value: &str) -> String {
-    if value.contains(',')
-        || value.contains('"')
-        || value.contains('\n')
-        || value.contains('\r')
-    {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()
@@ -367,7 +364,14 @@ mod tests {
     #[test]
     fn csv_quotes_and_keeps_null_distinct() {
         assert_eq!(csv_cell(&DbValue::Null), "");
-        assert_eq!(csv_cell(&DbValue::Text { value: String::new(), bytes: 0, truncated: false }), "\"\"");
+        assert_eq!(
+            csv_cell(&DbValue::Text {
+                value: String::new(),
+                bytes: 0,
+                truncated: false
+            }),
+            "\"\""
+        );
         assert_eq!(
             csv_cell(&DbValue::Text {
                 value: "a,b".to_string(),

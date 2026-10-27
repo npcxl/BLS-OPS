@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use ops_workbench_lib::database::{
-    driver, export::ExportRegistry, metadata, model::*, mutate, profiles, query, runtime::ProfileRuntime,
-    session::SessionEntry, table, tunnel::TunnelRegistry,
+    driver, export::ExportRegistry, metadata, model::*, mutate, profiles, query,
+    runtime::ProfileRuntime, session::SessionEntry, table, tunnel::TunnelRegistry,
 };
 
 fn env(key: &str, fallback: &str) -> String {
@@ -169,10 +169,7 @@ async fn runtime_for(conn: &rusqlite::Connection) -> (Arc<ProfileRuntime>, Arc<S
     (runtime, session)
 }
 
-async fn drain(
-    registry: &query::QueryRegistry,
-    query_id: &str,
-) -> Vec<DbBatch> {
+async fn drain(registry: &query::QueryRegistry, query_id: &str) -> Vec<DbBatch> {
     let mut batches = Vec::new();
     for _ in 0..10_000 {
         let response = registry.next(query_id).await.expect("next batch");
@@ -284,9 +281,7 @@ async fn mysql_types_multi_result_and_cancel() {
     // 长文本在结果里被截断，但真实字节数保留
     match &row[6] {
         DbValue::Text {
-            bytes,
-            truncated,
-            ..
+            bytes, truncated, ..
         } => {
             assert!(*truncated);
             assert!(*bytes > 64 * 1024);
@@ -305,9 +300,7 @@ async fn mysql_types_multi_result_and_cancel() {
     assert_eq!(duplicate_columns[1].name, "id");
     let duplicate_rows: Vec<Vec<DbValue>> = batches
         .iter()
-        .skip_while(|batch| {
-            !matches!(batch, DbBatch::ResultSet { index, .. } if *index == 1)
-        })
+        .skip_while(|batch| !matches!(batch, DbBatch::ResultSet { index, .. } if *index == 1))
         .filter_map(|batch| match batch {
             DbBatch::Rows { rows, .. } => Some(rows.clone()),
             _ => None,
@@ -377,7 +370,10 @@ async fn mysql_paging_mutation_and_export() {
     let detail = metadata::table_detail(&runtime, &cache, "ops_test", "composite_pk")
         .await
         .expect("detail");
-    assert_eq!(detail.reliable_key.as_deref(), Some(["tenant".to_string(), "seq".to_string()].as_slice()));
+    assert_eq!(
+        detail.reliable_key.as_deref(),
+        Some(["tenant".to_string(), "seq".to_string()].as_slice())
+    );
 
     // 复合主键 keyset：插入 100 行，按 (tenant, seq) 翻页
     {
@@ -550,7 +546,10 @@ async fn mysql_paging_mutation_and_export() {
     .await
     .expect("conflict");
     assert_eq!(conflict.state, "rolled_back");
-    assert!(conflict.outcomes.iter().any(|outcome| outcome.status == "conflict"));
+    assert!(conflict
+        .outcomes
+        .iter()
+        .any(|outcome| outcome.status == "conflict"));
 
     // -- 导出 ------------------------------------------------------------
     let exports = ExportRegistry::default();
@@ -714,12 +713,73 @@ async fn mysql_million_rows_keyset_stays_bounded() {
 
     let (runtime, session) = runtime_for(&conn).await;
     let cache = metadata::MetadataCache::default();
+
+    // 补到 1,000,000 行（setup_schema 已建 200,000 行）。
+    {
+        let opts = driver::build_opts(&runtime.endpoint, false).expect("opts");
+        let mut setup = driver::connect_once(opts, Duration::from_secs(10))
+            .await
+            .expect("setup conn");
+        setup
+            .query_drop("SET SESSION cte_max_recursion_depth = 1000000")
+            .await
+            .expect("cte");
+        let insert_started = std::time::Instant::now();
+        setup
+            .query_drop(
+                r#"
+                INSERT INTO ops_test.big_table (id, v)
+                WITH RECURSIVE s(n) AS (
+                    SELECT 200001 UNION ALL SELECT n + 1 FROM s WHERE n < 1000000
+                )
+                SELECT n, n MOD 97 FROM s
+                "#,
+            )
+            .await
+            .expect("insert million");
+        eprintln!(
+            "[perf] inserted 800k rows in {}ms",
+            insert_started.elapsed().as_millis()
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), setup.disconnect()).await;
+    }
+
     let detail = metadata::table_detail(&runtime, &cache, "ops_test", "big_table")
         .await
         .expect("detail");
-    assert_eq!(detail.reliable_key.as_deref(), Some(["id".to_string()].as_slice()));
+    assert_eq!(
+        detail.reliable_key.as_deref(),
+        Some(["id".to_string()].as_slice())
+    );
 
-    // 200,000 行是 setup_schema 建好的；再验证一次大表分页只取一页。
+    let count_started = std::time::Instant::now();
+    let counted = table::browse(
+        &runtime,
+        &detail,
+        &BrowseRequest {
+            session_id: session.session_id.clone(),
+            database: "ops_test".to_string(),
+            table: "big_table".to_string(),
+            page_size: Some(1),
+            offset: Some(0),
+            after: None,
+            sorts: None,
+            filters: None,
+            pagination: Some("offset".to_string()),
+            exact_count: Some(true),
+        },
+        &ResolvedBudget::resolve(None),
+    )
+    .await
+    .expect("count");
+    eprintln!(
+        "[perf] exact COUNT(*) = {:?} in {}ms",
+        counted.exact_rows,
+        count_started.elapsed().as_millis()
+    );
+    assert_eq!(counted.exact_rows, Some(1_000_000));
+
+    // 只取一页：返回行数必须等于 page_size，而不是把百万行读进内存。
     let started = std::time::Instant::now();
     let page1 = table::browse(
         &runtime,
@@ -787,7 +847,9 @@ async fn profile_roundtrip_and_history() {
     let profile = profile();
     let saved = profiles::save_profile(&conn, &profile, None).expect("save");
     assert!(!saved.has_password);
-    let loaded = profiles::get_profile(&conn, &saved.id).expect("load").expect("exists");
+    let loaded = profiles::get_profile(&conn, &saved.id)
+        .expect("load")
+        .expect("exists");
     assert_eq!(loaded.host, profile.host);
 
     let entry = profiles::record_history_request(

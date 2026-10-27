@@ -33,9 +33,7 @@ const MAX_PAGE_SIZE: u32 = 1_000;
 const MAX_OFFSET: u64 = 200_000;
 
 pub fn resolved_page_size(value: Option<u32>) -> u32 {
-    value
-        .unwrap_or(DEFAULT_PAGE_SIZE)
-        .clamp(1, MAX_PAGE_SIZE)
+    value.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
 }
 
 fn is_large_type(data_type: &str) -> bool {
@@ -266,11 +264,15 @@ pub(crate) fn filter_clause(
         "is_null" => Some(format!("{column} IS NULL")),
         "not_null" => Some(format!("{column} IS NOT NULL")),
         "eq" => {
-            params.push(Value::Bytes(filter.value.clone().unwrap_or_default().into_bytes()));
+            params.push(Value::Bytes(
+                filter.value.clone().unwrap_or_default().into_bytes(),
+            ));
             Some(format!("{column} = ?"))
         }
         "ne" => {
-            params.push(Value::Bytes(filter.value.clone().unwrap_or_default().into_bytes()));
+            params.push(Value::Bytes(
+                filter.value.clone().unwrap_or_default().into_bytes(),
+            ));
             Some(format!("{column} <> ?"))
         }
         "gt" | "gte" | "lt" | "lte" => {
@@ -280,7 +282,9 @@ pub(crate) fn filter_clause(
                 "lt" => "<",
                 _ => "<=",
             };
-            params.push(Value::Bytes(filter.value.clone().unwrap_or_default().into_bytes()));
+            params.push(Value::Bytes(
+                filter.value.clone().unwrap_or_default().into_bytes(),
+            ));
             Some(format!("{column} {operator} ?"))
         }
         "contains" | "starts_with" => {
@@ -356,7 +360,10 @@ fn plan_order(
     let matches_key = has_reliable_key
         && !key_columns.is_empty()
         && order_columns.len() == key_columns.len()
-        && order_columns.iter().zip(key_columns.iter()).all(|(a, b)| a == b);
+        && order_columns
+            .iter()
+            .zip(key_columns.iter())
+            .all(|(a, b)| a == b);
 
     let key_set = || -> Vec<(String, bool)> {
         if sorts.is_empty() {
@@ -487,7 +494,13 @@ pub async fn browse(
             }
             if !matches!(
                 filter.op.as_str(),
-                "eq" | "ne" | "contains" | "starts_with" | "gt" | "gte" | "lt" | "lte"
+                "eq" | "ne"
+                    | "contains"
+                    | "starts_with"
+                    | "gt"
+                    | "gte"
+                    | "lt"
+                    | "lte"
                     | "is_null"
                     | "not_null"
             ) {
@@ -521,10 +534,7 @@ pub async fn browse(
     for column in columns.iter() {
         let quoted = quote_identifier(&column.name)?;
         if is_large_type(&column.data_type) {
-            select_parts.push(format!(
-                "LEFT({quoted}, {})",
-                budget.field_preview_bytes
-            ));
+            select_parts.push(format!("LEFT({quoted}, {})", budget.field_preview_bytes));
             let length_position = output_index + 1;
             select_parts.push(format!("OCTET_LENGTH({quoted})"));
             layout.push((output_index, output_index, Some(length_position)));
@@ -629,10 +639,8 @@ pub async fn browse(
     for row in &page_rows {
         let mut values: Vec<DbValue> = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
-            let (_original, output, length_position) = layout
-                .get(index)
-                .copied()
-                .unwrap_or((index, index, None));
+            let (_original, output, length_position) =
+                layout.get(index).copied().unwrap_or((index, index, None));
             let real_bytes = length_position
                 .and_then(|position| row.as_ref(position).cloned())
                 .and_then(|value| match value {
@@ -644,9 +652,16 @@ pub async fn browse(
             let value = to_browse_value(column, raw, budget.field_preview_bytes, real_bytes);
             if matches!(
                 value,
-                DbValue::Text { truncated: true, .. }
-                    | DbValue::Json { truncated: true, .. }
-                    | DbValue::Binary { truncated: true, .. }
+                DbValue::Text {
+                    truncated: true,
+                    ..
+                } | DbValue::Json {
+                    truncated: true,
+                    ..
+                } | DbValue::Binary {
+                    truncated: true,
+                    ..
+                }
             ) {
                 truncated = true;
             }
@@ -796,12 +811,7 @@ pub async fn read_cell(
 
     let total = total.unwrap_or(0).max(0) as usize;
     let value = match bytes {
-        Some(bytes) => to_browse_value(
-            column_meta,
-            Value::Bytes(bytes),
-            max_bytes,
-            Some(total),
-        ),
+        Some(bytes) => to_browse_value(column_meta, Value::Bytes(bytes), max_bytes, Some(total)),
         None => DbValue::Null,
     };
     Ok((value, total))
@@ -827,9 +837,8 @@ pub fn bind_value(value: &DbValue) -> Result<Value, DbErrorInfo> {
                 .map_err(|error| DbErrorInfo::new("query", format!("二进制值无法解码：{error}")))?;
             Ok(Value::Bytes(bytes))
         }
-        DbValue::Unsupported { .. } => Err(DbErrorInfo::new(
-            "unsupported",
-            "该类型不支持作为写入参数",
-        )),
+        DbValue::Unsupported { .. } => {
+            Err(DbErrorInfo::new("unsupported", "该类型不支持作为写入参数"))
+        }
     }
 }

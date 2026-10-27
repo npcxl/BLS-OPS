@@ -101,11 +101,9 @@ impl ProfileRuntime {
         match tokio::time::timeout(Duration::from_secs(5), conn.query_drop(statement)).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(driver::map_error(&error, "cancelled")),
-            Err(_) => Err(DbErrorInfo::new(
-                "cancelled",
-                "取消控制连接在 5 秒内没有响应",
-            )
-            .retryable(true)),
+            Err(_) => {
+                Err(DbErrorInfo::new("cancelled", "取消控制连接在 5 秒内没有响应").retryable(true))
+            }
         }
     }
 

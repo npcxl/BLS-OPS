@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use tokio::net::TcpListener;
 use tokio::sync::{watch, Mutex};
 
-use crate::ssh::{connect_hop, CredentialSecrets, ConnectTarget, HopConnection, HopResult};
+use crate::ssh::{connect_hop, ConnectTarget, CredentialSecrets, HopConnection, HopResult};
 
 use super::model::DbErrorInfo;
 
@@ -135,9 +135,9 @@ impl TunnelRegistry {
         };
 
         // 端口由系统动态分配；`TcpListener::bind` 在 IPv4 回环上。
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .map_err(|error| DbErrorInfo::new("ssh_tunnel", format!("无法绑定回环端口：{error}")))?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|error| {
+            DbErrorInfo::new("ssh_tunnel", format!("无法绑定回环端口：{error}"))
+        })?;
         let local_port = listener
             .local_addr()
             .map_err(|error| DbErrorInfo::new("ssh_tunnel", format!("无法读取本地端口：{error}")))?
@@ -282,8 +282,8 @@ pub fn resolve_ssh_target(
         None => None,
     };
 
-    let port = u16::try_from(server.port)
-        .map_err(|_| anyhow!("SSH 服务器“{}”的端口无效", server.name))?;
+    let port =
+        u16::try_from(server.port).map_err(|_| anyhow!("SSH 服务器“{}”的端口无效", server.name))?;
 
     Ok(ConnectTarget {
         host: server.host,

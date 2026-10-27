@@ -349,9 +349,12 @@ async fn run_script(
         Ok(result) => result,
         Err(error) => {
             *state.write().await = STATE_FAILED.to_string();
-            send_batch(&tx, DbBatch::Error {
-                error: driver::map_error(&error, "query"),
-            })
+            send_batch(
+                &tx,
+                DbBatch::Error {
+                    error: driver::map_error(&error, "query"),
+                },
+            )
             .await;
             finalize(
                 &tx,
@@ -407,9 +410,12 @@ async fn run_script(
             // 没有列的结果集（UPDATE/DDL）：调用一次 `stream` 让它推进到
             // 下一个结果集，否则下一轮还会看到同一个空结果集。
             if let Err(error) = result.stream::<Row>().await {
-                send_batch(&tx, DbBatch::Error {
-                    error: driver::map_error(&error, "query"),
-                })
+                send_batch(
+                    &tx,
+                    DbBatch::Error {
+                        error: driver::map_error(&error, "query"),
+                    },
+                )
                 .await;
                 error_seen = true;
                 if error.is_fatal() {
@@ -422,9 +428,12 @@ async fn run_script(
                 Ok(None) => break,
                 Err(error) => {
                     *state.write().await = STATE_FAILED.to_string();
-                    send_batch(&tx, DbBatch::Error {
-                        error: driver::map_error(&error, "query"),
-                    })
+                    send_batch(
+                        &tx,
+                        DbBatch::Error {
+                            error: driver::map_error(&error, "query"),
+                        },
+                    )
                     .await;
                     clean = !error.is_fatal();
                     error_seen = true;
@@ -523,8 +532,7 @@ async fn run_script(
                             batch_bytes = 0;
                         }
 
-                        if rows_total >= budget.max_rows
-                            || bytes_total >= budget.max_bytes as usize
+                        if rows_total >= budget.max_rows || bytes_total >= budget.max_bytes as usize
                         {
                             truncated = true;
                             truncation_reason = Some(if rows_total >= budget.max_rows {
@@ -552,9 +560,12 @@ async fn run_script(
                                 cancelled = true;
                             }
                         } else {
-                            send_batch(&tx, DbBatch::Error {
-                                error: driver::map_error(&error, "query"),
-                            })
+                            send_batch(
+                                &tx,
+                                DbBatch::Error {
+                                    error: driver::map_error(&error, "query"),
+                                },
+                            )
                             .await;
                             error_seen = true;
                             if error.is_fatal() {

@@ -118,16 +118,10 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
         }
     }
     if !(1_000..=60_000).contains(&profile.connect_timeout_ms) {
-        return Err(DbErrorInfo::new(
-            "config",
-            "连接超时必须在 1 到 60 秒之间",
-        ));
+        return Err(DbErrorInfo::new("config", "连接超时必须在 1 到 60 秒之间"));
     }
     if !(1_000..=600_000).contains(&profile.query_timeout_ms) {
-        return Err(DbErrorInfo::new(
-            "config",
-            "查询超时必须在 1 到 600 秒之间",
-        ));
+        return Err(DbErrorInfo::new("config", "查询超时必须在 1 到 600 秒之间"));
     }
     Ok(())
 }

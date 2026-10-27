@@ -92,10 +92,7 @@ pub struct EndpointPlan {
     pub generation: u64,
 }
 
-pub fn plan_from_db(
-    db: &Connection,
-    profile_id: &str,
-) -> Result<EndpointPlan, DbErrorInfo> {
+pub fn plan_from_db(db: &Connection, profile_id: &str) -> Result<EndpointPlan, DbErrorInfo> {
     let profile = profiles::get_profile(db, profile_id)
         .map_err(|error| DbErrorInfo::new("config", error.to_string()))?
         .ok_or_else(|| DbErrorInfo::new("config", "连接配置不存在或已被删除"))?;
@@ -265,9 +262,8 @@ pub fn build_opts(endpoint: &ResolvedEndpoint, pool: bool) -> Result<Opts, DbErr
         } else {
             INTERACTIVE_POOL_MAX
         };
-        let constraints = PoolConstraints::new(0, max).ok_or_else(|| {
-            DbErrorInfo::new("config", "无法创建数据库连接池约束（内部错误）")
-        })?;
+        let constraints = PoolConstraints::new(0, max)
+            .ok_or_else(|| DbErrorInfo::new("config", "无法创建数据库连接池约束（内部错误）"))?;
         builder = builder.pool_opts(Some(
             PoolOpts::default()
                 .with_constraints(constraints)
@@ -287,12 +283,11 @@ pub fn build_interactive_pool(opts: Opts) -> Pool {
 pub fn build_export_pool(opts: Opts) -> Pool {
     let constraints = PoolConstraints::new(0, EXPORT_POOL_MAX).expect("export pool constraints");
     Pool::new(Opts::from(
-        OptsBuilder::from_opts(opts)
-            .pool_opts(Some(
-                PoolOpts::default()
-                    .with_constraints(constraints)
-                    .with_inactive_connection_ttl(Duration::from_secs(POOL_IDLE_TTL_SECS)),
-            )),
+        OptsBuilder::from_opts(opts).pool_opts(Some(
+            PoolOpts::default()
+                .with_constraints(constraints)
+                .with_inactive_connection_ttl(Duration::from_secs(POOL_IDLE_TTL_SECS)),
+        )),
     ))
 }
 
@@ -313,10 +308,7 @@ pub async fn connect_once(opts: Opts, timeout: Duration) -> Result<Conn, DbError
 }
 
 /// 按服务器设置会话：字符集、只读默认事务。
-pub async fn apply_session_settings(
-    conn: &mut Conn,
-    read_only: bool,
-) -> Result<(), DbErrorInfo> {
+pub async fn apply_session_settings(conn: &mut Conn, read_only: bool) -> Result<(), DbErrorInfo> {
     conn.query_drop("SET NAMES utf8mb4")
         .await
         .map_err(|error| map_error(&error, "query"))?;
@@ -378,7 +370,11 @@ pub async fn read_tls_status(conn: &mut Conn) -> TlsStatus {
 /// 事务状态以**服务器的 OK 包**为准，不看 SQL 前缀。
 pub fn transaction_state(conn: &Conn) -> &'static str {
     match conn.last_ok_packet() {
-        Some(packet) if packet.status_flags().contains(StatusFlags::SERVER_STATUS_IN_TRANS) => {
+        Some(packet)
+            if packet
+                .status_flags()
+                .contains(StatusFlags::SERVER_STATUS_IN_TRANS) =>
+        {
             if packet
                 .status_flags()
                 .contains(StatusFlags::SERVER_STATUS_IN_TRANS_READONLY)
@@ -552,8 +548,6 @@ fn strip_leading_comments_and_space(sql: &str) -> &str {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

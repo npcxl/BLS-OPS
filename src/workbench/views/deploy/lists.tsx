@@ -18,6 +18,7 @@ import type {
 } from "@/api/types/deployment";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { selectClassSm } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 
 import type { DeploymentCenter } from "./use-deployment-center";
@@ -321,7 +322,7 @@ export function ServicesList({
               <div className="flex items-center gap-2 border-b border-line/60 bg-surface-2/40 px-3 py-1.5">
                 <span className="shrink-0 text-10 text-fg-subtle">{t("Linked project")}</span>
                 <select
-                  className="h-6 min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1/70 px-1 text-11 text-fg"
+                  className={cn(selectClassSm, "min-w-0 flex-1")}
                   value={unit.confirmed_project_id ?? ""}
                   aria-label={t("Link a confirmed project")}
                   onChange={(event) => {

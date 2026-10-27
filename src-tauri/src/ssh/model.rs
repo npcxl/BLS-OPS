@@ -30,7 +30,15 @@ pub struct ExecOutput {
     pub stderr: String,
     /// `None` when the server never reported an exit status.
     pub exit_code: Option<u32>,
+    /// 任一输出流超过 [`MAX_EXEC_OUTPUT_BYTES`] 而被截断。
+    ///
+    /// 超时限制只管时间，不管数据量：`cat /dev/zero` 在超时前就能把内存打满。
+    /// 调用方**必须**把这个告诉用户 —— 不能把半截输出当成完整结果。
+    pub truncated: bool,
 }
+
+/// 单条命令 stdout / stderr **各自**的输出上限（8 MiB）。
+pub const MAX_EXEC_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// One remote file entry reported over SFTP.
 ///

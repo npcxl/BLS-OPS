@@ -19,11 +19,13 @@
 //! 4. 机器可读优先：Docker 用 `--format` 表格（safe.rs 固定模板）、git 用
 //!    `--porcelain=v2`，绝不做空格切割。
 
+mod cache;
 mod catalog;
 mod model;
 pub(crate) mod search;
 mod tests;
 
+pub use cache::CommandSearchCache;
 pub use model::{
     build_exec, CommandCategory, CommandKnowledge, CommandParams, CommandSearchHit, ExecKind,
     KnowledgeExec, Mutability, RiskLevel,
@@ -34,6 +36,16 @@ use crate::safe::ProbeTool;
 /// 编译期内置知识库（首批，P4.1）。
 pub fn builtin_catalog() -> &'static [CommandKnowledge] {
     catalog::CATALOG
+}
+
+/// **预处理后**的命令目录（小写字段只算一次）。
+///
+/// 知识库是编译期常量，所以预处理结果可以安全地缓存到进程结束。
+/// 检索热路径上不再做 `trim().to_lowercase()`，只做比较。
+pub fn prepared_catalog() -> &'static [search::PreparedEntry<'static>] {
+    static CACHE: std::sync::OnceLock<Vec<search::PreparedEntry<'static>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| search::prepare(builtin_catalog()))
 }
 
 /// 知识条目的执行能力需求（转成前端可读的工具名列表）。

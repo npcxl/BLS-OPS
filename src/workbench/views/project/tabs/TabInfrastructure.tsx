@@ -1,6 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Database } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { DeploymentInstance } from "@/api/ops-api";
 import { PortChips, RuntimeBadge, ServiceBadge, instanceKindMeta } from "../badges";
@@ -10,6 +13,9 @@ import {
   groupInfrastructure,
   instanceProductLabel,
 } from "../classify";
+import { ContainerConfigDialog } from "../container-config-dialog";
+import { buildInstanceMenuItems } from "../project-candidate-menu";
+import { useCandidateActions } from "../use-candidate-actions";
 
 /**
  * 基础设施 tab：只展示后端判定为 `workload_role === "infrastructure"` 的实例，
@@ -20,13 +26,39 @@ import {
  */
 export function TabInfrastructure({
   instances,
+  serverId,
+  sessionId,
   onOpenPath,
 }: {
   instances: DeploymentInstance[];
+  /** 服务器与会话：右键里的容器 / Nginx 动作走它们。 */
+  serverId: string;
+  sessionId: string;
   onOpenPath: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const groups = useMemo(() => groupInfrastructure(instances), [instances]);
+
+  // 一个页面级菜单就够：右键菜单是全局单例，行内只负责把它打开到某个实例上。
+  const menu = useContextMenu();
+  const actions = useCandidateActions(serverId, sessionId);
+  const [stopTarget, setStopTarget] = useState<string | null>(null);
+
+  const openMenuFor = (instance: DeploymentInstance) =>
+    menu.onContextMenu(() =>
+      buildInstanceMenuItems({
+        instance,
+        busy: actions.busy,
+        t,
+        onCopyPath: (path) => void actions.copyPath(path),
+        onOpenTerminal: (path) => actions.openInTerminal(path),
+        onReloadNginx: () => void actions.reloadNginx(),
+        onContainerAction: (action, container) => void actions.controlContainer(action, container),
+        onStopContainer: (container) => setStopTarget(container),
+        onInspectContainer: (container) => void actions.inspectContainer(container),
+        onOpenPath,
+      }),
+    );
 
   if (instances.length === 0) {
     return (
@@ -72,6 +104,7 @@ export function TabInfrastructure({
                 <div
                   key={instance.id}
                   className="flex flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-surface-hover/50"
+                  onContextMenu={openMenuFor(instance)}
                 >
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Icon size={14} className="shrink-0 text-accent" />
@@ -142,6 +175,43 @@ export function TabInfrastructure({
           </div>
         </section>
       ))}
+
+      {/* 右键动作的结果就地反馈，失败给后端原文。 */}
+      {actions.notice && (
+        <p
+          className={cn(
+            "text-11",
+            actions.notice.tone === "danger" ? "text-danger" : "text-success",
+          )}
+        >
+          {actions.notice.text}
+        </p>
+      )}
+
+      <ContextMenu {...menu.props} />
+      <ContainerConfigDialog
+        open={actions.configOpen}
+        config={actions.config}
+        onClose={actions.closeConfig}
+        onOpenPath={onOpenPath}
+        onTrackPath={actions.openInTerminal}
+        onCopyPath={(path) => void actions.copyPath(path)}
+      />
+      <ConfirmDialog
+        open={stopTarget !== null}
+        danger
+        title={t("Stop container {{name}}?", { name: stopTarget ?? "" })}
+        description={t(
+          "The container stops immediately and anything it serves becomes unreachable. Its data stays on disk, so you can start it again from the Docker view.",
+        )}
+        confirmLabel={t("Stop container")}
+        onCancel={() => setStopTarget(null)}
+        onConfirm={() => {
+          const target = stopTarget;
+          setStopTarget(null);
+          if (target) void actions.controlContainer("stop", target);
+        }}
+      />
     </div>
   );
 }

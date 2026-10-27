@@ -325,6 +325,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                 <TabApplications
                   candidates={applications}
                   serverId={tab.serverId ?? ""}
+                  sessionId={session.sessionId}
                   reviews={reviews}
                   onOpenPath={openPath}
                   onClosePath={closePanel}
@@ -339,6 +340,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                 <TabNeedsConfirm
                   candidates={needsConfirm}
                   serverId={tab.serverId ?? ""}
+                  sessionId={session.sessionId}
                   reviews={reviews}
                   onOpenPath={openPath}
                   onClosePath={closePanel}
@@ -350,10 +352,20 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
                 />
               )}
               {result && activeTab === "runtime" && (
-                <TabRuntime instances={runtimeInstances} onOpenPath={openPath} />
+                <TabRuntime
+                  instances={runtimeInstances}
+                  serverId={tab.serverId ?? ""}
+                  sessionId={session.sessionId}
+                  onOpenPath={openPath}
+                />
               )}
               {result && activeTab === "infrastructure" && (
-                <TabInfrastructure instances={infraInstances} onOpenPath={openPath} />
+                <TabInfrastructure
+                  instances={infraInstances}
+                  serverId={tab.serverId ?? ""}
+                  sessionId={session.sessionId}
+                  onOpenPath={openPath}
+                />
               )}
               {result && activeTab === "basic_info" && (
                 <TabBasicInfo profile={result.capability} />

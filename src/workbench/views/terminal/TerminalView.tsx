@@ -389,6 +389,34 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }, [sessionId]);
 
   /**
+   * 从项目卡片右键「在命令面板中打开」进来时，连上后在 shell 里切到目标目录。
+   *
+   * 命令由 Rust 侧拼好并写入（`ssh_cd`），这里只认领返回值：登记 cwd 跟踪的
+   * 待确认目标，真正更新仍等命令的退出码 —— 目录不存在时文件面板不会跟到
+   * 一个假路径上。同一个 nonce 只执行一次，重连不会重复 cd。
+   */
+  const enteredPathRef = useRef<number | null>(null);
+  useEffect(() => {
+    // 断开 / 重连：新 shell 回到登录目录，重新连接后要再 cd 一次。
+    if (phase !== "connected") {
+      enteredPathRef.current = null;
+      return;
+    }
+    const target = tab.initialPath;
+    if (!target) return;
+    if (enteredPathRef.current === target.nonce) return;
+    // 别在 shell 还没画完第一个提示符时写 —— 与 pwd 探测同样的等待理由。
+    const timer = window.setTimeout(() => {
+      enteredPathRef.current = target.nonce;
+      void opsApi
+        .sshCd(sessionId, target.path)
+        .then((line) => cwdTrackerRef.current?.noteCd(sessionId, line))
+        .catch((cause) => setError(toErrorMessage(cause)));
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [phase, sessionId, tab.initialPath]);
+
+  /**
    * 受控 pwd 探测的时机。
    *
    * **只在命令行是空的时候发**：探测行是写进当前输入行的，用户已经敲了

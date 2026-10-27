@@ -39,6 +39,12 @@ export interface WorkspaceTab {
    * the session; Rust discards it and never persists it.
    */
   oneTimePassword?: string;
+  /**
+   * 打开后自动 `cd` 到的远程目录（项目卡片右键「在命令面板中打开」）。
+   * `nonce` 用来允许对同一个目录重复触发 —— 只看路径的话，第二次右键
+   * 会因为依赖没变而不执行。
+   */
+  initialPath?: { path: string; nonce: number };
   /** Unsaved indicator (remote editor, config draft…). */
   dirty?: boolean;
 }

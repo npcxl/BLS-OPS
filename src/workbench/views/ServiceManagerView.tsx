@@ -241,8 +241,8 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
               className={cn(
                 "h-[24px] rounded-[6px] px-2 text-11 transition-colors",
                 filter === item.id
-                  ? "bg-surface-active text-fg"
-                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+                  ? "bg-tab-active text-fg"
+                  : "text-fg-muted hover:bg-tab-hover hover:text-fg",
               )}
             >
               {t(item.label)}

@@ -197,10 +197,13 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       writeQueue = writeQueue.catch(() => undefined).then(() => done);
       return done;
     };
-    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
-      if (disposed) return;
+    /**
+     * 处理一段输出：边界解析 → cwd → 协调器 → 写入 xterm。
+     *
+     * 从原来的 listener 回调体原样抽出，供合并后的批量处理调用。
+     */
+    const handleOutput = (output: string) => {
       const host = hostRef.current;
-      const output = event.payload;
       // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，同时把
       // OSC 133 事件按原始顺序切进 parts —— 文本写终端、事件决定快照时机。
       const parsed =
@@ -248,6 +251,47 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       // 远程输出（回显/补全回显）也会移动光标；顺带采样 alternate screen。
       host.setInAlternate(instance.buffer.active.type !== "normal");
       host.updateSuggestAnchor();
+    };
+
+    /**
+     * 输出合并（背压）。
+     *
+     * 高频输出时 Rust 每收到一块就 emit 一次；前端每块都要做边界解析、cwd
+     * 追踪、结果协调和 xterm 写入。把**同一轮事件循环**里的多块拼起来再处理，
+     * 能显著减少解析与写入次数。
+     *
+     * 三条保证：
+     * 1. **顺序不变**：按到达顺序 append，OSC 133 边界仍由同一个解析器按序吃；
+     * 2. **不无限积累**：超过 [`MAX_PENDING_OUTPUT`] 立刻处理；
+     * 3. **不拖慢回显**：用 `setTimeout(0)`（下一轮宏任务）而不是 rAF ——
+     *    窗口最小化时 rAF 会暂停，输出就卡住了。输入通道完全不经过这里。
+     */
+    let pendingOutput = "";
+    let flushTimer: number | null = null;
+    const MAX_PENDING_OUTPUT = 512 * 1024;
+
+    const flushOutput = () => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!pendingOutput) return;
+      const output = pendingOutput;
+      pendingOutput = "";
+      handleOutput(output);
+    };
+
+    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
+      if (disposed) return;
+      pendingOutput += event.payload;
+      // 超限：立刻处理，绝不靠"等下一帧"来兜住无限输出。
+      if (pendingOutput.length >= MAX_PENDING_OUTPUT) {
+        flushOutput();
+        return;
+      }
+      if (flushTimer === null) {
+        flushTimer = window.setTimeout(flushOutput, 0);
+      }
     });
     // stderr 与 stdout 分开：Rust 侧两条流各有独立的流式解码器，事件也分开，
     // 否则结果的原始输出里永远没有 stderr。写入仍走同一 xterm 队列。
@@ -313,7 +357,14 @@ export function useTerminalSession(host: TerminalSessionHost): void {
 
     return () => {
       const host = hostRef.current;
+      // 先把最后一批缓冲的输出处理掉（此时 `disposed` 仍为 false），再拆监听：
+      // 直接丢弃会让"命令刚结束就关标签"时的最后一行消失。
+      flushOutput();
       disposed = true;
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
       resizeObserver.disconnect();
       themeObserver.disconnect();
       viewport?.removeEventListener("scroll", onViewportScroll);

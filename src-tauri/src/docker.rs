@@ -341,6 +341,232 @@ pub async fn system_prune(manager: &SshSessionManager, session_id: &str) -> Resu
     }
 }
 
+// ---------------------------------------------------------------------------
+// 容器配置（docker inspect 的安全子集）
+// ---------------------------------------------------------------------------
+
+/// 一条端口映射：宿主 `8080` → 容器 `80/tcp`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContainerPort {
+    pub host_ip: String,
+    pub host_port: String,
+    /// `80/tcp` 原样保留协议后缀。
+    pub container_port: String,
+}
+
+/// 一条挂载：宿主路径 ↔ 容器路径。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContainerMount {
+    /// `bind` / `volume` / `tmpfs` …
+    pub kind: String,
+    pub source: String,
+    pub destination: String,
+    pub read_only: bool,
+}
+
+/// 容器配置摘要。
+///
+/// **刻意不含 `Config.Env` 与启动命令**：环境变量里通常是数据库密码、token、
+/// 连接串，启动命令也常带 `-p <password>`。把它们序列化到 WebView，就等于
+/// 让密钥进了前端内存和调试工具。要看完整 inspect 请登录服务器自己执行。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContainerConfig {
+    pub id: String,
+    /// `docker inspect` 的 `.Name` 带前导 `/`，这里已去掉。
+    pub name: String,
+    pub image: String,
+    /// `created` / `running` / `exited` / `paused` / `restarting`。
+    pub state: String,
+    pub created: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub exit_code: i64,
+    pub oom_killed: bool,
+    /// 健康检查结论（没有配 healthcheck 时为空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// `no` / `always` / `unless-stopped` / `on-failure`。
+    pub restart_policy: String,
+    pub working_dir: String,
+    pub ports: Vec<ContainerPort>,
+    pub mounts: Vec<ContainerMount>,
+    /// docker compose 项目 / 服务（有则带上，排障最常用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compose_service: Option<String>,
+    /// compose 文件在宿主机上的路径（可据此打开文件面板）。
+    pub compose_files: Vec<String>,
+}
+
+fn string_at(value: &serde_json::Value, pointer: &str) -> String {
+    value
+        .pointer(pointer)
+        .and_then(|item| item.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 解析 `docker inspect --format '{{json .}}'` 的单对象输出。
+///
+/// 纯函数：不碰网络，样本固定，边界（缺字段 / 未发布端口 / 无 compose 标签）
+/// 全在测试里钉住。
+pub fn parse_inspect(raw: &str) -> Result<ContainerConfig> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("容器配置为空：容器可能不存在或 Docker 不可用"));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|error| anyhow!("容器配置不是合法 JSON：{error}"))?;
+
+    let label = |key: &str| -> Option<String> {
+        value
+            .pointer("/Config/Labels")
+            .and_then(|labels| labels.get(key))
+            .and_then(|item| item.as_str())
+            .map(str::to_string)
+            .filter(|text| !text.is_empty())
+    };
+
+    // 端口按容器端口升序：inspect 返回的是对象，键序不稳定，直接渲染会跳。
+    let mut ports = Vec::new();
+    if let Some(bindings) = value
+        .pointer("/HostConfig/PortBindings")
+        .and_then(|item| item.as_object())
+    {
+        let mut entries: Vec<(&String, &serde_json::Value)> = bindings.iter().collect();
+        entries.sort_by_key(|(container_port, _)| {
+            let number = container_port
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .parse::<u32>()
+                .unwrap_or(u32::MAX);
+            (number, container_port.to_string())
+        });
+        for (container_port, list) in entries {
+            let published = list.as_array().map(|items| items.as_slice()).unwrap_or(&[]);
+            if published.is_empty() {
+                // 只 EXPOSE 没 -p：如实记一条"未映射"，而不是假装没有这个端口。
+                ports.push(ContainerPort {
+                    container_port: container_port.clone(),
+                    ..Default::default()
+                });
+                continue;
+            }
+            for item in published {
+                ports.push(ContainerPort {
+                    host_ip: item
+                        .get("HostIp")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    host_port: item
+                        .get("HostPort")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    container_port: container_port.clone(),
+                });
+            }
+        }
+    }
+
+    let mut mounts = Vec::new();
+    for item in value
+        .pointer("/Mounts")
+        .and_then(|v| v.as_array())
+        .map(|items| items.as_slice())
+        .unwrap_or(&[])
+    {
+        mounts.push(ContainerMount {
+            kind: item
+                .get("Type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            source: item
+                .get("Source")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            destination: item
+                .get("Destination")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            // `RW` 缺省视为可写（Docker 的默认值就是 rw）。
+            read_only: !item.get("RW").and_then(|v| v.as_bool()).unwrap_or(true),
+        });
+    }
+
+    let compose_files = label("com.docker.compose.project.config_files")
+        .map(|files| {
+            files
+                .split(',')
+                .map(|file| file.trim().to_string())
+                .filter(|file| !file.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(ContainerConfig {
+        id: string_at(&value, "/Id"),
+        name: string_at(&value, "/Name")
+            .trim_start_matches('/')
+            .to_string(),
+        image: string_at(&value, "/Config/Image"),
+        state: string_at(&value, "/State/Status"),
+        created: string_at(&value, "/Created"),
+        started_at: string_at(&value, "/State/StartedAt"),
+        finished_at: string_at(&value, "/State/FinishedAt"),
+        exit_code: value
+            .pointer("/State/ExitCode")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default(),
+        oom_killed: value
+            .pointer("/State/OOMKilled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        health: value
+            .pointer("/State/Health/Status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|text| !text.is_empty()),
+        restart_policy: {
+            let policy = string_at(&value, "/HostConfig/RestartPolicy/Name");
+            if policy.is_empty() {
+                "no".to_string()
+            } else {
+                policy
+            }
+        },
+        working_dir: string_at(&value, "/Config/WorkingDir"),
+        ports,
+        mounts,
+        compose_project: label("com.docker.compose.project"),
+        compose_service: label("com.docker.compose.service"),
+        compose_files,
+    })
+}
+
+/// 读一个容器的配置摘要（只读）。
+pub async fn inspect_container(
+    manager: &SshSessionManager,
+    session_id: &str,
+    container: &str,
+) -> Result<ContainerConfig> {
+    let output = run_on_linux(
+        manager,
+        session_id,
+        &Capability::DockerInspect {
+            container: container.to_string(),
+        },
+    )
+    .await?;
+    parse_inspect(&output)
+}
+
 /// Whether Docker is installed and reachable.
 pub async fn docker_available(manager: &SshSessionManager, session_id: &str) -> bool {
     crate::remote::has_tool(manager, session_id, ProbeTool::Docker).await
@@ -501,5 +727,128 @@ idle|--|0B / 3.84GiB|--|0B / 0B|0B / 0B
     fn short_ids_are_twelve_characters() {
         assert_eq!(short_id("3f2a1b9c8d7e4f5a"), "3f2a1b9c8d7e");
         assert_eq!(short_id("abc"), "abc");
+    }
+
+    const INSPECT_OUTPUT: &str = r#"{
+        "Id": "3f2a1b9c8d7e4f5a6b7c8d9e0f1a2b3c",
+        "Created": "2024-01-15T09:12:33.123456789Z",
+        "Name": "/web",
+        "Config": {
+            "Image": "nginx:1.25",
+            "WorkingDir": "/usr/share/nginx/html",
+            "Env": ["DB_PASSWORD=hunter2"],
+            "Labels": {
+                "com.docker.compose.project": "shop",
+                "com.docker.compose.service": "web",
+                "com.docker.compose.project.config_files": "/opt/shop/docker-compose.yml,/opt/shop/docker-compose.override.yml",
+                "com.example.secret": "should-not-leak"
+            }
+        },
+        "State": {
+            "Status": "running",
+            "StartedAt": "2024-01-15T09:12:34Z",
+            "FinishedAt": "0001-01-01T00:00:00Z",
+            "ExitCode": 0,
+            "OOMKilled": true,
+            "Health": { "Status": "healthy" }
+        },
+        "HostConfig": {
+            "RestartPolicy": { "Name": "unless-stopped" },
+            "PortBindings": {
+                "443/tcp": [{ "HostIp": "0.0.0.0", "HostPort": "8443" }],
+                "80/tcp": [
+                    { "HostIp": "0.0.0.0", "HostPort": "8080" },
+                    { "HostIp": "::", "HostPort": "8080" }
+                ],
+                "9000/tcp": null
+            }
+        },
+        "Mounts": [
+            { "Type": "bind", "Source": "/opt/shop", "Destination": "/usr/share/nginx/html", "RW": true },
+            { "Type": "volume", "Source": "/var/lib/docker/volumes/logs/_data", "Destination": "/var/log/nginx", "RW": false }
+        ]
+    }"#;
+
+    #[test]
+    fn parses_container_config() {
+        let config = parse_inspect(INSPECT_OUTPUT).unwrap();
+        assert_eq!(config.name, "web", "Name 的前导 / 必须去掉");
+        assert_eq!(config.image, "nginx:1.25");
+        assert_eq!(config.state, "running");
+        assert_eq!(config.restart_policy, "unless-stopped");
+        assert_eq!(config.working_dir, "/usr/share/nginx/html");
+        assert!(config.oom_killed);
+        assert_eq!(config.health.as_deref(), Some("healthy"));
+        assert_eq!(config.compose_project.as_deref(), Some("shop"));
+        assert_eq!(config.compose_service.as_deref(), Some("web"));
+        assert_eq!(
+            config.compose_files,
+            vec![
+                "/opt/shop/docker-compose.yml".to_string(),
+                "/opt/shop/docker-compose.override.yml".to_string()
+            ],
+            "compose 文件是逗号分隔的一串"
+        );
+    }
+
+    #[test]
+    fn orders_ports_and_keeps_unpublished_ones() {
+        let config = parse_inspect(INSPECT_OUTPUT).unwrap();
+        let ports: Vec<&str> = config
+            .ports
+            .iter()
+            .map(|port| port.container_port.as_str())
+            .collect();
+        // 80/tcp 的两条绑定在前，443/tcp 次之，未发布的 9000/tcp 排最后 ——
+        // 不能按对象键序随机输出。
+        assert_eq!(ports, vec!["80/tcp", "80/tcp", "443/tcp", "9000/tcp"]);
+
+        let unpublished = config.ports.last().unwrap();
+        assert_eq!(
+            unpublished.host_port, "",
+            "没 -p 时如实留空，不编造宿主端口"
+        );
+    }
+
+    #[test]
+    fn marks_read_only_mounts() {
+        let config = parse_inspect(INSPECT_OUTPUT).unwrap();
+        assert_eq!(config.mounts.len(), 2);
+        assert_eq!(config.mounts[0].kind, "bind");
+        assert_eq!(config.mounts[0].source, "/opt/shop");
+        assert!(!config.mounts[0].read_only);
+        assert!(config.mounts[1].read_only);
+    }
+
+    #[test]
+    fn never_serialises_env_or_unknown_labels() {
+        // 这条是安全约束，不是格式断言：容器配置会进 WebView，
+        // 环境变量（数据库密码）和自定义 label（可能带 token）都不得出现。
+        let config = parse_inspect(INSPECT_OUTPUT).unwrap();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("hunter2"), "Env 不能进前端");
+        assert!(
+            !json.contains("should-not-leak"),
+            "非白名单 label 不能进前端"
+        );
+        assert!(!json.contains("DB_PASSWORD"));
+    }
+
+    #[test]
+    fn missing_fields_do_not_break_the_config() {
+        // 老 daemon / 精简输出可能缺字段：给默认值，绝不 panic。
+        let config = parse_inspect(r#"{"Name":"/tiny"}"#).unwrap();
+        assert_eq!(config.name, "tiny");
+        assert_eq!(config.restart_policy, "no");
+        assert!(config.ports.is_empty());
+        assert!(config.mounts.is_empty());
+        assert!(config.compose_files.is_empty());
+        assert_eq!(config.health, None);
+    }
+
+    #[test]
+    fn empty_or_broken_inspect_output_is_an_error() {
+        assert!(parse_inspect("   ").is_err());
+        assert!(parse_inspect("not json").is_err());
     }
 }

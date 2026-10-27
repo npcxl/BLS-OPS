@@ -367,7 +367,7 @@ export function DeploymentWizard({
             hint={t("The server is probed read-only; nothing is changed here.")}
           >
             <select
-              className={fieldClass}
+              className={cn(fieldClass, "ops-select !pr-7")}
               data-testid="wizard-server"
               value={serverId}
               onChange={(event) => setServerId(event.target.value)}

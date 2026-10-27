@@ -265,7 +265,7 @@ function closeTabInPane(state: WorkbenchState, paneId: string, tabId: string): P
 export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
   activeModule: "ssh",
   sidebarCollapsed: false,
-  sidebarWidth: 244,
+  sidebarWidth: 224,
   rootPane: createInitialRootPane(),
   focusedPaneId: null,
   commandPaletteOpen: false,

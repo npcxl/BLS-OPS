@@ -151,15 +151,34 @@ impl SshSession {
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
             let mut exit_code = None;
+            let mut truncated = false;
 
+            // 超时限制只管时间，不管数据量。这里给两条流各设一个硬上限：
+            // 超出后**继续读**（不阻塞远端），但不再往内存里追加。
             loop {
                 let message = match timed(channel.wait(), deadline, &mut closed, timeout).await? {
                     Some(message) => message,
                     None => break,
                 };
                 match message {
-                    ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-                    ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                    ChannelMsg::Data { data } => {
+                        let room =
+                            crate::ssh::model::MAX_EXEC_OUTPUT_BYTES.saturating_sub(stdout.len());
+                        if data.len() > room {
+                            truncated = true;
+                        }
+                        let take = room.min(data.len());
+                        stdout.extend_from_slice(&data[..take]);
+                    }
+                    ChannelMsg::ExtendedData { data, .. } => {
+                        let room =
+                            crate::ssh::model::MAX_EXEC_OUTPUT_BYTES.saturating_sub(stderr.len());
+                        if data.len() > room {
+                            truncated = true;
+                        }
+                        let take = room.min(data.len());
+                        stderr.extend_from_slice(&data[..take]);
+                    }
                     ChannelMsg::ExitStatus { exit_status } => exit_code = Some(exit_status),
                     // OpenSSH sends exit-status before eof, so eof after a
                     // status means the command is finished; a bare eof may
@@ -174,6 +193,7 @@ impl SshSession {
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
                 exit_code,
+                truncated,
             })
         }
         .await;

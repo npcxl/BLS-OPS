@@ -55,6 +55,7 @@ import {
 } from "@/api/types/services";
 import {
   type ContainerActionName,
+  type ContainerConfig,
   type DockerSnapshot,
 } from "@/api/types/containers";
 import {
@@ -180,7 +181,10 @@ export {
 } from "@/api/types/services";
 export {
   type ContainerActionName,
+  type ContainerConfig,
   type ContainerInfo,
+  type ContainerMount,
+  type ContainerPort,
   type ContainerStats,
   type DockerSnapshot,
   type ImageInfo,
@@ -529,6 +533,14 @@ export const opsApi = {
       password: args.password ?? null,
     }),
   sshInput: (sessionId: string, data: string) => invoke<void>("ssh_input", { sessionId, data }),
+  /**
+   * 在已连接的交互终端里 `cd` 到某个绝对目录，返回后端实际写入的那一行。
+   *
+   * 命令串由后端拼（`validate_abs_path` + `shell_quote`），前端只给路径；
+   * 返回值供终端登记 cwd 跟踪，文件面板才能跟着走。
+   */
+  sshCd: (sessionId: string, path: string) =>
+    invoke<string>("ssh_cd", { sessionId, path }),
   sshResize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>("ssh_resize", { sessionId, cols, rows }),
   sshKeepalive: (sessionId: string) => invoke<void>("ssh_keepalive", { sessionId }),
@@ -740,6 +752,9 @@ export const opsApi = {
   dockerSnapshot: (sessionId: string) => invoke<DockerSnapshot>("docker_snapshot", { sessionId }),
   dockerLogs: (sessionId: string, container: string, lines: number) =>
     invoke<string>("docker_logs", { sessionId, container, lines }),
+  /** 容器配置摘要（只读）。后端只给安全字段，不含 Env 与启动命令。 */
+  dockerInspectContainer: (sessionId: string, container: string) =>
+    invoke<ContainerConfig>("docker_inspect_container", { sessionId, container }),
   dockerContainerAction: (
     sessionId: string,
     action: ContainerActionName,

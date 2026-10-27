@@ -188,4 +188,48 @@ export default {
   "No listening ports": "無監聽埠",
   "No exposed ports": "未暴露埠",
   "systemd unit": "unit 檔案",
+
+  // -- 專案卡片右鍵選單（project-candidate-menu / use-candidate-actions）--
+  "Path copied": "路徑已複製",
+  "Copy failed": "複製失敗",
+  "Track in terminal": "在終端中跟蹤",
+  "Nginx reloaded": "Nginx 已重新載入",
+  "nginx -t failed; the running config was left untouched": "nginx -t 未通過，正在運行的設定沒有被改動",
+  "Restart container {{name}}": "重啟容器 {{name}}",
+  "Stop container {{name}}": "停止容器 {{name}}",
+  "Restart container": "重啟容器",
+  "Stop container": "停止容器",
+  "View container config": "檢視容器設定",
+  "View Nginx config": "檢視 Nginx 設定",
+  "Container {{name}} stopped": "容器 {{name}} 已停止",
+  "Container {{name}} restarted": "容器 {{name}} 已重新啟動",
+  "Stop container {{name}}?": "停止容器 {{name}}？",
+  "The container stops immediately and anything it serves becomes unreachable. Its data stays on disk, so you can start it again from the Docker view.":
+    "容器會立即停止，它提供的服務將暫時無法存取。資料仍保留在磁碟上，可以在 Docker 檢視中重新啟動。",
+
+  // -- 容器設定彈窗（container-config-dialog）--
+  "Container config: {{name}}": "容器設定：{{name}}",
+  State: "狀態",
+  Health: "健康檢查",
+  "Restart policy": "重啟策略",
+  Created: "建立時間",
+  Started: "啟動時間",
+  Finished: "結束時間",
+  "Exit code": "結束碼",
+  "OOM killed": "因記憶體不足被終止",
+  Yes: "是",
+  "Working dir": "工作目錄",
+  Service: "服務",
+  "Compose files": "Compose 檔案",
+  Ports: "埠",
+  "No published ports": "沒有發佈埠",
+  "Not published": "未發佈",
+  Mounts: "掛載",
+  "No mounts": "無掛載",
+  "read-only": "唯讀",
+  "Environment variables and the start command are intentionally hidden — they often carry passwords and tokens.":
+    "環境變數與啟動指令被刻意隱藏 —— 它們經常包含密碼與權杖。",
+  "Open in file panel": "在檔案面板中開啟",
+  "Click a host path to open it in the file panel; right-click for more actions.":
+    "點擊主機路徑可在檔案面板中開啟，右鍵還有更多操作。",
 } as const;

@@ -65,6 +65,33 @@ describe("Modal exit animation", () => {
     expect(panel()).toBeNull();
   });
 
+  it("stops a right-click inside the panel from reaching the page below", () => {
+    // 回归：Modal 是 portal 到 body 的，但 React 合成事件沿**组件树**冒泡，
+    // 不拦的话浮层里右键会弹出下面列表 / 卡片的右键菜单。
+    let reachedPage = 0;
+    act(() => {
+      root.render(
+        <div
+          onContextMenu={() => {
+            reachedPage += 1;
+          }}
+        >
+          <Modal open title="Test modal" onClose={() => undefined}>
+            <p>Content</p>
+          </Modal>
+        </div>,
+      );
+    });
+
+    const target = panel();
+    expect(target).not.toBeNull();
+    act(() => {
+      target!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+
+    expect(reachedPage).toBe(0);
+  });
+
   it("does not leave a stale unmount timer when re-opened mid-fade", async () => {
     renderModal(true);
     renderModal(false);

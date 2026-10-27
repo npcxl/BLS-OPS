@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
 import type {
@@ -22,6 +24,9 @@ import type {
   ReviewState,
 } from "@/api/ops-api";
 import { Detail } from "./Detail";
+import { ContainerConfigDialog } from "./container-config-dialog";
+import { useCandidateActions } from "./use-candidate-actions";
+import { buildCandidateMenuItems } from "./project-candidate-menu";
 import {
   PortChips,
   RuntimeBadge,
@@ -76,6 +81,7 @@ export function CandidateCard({
   onOpenPath,
   onClosePath,
   serverId,
+  sessionId,
   review,
   onReview,
   scanInfo,
@@ -91,6 +97,8 @@ export function CandidateCard({
   onClosePath: () => void;
   /** 服务器 ID，写复核结论用。 */
   serverId: string;
+  /** 项目视图所在的非交互会话：容器操作与 Nginx 校验都走它。 */
+  sessionId: string;
   /** 当前复核结论（由父组件从扫描结果 / 本地状态合并而来）。 */
   review: ReviewState;
   /** 用户确认 / 忽略后回调，父组件据此刷新列表。 */
@@ -137,6 +145,23 @@ export function CandidateCard({
         (a, b) => a - b,
       );
 
+  // 右键菜单：动作在 hook 里（要碰工作台标签页 / 会话 / 反馈），这里只组装条目。
+  const menu = useContextMenu();
+  const actions = useCandidateActions(serverId, sessionId);
+  const [stopTarget, setStopTarget] = useState<string | null>(null);
+  const menuItems = buildCandidateMenuItems({
+    target: { path: candidate.path, instances, routes },
+    busy: actions.busy,
+    t,
+    onCopyPath: (path) => void actions.copyPath(path),
+    onOpenTerminal: (path) => actions.openInTerminal(path),
+    onReloadNginx: () => void actions.reloadNginx(),
+    onContainerAction: (action, container) => void actions.controlContainer(action, container),
+    onStopContainer: (container) => setStopTarget(container),
+    onInspectContainer: (container) => void actions.inspectContainer(container),
+    onOpenPath,
+  });
+
   const submitReview = async (state: ReviewState) => {
     setBusy(state);
     try {
@@ -159,7 +184,10 @@ export function CandidateCard({
   };
 
   return (
-    <article className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-shadow hover:shadow-[0_2px_6px_rgb(15_23_42/0.07)]">
+    <article
+      className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-shadow hover:shadow-[0_2px_6px_rgb(15_23_42/0.07)]"
+      onContextMenu={menu.onContextMenu(() => menuItems)}
+    >
       <div className="flex w-full items-center gap-3 px-4 py-3 text-left">
         <FolderSearch size={16} className="shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
@@ -242,6 +270,18 @@ export function CandidateCard({
           </div>
         </div>
       </div>
+
+      {/* 右键动作的结果就地反馈：成功是确认，失败是原文（绝不静默）。 */}
+      {actions.notice && (
+        <div
+          className={cn(
+            "border-t border-line/60 px-4 py-1.5 text-11",
+            actions.notice.tone === "danger" ? "text-danger" : "text-success",
+          )}
+        >
+          {actions.notice.text}
+        </div>
+      )}
 
       {/* 部署文件：默认收起，点「部署文件」才展开；展开后右下角有「证据详情」 */}
       <div className="border-t border-line">
@@ -479,6 +519,31 @@ export function CandidateCard({
           )}
         </div>
       )}
+
+      <ContextMenu {...menu.props} title={candidate.name} />
+      <ContainerConfigDialog
+        open={actions.configOpen}
+        config={actions.config}
+        onClose={actions.closeConfig}
+        onOpenPath={onOpenPath}
+        onTrackPath={actions.openInTerminal}
+        onCopyPath={(path) => void actions.copyPath(path)}
+      />
+      <ConfirmDialog
+        open={stopTarget !== null}
+        danger
+        title={t("Stop container {{name}}?", { name: stopTarget ?? "" })}
+        description={t(
+          "The container stops immediately and anything it serves becomes unreachable. Its data stays on disk, so you can start it again from the Docker view.",
+        )}
+        confirmLabel={t("Stop container")}
+        onCancel={() => setStopTarget(null)}
+        onConfirm={() => {
+          const target = stopTarget;
+          setStopTarget(null);
+          if (target) void actions.controlContainer("stop", target);
+        }}
+      />
     </article>
   );
 }

@@ -142,6 +142,7 @@ pub fn run() {
             commands::ssh_connect,
             commands::ssh_connect_monitor,
             commands::ssh_input,
+            commands::ssh_cd,
             commands::ssh_resize,
             commands::ssh_set_encoding,
             commands::ssh_get_encoding,
@@ -204,6 +205,7 @@ pub fn run() {
             // docker (P3-1.3)
             commands::docker_snapshot,
             commands::docker_logs,
+            commands::docker_inspect_container,
             commands::docker_container_action,
             commands::docker_image_remove,
             commands::docker_prune,

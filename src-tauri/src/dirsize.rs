@@ -312,6 +312,36 @@ impl DirectorySizeRegistry {
             .clone()
     }
 
+    /// 每个会话最多保留多少个**已结束**的任务结果。
+    ///
+    /// 任务结束后会留在 map 里供 `cached` 复用；逛几百个目录就会一直涨。
+    /// 超过上限时按完成时间淘汰最旧的一批 —— **只淘汰终态**，绝不动还在跑
+    /// 或排队的任务。淘汰的代价只是"回到那个目录要重算一次"。
+    const MAX_FINISHED_TASKS_PER_SESSION: usize = 300;
+
+    fn prune_finished(&self, session_id: &str) {
+        let mut tasks = self.tasks.lock().unwrap();
+        let total = tasks.keys().filter(|(sid, _)| sid == session_id).count();
+        if total <= Self::MAX_FINISHED_TASKS_PER_SESSION {
+            return;
+        }
+        let mut finished: Vec<(u64, (String, String))> = tasks
+            .iter()
+            .filter(|((sid, _), _)| sid == session_id)
+            .filter_map(|(key, task)| {
+                let snapshot = task.snapshot();
+                snapshot
+                    .complete
+                    .then_some((snapshot.calculated_at, key.clone()))
+            })
+            .collect();
+        finished.sort_by_key(|(calculated_at, _)| *calculated_at);
+        let excess = total - Self::MAX_FINISHED_TASKS_PER_SESSION;
+        for (_, key) in finished.into_iter().take(excess) {
+            tasks.remove(&key);
+        }
+    }
+
     /// Returns the cached result if a computation already finished for this
     /// path, or `None` if it is still running / never started.
     pub fn cached(&self, session_id: &str, path: &str) -> Option<DirectorySizeResult> {
@@ -377,6 +407,8 @@ impl DirectorySizeRegistry {
             state: Mutex::new(DirectorySizeResult::pending(&session_id, &path)),
         });
         self.tasks.lock().unwrap().insert(key, task.clone());
+        // 长时间运行：只保留最近完成的几百个结果，避免浏览成百上千目录后无限增长。
+        self.prune_finished(&session_id);
         let initial = task.snapshot();
         if let Some(emit) = &emit {
             emit(initial.clone());

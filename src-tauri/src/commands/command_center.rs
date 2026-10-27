@@ -49,12 +49,18 @@ pub async fn command_search(
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<CommandSearchHit>, String> {
+    // 收藏与使用统计是**低频变化**的数据，却出现在每次按键的热路径上。
+    // 这里用会话级快照：第一次检索加载，收藏/使用变化时失效（见下方命令）。
     let ctx = {
         let conn = open_db(&state)?;
-        search::SearchContext::load(&conn).map_err(|error| error.to_string())?
+        state
+            .command_search
+            .get_or_load(&conn)
+            .map_err(|error| error.to_string())?
     };
-    Ok(search::search(
-        builtin_catalog(),
+    Ok(search::search_prepared(
+        // 预处理目录是 `OnceLock` 缓存的，检索时只做比较、不再转小写。
+        crate::command_center::prepared_catalog(),
         &query,
         &ctx,
         limit.unwrap_or(12).clamp(1, 50) as usize,
@@ -71,14 +77,31 @@ pub async fn command_probe_tools(
     session_id: String,
     tools: Vec<String>,
 ) -> Result<Vec<String>, String> {
+    // **有限并发**：以前是逐项 `await`，24 项就是 24 次串行往返。
+    // 每批 4 个、批间串行 —— 不无限打通道（探测只是体验层，不值得挤占交互）。
+    const PROBE_CONCURRENCY: usize = 4;
     let mut installed = Vec::new();
-    for name in tools.iter().take(24) {
-        let Some(tool) = probe_tool_by_name(name) else {
-            continue; // 非白名单工具名直接忽略（不可能来自 CATALOG 之外）。
-        };
-        match run_capability(&state.ssh, &session_id, &Capability::Probe(tool)).await {
-            Ok(_) => installed.push(name.clone()),
-            Err(_) => continue, // 未安装：不在返回列表里。
+    let candidates: Vec<&String> = tools.iter().take(24).collect();
+    for chunk in candidates.chunks(PROBE_CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for name in chunk {
+            let Some(tool) = probe_tool_by_name(name) else {
+                continue; // 非白名单工具名直接忽略（不可能来自 CATALOG 之外）。
+            };
+            let ssh = state.ssh.clone();
+            let session = session_id.clone();
+            let name = (*name).clone();
+            set.spawn(async move {
+                let ok = run_capability(&ssh, &session, &Capability::Probe(tool))
+                    .await
+                    .is_ok();
+                (name, ok)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok((name, true)) = joined {
+                installed.push(name);
+            }
         }
     }
     Ok(installed)
@@ -259,6 +282,8 @@ pub async fn command_execute(
         let conn = open_db(&state)?;
         let _ = crate::db::command_usage_record(&conn, &knowledge_id);
     }
+    // 使用次数变了：检索快照必须失效，否则加权与"最近使用"排序都是旧的。
+    state.command_search.invalidate();
     if entry.mutability != crate::command_center::Mutability::Read {
         record_audit(
             &state,
@@ -357,7 +382,11 @@ pub async fn command_toggle_favorite(
     knowledge_id: String,
 ) -> Result<bool, String> {
     let conn = open_db(&state)?;
-    crate::db::command_favorite_toggle(&conn, &knowledge_id).map_err(|error| error.to_string())
+    let favorite = crate::db::command_favorite_toggle(&conn, &knowledge_id)
+        .map_err(|error| error.to_string())?;
+    // 收藏变了：检索快照立即失效。
+    state.command_search.invalidate();
+    Ok(favorite)
 }
 
 /// 收藏列表。

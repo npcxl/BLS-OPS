@@ -10,6 +10,7 @@ import { CandidateCard } from "../CandidateCard";
 export function TabApplications({
   candidates,
   serverId,
+  sessionId,
   reviews,
   onOpenPath,
   onClosePath,
@@ -21,6 +22,8 @@ export function TabApplications({
 }: {
   candidates: DisplayCandidate[];
   serverId: string;
+  /** 项目视图的会话：右键菜单里的容器操作与 Nginx 校验走它。 */
+  sessionId: string;
   reviews: Record<string, ReviewState>;
   onOpenPath: (path: string) => void;
   onClosePath: () => void;
@@ -62,6 +65,7 @@ export function TabApplications({
           key={candidate.id}
           candidate={candidate}
           serverId={serverId}
+          sessionId={sessionId}
           review={(reviews[candidate.path] ?? candidate.review) ?? "pending"}
           onOpenPath={onOpenPath}
           onClosePath={onClosePath}

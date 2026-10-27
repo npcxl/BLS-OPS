@@ -160,7 +160,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
     ]);
 
   return (
-    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line bg-transparent px-2">
+    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line/80 bg-transparent px-2">
       <div
         ref={tabStripRef}
         onWheel={onWheel}
@@ -178,8 +178,8 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               className={cn(
                 "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] select-none transition-colors duration-100",
                 active
-                  ? "bg-surface-active text-fg shadow-[inset_0_1px_0_rgb(255_255_255/0.55),0_1px_2px_rgb(15_23_42/0.06)]"
-                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+                  ? "bg-tab-active text-fg shadow-[var(--tab-active-shadow)]"
+                  : "text-fg-muted hover:bg-tab-hover hover:text-fg",
               )}
               onClick={() => setActiveTab(pane.id, tab.id)}
               onAuxClick={(e) => {
@@ -195,7 +195,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
                 type="button"
                 aria-label={t("Close {{title}}", { title: tab.title })}
                 className={cn(
-                  "ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg",
+                  "ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle hover:bg-fg/10 hover:text-fg",
                   active ? "opacity-70 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100",
                 )}
                 onClick={(e) => {
@@ -212,7 +212,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
       <button
         type="button"
         aria-label={t("New terminal tab")}
-        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-fg-subtle hover:bg-surface-hover hover:text-fg"
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-fg-subtle hover:bg-tab-hover hover:text-fg"
         onClick={() => openTab({ id: crypto.randomUUID(), type: "terminal", title: t("New Terminal") })}
       >
         <Plus size={14} />

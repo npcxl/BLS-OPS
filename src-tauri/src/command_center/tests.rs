@@ -274,7 +274,7 @@ fn unrelated_query_matches_nothing() {
 fn favorites_boost_ranking() {
     let catalog = builtin_catalog();
     let ctx = SearchContext {
-        favorites: vec!["df.h".to_string()],
+        favorites: std::collections::HashSet::from(["df.h".to_string()]),
         usage: HashMap::new(),
     };
     let hits = search(&catalog, "df", &ctx, 10);

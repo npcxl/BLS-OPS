@@ -62,6 +62,21 @@ pub async fn docker_container_action(
     Ok(outcome)
 }
 
+/// 读容器配置摘要（只读，不进审计）。
+///
+/// 返回的是**安全子集**：镜像、状态、重启策略、端口、挂载、compose 归属。
+/// 环境变量与启动命令由后端直接丢弃，见 `docker::ContainerConfig` 的注释。
+#[tauri::command]
+pub async fn docker_inspect_container(
+    state: State<'_, AppState>,
+    session_id: String,
+    container: String,
+) -> Result<crate::docker::ContainerConfig, String> {
+    crate::docker::inspect_container(&state.ssh, &session_id, &container)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn docker_image_remove(
     app: AppHandle,

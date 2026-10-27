@@ -12,7 +12,7 @@ import { ConnectionProgressBar } from "./ConnectionProgressBar";
 export function Workspace() {
   const rootPane = useWorkbenchStore((s) => s.rootPane);
   return (
-    <main className="relative ml-2 mt-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[12px] bg-surface-1">
+    <main className="relative m-2 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[12px] bg-surface-1">
       {/* 连接光条只覆盖右侧内容区顶部（`main` 是 relative，光条 absolute 定位）。 */}
       <ConnectionProgressBar />
       <div className="flex min-h-0 flex-1">

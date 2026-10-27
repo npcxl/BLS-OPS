@@ -17,6 +17,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { selectClassSm } from "@/components/ui/modal";
 import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage, type DiskMetrics } from "@/api/ops-api";
 import { i18n } from "@/i18n";
@@ -329,7 +330,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           <select
             value={intervalMs}
             onChange={(event) => setIntervalMs(tab.id, Number(event.target.value))}
-            className="h-[24px] rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
+            className={selectClassSm}
           >
             {MONITOR_INTERVALS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -531,8 +532,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                       className={cn(
                         "flex h-6 items-center gap-1.5 rounded-[7px] px-2 text-11 transition-colors",
                         detail === item.id
-                          ? "bg-surface-active text-fg"
-                          : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+                          ? "bg-tab-active text-fg"
+                          : "text-fg-muted hover:bg-tab-hover hover:text-fg",
                       )}
                     >
                       <Icon size={12} strokeWidth={1.75} />

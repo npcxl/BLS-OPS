@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { selectClassSm } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
@@ -219,7 +220,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
               onChange={(event) =>
                 setPriority(event.target.value === "" ? null : Number(event.target.value))
               }
-              className="h-[24px] rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
+              className={selectClassSm}
             >
               {JOURNAL_PRIORITIES.map((item) => (
                 <option key={item.label} value={item.value === null ? "" : String(item.value)}>
@@ -233,7 +234,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
             <select
               value={lines}
               onChange={(event) => setLines(Number(event.target.value))}
-              className="h-[24px] rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 text-fg outline-none focus:border-accent"
+              className={selectClassSm}
             >
               {LINE_CHOICES.map((choice) => (
                 <option key={choice} value={choice}>

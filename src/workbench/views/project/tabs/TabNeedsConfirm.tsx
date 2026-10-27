@@ -12,6 +12,7 @@ import { CandidateCard } from "../CandidateCard";
 export function TabNeedsConfirm({
   candidates,
   serverId,
+  sessionId,
   reviews,
   onOpenPath,
   onClosePath,
@@ -23,6 +24,8 @@ export function TabNeedsConfirm({
 }: {
   candidates: ProjectCandidate[];
   serverId: string;
+  /** 项目视图的会话：右键菜单里的容器操作与 Nginx 校验走它。 */
+  sessionId: string;
   reviews: Record<string, ReviewState>;
   onOpenPath: (path: string) => void;
   onClosePath: () => void;
@@ -70,6 +73,7 @@ export function TabNeedsConfirm({
           key={candidate.id}
           candidate={candidate}
           serverId={serverId}
+          sessionId={sessionId}
           review={(reviews[candidate.path] ?? candidate.review) ?? "pending"}
           onOpenPath={onOpenPath}
           onClosePath={onClosePath}

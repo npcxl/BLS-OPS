@@ -32,6 +32,8 @@ pub struct AppState {
     pub env_locks: EnvironmentLocks,
     /// P5.5 AI 复核任务（取消位；任务状态本身在数据库里）。
     pub ai_reviews: AiReviewRegistry,
+    /// 命令检索的收藏/使用快照：避免每次按键都开库查两张表。
+    pub command_search: crate::command_center::CommandSearchCache,
 }
 
 impl AppState {
@@ -47,6 +49,7 @@ impl AppState {
             runs: RunRegistry::default(),
             env_locks: EnvironmentLocks::default(),
             ai_reviews: AiReviewRegistry::default(),
+            command_search: crate::command_center::CommandSearchCache::default(),
         }
     }
 }

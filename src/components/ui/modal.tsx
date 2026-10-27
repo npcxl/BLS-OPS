@@ -41,6 +41,10 @@ export function Modal({ open, title, description, width = 360, onClose, footer, 
         exiting ? "opacity-0 transition-opacity duration-150" : "overlay-scrim",
       )}
       onMouseDown={onClose}
+      // 浮层内的右键不能穿透到触发它的列表 / 卡片：React 的合成事件沿
+      // **组件树**冒泡，portal 到 body 也照样能传到外层 `onContextMenu`，
+      // 用户就会在弹窗里右键弹出下面卡片的菜单。
+      onContextMenu={(event) => event.stopPropagation()}
     >
       <div
         className={cn(
@@ -79,9 +83,17 @@ export function Modal({ open, title, description, width = 360, onClose, footer, 
 }
 
 export const fieldClass =
-  "h-[30px] w-full rounded-[8px] border border-line bg-surface-1/70 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle shadow-[inset_0_1px_0_rgb(255_255_255/0.45)] transition-colors focus:border-accent disabled:opacity-60";
+  "h-[30px] w-full rounded-[8px] border border-line bg-surface-1/70 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle shadow-[var(--field-shadow)] transition-colors hover:border-line-strong focus:border-accent disabled:opacity-60";
 
-export const selectClass = cn(fieldClass, "cursor-default pr-1");
+/**
+ * 下拉框：与输入框同一套表面，但箭头换成自绘的（见 globals.css 的
+ * `.ops-select`）。右侧留 26px 给箭头，文字不会压上去；`!` 是因为
+ * `fieldClass` 已经带了 `px-2`，必须显式覆盖右侧内边距。
+ */
+export const selectClass = cn(fieldClass, "ops-select cursor-default !pr-7");
+
+/** 工具栏 / 行内的紧凑下拉：与 selectClass 同一套外观，24px 高。 */
+export const selectClassSm = cn(selectClass, "h-[24px] w-auto !pr-6 text-11");
 
 export function Field({
   label,

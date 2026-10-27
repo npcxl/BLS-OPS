@@ -340,6 +340,7 @@ fn a_failed_command_becomes_an_error_not_empty_output() {
         stdout: String::new(),
         stderr: "df: /nope: No such file or directory\n".to_string(),
         exit_code: Some(1),
+        truncated: false,
     };
     let error = require_ok("df -B1 -P -T", failure).expect_err("must fail");
     assert!(error.to_string().contains("退出码 1"), "{error}");
@@ -352,6 +353,7 @@ fn a_successful_command_returns_its_stdout() {
         stdout: "ok\n".to_string(),
         stderr: String::new(),
         exit_code: Some(0),
+        truncated: false,
     };
     assert_eq!(require_ok("true", output).expect("ok"), "ok\n");
 }

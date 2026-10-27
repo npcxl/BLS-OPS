@@ -1,16 +1,11 @@
 import { useMemo, useState } from "react";
-import { Boxes, CircleDashed } from "lucide-react";
+import { Boxes } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { DeploymentInstance } from "@/api/ops-api";
-import {
-  PortChips,
-  RuntimeBadge,
-  ServiceBadge,
-  instanceKindMeta,
-} from "../badges";
-import { COMPONENT_ROLE_LABELS, instanceRole } from "../classify";
+import { instanceRole } from "../classify";
+import { RuntimeInstanceCard } from "../runtime-instance-card";
 
 type Filter = "all" | "linked" | "unlinked" | "unclassified" | "stopped";
 
@@ -27,12 +22,20 @@ const FILTERS: { id: Filter; labelKey: string }[] = [
  * 应用服务 tab：只展示后端判定为 `application` 的运行实例
  * （Node/Java/Go 业务进程、项目专属容器等），外加"待归类"实例供筛选查看。
  * MySQL/Redis 这类基础设施在「基础设施」tab —— 两个 tab 互斥，不会重复。
+ *
+ * 每张卡片各自持有右键菜单（动作要碰会话与工作台标签页），所以卡片是独立
+ * 组件 `RuntimeInstanceCard`；这里只负责筛选与计数。
  */
 export function TabRuntime({
   instances,
+  serverId,
+  sessionId,
   onOpenPath,
 }: {
   instances: DeploymentInstance[];
+  /** 服务器与会话：右键里的容器 / Nginx 动作走它们。 */
+  serverId: string;
+  sessionId: string;
   onOpenPath: (path: string) => void;
 }) {
   const { t } = useTranslation();
@@ -103,109 +106,15 @@ export function TabRuntime({
         <p className="text-11 text-fg-subtle">{t("No instances match this filter.")}</p>
       ) : (
         <div className="flex flex-col gap-2">
-          {visible.map((instance) => {
-            const meta = instanceKindMeta(instance.kind);
-            const unclassified = instanceRole(instance) === "unknown";
-            const stopped = instance.status && instance.status !== "running";
-            const componentLabel = COMPONENT_ROLE_LABELS[instance.component_role]
-              ? t(COMPONENT_ROLE_LABELS[instance.component_role])
-              : undefined;
-            return (
-              <article
-                key={instance.id}
-                className={cn(
-                  "overflow-hidden rounded-[12px] border border-line bg-surface-1 px-4 py-3 shadow-[0_1px_2px_rgb(15_23_42/0.04)]",
-                  stopped && "opacity-70",
-                )}
-              >
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <strong className="text-13 text-fg">{instance.name}</strong>
-                  <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
-                    {meta.label}
-                  </span>
-                  <RuntimeBadge runtime={instance.runtime} />
-                  <ServiceBadge service={instance.service} />
-                  {/* 待归类必须显式标记，绝不与业务应用混为一谈。 */}
-                  {unclassified && (
-                    <span
-                      className="inline-flex items-center gap-1 rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning"
-                      title={t(
-                        "Not enough evidence to tell whether it's a business app; the backend never defaults to infrastructure",
-                      )}
-                    >
-                      <CircleDashed size={9} />
-                      {t("Unclassified")}
-                    </span>
-                  )}
-                  {!unclassified && componentLabel && instance.component_role !== "unknown" && (
-                    <span className="rounded bg-accent/12 px-1.5 py-0.5 text-10 text-accent">
-                      {componentLabel}
-                    </span>
-                  )}
-                  {instance.status && (
-                    <span
-                      className={cn(
-                        "text-10",
-                        stopped ? "text-fg-subtle" : "text-success",
-                      )}
-                    >
-                      {instance.status}
-                    </span>
-                  )}
-                  {!instance.source_known && !unclassified && (
-                    <span className="rounded bg-warning/12 px-1.5 py-0.5 text-10 text-warning">
-                      {t("Source unknown")}
-                    </span>
-                  )}
-                </div>
-
-                <div className="mt-1.5">
-                  <PortChips ports={instance.ports} empty="No exposed ports" />
-                </div>
-
-                {instance.source_paths.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-10 text-fg-subtle">
-                    <span className="rounded bg-success/12 px-1.5 py-0.5 text-success">
-                      {t("Source linked")}
-                    </span>
-                    {instance.source_paths.map((dir) => (
-                      <button
-                        key={dir}
-                        type="button"
-                        className="font-mono text-fg-muted hover:text-fg"
-                        onClick={() => onOpenPath(dir)}
-                        title={t("Open {{path}} in the file panel", { path: dir })}
-                      >
-                        {dir}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {instance.config_files.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {instance.config_files.map((file) => (
-                      <button
-                        key={file}
-                        type="button"
-                        className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-10 text-fg-muted hover:text-fg"
-                        onClick={() => onOpenPath(file)}
-                        title={t("Open {{path}}", { path: file })}
-                      >
-                        {file}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {instance.detail && (
-                  <p className="mt-1.5 truncate text-10 text-fg-subtle" title={instance.detail}>
-                    {instance.detail}
-                  </p>
-                )}
-              </article>
-            );
-          })}
+          {visible.map((instance) => (
+            <RuntimeInstanceCard
+              key={instance.id}
+              instance={instance}
+              serverId={serverId}
+              sessionId={sessionId}
+              onOpenPath={onOpenPath}
+            />
+          ))}
         </div>
       )}
     </div>

@@ -178,6 +178,27 @@
 }
 
 @layer components {
+  /*
+   * 原生 select 的箭头由我们自己画。
+   *
+   * 系统的下拉箭头在 WebView2 里跟主题完全脱节（深色下仍然是浅灰粗箭头），
+   * 而且占位宽度不可控 —— `appearance:none` 后用一张随主题换色的 SVG，
+   * 右侧留出固定 26px 给箭头，文字不会再压到它上面。
+   */
+  .ops-select {
+    appearance: none;
+    background-image: var(--select-arrow);
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px 12px;
+  }
+
+  /* 展开的选项列表由 OS 绘制，能控的只有配色：至少别在深色模式下闪一块白。 */
+  .ops-select option {
+    background-color: rgb(var(--surface-1));
+    color: rgb(var(--fg));
+  }
+
   /* 浮层面板统一为**纯白实色**（2026-09-03 UI 重构）：与内容区白卡片同一
      份表面色，去掉半透明与 backdrop blur —— "外层是背景，内层是白纸"。 */
   .glass-panel {

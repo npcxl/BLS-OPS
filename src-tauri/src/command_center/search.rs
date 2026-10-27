@@ -15,35 +15,97 @@
 //! 收藏 +150、使用次数 ×10（封顶 +100）、7 天内用过 +30。
 //! 同分时只读命令排前面（风险优先）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::model::{CommandKnowledge, CommandSearchHit, RiskLevel};
 use crate::db;
 
 /// 检索上下文：收藏集 + 使用统计。
+///
+/// 收藏用 `HashSet`：评分时每个条目都要判一次"是否收藏"，
+/// `Vec::iter().any()` 在收藏多时是 O(n×m)。
 #[derive(Debug, Default, Clone)]
 pub struct SearchContext {
-    pub favorites: Vec<String>,
+    pub favorites: HashSet<String>,
     pub usage: HashMap<String, db::CommandUsage>,
 }
 
 impl SearchContext {
     pub fn load(conn: &rusqlite::Connection) -> anyhow::Result<Self> {
-        let favorites = db::command_favorites(conn)?;
+        let favorites = db::command_favorites(conn)?.into_iter().collect();
         let usage = db::command_usage_all(conn)?.into_iter().collect();
         Ok(Self { favorites, usage })
     }
 }
 
-/// 检索知识库。空查询返回"收藏 + 最近使用 + 兜底推荐"。
+/// 预处理后的知识条目。
+///
+/// 知识库是编译期常量，但以前**每次按键**都要把每个条目的 id / 可执行名 /
+/// 标题 / 描述 / 语法 / 别名 / 场景重新 `trim().to_lowercase()` 一遍 ——
+/// 几十个条目就是几百次分配，全部发生在输入热路径上。
+///
+/// 这里把这几份小写字符串算**一次**并缓存（见
+/// [`crate::command_center::prepared_catalog`]），检索时只做比较。
+pub struct PreparedEntry<'a> {
+    pub entry: &'a CommandKnowledge,
+    id: String,
+    executable: String,
+    display: String,
+    title: String,
+    description: String,
+    syntax: String,
+    aliases: Vec<String>,
+    scenarios: Vec<String>,
+}
+
+impl<'a> PreparedEntry<'a> {
+    pub fn new(entry: &'a CommandKnowledge) -> Self {
+        Self {
+            entry,
+            id: normalize(entry.id),
+            executable: normalize(entry.executable),
+            display: normalize(&entry.display_command()),
+            title: normalize(entry.title),
+            description: normalize(entry.description),
+            syntax: normalize(entry.syntax),
+            aliases: entry.aliases.iter().map(|alias| normalize(alias)).collect(),
+            scenarios: entry
+                .scenarios
+                .iter()
+                .map(|scenario| normalize(scenario))
+                .collect(),
+        }
+    }
+}
+
+/// 把整个知识库预处理一遍。调用方应当缓存结果（见 `prepared_catalog`）。
+pub fn prepare<'a>(catalog: &'a [CommandKnowledge]) -> Vec<PreparedEntry<'a>> {
+    catalog.iter().map(PreparedEntry::new).collect()
+}
+
+/// 检索知识库（未预处理的便捷入口）。
+///
+/// 每次调用都会重新预处理 —— 只适合测试或一次性调用。热路径请用
+/// [`search_prepared`] 配合缓存的 [`PreparedEntry`]。
 pub fn search(
     catalog: &[CommandKnowledge],
     query: &str,
     ctx: &SearchContext,
     limit: usize,
 ) -> Vec<CommandSearchHit> {
+    let prepared = prepare(catalog);
+    search_prepared(&prepared, query, ctx, limit)
+}
+
+/// 检索预处理过的知识库。空查询返回"收藏 + 最近使用 + 兜底推荐"。
+pub fn search_prepared(
+    catalog: &[PreparedEntry<'_>],
+    query: &str,
+    ctx: &SearchContext,
+    limit: usize,
+) -> Vec<CommandSearchHit> {
     let q = normalize(query);
-    let mut scored: Vec<(f64, &CommandKnowledge)> = catalog
+    let mut scored: Vec<(f64, &PreparedEntry<'_>)> = catalog
         .iter()
         .filter_map(|entry| Some((score_entry(entry, &q, ctx)?, entry)))
         .collect();
@@ -52,10 +114,11 @@ pub fn search(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
                 // 同分：只读优先，再按 id 保证稳定。
-                a.1.risk
+                a.1.entry
+                    .risk
                     .rank()
-                    .cmp(&b.1.risk.rank())
-                    .then(a.1.id.cmp(b.1.id))
+                    .cmp(&b.1.entry.risk.rank())
+                    .then(a.1.id.cmp(&b.1.id))
             })
     });
     scored
@@ -65,7 +128,11 @@ pub fn search(
         .collect()
 }
 
-fn to_hit(entry: &CommandKnowledge, score: f64, ctx: &SearchContext) -> CommandSearchHit {
+fn to_hit(prepared: &PreparedEntry<'_>, score: f64, ctx: &SearchContext) -> CommandSearchHit {
+    to_hit_raw(prepared.entry, score, ctx)
+}
+
+fn to_hit_raw(entry: &CommandKnowledge, score: f64, ctx: &SearchContext) -> CommandSearchHit {
     CommandSearchHit {
         id: entry.id.to_string(),
         executable: entry.executable.to_string(),
@@ -90,14 +157,14 @@ fn to_hit(entry: &CommandKnowledge, score: f64, ctx: &SearchContext) -> CommandS
             .collect(),
         placeholders: super::model::placeholders_in(entry.syntax),
         can_execute: entry.executable_now(),
-        favorite: ctx.favorites.iter().any(|id| id == entry.id),
+        favorite: ctx.favorites.contains(entry.id),
         score,
     }
 }
 
 /// 不带个性化上下文的命中（终端命令匹配用：只需要 id / 风险 / 适配器）。
 pub fn hit_for(entry: &CommandKnowledge) -> CommandSearchHit {
-    to_hit(entry, 0.0, &SearchContext::default())
+    to_hit_raw(entry, 0.0, &SearchContext::default())
 }
 
 fn normalize(value: &str) -> String {
@@ -105,36 +172,31 @@ fn normalize(value: &str) -> String {
 }
 
 /// 返回 `None` 表示该条目与查询无关（空查询除外）。
-fn score_entry(entry: &CommandKnowledge, q: &str, ctx: &SearchContext) -> Option<f64> {
-    let display = normalize(&entry.display_command());
-    let title = normalize(entry.title);
-    let description = normalize(entry.description);
-    let syntax = normalize(entry.syntax);
-    let id = normalize(entry.id);
-
+fn score_entry(entry: &PreparedEntry<'_>, q: &str, ctx: &SearchContext) -> Option<f64> {
+    // 这些字段在 `PreparedEntry::new` 里已经小写化，这里只做比较。
     let mut score = if q.is_empty() {
         // 空查询：只推荐收藏 / 用过 / 高频默认（由 base 分 + 加权决定）。
-        base_recency(entry.id, ctx)?
-    } else if id == q {
+        base_recency(&entry.id, ctx)?
+    } else if entry.id == q {
         1000.0
-    } else if entry.aliases.iter().any(|a| normalize(a) == q) {
+    } else if entry.aliases.iter().any(|alias| alias == q) {
         900.0
-    } else if display == q || entry.executable.eq_ignore_ascii_case(q) {
+    } else if entry.display == q || entry.executable == q {
         850.0
-    } else if display.starts_with(q) || entry.executable.to_lowercase().starts_with(q) {
+    } else if entry.display.starts_with(q) || entry.executable.starts_with(q) {
         // 前缀补全是输入提示的主路径（`docker p` → docker ps）。
-        700.0 - display.len() as f64 * 0.5
-    } else if entry.aliases.iter().any(|a| normalize(a).contains(q)) {
+        700.0 - entry.display.len() as f64 * 0.5
+    } else if entry.aliases.iter().any(|alias| alias.contains(q)) {
         600.0
-    } else if entry.scenarios.iter().any(|s| normalize(s).contains(q)) {
+    } else if entry.scenarios.iter().any(|scenario| scenario.contains(q)) {
         550.0
-    } else if title.contains(q) {
+    } else if entry.title.contains(q) {
         500.0
-    } else if description.contains(q) {
+    } else if entry.description.contains(q) {
         300.0
-    } else if syntax.contains(q) {
+    } else if entry.syntax.contains(q) {
         250.0
-    } else if is_subsequence(q, &display) || is_subsequence(q, &id) {
+    } else if is_subsequence(q, &entry.display) || is_subsequence(q, &entry.id) {
         // `dps` → docker ps；`dpsa` → docker ps -a。
         150.0
     } else {
@@ -142,10 +204,10 @@ fn score_entry(entry: &CommandKnowledge, q: &str, ctx: &SearchContext) -> Option
     };
 
     // 个性化加权。
-    if ctx.favorites.iter().any(|id| id == entry.id) {
+    if ctx.favorites.contains(entry.entry.id) {
         score += 150.0;
     }
-    if let Some(usage) = ctx.usage.get(entry.id) {
+    if let Some(usage) = ctx.usage.get(&entry.id) {
         score += (usage.use_count as f64 * 10.0).min(100.0);
         // 7 天内用过 → 再加时近性分。
         let week_ms = 7 * 24 * 3600 * 1000;
@@ -154,13 +216,13 @@ fn score_entry(entry: &CommandKnowledge, q: &str, ctx: &SearchContext) -> Option
         }
     }
     // 只读命令在同分下优先（排序处也会 tiebreak）。
-    score -= entry.risk.rank() as f64;
+    score -= entry.entry.risk.rank() as f64;
     Some(score)
 }
 
 /// 空查询的兜底分：只有收藏 / 用过的命令，外加常用只读推荐。
 fn base_recency(id: &str, ctx: &SearchContext) -> Option<f64> {
-    if ctx.favorites.iter().any(|fav| fav == id) {
+    if ctx.favorites.contains(id) {
         return Some(120.0);
     }
     if let Some(usage) = ctx.usage.get(id) {

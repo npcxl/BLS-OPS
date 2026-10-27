@@ -189,4 +189,48 @@ export default {
   "No listening ports": "无监听端口",
   "No exposed ports": "未暴露端口",
   "systemd unit": "unit 文件",
+
+  // -- 项目卡片右键菜单（project-candidate-menu / use-candidate-actions）--
+  "Path copied": "路径已复制",
+  "Copy failed": "复制失败",
+  "Track in terminal": "在终端中跟踪",
+  "Nginx reloaded": "Nginx 已重载",
+  "nginx -t failed; the running config was left untouched": "nginx -t 未通过，正在运行的配置没有被改动",
+  "Restart container {{name}}": "重启容器 {{name}}",
+  "Stop container {{name}}": "停止容器 {{name}}",
+  "Restart container": "重启容器",
+  "Stop container": "停止容器",
+  "View container config": "查看容器配置",
+  "View Nginx config": "查看 Nginx 配置",
+  "Container {{name}} stopped": "容器 {{name}} 已停止",
+  "Container {{name}} restarted": "容器 {{name}} 已重启",
+  "Stop container {{name}}?": "停止容器 {{name}}？",
+  "The container stops immediately and anything it serves becomes unreachable. Its data stays on disk, so you can start it again from the Docker view.":
+    "容器会立即停止，它提供的服务将暂时不可访问。数据仍保留在磁盘上，可以在 Docker 视图里重新启动。",
+
+  // -- 容器配置弹窗（container-config-dialog）--
+  "Container config: {{name}}": "容器配置：{{name}}",
+  State: "状态",
+  Health: "健康检查",
+  "Restart policy": "重启策略",
+  Created: "创建时间",
+  Started: "启动时间",
+  Finished: "结束时间",
+  "Exit code": "退出码",
+  "OOM killed": "因内存不足被终止",
+  Yes: "是",
+  "Working dir": "工作目录",
+  Service: "服务",
+  "Compose files": "Compose 文件",
+  Ports: "端口",
+  "No published ports": "没有发布端口",
+  "Not published": "未发布",
+  Mounts: "挂载",
+  "No mounts": "无挂载",
+  "read-only": "只读",
+  "Environment variables and the start command are intentionally hidden — they often carry passwords and tokens.":
+    "环境变量与启动命令被刻意隐藏 —— 它们经常包含密码和令牌。",
+  "Open in file panel": "在文件面板中打开",
+  "Click a host path to open it in the file panel; right-click for more actions.":
+    "点击宿主路径可在文件面板中打开，右键还有更多操作。",
 } as const;

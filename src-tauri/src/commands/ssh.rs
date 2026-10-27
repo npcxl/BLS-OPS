@@ -305,6 +305,32 @@ pub async fn ssh_input(
         .map_err(|error| error.to_string())
 }
 
+/// 把某个已连接的交互终端切到指定目录（项目卡片右键「在命令面板中打开」）。
+///
+/// 命令串仍然只在这里拼：前端只给路径，`validate_abs_path` 先卡住相对路径与
+/// `..` 段，`shell_quote` 再兜一层引号 —— WebView 永远拿不到拼命令的权力。
+///
+/// 不加 `--`：路径恒为绝对路径（`validate_abs_path` 保证以 `/` 开头），本就不会
+/// 被当成选项；而前端要用同一条命令做 cwd 跟踪（`parseCdArgument` 只认
+/// `cd <参数>`），多一个 `--` 会让它把参数解析成相对路径。
+///
+/// 返回实际写入的那一行，前端据此登记 cwd 跟踪（文件面板才会跟）。
+#[tauri::command]
+pub async fn ssh_cd(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let path = crate::safe::validate_abs_path(&path, "目录").map_err(|error| error.to_string())?;
+    let line = format!("cd {}", crate::safe::shell_quote(path));
+    state
+        .ssh
+        .input(&session_id, format!("{line}\r").into_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(line)
+}
+
 /// 切换一个会话的**输出编码**（`auto` / `utf8` / `gb18030` / `big5`）。
 ///
 /// 老服务器的 `LANG=C` 或 GBK 环境会让 UTF-8 解码整屏乱码，用户需要现场

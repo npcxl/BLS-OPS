@@ -339,23 +339,42 @@ impl SshSessionManager {
             .map_err(|error| sftp_error(&requested, error))?;
 
         let mut entries: Vec<RemoteFileEntry> = Vec::new();
+        // 缺失 SIZE 的条目下标。先收集、再并发补查 —— 以前是边读边逐个
+        // `await`，N 个缺失就是 N 次**串行**往返，首屏被放大成 N × RTT。
+        let mut missing_sizes: Vec<usize> = Vec::new();
         for (entry, size_missing) in sftp
             .read_dir(&canonical)
             .await
             .map_err(|error| sftp_error(&canonical, error))?
             .map(|entry| remote_entry(&canonical, entry))
         {
-            // Some servers omit SIZE in readdir attrs (the client would then
-            // silently report 0). One extra lstat per affected entry is the
-            // honest fix; it only ever runs for those entries.
             if size_missing {
-                if let Ok(full) = sftp.symlink_metadata(&entry.path).await {
-                    let patched = build_entry(&entry.path, &entry.name, &full);
-                    entries.push(patched);
-                    continue;
-                }
+                missing_sizes.push(entries.len());
             }
             entries.push(entry);
+        }
+
+        // 有限并发补查：每批 8 个，批间串行。
+        // 不无限并发 —— 同一条 SFTP 通道上打满请求反而会让交互变慢。
+        const STAT_CONCURRENCY: usize = 8;
+        for chunk in missing_sizes.chunks(STAT_CONCURRENCY) {
+            let mut set = tokio::task::JoinSet::new();
+            for &index in chunk {
+                let sftp = Arc::clone(&sftp);
+                let path = entries[index].path.clone();
+                let name = entries[index].name.clone();
+                set.spawn(async move {
+                    let meta = sftp.symlink_metadata(&path).await;
+                    (index, path, name, meta)
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                // 单个条目查不到就保留原样（大小未知），不影响整份列表。
+                let Ok((index, path, name, Ok(meta))) = joined else {
+                    continue;
+                };
+                entries[index] = build_entry(&path, &name, &meta);
+            }
         }
 
         entries.sort_by(|a, b| {
@@ -535,14 +554,26 @@ impl SshSessionManager {
             .await
             .map_err(|error| sftp_error(&canonical, error))?;
         let mut bytes = Vec::with_capacity(size as usize);
-        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
+        // `take(max_len + 1)`：元数据可能在检查之后过期（文件正在被写），
+        // 单靠 size 判断不能阻止 `read_to_end` 把增长后的内容全部读进内存。
+        let mut limited = tokio::io::AsyncReadExt::take(&mut file, max_len + 1);
+        tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes)
             .await
             .map_err(|error| anyhow!("读取文件失败：{error}"))?;
+        if bytes.len() as u64 > max_len {
+            return Err(anyhow!(
+                "文件在读取期间变大了（超过 {}），已中止读取",
+                format_size_human(max_len)
+            ));
+        }
 
-        let binary = bytes.contains(&0) || String::from_utf8(bytes.clone()).is_err();
+        // 借用校验，**不克隆**整份内容：以前 `String::from_utf8(bytes.clone())`
+        // 为了判 UTF-8 复制了一遍文件，大文件直接双倍内存。
+        let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
         let content = if binary {
             None
         } else {
+            // 上面已验证是合法 UTF-8，这里 move 进去，不会再分配。
             Some(String::from_utf8(bytes).unwrap_or_default())
         };
         Ok(RemoteFileContent {
@@ -796,10 +827,17 @@ impl SshSessionManager {
 ///
 /// 最坏情况下原内容仍在 `.bls-bak` 里，不会凭空消失。
 async fn atomic_write(sftp: &SftpSession, canonical: &str, content: &[u8]) -> Result<()> {
-    let temp = format!("{canonical}.bls-tmp");
-    let backup = format!("{canonical}.bls-bak");
+    // **唯一**的临时名与备份名：两个编辑器同时保存同一个文件时，固定名字
+    // 会让它们互相覆盖对方正在写的临时文件。
+    //
+    // 代价：进程崩溃可能留下 `.bls-tmp-<uuid>` 残留文件。这不影响正确性
+    // （下次保存用新名字），但会占空间 —— 清理是运维层面的事，不做自动删除
+    // 以免误删别的会话正在写的文件。
+    let unique = uuid::Uuid::new_v4();
+    let temp = format!("{canonical}.bls-tmp-{unique}");
+    let backup = format!("{canonical}.bls-bak-{unique}");
 
-    // 上次异常退出留下的临时文件不该阻止这次写入。
+    // 同一个 uuid 不可能重复，但保守起见先清一次（重试时留下的）。
     let _ = sftp.remove_file(&temp).await;
 
     let written: Result<()> = async {
@@ -834,8 +872,30 @@ async fn atomic_write(sftp: &SftpSession, canonical: &str, content: &[u8]) -> Re
         return Err(error);
     }
 
-    let had_target = sftp.symlink_metadata(canonical).await.is_ok();
+    // 原文件属性：既用来判断"是否存在"，也用来把权限复制到临时文件。
+    let original = sftp.symlink_metadata(canonical).await.ok();
+    let had_target = original.is_some();
     if had_target {
+        // rename 保留的是**临时文件**的权限。不显式复制，0600 的私钥 / 配置
+        // 会被换成新建文件的默认权限（通常 0644）—— 这是一次静默的提权。
+        if let Some(permissions) = original.as_ref().and_then(|meta| meta.permissions) {
+            let attrs = russh_sftp::protocol::FileAttributes {
+                permissions: Some(permissions),
+                ..Default::default()
+            };
+            if sftp.set_metadata(&temp, attrs).await.is_err() {
+                // 严格权限（如 0600 私钥 / 0700 脚本）绝不能被静默放宽：
+                // 宁可不保存，也不能把"只有所有者可读"变成"所有人可读"。
+                // 组/其他本来就有权限的文件，放宽风险小，继续保存。
+                if permissions & 0o077 == 0 {
+                    let _ = sftp.remove_file(&temp).await;
+                    return Err(anyhow!(
+                        "无法保留原文件权限（{:04o}），已取消保存",
+                        permissions
+                    ));
+                }
+            }
+        }
         let _ = sftp.remove_file(&backup).await;
         if let Err(error) = sftp.rename(canonical, &backup).await {
             let _ = sftp.remove_file(&temp).await;

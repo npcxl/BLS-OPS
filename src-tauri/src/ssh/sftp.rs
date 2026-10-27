@@ -22,8 +22,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 
 use super::manager::SshSessionManager;
 use super::model::{
-    RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, KIND_DIRECTORY, KIND_FILE, KIND_OTHER,
-    KIND_SYMLINK,
+    RemoteBinaryContent, RemoteFileContent, RemoteFileEntry, RemoteFileVersion, SaveFileOutcome,
+    KIND_DIRECTORY, KIND_FILE, KIND_OTHER, KIND_SYMLINK,
 };
 use super::paths::{base_name, format_size_human, parent_of, posix_join, posix_normalize};
 
@@ -453,6 +453,177 @@ impl SshSessionManager {
         remove_recursive(&sftp, &posix_normalize(path)).await
     }
 
+    // -- 回收站 ---------------------------------------------------------------
+
+    /// 把条目移进远程回收站：`~/.bls-ops-trash/<时间戳>/<name>`。
+    ///
+    /// 用同一文件系统内的 `rename`（原子）；跨文件系统 / 无权限时 `rename`
+    /// 会失败，这里**如实报错并清理半成品**，绝不降级成永久删除。
+    pub async fn trash_move(
+        &self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<crate::trash::TrashEntry> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let root = trash_root(&sftp).await?;
+        if !remote_exists(&sftp, &root).await {
+            sftp.create_dir(&root)
+                .await
+                .map_err(|error| sftp_error(&root, error))?;
+        }
+
+        let normalized = posix_normalize(path);
+        let name = base_name(&normalized).to_string();
+        if name.is_empty() || normalized == "/" {
+            return Err(anyhow!("不能删除根目录"));
+        }
+        let meta = sftp
+            .symlink_metadata(&normalized)
+            .await
+            .map_err(|error| sftp_error(&normalized, error))?;
+        let kind = sftp_kind(meta.file_type()).to_string();
+
+        let id = chrono::Utc::now().timestamp_millis().to_string();
+        let dir = crate::trash::entry_dir(&root, &id);
+        sftp.create_dir(&dir)
+            .await
+            .map_err(|error| sftp_error(&dir, error))?;
+
+        let entry = crate::trash::TrashEntry {
+            id: id.clone(),
+            name: name.clone(),
+            original_path: normalized.clone(),
+            deleted_at: chrono::Utc::now().timestamp_millis(),
+            kind,
+        };
+        if let Err(error) = write_remote_text(
+            &sftp,
+            &crate::trash::meta_path(&root, &id),
+            &serde_json::to_string_pretty(&entry)?,
+        )
+        .await
+        {
+            let _ = remove_recursive(&sftp, &dir).await;
+            return Err(error);
+        }
+
+        if let Err(error) = sftp
+            .rename(&normalized, &crate::trash::payload_path(&root, &id, &name))
+            .await
+        {
+            // 回收失败（跨文件系统 / 无权限）：清掉半成品目录，把原因说清楚。
+            let _ = remove_recursive(&sftp, &dir).await;
+            return Err(anyhow!(
+                "无法移入回收区：{}。文件未被删除。",
+                sftp_error(&normalized, error)
+            ));
+        }
+        prune_trash(&sftp, &root).await;
+        Ok(entry)
+    }
+
+    /// 列出回收站条目（最近的在前）。
+    pub async fn trash_list(&self, session_id: &str) -> Result<Vec<crate::trash::TrashEntry>> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let root = trash_root(&sftp).await?;
+        if !remote_exists(&sftp, &root).await {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in sftp
+            .read_dir(&root)
+            .await
+            .map_err(|error| sftp_error(&root, error))?
+        {
+            if entry.metadata().file_type() != FileType::Dir {
+                continue;
+            }
+            let id = entry.file_name();
+            if crate::trash::validate_id(&id).is_err() {
+                continue;
+            }
+            let Ok(text) = read_remote_text(&sftp, &crate::trash::meta_path(&root, &id)).await
+            else {
+                // 读不到 meta 的目录不冒充条目：宁可不显示，也不编造原路径。
+                continue;
+            };
+            if let Ok(parsed) = serde_json::from_str::<crate::trash::TrashEntry>(&text) {
+                out.push(parsed);
+            }
+        }
+        out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+        Ok(out)
+    }
+
+    /// 从回收站恢复到原路径。原路径已有同名条目时**拒绝**，不覆盖。
+    pub async fn trash_restore(&self, session_id: &str, id: &str) -> Result<String> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        crate::trash::validate_id(id)?;
+        let root = trash_root(&sftp).await?;
+        let text = read_remote_text(&sftp, &crate::trash::meta_path(&root, id)).await?;
+        let entry: crate::trash::TrashEntry = serde_json::from_str(&text)?;
+
+        let source = crate::trash::payload_path(&root, id, &entry.name);
+        if !remote_exists(&sftp, &source).await {
+            return Err(anyhow!("回收区里找不到 {}，可能已被清理", entry.name));
+        }
+        if remote_exists(&sftp, &entry.original_path).await {
+            return Err(anyhow!(
+                "{} 已存在同名文件，请先处理它再恢复",
+                entry.original_path
+            ));
+        }
+        let parent = parent_of(&entry.original_path);
+        if !remote_exists(&sftp, &parent).await {
+            return Err(anyhow!("原目录 {parent} 已不存在，无法恢复"));
+        }
+        sftp.rename(&source, &entry.original_path)
+            .await
+            .map_err(|error| sftp_error(&entry.original_path, error))?;
+        let _ = remove_recursive(&sftp, &crate::trash::entry_dir(&root, id)).await;
+        Ok(entry.original_path)
+    }
+
+    /// 永久删除一条回收站条目。
+    pub async fn trash_purge(&self, session_id: &str, id: &str) -> Result<()> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        crate::trash::validate_id(id)?;
+        let root = trash_root(&sftp).await?;
+        remove_recursive(&sftp, &crate::trash::entry_dir(&root, id)).await
+    }
+
+    /// 清空回收站，返回清理的条目数。
+    pub async fn trash_empty(&self, session_id: &str) -> Result<usize> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        let root = trash_root(&sftp).await?;
+        if !remote_exists(&sftp, &root).await {
+            return Ok(0);
+        }
+        let mut removed = 0;
+        for entry in sftp
+            .read_dir(&root)
+            .await
+            .map_err(|error| sftp_error(&root, error))?
+        {
+            let id = entry.file_name();
+            if crate::trash::validate_id(&id).is_err() {
+                continue;
+            }
+            if remove_recursive(&sftp, &crate::trash::entry_dir(&root, &id))
+                .await
+                .is_ok()
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Renames an entry within its directory (`new_name` is a plain name, not
     /// a path). Fails if the target exists — SFTP rename does not overwrite.
     pub async fn sftp_rename(
@@ -639,6 +810,16 @@ impl SshSessionManager {
         // 借用校验，**不克隆**整份内容：以前 `String::from_utf8(bytes.clone())`
         // 为了判 UTF-8 复制了一遍文件，大文件直接双倍内存。
         let binary = bytes.contains(&0) || std::str::from_utf8(&bytes).is_err();
+        // 版本指纹必须在 move 之前算：保存时用它来判断"这期间文件有没有被改"。
+        let version = RemoteFileVersion {
+            size,
+            modified_at: meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64),
+            sha256: sha256_hex(&bytes),
+        };
         let content = if binary {
             None
         } else {
@@ -650,6 +831,56 @@ impl SshSessionManager {
             size,
             binary,
             content,
+            version,
+        })
+    }
+
+    /// 保存编辑器内容；`expected` 有值时先核对版本，不一致**不写**。
+    ///
+    /// 冲突时把**当前**版本一并返回，前端据此展示"文件已被改过"并让用户
+    /// 选择重新加载 / 另存 / 明确覆盖 —— 绝不替用户决定覆盖。
+    ///
+    /// `expected == None` 表示不校验（另存为、新文件）。
+    pub async fn save_text_file(
+        &self,
+        session_id: &str,
+        path: &str,
+        content: &str,
+        expected: Option<&RemoteFileVersion>,
+    ) -> Result<SaveFileOutcome> {
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+
+        let canonical = match sftp.canonicalize(path).await {
+            Ok(value) => value,
+            Err(error) => {
+                if expected.is_some() {
+                    // 打开时还在，现在连路径都解析不出来：文件被删了（或不再可读）。
+                    return Ok(SaveFileOutcome::Conflict { current: None });
+                }
+                return Err(sftp_error(path, error));
+            }
+        };
+
+        if let Some(expected) = expected {
+            match read_current_version(&sftp, &canonical).await {
+                Ok(current) if current.sha256 == expected.sha256 => {}
+                Ok(current) => {
+                    return Ok(SaveFileOutcome::Conflict {
+                        current: Some(current),
+                    })
+                }
+                Err(_) => return Ok(SaveFileOutcome::Conflict { current: None }),
+            }
+        }
+
+        atomic_write(&sftp, &canonical, content.as_bytes()).await?;
+        Ok(SaveFileOutcome::Saved {
+            version: RemoteFileVersion {
+                size: content.len() as u64,
+                modified_at: None,
+                sha256: sha256_hex(content.as_bytes()),
+            },
         })
     }
 
@@ -877,6 +1108,113 @@ impl SshSessionManager {
     }
 }
 
+// -- 回收站辅助 ---------------------------------------------------------------
+
+/// 回收站根目录：登录目录下的 `.bls-ops-trash`。
+async fn trash_root(sftp: &SftpSession) -> Result<String> {
+    let home = sftp
+        .canonicalize(".")
+        .await
+        .map_err(|error| sftp_error(".", error))?;
+    Ok(posix_join(&home, crate::trash::TRASH_DIR_NAME))
+}
+
+async fn remote_exists(sftp: &SftpSession, path: &str) -> bool {
+    sftp.symlink_metadata(path).await.is_ok()
+}
+
+async fn read_remote_text(sftp: &SftpSession, path: &str) -> Result<String> {
+    let mut file = sftp
+        .open(path)
+        .await
+        .map_err(|error| sftp_error(path, error))?;
+    let mut bytes = Vec::new();
+    let mut limited = tokio::io::AsyncReadExt::take(&mut file, 1024 * 1024);
+    tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes)
+        .await
+        .map_err(|error| anyhow!("读取 {path} 失败：{error}"))?;
+    String::from_utf8(bytes).map_err(|_| anyhow!("{path} 不是合法 UTF-8"))
+}
+
+async fn write_remote_text(sftp: &SftpSession, path: &str, text: &str) -> Result<()> {
+    let mut file = sftp
+        .create(path)
+        .await
+        .map_err(|error| sftp_error(path, error))?;
+    AsyncWriteExt::write_all(&mut file, text.as_bytes())
+        .await
+        .map_err(|error| anyhow!("写入 {path} 失败：{error}"))?;
+    file.shutdown()
+        .await
+        .map_err(|error| anyhow!("写入 {path} 失败：{error}"))?;
+    Ok(())
+}
+
+/// 回收区超过上限时清最旧的条目（按目录名 = 时间戳）。
+async fn prune_trash(sftp: &SftpSession, root: &str) {
+    let Ok(entries) = sftp.read_dir(root).await else {
+        return;
+    };
+    let mut dirs: Vec<String> = entries
+        .into_iter()
+        .filter(|entry| entry.metadata().file_type() == FileType::Dir)
+        .map(|entry| entry.file_name())
+        .filter(|id| crate::trash::validate_id(id).is_ok())
+        .collect();
+    if dirs.len() <= crate::trash::TRASH_KEEP {
+        return;
+    }
+    dirs.sort();
+    let drop_count = dirs.len() - crate::trash::TRASH_KEEP;
+    for id in dirs.into_iter().take(drop_count) {
+        let _ = remove_recursive(sftp, &crate::trash::entry_dir(root, &id)).await;
+    }
+}
+
+/// 内容指纹（小写十六进制）。与上传路径共用同一种表示，便于比对。
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// 读当前文件的版本指纹（只读前 4 MB，够覆盖可编辑文件）。
+async fn read_current_version(sftp: &SftpSession, canonical: &str) -> Result<RemoteFileVersion> {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let meta = sftp
+        .symlink_metadata(canonical)
+        .await
+        .map_err(|error| sftp_error(canonical, error))?;
+    if meta.file_type() == FileType::Dir {
+        return Err(anyhow!("这是一个文件夹，无法作为文本保存"));
+    }
+    if meta.len() > LIMIT {
+        return Err(anyhow!("文件过大，无法比对版本"));
+    }
+    let mut file = sftp
+        .open(canonical)
+        .await
+        .map_err(|error| sftp_error(canonical, error))?;
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    let mut limited = tokio::io::AsyncReadExt::take(&mut file, LIMIT + 1);
+    tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes)
+        .await
+        .map_err(|error| anyhow!("读取文件失败：{error}"))?;
+    Ok(RemoteFileVersion {
+        size: meta.len(),
+        modified_at: meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs() as i64),
+        sha256: sha256_hex(&bytes),
+    })
+}
+
 /// 把内容**原子地**写到 `canonical`。
 ///
 /// # 为什么不能直接 `create()` 写
@@ -914,6 +1252,14 @@ async fn atomic_write(sftp: &SftpSession, canonical: &str, content: &[u8]) -> Re
             .create(&temp)
             .await
             .map_err(|error| sftp_error(&temp, error))?;
+        // **写入前**先收紧到 0600：临时文件从创建到"设回原权限"之间有一段
+        // 窗口，服务器默认可能是 0644，敏感内容在那段时间里会被其他用户读到。
+        // 设置失败不阻断（有些服务器不支持 setstat），但至少尝试收紧。
+        let locked = russh_sftp::protocol::FileAttributes {
+            permissions: Some(0o600),
+            ..Default::default()
+        };
+        let _ = sftp.set_metadata(&temp, locked).await;
         if let Err(error) = tokio::io::AsyncWriteExt::write_all(&mut file, content).await {
             let _ = file.shutdown().await;
             return Err(anyhow!("写入临时文件失败：{error}"));

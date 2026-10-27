@@ -341,3 +341,70 @@ pub async fn sftp_write_file(
     record_audit(&state, "sftp_write_file", None, None, &path);
     Ok(())
 }
+
+/// 编辑器保存：带版本冲突检测，并在覆盖前留一份本机历史。
+///
+/// `expected` 是打开文件时拿到的版本；不一致时**不写**，把当前版本回给前端，
+/// 由用户选择重新加载 / 另存 / 明确覆盖。
+#[tauri::command]
+pub async fn sftp_save_editor_file(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    content: String,
+    expected: Option<crate::ssh::RemoteFileVersion>,
+) -> Result<crate::ssh::SaveFileOutcome, String> {
+    const MAX_EDIT_SIZE: u64 = 2 * 1024 * 1024;
+    // 覆盖之前先把**旧内容**存到本机：保存错了还能捞回来。
+    // 读不到（二进制 / 没权限）就跳过历史，不能因此阻止保存。
+    if let Some(root) = state.db.path().parent() {
+        if let Ok(existing) = state
+            .ssh
+            .sftp_read_file(&session_id, &path, MAX_EDIT_SIZE)
+            .await
+        {
+            if let Some(text) = existing.content {
+                let _ = crate::editor_history::record(root, &path, &text);
+            }
+        }
+    }
+    let outcome = state
+        .ssh
+        .save_text_file(&session_id, &path, &content, expected.as_ref())
+        .await
+        .map_err(|error| error.to_string())?;
+    // 冲突时并没有写入，但审计里记一条"尝试保存"没有意义 —— 只在真正落盘后记录。
+    if matches!(outcome, crate::ssh::SaveFileOutcome::Saved { .. }) {
+        record_audit(&state, "sftp_write_file", None, None, &path);
+    }
+    Ok(outcome)
+}
+
+/// 列出某个远程文件的本地历史版本（最近的在前）。
+#[tauri::command]
+pub async fn editor_history_list(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<crate::editor_history::EditorHistoryEntry>, String> {
+    let root = state
+        .db
+        .path()
+        .parent()
+        .ok_or_else(|| "找不到应用数据目录".to_string())?;
+    crate::editor_history::list(root, &path).map_err(|error| error.to_string())
+}
+
+/// 读取一份历史版本的内容（供编辑器预览 / 回填）。
+#[tauri::command]
+pub async fn editor_history_read(
+    state: State<'_, AppState>,
+    path: String,
+    id: String,
+) -> Result<String, String> {
+    let root = state
+        .db
+        .path()
+        .parent()
+        .ok_or_else(|| "找不到应用数据目录".to_string())?;
+    crate::editor_history::read(root, &path, &id).map_err(|error| error.to_string())
+}

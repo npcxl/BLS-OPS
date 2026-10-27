@@ -509,6 +509,15 @@ export function useContextMenu() {
     [],
   );
 
+  /**
+   * 命令式打开菜单（用于工具栏「⋯」这类点击触发、而不是右键的入口）。
+   * 坐标就是菜单左上角，超出视口时由菜单自身翻转。
+   */
+  const openAt = useCallback((x: number, y: number, items: ContextMenuItem[]) => {
+    closeActiveContextMenu();
+    setState({ x, y, items });
+  }, []);
+
   return {
     /** Spread onto <ContextMenu>. */
     props: {
@@ -519,6 +528,7 @@ export function useContextMenu() {
       onClose: close,
     },
     onContextMenu,
+    openAt,
     close,
   };
 }

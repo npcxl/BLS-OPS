@@ -138,3 +138,91 @@ describe("FileRow size line", () => {
     expect(rowText(root, holder, entry(), "s2")).toContain("999");
   });
 });
+
+describe("FileRow inline rename", () => {
+  let holder: HTMLDivElement;
+  let root: Root;
+
+  const renderRenaming = (
+    onSubmit: (entryValue: RemoteFileEntry, name: string) => boolean = () => true,
+    onCancel: () => void = () => undefined,
+  ) => {
+    act(() => {
+      root.render(
+        <FileRow
+          sessionId="s1"
+          entry={entry({ kind: "file", name: "report.tar.gz", path: "/var/www/report.tar.gz" })}
+          selected
+          renaming
+          renameInitial="report.tar.gz"
+          onRenameSubmit={onSubmit}
+          onRenameCancel={onCancel}
+          onSelect={() => undefined}
+          onOpen={() => undefined}
+          onContextMenu={() => undefined}
+        />,
+      );
+    });
+    return holder.querySelector("input") as HTMLInputElement;
+  };
+
+  beforeEach(() => {
+    holder = document.createElement("div");
+    document.body.appendChild(holder);
+    root = createRoot(holder);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    holder.remove();
+  });
+
+  it("edits in place instead of opening a dialog", () => {
+    const input = renderRenaming();
+
+    expect(input).not.toBeNull();
+    expect(input.value).toBe("report.tar.gz");
+    // 行内是一行输入框，不再是可点击的行按钮（input 不能嵌在 button 里）。
+    expect(holder.querySelector("button")).toBeNull();
+  });
+
+  it("submits on Enter and cancels on Escape", () => {
+    const submitted: string[] = [];
+    let cancelled = 0;
+    const input = renderRenaming(
+      (_entry, name) => {
+        submitted.push(name);
+        return true;
+      },
+      () => {
+        cancelled += 1;
+      },
+    );
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(submitted).toEqual(["report.tar.gz"]);
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(cancelled).toBe(1);
+  });
+
+  it("stays in edit mode when the parent rejects the name", () => {
+    let calls = 0;
+    const input = renderRenaming(() => {
+      calls += 1;
+      return false;
+    });
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(calls).toBe(1);
+    // 名字不合法时不卸载输入框：刚打的字不能丢。
+    expect(holder.querySelector("input")).not.toBeNull();
+  });
+});

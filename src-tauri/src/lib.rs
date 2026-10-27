@@ -1,3 +1,5 @@
+/// 整机配置备份 / 恢复（服务器、分组、凭据元数据、指纹、项目、设置）。
+pub mod backup;
 /// First/second-layer server capability recognition — the P3 pipeline start.
 pub mod capability_probe;
 /// P4 Linux 命令智能中心：知识库、检索与安全执行（P4.0–P4.3）。
@@ -17,6 +19,8 @@ pub mod deployment_collector;
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
 pub mod docker;
+/// 编辑器历史版本（保存前把旧内容留在本机，支持查看与恢复）。
+pub mod editor_history;
 /// 本地编辑器同步（VS Code/Cursor 等编辑远程文件，保存自动回传服务器）。
 pub mod editor_sync;
 /// 服务器运行环境探测（Nginx 在宿主机 / Docker / Compose）。纯逻辑 + 只读采集。
@@ -45,6 +49,8 @@ pub mod ssh;
 mod state;
 /// systemd service management (P3-1.1).
 pub mod systemd;
+/// 远程回收站（删除先移动，可恢复）。
+pub mod trash;
 /// 系统托盘：点 X 隐藏窗口到托盘（不退出），托盘恢复/退出。
 mod tray;
 /// 实例业务分类器：应用服务 / 基础设施 / 系统组件 / 待归类 四个互斥集合。
@@ -105,6 +111,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
+            // 配置备份 / 恢复（整机迁移）
+            commands::backup_export,
+            commands::backup_preview,
+            commands::backup_import,
             // 外部链接兜底：opener 插件失败时由 Rust 调系统命令打开
             commands::open_external_url,
             // tray menu labels follow the frontend locale
@@ -171,8 +181,17 @@ pub fn run() {
             commands::sftp_touch,
             commands::sftp_read_file,
             commands::sftp_write_file,
+            commands::sftp_save_editor_file,
+            commands::editor_history_list,
+            commands::editor_history_read,
             commands::sftp_read_binary,
             commands::sftp_download_file,
+            // 回收站：删除默认移动，恢复与永久删除分开
+            commands::trash_move,
+            commands::trash_list,
+            commands::trash_restore,
+            commands::trash_purge,
+            commands::trash_empty,
             // editor sync — open remote files/folders with a local editor
             // (VS Code / Cursor / …) and push saves back over SFTP
             commands::editor_list_available,

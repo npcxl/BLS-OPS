@@ -32,10 +32,14 @@ import {
   type SessionStats,
 } from "@/api/types/sessions";
 import { type SshConnectResult, type TerminalEncoding } from "@/api/types/ssh";
+import { type TrashEntry } from "@/api/types/trash";
 import {
   type DirectorySizeResult,
+  type EditorHistoryEntry,
   type RemoteBinaryContent,
   type RemoteFileEntry,
+  type RemoteFileVersion,
+  type SaveFileOutcome,
   type SftpListResult,
 } from "@/api/types/sftp";
 import {
@@ -58,6 +62,11 @@ import {
   type ContainerConfig,
   type DockerSnapshot,
 } from "@/api/types/containers";
+import {
+  type BackupImportResult,
+  type BackupPreview,
+  type BackupSummary,
+} from "@/api/types/backup";
 import {
   type NginxSaveResult,
   type NginxSite,
@@ -158,10 +167,14 @@ export {
   DIRECTORY_SIZE_EVENT,
   type DirectorySizeResult,
   type DirectorySizeStatus,
+  type EditorHistoryEntry,
   type RemoteBinaryContent,
   type RemoteFileEntry,
+  type RemoteFileVersion,
+  type SaveFileOutcome,
   type SftpListResult,
 } from "@/api/types/sftp";
+export { type TrashEntry } from "@/api/types/trash";
 export {
   type CpuMetrics,
   type DiskMetrics,
@@ -189,6 +202,12 @@ export {
   type DockerSnapshot,
   type ImageInfo,
 } from "@/api/types/containers";
+export {
+  type BackupImportResult,
+  type BackupPreview,
+  type BackupSection,
+  type BackupSummary,
+} from "@/api/types/backup";
 export {
   type NginxSaveResult,
   type NginxSite,
@@ -582,13 +601,51 @@ export const opsApi = {
     invoke<string>("sftp_touch", { sessionId, path }),
   /** Reads a remote file for the in-app editor (text files, size-capped). */
   sftpReadFile: (sessionId: string, path: string) =>
-    invoke<{ path: string; size: number; binary: boolean; content: string | null }>(
-      "sftp_read_file",
-      { sessionId, path },
-    ),
+    invoke<{
+      path: string;
+      size: number;
+      binary: boolean;
+      content: string | null;
+      version: RemoteFileVersion;
+    }>("sftp_read_file", { sessionId, path }),
   /** Overwrites a remote text file (editor save). */
   sftpWriteFile: (sessionId: string, path: string, content: string) =>
     invoke<void>("sftp_write_file", { sessionId, path, content }),
+  /**
+   * 编辑器保存：带版本校验。`expected` 与远程当前内容不一致时后端**不写**，
+   * 返回 `conflict` 与当前版本，由用户决定重新加载 / 另存 / 覆盖。
+   */
+  sftpSaveEditorFile: (
+    sessionId: string,
+    path: string,
+    content: string,
+    expected?: RemoteFileVersion | null,
+  ) =>
+    invoke<SaveFileOutcome>("sftp_save_editor_file", {
+      sessionId,
+      path,
+      content,
+      expected: expected ?? null,
+    }),
+  /** 某个远程文件在本机的历史版本（最近的在前）。 */
+  editorHistoryList: (path: string) =>
+    invoke<EditorHistoryEntry[]>("editor_history_list", { path }),
+  /** 读取一份历史版本的内容。 */
+  editorHistoryRead: (path: string, id: string) =>
+    invoke<string>("editor_history_read", { path, id }),
+
+  // -- 回收站（删除先移动，可恢复）--------------------------------------------
+  /** 移入回收区；跨文件系统 / 无权限时**报错**，不会退化成永久删除。 */
+  trashMove: (sessionId: string, path: string) =>
+    invoke<TrashEntry>("trash_move", { sessionId, path }),
+  trashList: (sessionId: string) => invoke<TrashEntry[]>("trash_list", { sessionId }),
+  /** 恢复到原路径；原路径已有同名条目时拒绝。 */
+  trashRestore: (sessionId: string, id: string) =>
+    invoke<string>("trash_restore", { sessionId, id }),
+  /** 永久删除一条（不可撤销）。 */
+  trashPurge: (sessionId: string, id: string) =>
+    invoke<void>("trash_purge", { sessionId, id }),
+  trashEmpty: (sessionId: string) => invoke<number>("trash_empty", { sessionId }),
   sftpClose: (sessionId: string) => invoke<void>("sftp_close", { sessionId }),
   /** Reads any remote file as base64 bytes for the in-app preview. */
   sftpReadBinary: (sessionId: string, path: string, maxLen?: number) =>
@@ -747,6 +804,19 @@ export const opsApi = {
     }),
   journalDiskUsage: (sessionId: string) =>
     invoke<JournalDiskUsage>("journal_disk_usage", { sessionId }),
+
+  // -- 配置备份 / 恢复 -------------------------------------------------------
+  /**
+   * 导出整机配置到 `path`。`settings` 是 WebView 里 localStorage 的内容，
+   * 由前端收集后随文件一起写入 —— 密钥永远不会出现在这里。
+   */
+  backupExport: (path: string, settings?: Record<string, string>) =>
+    invoke<BackupSummary>("backup_export", { path, settings: settings ?? null }),
+  /** 只读预览：新增 / 冲突，不写库。 */
+  backupPreview: (path: string) => invoke<BackupPreview>("backup_preview", { path }),
+  /** 合并导入；`overwrite` 决定冲突项是覆盖还是跳过（整批一个事务）。 */
+  backupImport: (path: string, overwrite: boolean) =>
+    invoke<BackupImportResult>("backup_import", { path, overwrite }),
 
   // -- Docker ---------------------------------------------------------------
   dockerSnapshot: (sessionId: string) => invoke<DockerSnapshot>("docker_snapshot", { sessionId }),

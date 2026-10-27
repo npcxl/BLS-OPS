@@ -6,6 +6,7 @@
 
 mod ai_provider;
 mod app;
+mod backup;
 mod command_center;
 mod containers;
 mod credentials;
@@ -28,10 +29,12 @@ mod sessions;
 mod sftp;
 mod ssh;
 mod system;
+mod trash;
 mod vscode;
 
 pub use ai_provider::*;
 pub use app::*;
+pub use backup::*;
 pub use command_center::*;
 pub use containers::*;
 pub use credentials::*;
@@ -54,6 +57,7 @@ pub use sessions::*;
 pub use sftp::*;
 pub use ssh::*;
 pub use system::*;
+pub use trash::*;
 pub use vscode::*;
 
 use rusqlite::Connection;

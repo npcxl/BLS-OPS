@@ -33,6 +33,18 @@ impl AppDb {
             std::fs::create_dir_all(parent)?;
         }
         let conn = self.open()?;
+        // 升级前先复制一份旧库：迁移中途失败时，用户还能拿这份文件退回去。
+        // 备份失败不阻止启动（打不开应用比没有备份更糟），但必须留下痕迹。
+        if self.path.exists() {
+            let version: u32 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap_or(0);
+            if version > 0 && version < SCHEMA_VERSION {
+                if let Err(error) = crate::backup::backup_before_migration(&self.path, version) {
+                    eprintln!("[db] 迁移前自动备份失败：{error}");
+                }
+            }
+        }
         conn.execute_batch(SCHEMA_SQL)?;
         migrate(&conn)?;
         Ok(())

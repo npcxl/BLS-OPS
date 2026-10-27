@@ -38,6 +38,30 @@ export interface SftpListResult {
   entries: RemoteFileEntry[];
 }
 
+/**
+ * 文件的版本指纹。
+ *
+ * 冲突判断**只看 `sha256`**：`modified_at` 会被 `touch`、部署脚本、rsync
+ * 随手改写，单看时间戳既会误报也会漏报。
+ */
+export interface RemoteFileVersion {
+  size: number;
+  modified_at?: number | null;
+  sha256: string;
+}
+
+/** `sftp_save_editor_file` 的结果：写入成功，或发现文件已被别人改过。 */
+export type SaveFileOutcome =
+  | { status: "saved"; version: RemoteFileVersion }
+  | { status: "conflict"; current?: RemoteFileVersion | null };
+
+/** 一份本机保存的历史版本（保存前被覆盖的内容）。 */
+export interface EditorHistoryEntry {
+  id: string;
+  saved_at: number;
+  size: number;
+}
+
 /** Lifecycle of a single directory-size computation. */
 export type DirectorySizeStatus =
   | "pending"

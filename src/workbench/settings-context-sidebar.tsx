@@ -21,6 +21,7 @@ import { UpdateSection } from "./updater/UpdateSection";
 import { AiProviderSettings } from "./settings-ai";
 import { EmptyRow, Group, ListGroup } from "./settings-parts";
 import { TerminalSettingsGroup } from "./settings-terminal";
+import { BackupSettingsGroup } from "./settings-backup";
 import { cn } from "@/lib/cn";
 
 /**
@@ -190,6 +191,8 @@ export function SettingsContextSidebar() {
       </Group>
 
       <TerminalSettingsGroup />
+
+      <BackupSettingsGroup />
 
       <Group
         title={t("Credentials")}

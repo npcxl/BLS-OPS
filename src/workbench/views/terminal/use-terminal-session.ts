@@ -191,10 +191,21 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     let writeQueue: Promise<void> = Promise.resolve();
     const queueWrite = (text: string): Promise<void> => {
       if (!text) return writeQueue;
-      const done = new Promise<void>((resolve) => {
-        instance.write(text, () => resolve());
-      });
-      writeQueue = writeQueue.catch(() => undefined).then(() => done);
+      // **必须等上一个 write 渲染完再启动下一个**。
+      //
+      // 旧写法在 `new Promise` 的 executor 里立即调用 `instance.write()`，
+      // 只是把"结果"串成链 —— 100 次调用会在渲染回调一个都没回来时连续提交
+      // 100 块数据，xterm 内部照样积压。现在 `instance.write` 只在上一块的
+      // 渲染回调触发后才执行，队列长度始终 ≤ 1。
+      const done = writeQueue
+        .catch(() => undefined)
+        .then(
+          () =>
+            new Promise<void>((resolve) => {
+              instance.write(text, () => resolve());
+            }),
+        );
+      writeQueue = done;
       return done;
     };
     /**
@@ -202,7 +213,7 @@ export function useTerminalSession(host: TerminalSessionHost): void {
      *
      * 从原来的 listener 回调体原样抽出，供合并后的批量处理调用。
      */
-    const handleOutput = (output: string) => {
+    const handleOutput = async (output: string): Promise<void> => {
       const host = hostRef.current;
       // 命令边界解析**必须**先于 xterm：剔除受控标记与注入行回显，同时把
       // OSC 133 事件按原始顺序切进 parts —— 文本写终端、事件决定快照时机。
@@ -242,7 +253,7 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       const heldAtEnd = host.captureMarkerRef.current;
       // 写出顺序 = 终端输出流水线（见 terminal-output-pipeline.ts）：
       // D 之前写完并渲染完 → 抓快照 → 才写 D 之后的提示符。
-      void writeOutputParts(parsed.parts, {
+      await writeOutputParts(parsed.parts, {
         write: (text) => queueWrite(display(text)),
         flush: () => writeQueue.catch(() => undefined),
         capture: () =>
@@ -266,8 +277,21 @@ export function useTerminalSession(host: TerminalSessionHost): void {
      * 3. **不拖慢回显**：用 `setTimeout(0)`（下一轮宏任务）而不是 rAF ——
      *    窗口最小化时 rAF 会暂停，输出就卡住了。输入通道完全不经过这里。
      */
-    let pendingOutput = "";
+    /**
+     * 输出合并 + **跨流顺序保证**。
+     *
+     * stdout 和 stderr 进**同一个队列**。以前 stdout 被缓冲到下一轮、stderr
+     * 立即写：`stdout-A → stderr-B` 会变成 `stderr-B → stdout-A`，日志上下文
+     * 直接错乱，命令结果也可能归错。
+     *
+     * 消费是**串行**的（一条处理完再下一条）：`handleOutput` 内部要等 xterm
+     * 渲染完成再抓快照，并发启动多个会打乱快照时机。
+     */
+    type OutputChunk = { stream: "stdout" | "stderr"; text: string };
+    let pending: OutputChunk[] = [];
+    let pendingBytes = 0;
     let flushTimer: number | null = null;
+    let consumeChain: Promise<void> = Promise.resolve();
     const MAX_PENDING_OUTPUT = 512 * 1024;
 
     const flushOutput = () => {
@@ -275,33 +299,50 @@ export function useTerminalSession(host: TerminalSessionHost): void {
         window.clearTimeout(flushTimer);
         flushTimer = null;
       }
-      if (!pendingOutput) return;
-      const output = pendingOutput;
-      pendingOutput = "";
-      handleOutput(output);
+      if (pending.length === 0) return;
+      const chunks = pending;
+      pending = [];
+      pendingBytes = 0;
+
+      consumeChain = consumeChain
+        .catch(() => undefined)
+        .then(async () => {
+          for (const chunk of chunks) {
+            if (disposed) return;
+            if (chunk.stream === "stdout") {
+              await handleOutput(chunk.text);
+            } else {
+              // stderr 与 stdout 走同一条写入队列，顺序由这个循环保证。
+              hostRef.current.coordinatorRef.current?.onStderr(chunk.text);
+              await queueWrite(chunk.text);
+            }
+          }
+        });
     };
 
-    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
-      if (disposed) return;
-      pendingOutput += event.payload;
-      // 超限：立刻处理，绝不靠"等下一帧"来兜住无限输出。
-      if (pendingOutput.length >= MAX_PENDING_OUTPUT) {
+    const enqueue = (chunk: OutputChunk) => {
+      pending.push(chunk);
+      pendingBytes += chunk.text.length;
+      // 高水位：立刻处理，绝不靠"等下一帧"兜住无限输出。
+      if (pendingBytes >= MAX_PENDING_OUTPUT) {
         flushOutput();
         return;
       }
       if (flushTimer === null) {
         flushTimer = window.setTimeout(flushOutput, 0);
       }
+    };
+
+    const unlistenOutput = listen<string>(sshOutputEvent(sessionId), (event) => {
+      if (disposed) return;
+      enqueue({ stream: "stdout", text: event.payload });
     });
-    // stderr 与 stdout 分开：Rust 侧两条流各有独立的流式解码器，事件也分开，
-    // 否则结果的原始输出里永远没有 stderr。写入仍走同一 xterm 队列。
+
+    // stderr 与 stdout 分开解码（Rust 侧两条流各有解码器），但**写入顺序**
+    // 由上面的统一队列保证。
     const unlistenStderr = listen<string>(sshStderrEvent(sessionId), (event) => {
       if (disposed) return;
-      const text = event.payload;
-      hostRef.current.coordinatorRef.current?.onStderr(text);
-      // 与 stdout **同一条写入队列**：stderr 事件晚到时也要排在快照之前，
-      // 否则它会写进下一个命令的结果，或干脆不进本次快照。
-      if (text) void queueWrite(text);
+      enqueue({ stream: "stderr", text: event.payload });
     });
 
     const selectionSubscription = instance.onSelectionChange(() => {

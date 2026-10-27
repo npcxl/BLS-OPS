@@ -10,6 +10,18 @@ export function parentOf(path: string): string {
   return path.slice(0, cut);
 }
 
+/**
+ * 按键事件的落点是否在可编辑区域（输入框 / 文本域 / contenteditable）。
+ *
+ * 文件面板把 Backspace 当"返回上级目录"。但焦点在行内重命名输入框、搜索框
+ * 或代码编辑器里时，这个键必须留给编辑框 —— 否则一个字都删不掉，面板还会
+ * 退回上一级。CodeMirror 的编辑区是 `contenteditable="true"`，一并覆盖。
+ */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest("input, textarea, [contenteditable='true']") !== null;
+}
+
 /** 目录大小状态 → 英文 key（渲染处统一 `i18n.t`，key 与语言包逐字一致）。 */
 export const DIR_SIZE_STATUS_LABEL: Record<string, string> = {
   pending: "Queued",

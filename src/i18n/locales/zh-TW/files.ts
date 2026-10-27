@@ -12,6 +12,8 @@ export default {
   "Drag to resize": "拖動調整寬度",
   Forward: "前進",
   "Go up": "上一級",
+  "More actions": "更多操作",
+  "Cannot open {{path}} — {{reason}}": "無法開啟 {{path}}：{{reason}}",
   "Upload files to this directory": "上傳檔案到當前目錄",
   "Collapse panel": "摺疊面板",
 
@@ -141,4 +143,53 @@ export default {
   "New file": "新建檔案",
   "New file.txt": "新建檔案.txt",
   "{{name}} - Copy": "{{name}} - 副本",
+
+  // -- 編輯器：版本衝突與歷史（FileEditorModal）--
+  History: "歷史版本",
+  "This file changed on the server": "伺服器上的檔案已被修改",
+  "You opened this file earlier, but it has been modified since. Saving now would overwrite those changes.":
+    "你開啟這個檔案之後，它又被修改過。現在儲存會覆蓋那部分改動。",
+  "Current version: {{size}} KB · modified {{time}}": "目前版本：{{size}} KB · 修改於 {{time}}",
+  "Unknown time": "時間未知",
+  "The file no longer exists on the server.": "該檔案在伺服器上已不存在。",
+  "Reload from server": "從伺服器重新載入",
+  "Save as a copy": "另存為副本",
+  "Overwrite anyway": "仍然覆蓋",
+  "Version history": "歷史版本",
+  "Kept on this machine before each overwrite. Older copies roll off automatically.":
+    "每次覆蓋前保存在本機，舊副本會自動淘汰。",
+  "No history yet — the first copy is recorded when you save over this file.":
+    "還沒有歷史版本 —— 第一次覆蓋儲存時會記錄一份。",
+  "{{size}} KB": "{{size}} KB",
+  "Load this version": "載入這個版本",
+  "Saved as {{path}}. The original file was left untouched.": "已另存為 {{path}}，原檔案未被改動。",
+  "The copy target changed too. Try again.": "副本目標也被改動了，請重試。",
+  "Reloaded the current version from the server.": "已重新載入伺服器上的目前版本。",
+  "Loaded a historical version into the editor. Save to write it back.":
+    "已把歷史版本載入編輯器，儲存後才會寫回伺服器。",
+
+  // -- 回收站（TrashDialog / RemoteFilePanel 刪除）--
+  "Recycle bin": "回收站",
+  "Move to recycle bin": "移入回收站",
+  "Move file to recycle bin": "移入回收站",
+  "Move folder to recycle bin": "移入回收站",
+  'Move file "{{name}}" to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.':
+    "把檔案「{{name}}」移動到伺服器的 ~/.bls-ops-trash，可在回收站裡還原。",
+  'Move folder "{{name}}" and everything inside to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.':
+    "把資料夾「{{name}}」及其內容移動到伺服器的 ~/.bls-ops-trash，可在回收站裡還原。",
+  "Delete permanently…": "永久刪除…",
+  "Delete permanently": "永久刪除",
+  "Delete {{name}} permanently?": "永久刪除 {{name}}？",
+  "This cannot be undone — no copy is kept in the recycle bin.": "此操作不可復原 —— 回收站裡不會保留副本。",
+  "This cannot be undone — the file is removed from the server's recycle bin.":
+    "此操作不可復原 —— 檔案會從伺服器回收站裡刪除。",
+  "Deleted files are moved to ~/.bls-ops-trash on the server. Restore them here, or delete them permanently.":
+    "刪除的檔案會移到伺服器的 ~/.bls-ops-trash 目錄。可以在這裡還原，或永久刪除。",
+  "The recycle bin is empty.": "回收站是空的。",
+  "{{count}} items": "{{count}} 項",
+  "Empty recycle bin": "清空回收站",
+  "Empty the recycle bin?": "清空回收站？",
+  "Every entry is deleted permanently. This cannot be undone.":
+    "所有項目都會被永久刪除，此操作不可復原。",
+  Restore: "還原",
 } as const;

@@ -4,7 +4,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -12,9 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import {
-  ArrowLeft,
-  ArrowRight,
-  ArrowUp,
+  ChevronLeft,
   ClipboardCopy,
   CornerDownLeft,
   Copy,
@@ -23,13 +20,14 @@ import {
   FilePlus2,
   FolderPlus,
   Loader2,
+  MoreHorizontal,
   Pause,
   Pencil,
   RefreshCw,
   Trash2,
   Upload,
 } from "lucide-react";
-import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
@@ -47,6 +45,7 @@ import { useActivityTicket } from "@/stores/activity-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
+import { TrashDialog } from "./TrashDialog";
 import {
   AUTO_DIR_SIZE_LIMIT,
   hasUsableSize,
@@ -56,6 +55,7 @@ import {
   useTransientNotice,
 } from "./use-dir-size-queue";
 import {
+  isEditableTarget,
   parentOf,
   validateName,
   type EditorTarget,
@@ -130,10 +130,24 @@ function RemoteFilePanelImpl({
   const [selected, setSelected] = useState<string | null>(null);
   const menu = useContextMenu();
   const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
+  /**
+   * 就地重命名状态：只记路径与进入编辑时的文件名，输入框长在那一行里
+   * （像资源管理器那样），不再弹 Modal。
+   */
+  const [renaming, setRenaming] = useState<{ path: string; name: string } | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   // Non-blocking notice (used for unsupported types) — auto-dismisses after 4s.
   const [notice, setNotice] = useTransientNotice();
+  /** 提示的语气：操作失败要红，别把错误混在灰色说明里。 */
+  const [noticeTone, setNoticeTone] = useState<"info" | "danger">("info");
+  const showNotice = useCallback(
+    (message: string, tone: "info" | "danger" = "info") => {
+      setNoticeTone(tone);
+      setNotice(message);
+    },
+    [setNotice],
+  );
   const [dragging, setDraggingState] = useState(false);
   const [uploads, setUploads] = useState<{ total: number; done: number } | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -160,22 +174,13 @@ function RemoteFilePanelImpl({
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
 
   /**
-   * 当选中文件且文件名很长时，隐藏左侧路径面包屑，避免面包屑与文件名、操作
-   * 按钮互相挤压。判定依据是文件名自身的渲染宽度（`scrollWidth`，不受 `max-w`
-   * 截断影响），超过阈值即视为"很长"。面板宽度变化（拖动分隔条）时重新评估，
-   * 用 `useLayoutEffect` 在绘制前定夺，避免先显示再跳变。
+   * 地址栏：`null` = 不在编辑（显示当前目录）。聚焦后变成可编辑输入框，
+   * 回车跳转、Esc 放弃 —— 和 Windows 资源管理器的地址栏同一个用法。
    */
-  const [hideCrumbs, setHideCrumbs] = useState(false);
-  const selectedNameRef = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => {
-    if (!selectedEntry) {
-      setHideCrumbs(false);
-      return;
-    }
-    const el = selectedNameRef.current;
-    if (!el) return;
-    setHideCrumbs(el.scrollWidth > 150);
-  }, [selectedEntry, width]);
+  const [pathDraft, setPathDraft] = useState<string | null>(null);
+  const pathInputRef = useRef<HTMLInputElement>(null);
+  /** 工具栏「⋯」的菜单（与行右键菜单各自独立，全局仍只允许一个可见）。 */
+  const toolMenu = useContextMenu();
 
   /**
    * 目录加载的请求序号。
@@ -187,10 +192,15 @@ function RemoteFilePanelImpl({
   const loadSeqRef = useRef(0);
 
   const load = useCallback(
-    async (path: string) => {
+    async (path: string, options?: { silent?: boolean }) => {
+      // 静默刷新：删文件 / 上传 / 重命名之后只换列表内容，不切 loading 页、
+      // 不清选中项 —— 否则整块列表现消失再出现，就是"闪一下"。
+      const silent = options?.silent ?? false;
       const seq = ++loadSeqRef.current;
-      setStatus({ state: "loading" });
-      setSelected(null);
+      if (!silent) {
+        setStatus({ state: "loading" });
+        setSelected(null);
+      }
       try {
         const result = await opsApi.sftpListDir(sessionId, path);
         // 过期响应：直接丢弃，什么状态都不写。
@@ -207,10 +217,16 @@ function RemoteFilePanelImpl({
         });
       } catch (cause) {
         if (seq !== loadSeqRef.current) return;
-        setStatus({ state: "error", message: toErrorMessage(cause) });
+        if (silent) {
+          // 刷新失败时保留已有列表：把列表换成错误页等于把用户正在看的东西
+          // 抹掉，比报错本身更糟。
+          showNotice(toErrorMessage(cause), "danger");
+        } else {
+          setStatus({ state: "error", message: toErrorMessage(cause) });
+        }
       }
     },
-    [sessionId],
+    [sessionId, showNotice],
   );
 
   /**
@@ -308,6 +324,8 @@ function RemoteFilePanelImpl({
 
   const navigate = useCallback(
     (path: string) => {
+      // 换目录时退出就地重命名：回到原目录不能又停在编辑框里。
+      setRenaming(null);
       setNav((current) => ({
         stack: [...current.stack.slice(0, current.index + 1), path],
         index: current.index + 1,
@@ -317,20 +335,10 @@ function RemoteFilePanelImpl({
     [load],
   );
 
-  const goBack = () => {
-    if (nav.index <= 0) return;
-    const target = nav.stack[nav.index - 1];
-    setNav((current) => ({ ...current, index: current.index - 1 }));
-    void load(target);
-  };
-
-  const goForward = () => {
-    if (nav.index >= nav.stack.length - 1) return;
-    const target = nav.stack[nav.index + 1];
-    setNav((current) => ({ ...current, index: current.index + 1 }));
-    void load(target);
-  };
-
+  /**
+   * 左箭头 = 回上一级。历史上"后退 / 前进 / 上一级"是三个按钮，文件树里
+   * 真正天天用的只有向上，合并成一个之后顶部才腾得下地址栏。
+   */
   const goUp = () => {
     if (!cwd) return;
     navigate(parentOf(cwd));
@@ -339,6 +347,45 @@ function RemoteFilePanelImpl({
   const refresh = () => {
     if (cwd) void load(cwd);
   };
+
+  /**
+   * 地址栏回车：**先探测再跳**。不存在的路径只在顶部提示，绝不把当前列表
+   * 换成错误页 —— 那样等于把用户正在看的内容抹掉。
+   *
+   * - 目录 → 直接进去
+   * - 文件 → 进它所在目录并选中（输入 `/etc/nginx/nginx.conf` 能一步定位）
+   * - 不存在 / 无权限 → 留在原目录，提示里带路径与原因
+   */
+  const commitPath = useCallback(
+    async (draft: string) => {
+      const raw = draft.trim();
+      setPathDraft(null);
+      if (!raw) return;
+      // 相对路径按当前目录补全：地址栏里输入 `logs` 与在 shell 里 `cd logs` 同义。
+      const target = raw.startsWith("/") ? raw : `${cwd ?? ""}/${raw}`;
+      if (target === cwd) return;
+      try {
+        const entry = await opsApi.sftpStat(sessionId, target);
+        if (entry.kind === "directory") {
+          navigate(target);
+          return;
+        }
+        // 文件：落到父目录并选中。已经在父目录里就不再重载（省一次闪）。
+        const parent = parentOf(target);
+        if (parent !== cwd) await load(parent);
+        setSelected(target);
+      } catch (cause) {
+        showNotice(
+          t("Cannot open {{path}} — {{reason}}", {
+            path: target,
+            reason: toErrorMessage(cause),
+          }),
+          "danger",
+        );
+      }
+    },
+    [cwd, load, navigate, sessionId, showNotice, t],
+  );
 
   const openEntry = useCallback(
     (entry: RemoteFileEntry) => {
@@ -364,15 +411,24 @@ function RemoteFilePanelImpl({
     (action: () => Promise<unknown>) => {
       void action()
         .then(() => {
-          if (cwd) return load(cwd);
+          // 静默刷新：操作成功后列表原地更新，不闪。
+          if (cwd) return load(cwd, { silent: true });
           return undefined;
         })
-        .catch((cause) => setStatus({ state: "error", message: toErrorMessage(cause) }));
+        .catch((cause) => showNotice(toErrorMessage(cause), "danger"));
     },
-    [cwd, load],
+    [cwd, load, showNotice],
   );
 
+  /** 操作后原地刷新列表（不切 loading、不清选中）。 */
+  const refreshSilently = useCallback(() => {
+    if (cwd) void load(cwd, { silent: true });
+  }, [cwd, load]);
+
   const [deleteTarget, setDeleteTarget] = useState<RemoteFileEntry | null>(null);
+  /** 永久删除（跳过回收站）：必须由用户显式选择，绝不作为删除的回退。 */
+  const [purgeTarget, setPurgeTarget] = useState<RemoteFileEntry | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   const removeEntry = (entry: RemoteFileEntry) => {
     setDeleteTarget(entry);
@@ -491,19 +547,53 @@ function RemoteFilePanelImpl({
     if (!deleteTarget) return;
     const target = deleteTarget;
     setDeleteTarget(null);
+    // 删除 = 移入服务器回收区。移不过去（跨文件系统 / 无权限）时如实报错，
+    // **不会**偷偷改成永久删除 —— 那正是"以为能恢复、其实已经没了"的来源。
+    runAndRefresh(() => opsApi.trashMove(sessionId, target.path));
+  };
+
+  const confirmPurge = () => {
+    if (!purgeTarget) return;
+    const target = purgeTarget;
+    setPurgeTarget(null);
     runAndRefresh(() => opsApi.sftpRemove(sessionId, target.path));
   };
 
+  /** 进入就地重命名：选中该行，名字输入框会出现在行内。 */
   const renameEntry = (entry: RemoteFileEntry) => {
-    setNameDialog({
-      title: "Rename",
-      label: "New name",
-      initial: entry.name,
-      submitLabel: "Rename",
-      validate: validateName,
-      onConfirm: (name) => opsApi.sftpRename(sessionId, entry.path, name),
-    });
+    setSelected(entry.path);
+    setRenaming({ path: entry.path, name: entry.name });
   };
+
+  const cancelRename = useCallback(() => setRenaming(null), []);
+
+  /**
+   * 提交就地重命名。返回 `false` 表示名字不合法 —— 行内输入框会留在编辑态，
+   * 用户可以直接改，而不是把刚打的字丢掉。
+   */
+  const submitRename = useCallback(
+    (entry: RemoteFileEntry, name: string): boolean => {
+      const trimmed = name.trim();
+      if (trimmed === entry.name) {
+        // 没改名：当成取消，不发无意义的 SFTP 请求。
+        setRenaming(null);
+        return true;
+      }
+      // `validateName` 返回的已经是翻译好的文案，这里不再包一层 t()。
+      const error = validateName(trimmed);
+      if (error) {
+        setNotice(error);
+        return false;
+      }
+      setRenaming(null);
+      // 改名后把选中落到新名字上：刷新是静默的，选中项不能丢。
+      const parent = parentOf(entry.path);
+      setSelected(parent === "/" ? `/${trimmed}` : `${parent}/${trimmed}`);
+      runAndRefresh(() => opsApi.sftpRename(sessionId, entry.path, trimmed));
+      return true;
+    },
+    [runAndRefresh, sessionId, setNotice],
+  );
 
   const copyEntry = (entry: RemoteFileEntry) => {
     const dot = entry.name.lastIndexOf(".");
@@ -553,19 +643,20 @@ function RemoteFilePanelImpl({
       setUploads({ total: paths.length, done: 0 });
       try {
         await opsApi.sftpUpload(sessionId, paths, cwd);
-        await load(cwd);
+        // 静默刷新：新文件直接出现在列表里，不再先清空整块区域。
+        await load(cwd, { silent: true });
         setUploadNotice(
           paths.length === 1
             ? t("Upload complete")
             : t("{{count}} files uploaded", { count: paths.length }),
         );
       } catch (cause) {
-        setStatus({ state: "error", message: toErrorMessage(cause) });
+        showNotice(toErrorMessage(cause), "danger");
       } finally {
         setUploads(null);
       }
     },
-    [cwd, load, sessionId, t],
+    [cwd, load, sessionId, t, showNotice],
   );
 
   // The drag listener is registered once, so it calls through this ref rather
@@ -682,11 +773,11 @@ function RemoteFilePanelImpl({
       if (paths.length === 0) return;
       await uploadFiles(paths);
     } catch (cause) {
-      setStatus({ state: "error", message: toErrorMessage(cause) });
+      showNotice(toErrorMessage(cause), "danger");
     } finally {
       setPicking(false);
     }
-  }, [cwd, picking, uploadFiles, t]);
+  }, [cwd, picking, uploadFiles, t, showNotice]);
 
   // Drag & drop from the local machine. Tauri intercepts the OS drop and hands
   // over absolute paths; DOM drop events would only give opaque File objects.
@@ -757,6 +848,9 @@ function RemoteFilePanelImpl({
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    // 焦点在编辑框 / 代码编辑器里：按键归它们。不放行的话 Backspace 删不了字，
+    // 还会把面板退回上一级 —— 看起来就是"编辑时按退格在回退"。
+    if (isEditableTarget(event.target)) return;
     if (event.key === "Backspace") {
       event.preventDefault();
       goUp();
@@ -846,11 +940,17 @@ function RemoteFilePanelImpl({
       { id: "sep2", separator: true },
       {
         id: "delete",
-        label: t("Delete"),
+        label: t("Move to recycle bin"),
         icon: Trash2,
         hint: "Delete",
-        danger: true,
         onSelect: () => removeEntry(entry),
+      },
+      {
+        id: "purge",
+        label: t("Delete permanently…"),
+        icon: Trash2,
+        danger: true,
+        onSelect: () => setPurgeTarget(entry),
       },
     ];
   });
@@ -890,16 +990,25 @@ function RemoteFilePanelImpl({
   openEntryRef.current = openEntry;
   const handleRowOpen = useCallback((entry: RemoteFileEntry) => openEntryRef.current(entry), []);
 
-  // Breadcrumb segments for the current path.
-  const crumbs: { label: string; path: string }[] = [];
-  if (cwd) {
-    crumbs.push({ label: "/", path: "/" });
-    let accumulated = "";
-    for (const segment of cwd.split("/").filter(Boolean)) {
-      accumulated += `/${segment}`;
-      crumbs.push({ label: segment, path: accumulated });
-    }
-  }
+  /**
+   * 工具栏「⋯」菜单：上传 / 新建 / 刷新 / 折叠都收在这里，顶上只留地址栏。
+   * 菜单项在渲染期构造，label 直接取当前语言。
+   */
+  const toolItems: ContextMenuItem[] = [
+    {
+      id: "upload",
+      label: t("Upload files…"),
+      icon: Upload,
+      disabled: !cwd || picking,
+      onSelect: () => void pickFilesToUpload(),
+    },
+    { id: "mkdir", label: t("New folder"), icon: FolderPlus, disabled: !cwd, onSelect: createFolder },
+    { id: "touch", label: t("New file"), icon: FilePlus2, disabled: !cwd, onSelect: createFile },
+    { id: "sep-tools", separator: true },
+    { id: "refresh", label: t("Refresh"), icon: RefreshCw, disabled: !cwd, onSelect: refresh },
+    { id: "trash", label: t("Recycle bin"), icon: Trash2, onSelect: () => setTrashOpen(true) },
+    { id: "collapse", label: t("Collapse panel"), icon: Pause, onSelect: onClose },
+  ];
 
   return (
     <aside
@@ -917,73 +1026,64 @@ function RemoteFilePanelImpl({
         onPointerDown={startDrag}
       />
 
-      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-1.5">
-        <PanelButton label="Back" icon={ArrowLeft} disabled={nav.index <= 0} onClick={goBack} />
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-1.5">
+        {/* 上一级与"返回"合并为一个：文件树里最常用的后退就是回父目录。 */}
         <PanelButton
-          label="Forward"
-          icon={ArrowRight}
-          disabled={nav.index >= nav.stack.length - 1}
-          onClick={goForward}
+          label="Go up"
+          icon={ChevronLeft}
+          disabled={!cwd || cwd === "/"}
+          onClick={goUp}
         />
-        <PanelButton label="Go up" icon={ArrowUp} disabled={!cwd || cwd === "/"} onClick={goUp} />
-        <PanelButton label="Refresh" icon={RefreshCw} disabled={!cwd} onClick={refresh} />
-        <PanelButton label="New folder" icon={FolderPlus} disabled={!cwd} onClick={createFolder} />
-        <PanelButton label="New file" icon={FilePlus2} disabled={!cwd} onClick={createFile} />
-        <PanelButton
-          label="Upload files to this directory"
-          icon={picking ? Loader2 : Upload}
-          disabled={!cwd || picking}
-          className={picking ? "animate-spin" : undefined}
-          onClick={() => void pickFilesToUpload()}
+        <input
+          ref={pathInputRef}
+          value={pathDraft ?? cwd ?? ""}
+          aria-label={t("Path")}
+          spellCheck={false}
+          placeholder={t("Disconnected")}
+          onChange={(event) => setPathDraft(event.target.value)}
+          onFocus={() => {
+            setPathDraft(cwd ?? "");
+            // 像地址栏那样整体选中：直接输入就替换整条路径。
+            requestAnimationFrame(() => pathInputRef.current?.select());
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              const target = event.currentTarget;
+              void commitPath(target.value);
+              target.blur();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setPathDraft(null);
+              event.currentTarget.blur();
+            }
+          }}
+          onBlur={() => setPathDraft(null)}
+          className="h-[24px] min-w-0 flex-1 rounded-[5px] border border-transparent bg-transparent px-1.5 font-mono text-11 text-fg outline-none hover:border-line focus:border-accent focus:bg-surface-1"
         />
-        <PanelButton label="Collapse panel" icon={Pause} onClick={onClose} />
+        <button
+          type="button"
+          aria-label={t("More actions")}
+          title={t("More actions")}
+          disabled={!cwd}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            // 菜单右对齐到按钮，并保证不跑出窗口左边。
+            toolMenu.openAt(Math.max(8, rect.right - 184), rect.bottom + 4, toolItems);
+          }}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-fg-muted hover:bg-surface-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40"
+        >
+          <MoreHorizontal size={14} strokeWidth={1.75} />
+        </button>
       </div>
 
-      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-11">
-        <div
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto",
-            hideCrumbs && "hidden",
-          )}
-        >
-          {cwd ? (
-            crumbs.map((crumb, index) => (
-              <span key={crumb.path} className="flex shrink-0 items-center gap-0.5">
-                {index > 0 && <span className="text-fg-subtle">/</span>}
-                <button
-                  type="button"
-                  className={cn(
-                    "truncate rounded px-1 hover:bg-surface-hover hover:text-fg",
-                    index === crumbs.length - 1 ? "font-semibold text-fg" : "text-fg-muted",
-                  )}
-                  onClick={() => navigate(crumb.path)}
-                >
-                  {crumb.label}
-                </button>
-              </span>
-            ))
-          ) : (
-            <span className="text-fg-subtle">{t("Disconnected")}</span>
-          )}
-        </div>
-
-        {/* Selected-row actions live in this row (not as an inserted strip) so
-            clicking a file never shifts the list below. */}
-        {selectedEntry && (
-          <div
-            className={cn(
-              "flex items-center gap-0.5",
-              hideCrumbs ? "min-w-0 flex-1" : "shrink-0",
-            )}
-          >
-            <span
-              ref={selectedNameRef}
-              className="min-w-0 flex-1 truncate text-fg-subtle"
-              title={selectedEntry.path}
-            >
-              {selectedEntry.name}
-            </span>
-            <div className="flex shrink-0 items-center gap-0.5">
+      {/* 选中项的操作条：只在选中时出现，不挤占地址栏。 */}
+      {selectedEntry && (
+        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-11">
+          <span className="min-w-0 flex-1 truncate text-fg-subtle" title={selectedEntry.path}>
+            {selectedEntry.name}
+          </span>
+          <div className="flex shrink-0 items-center gap-0.5">
             <PanelButton label="Open" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
             {selectedEntry.kind !== "directory" && (
               <>
@@ -1008,15 +1108,28 @@ function RemoteFilePanelImpl({
             <PanelButton label="Rename" icon={Pencil} onClick={() => renameEntry(selectedEntry)} />
             <PanelButton label="Create a copy" icon={Copy} onClick={() => copyEntry(selectedEntry)} />
             <PanelButton
-              label="Delete"
+              label="Move to recycle bin"
               icon={Trash2}
               onClick={() => removeEntry(selectedEntry)}
               className="hover:text-danger"
             />
-            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* 提示固定在列表上方：列表滚到哪儿都看得见（地址栏输错路径要靠它）。 */}
+      {notice && (
+        <div
+          className={cn(
+            "shrink-0 border-b border-line px-3 py-2 text-11",
+            noticeTone === "danger"
+              ? "bg-danger/10 text-danger"
+              : "bg-surface-2/70 text-fg-muted",
+          )}
+        >
+          {notice}
+        </div>
+      )}
 
       <div
         tabIndex={0}
@@ -1043,10 +1156,6 @@ function RemoteFilePanelImpl({
               {t("Close")}
             </button>
           </div>
-        )}
-
-        {notice && (
-          <div className="border-b border-line bg-surface-2/70 px-3 py-2 text-11 text-fg-muted">{notice}</div>
         )}
 
         {status.state === "loading" && (
@@ -1083,13 +1192,17 @@ function RemoteFilePanelImpl({
         )}
 
         {status.state === "ready" && (
-          <div className="divide-y divide-line/50">
+          <div>
             {entries.map((entry) => (
               <FileRow
                 key={entry.path}
                 sessionId={sessionId}
                 entry={entry}
                 selected={entry.path === selected}
+                renaming={renaming?.path === entry.path}
+                renameInitial={renaming?.path === entry.path ? renaming.name : ""}
+                onRenameSubmit={submitRename}
+                onRenameCancel={cancelRename}
                 onSelect={handleRowSelect}
                 onOpen={handleRowOpen}
                 onContextMenu={handleRowContextMenu}
@@ -1122,24 +1235,43 @@ function RemoteFilePanelImpl({
       {/* Names the row the menu applies to — set by the row's context handler
           and cleared by the background one. */}
       <ContextMenu {...menu.props} title={contextTargetRef.current?.name ?? undefined} />
+      {/* 工具栏「⋯」：命令式打开，与行右键菜单共用一个全局可见槽位。 */}
+      <ContextMenu {...toolMenu.props} />
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={t(deleteTarget?.kind === "directory" ? "Delete folder" : "Delete file")}
+        title={t(deleteTarget?.kind === "directory" ? "Move folder to recycle bin" : "Move file to recycle bin")}
         description={
           deleteTarget?.kind === "directory"
             ? t(
-                'Delete folder "{{name}}"? Everything inside will also be deleted. This action cannot be undone.',
+                'Move folder "{{name}}" and everything inside to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.',
                 { name: deleteTarget?.name ?? "" },
               )
-            : t('Delete file "{{name}}"? This action cannot be undone.', {
-                name: deleteTarget?.name ?? "",
-              })
+            : t(
+                'Move file "{{name}}" to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.',
+                { name: deleteTarget?.name ?? "" },
+              )
         }
-        confirmLabel={t("Delete")}
-        danger
+        confirmLabel={t("Move to recycle bin")}
         onConfirm={confirmRemove}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={purgeTarget !== null}
+        danger
+        title={t("Delete {{name}} permanently?", { name: purgeTarget?.name ?? "" })}
+        description={t("This cannot be undone — no copy is kept in the recycle bin.")}
+        confirmLabel={t("Delete permanently")}
+        onConfirm={confirmPurge}
+        onCancel={() => setPurgeTarget(null)}
+      />
+
+      <TrashDialog
+        open={trashOpen}
+        sessionId={sessionId}
+        onClose={() => setTrashOpen(false)}
+        onChanged={refreshSilently}
       />
 
       {nameDialog && (
@@ -1148,7 +1280,8 @@ function RemoteFilePanelImpl({
           onClose={() => setNameDialog(null)}
           onSaved={() => {
             setNameDialog(null);
-            refresh();
+            // 新建 / 复制的文件直接出现在列表里，避免整块列表闪一次。
+            refreshSilently();
           }}
         />
       )}
@@ -1168,7 +1301,8 @@ function RemoteFilePanelImpl({
             language={editor.language}
             onClose={() => setEditor(null)}
             onSaved={() => {
-              if (cwd) void load(cwd);
+              // 保存只改文件内容与 mtime，列表原地更新即可。
+              if (cwd) void load(cwd, { silent: true });
             }}
           />
         </Suspense>

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// How often an idle session sends a keepalive probe; also drives russh's
 /// `keepalive_max` disconnect detection.
@@ -66,6 +66,32 @@ pub struct RemoteFileContent {
     pub binary: bool,
     /// UTF-8 content, `None` when `binary` is true.
     pub content: Option<String>,
+    /// 打开时的版本指纹，保存时原样带回用于冲突检测。
+    pub version: RemoteFileVersion,
+}
+
+/// 一个远程文件的版本指纹。
+///
+/// **判断"有没有被别人改过"只能用 `sha256`**：`mtime` 会被 `touch`、
+/// `rsync`、部署脚本随手改写，单看时间戳既会误报也会漏报。`size` 与
+/// `modified_at` 只用于给用户看"现在这个文件是什么时候、多大"。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteFileVersion {
+    pub size: u64,
+    /// 服务器 mtime（秒）。有的服务器不报，所以是 Option。
+    pub modified_at: Option<i64>,
+    /// 内容 SHA-256（小写十六进制）。
+    pub sha256: String,
+}
+
+/// 编辑器保存的结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SaveFileOutcome {
+    /// 写入成功，返回新版本（前端据此更新基线）。
+    Saved { version: RemoteFileVersion },
+    /// 打开之后文件变了。`current = None` 表示文件已被删除或不可读。
+    Conflict { current: Option<RemoteFileVersion> },
 }
 
 /// Payload of `sftp_read_binary`: the raw bytes of any remote file, for the

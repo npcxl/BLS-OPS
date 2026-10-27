@@ -429,6 +429,11 @@ pub fn score_candidate(input: CandidateInput, now: &str) -> Option<ProjectCandid
         "vendor",
         "venv",
         ".venv",
+        // 远程 IDE 在服务器家目录自己建的运行时目录：里面有
+        // `extensions/*/package.json`，不排掉就会被当成"项目"。
+        ".vscode-server",
+        ".vscode-server-insiders",
+        ".cursor-server",
     ];
     if noisy
         .iter()
@@ -1013,6 +1018,20 @@ mod tests {
         )
         .is_none());
         assert!(score_candidate(input("/srv/app/target/debug", &["cargo.toml"]), "0").is_none());
+        // 远程 IDE 自己写的 server 目录里也有 package.json —— 那不是用户的代码。
+        assert!(score_candidate(
+            input(
+                "/root/.vscode-server/extensions/ms-python.python",
+                &["package.json"]
+            ),
+            "0"
+        )
+        .is_none());
+        assert!(score_candidate(
+            input("/root/.cursor-server/bin/abc", &["package.json"]),
+            "0"
+        )
+        .is_none());
     }
 
     /// 一个普通的 Node 项目（package.json + src，没有 .git、没有部署配置）

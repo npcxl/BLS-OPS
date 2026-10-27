@@ -24,13 +24,19 @@ pub struct CommandSearchCache {
 }
 
 impl CommandSearchCache {
-    /// 取快照；没有就加载一次（之后复用，直到 [`Self::invalidate`]）。
-    pub fn get_or_load(&self, conn: &rusqlite::Connection) -> anyhow::Result<Arc<SearchContext>> {
+    /// 取快照；**只有缓存未命中时才调用 `load`**。
+    ///
+    /// 这一点很关键：旧签名要求调用方先拿到 `Connection`，于是即使缓存命中，
+    /// 输入热路径上仍然会 `open_db()` —— 省了查表，没省建连接。
+    pub fn get_or_try_load<F>(&self, load: F) -> Result<Arc<SearchContext>, String>
+    where
+        F: FnOnce() -> Result<SearchContext, String>,
+    {
         let mut guard = self.inner.lock().unwrap();
         if let Some(context) = guard.as_ref() {
             return Ok(Arc::clone(context));
         }
-        let context = Arc::new(SearchContext::load(conn)?);
+        let context = Arc::new(load()?);
         *guard = Some(Arc::clone(&context));
         Ok(context)
     }

@@ -71,4 +71,37 @@ export default {
   Version: "版本",
   Platform: "平臺",
   Database: "資料庫",
+
+  // -- 設定備份與還原（settings-backup） --
+  "Backup & restore": "備份與還原",
+  "Move servers, groups, tags, jump hosts, projects and preferences to another machine. Secrets are never exported — rebind credentials after importing.":
+    "把伺服器、群組、標籤、跳板、專案與偏好遷移到另一台機器。金鑰不會被匯出，匯入後需要重新綁定憑證。",
+  "Export configuration": "匯出設定",
+  "Writes a JSON file. Passwords and private keys stay in the system credential manager.":
+    "寫出一份 JSON 檔案。密碼與私鑰仍留在系統憑證管理員裡。",
+  "Import configuration": "匯入設定",
+  "Preview first: you decide whether existing entries are kept or overwritten.":
+    "先預覽再匯入：已存在的項目是保留還是覆蓋，由你決定。",
+  "Export…": "匯出…",
+  "Import…": "匯入…",
+  "Exporting…": "正在匯出…",
+  "Reading…": "正在讀取…",
+  "Importing…": "正在匯入…",
+  "Exported {{servers}} servers, {{groups}} groups, {{credentials}} credentials and {{projects}} projects to {{path}}":
+    "已匯出 {{servers}} 台伺服器、{{groups}} 個群組、{{credentials}} 個憑證、{{projects}} 個專案到 {{path}}",
+  "Imported: {{added}} added, {{overwritten}} overwritten, {{skipped}} skipped. Rebind credentials before connecting.":
+    "匯入完成：新增 {{added}} 項，覆蓋 {{overwritten}} 項，略過 {{skipped}} 項。連線前請重新綁定憑證。",
+  "{{count}} preferences restored.": "已還原 {{count}} 項偏好設定。",
+  "From {{path}} · exported by version {{version}}": "來源：{{path}} · 由版本 {{version}} 匯出",
+  "{{total}} total": "共 {{total}} 項",
+  "{{count}} conflicts": "{{count}} 項衝突",
+  "Conflicts (already on this machine)": "衝突項（本機已存在）",
+  "Overwrite existing entries (off = import new entries only, keep this machine's version)":
+    "覆蓋已存在的項目（關閉時只匯入新增，本機版本保持不變）",
+  "Import {{count}} entries": "匯入 {{count}} 項",
+  "Project reviews": "專案複核結論",
+  "Project merges": "專案合併關係",
+  "Credentials are exported without secrets — rebind them after importing":
+    "憑證匯出時不帶金鑰 —— 匯入後需要重新綁定。",
+  "This backup was written by an older format version": "這份備份由較舊的格式版本寫出。",
 } as const;

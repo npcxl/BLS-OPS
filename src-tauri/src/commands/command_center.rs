@@ -50,14 +50,11 @@ pub async fn command_search(
     limit: Option<u32>,
 ) -> Result<Vec<CommandSearchHit>, String> {
     // 收藏与使用统计是**低频变化**的数据，却出现在每次按键的热路径上。
-    // 这里用会话级快照：第一次检索加载，收藏/使用变化时失效（见下方命令）。
-    let ctx = {
+    // 缓存命中时连数据库连接都不打开 —— 只有第一次（或失效后）才读库。
+    let ctx = state.command_search.get_or_try_load(|| {
         let conn = open_db(&state)?;
-        state
-            .command_search
-            .get_or_load(&conn)
-            .map_err(|error| error.to_string())?
-    };
+        search::SearchContext::load(&conn).map_err(|error| error.to_string())
+    })?;
     Ok(search::search_prepared(
         // 预处理目录是 `OnceLock` 缓存的，检索时只做比较、不再转小写。
         crate::command_center::prepared_catalog(),

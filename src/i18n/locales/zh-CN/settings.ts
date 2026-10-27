@@ -72,4 +72,37 @@ export default {
   Version: "版本",
   Platform: "平台",
   Database: "数据库",
+
+  // -- 配置备份与恢复（settings-backup） --
+  "Backup & restore": "备份与恢复",
+  "Move servers, groups, tags, jump hosts, projects and preferences to another machine. Secrets are never exported — rebind credentials after importing.":
+    "把服务器、分组、标签、跳板、项目与偏好迁移到另一台机器。密钥不会被导出，导入后需要重新绑定凭据。",
+  "Export configuration": "导出配置",
+  "Writes a JSON file. Passwords and private keys stay in the system credential manager.":
+    "写出一份 JSON 文件。密码与私钥仍留在系统凭据管理器里。",
+  "Import configuration": "导入配置",
+  "Preview first":
+    "先预览再导入",
+  "Export…": "导出…",
+  "Import…": "导入…",
+  "Exporting…": "正在导出…",
+  "Reading…": "正在读取…",
+  "Importing…": "正在导入…",
+  "Exported {{servers}} servers, {{groups}} groups, {{credentials}} credentials and {{projects}} projects to {{path}}":
+    "已导出 {{servers}} 台服务器、{{groups}} 个分组、{{credentials}} 个凭据、{{projects}} 个项目到 {{path}}",
+  "Imported: {{added}} added, {{overwritten}} overwritten, {{skipped}} skipped. Rebind credentials before connecting.":
+    "导入完成：新增 {{added}} 项，覆盖 {{overwritten}} 项，跳过 {{skipped}} 项。连接前请重新绑定凭据。",
+  "{{count}} preferences restored.": "已恢复 {{count}} 项偏好设置。",
+  "From {{path}} · exported by version {{version}}": "来源：{{path}} · 由版本 {{version}} 导出",
+  "{{total}} total": "共 {{total}} 项",
+  "{{count}} conflicts": "{{count}} 项冲突",
+  "Conflicts (already on this machine)": "冲突项（本机已存在）",
+  "Overwrite existing entries (off = import new entries only, keep this machine's version)":
+    "覆盖已存在的条目（关闭时只导入新增，本机版本保持不变）",
+  "Import {{count}} entries": "导入 {{count}} 项",
+  "Project reviews": "项目复核结论",
+  "Project merges": "项目合并关系",
+  "Credentials are exported without secrets — rebind them after importing":
+    "凭据导出时不带密钥 —— 导入后需要重新绑定。",
+  "This backup was written by an older format version": "这份备份由较旧的格式版本写出。",
 } as const;

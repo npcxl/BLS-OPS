@@ -96,6 +96,13 @@ interface DatabaseAssetState {
   invalidate: (profileId: string) => Promise<void>;
 
   ensureSession: (profileId: string) => Promise<DbSessionInfo | null>;
+  /**
+   * 强制重连：关闭旧会话（不尝试恢复事务/临时表），再建立新会话。
+   * 只用于用户显式点击"重新连接"；绝不自动调用。
+   */
+  reconnect: (profileId: string) => Promise<DbSessionInfo | null>;
+  /** 在固定会话上执行 COMMIT / ROLLBACK（关闭工作项时用）。 */
+  runSessionCommand: (profileId: string, sql: "COMMIT" | "ROLLBACK") => Promise<void>;
   closeSession: (profileId: string) => Promise<void>;
   /** 关闭已经不在任何标签里的会话；切换标签不会触发（标签还在）。 */
   pruneSessions: (activeProfileIds: string[]) => Promise<void>;
@@ -285,6 +292,56 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
       }));
       return null;
     }
+  },
+
+  runSessionCommand: async (profileId, sql) => {
+    const session = get().sessions[profileId];
+    if (!session) throw new Error("会话不存在，无法执行事务命令");
+    const started = await databaseApi.queryStart(session.session_id, sql);
+    try {
+      for (let guard = 0; guard < 200; guard += 1) {
+        const response = await databaseApi.queryNext(started.query_id);
+        if (
+          response.state === "completed" ||
+          response.state === "cancelled" ||
+          response.state === "failed" ||
+          response.state === "outcome_unknown"
+        ) {
+          break;
+        }
+      }
+    } finally {
+      await databaseApi.queryRelease(started.query_id).catch(() => undefined);
+      // 事务状态以服务器 OK 包为准；重新读一次会话信息。
+      try {
+        const info = await databaseApi.sessionInfo(session.session_id);
+        set((state) => ({
+          sessions: { ...state.sessions, [profileId]: info },
+        }));
+      } catch {
+        // 忽略：下一次操作会自然暴露失效。
+      }
+    }
+  },
+
+  reconnect: async (profileId) => {
+    const existing = get().sessions[profileId];
+    if (existing) {
+      try {
+        await databaseApi.disconnect(existing.session_id);
+      } catch {
+        // 旧会话可能已经断开；继续建新会话。
+      }
+    }
+    set((state) => {
+      const sessions = { ...state.sessions };
+      delete sessions[profileId];
+      return {
+        sessions,
+        sessionErrors: { ...state.sessionErrors, [profileId]: null },
+      };
+    });
+    return get().ensureSession(profileId);
   },
 
   closeSession: async (profileId) => {

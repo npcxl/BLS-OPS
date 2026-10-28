@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Database as DatabaseIcon,
   Eye,
+  FileCode2,
   KeyRound,
   Loader2,
   Pencil,
@@ -24,6 +25,11 @@ import {
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
+import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
+import {
+  useDatabaseWorkspaceStore,
+  type SavedQuery,
+} from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConnectionDialog } from "./ConnectionDialog";
 
@@ -41,14 +47,14 @@ function ErrorRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex items-start gap-1.5 py-1 pr-2 text-[10px] leading-snug text-danger"
+      className="flex items-start gap-1.5 py-1 pr-2 text-11 leading-snug text-danger"
       style={indent(level)}
     >
       <TriangleAlert size={11} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1 break-words">{error.message}</span>
       <button
         type="button"
-        className="shrink-0 rounded px-1 text-[10px] text-accent hover:bg-surface-hover"
+        className="shrink-0 rounded px-1 text-11 text-accent hover:bg-surface-hover"
         onClick={(event) => {
           event.stopPropagation();
           onRetry();
@@ -62,7 +68,7 @@ function ErrorRow({
 
 function LoadingRow({ level }: { level: number }) {
   return (
-    <div className="flex items-center gap-1.5 py-1 text-[10px] text-fg-subtle" style={indent(level)}>
+    <div className="flex items-center gap-1.5 py-1 text-11 text-fg-subtle" style={indent(level)}>
       <Loader2 size={10} className="animate-spin" />
     </div>
   );
@@ -92,7 +98,7 @@ const ProfileRow = memo(function ProfileRow({
   const { t } = useTranslation();
   return (
     <div
-      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-[3px] pr-1 hover:bg-surface-hover"
+      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
       style={indent(0)}
       onDoubleClick={onOpen}
       onClick={onOpen}
@@ -114,11 +120,6 @@ const ProfileRow = memo(function ProfileRow({
       </button>
       <DatabaseIcon size={13} className="shrink-0 text-fg-subtle" />
       <span className="min-w-0 flex-1 truncate text-12 text-fg">{profile.name}</span>
-      {profile.read_only && (
-        <span className="shrink-0 rounded bg-surface-2 px-1 text-[9px] text-fg-subtle">
-          {t("只读")}
-        </span>
-      )}
       <span
         className={cn(
           "h-1.5 w-1.5 shrink-0 rounded-full",
@@ -187,13 +188,21 @@ export function DatabaseAssetSidebar() {
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
   const refreshTableDetail = useDatabaseStore((state) => state.refreshTableDetail);
   const deleteProfile = useDatabaseStore((state) => state.deleteProfile);
-  const requestTable = useDatabaseStore((state) => state.requestTable);
 
   const openDatabaseTab = useWorkbenchStore((state) => state.openDatabaseTab);
   const closeTabById = useWorkbenchStore((state) => state.closeTabById);
   const rootPane = useWorkbenchStore((state) => state.rootPane);
 
+  const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
+  const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
+  const openDatabaseObjects = useDatabaseWorkspaceStore(
+    (state) => state.openDatabaseObjects,
+  );
+  const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
+  const savedQueries = useDatabaseWorkspaceStore((state) => state.savedQueries);
+
   const [filter, setFilter] = useState("");
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
     { mode: "create" } | { mode: "edit"; profile: DatabaseProfile } | null
   >(null);
@@ -222,6 +231,34 @@ export function DatabaseAssetSidebar() {
     });
   };
 
+  /** 双击表：打开连接标签，并在其中打开一个独立表工作项。 */
+  const openTableItem = (profile: DatabaseProfile, database: string, table: string) => {
+    open(profile);
+    openTable({
+      profileId: profile.id,
+      connectionName: profile.name,
+      database,
+      table,
+    });
+  };
+
+  const openSavedQuery = (query: SavedQuery) => {
+    const profile = profiles.find((entry) => entry.id === query.profileId);
+    if (!profile) return;
+    open(profile);
+    const id = newQuery({
+      profileId: query.profileId,
+      connectionName: query.connectionName,
+      database: query.database,
+      sql: query.sql,
+      savedQueryId: query.id,
+      title: query.name,
+    });
+    const workbench = useDatabaseWorkbenchStore.getState();
+    workbench.ensureTab(id, query.profileId);
+    workbench.setSql(id, query.sql);
+  };
+
   const remove = async (profile: DatabaseProfile) => {
     // 关闭这个连接的所有标签，再删配置。
     const ids: string[] = [];
@@ -239,7 +276,7 @@ export function DatabaseAssetSidebar() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-        <span className="min-w-0 flex-1 truncate text-11 font-medium text-fg-muted">
+        <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg-muted">
           {t("数据库资产")}
         </span>
         <button
@@ -267,7 +304,7 @@ export function DatabaseAssetSidebar() {
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             placeholder={t("搜索连接…")}
-            className="h-[26px] w-full rounded-[6px] border border-line bg-surface-2 pl-6 pr-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+            className="h-[28px] w-full rounded-[6px] border border-line bg-surface-2 pl-6 pr-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
           />
         </div>
       </div>
@@ -327,11 +364,17 @@ export function DatabaseAssetSidebar() {
                     return (
                       <div key={key}>
                         <div
-                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-[3px] pr-1 hover:bg-surface-hover"
+                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
+                            // 点数据库名称：打开该库全部表的搜索列表；
+                            // 展开/收起仍由左侧箭头负责。
                             open(profile);
-                            void toggleDatabase(profile.id, database.name);
+                            openDatabaseObjects({
+                              profileId: profile.id,
+                              connectionName: profile.name,
+                              database: database.name,
+                            });
                           }}
                         >
                           <button
@@ -351,7 +394,7 @@ export function DatabaseAssetSidebar() {
                           <DatabaseIcon size={11} className="shrink-0 text-fg-subtle" />
                           <span
                             className={cn(
-                              "min-w-0 flex-1 truncate text-11",
+                              "min-w-0 flex-1 truncate text-12",
                               database.system ? "text-fg-subtle" : "text-fg",
                             )}
                           >
@@ -394,19 +437,23 @@ export function DatabaseAssetSidebar() {
                               return (
                                 <div key={tableKey}>
                                   <div
-                                    className="group flex cursor-default items-center gap-1 rounded-[6px] py-[3px] pr-1 hover:bg-surface-hover"
+                                    className={cn(
+                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover",
+                                      selectedKey === tableKey &&
+                                        "bg-accent/10 ring-1 ring-inset ring-accent/20",
+                                    )}
                                     style={indent(2)}
-                                    onClick={() => {
-                                      open(profile);
-                                      requestTable(profile.id, database.name, table.name);
-                                    }}
-                                    title={
-                                      table.estimated_rows !== null
-                                        ? t("约 {{count}} 行（估算值）", {
-                                            count: table.estimated_rows.toLocaleString(),
-                                          })
-                                        : undefined
+                                    tabIndex={0}
+                                    onClick={() => setSelectedKey(tableKey)}
+                                    onDoubleClick={() =>
+                                      openTableItem(profile, database.name, table.name)
                                     }
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter") {
+                                        openTableItem(profile, database.name, table.name);
+                                      }
+                                    }}
+                                    title={`${database.name}.${table.name}`}
                                   >
                                     <button
                                       type="button"
@@ -430,7 +477,7 @@ export function DatabaseAssetSidebar() {
                                     ) : (
                                       <Table2 size={11} className="shrink-0 text-fg-subtle" />
                                     )}
-                                    <span className="min-w-0 flex-1 truncate text-11 text-fg">
+                                    <span className="min-w-0 flex-1 truncate text-12 text-fg">
                                       {table.name}
                                     </span>
                                     {tableError && (
@@ -457,7 +504,7 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.slice(0, 80).map((column) => (
                                         <div
                                           key={column.name}
-                                          className="flex items-center gap-1 py-[2px] pr-1 text-[10px] text-fg-subtle"
+                                          className="flex items-center gap-1 py-[3px] pr-1 text-11 text-fg-subtle"
                                           style={indent(3)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
                                         >
@@ -469,14 +516,14 @@ export function DatabaseAssetSidebar() {
                                           <span className="min-w-0 flex-1 truncate text-fg-muted">
                                             {column.name}
                                           </span>
-                                          <span className="shrink-0 text-[9px]">
+                                          <span className="shrink-0 text-10">
                                             {column.data_type}
                                           </span>
                                         </div>
                                       ))}
                                       {detail.columns.length > 80 && (
                                         <div
-                                          className="py-[2px] text-[10px] text-fg-subtle"
+                                          className="py-[3px] text-11 text-fg-subtle"
                                           style={indent(3)}
                                         >
                                           {t("…另有 {{count}} 列", {
@@ -486,16 +533,16 @@ export function DatabaseAssetSidebar() {
                                       )}
                                       <button
                                         type="button"
-                                        className="mt-1 rounded px-1 text-[10px] text-accent hover:bg-surface-hover"
+                                        className="mt-1 rounded px-1 text-11 text-accent hover:bg-surface-hover"
                                         style={indent(3)}
                                         onClick={() => {
                                           open(profile);
-                                          requestTable(
-                                            profile.id,
-                                            database.name,
-                                            table.name,
-                                            "structure",
-                                          );
+                                          openStructure({
+                                            profileId: profile.id,
+                                            connectionName: profile.name,
+                                            database: database.name,
+                                            table: table.name,
+                                          });
                                         }}
                                       >
                                         {t("查看表结构 / 索引")}
@@ -506,7 +553,7 @@ export function DatabaseAssetSidebar() {
                               );
                             })}
                         {dbOpen && !dbLoading && !dbError && dbTables.length === 0 && (
-                          <p className="py-1 text-[10px] text-fg-subtle" style={indent(2)}>
+                          <p className="py-1 text-11 text-fg-subtle" style={indent(2)}>
                             {t("没有表或视图")}
                           </p>
                         )}
@@ -516,6 +563,42 @@ export function DatabaseAssetSidebar() {
             </div>
           );
         })}
+
+        {savedQueries.filter((query) =>
+          profiles.some((profile) => profile.id === query.profileId),
+        ).length > 0 && (
+          <div className="mt-2 border-t border-line pt-1">
+            <div className="px-2 py-1 text-11 font-medium text-fg-subtle">
+              {t("保存的查询")}
+            </div>
+            {savedQueries
+              .filter((query) =>
+                profiles.some((profile) => profile.id === query.profileId),
+              )
+              .map((query) => (
+                <div
+                  key={query.id}
+                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pl-2 pr-1 hover:bg-surface-hover"
+                  tabIndex={0}
+                  onDoubleClick={() => openSavedQuery(query)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") openSavedQuery(query);
+                  }}
+                  title={`${query.connectionName}${
+                    query.database ? ` / ${query.database}` : ""
+                  }\n${t("双击打开这份查询")}`}
+                >
+                  <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
+                  <span className="min-w-0 flex-1 truncate text-12 text-fg">
+                    {query.name}
+                  </span>
+                  <span className="shrink-0 text-10 text-fg-subtle">
+                    {query.connectionName}
+                  </span>
+                </div>
+              ))}
+          </div>
+        )}
       </div>
 
       <ConnectionDialog

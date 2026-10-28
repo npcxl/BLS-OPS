@@ -105,7 +105,7 @@ export function HistoryDialog({
               onClick={() => onPick(entry.sql)}
               title={t("点击填入编辑器")}
             >
-              <div className="flex items-center gap-2 text-[10px] text-fg-subtle">
+              <div className="flex items-center gap-2 text-11 text-fg-subtle">
                 <span
                   className={
                     entry.succeeded ? "text-success" : "text-danger"
@@ -119,11 +119,11 @@ export function HistoryDialog({
                 </span>
                 <span>{entry.elapsed_ms} ms</span>
               </div>
-              <pre className="max-h-16 overflow-hidden whitespace-pre-wrap break-all font-mono text-[10px] text-fg">
+              <pre className="max-h-16 overflow-hidden whitespace-pre-wrap break-all font-mono text-11 text-fg">
                 {entry.sql.length > 400 ? `${entry.sql.slice(0, 400)}…` : entry.sql}
               </pre>
               {entry.error && (
-                <span className="truncate text-[10px] text-danger">{entry.error}</span>
+                <span className="truncate text-11 text-danger">{entry.error}</span>
               )}
             </button>
           ))}

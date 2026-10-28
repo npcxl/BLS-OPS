@@ -455,6 +455,8 @@ pub fn run() {
             commands::db_history_list,
             commands::db_history_record,
             commands::db_history_clear,
+            commands::db_read_sql_file,
+            commands::db_write_sql_file,
             commands::db_module_info,
         ])
         .build(tauri::generate_context!())

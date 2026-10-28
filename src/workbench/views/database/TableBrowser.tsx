@@ -10,25 +10,33 @@
  * 修改：先暂存 → 展示待提交行 → 显式提交（事务 + 影响行数校验）。
  * 结果未知时**不自动重试**，只给出按主键重新核对的语句。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ChevronLeft,
   ChevronRight,
   FileDown,
+  FilePlus2,
   Filter,
   Loader2,
   Pencil,
   Plus,
   RefreshCw,
   Save,
-  Table2,
   Trash2,
-  Wand2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { LoadingState } from "@/components/ui/loading";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
@@ -47,6 +55,7 @@ import type {
 } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { VirtualDataGrid, type CellAddress } from "./VirtualDataGrid";
 import { TableStructure } from "./TableStructure";
 import { EditRowDialog } from "./EditRowDialog";
@@ -95,32 +104,66 @@ type Pending =
     }
   | { id: string; kind: "insert"; values: ColumnAssignment[] };
 
+function keyToString(key: AssignValue[]): string {
+  return key
+    .map((value) => (value.kind === "value" ? value.value : `\u0000${value.kind}`))
+    .join("\u0001");
+}
+
+function sameKey(a: AssignValue[], b: AssignValue[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => {
+    const other = b[index];
+    if (!other || value.kind !== other.kind) return false;
+    if (value.kind === "value" && other.kind === "value") {
+      return value.value === other.value;
+    }
+    return true;
+  });
+}
+
 export function TableBrowser({
   tabId: _tabId,
   profile,
   session,
   database,
   table,
-  initialView,
+  initialView = "data",
   onClose,
+  onPendingChange,
+  onNewQuery,
+  footer,
 }: {
   tabId: string;
   profile: DatabaseProfile;
   session: DbSessionInfo | null;
   database: string;
   table: string;
-  initialView: "data" | "structure";
+  initialView?: "data" | "structure" | "indexes" | "ddl";
+  connectionName?: string;
   onClose: () => void;
+  onPendingChange?: (count: number) => void;
+  onNewQuery?: () => void;
+  footer?: ReactNode;
 }) {
   const { t } = useTranslation();
   const details = useDatabaseStore((state) => state.details);
   const loadingDetail = useDatabaseStore((state) => state.loading);
   const refreshTableDetail = useDatabaseStore((state) => state.refreshTableDetail);
+  const rightPanel = useDatabaseWorkspaceStore((state) => state.rightPanel);
+  const ddl = useDatabaseWorkspaceStore((state) => state.ddl);
+  const showDdl = useDatabaseWorkspaceStore((state) => state.showDdl);
+  const hideDdl = useDatabaseWorkspaceStore((state) => state.hideDdl);
+  const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
 
   const detailKey = `${profile.id}\u0001${database}\u0001${table}`;
   const detail: DbTableDetail | null = details[detailKey] ?? null;
 
-  const [view, setView] = useState<"data" | "structure">(initialView);
+  const [view, setView] = useState<"data" | "structure" | "indexes" | "ddl">(
+    initialView,
+  );
+  const [showFilters, setShowFilters] = useState(false);
+  const [editorLoading, setEditorLoading] = useState(false);
   const [pageSize, setPageSize] = useState(200);
   const [pageIndex, setPageIndex] = useState(0);
   const [cursor, setCursor] = useState<(string | null)[] | null>(null);
@@ -128,11 +171,17 @@ export function TableBrowser({
   const [filters, setFilters] = useState<BrowseFilter[]>([]);
   const [sorts, setSorts] = useState<BrowseSort[]>([]);
   const [result, setResult] = useState<BrowseResult | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [exact, setExact] = useState<number | null>(null);
+  /** 第二行（新增/删除/应用修改）默认收起，点“表格修改”才展开。 */
+  const [showEditBar, setShowEditBar] = useState(false);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [selectedCell, setSelectedCell] = useState<CellAddress | null>(null);
+  const [editing, setEditing] = useState<{
+    cell: CellAddress;
+    value: string;
+  } | null>(null);
   const [editor, setEditor] = useState<{
     mode: "insert" | "update";
     row: DbValue[] | null;
@@ -149,6 +198,7 @@ export function TableBrowser({
     value: DbValue;
   } | null>(null);
   const requestNonce = useRef(0);
+  const cellMenu = useContextMenu();
 
   const [draftFilter, setDraftFilter] = useState<{
     column: string;
@@ -160,13 +210,41 @@ export function TableBrowser({
     if (!detail) void refreshTableDetail(profile.id, database, table);
   }, [database, detail, profile.id, refreshTableDetail, table]);
 
-  const load = useCallback(async () => {
+  // 右栏需要显示"待修改"标记；只用 ref 保存回调，避免父组件每次渲染
+  // 生成新函数 → effect 重跑 → setStatus → 再渲染的死循环。
+  const pendingChangeRef = useRef(onPendingChange);
+  pendingChangeRef.current = onPendingChange;
+  useEffect(() => {
+    pendingChangeRef.current?.(pending.length);
+  }, [pending.length]);
+
+  const lastLoadKeyRef = useRef("");
+
+  /**
+   * `force=false` 时同一组条件只查一次：首次进入查询一次，刷新按钮
+   * 显式传 `force=true` 再查一次；React StrictMode 的双执行也不会重复查。
+   */
+  const load = useCallback(async (force = false) => {
     if (!session) return;
+    const loadKey = [
+      session.session_id,
+      database,
+      table,
+      pageIndex,
+      pageSize,
+      JSON.stringify(filters),
+      JSON.stringify(sorts),
+      cursor?.join("\u0001") ?? "",
+    ].join("\u0002");
+    if (!force && loadKey === lastLoadKeyRef.current) return;
+    lastLoadKeyRef.current = loadKey;
     const nonce = ++requestNonce.current;
     setLoading(true);
     setError(null);
     try {
       const offset = cursor ? 0 : pageIndex * pageSize;
+      // 只在首页/刷新/筛选时统计总数；翻页不重复 COUNT。
+      const shouldCount = force || pageIndex === 0;
       const next = await databaseApi.browse({
         session_id: session.session_id,
         database,
@@ -177,10 +255,11 @@ export function TableBrowser({
         sorts: sorts.length > 0 ? sorts : null,
         filters: filters.length > 0 ? filters : null,
         pagination: "auto",
-        exact_count: false,
+        exact_count: shouldCount,
       });
       if (nonce !== requestNonce.current) return;
       setResult(next);
+      if (shouldCount) setTotal(next.exact_rows);
       setSelectedRow(null);
       setSelectedCell(null);
     } catch (failure) {
@@ -199,7 +278,6 @@ export function TableBrowser({
     setPageIndex(0);
     setCursor(null);
     setCursorStack([null]);
-    setExact(null);
   };
 
   const keyOfRow = useCallback(
@@ -226,7 +304,17 @@ export function TableBrowser({
       detail.columns.forEach((column, index) => {
         // 二进制列不能安全地作为比较参数（base64 与列值不是同一表示），跳过。
         if (/blob|binary/i.test(column.data_type)) return;
-        const text = rawText(row[index] ?? { kind: "null" });
+        const value = row[index] ?? { kind: "null" as const };
+        // **绝不拿截断预览做并发比较**：预览 64 KiB 和完整值永远不相等，
+        // 会导致每次保存都"冲突"，或者把截断值写回。跳过这些列。
+        if (
+          (value.kind === "text" || value.kind === "json") &&
+          value.truncated
+        ) {
+          return;
+        }
+        if (value.kind === "binary" || value.kind === "unsupported") return;
+        const text = rawText(value);
         assignments.push({
           column: column.name,
           value: text === null ? { kind: "null" } : { kind: "value", value: text },
@@ -247,6 +335,187 @@ export function TableBrowser({
     if (selectedRow === null || !result) return null;
     return result.rows[selectedRow] ?? null;
   }, [result, selectedRow]);
+
+  /**
+   * 打开表单编辑前，把被结果预算截断的大字段**按主键重新读完整**。
+   * 否则用户会在表单里看到 64 KiB 的预览，保存时把截断值写回数据库。
+   */
+  const openEditor = async (mode: "insert" | "update", row: DbValue[] | null) => {
+    if (mode === "insert" || !row || !detail) {
+      setEditor({ mode, row });
+      return;
+    }
+    const located = keyOfRow(row);
+    if (!located) {
+      setEditor({ mode, row });
+      return;
+    }
+    const truncated = row
+      .map((value, index) => ({ value, index }))
+      .filter(
+        ({ value }) =>
+          (value.kind === "text" || value.kind === "json") && value.truncated,
+      );
+    if (truncated.length === 0) {
+      setEditor({ mode, row });
+      return;
+    }
+    setEditorLoading(true);
+    try {
+      const keyValues = located.key.map((entry) =>
+        entry.kind === "value" ? entry.value : null,
+      );
+      const full = [...row];
+      await Promise.all(
+        truncated.map(async ({ index }) => {
+          const column = detail.columns[index];
+          if (!column) return;
+          try {
+            full[index] = await databaseApi.readCell({
+              profileId: profile.id,
+              database,
+              table,
+              keyValues,
+              column: column.name,
+              maxBytes: 4 * 1024 * 1024,
+            });
+          } catch {
+            // 读取失败保留预览；表单里会标记该字段被截断。
+          }
+        }),
+      );
+      setEditor({ mode, row: full });
+    } finally {
+      setEditorLoading(false);
+    }
+  };
+
+  /** 把一个单元格值并入同一行的待提交修改（同表、同主键）。 */
+  const applyCellValue = (cell: CellAddress, value: AssignValue) => {
+    if (!canEdit || !detail) return;
+    const rowValues = pageRows[cell.row];
+    const column = detail.columns[cell.col];
+    if (!rowValues || !column || column.primary_key) return;
+    if (/blob|binary/i.test(column.data_type)) return;
+    const located = keyOfRow(rowValues);
+    if (!located) return;
+    const assignment: ColumnAssignment = { column: column.name, value };
+    setPending((current) => {
+      const index = current.findIndex(
+        (entry) => entry.kind === "update" && sameKey(entry.key, located.key),
+      );
+      if (index >= 0) {
+        const entry = current[index];
+        if (entry.kind !== "update") return current;
+        const values = entry.values.some((item) => item.column === column.name)
+          ? entry.values.map((item) =>
+              item.column === column.name ? assignment : item,
+            )
+          : [...entry.values, assignment];
+        return current.map((item, itemIndex) =>
+          itemIndex === index ? { ...entry, values } : item,
+        );
+      }
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          kind: "update" as const,
+          key: located.key,
+          label: located.label,
+          values: [assignment],
+          expected: expectedOfRow(rowValues),
+        },
+      ];
+    });
+  };
+
+  /** 查看完整值：有可靠键时按主键重读，否则只显示已接收的预览。 */
+  const openCellDetail = (cell: CellAddress) => {
+    const column = result?.columns[cell.col]?.name;
+    const value = pageRows[cell.row]?.[cell.col];
+    if (!column || !value) return;
+    const row = pageRows[cell.row];
+    const located = row ? keyOfRow(row) : null;
+    if (!detail?.reliable_key || !canEdit || !located) {
+      setCellDetail({ column, value });
+      return;
+    }
+    void databaseApi
+      .readCell({
+        profileId: profile.id,
+        database,
+        table,
+        keyValues: located.key.map((entry) =>
+          entry.kind === "value" ? entry.value : null,
+        ),
+        column,
+        maxBytes: 512 * 1024,
+      })
+      .then((full) => setCellDetail({ column, value: full }))
+      .catch((failure) =>
+        setCellDetail({
+          column,
+          value: {
+            kind: "unsupported",
+            type_name: "read_failed",
+            preview: toDbError(failure).message,
+            bytes: 0,
+          },
+        }),
+      );
+  };
+
+  /** 双击/F2：进入单元格编辑；不可编辑的类型退回完整值查看。 */
+  const startCellEdit = async (cell: CellAddress) => {
+    if (!canEdit || !detail) {
+      openCellDetail(cell);
+      return;
+    }
+    const value = pageRows[cell.row]?.[cell.col];
+    const column = detail.columns[cell.col];
+    if (
+      !value ||
+      !column ||
+      column.primary_key ||
+      /blob|binary/i.test(column.data_type) ||
+      value.kind === "unsupported"
+    ) {
+      openCellDetail(cell);
+      return;
+    }
+    let text = rawText(value) ?? "";
+    if ((value.kind === "text" || value.kind === "json") && value.truncated) {
+      const rowValues = pageRows[cell.row];
+      const located = rowValues ? keyOfRow(rowValues) : null;
+      if (located) {
+        try {
+          const full = await databaseApi.readCell({
+            profileId: profile.id,
+            database,
+            table,
+            keyValues: located.key.map((entry) =>
+              entry.kind === "value" ? entry.value : null,
+            ),
+            column: column.name,
+            maxBytes: 4 * 1024 * 1024,
+          });
+          text = rawText(full) ?? text;
+        } catch {
+          // 读不到完整值时仍允许编辑预览，但用户会看到截断提示。
+        }
+      }
+    }
+    setEditing({ cell, value: text });
+  };
+
+  const commitCellEdit = (cell: CellAddress) => {
+    if (!editing || editing.cell.row !== cell.row || editing.cell.col !== cell.col) {
+      return;
+    }
+    applyCellValue(cell, { kind: "value", value: editing.value });
+    setEditing(null);
+  };
 
   const addUpdate = (values: ColumnAssignment[]) => {
     if (!selectedValues) return;
@@ -284,6 +553,17 @@ export function TableBrowser({
   const submit = async (allowOverride?: boolean) => {
     if (!session || pending.length === 0) return;
     const allow = allowOverride ?? allowNonTransactional;
+    const live = useDatabaseStore.getState().sessions[profile.id];
+    if (
+      live &&
+      (live.transaction === "in_transaction" ||
+        live.transaction === "in_transaction_read_only")
+    ) {
+      setMutationError(
+        t("当前会话有未提交事务：请先在 SQL 中 COMMIT 或 ROLLBACK，再应用表格修改"),
+      );
+      return;
+    }
     setSubmitting(true);
     setMutationError(null);
     setMutation(null);
@@ -382,111 +662,166 @@ export function TableBrowser({
 
   const columns = detail?.columns ?? [];
   const pageRows = result?.rows ?? [];
+
+  const modifiedCells = useMemo(() => {
+    const set = new Set<string>();
+    if (!detail) return set;
+    const rowIndexByKey = new Map<string, number>();
+    pageRows.forEach((row, index) => {
+      const located = keyOfRow(row);
+      if (located) rowIndexByKey.set(keyToString(located.key), index);
+    });
+    for (const entry of pending) {
+      if (entry.kind !== "update") continue;
+      const rowIndex = rowIndexByKey.get(keyToString(entry.key));
+      if (rowIndex === undefined) continue;
+      for (const assignment of entry.values) {
+        const colIndex = detail.columns.findIndex(
+          (column) => column.name === assignment.column,
+        );
+        if (colIndex >= 0) set.add(`${rowIndex}:${colIndex}`);
+      }
+    }
+    return set;
+  }, [detail, keyOfRow, pageRows, pending]);
+
+  const deletedRows = useMemo(() => {
+    const set = new Set<number>();
+    const keys = new Set<string>();
+    for (const entry of pending) {
+      if (entry.kind === "delete") keys.add(keyToString(entry.key));
+    }
+    pageRows.forEach((row, index) => {
+      const located = keyOfRow(row);
+      if (located && keys.has(keyToString(located.key))) set.add(index);
+    });
+    return set;
+  }, [keyOfRow, pageRows, pending]);
   const totalPages =
-    result?.exact_rows !== null && result?.exact_rows !== undefined
-      ? Math.max(1, Math.ceil(result.exact_rows / pageSize))
-      : null;
+    total !== null ? Math.max(1, Math.ceil(total / pageSize)) : null;
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
-        <Table2 size={12} className="shrink-0 text-fg-subtle" />
-        <span className="max-w-[240px] truncate text-12 text-fg" title={`${database}.${table}`}>
-          {database}.<span className="font-medium">{table}</span>
-        </span>
-        {detail?.kind === "view" && (
-          <span className="rounded bg-surface-2 px-1 text-[9px] text-fg-subtle">{t("视图")}</span>
-        )}
-        {detail?.engine && (
-          <span className="text-[10px] text-fg-subtle">{detail.engine}</span>
-        )}
-        {detail?.estimated_rows !== null && detail?.estimated_rows !== undefined && (
-          <span
-            className="text-[10px] text-fg-subtle"
-            title={t("information_schema.TABLES.TABLE_ROWS：估算值，不是 COUNT(*)")}
-          >
-            ≈ {detail.estimated_rows.toLocaleString()} {t("行")}
-          </span>
-        )}
-        {!detail && <Loader2 size={11} className="animate-spin text-fg-subtle" />}
-
-        <div className="ml-2 flex items-center gap-1">
+      {/* 第一行：新建查询 + 子视图 + 表格修改开关 + 筛选/导出 + 刷新/关闭 */}
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+        <Button
+          variant="primary"
+          size="xs"
+          onClick={onNewQuery}
+          disabled={!onNewQuery}
+          title={t("新建一份独立的 SQL 查询")}
+        >
+          <FilePlus2 size={11} />
+          {t("新建查询")}
+        </Button>
+        <span className="mx-1 h-5 w-px shrink-0 bg-line" />
+        {(
+          [
+            ["data", t("数据")],
+            ["structure", t("结构")],
+            ["ddl", "DDL"],
+          ] as const
+        ).map(([key, label]) => {
+          const ddlActive =
+            key === "ddl" &&
+            rightPanel === "ddl" &&
+            ddl?.profileId === profile.id &&
+            ddl.database === database &&
+            ddl.table === table;
+          return (
+            <Button
+              key={key}
+              variant={
+                ddlActive || (key === "data" && view === "data")
+                  ? "secondary"
+                  : "ghost"
+              }
+              size="xs"
+              onClick={() => {
+                if (key === "ddl") {
+                  // DDL 不走中央工作区：显示在右侧、加宽；再点一次恢复列表。
+                  if (ddlActive) {
+                    hideDdl();
+                  } else {
+                    if (view === "ddl") setView("data");
+                    showDdl({ profileId: profile.id, database, table });
+                  }
+                  return;
+                }
+                if (key === "structure") {
+                  // 表结构独立开一个工作项，和表数据页并存。
+                  openStructure({
+                    profileId: profile.id,
+                    connectionName: profile.name,
+                    database,
+                    table,
+                  });
+                  return;
+                }
+                setView("data");
+                if (!detail) void refreshTableDetail(profile.id, database, table);
+              }}
+            >
+              {label}
+            </Button>
+          );
+        })}
+        {view === "data" && (
           <Button
-            variant={view === "data" ? "secondary" : "ghost"}
+            variant={showEditBar ? "secondary" : "ghost"}
             size="xs"
-            onClick={() => setView("data")}
+            onClick={() => setShowEditBar((value) => !value)}
+            title={t("展开新增 / 编辑 / 删除 / 应用修改")}
           >
-            {t("数据")}
+            <Pencil size={11} />
+            {t("表格修改")}
           </Button>
-          <Button
-            variant={view === "structure" ? "secondary" : "ghost"}
-            size="xs"
-            onClick={() => {
-              setView("structure");
-              if (!detail) void refreshTableDetail(profile.id, database, table);
-            }}
-          >
-            {t("结构")}
-          </Button>
-        </div>
-
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+        )}
+        <span className="mx-1 h-5 w-px shrink-0 bg-line" />
+        <Button
+          variant={showFilters ? "secondary" : "ghost"}
+          size="xs"
+          onClick={() => setShowFilters((value) => !value)}
+        >
+          <Filter size={11} />
+          {t("筛选")}
+          {filters.length > 0 ? ` (${filters.length})` : ""}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!session}
+          onClick={() => setExportOpen(true)}
+          title={t("按当前过滤/排序重新查询整表并流式导出")}
+        >
+          <FileDown size={11} />
+          {t("导出")}
+        </Button>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <Button
             variant="ghost"
             size="xs"
             disabled={loading || !session}
-            onClick={() => void load()}
+            onClick={() => void load(true)}
+            title={t("刷新当前页")}
           >
             {loading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
           </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={loading || !session}
-            onClick={async () => {
-              if (!session) return;
-              try {
-                const counted = await databaseApi.browse({
-                  session_id: session.session_id,
-                  database,
-                  table,
-                  page_size: 1,
-                  offset: 0,
-                  filters: filters.length > 0 ? filters : null,
-                  sorts: null,
-                  pagination: "offset",
-                  exact_count: true,
-                });
-                setExact(counted.exact_rows);
-              } catch (failure) {
-                setError(toDbError(failure).message);
-              }
-            }}
-            title={t("执行一次 COUNT(*)（显式请求，不在打开表时自动执行）")}
-          >
-            <Wand2 size={11} />
-            {exact !== null ? exact.toLocaleString() : t("精确行数")}
+          <Button variant="ghost" size="xs" onClick={onClose} title={t("关闭")}>
+            <X size={11} />
           </Button>
+        </div>
+      </div>
+
+      {/* 第二行：默认收起；点“表格修改”才出现 */}
+      {view === "data" && showEditBar && (
+        <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-surface-2/30 px-2">
           <Button
-            variant="ghost"
+            variant="primary"
             size="xs"
-            disabled={!session}
-            onClick={() => setExportOpen(true)}
-            title={t("按当前过滤/排序重新查询整表并流式导出")}
-          >
-            <FileDown size={11} />
-            CSV
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={!canEdit}
-            onClick={() => setEditor({ mode: "insert", row: null })}
-            title={
-              canEdit
-                ? t("新增一行")
-                : t("只读：视图、无可靠唯一键或连接为只读")
-            }
+            disabled={!canEdit || editorLoading}
+            onClick={() => void openEditor("insert", null)}
+            title={canEdit ? t("新增一行") : t("只读：视图、无可靠唯一键或连接为只读")}
           >
             <Plus size={11} />
             {t("新增")}
@@ -494,8 +829,9 @@ export function TableBrowser({
           <Button
             variant="ghost"
             size="xs"
-            disabled={!canEdit || selectedRow === null}
-            onClick={() => setEditor({ mode: "update", row: selectedValues })}
+            disabled={!canEdit || selectedRow === null || editorLoading}
+            onClick={() => void openEditor("update", selectedValues)}
+            title={t("用表单编辑当前行")}
           >
             <Pencil size={11} />
             {t("编辑")}
@@ -505,23 +841,45 @@ export function TableBrowser({
             size="xs"
             disabled={!canEdit || selectedRow === null}
             onClick={addDelete}
+            title={t("删除")}
           >
             <Trash2 size={11} />
             {t("删除")}
           </Button>
-          <Button variant="ghost" size="xs" onClick={onClose}>
-            <X size={11} />
+          <span className="mx-1 h-5 w-px shrink-0 bg-line" />
+          <Button
+            variant="secondary"
+            size="xs"
+            disabled={!canEdit || pending.length === 0 || submitting}
+            onClick={() => void submit()}
+          >
+            {submitting ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+            {t("应用修改")}
           </Button>
-        </div>
-      </div>
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={pending.length === 0}
+            onClick={() => setPending([])}
+          >
+            {t("撤销")}
+          </Button>
 
-      {view === "structure" ? (
+        </div>
+      )}
+
+      {view !== "data" ? (
         <div className="min-h-0 flex-1">
-          <TableStructure detail={detail} loading={!!loadingDetail[detailKey]} />
+          <TableStructure
+            detail={detail}
+            loading={!!loadingDetail[detailKey]}
+            section={view === "structure" ? "columns" : view}
+          />
         </div>
       ) : (
         <>
-          <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+          {showFilters && (
+          <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
             <Filter size={11} className="shrink-0 text-fg-subtle" />
             <Select
               className="w-[140px]"
@@ -563,7 +921,7 @@ export function TableBrowser({
               ]}
             />
             <input
-              className={cn(fieldClass, "h-[24px] w-[150px] text-10")}
+              className={cn(fieldClass, "h-[28px] w-[160px] text-12")}
               value={draftFilter.value}
               disabled={draftFilter.op === "is_null" || draftFilter.op === "not_null"}
               onChange={(event) =>
@@ -581,7 +939,7 @@ export function TableBrowser({
             {filters.map((filter, index) => (
               <span
                 key={`${filter.column}-${index}`}
-                className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-[10px] text-fg-muted"
+                className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-11 text-fg-muted"
               >
                 {filter.column} {filter.op} {filter.value ?? ""}
                 <button
@@ -597,7 +955,7 @@ export function TableBrowser({
               </span>
             ))}
             {sorts.length > 0 && (
-              <span className="flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] text-accent">
+              <span className="flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-11 text-accent">
                 {sorts.map((sort) => `${sort.column} ${sort.direction}`).join(", ")}
                 <button type="button" onClick={() => { setSorts([]); resetPaging(); }}>
                   <X size={9} />
@@ -605,57 +963,24 @@ export function TableBrowser({
               </span>
             )}
 
-            <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-fg-subtle">
-              {result?.pagination === "keyset" ? "keyset" : "offset"}
-              <Select
-                className="w-[86px]"
-                size="sm"
-                value={String(pageSize)}
-                ariaLabel={t("每页行数")}
-                onChange={(value) => {
-                  setPageSize(Number(value));
-                  resetPaging();
-                }}
-                options={PAGE_SIZES.map((size) => ({
-                  value: String(size),
-                  label: `${size} ${t("行")}`,
-                }))}
-              />
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={pageIndex === 0 || loading}
-                onClick={prevPage}
-              >
-                <ChevronLeft size={11} />
-              </Button>
-              <span>
-                {pageIndex + 1}
-                {totalPages ? ` / ${totalPages}` : ""}
-              </span>
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={loading || !result?.has_more}
-                onClick={nextPage}
-              >
-                <ChevronRight size={11} />
-              </Button>
-            </span>
           </div>
+          )}
 
           {result?.warning && (
-            <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
+            <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
               {result.warning}
             </div>
           )}
           {error && (
-            <div className="border-b border-danger/30 bg-danger/10 px-2 py-1 text-[10px] text-danger">
+            <div className="border-b border-danger/30 bg-danger/10 px-2 py-1 text-11 text-danger">
               {error}
             </div>
           )}
 
           <div className="min-h-0 flex-1">
+            {!result && !error ? (
+              <LoadingState className="h-full" />
+            ) : (
             <VirtualDataGrid
               columns={result?.columns ?? []}
               rows={pageRows}
@@ -668,88 +993,161 @@ export function TableBrowser({
               sortColumn={sorts[0]?.column ?? null}
               sortDirection={sorts[0]?.direction ?? null}
               canResolveRows={canEdit}
-              onOpenCell={(cell) => {
-                const column = result?.columns[cell.col]?.name;
-                const value = pageRows[cell.row]?.[cell.col];
-                if (!column || !value) return;
-                if (!detail?.reliable_key || !canEdit) {
-                  setCellDetail({ column, value });
-                  return;
-                }
-                const row = pageRows[cell.row];
-                const located = keyOfRow(row);
-                if (!located) {
-                  setCellDetail({ column, value });
-                  return;
-                }
-                void databaseApi
-                  .readCell({
-                    profileId: profile.id,
-                    database,
-                    table,
-                    keyValues: located.key.map((entry) =>
-                      entry.kind === "value" ? entry.value : null,
-                    ),
-                    column,
-                    maxBytes: 512 * 1024,
-                  })
-                  .then((full) => setCellDetail({ column, value: full }))
-                  .catch((failure) =>
-                    setCellDetail({
-                      column,
-                      value: {
-                        kind: "unsupported",
-                        type_name: "read_failed",
-                        preview: toDbError(failure).message,
-                        bytes: 0,
-                      },
-                    }),
-                  );
+              modifiedCells={modifiedCells}
+              deletedRows={deletedRows}
+              editingCell={editing?.cell ?? null}
+              editingValue={editing?.value ?? ""}
+              onEditingValueChange={(value) =>
+                setEditing((current) => (current ? { ...current, value } : current))
+              }
+              onStartEdit={(cell) => void startCellEdit(cell)}
+              onCommitEdit={commitCellEdit}
+              onCancelEdit={() => setEditing(null)}
+              onCellContextMenu={(cell, event) => {
+                cellMenu.onContextMenu(() => [
+                  {
+                    id: "null",
+                    label: t("设为 NULL"),
+                    onSelect: () => applyCellValue(cell, { kind: "null" }),
+                  },
+                  {
+                    id: "empty",
+                    label: t("设为空字符串"),
+                    onSelect: () =>
+                      applyCellValue(cell, { kind: "value", value: "" }),
+                  },
+                  {
+                    id: "default",
+                    label: t("使用默认值"),
+                    onSelect: () => applyCellValue(cell, { kind: "default" }),
+                  },
+                  { separator: true },
+                  {
+                    id: "detail",
+                    label: t("查看完整值"),
+                    onSelect: () => openCellDetail(cell),
+                  },
+                ])(event);
               }}
+              onOpenCell={openCellDetail}
             />
+            )}
+          </div>
+
+          {/* 底部只有一行：待提交操作 + 总数 + 分页 + 全局状态 */}
+          <div className="flex h-8 shrink-0 items-center gap-2 overflow-x-auto border-t border-line px-2 text-11 text-fg-subtle">
+            {pending.length > 0 && (
+              <>
+                <span className="text-accent">
+                  {t("待提交 {{count}} 项", { count: pending.length })}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setShowPending(true)}
+                >
+                  {t("查看变更")}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="xs"
+                  disabled={submitting}
+                  onClick={() => void submit()}
+                >
+                  {submitting ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    <Save size={10} />
+                  )}
+                  {t("提交修改")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setPending([])}
+                >
+                  {t("放弃")}
+                </Button>
+              </>
+            )}
+            {mutation?.state === "outcome_unknown" && (
+              <span className="text-danger">{t("结果未知，请勿自动重试")}</span>
+            )}
+            {mutation?.state === "rolled_back" && (
+              <span className="text-danger">{t("已回滚")}</span>
+            )}
+            {mutationError && (
+              <span
+                className="max-w-[220px] truncate text-danger"
+                title={mutationError}
+              >
+                {mutationError}
+              </span>
+            )}
+            <span className="ml-auto flex items-center gap-3">
+              <span>
+                {total === null
+                  ? loading
+                    ? t("加载中…")
+                    : t("暂无数据")
+                  : total === 0
+                    ? t("暂无数据")
+                    : t("共 {{count}} 行", { count: total.toLocaleString() })}
+              </span>
+              <span className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={pageIndex === 0 || loading}
+                  onClick={prevPage}
+                >
+                  <ChevronLeft size={11} />
+                </Button>
+                <span>
+                  {pageIndex + 1}
+                  {totalPages ? ` / ${totalPages}` : ""}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={loading || !result?.has_more}
+                  onClick={nextPage}
+                >
+                  <ChevronRight size={11} />
+                </Button>
+              </span>
+              <Select
+                className="w-[84px]"
+                size="sm"
+                value={String(pageSize)}
+                ariaLabel={t("每页行数")}
+                onChange={(value) => {
+                  setPageSize(Number(value));
+                  resetPaging();
+                }}
+                options={PAGE_SIZES.map((size) => ({
+                  value: String(size),
+                  label: `${size} ${t("行")}`,
+                }))}
+              />
+            </span>
+            {footer && (
+              <>
+                <span className="mx-1 h-4 w-px shrink-0 bg-line" />
+                <div className="flex min-w-0 shrink-0 items-center gap-2">
+                  {footer}
+                </div>
+              </>
+            )}
           </div>
         </>
       )}
 
-      {pending.length > 0 && (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-t border-accent/30 bg-accent/5 px-2 text-[10px] text-fg-muted">
-          <span className="text-accent">
-            {t("待提交 {{count}} 项", { count: pending.length })}
-          </span>
-          <Button variant="ghost" size="xs" onClick={() => setShowPending(true)}>
-            {t("查看变更")}
-          </Button>
-          <Button
-            variant="primary"
-            size="xs"
-            disabled={submitting}
-            onClick={() => void submit()}
-          >
-            {submitting ? (
-              <Loader2 size={10} className="animate-spin" />
-            ) : (
-              <Save size={10} />
-            )}
-            {t("提交修改")}
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setPending([])}>
-            {t("放弃")}
-          </Button>
-          {mutation?.state === "outcome_unknown" && (
-            <span className="text-danger">{t("结果未知，请勿自动重试")}</span>
-          )}
-          {mutation?.state === "rolled_back" && (
-            <span className="text-danger">{t("已回滚")}</span>
-          )}
-          {mutationError && <span className="text-danger">{mutationError}</span>}
-        </div>
-      )}
-
       {mutation && (mutation.warning || mutation.verify_hint) && (
-        <div className="max-h-32 shrink-0 overflow-y-auto border-t border-line bg-surface-2/60 px-2 py-1 text-[10px] leading-relaxed text-fg-muted">
+        <div className="max-h-32 shrink-0 overflow-y-auto border-t border-line bg-surface-2/60 px-2 py-1 text-11 leading-relaxed text-fg-muted">
           {mutation.warning && <p className="text-warning">{mutation.warning}</p>}
           {mutation.verify_hint && (
-            <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] text-fg-subtle">
+            <pre className="mt-1 whitespace-pre-wrap font-mono text-11 text-fg-subtle">
               {mutation.verify_hint}
             </pre>
           )}
@@ -779,7 +1177,7 @@ export function TableBrowser({
               {t("发生冲突：放弃暂存并刷新")}
             </Button>
           )}
-          {mutationError?.includes("事务") && (
+          {mutationError?.includes("不支持事务") && (
             <Button
               variant="ghost"
               size="xs"
@@ -817,7 +1215,7 @@ export function TableBrowser({
         width={620}
         onClose={() => setShowPending(false)}
         footer={
-          <Button variant="secondary" size="sm" onClick={() => setShowPending(false)}>
+          <Button variant="secondary" size="xs" onClick={() => setShowPending(false)}>
             {t("关闭")}
           </Button>
         }
@@ -830,7 +1228,7 @@ export function TableBrowser({
             >
               <span
                 className={cn(
-                  "rounded px-1 text-[9px]",
+                  "rounded px-1 text-10",
                   entry.kind === "insert"
                     ? "bg-success/15 text-success"
                     : entry.kind === "delete"
@@ -841,10 +1239,10 @@ export function TableBrowser({
                 {entry.kind === "insert" ? "INSERT" : entry.kind === "delete" ? "DELETE" : "UPDATE"}
               </span>
               <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-[10px] text-fg-muted">
+                <div className="truncate font-mono text-11 text-fg-muted">
                   {entry.kind === "insert" ? t("新增行") : entry.label}
                 </div>
-                <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-fg-subtle">
+                <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-11 text-fg-subtle">
                   {(entry.kind === "delete" ? [] : entry.values).map((assignment) => (
                     <span key={assignment.column} className="font-mono">
                       {assignment.column} ={" "}
@@ -881,7 +1279,7 @@ export function TableBrowser({
         {cellDetail && (
           <div className="flex flex-col gap-2">
             {cellDetail.value.kind === "text" && cellDetail.value.truncated && (
-              <p className="rounded border border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
+              <p className="rounded border border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
                 {t("原始 {{bytes}} 字节，这里只显示前 512 KiB 的完整读取结果。", {
                   bytes: cellDetail.value.bytes,
                 })}
@@ -903,21 +1301,14 @@ export function TableBrowser({
         title={t("导出表数据")}
       />
 
-      {!canEdit && (
-        <div className="pointer-events-none absolute bottom-1 left-2 z-10 rounded bg-surface-2/90 px-1.5 py-0.5 text-[9px] text-fg-subtle">
-          {profile.read_only
-            ? t("连接为只读")
-            : detail?.kind === "view"
-              ? t("视图默认只读")
-              : t("缺少可靠唯一键：只读")}
-        </div>
-      )}
       {result?.truncated && (
-        <span className="pointer-events-none absolute bottom-1 right-2 z-10 flex items-center gap-1 rounded bg-warning/20 px-1.5 py-0.5 text-[9px] text-warning">
+        <span className="pointer-events-none absolute bottom-1 right-2 z-10 flex items-center gap-1 rounded bg-warning/20 px-1.5 py-0.5 text-10 text-warning">
           <AlertTriangle size={9} />
           {t("大字段预览已截断")}
         </span>
       )}
+
+      <ContextMenu {...cellMenu.props} />
     </div>
   );
 }

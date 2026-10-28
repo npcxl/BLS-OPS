@@ -94,13 +94,29 @@ export function Select({
   useLayoutEffect(() => {
     if (!open) return;
     setPosition(computePosition());
-    const onViewportChange = () => setOpen(false);
-    window.addEventListener("resize", onViewportChange);
-    // capture：Modal/表格内部的滚动也会让 fixed 面板跟不动，直接关闭。
-    window.addEventListener("scroll", onViewportChange, true);
+
+    let frame = 0;
+    /**
+     * 外部滚动 → 重新定位（fixed 面板不跟随滚动会"飘走"）。
+     * **必须忽略面板自身的滚动**：scroll 不冒泡，但 capture 阶段会经过
+     * window。之前无条件关闭，选项一滚下拉就消失 —— 表现就是"滚动不了"。
+     */
+    const onScroll = (event: Event) => {
+      if (listRef.current?.contains(event.target as Node)) return;
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const next = computePosition();
+        if (next) setPosition(next);
+      });
+    };
+    const onResize = () => setOpen(false);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
-      window.removeEventListener("resize", onViewportChange);
-      window.removeEventListener("scroll", onViewportChange, true);
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -160,7 +176,7 @@ export function Select({
       role="listbox"
       tabIndex={-1}
       aria-label={ariaLabel}
-      className="ops-scroll fixed z-[120] min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      className="select-menu fixed z-[120] min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
       style={{
         left: position.left,
         width: position.width,
@@ -186,7 +202,7 @@ export function Select({
         }
       }}
     >
-      {options.length === 0 && <p className="px-2 py-1.5 text-[10px] text-fg-subtle">—</p>}
+      {options.length === 0 && <p className="px-2 py-1.5 text-11 text-fg-subtle">—</p>}
       {options.map((option, index) => {
         const active = option.value === value;
         return (
@@ -198,7 +214,7 @@ export function Select({
             aria-selected={active}
             disabled={option.disabled}
             className={cn(
-              "flex w-full items-center gap-2 rounded-[5px] px-2 py-[5px] text-left text-11 transition-colors",
+              "flex w-full items-center gap-2 rounded-[5px] px-2 py-[6px] text-left text-12 transition-colors",
               active ? "bg-accent/10 text-accent" : "text-fg",
               !option.disabled && "hover:bg-surface-hover",
               option.disabled && "cursor-not-allowed opacity-40",
@@ -209,7 +225,7 @@ export function Select({
           >
             <span className="min-w-0 flex-1 truncate">{option.label}</span>
             {option.hint && (
-              <span className="max-w-[150px] shrink-0 truncate text-[9px] text-fg-subtle">
+              <span className="max-w-[150px] shrink-0 truncate text-10 text-fg-subtle">
                 {option.hint}
               </span>
             )}
@@ -234,7 +250,7 @@ export function Select({
         title={title ?? selected?.label}
         className={cn(
           "flex w-full items-center justify-between gap-1 rounded-[6px] border bg-surface-1 px-2 text-left outline-none transition-colors",
-          size === "sm" ? "h-[24px] text-11" : "h-[30px] text-12",
+          size === "sm" ? "h-[26px] text-12" : "h-[32px] text-12",
           open
             ? "border-accent/70 ring-1 ring-accent/20"
             : "border-line hover:border-line-strong",

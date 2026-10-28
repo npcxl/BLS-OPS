@@ -226,7 +226,7 @@ export function ConnectionDialog({
               ]}
             />
           </Field>
-          <p className="pb-0.5 text-[10px] leading-relaxed text-fg-subtle">
+          <p className="pb-0.5 text-11 leading-relaxed text-fg-subtle">
             {t(
               "MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。其它引擎只保留适配器边界，当前版本不可选。",
             )}

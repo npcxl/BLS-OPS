@@ -161,7 +161,7 @@ export function EditRowDialog({
                   {column.name}
                 </span>
                 {column.primary_key && (
-                  <span className="rounded bg-accent/15 px-1 text-[9px] text-accent">PK</span>
+                  <span className="rounded bg-accent/15 px-1 text-10 text-accent">PK</span>
                 )}
               </div>
               <Select

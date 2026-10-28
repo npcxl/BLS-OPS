@@ -93,7 +93,7 @@ export function ResultsPanel({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1">
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1">
         {results.map((result) => {
           const isActive = result.key === (active?.key ?? "");
           return (
@@ -106,7 +106,7 @@ export function ResultsPanel({
                 setSelectedCell(null);
               }}
               className={cn(
-                "flex h-[24px] shrink-0 items-center gap-1 rounded-[5px] px-2 text-[10px]",
+                "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
                 isActive
                   ? "bg-surface-3 text-fg"
                   : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
@@ -135,7 +135,7 @@ export function ResultsPanel({
           );
         })}
 
-        <span className="ml-auto flex shrink-0 items-center gap-2 pr-1 text-[10px] text-fg-subtle">
+        <span className="ml-auto flex shrink-0 items-center gap-2 pr-1 text-11 text-fg-subtle">
           {tab.runState === "running" && (
             <span className="flex items-center gap-1 text-accent">
               <Loader2 size={9} className="animate-spin" />
@@ -168,13 +168,13 @@ export function ResultsPanel({
       </div>
 
       {tab.cacheWarning && (
-        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
+        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
           {tab.cacheWarning}
         </div>
       )}
 
       {tab.truncated && tab.truncationReason && (
-        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
+        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
           {t("结果不完整：{{reason}}。请增加过滤条件或分页，不要把它当作完整结果。", {
             reason: tab.truncationReason,
           })}
@@ -194,7 +194,7 @@ export function ResultsPanel({
           </div>
           <div className="mt-0.5 break-words">{active.error.message}</div>
           {active.error.detail && (
-            <div className="mt-0.5 break-words text-[10px] opacity-80">
+            <div className="mt-0.5 break-words text-11 opacity-80">
               {active.error.detail}
             </div>
           )}

@@ -235,7 +235,7 @@ export function ExportDialog({
           </label>
         </div>
 
-        <div className="rounded-[8px] border border-line bg-surface-2/50 px-2 py-1.5 text-[10px] leading-relaxed text-fg-subtle">
+        <div className="rounded-[8px] border border-line bg-surface-2/50 px-2 py-1.5 text-11 leading-relaxed text-fg-subtle">
           {t(
             "NULL 导出为空字段，空字符串导出为 \"\"；含逗号/引号/换行的值会被引号包裹。写入临时文件成功后才改名为目标文件。",
           )}
@@ -258,21 +258,21 @@ export function ExportDialog({
                         ? t("已取消")
                         : t("导出失败")}
               </span>
-              <span className="ml-auto text-[10px] text-fg-subtle">
+              <span className="ml-auto text-11 text-fg-subtle">
                 {progress.rows.toLocaleString()} {t("行")} ·{" "}
                 {(progress.bytes / 1024 / 1024).toFixed(2)} MiB
               </span>
             </div>
             {progress.message && (
-              <p className="mt-1 break-words text-[10px] text-fg-subtle">
+              <p className="mt-1 break-words text-11 text-fg-subtle">
                 {progress.message}
               </p>
             )}
             {outcome?.state === "completed" && outcome.path && (
-              <p className="mt-1 break-all text-[10px] text-success">{outcome.path}</p>
+              <p className="mt-1 break-all text-11 text-success">{outcome.path}</p>
             )}
             {outcome?.error && (
-              <p className="mt-1 flex items-start gap-1 text-[10px] text-danger">
+              <p className="mt-1 flex items-start gap-1 text-11 text-danger">
                 <TriangleAlert size={10} className="mt-0.5 shrink-0" />
                 {outcome.error.message}
               </p>

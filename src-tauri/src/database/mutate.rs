@@ -141,6 +141,21 @@ pub async fn apply(
         }
     }
 
+    // **绝不隐式提交 SQL 编辑器的事务**：
+    // `START TRANSACTION` 会隐式提交同一连接上已打开的事务，用户会以为
+    // SQL 里的改动还在，实际已经落库。这里直接拒绝，让用户先显式
+    // COMMIT/ROLLBACK，或继续在 SQL 编辑器里操作。
+    let session_transaction = session.transaction().await;
+    if matches!(
+        session_transaction.as_str(),
+        "in_transaction" | "in_transaction_read_only"
+    ) {
+        return Err(DbErrorInfo::new(
+            "query",
+            "当前会话有未提交事务：请先 COMMIT 或 ROLLBACK，再应用表格修改；本工具不会替你隐式提交",
+        ));
+    }
+
     let conn = session.acquire_conn().await?;
     let mut conn = conn;
 

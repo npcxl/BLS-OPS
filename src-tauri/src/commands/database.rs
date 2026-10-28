@@ -454,6 +454,48 @@ pub fn db_history_clear(
     profiles::clear_history(&conn, profile_id.as_deref()).map_err(db_error)
 }
 
+// ---------------------------------------------------------------------------
+// SQL 文件（路径必须来自用户通过系统文件对话框选择的路径）
+// ---------------------------------------------------------------------------
+
+/// 单个 SQL 文件的上限：防止误选一个巨大文件把编辑器卡死。
+const MAX_SQL_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+#[tauri::command]
+pub async fn db_read_sql_file(path: String) -> Result<String, DbErrorInfo> {
+    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        DbErrorInfo::new("config", format!("无法读取 SQL 文件：{error}"))
+    })?;
+    if metadata.len() > MAX_SQL_FILE_BYTES {
+        return Err(DbErrorInfo::new(
+            "config",
+            format!(
+                "SQL 文件超过 {} MiB，拒绝打开",
+                MAX_SQL_FILE_BYTES / 1024 / 1024
+            ),
+        ));
+    }
+    tokio::fs::read_to_string(&path).await.map_err(|error| {
+        DbErrorInfo::new(
+            "config",
+            format!("SQL 文件不是 UTF-8 文本或无法读取：{error}"),
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn db_write_sql_file(path: String, sql: String) -> Result<(), DbErrorInfo> {
+    if sql.len() as u64 > MAX_SQL_FILE_BYTES {
+        return Err(DbErrorInfo::new(
+            "config",
+            format!("SQL 内容超过 {} MiB，拒绝写入", MAX_SQL_FILE_BYTES / 1024 / 1024),
+        ));
+    }
+    tokio::fs::write(&path, sql).await.map_err(|error| {
+        DbErrorInfo::new("config", format!("写入 SQL 文件失败：{error}"))
+    })
+}
+
 /// 供前端检查同名命令是否注册（调试用；不参与业务）。
 #[tauri::command]
 pub fn db_module_info() -> serde_json::Value {

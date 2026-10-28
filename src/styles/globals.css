@@ -120,6 +120,37 @@
     background-color: rgb(var(--fg-subtle));
   }
 
+  /*
+   * 下拉面板专用的滚动条：`ops-scroll` 为了不让滚动时内容左右跳动，用了
+   * `scrollbar-gutter: stable`，即使不滚动也预留 12px —— 放在下拉里就是
+   * 右侧一条莫名的空隙。这里改回按需出现的 8px 细条。
+   */
+  .select-menu {
+    scrollbar-gutter: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--line-strong)) transparent;
+  }
+
+  .select-menu::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .select-menu::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .select-menu::-webkit-scrollbar-thumb {
+    border: 0;
+    border-radius: 999px;
+    background-color: rgb(var(--line-strong));
+    background-clip: padding-box;
+  }
+
+  .select-menu::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--fg-subtle));
+  }
+
   /* xterm owns its scroll container, so the global scrollbar rules do not
      reach the terminal viewport. Keep the rail visible when scrollback exists. */
   .xterm .xterm-viewport {

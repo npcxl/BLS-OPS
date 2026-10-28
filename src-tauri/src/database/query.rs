@@ -345,9 +345,12 @@ async fn run_script(
     let mut error_seen = false;
 
     // `query_iter` 走文本协议：不依赖编译期元数据，也不改写用户 SQL。
-    let mut result = match conn.query_iter(&sql).await {
-        Ok(result) => result,
-        Err(error) => {
+    //
+    // **总超时必须包住"首个响应"**：服务器执行慢时 `query_iter` 自己会一直
+    // 等着，之前只在后面的流循环里检查 deadline，用户会看到"查询永不超时"。
+    let mut result = match tokio::time::timeout(timeout, conn.query_iter(&sql)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
             *state.write().await = STATE_FAILED.to_string();
             send_batch(
                 &tx,
@@ -367,6 +370,44 @@ async fn run_script(
             )
             .await;
             session.release_conn(conn, !error.is_fatal()).await;
+            return;
+        }
+        Err(_) => {
+            // 首个响应前超时：连接上的协议状态不可信 → 丢弃，绝不归还池。
+            *state.write().await = STATE_CANCELLING.to_string();
+            let killed = runtime.kill_query(thread_id).await.is_ok();
+            *state.write().await = STATE_OUTCOME_UNKNOWN.to_string();
+            let reason = if killed {
+                "首个响应超时：已发送 KILL QUERY，连接已丢弃（事务/临时表状态未知）".to_string()
+            } else {
+                "首个响应超时：取消请求失败，服务器可能仍在执行".to_string()
+            };
+            send_batch(
+                &tx,
+                DbBatch::Error {
+                    error: DbErrorInfo::new(
+                        "timeout",
+                        format!(
+                            "查询在 {} ms 内没有收到首个响应；{}",
+                            timeout.as_millis(),
+                            reason
+                        ),
+                    )
+                    .retryable(true),
+                },
+            )
+            .await;
+            finalize(
+                &tx,
+                STATE_OUTCOME_UNKNOWN,
+                started,
+                0,
+                0,
+                false,
+                Some(reason),
+            )
+            .await;
+            session.release_conn(conn, false).await;
             return;
         }
     };

@@ -83,9 +83,20 @@ export interface DatabaseTabState {
 const draftKey = (profileId: string) => `ops.db.sql.${profileId}`;
 const historyFlagKey = "ops.db.history.enabled";
 
-function loadDraft(profileId: string): string {
+function loadDraft(tabId: string, profileId: string): string {
   try {
-    return localStorage.getItem(draftKey(profileId)) ?? "";
+    const own = localStorage.getItem(draftKey(tabId));
+    if (own !== null) return own;
+    // 兼容旧版本：草稿曾经按连接存。第一次打开新工作项时迁移一次，
+    // 避免升级后用户发现草稿"消失"。
+    const legacyKey = draftKey(profileId);
+    const legacy = localStorage.getItem(legacyKey);
+    if (legacy) {
+      localStorage.removeItem(legacyKey);
+      localStorage.setItem(draftKey(tabId), legacy);
+      return legacy;
+    }
+    return "";
   } catch {
     return "";
   }
@@ -107,10 +118,11 @@ export function clearDraft(profileId: string): void {
   }
 }
 
-function emptyTab(profileId: string): DatabaseTabState {
+function emptyTab(tabId: string, profileId: string): DatabaseTabState {
   return {
     profileId,
-    sql: loadDraft(profileId),
+    // 草稿按**工作项**隔离：一份查询一个草稿，不会互相覆盖。
+    sql: loadDraft(tabId, profileId),
     results: [],
     activeResultKey: null,
     runState: "idle",
@@ -160,7 +172,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     set((state) => {
       const existing = state.tabs[tabId];
       if (existing && existing.profileId === profileId) return state;
-      return { tabs: { ...state.tabs, [tabId]: emptyTab(profileId) } };
+      return { tabs: { ...state.tabs, [tabId]: emptyTab(tabId, profileId) } };
     }),
 
   setSql: (tabId, sql) =>
@@ -215,7 +227,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     if (filtered.length === 0) return;
 
     const reset: DatabaseTabState = {
-      ...emptyTab(profileId),
+      ...emptyTab(tabId, profileId),
       sql: get().tabs[tabId]?.sql ?? "",
       runState: "running",
       totalStatements: filtered.length,
@@ -261,9 +273,9 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
                 error: info,
                 results: [
                   ...tab.results,
-                  statementErrorResult(tabId, index, 0, statement, info),
+                  statementErrorResult(`error:${index}`, index, 0, statement, info),
                 ],
-                activeResultKey: `${index}:0`,
+                activeResultKey: `error:${index}`,
               },
             },
           };
@@ -375,6 +387,8 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     if (tab?.queryId) {
       void databaseApi.queryRelease(tab.queryId).catch(() => undefined);
     }
+    // 工作项关闭 → 丢弃它的临时草稿；长期保存走“保存查询”。
+    clearDraft(tabId);
     set((state) => {
       const tabs = { ...state.tabs };
       delete tabs[tabId];
@@ -403,14 +417,14 @@ function toTabRunState(state: DbQueryState): TabRunState {
 }
 
 function statementErrorResult(
-  _tabId: string,
+  key: string,
   statementIndex: number,
   resultSetIndex: number,
   statement: string,
   error: DbErrorInfo,
 ): StatementResult {
   return {
-    key: `${statementIndex}:${resultSetIndex}`,
+    key,
     statementIndex,
     resultSetIndex,
     statement,
@@ -481,7 +495,10 @@ async function drainQuery(args: DrainArgs): Promise<{
       if (payload.kind === "result_set") {
         args.onUpdate((tab) => {
           const merged = upsertResultSet(tab.results, {
-            key: `${args.statementIndex}:${payload.index}`,
+            // **必须**用后端 ID：rows / result_set_end 都按它匹配。
+            // 以前这里用 `${statementIndex}:${index}`，和后端
+            // `${queryId}:${index}` 不一致，行数据全部被丢掉 —— 显示 0 行。
+            key: payload.result_set_id,
             statementIndex: args.statementIndex,
             resultSetIndex: payload.index,
             statement: payload.statement || args.statement,
@@ -501,7 +518,7 @@ async function drainQuery(args: DrainArgs): Promise<{
           return {
             ...tab,
             results: merged.results,
-            activeResultKey: tab.activeResultKey ?? `${args.statementIndex}:${payload.index}`,
+            activeResultKey: tab.activeResultKey ?? payload.result_set_id,
             cacheWarning: merged.warning ?? tab.cacheWarning,
           };
         });
@@ -535,7 +552,8 @@ async function drainQuery(args: DrainArgs): Promise<{
       } else if (payload.kind === "error") {
         error = payload.error;
         args.onUpdate((tab) => {
-          const key = `${args.statementIndex}:0`;
+          // 错误不是结果集：用独立前缀，避免和后端 result_set_id 撞车。
+          const key = `error:${args.statementIndex}`;
           const existing = tab.results.find((result) => result.key === key);
           if (existing) {
             return {
@@ -549,7 +567,7 @@ async function drainQuery(args: DrainArgs): Promise<{
             ...tab,
             results: [
               ...tab.results,
-              statementErrorResult(args.tabId, args.statementIndex, 0, args.statement, payload.error),
+              statementErrorResult(key, args.statementIndex, 0, args.statement, payload.error),
             ],
             activeResultKey: tab.activeResultKey ?? key,
           };

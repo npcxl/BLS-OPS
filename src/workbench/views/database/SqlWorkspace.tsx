@@ -16,41 +16,51 @@ import { MySQL, sql as sqlLanguage } from "@codemirror/lang-sql";
 import {
   Eraser,
   FileDown,
+  FolderOpen,
   History,
   Loader2,
   Play,
+  Save,
   ScrollText,
   Square,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useEditorTheme } from "@/lib/cm-theme";
-import type { DatabaseProfile, DbSessionInfo } from "@/api/types/database";
-import { useDatabaseStore } from "@/stores/database-store";
-import {
-  clearDraft,
-  saveDraft,
-  useDatabaseWorkbenchStore,
-} from "@/stores/database-workbench-store";
+import { databaseApi } from "@/api/ops-api";
+import type { DatabaseProfile, DbDatabase, DbSessionInfo } from "@/api/types/database";
+import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import { saveDraft, useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
+import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
 import { splitSqlStatements, statementAtCursor } from "./sql-split";
 
+const EMPTY_DATABASES: DbDatabase[] = [];
+
 export function SqlWorkspace({
   tabId,
   profile,
   session,
+  connectionName,
+  database,
+  onNewQuery,
   onOpenTable: _onOpenTable,
 }: {
   tabId: string;
   profile: DatabaseProfile;
   session: DbSessionInfo | null;
+  connectionName?: string;
+  database?: string | null;
+  onNewQuery?: () => void;
   onOpenTable: (database: string, table: string) => void;
 }) {
   const { t } = useTranslation();
   const theme = useEditorTheme();
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [editorHeight, setEditorHeight] = useState(236);
   const [dragging, setDragging] = useState(false);
@@ -63,8 +73,17 @@ export function SqlWorkspace({
   const runStatements = useDatabaseWorkbenchStore((state) => state.runStatements);
   const cancel = useDatabaseWorkbenchStore((state) => state.cancel);
   const clearResults = useDatabaseWorkbenchStore((state) => state.clearResults);
+  const item = useDatabaseWorkspaceStore(
+    (state) => state.items.find((entry) => entry.id === tabId) ?? null,
+  );
+  const saveQuery = useDatabaseWorkspaceStore((state) => state.saveQuery);
+  const setItemStatus = useDatabaseWorkspaceStore((state) => state.setStatus);
 
-  const databases = useDatabaseStore((state) => state.databases[profile.id] ?? []);
+  // **必须是稳定引用**：`?? []` 每次 selector 返回新数组，会让
+  // useSyncExternalStore 认为快照一直在变，触发无限重渲染。
+  const databases = useDatabaseStore(
+    (state) => state.databases[profile.id] ?? EMPTY_DATABASES,
+  );
   const tables = useDatabaseStore((state) => state.tables);
   const details = useDatabaseStore((state) => state.details);
 
@@ -73,9 +92,10 @@ export function SqlWorkspace({
   const cancelling = tab?.runState === "cancelling";
 
   useEffect(() => {
-    const timer = window.setTimeout(() => saveDraft(profile.id, sqlText), 500);
+    // 草稿按工作项隔离，多个查询互不覆盖。
+    const timer = window.setTimeout(() => saveDraft(tabId, sqlText), 500);
     return () => window.clearTimeout(timer);
-  }, [profile.id, sqlText]);
+  }, [sqlText, tabId]);
 
   // 编辑器补全：已加载的库/表/字段。没展开的对象不会出现在补全里，
   // 这比"猜一份元数据"诚实。
@@ -98,8 +118,12 @@ export function SqlWorkspace({
   useEffect(() => {
     if (!dragging) return;
     const onMove = (event: MouseEvent) => {
-      const next = window.innerHeight - event.clientY - 60;
-      setEditorHeight(Math.max(120, Math.min(window.innerHeight * 0.6, next)));
+      // 按**容器**坐标算，不用 window 底部：SQL 页只占中央区域，
+      // 按窗口算会让分隔条和鼠标位置对不上。
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const next = event.clientY - rect.top;
+      setEditorHeight(Math.max(120, Math.min(rect.height * 0.72, next)));
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -159,9 +183,104 @@ export function SqlWorkspace({
     [schema],
   );
 
+  const handleSqlChange = (value: string) => {
+    setSql(tabId, value);
+    const current = useDatabaseWorkspaceStore
+      .getState()
+      .items.find((entry) => entry.id === tabId);
+    if (current && !current.dirty) setItemStatus(tabId, { dirty: true });
+  };
+
+  const handleSaveQuery = () => {
+    if (!item) return;
+    saveQuery({
+      itemId: tabId,
+      profileId: profile.id,
+      connectionName: item.connectionName || connectionName || profile.name,
+      database: item.database ?? database ?? null,
+      name: item.title,
+      sql: sqlText,
+    });
+    setNotice(t("查询已保存，可在左侧「保存的查询」中找到"));
+  };
+
+  const handleOpenSqlFile = async () => {
+    try {
+      const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
+      const path = await openFileDialog({
+        multiple: false,
+        filters: [{ name: "SQL", extensions: ["sql"] }],
+      });
+      if (typeof path !== "string") return;
+      const content = await databaseApi.readSqlFile(path);
+      setSql(tabId, content);
+      setItemStatus(tabId, { dirty: true });
+      setNotice(t("已打开 {{path}}", { path }));
+    } catch (failure) {
+      setNotice(toDbError(failure).message);
+    }
+  };
+
+  const handleSaveSqlFile = async () => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({
+        title: t("保存 SQL 文件"),
+        defaultPath: `${item?.title || "query"}.sql`,
+        filters: [{ name: "SQL", extensions: ["sql"] }],
+      });
+      if (!path) return;
+      await databaseApi.writeSqlFile(path, sqlText);
+      setNotice(t("已保存到 {{path}}", { path }));
+    } catch (failure) {
+      setNotice(toDbError(failure).message);
+    }
+  };
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+    <div ref={containerRef} className="flex h-full min-h-0 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+        <Button
+          variant="primary"
+          size="xs"
+          onClick={onNewQuery}
+          disabled={!onNewQuery}
+          title={t("新建一份独立的 SQL 查询")}
+        >
+          <SquareTerminal size={12} />
+          {t("新建查询")}
+        </Button>
+        <span className="mx-1 h-5 w-px bg-line" />
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!sqlText.trim()}
+          onClick={handleSaveQuery}
+          title={t("保存查询（不执行 SQL）")}
+        >
+          <Save size={12} />
+          {t("保存查询")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() => void handleOpenSqlFile()}
+          title={t("打开本地 .sql 文件")}
+        >
+          <FolderOpen size={12} />
+          {t("打开")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!sqlText.trim()}
+          onClick={() => void handleSaveSqlFile()}
+          title={t("另存为 .sql 文件")}
+        >
+          <FileDown size={12} />
+          {t("保存 .sql")}
+        </Button>
+        <span className="mx-1 h-5 w-px bg-line" />
         <Button
           variant="primary"
           size="xs"
@@ -169,7 +288,7 @@ export function SqlWorkspace({
           onClick={() => execute("current")}
           title={t("执行选中 SQL 或光标所在语句（Ctrl+Enter）")}
         >
-          <Play size={11} />
+          <Play size={12} />
           {t("执行")}
         </Button>
         <Button
@@ -179,7 +298,7 @@ export function SqlWorkspace({
           onClick={() => execute("script")}
           title={t("按顺序执行整段脚本（Ctrl+Shift+Enter）")}
         >
-          <ScrollText size={11} />
+          <ScrollText size={12} />
           {t("执行脚本")}
         </Button>
         {(running || cancelling) && (
@@ -191,15 +310,15 @@ export function SqlWorkspace({
             title={t("发送 KILL QUERY 并在服务器确认前不复用连接")}
           >
             {cancelling ? (
-              <Loader2 size={11} className="animate-spin" />
+              <Loader2 size={12} className="animate-spin" />
             ) : (
-              <Square size={11} />
+              <Square size={12} />
             )}
             {cancelling ? t("取消中…") : t("停止")}
           </Button>
         )}
 
-        <span className="mx-1 h-4 w-px bg-line" />
+        <span className="mx-1 h-5 w-px bg-line" />
 
         <Button
           variant="ghost"
@@ -207,11 +326,11 @@ export function SqlWorkspace({
           onClick={() => clearResults(tabId)}
           title={t("清空当前结果（不会重新执行）")}
         >
-          <Eraser size={11} />
+          <Eraser size={12} />
           {t("清空结果")}
         </Button>
         <Button variant="ghost" size="xs" onClick={() => setHistoryOpen(true)}>
-          <History size={11} />
+          <History size={12} />
           {t("历史")}
         </Button>
         <Button
@@ -221,27 +340,9 @@ export function SqlWorkspace({
           onClick={() => setExportOpen(true)}
           title={t("导出会重新执行这条只读 SQL")}
         >
-          <FileDown size={11} />
+          <FileDown size={12} />
           {t("导出 CSV")}
         </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={() => {
-            clearDraft(profile.id);
-            setSql(tabId, "");
-          }}
-          title={t("清除本连接保存的 SQL 草稿")}
-        >
-          <X size={11} />
-          {t("清除草稿")}
-        </Button>
-
-        <span className="ml-auto text-[10px] text-fg-subtle">
-          {session
-            ? `${t("会话")} #${session.connection_id} · ${session.current_database ?? t("未选择库")}`
-            : t("未连接")}
-        </span>
       </div>
 
       <div
@@ -268,7 +369,7 @@ export function SqlWorkspace({
             closeBrackets: true,
             lineNumbers: true,
           }}
-          onChange={(value) => setSql(tabId, value)}
+          onChange={handleSqlChange}
           onCreateEditor={(view) => {
             viewRef.current = view;
           }}

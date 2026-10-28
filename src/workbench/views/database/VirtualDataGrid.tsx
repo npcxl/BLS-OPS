@@ -13,9 +13,8 @@ import { useTranslation } from "react-i18next";
 import type { DbColumn, DbValue } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 
-const ROW_HEIGHT = 26;
-const HEADER_HEIGHT = 36;
-const GUTTER_WIDTH = 56;
+const ROW_HEIGHT = 28;
+const HEADER_HEIGHT = 42;
 const OVERSCAN_ROWS = 8;
 const MIN_COL_WIDTH = 72;
 const MAX_COL_WIDTH = 420;
@@ -56,6 +55,17 @@ interface VirtualDataGridProps {
   /** 有可靠键时才允许双击详情/修改。 */
   canResolveRows?: boolean;
   className?: string;
+  /** 单元格是否已有待提交修改（`row:col`）。 */
+  modifiedCells?: Set<string>;
+  /** 已标记删除的行（当前页索引）。 */
+  deletedRows?: Set<number>;
+  editingCell?: CellAddress | null;
+  editingValue?: string;
+  onEditingValueChange?: (value: string) => void;
+  onStartEdit?: (cell: CellAddress) => void;
+  onCommitEdit?: (cell: CellAddress) => void;
+  onCancelEdit?: () => void;
+  onCellContextMenu?: (cell: CellAddress, event: React.MouseEvent) => void;
 }
 
 export function cellText(value: DbValue): { text: string; tone: string; truncated: boolean } {
@@ -114,7 +124,6 @@ function initialWidths(columns: DbColumn[]): number[] {
 export const VirtualDataGrid = memo(function VirtualDataGrid({
   columns,
   rows,
-  rowOffset = 0,
   selectedRow,
   selectedCell,
   onSelectRow,
@@ -123,10 +132,19 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   onSort,
   sortColumn,
   sortDirection,
-  canResolveRows = false,
   className,
+  modifiedCells,
+  deletedRows,
+  editingCell,
+  editingValue = "",
+  onEditingValueChange,
+  onStartEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onCellContextMenu,
 }: VirtualDataGridProps) {
   const { t } = useTranslation();
+  const suppressBlur = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -175,7 +193,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
 
   const starts = useMemo(() => {
     const result: number[] = [];
-    let cursor = GUTTER_WIDTH;
+    let cursor = 0;
     for (const width of widths) {
       result.push(cursor);
       cursor += width;
@@ -184,10 +202,12 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   }, [widths]);
 
   const totalWidth = useMemo(
-    () => GUTTER_WIDTH + widths.reduce((sum, width) => sum + width, 0),
+    () => widths.reduce((sum, width) => sum + width, 0),
     [widths],
   );
   const totalHeight = HEADER_HEIGHT + rows.length * ROW_HEIGHT;
+
+
 
   const visibleRows = useMemo(() => {
     const first = Math.max(
@@ -221,26 +241,18 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   }, []);
 
   return (
-    <div
-      ref={containerRef}
-      onScroll={onScroll}
-      className={cn(
-        "ops-scroll relative h-full min-h-0 overflow-auto bg-surface-1 font-mono text-11",
-        className,
-      )}
-    >
+    <div className={cn("relative h-full min-h-0", className)}>
+      <div
+        ref={containerRef}
+        onScroll={onScroll}
+        className="ops-scroll relative h-full overflow-auto bg-surface-1 font-mono text-12"
+      >
       <div style={{ width: totalWidth, height: totalHeight, position: "relative" }}>
         {/* header */}
         <div
           className="sticky top-0 z-20 bg-surface-2"
           style={{ width: totalWidth, height: HEADER_HEIGHT }}
         >
-          <div
-            className="absolute flex items-center justify-end border-b border-r border-line px-2 text-10 text-fg-subtle"
-            style={{ left: 0, top: 0, width: GUTTER_WIDTH, height: HEADER_HEIGHT }}
-          >
-            #
-          </div>
           {visibleColumns.map((index) => {
             const column = columns[index];
             const active = sortColumn === column.name;
@@ -262,7 +274,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                   onClick={() => onSort?.(column)}
                   title={`${column.name} · ${column.type_name}${column.primary_key ? " · PK" : ""}`}
                 >
-                  <span className="truncate text-11 font-medium text-fg">{column.name}</span>
+                  <span className="truncate text-12 font-medium text-fg">{column.name}</span>
                   {column.primary_key && (
                     <span className="shrink-0 rounded-[3px] bg-accent/15 px-1 text-[9px] text-accent">
                       PK
@@ -274,7 +286,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                     </span>
                   )}
                 </button>
-                <span className="truncate text-[9px] font-normal text-fg-subtle">
+                <span className="truncate text-11 font-normal text-fg-subtle">
                   {column.type_name}
                   {column.unsigned ? " UNSIGNED" : ""}
                   {column.nullable ? "" : " NOT NULL"}
@@ -305,7 +317,13 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
               key={rowIndex}
               className={cn(
                 "absolute w-full",
-                selected ? "bg-accent/10" : rowIndex % 2 === 0 ? "bg-transparent" : "bg-surface-2/40",
+                deletedRows?.has(rowIndex)
+                  ? "bg-danger/10 line-through decoration-danger/40"
+                  : selected
+                    ? "bg-accent/10"
+                    : rowIndex % 2 === 0
+                      ? "bg-transparent"
+                      : "bg-surface-2/40",
               )}
               style={{
                 top: HEADER_HEIGHT + rowIndex * ROW_HEIGHT,
@@ -314,27 +332,24 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
               }}
               onMouseDown={() => onSelectRow(rowIndex)}
             >
-              <div
-                className={cn(
-                  "absolute flex cursor-default items-center justify-end border-b border-r border-line/60 px-2 text-10",
-                  selected ? "text-accent" : "text-fg-subtle",
-                )}
-                style={{ left: 0, top: 0, width: GUTTER_WIDTH, height: ROW_HEIGHT }}
-              >
-                {(rowOffset + rowIndex + 1).toLocaleString()}
-              </div>
               {visibleColumns.map((colIndex) => {
                 const value = row[colIndex] ?? { kind: "null" as const };
                 const display = cellText(value);
+                const cell = { row: rowIndex, col: colIndex };
                 const cellSelected =
                   selectedCell?.row === rowIndex && selectedCell?.col === colIndex;
+                const editing =
+                  editingCell?.row === rowIndex && editingCell?.col === colIndex;
+                const modified = modifiedCells?.has(`${rowIndex}:${colIndex}`);
                 return (
                   <div
                     key={colIndex}
                     role="gridcell"
+                    tabIndex={0}
                     className={cn(
                       "absolute flex items-center overflow-hidden border-b border-r border-line/40 px-2",
                       cellSelected && "ring-1 ring-inset ring-accent/70",
+                      modified && "bg-warning/10",
                       value.kind === "null" && "text-fg-subtle",
                     )}
                     style={{
@@ -346,18 +361,56 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                     onMouseDown={(event) => {
                       event.stopPropagation();
                       onSelectRow(rowIndex);
-                      onSelectCell({ row: rowIndex, col: colIndex });
+                      onSelectCell(cell);
                     }}
-                    onDoubleClick={() => onOpenCell?.({ row: rowIndex, col: colIndex })}
+                    onDoubleClick={() => {
+                      if (onStartEdit) onStartEdit(cell);
+                      else onOpenCell?.(cell);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "F2" && onStartEdit) {
+                        event.preventDefault();
+                        onStartEdit(cell);
+                      }
+                    }}
+                    onContextMenu={(event) => onCellContextMenu?.(cell, event)}
                     title={
                       value.kind === "text" && value.truncated
                         ? t("预览已截断，双击查看完整值")
                         : undefined
                     }
                   >
-                    <span className={cn("truncate", display.tone)}>{display.text}</span>
-                    {display.truncated && (
-                      <span className="ml-1 shrink-0 text-[9px] text-warning">…</span>
+                    {editing ? (
+                      <input
+                        autoFocus
+                        value={editingValue}
+                        onChange={(event) => onEditingValueChange?.(event.target.value)}
+                        className="h-full w-full min-w-0 rounded-[3px] border border-accent bg-surface-1 px-1 font-mono text-12 text-fg outline-none"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            onCommitEdit?.(cell);
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            suppressBlur.current = true;
+                            onCancelEdit?.();
+                          }
+                        }}
+                        onBlur={() => {
+                          if (suppressBlur.current) {
+                            suppressBlur.current = false;
+                            return;
+                          }
+                          onCommitEdit?.(cell);
+                        }}
+                      />
+                    ) : (
+                      <>
+                        <span className={cn("truncate", display.tone)}>{display.text}</span>
+                        {display.truncated && (
+                          <span className="ml-1 shrink-0 text-[9px] text-warning">…</span>
+                        )}
+                      </>
                     )}
                   </div>
                 );
@@ -376,11 +429,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
         )}
       </div>
 
-      {!canResolveRows && rows.length > 0 && (
-        <div className="pointer-events-none sticky bottom-0 left-0 z-10 w-fit bg-surface-2/90 px-2 py-0.5 text-[10px] text-fg-subtle">
-          {t("无可靠唯一键：只能查看，不能重新读取完整字段")}
-        </div>
-      )}
+      </div>
     </div>
   );
 });

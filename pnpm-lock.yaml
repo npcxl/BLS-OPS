@@ -32,6 +32,9 @@ importers:
       '@codemirror/lang-sql':
         specifier: ^6.10.0
         version: 6.10.0
+      '@codemirror/language':
+        specifier: ^6.10.0
+        version: 6.12.4
       '@codemirror/search':
         specifier: ^6.7.2
         version: 6.7.2
@@ -41,6 +44,9 @@ importers:
       '@iconify/react':
         specifier: ^6.0.2
         version: 6.0.2(react@19.2.8)
+      '@lezer/highlight':
+        specifier: ^1.2.0
+        version: 1.2.3
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(lightningcss@1.32.0))

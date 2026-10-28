@@ -1474,6 +1474,11 @@ export const databaseApi = {
   historyClear: (profileId: string | null) =>
     invoke<void>("db_history_clear", { profileId }),
 
+  // -- SQL 文件（路径来自系统文件对话框） ---------------------------------
+  readSqlFile: (path: string) => invoke<string>("db_read_sql_file", { path }),
+  writeSqlFile: (path: string, sql: string) =>
+    invoke<void>("db_write_sql_file", { path, sql }),
+
   moduleInfo: () =>
     invoke<{ engine: string; driver: string; supports: string[]; postgres: string }>(
       "db_module_info",

@@ -201,7 +201,7 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 - 非事务表覆盖按钮不可达（`TableBrowser.tsx:1529/1563` vs `mutate.rs:112-121`）。
 - 独立窗口文案“共享会话”错误（实际独立会话）。
 - 导出使用当前全文 SQL 重查，不导出屏幕结果。
-- `mutate` 所有值按字符串绑定，BIT/BINARY 类型不安全。
+- `mutate` 仍按字符串绑定普通类型；BIT/BINARY/GEOMETRY 已在前后端阻止文本写入，完整二进制编辑器仍缺。
 - 池连接未继承只读设置。
 - 长 CJK 标识符按字节数判断 64 上限。
 - 保存的查询不可删除/重命名。
@@ -228,6 +228,7 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 | CSV 导出流无超时/不可取消 | 查询启动和逐行读取增加超时，`select!` 观察取消；取消/超时断开连接 | `cargo test --test database_mysql`（无 DB 时明确 skip） |
 | 查询阻塞 send 时取消无效 | `flush_batch`/ResultSetEnd 的 send 增加取消 `select!`，取消时回退 in-flight 计数 | `cargo test --lib` |
 | 查询任务 panic 会让会话永久 busy | `catch_unwind` + `SessionEntry::mark_lost`，panic 后标记失败并释放查询计数 | `cargo test --lib` |
+| BIT/BINARY 文本写入可损坏数据 | 前端禁止编辑 BIT/BLOB/BINARY/GEOMETRY；后端 `validate_assignment` 二次拒绝 | 待补真实 MySQL BIT/BINARY 写入测试 |
 | CI 真实 MySQL 未执行 | GitHub Actions 启动 MySQL 8.0；`BLS_TEST_MYSQL_REQUIRED=1` 禁止 skip | `.github/workflows/ci.yml`（待 PR 实跑确认） |
 | SQL 文件任意路径读写 | Rust 侧系统对话框 + 读写一体化命令，移除前端传路径；文件名净化 | `commands::database::tests` 2 项通过 |
 | 导出任意路径写入 | `db_pick_export_path` 授权 + `db_export_start` 校验授权集合；前端路径只读 | `commands::database::tests` |

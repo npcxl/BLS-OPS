@@ -34,6 +34,55 @@ fn is_transactional(engine: &Option<String>) -> bool {
         .unwrap_or(false)
 }
 
+/// 这些类型不能用普通文本编辑器的字符串直接绑定；否则 BIT/BINARY 会被写成
+/// 原始字节串，看起来成功、实际值已经损坏。
+fn is_binary_type(data_type: &str) -> bool {
+    matches!(
+        data_type.to_ascii_lowercase().as_str(),
+        "bit"
+            | "binary"
+            | "varbinary"
+            | "tinyblob"
+            | "blob"
+            | "mediumblob"
+            | "longblob"
+            | "geometry"
+            | "point"
+            | "linestring"
+            | "polygon"
+            | "multipoint"
+            | "multilinestring"
+            | "multipolygon"
+            | "geometrycollection"
+    )
+}
+
+fn validate_assignment(
+    detail: &DbTableDetail,
+    assignment: &ColumnAssignment,
+) -> Result<(), DbErrorInfo> {
+    if !matches!(assignment.value, AssignValue::Value { .. }) {
+        return Ok(());
+    }
+    let Some(column) = detail
+        .columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(&assignment.column))
+    else {
+        return Ok(());
+    };
+    if is_binary_type(&column.data_type) {
+        return Err(DbErrorInfo::new(
+            "unsupported",
+            format!(
+                "字段 {} 是 {} 类型，不能用文本直接写入；请使用只读查看，后续会提供二进制编辑器",
+                column.name, column.data_type
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn assignment_sql(assignment: &ColumnAssignment) -> Result<(String, Option<Value>), DbErrorInfo> {
     let quoted = quote_identifier(&assignment.column)?;
     match &assignment.value {
@@ -138,6 +187,7 @@ pub async fn apply(
                     format!("列不存在或已被修改：{}", assignment.column),
                 ));
             }
+            validate_assignment(detail, assignment)?;
         }
     }
 

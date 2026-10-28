@@ -306,7 +306,7 @@ export function TableBrowser({
       const assignments: ColumnAssignment[] = [];
       detail.columns.forEach((column, index) => {
         // 二进制列不能安全地作为比较参数（base64 与列值不是同一表示），跳过。
-        if (/blob|binary/i.test(column.data_type)) return;
+        if (/bit|blob|binary|geometry/i.test(column.data_type)) return;
         const value = row[index] ?? { kind: "null" as const };
         // **绝不拿截断预览做并发比较**：预览 64 KiB 和完整值永远不相等，
         // 会导致每次保存都"冲突"，或者把截断值写回。跳过这些列。
@@ -419,7 +419,7 @@ export function TableBrowser({
     const source = pageRows[cell.row];
     const column = detail.columns[cell.col];
     if (!source || !column || column.primary_key) return;
-    if (/blob|binary/i.test(column.data_type)) return;
+    if (/bit|blob|binary|geometry/i.test(column.data_type)) return;
     const rowValues = fullValue
       ? source.map((item, index) => (index === cell.col ? fullValue : item))
       : source;
@@ -504,7 +504,7 @@ export function TableBrowser({
       !value ||
       !column ||
       column.primary_key ||
-      /blob|binary/i.test(column.data_type) ||
+      /bit|blob|binary|geometry/i.test(column.data_type) ||
       value.kind === "unsupported"
     ) {
       openCellDetail(cell);

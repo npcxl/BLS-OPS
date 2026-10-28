@@ -327,7 +327,6 @@ export function DatabaseAssetSidebar() {
   );
 
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
-  const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
   const openDatabaseObjects = useDatabaseWorkspaceStore(
     (state) => state.openDatabaseObjects,
   );
@@ -469,6 +468,20 @@ export function DatabaseAssetSidebar() {
     const profile = profiles.find((entry) => entry.id === query.profileId);
     if (!profile) return;
     open(profile);
+
+    const existing = useDatabaseWorkspaceStore
+      .getState()
+      .items.find((item) => item.savedQueryId === query.id);
+    if (existing) {
+      useDatabaseWorkspaceStore.getState().setActive(existing.id);
+      // 已有工作项可能还没挂载过，确保它的编辑器 tab 存在；
+      // 但绝不把 SQL 重置为保存版本，避免覆盖未保存修改。
+      useDatabaseWorkbenchStore
+        .getState()
+        .ensureTab(existing.id, query.profileId);
+      return;
+    }
+
     const id = newQuery({
       profileId: query.profileId,
       connectionName: query.connectionName,
@@ -1035,23 +1048,6 @@ export function DatabaseAssetSidebar() {
                                           })}
                                         </div>
                                       )}
-                                      <Button
-                                        variant="ghost"
-                                        size="xs"
-                                        className="mt-1 h-auto px-1 text-12 text-accent"
-                                        style={indent(4)}
-                                        onClick={() => {
-                                          open(profile);
-                                          openStructure({
-                                            profileId: profile.id,
-                                            connectionName: profile.name,
-                                            database: database.name,
-                                            table: table.name,
-                                          });
-                                        }}
-                                      >
-                                        {t("查看表结构 / 索引")}
-                                      </Button>
                                     </div>
                                   )}
                                 </div>
@@ -1079,7 +1075,7 @@ export function DatabaseAssetSidebar() {
                                 <div
                                   key={query.id}
                                   className="flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-13 text-fg hover:bg-surface-hover"
-                                  style={indent(3)}
+                                  style={indent(4)}
                                   onDoubleClick={() => openSavedQuery(query)}
                                   onContextMenu={(event) => {
                                     event.stopPropagation();

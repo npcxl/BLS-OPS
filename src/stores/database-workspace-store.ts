@@ -278,6 +278,17 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
   },
 
   newQuery: ({ profileId, connectionName, database, sql, savedQueryId, title }) => {
+    // 同一份保存的查询只允许一个工作项：再次打开时聚焦原有工作项，
+    // 不覆盖它里面尚未保存的编辑。
+    if (savedQueryId) {
+      const existing = get().items.find(
+        (item) => item.savedQueryId === savedQueryId,
+      );
+      if (existing) {
+        set({ activeId: existing.id });
+        return existing.id;
+      }
+    }
     const id = `query:${crypto.randomUUID()}`;
     const count = get().items.filter(
       (item) => item.kind === "query" && item.profileId === profileId,

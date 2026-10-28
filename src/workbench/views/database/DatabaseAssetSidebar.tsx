@@ -39,6 +39,7 @@ import {
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
 
 const indent = (level: number) => ({ paddingLeft: `${8 + level * 12}px` });
@@ -137,12 +138,10 @@ const ProfileRow = memo(function ProfileRow({
           />
         </Button>
       </Tooltip>
-      <DatabaseIcon
+      <DbEngineIcon
+        engine={profile.engine}
+        connected={connected}
         size={13}
-        className={cn(
-          "shrink-0",
-          connected ? "text-fg" : "text-fg-subtle",
-        )}
       />
       <span
         className={cn(

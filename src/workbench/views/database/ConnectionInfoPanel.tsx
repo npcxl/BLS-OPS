@@ -21,6 +21,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import type { DbEngine, ProfileRuntimeStatus } from "@/api/types/database";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { DbEngineIcon } from "./DbEngineIcon";
 
 const ENGINE_LABEL: Record<DbEngine, string> = {
   mysql: "MySQL",
@@ -90,10 +91,29 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
       ).toLocaleString()
     : "—";
 
+  const EngineIcon = ({
+    size = 12,
+    className,
+  }: {
+    size?: number;
+    className?: string;
+  }) => (
+    <DbEngineIcon
+      engine={profile.engine}
+      connected={connected}
+      size={size}
+      className={className}
+    />
+  );
+
   return (
     <aside className="flex h-full min-h-0 flex-col bg-surface-1">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-2">
-        <DatabaseIcon size={12} className="shrink-0 text-fg" />
+        <DbEngineIcon
+          engine={profile.engine}
+          connected={connected}
+          size={12}
+        />
         <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg">
           {t("连接信息")}
         </span>
@@ -139,7 +159,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
         </div>
 
         <InfoRow
-          icon={DatabaseIcon}
+          icon={EngineIcon}
           label={t("类型")}
           value={ENGINE_LABEL[profile.engine]}
         />

@@ -586,9 +586,12 @@ export function DatabaseAssetSidebar() {
                           className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
-                            // 点数据库名称：打开该库全部表的搜索列表；
-                            // 展开/收起仍由左侧箭头负责。
+                            // Navicat 式交互：点数据库就是打开它（展开表列表），
+                            // 同时打开该库的对象列表；收起由箭头/右键菜单负责。
                             open(profile);
+                            if (!dbOpen) {
+                              void toggleDatabase(profile.id, database.name);
+                            }
                             openDatabaseObjects({
                               profileId: profile.id,
                               connectionName: profile.name,
@@ -621,19 +624,15 @@ export function DatabaseAssetSidebar() {
                             size={11}
                             className={cn(
                               "shrink-0",
-                              currentDb || dbOpen
-                                ? "text-fg"
-                                : "text-fg-subtle",
+                              dbOpen ? "text-fg" : "text-fg-subtle",
                             )}
                           />
                           <span
                             className={cn(
                               "min-w-0 flex-1 truncate text-12",
-                              currentDb
+                              dbOpen
                                 ? "font-medium text-fg"
-                                : dbOpen
-                                  ? "text-fg-muted"
-                                  : "text-fg-subtle",
+                                : "text-fg-subtle",
                             )}
                           >
                             {database.name}

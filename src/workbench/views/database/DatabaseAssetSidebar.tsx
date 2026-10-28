@@ -416,7 +416,16 @@ export function DatabaseAssetSidebar() {
     database: { name: string },
   ) => {
     const key = `${profile.id}\u0001${database.name}`;
+    const opened = !!expandedDatabases[key];
     return [
+      {
+        id: "open-close",
+        label: opened ? t("关闭数据库") : t("打开数据库"),
+        onSelect: () => {
+          open(profile);
+          void toggleDatabase(profile.id, database.name);
+        },
+      },
       {
         id: "objects",
         label: t("打开对象列表"),
@@ -447,11 +456,6 @@ export function DatabaseAssetSidebar() {
         onSelect: () => void refreshTables(profile.id, database.name),
       },
       { separator: true },
-      {
-        id: "toggle",
-        label: expandedDatabases[key] ? t("收起") : t("展开"),
-        onSelect: () => void toggleDatabase(profile.id, database.name),
-      },
       {
         id: "copy-name",
         label: t("复制库名"),
@@ -561,6 +565,8 @@ export function DatabaseAssetSidebar() {
                   .map((database) => {
                     const key = `${profile.id}\u0001${database.name}`;
                     const dbOpen = !!expandedDatabases[key];
+                    const currentDb =
+                      sessions[profile.id]?.current_database === database.name;
                     const dbTables = tables[key] ?? [];
                     const dbLoading = loading[key];
                     const dbError = errors[key] ?? null;
@@ -601,15 +607,35 @@ export function DatabaseAssetSidebar() {
                               className={cn("transition-transform", dbOpen && "rotate-90")}
                             />
                           </Button>
-                          <DatabaseIcon size={11} className="shrink-0 text-fg-subtle" />
+                          <DatabaseIcon
+                            size={11}
+                            className={cn(
+                              "shrink-0",
+                              currentDb || dbOpen
+                                ? "text-fg"
+                                : "text-fg-subtle",
+                            )}
+                          />
                           <span
                             className={cn(
                               "min-w-0 flex-1 truncate text-12",
-                              database.system ? "text-fg-subtle" : "text-fg",
+                              currentDb
+                                ? "font-medium text-fg"
+                                : dbOpen
+                                  ? "text-fg-muted"
+                                  : "text-fg-subtle",
                             )}
                           >
                             {database.name}
                           </span>
+                          {currentDb && (
+                            <Tooltip label={t("当前数据库")} side="left">
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg"
+                                aria-label={t("当前数据库")}
+                              />
+                            </Tooltip>
+                          )}
                           {dbError && <TriangleAlert size={10} className="shrink-0 text-danger" />}
                           <Tooltip label={t("刷新表列表")} side="left">
                             <Button

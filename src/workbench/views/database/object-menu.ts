@@ -8,7 +8,7 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import type { ContextMenuItem } from "@/components/ui/context-menu";
-import type { DbTable } from "@/api/types/database";
+import type { DbTable, TableOperationKind } from "@/api/types/database";
 import { copyText } from "@/lib/clipboard";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
@@ -21,7 +21,18 @@ export interface ObjectMenuContext {
 
 const quote = (name: string) => `\`${name.replace(/`/g, "``")}\``;
 
-export function useObjectMenuBuilder() {
+export type ObjectTableOperation = Extract<
+  TableOperationKind,
+  "rename" | "copy_structure" | "copy_data" | "drop" | "truncate"
+>;
+
+export function useObjectMenuBuilder(
+  onTableOperation?: (
+    context: ObjectMenuContext,
+    table: DbTable,
+    kind: ObjectTableOperation,
+  ) => void,
+) {
   const { t } = useTranslation();
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
   const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
@@ -65,6 +76,54 @@ export function useObjectMenuBuilder() {
             table: table.name,
           }),
       },
+      ...(onTableOperation
+        ? table.kind === "table"
+          ? [
+              { separator: true as const },
+              {
+                id: "rename",
+                label: t("重命名表"),
+                onSelect: () => onTableOperation(context, table, "rename"),
+              },
+              {
+                id: "copy-structure",
+                label: t("复制表结构"),
+                onSelect: () =>
+                  onTableOperation(context, table, "copy_structure"),
+              },
+              {
+                id: "copy-data",
+                label: t("复制表结构和数据"),
+                onSelect: () => onTableOperation(context, table, "copy_data"),
+              },
+              { separator: true as const },
+              {
+                id: "truncate",
+                label: t("清空表"),
+                danger: true,
+                onSelect: () => onTableOperation(context, table, "truncate"),
+              },
+              {
+                id: "drop",
+                label: t("删除表"),
+                danger: true,
+                onSelect: () => onTableOperation(context, table, "drop"),
+              },
+            ]
+          : [
+              {
+                id: "rename-view",
+                label: t("重命名视图"),
+                onSelect: () => onTableOperation(context, table, "rename"),
+              },
+              {
+                id: "drop-view",
+                label: t("删除视图"),
+                danger: true,
+                onSelect: () => onTableOperation(context, table, "drop"),
+              },
+            ]
+        : []),
       { separator: true },
       {
         id: "copy-name",
@@ -93,6 +152,14 @@ export function useObjectMenuBuilder() {
         },
       },
     ],
-    [openStructure, openTable, refreshTableDetail, refreshTables, showDdl, t],
+    [
+      onTableOperation,
+      openStructure,
+      openTable,
+      refreshTableDetail,
+      refreshTables,
+      showDdl,
+      t,
+    ],
   );
 }

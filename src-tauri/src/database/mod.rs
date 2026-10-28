@@ -38,6 +38,7 @@ pub mod query;
 pub mod runtime;
 pub mod session;
 pub mod table;
+pub mod table_ops;
 pub mod tunnel;
 
 pub use manager::DatabaseManager;

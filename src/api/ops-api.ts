@@ -35,6 +35,9 @@ import type {
   QueryStarted,
   RowMutation,
   SaveProfileRequest,
+  TableOperationOutcome,
+  TableOperationPreview,
+  TableOperationRequest,
 } from "@/api/types/database";
 
 import {
@@ -1414,6 +1417,22 @@ export const databaseApi = {
     invoke<DbTable[]>("db_metadata_tables", { profileId, database }),
   tableDetail: (profileId: string, database: string, table: string) =>
     invoke<DbTableDetail>("db_metadata_table", { profileId, database, table }),
+  previewTableOperation: (
+    sessionId: string,
+    request: TableOperationRequest,
+  ) =>
+    invoke<TableOperationPreview>("db_table_operation_preview", {
+      sessionId,
+      request,
+    }),
+  applyTableOperation: (
+    sessionId: string,
+    request: TableOperationRequest,
+  ) =>
+    invoke<TableOperationOutcome>("db_table_operation_apply", {
+      sessionId,
+      request,
+    }),
   invalidateMetadata: (profileId: string | null) =>
     invoke<MetadataCacheStatus>("db_metadata_invalidate", { profileId }),
 

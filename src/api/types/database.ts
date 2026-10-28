@@ -224,6 +224,31 @@ export interface DbIndex {
   columns: DbIndexColumn[];
 }
 
+export type TableOperationKind =
+  | "rename"
+  | "copy_structure"
+  | "copy_data"
+  | "drop"
+  | "truncate";
+
+export interface TableOperationRequest {
+  kind: TableOperationKind;
+  database: string;
+  table: string;
+  new_name: string | null;
+}
+
+export interface TableOperationPreview {
+  sql: string;
+  warning: string | null;
+  destructive: boolean;
+}
+
+export interface TableOperationOutcome {
+  sql: string;
+  warning: string | null;
+}
+
 export interface DbTableDetail {
   database: string;
   table: string;

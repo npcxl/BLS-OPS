@@ -128,6 +128,13 @@ interface WorkspaceState {
   close: (id: string) => void;
   togglePin: (id: string) => void;
   rename: (id: string, title: string) => void;
+  /** 表重命名后同步已打开的数据/结构工作项。 */
+  renameTableItems: (
+    profileId: string,
+    database: string,
+    oldTable: string,
+    newTable: string,
+  ) => void;
   setStatus: (
     id: string,
     patch: Partial<Pick<WorkItem, "pendingCount" | "running" | "dirty">>,
@@ -340,6 +347,26 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
       items: state.items.map((item) =>
         item.id === id ? { ...item, title: title.trim() || item.objectName } : item,
       ),
+    })),
+
+  renameTableItems: (profileId, database, oldTable, newTable) =>
+    set((state) => ({
+      items: state.items.map((item) => {
+        if (
+          item.profileId !== profileId ||
+          item.database !== database ||
+          item.objectName !== oldTable ||
+          (item.kind !== "table" && item.kind !== "structure")
+        ) {
+          return item;
+        }
+        return {
+          ...item,
+          objectName: newTable,
+          title:
+            item.kind === "structure" ? `${newTable} · 结构` : newTable,
+        };
+      }),
     })),
 
   setStatus: (id, patch) =>

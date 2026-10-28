@@ -444,17 +444,25 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     const session = get().sessions[profileId];
     if (!session) throw new Error("会话不存在，无法执行事务命令");
     const started = await databaseApi.queryStart(session.session_id, sql);
+    let terminal: string | null = null;
+    let batchError: DbErrorInfo | null = null;
     try {
       for (let guard = 0; guard < 200; guard += 1) {
         const response = await databaseApi.queryNext(started.query_id);
+        terminal = response.state;
+        if (response.batch?.kind === "error") {
+          batchError = response.batch.error;
+        }
         if (
-          response.state === "completed" ||
-          response.state === "cancelled" ||
-          response.state === "failed" ||
-          response.state === "outcome_unknown"
+          terminal === "completed" ||
+          terminal === "cancelled" ||
+          terminal === "failed" ||
+          terminal === "outcome_unknown"
         ) {
           break;
         }
+        // 没到终态就不要无间隔打满 IPC；让后端有机会推进。
+        await new Promise((resolve) => setTimeout(resolve, 25));
       }
     } finally {
       await databaseApi.queryRelease(started.query_id).catch(() => undefined);
@@ -467,6 +475,29 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
       } catch {
         // 忽略：下一次操作会自然暴露失效。
       }
+    }
+
+    if (batchError) {
+      throw new Error(`${sql} 失败：${batchError.message}`);
+    }
+    if (
+      terminal === null ||
+      !["completed", "cancelled", "failed", "outcome_unknown"].includes(
+        terminal,
+      )
+    ) {
+      throw new Error(
+        `${sql} 轮询超限：等待事务结果超过 ${200 * 25} ms（最后状态 ${terminal ?? "unknown"}），请重新检查会话`,
+      );
+    }
+    if (terminal !== "completed") {
+      const detail =
+        terminal === "failed"
+          ? "服务器执行失败"
+          : terminal === "cancelled"
+            ? "请求被取消"
+            : "事务结果未知，服务器可能已经提交或回滚";
+      throw new Error(`${sql} 未成功（${terminal}）：${detail}`);
     }
   },
 

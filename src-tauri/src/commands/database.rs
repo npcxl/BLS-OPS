@@ -8,7 +8,7 @@ use tauri::State;
 use super::open_db;
 use crate::database::runtime::ProfileRuntime;
 use crate::database::session::SessionEntry;
-use crate::database::{driver, metadata, model::*, mutate, profiles, query, table};
+use crate::database::{driver, metadata, model::*, mutate, profiles, query, table, table_ops};
 use crate::state::AppState;
 use std::sync::Arc;
 
@@ -208,6 +208,46 @@ pub async fn db_metadata_table(
 ) -> Result<DbTableDetail, DbErrorInfo> {
     let runtime = runtime_for(&state, &profile_id).await?;
     metadata::table_detail(&runtime, &state.database.metadata, &database, &table).await
+}
+
+#[tauri::command]
+pub async fn db_table_operation_preview(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: table_ops::TableOperationRequest,
+) -> Result<table_ops::TableOperationPreview, DbErrorInfo> {
+    let (_session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let detail = metadata::table_detail(
+        &runtime,
+        &state.database.metadata,
+        &request.database,
+        &request.table,
+    )
+    .await?;
+    table_ops::preview(&detail, &request)
+}
+
+#[tauri::command]
+pub async fn db_table_operation_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: table_ops::TableOperationRequest,
+) -> Result<table_ops::TableOperationOutcome, DbErrorInfo> {
+    let (session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let detail = metadata::table_detail(
+        &runtime,
+        &state.database.metadata,
+        &request.database,
+        &request.table,
+    )
+    .await?;
+    let outcome = table_ops::apply(&session, &detail, &request).await?;
+    state
+        .database
+        .metadata
+        .invalidate(Some(&session.profile_id))
+        .await;
+    Ok(outcome)
 }
 
 #[tauri::command]

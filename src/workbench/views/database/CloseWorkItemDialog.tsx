@@ -17,6 +17,7 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+import { assessCloseRisk } from "./close-coordination";
 
 export type CloseAction =
   | "discard"
@@ -41,12 +42,11 @@ export function CloseWorkItemDialog({
     item ? state.items.find((entry) => entry.id === item.id) : undefined,
   );
 
-  const running = tab?.running ?? false;
-  const pending = tab?.pendingCount ?? 0;
-  const dirty = tab?.dirty ?? false;
-  const transaction = session?.transaction;
-  const inTransaction =
-    transaction === "in_transaction" || transaction === "in_transaction_read_only";
+  const risk = tab ? assessCloseRisk(tab, session) : null;
+  const running = risk?.running ?? false;
+  const pending = risk?.pending ?? 0;
+  const dirty = risk?.dirty ?? false;
+  const inTransaction = risk?.inTransaction ?? false;
 
   return (
     <Modal

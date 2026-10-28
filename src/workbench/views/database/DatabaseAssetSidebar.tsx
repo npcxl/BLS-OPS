@@ -45,6 +45,10 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
+import {
+  TableOperationDialog,
+  type TableOperationRequestTarget,
+} from "./TableOperationDialog";
 
 /** 10px 起点与服务器侧栏的 px-2.5 对齐，每层再缩进 12px。 */
 const indent = (level: number) => ({ paddingLeft: `${10 + level * 12}px` });
@@ -277,8 +281,15 @@ export function DatabaseAssetSidebar() {
     useState<DatabaseProfile | null>(null);
   const [deleteQueryTarget, setDeleteQueryTarget] =
     useState<SavedQuery | null>(null);
+  const [tableOperation, setTableOperation] =
+    useState<TableOperationRequestTarget | null>(null);
   const menu = useContextMenu();
-  const objectMenu = useObjectMenuBuilder();
+  const objectMenu = useObjectMenuBuilder((context, table, kind) =>
+    setTableOperation({
+      target: { ...context, table },
+      kind,
+    }),
+  );
   const statuses = useDatabaseStore((state) => state.statuses);
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
   const disconnectProfile = useDatabaseStore((state) => state.disconnectProfile);
@@ -1132,6 +1143,12 @@ export function DatabaseAssetSidebar() {
           if (deleteQueryTarget) deleteSavedQuery(deleteQueryTarget.id);
           setDeleteQueryTarget(null);
         }}
+      />
+
+      <TableOperationDialog
+        pending={tableOperation}
+        onClose={() => setTableOperation(null)}
+        onApplied={() => undefined}
       />
 
       <ConnectionDialog

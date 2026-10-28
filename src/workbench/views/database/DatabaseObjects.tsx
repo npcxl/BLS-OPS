@@ -37,6 +37,10 @@ import {
   type WorkItem,
 } from "@/stores/database-workspace-store";
 import { useObjectMenuBuilder } from "./object-menu";
+import {
+  TableOperationDialog,
+  type TableOperationRequestTarget,
+} from "./TableOperationDialog";
 
 const ROW_HEIGHT = 30;
 /** 稳定空数组：selector 每次返回新 `[]` 会触发无限重渲染。 */
@@ -87,7 +91,14 @@ export function DatabaseObjects({
   const error = useDatabaseStore((state) => state.errors[key] ?? null);
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
-  const objectMenu = useObjectMenuBuilder();
+  const [tableOperation, setTableOperation] =
+    useState<TableOperationRequestTarget | null>(null);
+  const objectMenu = useObjectMenuBuilder((context, table, kind) =>
+    setTableOperation({
+      target: { ...context, table },
+      kind,
+    }),
+  );
 
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
@@ -320,6 +331,12 @@ export function DatabaseObjects({
           </div>
         )}
       </div>
+
+      <TableOperationDialog
+        pending={tableOperation}
+        onClose={() => setTableOperation(null)}
+        onApplied={() => undefined}
+      />
 
       <ContextMenu {...menu.props} />
     </div>

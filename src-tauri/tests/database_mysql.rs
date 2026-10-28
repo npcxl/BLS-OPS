@@ -13,7 +13,7 @@ use std::time::Duration;
 use mysql_async::prelude::Queryable;
 use ops_workbench_lib::database::{
     driver, export::ExportRegistry, metadata, model::*, mutate, profiles, query,
-    runtime::ProfileRuntime, session::SessionEntry, table, tunnel::TunnelRegistry,
+    runtime::ProfileRuntime, session::SessionEntry, table, table_ops, tunnel::TunnelRegistry,
 };
 
 fn env(key: &str, fallback: &str) -> String {
@@ -890,5 +890,139 @@ async fn profile_roundtrip_and_history() {
 
     profiles::delete_profile(&conn, &saved.id).expect("delete");
     assert!(profiles::get_profile(&conn, &saved.id).unwrap().is_none());
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn mysql_table_operations_are_real() {
+    let (path, conn) = temp_app_db();
+    let base = profile();
+    let plan = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip table ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let endpoint = match driver::resolve_plan(&TunnelRegistry::default(), plan).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("skip table ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let mut admin = match driver::connect_once(
+        driver::build_opts(&endpoint, false).expect("opts"),
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(conn) => conn,
+        Err(error) => {
+            if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+                panic!("required table ops test cannot connect: {error}");
+            }
+            eprintln!("skip table ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    admin
+        .query_drop("CREATE DATABASE IF NOT EXISTS ops_test CHARACTER SET utf8mb4")
+        .await
+        .expect("database");
+    admin
+        .query_drop("DROP TABLE IF EXISTS ops_test.object_ops_demo")
+        .await
+        .expect("drop old demo");
+    admin
+        .query_drop(
+            "CREATE TABLE ops_test.object_ops_demo (id INT PRIMARY KEY, note VARCHAR(40)) ENGINE=InnoDB",
+        )
+        .await
+        .expect("create demo");
+    admin
+        .exec_drop(
+            "INSERT INTO ops_test.object_ops_demo (id, note) VALUES (1, 'one'), (2, 'two')",
+            (),
+        )
+        .await
+        .expect("seed demo");
+
+    let (runtime, session) = runtime_for(&conn).await;
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "ops_test", "object_ops_demo")
+        .await
+        .expect("detail");
+    let rename = table_ops::TableOperationRequest {
+        kind: table_ops::TableOperationKind::Rename,
+        database: "ops_test".to_string(),
+        table: "object_ops_demo".to_string(),
+        new_name: Some("object_ops_renamed".to_string()),
+    };
+    table_ops::apply(&session, &detail, &rename)
+        .await
+        .expect("rename");
+    cache.invalidate(None).await;
+    let renamed = metadata::table_detail(&runtime, &cache, "ops_test", "object_ops_renamed")
+        .await
+        .expect("renamed detail");
+    assert_eq!(renamed.table, "object_ops_renamed");
+
+    let copy = table_ops::TableOperationRequest {
+        kind: table_ops::TableOperationKind::CopyData,
+        database: "ops_test".to_string(),
+        table: "object_ops_renamed".to_string(),
+        new_name: Some("object_ops_copy".to_string()),
+    };
+    table_ops::apply(&session, &renamed, &copy)
+        .await
+        .expect("copy");
+    let copied: Option<u64> = admin
+        .query_first("SELECT COUNT(*) FROM ops_test.object_ops_copy")
+        .await
+        .expect("count copy");
+    assert_eq!(copied, Some(2));
+
+    let truncate = table_ops::TableOperationRequest {
+        kind: table_ops::TableOperationKind::Truncate,
+        database: "ops_test".to_string(),
+        table: "object_ops_copy".to_string(),
+        new_name: None,
+    };
+    let copied_detail = metadata::table_detail(&runtime, &cache, "ops_test", "object_ops_copy")
+        .await
+        .expect("copy detail");
+    table_ops::apply(&session, &copied_detail, &truncate)
+        .await
+        .expect("truncate");
+    let empty: Option<u64> = admin
+        .query_first("SELECT COUNT(*) FROM ops_test.object_ops_copy")
+        .await
+        .expect("count truncated");
+    assert_eq!(empty, Some(0));
+
+    let drop_copy = table_ops::TableOperationRequest {
+        kind: table_ops::TableOperationKind::Drop,
+        database: "ops_test".to_string(),
+        table: "object_ops_copy".to_string(),
+        new_name: None,
+    };
+    table_ops::apply(&session, &copied_detail, &drop_copy)
+        .await
+        .expect("drop copy");
+    let drop_renamed = table_ops::TableOperationRequest {
+        kind: table_ops::TableOperationKind::Drop,
+        database: "ops_test".to_string(),
+        table: "object_ops_renamed".to_string(),
+        new_name: None,
+    };
+    table_ops::apply(&session, &renamed, &drop_renamed)
+        .await
+        .expect("drop renamed");
+
+    let _ = tokio::time::timeout(Duration::from_secs(2), admin.disconnect()).await;
     let _ = std::fs::remove_file(path);
 }

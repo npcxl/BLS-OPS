@@ -45,7 +45,6 @@ import {
   type SavedQuery,
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
-import { DatabaseDuotone } from "@/components/icons";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
@@ -218,11 +217,6 @@ const ProfileRow = memo(function ProfileRow({
         connected={connected}
         size={18}
       />
-      {/* 连接状态图标：Rust 侧报告已连接时染绿（GitHub 成功绿），未连接时保持默认弱色。 */}
-      <DatabaseDuotone
-        size={13}
-        className={connected ? "text-[#3fb950]" : "text-fg-subtle"}
-      />
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-14",
@@ -306,6 +300,9 @@ export function DatabaseAssetSidebar() {
   const profileError = useDatabaseStore((state) => state.profileError);
   const expandedProfiles = useDatabaseStore((state) => state.expandedProfiles);
   const expandedDatabases = useDatabaseStore((state) => state.expandedDatabases);
+  const openedDatabases = useDatabaseStore((state) => state.openedDatabases);
+  const openDatabase = useDatabaseStore((state) => state.openDatabase);
+  const closeDatabase = useDatabaseStore((state) => state.closeDatabase);
   const expandedTables = useDatabaseStore((state) => state.expandedTables);
   const expandedCategories = useDatabaseStore((state) => state.expandedCategories);
   const databases = useDatabaseStore((state) => state.databases);
@@ -618,14 +615,18 @@ export function DatabaseAssetSidebar() {
     database: { name: string },
   ) => {
     const key = `${profile.id}\u0001${database.name}`;
-    const opened = !!expandedDatabases[key];
+    const opened = !!openedDatabases[key];
     return [
       {
         id: "open-close",
         label: opened ? t("关闭数据库") : t("打开数据库"),
         onSelect: () => {
+          if (opened) {
+            closeDatabase(profile.id, database.name);
+            return;
+          }
           open(profile);
-          void toggleDatabase(profile.id, database.name);
+          void openDatabase(profile.id, database.name);
         },
       },
       {
@@ -786,6 +787,7 @@ export function DatabaseAssetSidebar() {
                   .map((database) => {
                     const key = `${profile.id}\u0001${database.name}`;
                     const dbOpen = !!expandedDatabases[key];
+                    const dbOpened = !!openedDatabases[key];
                     const dbTables = tables[key] ?? [];
                     const dbLoading = loading[key];
                     const dbError = errors[key] ?? null;
@@ -795,13 +797,12 @@ export function DatabaseAssetSidebar() {
                           className="group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
-                            // 点数据库 = 连接 + 展开 + 打开对象列表。
-                            // 已经展开的不会被点回去（收起只走箭头/右键菜单），
-                            // 展开态本身存在 store 里，切到别的库再回来还是打开的。
+                            // 点数据库 = 连接 + 打开 + 展开 + 打开对象列表。
+                            // 打开状态独立于展开态，切换当前库不会把它变灰。
                             open(profile);
                             void ensureSession(profile.id);
-                            if (!dbOpen) {
-                              void toggleDatabase(profile.id, database.name);
+                            if (!dbOpened || !dbOpen) {
+                              void openDatabase(profile.id, database.name);
                             }
                             openDatabaseObjects({
                               profileId: profile.id,
@@ -823,7 +824,11 @@ export function DatabaseAssetSidebar() {
                             aria-label={t("展开")}
                             onClick={(event) => {
                               event.stopPropagation();
-                              void toggleDatabase(profile.id, database.name);
+                              if (!dbOpen) {
+                                void openDatabase(profile.id, database.name);
+                              } else {
+                                void toggleDatabase(profile.id, database.name);
+                              }
                             }}
                           >
                             <ChevronRight
@@ -835,13 +840,13 @@ export function DatabaseAssetSidebar() {
                             size={14}
                             className={cn(
                               "shrink-0",
-                              dbOpen ? "text-fg" : "text-fg-muted",
+                              dbOpened ? "text-fg" : "text-fg-muted",
                             )}
                           />
                           <span
                             className={cn(
                               "min-w-0 flex-1 truncate text-14",
-                              dbOpen
+                              dbOpened
                                 ? "font-medium text-fg"
                                 : "text-fg-muted",
                             )}

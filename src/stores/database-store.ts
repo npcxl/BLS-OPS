@@ -44,6 +44,8 @@ const EXPANDED_STORAGE_KEY = "blsops.database.expanded-tree";
 interface PersistedExpanded {
   profiles: Record<string, boolean>;
   databases: Record<string, boolean>;
+  /** 用户明确打开/关闭的数据库；与“展开表列表”分离。 */
+  opened: Record<string, boolean>;
   tables: Record<string, boolean>;
   categories: Record<string, boolean>;
 }
@@ -51,6 +53,7 @@ interface PersistedExpanded {
 const EMPTY_EXPANDED: PersistedExpanded = {
   profiles: {},
   databases: {},
+  opened: {},
   tables: {},
   categories: {},
 };
@@ -70,9 +73,12 @@ function readExpanded(): PersistedExpanded {
     if (!raw) return EMPTY_EXPANDED;
     const parsed = JSON.parse(raw) as Partial<PersistedExpanded> | null;
     if (!parsed || typeof parsed !== "object") return EMPTY_EXPANDED;
+    const databases = boolRecord(parsed.databases);
     return {
       profiles: boolRecord(parsed.profiles),
-      databases: boolRecord(parsed.databases),
+      databases,
+      // 旧版本没有 opened：已展开的库视为已打开，避免升级后全变灰。
+      opened: parsed.opened ? boolRecord(parsed.opened) : databases,
       tables: boolRecord(parsed.tables),
       categories: boolRecord(parsed.categories),
     };
@@ -122,6 +128,8 @@ interface DatabaseAssetState {
 
   expandedProfiles: Record<string, boolean>;
   expandedDatabases: Record<string, boolean>;
+  /** 数据库是否被用户打开；打开后切换当前库也不会变灰。 */
+  openedDatabases: Record<string, boolean>;
   expandedTables: Record<string, boolean>;
   /** 分类节点（表/视图/函数/查询/备份）的展开态，`undefined` 视为展开。 */
   expandedCategories: Record<string, boolean>;
@@ -149,6 +157,10 @@ interface DatabaseAssetState {
   refreshProfiles: () => Promise<void>;
   toggleProfile: (profileId: string) => Promise<void>;
   toggleDatabase: (profileId: string, database: string) => Promise<void>;
+  /** 显式打开数据库：标记打开状态并加载/展开表列表。 */
+  openDatabase: (profileId: string, database: string) => Promise<void>;
+  /** 显式关闭数据库：清除打开状态并收起表列表。 */
+  closeDatabase: (profileId: string, database: string) => void;
   toggleTable: (profileId: string, database: string, table: string) => Promise<void>;
   /** 纯 UI 展开态，不触发任何查询（数据在展开数据库时已一并取回）。 */
   toggleCategory: (key: string) => void;
@@ -195,6 +207,7 @@ function persistExpanded(get: () => DatabaseAssetState) {
       JSON.stringify({
         profiles: state.expandedProfiles,
         databases: state.expandedDatabases,
+        opened: state.openedDatabases,
         tables: state.expandedTables,
         categories: state.expandedCategories,
       } satisfies PersistedExpanded),
@@ -211,6 +224,7 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
 
   expandedProfiles: initialExpanded.profiles,
   expandedDatabases: initialExpanded.databases,
+  openedDatabases: initialExpanded.opened,
   expandedTables: initialExpanded.tables,
   expandedCategories: initialExpanded.categories,
 
@@ -265,11 +279,41 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     const expanded = !get().expandedDatabases[key];
     set((state) => ({
       expandedDatabases: { ...state.expandedDatabases, [key]: expanded },
+      // 展开动作也视为打开；收起只改变展开，不撤销“已打开”状态。
+      ...(expanded
+        ? {
+            openedDatabases: {
+              ...state.openedDatabases,
+              [key]: true,
+            },
+          }
+        : {}),
     }));
     persistExpanded(get);
     if (expanded && get().tables[key] === undefined) {
       await get().refreshTables(profileId, database);
     }
+  },
+
+  openDatabase: async (profileId, database) => {
+    const key = tablesKey(profileId, database);
+    set((state) => ({
+      openedDatabases: { ...state.openedDatabases, [key]: true },
+      expandedDatabases: { ...state.expandedDatabases, [key]: true },
+    }));
+    persistExpanded(get);
+    if (get().tables[key] === undefined) {
+      await get().refreshTables(profileId, database);
+    }
+  },
+
+  closeDatabase: (profileId, database) => {
+    const key = tablesKey(profileId, database);
+    set((state) => ({
+      openedDatabases: { ...state.openedDatabases, [key]: false },
+      expandedDatabases: { ...state.expandedDatabases, [key]: false },
+    }));
+    persistExpanded(get);
   },
 
   toggleTable: async (profileId, database, table) => {

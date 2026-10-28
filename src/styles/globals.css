@@ -247,8 +247,8 @@
        （刷新瞬间能看到磨砂、加载完就没了，就是这个原因）。 */
     background: linear-gradient(
       180deg,
-      rgb(var(--app) / 0.62) 0%,
-      rgb(var(--app) / 0.54) 100%
+      rgb(var(--app) / 0.78) 0%,
+      rgb(var(--app) / 0.7) 100%
     );
     /* 顶部一道极淡的内高光：让外壳与内容区之间有"玻璃厚度"。 */
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18);
@@ -257,8 +257,8 @@
   :root[data-theme="dark"] .app-shell {
     background: linear-gradient(
       180deg,
-      rgb(var(--app) / 0.7) 0%,
-      rgb(var(--app) / 0.62) 100%
+      rgb(var(--app) / 0.78) 0%,
+      rgb(var(--app) / 0.7) 100%
     );
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
   }

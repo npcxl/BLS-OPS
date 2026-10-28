@@ -380,7 +380,7 @@ export function WorkItemHost({
       </div>
 
       {footer && activeItem?.kind !== "table" && (
-        <footer className="flex h-8 shrink-0 items-center gap-3 overflow-hidden border-t border-line px-3 text-11 text-fg-subtle">
+        <footer className="flex h-8 shrink-0 items-center justify-end gap-3 overflow-hidden border-t border-line px-3 text-11 text-fg-subtle">
           {footer}
         </footer>
       )}

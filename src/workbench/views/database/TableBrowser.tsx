@@ -33,7 +33,7 @@ import {
   Save,
   Trash2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { LoadingState } from "@/components/ui/loading";
@@ -1418,7 +1418,7 @@ export function TableBrowser({
           </div>
 
           {/* 底部只有一行：待提交操作 + 总数 + 分页 + 全局状态 */}
-          <div className="flex h-8 shrink-0 items-center gap-2 overflow-x-auto border-t border-line px-2 text-11 text-fg-subtle">
+          <div className="flex h-8 shrink-0 items-center justify-end gap-2 overflow-x-auto border-t border-line px-2 text-11 text-fg-subtle">
             {pending.length > 0 && (
               <>
                 <span className="text-accent">
@@ -1467,7 +1467,7 @@ export function TableBrowser({
                 {mutationError}
               </span>
             )}
-            <span className="ml-auto flex items-center gap-3">
+            <span className="flex items-center gap-3">
               <span>
                 {total === null
                   ? loading

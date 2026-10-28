@@ -18,7 +18,7 @@ import {
   Search,
   Table2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -28,6 +28,15 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+
+/** 悬停时显示“上一级”：对象页只到连接，表/查询到连接 + 库。 */
+function itemTooltip(item: WorkItem): string {
+  const parents =
+    item.kind === "objects"
+      ? [item.connectionName]
+      : [item.connectionName, item.database];
+  return [...parents.filter(Boolean), item.title].join("\n");
+}
 
 export function OpenItemsPanel({
   onRequestClose,
@@ -174,7 +183,7 @@ export function OpenItemsPanel({
                       hint: t("即将支持"),
                     },
                   ])}
-                  title={item.title}
+                  title={itemTooltip(item)}
                 >
                   {item.kind === "table" ? (
                     <Table2 size={12} className="shrink-0 text-fg-subtle" />

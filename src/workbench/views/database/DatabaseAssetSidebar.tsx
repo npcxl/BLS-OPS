@@ -23,6 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -212,6 +213,8 @@ export function DatabaseAssetSidebar() {
   const [dialog, setDialog] = useState<
     { mode: "create" } | { mode: "edit"; profile: DatabaseProfile } | null
   >(null);
+  const [disconnectTarget, setDisconnectTarget] =
+    useState<DatabaseProfile | null>(null);
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
   const closeSession = useDatabaseStore((state) => state.closeSession);
@@ -324,7 +327,7 @@ export function DatabaseAssetSidebar() {
       id: "disconnect",
       label: t("断开连接"),
       danger: true,
-      onSelect: () => void closeSession(profile.id),
+      onSelect: () => setDisconnectTarget(profile),
     },
   ];
 
@@ -728,6 +731,21 @@ export function DatabaseAssetSidebar() {
       </div>
 
       <ContextMenu {...menu.props} />
+
+      <ConfirmDialog
+        open={disconnectTarget !== null}
+        danger
+        title={t("断开连接「{{name}}」？", { name: disconnectTarget?.name ?? "" })}
+        description={t(
+          "断开后，该连接上未提交的事务会回滚，临时表会丢失；工作项和 SQL 草稿会保留。",
+        )}
+        confirmLabel={t("断开连接")}
+        onCancel={() => setDisconnectTarget(null)}
+        onConfirm={() => {
+          if (disconnectTarget) void closeSession(disconnectTarget.id);
+          setDisconnectTarget(null);
+        }}
+      />
 
       <ConnectionDialog
         open={dialog !== null}

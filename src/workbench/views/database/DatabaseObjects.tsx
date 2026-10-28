@@ -6,7 +6,14 @@
  * - 列表只渲染视口内的行（固定行高虚拟化），不为每个表建 DOM；
  * - 高亮只计算可见行，不在每次按键时给全部结果套 `<mark>`。
  */
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   Columns3,
@@ -37,17 +44,24 @@ const EMPTY_TABLES: DbTable[] = [];
 function highlight(name: string, needle: string) {
   const query = needle.trim().toLowerCase();
   if (!query) return name;
-  const index = name.toLowerCase().indexOf(query);
-  if (index < 0) return name;
-  return (
-    <>
-      {name.slice(0, index)}
-      <mark className="rounded bg-warning/30 px-0.5 text-fg">
+  const lower = name.toLowerCase();
+  const parts: ReactNode[] = [];
+  let from = 0;
+  while (from <= lower.length) {
+    const index = lower.indexOf(query, from);
+    if (index < 0) {
+      parts.push(name.slice(from));
+      break;
+    }
+    if (index > from) parts.push(name.slice(from, index));
+    parts.push(
+      <mark key={index} className="rounded bg-warning/30 px-0.5 text-fg">
         {name.slice(index, index + query.length)}
-      </mark>
-      {name.slice(index + query.length)}
-    </>
-  );
+      </mark>,
+    );
+    from = index + query.length;
+  }
+  return <>{parts}</>;
 }
 
 export function DatabaseObjects({
@@ -99,16 +113,36 @@ export function DatabaseObjects({
     return () => observer.disconnect();
   }, []);
 
+  // 名称只排序一次、小写索引只建一次；否则每敲一个字都要对上千张表
+  // 重新 sort + toLowerCase，输入框虽然用了 useDeferredValue 仍会明显滞后。
+  const sortedTables = useMemo(() => {
+    const collator = new Intl.Collator(undefined, { sensitivity: "base" });
+    return [...tables].sort((a, b) => collator.compare(a.name, b.name));
+  }, [tables]);
+  const indexedTables = useMemo(
+    () =>
+      sortedTables.map((table) => ({
+        table,
+        lower: table.name.toLowerCase(),
+      })),
+    [sortedTables],
+  );
+
   // 输入即时更新，过滤延后执行：上千张表时不会每个按键都卡一下。
   const deferredQuery = useDeferredValue(query);
+  useEffect(() => {
+    // 过滤后结果变短，旧 scrollTop 可能已经超出列表；回到顶部。
+    viewportRef.current?.scrollTo({ top: 0 });
+    setScrollTop(0);
+    setActiveLetter(null);
+  }, [deferredQuery]);
   const rows = useMemo(() => {
     const needle = deferredQuery.trim().toLowerCase();
-    const filtered = needle
-      ? tables.filter((table) => table.name.toLowerCase().includes(needle))
-      : tables;
-    // 按名称排序，右侧 A–Z 字母导航的顺序才和列表一致。
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
-  }, [deferredQuery, tables]);
+    if (!needle) return sortedTables;
+    return indexedTables
+      .filter((entry) => entry.lower.includes(needle))
+      .map((entry) => entry.table);
+  }, [deferredQuery, indexedTables, sortedTables]);
 
   const letterTargets = useMemo(() => {
     const map = new Map<string, number>();

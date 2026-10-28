@@ -69,6 +69,22 @@
   }
 
   /*
+   * 只有文本类输入框才该给 I-beam。
+   * 勾选框/单选框/滑杆等控件同样匹配 `input`，会拿到 text 光标 ——
+   * 鼠标移到 UNIQUE 勾选框上像是"要打字"，得单独放回箭头。
+   */
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"],
+  input[type="file"],
+  input[type="color"],
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"] {
+    cursor: default;
+  }
+
+  /*
    * 可编辑的 contenteditable 也要 I-beam。
    *
    * `body` 上是 `cursor: default`，例外只开给了 input/textarea；CodeMirror 的

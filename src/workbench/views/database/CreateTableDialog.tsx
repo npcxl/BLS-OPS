@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ComboInput } from "@/components/ui/combo-input";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { databaseApi } from "@/api/ops-api";
 import type {
@@ -10,6 +11,11 @@ import type {
   SchemaPreview,
 } from "@/api/types/database";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import {
+  columnTypeTemplate,
+  findColumnTypePreset,
+  MYSQL_COLUMN_TYPE_OPTIONS,
+} from "./column-types";
 
 export interface CreateTableTarget {
   profileId: string;
@@ -19,19 +25,6 @@ export interface CreateTableTarget {
 interface DraftColumn extends NewColumn {
   primary: boolean;
 }
-
-const typeOptions = [
-  "BIGINT",
-  "INT",
-  "VARCHAR(255)",
-  "TEXT",
-  "DECIMAL(10,2)",
-  "DATETIME",
-  "TIMESTAMP",
-  "DATE",
-  "BOOLEAN",
-  "JSON",
-];
 
 const emptyColumn = (index: number): DraftColumn => ({
   name: index === 0 ? "id" : `column_${index + 1}`,
@@ -208,11 +201,18 @@ export function CreateTableDialog({
               className="grid grid-cols-[1.2fr_1.2fr_58px_58px_58px_1fr_28px] items-center gap-1 border-b border-line/60 px-2 py-1 last:border-b-0"
             >
               <input className={fieldClass} value={column.name} onChange={(event) => patch(index, { name: event.target.value })} />
-              <input
-                className={fieldClass}
-                list="bls-column-types"
+              <ComboInput
                 value={column.column_type}
-                onChange={(event) => patch(index, { column_type: event.target.value })}
+                options={MYSQL_COLUMN_TYPE_OPTIONS}
+                placeholder={t("类型")}
+                ariaLabel={t("类型")}
+                onChange={(next) => patch(index, { column_type: next })}
+                onPick={(option) => {
+                  const preset = findColumnTypePreset(option.value);
+                  patch(index, {
+                    column_type: preset ? columnTypeTemplate(preset) : option.value,
+                  });
+                }}
               />
               <input type="checkbox" checked={column.nullable} onChange={(event) => patch(index, { nullable: event.target.checked })} />
               <input type="checkbox" checked={column.auto_increment} onChange={(event) => patch(index, { auto_increment: event.target.checked })} />
@@ -234,11 +234,6 @@ export function CreateTableDialog({
             </div>
           ))}
         </div>
-        <datalist id="bls-column-types">
-          {typeOptions.map((type) => (
-            <option key={type} value={type} />
-          ))}
-        </datalist>
         <Button
           variant="ghost"
           size="sm"

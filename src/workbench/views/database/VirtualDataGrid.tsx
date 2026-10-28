@@ -371,10 +371,18 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                       event.stopPropagation();
                       onSelectRow(rowIndex);
                       onSelectCell(cell);
-                    }}
-                    onDoubleClick={() => {
-                      if (onStartEdit) onStartEdit(cell);
-                      else onOpenCell?.(cell);
+                      // Navicat 式：左键单击直接进入编辑；已处于编辑态时
+                      // 让输入框自己处理鼠标，避免重置光标。
+                      if (
+                        event.button === 0 &&
+                        !editing &&
+                        !event.ctrlKey &&
+                        !event.metaKey &&
+                        !event.shiftKey
+                      ) {
+                        if (onStartEdit) onStartEdit(cell);
+                        else onOpenCell?.(cell);
+                      }
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "F2" && onStartEdit) {
@@ -388,7 +396,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                     }}
                     title={
                       value.kind === "text" && value.truncated
-                        ? t("预览已截断，双击查看完整值")
+                        ? t("预览已截断，单击查看完整值")
                         : undefined
                     }
                   >

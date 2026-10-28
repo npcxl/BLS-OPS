@@ -959,6 +959,22 @@ export function TableBrowser({
     setPageIndex((index) => Math.max(0, index - 1));
   };
 
+  // 表格数据也支持 Ctrl+S 提交暂存修改，和结构编辑保持一致。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "s" &&
+        pending.length > 0
+      ) {
+        event.preventDefault();
+        if (!submitting) void submit();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pending.length, submit, submitting]);
+
   const sortBy = (column: { name: string }) => {
     const current = sorts[0];
     if (!current || current.column !== column.name) {
@@ -1210,10 +1226,10 @@ export function TableBrowser({
       ) : (
         <>
           {showFilters && (
-          <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+          <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-x-1 gap-y-1 border-b border-line px-2 py-1">
             <Filter size={11} className="shrink-0 text-fg-subtle" />
             <Select
-              className="w-[140px]"
+              className="w-[140px] shrink-0"
               size="sm"
               value={draftFilter.column}
               placeholder={t("选择列")}
@@ -1228,7 +1244,7 @@ export function TableBrowser({
               }))}
             />
             <Select
-              className="w-[112px]"
+              className="w-[112px] shrink-0"
               size="sm"
               value={draftFilter.op}
               ariaLabel={t("筛选条件")}
@@ -1252,7 +1268,7 @@ export function TableBrowser({
               ]}
             />
             <input
-              className={cn(fieldClass, "h-[28px] w-[160px] text-12")}
+              className={cn(fieldClass, "h-[28px] w-[160px] shrink-0 text-12")}
               value={draftFilter.value}
               disabled={draftFilter.op === "is_null" || draftFilter.op === "not_null"}
               onChange={(event) =>
@@ -1263,18 +1279,28 @@ export function TableBrowser({
               }}
               placeholder={t("值（参数绑定）")}
             />
-            <Button variant="ghost" size="xs" disabled={!draftFilter.column} onClick={addFilter}>
+            <Button
+              className="shrink-0"
+              variant="ghost"
+              size="xs"
+              disabled={!draftFilter.column}
+              onClick={addFilter}
+            >
               {t("添加筛选")}
             </Button>
 
             {filters.map((filter, index) => (
               <span
                 key={`${filter.column}-${index}`}
-                className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-11 text-fg-muted"
+                className="flex max-w-[min(320px,100%)] shrink-0 items-center gap-1 rounded-full border border-line bg-surface-2 px-2 py-0.5 text-11 text-fg-muted"
+                title={`${filter.column} ${filter.op} ${filter.value ?? ""}`}
               >
-                {filter.column} {filter.op} {filter.value ?? ""}
+                <span className="min-w-0 truncate">
+                  {filter.column} {filter.op} {filter.value ?? ""}
+                </span>
                 <button
                   type="button"
+                  className="shrink-0"
                   aria-label={t("移除筛选")}
                   onClick={() => {
                     setFilters((current) => current.filter((_, i) => i !== index));
@@ -1286,9 +1312,15 @@ export function TableBrowser({
               </span>
             ))}
             {sorts.length > 0 && (
-              <span className="flex shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-11 text-accent">
-                {sorts.map((sort) => `${sort.column} ${sort.direction}`).join(", ")}
-                <button type="button" onClick={() => { setSorts([]); resetPaging(); }}>
+              <span className="flex max-w-[min(320px,100%)] shrink-0 items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-11 text-accent">
+                <span className="min-w-0 truncate">
+                  {sorts.map((sort) => `${sort.column} ${sort.direction}`).join(", ")}
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0"
+                  onClick={() => { setSorts([]); resetPaging(); }}
+                >
                   <X size={9} />
                 </button>
               </span>

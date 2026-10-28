@@ -2,7 +2,7 @@
  *
  * 点击字段表或「编辑结构」进入内联编辑；Ctrl+S 保存，删除字段/索引会二次确认。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { KeyRound, Pencil, Plus, Trash2 } from "@/components/icons";
 import type {
@@ -15,17 +15,45 @@ import type {
 } from "@/api/types/database";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ComboInput } from "@/components/ui/combo-input";
 import { ErrorText } from "@/components/ui/modal";
 import { LoadingState } from "@/components/ui/loading";
 import { databaseApi } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import { findColumnTypePreset, MYSQL_COLUMN_TYPE_OPTIONS } from "./column-types";
 
 export type StructureSection = "all" | "columns" | "indexes" | "ddl";
 
 interface DraftColumn extends ColumnEdit {
   key: string;
   primary: boolean;
+  base_type: string;
+  length: string;
+  scale: string;
+}
+
+function parseColumnType(value: string): {
+  base: string;
+  length: string;
+  scale: string;
+} {
+  const match = value.trim().match(/^([^(]+?)(?:\((\d+)(?:\s*,\s*(\d+))?\))?$/);
+  if (!match) return { base: value.trim(), length: "", scale: "" };
+  return {
+    base: match[1].trim(),
+    length: match[2] ?? "",
+    scale: match[3] ?? "",
+  };
+}
+
+function composeColumnType(column: DraftColumn): string {
+  const base = column.base_type.trim();
+  if (!base) return "";
+  if (!column.length.trim()) return base;
+  return column.scale.trim()
+    ? `${base}(${column.length.trim()},${column.scale.trim()})`
+    : `${base}(${column.length.trim()})`;
 }
 
 interface DraftIndex extends IndexEdit {
@@ -34,17 +62,23 @@ interface DraftIndex extends IndexEdit {
 }
 
 const fromDetail = (detail: DbTableDetail) => ({
-  columns: detail.columns.map<DraftColumn>((column) => ({
-    key: `col:${column.name}`,
-    original_name: column.name,
-    name: column.name,
-    column_type: column.column_type,
-    nullable: column.nullable,
-    auto_increment: column.auto_increment,
-    default_value: column.default_value,
-    comment: column.comment,
-    primary: column.primary_key,
-  })),
+  columns: detail.columns.map<DraftColumn>((column) => {
+    const type = parseColumnType(column.column_type);
+    return {
+      key: `col:${column.name}`,
+      original_name: column.name,
+      name: column.name,
+      column_type: column.column_type,
+      base_type: type.base,
+      length: type.length,
+      scale: type.scale,
+      nullable: column.nullable,
+      auto_increment: column.auto_increment,
+      default_value: column.default_value,
+      comment: column.comment,
+      primary: column.primary_key,
+    };
+  }),
   indexes: detail.indexes
     .filter((index) => !index.primary)
     .map<DraftIndex>((index) => ({
@@ -77,6 +111,7 @@ export function TableStructure({
 }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [columns, setColumns] = useState<DraftColumn[]>([]);
   const [indexes, setIndexes] = useState<DraftIndex[]>([]);
   const [preview, setPreview] = useState<SchemaPreview | null>(null);
@@ -86,8 +121,24 @@ export function TableStructure({
   const refreshTableDetail = useDatabaseStore(
     (state) => state.refreshTableDetail,
   );
+  const enteredTableRef = useRef<string | null>(null);
 
   const editable = detail?.kind === "table" && !!profileId && !!sessionId;
+
+  // 打开结构页默认进入编辑，不再要求先点“编辑结构”。
+  useEffect(() => {
+    if (!detail || detail.kind !== "table" || !profileId || !sessionId) return;
+    const key = `${profileId}\u0001${detail.database}\u0001${detail.table}`;
+    if (enteredTableRef.current === key) return;
+    enteredTableRef.current = key;
+    const draft = fromDetail(detail);
+    setColumns(draft.columns);
+    setIndexes(draft.indexes);
+    setFocusedKey(draft.columns[0]?.key ?? null);
+    setEditing(true);
+    setPreview(null);
+    setError(null);
+  }, [detail, profileId, sessionId]);
 
   useEffect(() => {
     if (!editing) return;
@@ -124,7 +175,15 @@ export function TableStructure({
     return {
       database: detail.database,
       table: detail.table,
-      columns: columns.map(({ key: _key, primary: _primary, ...column }) => column),
+      columns: columns.map((column) => ({
+        original_name: column.original_name,
+        name: column.name,
+        column_type: composeColumnType(column),
+        nullable: column.nullable,
+        auto_increment: column.auto_increment,
+        default_value: column.default_value,
+        comment: column.comment,
+      })),
       indexes: indexes.map(({ key: _key, primary: _primary, ...index }) => ({
         ...index,
         columns: index.columns.filter(Boolean),
@@ -184,7 +243,10 @@ export function TableStructure({
 
   return (
     <div
-      className="ops-scroll h-full overflow-y-auto p-3"
+      className={cn(
+        "ops-scroll h-full p-3",
+        editing ? "overflow-auto" : "overflow-y-auto",
+      )}
       onKeyDownCapture={(event) => {
         if (
           editing &&
@@ -262,7 +324,10 @@ export function TableStructure({
                       key: `new:${crypto.randomUUID()}`,
                       original_name: null,
                       name: "",
-                      column_type: "VARCHAR(255)",
+                      column_type: "varchar(255)",
+                      base_type: "varchar",
+                      length: "255",
+                      scale: "",
                       nullable: true,
                       auto_increment: false,
                       default_value: null,
@@ -278,15 +343,19 @@ export function TableStructure({
             )}
           </div>
           <div className="overflow-x-auto rounded-[8px] border border-line">
-            <table className="w-full min-w-[760px] border-collapse text-12">
+            <table className="w-full min-w-[780px] border-collapse text-12">
               <thead className="bg-surface-2 text-fg-subtle">
                 <tr>
                   <th className="px-2 py-1 text-left font-medium">{t("名称")}</th>
                   <th className="px-2 py-1 text-left font-medium">{t("类型")}</th>
-                  <th className="px-2 py-1 text-left font-medium">NULL</th>
-                  <th className="px-2 py-1 text-left font-medium">{t("默认值")}</th>
-                  <th className="px-2 py-1 text-left font-medium">{t("键")}</th>
+                  <th className="w-[64px] px-2 py-1 text-left font-medium">{t("长度")}</th>
+                  <th className="w-[58px] px-2 py-1 text-left font-medium">{t("小数点")}</th>
+                  <th className="w-[70px] px-2 py-1 text-center font-medium">{t("不是 null")}</th>
+                  <th className="w-[54px] px-2 py-1 text-center font-medium">{t("虚拟")}</th>
+                  <th className="w-[70px] px-2 py-1 text-center font-medium">{t("键")}</th>
                   <th className="px-2 py-1 text-left font-medium">{t("注释")}</th>
+                  <th className="w-[110px] px-2 py-1 text-left font-medium">{t("默认值")}</th>
+                  <th className="w-[58px] px-2 py-1 text-center font-medium">{t("自增")}</th>
                   {editing && <th className="w-7 px-1" />}
                 </tr>
               </thead>
@@ -300,69 +369,140 @@ export function TableStructure({
                       className={cn(
                         "border-t border-line/60",
                         !editing && onSelectColumn && "cursor-text hover:bg-surface-hover",
-                        selectedColumn === (draft?.name ?? (column as DbTableColumn).name) &&
+                        (focusedKey === draft?.key ||
+                          selectedColumn ===
+                            (draft?.name ?? (column as DbTableColumn).name)) &&
                           "bg-accent/10",
                       )}
                       onClick={() => {
+                        if (draft) setFocusedKey(draft.key);
                         if (!editing && editable) startEditing();
                         else if (!editing) onSelectColumn?.(column as DbTableColumn);
                       }}
                     >
                       <td className="px-2 py-1 font-mono text-fg">
                         {draft ? (
-                          <span className="flex items-center gap-1">
-                            {primary && <KeyRound size={9} className="shrink-0 text-accent" />}
-                            <input
-                              className="min-w-[110px] flex-1 rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
-                              value={draft.name}
-                              onChange={(event) => patchColumn(draft.key, { name: event.target.value })}
+                          <input
+                            className="w-full min-w-0 rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
+                            value={draft.name}
+                            onChange={(event) => patchColumn(draft.key, { name: event.target.value })}
+                            onFocus={() => setFocusedKey(draft.key)}
+                          />
+                        ) : (
+                          <span className="truncate">{(column as DbTableColumn).name}</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1 font-mono text-fg-muted">
+                        {draft ? (
+                          // 类型可下拉、也可手写（enum('a','b') 这种列表里给不了）；
+                          // 选列表项时把长度/小数点按 Navicat 的默认值一并填好。
+                          <span className="block min-w-[104px]" onFocus={() => setFocusedKey(draft.key)}>
+                            <ComboInput
+                              value={draft.base_type}
+                              options={MYSQL_COLUMN_TYPE_OPTIONS}
+                              placeholder={t("类型")}
+                              ariaLabel={t("类型")}
+                              onChange={(next) => patchColumn(draft.key, { base_type: next })}
+                              onPick={(option) => {
+                                const preset = findColumnTypePreset(option.value);
+                                patchColumn(draft.key, {
+                                  base_type: option.value,
+                                  length: preset?.length ?? "",
+                                  scale: preset?.scale ?? "",
+                                });
+                              }}
                             />
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1">
-                            {primary && <KeyRound size={9} className="text-accent" />}
-                            {(column as DbTableColumn).name}
-                          </span>
+                          parseColumnType((column as DbTableColumn).column_type).base
                         )}
                       </td>
                       <td className="px-2 py-1 font-mono text-fg-muted">
                         {draft ? (
                           <input
-                            className="w-[140px] rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
-                            value={draft.column_type}
+                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
+                            value={draft.length}
                             onChange={(event) =>
-                              patchColumn(draft.key, { column_type: event.target.value })
+                              patchColumn(draft.key, { length: event.target.value })
                             }
+                            onFocus={() => setFocusedKey(draft.key)}
                           />
                         ) : (
-                          (column as DbTableColumn).column_type
+                          parseColumnType((column as DbTableColumn).column_type).length
                         )}
                       </td>
-                      <td className="px-2 py-1 text-fg-muted">
+                      <td className="px-2 py-1 font-mono text-fg-muted">
+                        {draft ? (
+                          <input
+                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
+                            value={draft.scale}
+                            onChange={(event) =>
+                              patchColumn(draft.key, { scale: event.target.value })
+                            }
+                            onFocus={() => setFocusedKey(draft.key)}
+                          />
+                        ) : (
+                          parseColumnType((column as DbTableColumn).column_type).scale
+                        )}
+                      </td>
+                      <td className="px-2 py-1 text-center text-fg-muted">
                         {draft ? (
                           <input
                             type="checkbox"
-                            checked={draft.nullable}
+                            checked={!draft.nullable}
                             onChange={(event) =>
-                              patchColumn(draft.key, { nullable: event.target.checked })
+                              patchColumn(draft.key, { nullable: !event.target.checked })
                             }
                           />
-                        ) : (column as DbTableColumn).nullable ? (
-                          "YES"
                         ) : (
-                          "NO"
+                          <input
+                            type="checkbox"
+                            checked={!(column as DbTableColumn).nullable}
+                            disabled
+                          />
                         )}
                       </td>
-                      <td className="max-w-[180px] px-2 py-1 font-mono text-fg-muted">
+                      <td className="px-2 py-1 text-center text-fg-subtle">
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          disabled
+                          title={t("暂不支持虚拟列")}
+                        />
+                      </td>
+                      <td className="px-2 py-1 text-center text-fg-muted">
+                        {primary && (
+                          <span className="inline-flex items-center gap-0.5 font-mono text-11 text-accent">
+                            <KeyRound size={11} />
+                            1
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1 text-fg-subtle">
                         {draft ? (
                           <input
-                            className="w-[150px] rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-11 text-fg outline-none focus:border-accent"
+                            className="w-full min-w-[100px] rounded border border-line bg-surface-2 px-1 py-0.5 text-11 text-fg outline-none focus:border-accent"
+                            value={draft.comment}
+                            onChange={(event) =>
+                              patchColumn(draft.key, { comment: event.target.value })
+                            }
+                            onFocus={() => setFocusedKey(draft.key)}
+                          />
+                        ) : (
+                          (column as DbTableColumn).comment
+                        )}
+                      </td>
+                      <td className="max-w-[150px] px-2 py-1 font-mono text-fg-muted">
+                        {draft ? (
+                          <input
+                            className="w-full min-w-[90px] rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-11 text-fg outline-none focus:border-accent"
                             value={draft.default_value ?? ""}
                             onChange={(event) =>
                               patchColumn(draft.key, {
                                 default_value: event.target.value || null,
                               })
                             }
+                            onFocus={() => setFocusedKey(draft.key)}
                           />
                         ) : (column as DbTableColumn).default_value === null ? (
                           "NULL"
@@ -370,42 +510,21 @@ export function TableStructure({
                           (column as DbTableColumn).default_value
                         )}
                       </td>
-                      <td className="px-2 py-1 text-fg-muted">
-                        {draft ? (
-                          <label className="flex items-center gap-1 text-11">
-                            <input
-                              type="checkbox"
-                              checked={draft.auto_increment}
-                              disabled={draft.primary}
-                              onChange={(event) =>
-                                patchColumn(draft.key, {
-                                  auto_increment: event.target.checked,
-                                })
-                              }
-                            />
-                            AUTO
-                          </label>
-                        ) : (
-                          [
-                            (column as DbTableColumn).primary_key ? "PK" : null,
-                            (column as DbTableColumn).auto_increment ? "AUTO" : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" ") || "—"
-                        )}
-                      </td>
-                      <td className="px-2 py-1 text-fg-subtle">
+                      <td className="px-2 py-1 text-center">
                         {draft ? (
                           <input
-                            className="w-[130px] rounded border border-line bg-surface-2 px-1 py-0.5 text-11 text-fg outline-none focus:border-accent"
-                            value={draft.comment}
+                            type="checkbox"
+                            checked={draft.auto_increment}
+                            disabled={draft.primary}
                             onChange={(event) =>
-                              patchColumn(draft.key, { comment: event.target.value })
+                              patchColumn(draft.key, {
+                                auto_increment: event.target.checked,
+                              })
                             }
                           />
-                        ) : (
-                          (column as DbTableColumn).comment
-                        )}
+                        ) : (column as DbTableColumn).auto_increment ? (
+                          <span className="text-11 text-fg-muted">AUTO</span>
+                        ) : null}
                       </td>
                       {editing && (
                         <td className="px-1">

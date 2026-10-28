@@ -9,12 +9,8 @@ import { useEffect, useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Database as DatabaseIcon,
-  FilePlus2,
-  Loader2,
   PlugZap,
-  RefreshCw,
   SquareTerminal,
-  X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { databaseApi } from "@/api/ops-api";
@@ -118,15 +114,12 @@ function StructureHost({
   profileId,
   session,
   onRequestClose,
-  onNewQuery,
 }: {
   item: WorkItem;
   profileId: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: (database?: string | null) => void;
 }) {
-  const { t } = useTranslation();
   const profile = useDatabaseStore(
     (state) => state.profiles.find((entry) => entry.id === profileId) ?? null,
   );
@@ -151,72 +144,35 @@ function StructureHost({
   if (!profile || !item.database) return null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
-        <Button
-          variant="primary"
-          size="xs"
-          onClick={() => onNewQuery(item.database)}
-          title={t("新建一份独立的 SQL 查询")}
-        >
-          <FilePlus2 size={11} />
-          {t("新建查询")}
-        </Button>
-        <span className="mx-1 h-5 w-px shrink-0 bg-line" />
-        <span className="max-w-[220px] shrink-0 truncate text-12 font-medium text-fg">
-          {item.objectName}
-        </span>
-        <span className="shrink-0 text-11 text-fg-subtle">{t("表结构")}</span>
-        <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={loading}
-            onClick={() =>
-              void refreshTableDetail(profileId, item.database!, item.objectName)
-            }
-            title={t("刷新结构")}
-          >
-            {loading ? (
-              <Loader2 size={11} className="animate-spin" />
-            ) : (
-              <RefreshCw size={11} />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => onRequestClose(item)}
-            title={t("关闭")}
-          >
-            <X size={11} />
-          </Button>
-        </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-hidden">
-        <TableStructure
-          detail={detail}
-          loading={loading}
-          section="all"
-          profileId={profileId}
-          sessionId={session?.session_id ?? null}
-          selectedColumn={
-            fieldCard?.profileId === profileId &&
-            fieldCard.database === item.database &&
-            fieldCard.table === item.objectName
-              ? fieldCard.column
-              : null
-          }
-          onSelectColumn={(column) =>
-            showFieldCard({
-              profileId,
-              database: item.database!,
-              table: item.objectName,
-              column: column.name,
-            })
-          }
-        />
-      </div>
+    // 结构页自己画单行头部（保存 / 撤销 / 新增 + 页签 + 表名 / 刷新 / 关闭），
+    // 这里不再叠一行工具条。
+    <div className="h-full min-h-0 overflow-hidden">
+      <TableStructure
+        detail={detail}
+        loading={loading}
+        section="all"
+        title={item.objectName}
+        refreshing={loading}
+        onRefresh={() => void refreshTableDetail(profileId, item.database!, item.objectName)}
+        onClose={() => onRequestClose(item)}
+        profileId={profileId}
+        sessionId={session?.session_id ?? null}
+        selectedColumn={
+          fieldCard?.profileId === profileId &&
+          fieldCard.database === item.database &&
+          fieldCard.table === item.objectName
+            ? fieldCard.column
+            : null
+        }
+        onSelectColumn={(column) =>
+          showFieldCard({
+            profileId,
+            database: item.database!,
+            table: item.objectName,
+            column: column.name,
+          })
+        }
+      />
     </div>
   );
 }
@@ -358,7 +314,6 @@ export function WorkItemHost({
                   profileId={profileId}
                   session={session}
                   onRequestClose={onRequestClose}
-                  onNewQuery={onNewQuery}
                 />
               ) : item.kind === "objects" ? (
                 <DatabaseObjects

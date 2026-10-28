@@ -244,8 +244,11 @@ export interface IndexEdit {
 export interface AlterTableRequest {
   database: string;
   table: string;
+  /** 数组顺序就是目标字段顺序（上移/下移直接改数组）。 */
   columns: ColumnEdit[];
   indexes: IndexEdit[];
+  /** 目标主键（按顺序、用新字段名）；留空表示不要主键。 */
+  primary_key: string[];
 }
 
 export interface NewColumn {

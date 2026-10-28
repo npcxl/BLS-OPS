@@ -4,7 +4,20 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { KeyRound, Pencil, Plus, Trash2 } from "@/components/icons";
+import {
+  ClipboardCopy,
+  Copy,
+  Eye,
+  KeyRound,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Trash2,
+  X,
+} from "@/components/icons";
 import type {
   AlterTableRequest,
   ColumnEdit,
@@ -16,6 +29,11 @@ import type {
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ComboInput } from "@/components/ui/combo-input";
+import {
+  ContextMenu,
+  useContextMenu,
+  type ContextMenuItem,
+} from "@/components/ui/context-menu";
 import { ErrorText } from "@/components/ui/modal";
 import { LoadingState } from "@/components/ui/loading";
 import { databaseApi } from "@/api/ops-api";
@@ -102,6 +120,27 @@ const fromDetail = (detail: DbTableDetail) => ({
     })),
 });
 
+/** 草稿指纹：只比"会写进 DDL 的字段"，用来判断有没有未保存的修改。 */
+const draftSignature = (columns: DraftColumn[], indexes: DraftIndex[]) =>
+  JSON.stringify({
+    columns: columns.map((column) => [
+      column.original_name,
+      column.name,
+      composeColumnType(column),
+      column.nullable,
+      column.auto_increment,
+      column.primary,
+      column.default_value,
+      column.comment,
+    ]),
+    indexes: indexes.map((index) => [
+      index.original_name,
+      index.name,
+      index.columns,
+      index.unique,
+    ]),
+  });
+
 export function TableStructure({
   detail,
   loading,
@@ -110,6 +149,10 @@ export function TableStructure({
   onSelectColumn,
   profileId,
   sessionId,
+  title,
+  refreshing = false,
+  onRefresh,
+  onClose,
 }: {
   detail: DbTableDetail | null;
   loading: boolean;
@@ -119,6 +162,11 @@ export function TableStructure({
   onSelectColumn?: (column: DbTableColumn) => void;
   profileId?: string;
   sessionId?: string | null;
+  /** 下面四个只给结构工作项：单行头部右侧的表名 / 刷新 / 关闭。 */
+  title?: string;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+  onClose?: () => void;
 }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -126,6 +174,11 @@ export function TableStructure({
   // 结构/索引/DDL 子视图）由父组件决定显示哪一块，这里不出页签。
   const [tab, setTab] = useState<StructureTab>(section === "all" ? "columns" : section);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  // Navicat 式底部属性抽屉：选中某行才出现，可手动关掉。
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [fieldClipboard, setFieldClipboard] = useState<DraftColumn[]>([]);
+  const menu = useContextMenu();
   const [columns, setColumns] = useState<DraftColumn[]>([]);
   const [indexes, setIndexes] = useState<DraftIndex[]>([]);
   const [preview, setPreview] = useState<SchemaPreview | null>(null);
@@ -180,7 +233,12 @@ export function TableStructure({
   const showIndexes = active === "indexes";
   const showDdl = active === "ddl";
   const showForeign = active === "foreign";
-  const showMeta = section === "all" || active === "columns";
+  // 没有实际改动时「保存 / 撤销」置灰，避免点了什么也没发生。
+  const baseline = fromDetail(detail);
+  const dirty =
+    editing &&
+    draftSignature(columns, indexes) !== draftSignature(baseline.columns, baseline.indexes);
+  const selectedDraft = columns.find((column) => column.key === selectedKey) ?? null;
 
   const startEditing = () => {
     if (!editable) return;
@@ -191,8 +249,149 @@ export function TableStructure({
     setError(null);
   };
 
+  const resetDraft = () => {
+    const draft = fromDetail(detail);
+    setColumns(draft.columns);
+    setIndexes(draft.indexes);
+    setPreview(null);
+    setError(null);
+  };
+
+  const blankColumn = (): DraftColumn => ({
+    key: `new:${crypto.randomUUID()}`,
+    original_name: null,
+    name: "",
+    column_type: "varchar(255)",
+    base_type: "varchar",
+    length: "255",
+    scale: "",
+    nullable: true,
+    auto_increment: false,
+    default_value: null,
+    comment: "",
+    primary: false,
+  });
+
+  /** 不传 `after` 就追加到末尾。 */
+  const addColumn = (after?: number) => {
+    setColumns((current) => {
+      const next = [...current];
+      next.splice(after === undefined ? next.length : after + 1, 0, blankColumn());
+      return next;
+    });
+  };
+
+  const removeColumn = (key: string) => {
+    setColumns((current) => current.filter((column) => column.key !== key));
+  };
+
+  const moveColumn = (index: number, delta: number) => {
+    setColumns((current) => {
+      const target = index + delta;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  /** 复制/粘贴：插到 `after` 后面，作为**新字段**（不带原字段名绑定）。 */
+  const insertCopies = (after: number, sources: DraftColumn[]) => {
+    setColumns((current) => {
+      const next = [...current];
+      next.splice(
+        after + 1,
+        0,
+        ...sources.map((column) => ({
+          ...column,
+          key: `new:${crypto.randomUUID()}`,
+          original_name: null,
+          name: `${column.name || "column"}_copy`,
+          primary: false,
+        })),
+      );
+      return next;
+    });
+  };
+
+  const columnMenuItems = (column: DraftColumn, index: number): ContextMenuItem[] => [
+    {
+      id: "copy",
+      label: t("复制"),
+      icon: Copy,
+      onSelect: () => setFieldClipboard([column]),
+    },
+    {
+      id: "paste",
+      label: t("粘贴"),
+      icon: ClipboardCopy,
+      disabled: fieldClipboard.length === 0,
+      onSelect: () => insertCopies(index, fieldClipboard),
+    },
+    {
+      id: "delete",
+      label: t("删除"),
+      icon: Trash2,
+      danger: true,
+      disabled: column.primary || columns.length === 1,
+      onSelect: () => removeColumn(column.key),
+    },
+    { separator: true },
+    {
+      id: "move-up",
+      label: t("上移"),
+      disabled: index === 0,
+      onSelect: () => moveColumn(index, -1),
+    },
+    {
+      id: "move-down",
+      label: t("下移"),
+      disabled: index === columns.length - 1,
+      onSelect: () => moveColumn(index, 1),
+    },
+    { separator: true },
+    {
+      id: "add",
+      label: t("添加字段"),
+      icon: Plus,
+      onSelect: () => addColumn(index),
+    },
+    {
+      id: "duplicate",
+      label: t("复制字段"),
+      onSelect: () => insertCopies(index, [column]),
+    },
+    { separator: true },
+    column.primary
+      ? {
+          id: "drop-primary",
+          label: t("从主键中删除"),
+          onSelect: () => patchColumn(column.key, { primary: false }),
+        }
+      : {
+          id: "add-primary",
+          label: t("添加到主键"),
+          hint: column.nullable ? t("会自动设为 NOT NULL") : undefined,
+          onSelect: () => patchColumn(column.key, { primary: true, nullable: false }),
+        },
+  ];
+
   const request = useMemo<AlterTableRequest | null>(() => {
     if (!editing || !detail || !profileId) return null;
+    const marked = columns.filter((column) => column.primary);
+    // 主键成员没变时保持库里原来的列序，避免"只是挪了字段顺序"也被当成重建主键。
+    const unchanged =
+      marked.length === detail.primary_key.length &&
+      marked.every((column) =>
+        detail.primary_key.some((key) => key.toLowerCase() === column.name.toLowerCase()),
+      );
+    const primaryKey = unchanged
+      ? detail.primary_key.map(
+          (key) =>
+            marked.find((column) => column.name.toLowerCase() === key.toLowerCase())?.name ??
+            key,
+        )
+      : marked.map((column) => column.name);
     return {
       database: detail.database,
       table: detail.table,
@@ -209,6 +408,7 @@ export function TableStructure({
         ...index,
         columns: index.columns.filter(Boolean),
       })),
+      primary_key: primaryKey,
     };
   }, [columns, detail, editing, indexes, profileId]);
 
@@ -244,7 +444,7 @@ export function TableStructure({
   };
 
   const save = async () => {
-    if (!sessionId || !request) return;
+    if (!sessionId || !request || !dirty) return;
     setBusy(true);
     setError(null);
     try {
@@ -264,10 +464,7 @@ export function TableStructure({
 
   return (
     <div
-      className={cn(
-        "ops-scroll h-full p-3",
-        editing ? "overflow-auto" : "overflow-y-auto",
-      )}
+      className="flex h-full flex-col"
       onKeyDownCapture={(event) => {
         if (
           editing &&
@@ -279,14 +476,56 @@ export function TableStructure({
         }
       }}
     >
-      <div
-        className={cn(
-          "mb-2 flex flex-wrap items-center gap-1",
-          section === "all" ? "justify-between" : "justify-end",
+      {/* 固定单行头部：操作 / 页签 / 字段数 / 表名 + 刷新 + 关闭。 */}
+      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+        {editing ? (
+          <>
+            <Button
+              variant="secondary"
+              size="xs"
+              disabled={busy || !dirty}
+              onClick={() => void save()}
+              title={t("保存结构修改（Ctrl+S）")}
+            >
+              <Save size={11} />
+              {t("保存")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busy || !dirty}
+              onClick={resetDraft}
+              title={t("丢弃未保存的修改")}
+            >
+              <RotateCcw size={11} />
+              {t("撤销")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busy}
+              onClick={() => addColumn()}
+              title={t("添加字段")}
+            >
+              <Plus size={11} />
+              {t("新增")}
+            </Button>
+          </>
+        ) : (
+          editable && (
+            <Button variant="secondary" size="xs" onClick={startEditing}>
+              <Pencil size={11} />
+              {t("编辑结构")}
+            </Button>
+          )
         )}
-      >
+
         {section === "all" && (
-          <div role="tablist" aria-label={t("表结构")} className="flex flex-wrap items-center gap-1">
+          <div
+            role="tablist"
+            aria-label={t("表结构")}
+            className="flex shrink-0 items-center gap-1 border-l border-line pl-2"
+          >
             {STRUCTURE_TABS.map(([key, label]) => (
               <Button
                 key={key}
@@ -301,109 +540,80 @@ export function TableStructure({
             ))}
           </div>
         )}
-        <div className="flex flex-wrap items-center gap-1">
-        {editing ? (
-          <>
-            <Button variant="ghost" size="xs" onClick={() => void save()} disabled={busy}>
-              {t("保存")}
-            </Button>
+
+        {showColumns && (
+          <span className="shrink-0 text-11 text-fg-subtle">
+            {t("字段（{{count}}）", { count: columns.length || detail.columns.length })}
+          </span>
+        )}
+
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {title && (
+            <span className="max-w-[200px] truncate text-11 text-fg-subtle">{title}</span>
+          )}
+          {onRefresh && (
             <Button
               variant="ghost"
               size="xs"
-              disabled={busy}
-              onClick={() => {
-                const draft = fromDetail(detail);
-                setColumns(draft.columns);
-                setIndexes(draft.indexes);
-                setPreview(null);
-                setError(null);
-              }}
+              className="h-6 w-6 px-0"
+              disabled={refreshing}
+              onClick={onRefresh}
+              title={t("刷新结构")}
+              aria-label={t("刷新结构")}
             >
-              {t("撤销")}
+              {refreshing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
             </Button>
-            <Button variant="ghost" size="xs" disabled={busy} onClick={() => setEditing(false)}>
-              {t("取消")}
+          )}
+          {onClose && (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-6 w-6 px-0"
+              onClick={onClose}
+              title={t("关闭")}
+              aria-label={t("关闭")}
+            >
+              <X size={11} />
             </Button>
-          </>
-        ) : (
-          editable && (
-            <Button variant="secondary" size="xs" onClick={startEditing}>
-              <Pencil size={11} />
-              {t("编辑结构")}
-            </Button>
-          )
-        )}
+          )}
+        </div>
       </div>
 
+      <div className="ops-scroll min-h-0 flex-1 overflow-auto p-2">
       {showColumns && (
-        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-11 text-fg-muted">
-          <span>
-            {t("类型")}: {detail.kind === "view" ? t("视图") : t("表")}
-          </span>
-          <span>
-            {t("引擎")}: {detail.engine ?? "—"}
-          </span>
-          <span>
-            {t("可安全定位")}: {detail.reliable_key ? detail.reliable_key.join(", ") : t("否")}
-          </span>
-          {editing && <span className="text-accent">{t("编辑中，Ctrl+S 保存")}</span>}
-        </div>
-      )}
-
-      {showColumns && (
-        <section className="mb-4">
-          <div className="mb-1 flex items-center justify-between">
-            <h3 className="text-12 font-medium text-fg">
-              {t("字段（{{count}}）", { count: columns.length || detail.columns.length })}
-            </h3>
-            {editing && (
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() =>
-                  setColumns((current) => [
-                    ...current,
-                    {
-                      key: `new:${crypto.randomUUID()}`,
-                      original_name: null,
-                      name: "",
-                      column_type: "varchar(255)",
-                      base_type: "varchar",
-                      length: "255",
-                      scale: "",
-                      nullable: true,
-                      auto_increment: false,
-                      default_value: null,
-                      comment: "",
-                      primary: false,
-                    },
-                  ])
-                }
-              >
-                <Plus size={11} />
-                {t("添加字段")}
-              </Button>
-            )}
-          </div>
+        <section>
           <div className="overflow-x-auto rounded-[8px] border border-line">
-            <table className="w-full min-w-[780px] border-collapse text-12">
-              <thead className="bg-surface-2 text-fg-subtle">
+            {/* 固定列宽：切换页签 / 进出编辑时列不会跳动。 */}
+            <table className="w-full min-w-[760px] table-fixed border-collapse text-12">
+              <colgroup>
+                <col className="w-[160px]" />
+                <col className="w-[136px]" />
+                <col className="w-[72px]" />
+                <col className="w-[64px]" />
+                <col className="w-[64px]" />
+                <col className="w-[52px]" />
+                <col className="w-[52px]" />
+                <col />
+                {/* 编辑态：默认值/自增在底部抽屉里；只读态才放到表格里。 */}
+                {!editing && <col className="w-[130px]" />}
+                {!editing && <col className="w-[56px]" />}
+              </colgroup>
+              <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
                 <tr>
                   <th className="px-2 py-1 text-left font-medium">{t("名称")}</th>
                   <th className="px-2 py-1 text-left font-medium">{t("类型")}</th>
-                  <th className="w-[64px] px-2 py-1 text-left font-medium">{t("长度")}</th>
-                  <th className="w-[58px] px-2 py-1 text-left font-medium">{t("小数点")}</th>
-                  <th className="w-[70px] px-2 py-1 text-center font-medium">{t("不是 null")}</th>
-                  <th className="w-[54px] px-2 py-1 text-center font-medium">{t("虚拟")}</th>
-                  <th className="w-[70px] px-2 py-1 text-center font-medium">{t("键")}</th>
+                  <th className="px-2 py-1 text-left font-medium">{t("长度")}</th>
+                  <th className="px-2 py-1 text-left font-medium">{t("小数点")}</th>
+                  <th className="px-2 py-1 text-center font-medium">{t("不是 null")}</th>
+                  <th className="px-2 py-1 text-center font-medium">{t("虚拟")}</th>
+                  <th className="px-2 py-1 text-center font-medium">{t("键")}</th>
                   <th className="px-2 py-1 text-left font-medium">{t("注释")}</th>
-                  <th className="w-[110px] px-2 py-1 text-left font-medium">{t("默认值")}</th>
-                  <th className="w-[58px] px-2 py-1 text-center font-medium">{t("自增")}</th>
-                  {editing && <th className="w-7 px-1" />}
+                  {!editing && <th className="px-2 py-1 text-left font-medium">{t("默认值")}</th>}
+                  {!editing && <th className="px-2 py-1 text-center font-medium">{t("自增")}</th>}
                 </tr>
               </thead>
               <tbody>
-                {(editing ? columns : detail.columns).map((column) => {
+                {(editing ? columns : detail.columns).map((column, index) => {
                   const draft = editing ? (column as DraftColumn) : null;
                   const primary = draft ? draft.primary : (column as DbTableColumn).primary_key;
                   return (
@@ -416,12 +626,27 @@ export function TableStructure({
                           selectedColumn ===
                             (draft?.name ?? (column as DbTableColumn).name)) &&
                           "bg-accent/10",
+                        drawerOpen && selectedKey === draft?.key && "bg-accent/10",
                       )}
                       onClick={() => {
-                        if (draft) setFocusedKey(draft.key);
+                        if (draft) {
+                          setFocusedKey(draft.key);
+                          setSelectedKey(draft.key);
+                          setDrawerOpen(true);
+                        }
                         if (!editing && editable) startEditing();
                         else if (!editing) onSelectColumn?.(column as DbTableColumn);
                       }}
+                      onContextMenu={
+                        draft
+                          ? menu.onContextMenu(() => {
+                              setFocusedKey(draft.key);
+                              setSelectedKey(draft.key);
+                              setDrawerOpen(true);
+                              return columnMenuItems(draft, index);
+                            })
+                          : undefined
+                      }
                     >
                       <td className="px-2 py-1 font-mono text-fg">
                         {draft ? (
@@ -523,70 +748,46 @@ export function TableStructure({
                       </td>
                       <td className="px-2 py-1 text-fg-subtle">
                         {draft ? (
-                          <input
-                            className="w-full min-w-[100px] rounded border border-line bg-surface-2 px-1 py-0.5 text-11 text-fg outline-none focus:border-accent"
-                            value={draft.comment}
-                            onChange={(event) =>
-                              patchColumn(draft.key, { comment: event.target.value })
-                            }
-                            onFocus={() => setFocusedKey(draft.key)}
-                          />
+                          // 注释可能很长：输入框内滚动，右侧眼睛 hover 出全文（title）。
+                          <div className="flex items-center gap-1">
+                            <input
+                              className="min-w-0 flex-1 rounded border border-line bg-surface-2 px-1 py-0.5 text-11 text-fg outline-none focus:border-accent"
+                              value={draft.comment}
+                              title={draft.comment || undefined}
+                              onChange={(event) =>
+                                patchColumn(draft.key, { comment: event.target.value })
+                              }
+                              onFocus={() => setFocusedKey(draft.key)}
+                            />
+                            {draft.comment.trim().length > 8 && (
+                              <span
+                                className="shrink-0 cursor-default text-fg-subtle"
+                                title={draft.comment}
+                              >
+                                <Eye size={11} />
+                              </span>
+                            )}
+                          </div>
                         ) : (
-                          (column as DbTableColumn).comment
-                        )}
-                      </td>
-                      <td className="max-w-[150px] px-2 py-1 font-mono text-fg-muted">
-                        {draft ? (
-                          <input
-                            className="w-full min-w-[90px] rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-11 text-fg outline-none focus:border-accent"
-                            value={draft.default_value ?? ""}
-                            onChange={(event) =>
-                              patchColumn(draft.key, {
-                                default_value: event.target.value || null,
-                              })
-                            }
-                            onFocus={() => setFocusedKey(draft.key)}
-                          />
-                        ) : (column as DbTableColumn).default_value === null ? (
-                          "NULL"
-                        ) : (
-                          (column as DbTableColumn).default_value
-                        )}
-                      </td>
-                      <td className="px-2 py-1 text-center">
-                        {draft ? (
-                          <input
-                            type="checkbox"
-                            checked={draft.auto_increment}
-                            disabled={draft.primary}
-                            onChange={(event) =>
-                              patchColumn(draft.key, {
-                                auto_increment: event.target.checked,
-                              })
-                            }
-                          />
-                        ) : (column as DbTableColumn).auto_increment ? (
-                          <span className="text-11 text-fg-muted">AUTO</span>
-                        ) : null}
-                      </td>
-                      {editing && (
-                        <td className="px-1">
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            className="h-5 w-5 px-0"
-                            aria-label={t("删除字段")}
-                            disabled={!!primary || columns.length === 1}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setColumns((current) =>
-                                current.filter((entry) => entry.key !== draft!.key),
-                              );
-                            }}
+                          <span
+                            className="block truncate"
+                            title={(column as DbTableColumn).comment || undefined}
                           >
-                            <Trash2 size={11} />
-                          </Button>
-                        </td>
+                            {(column as DbTableColumn).comment}
+                          </span>
+                        )}
+                      </td>
+                      {!editing && (
+                        <>
+                          <td className="px-2 py-1 font-mono text-11 text-fg-muted">
+                            {(column as DbTableColumn).default_value === null
+                              ? "NULL"
+                              : (column as DbTableColumn).default_value}
+                          </td>
+                          <td className="px-2 py-1 text-center text-11 text-fg-muted">
+                            {(column as DbTableColumn).auto_increment ? "AUTO" : ""}
+                          </td>
+                        </>
                       )}
                     </tr>
                   );
@@ -599,8 +800,16 @@ export function TableStructure({
 
       {showIndexes && (
         <section className="mb-4">
-          <div className="mb-1 flex items-center justify-between">
-            <h3 className="text-12 font-medium text-fg">{t("索引")}</h3>
+          <div
+            className={cn(
+              "mb-1 flex items-center gap-2",
+              // 页签已经写着“索引”，只有作为固定子视图时才需要标题。
+              section === "all" ? "justify-end" : "justify-between",
+            )}
+          >
+            {section !== "all" && (
+              <h3 className="text-12 font-medium text-fg">{t("索引")}</h3>
+            )}
             {editing && (
               <Button
                 variant="ghost"
@@ -708,9 +917,60 @@ export function TableStructure({
         </section>
       )}
 
+      {showForeign && (
+        <section>
+          {foreignKeys.length > 0 ? (
+            <div className="overflow-x-auto rounded-[8px] border border-line">
+              <table className="w-full min-w-[680px] border-collapse text-12">
+                <thead className="bg-surface-2 text-fg-subtle">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-medium">{t("名称")}</th>
+                    <th className="px-2 py-1 text-left font-medium">{t("字段")}</th>
+                    <th className="px-2 py-1 text-left font-medium">{t("参考表")}</th>
+                    <th className="px-2 py-1 text-left font-medium">{t("参考字段")}</th>
+                    <th className="px-2 py-1 text-left font-medium">{t("删除时")}</th>
+                    <th className="px-2 py-1 text-left font-medium">{t("更新时")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {foreignKeys.map((key, index) => (
+                    <tr
+                      key={`${key.name || "fk"}-${index}`}
+                      className="border-t border-line/60"
+                    >
+                      <td className="px-2 py-1 font-mono text-fg">
+                        {key.name || <span className="text-fg-subtle">—</span>}
+                      </td>
+                      <td className="px-2 py-1 font-mono text-fg-muted">
+                        {key.columns.join(", ")}
+                      </td>
+                      <td className="px-2 py-1 font-mono text-fg-muted">{key.refTable}</td>
+                      <td className="px-2 py-1 font-mono text-fg-muted">
+                        {key.refColumns.join(", ")}
+                      </td>
+                      <td className="px-2 py-1 text-fg-subtle">{key.onDelete ?? "—"}</td>
+                      <td className="px-2 py-1 text-fg-subtle">{key.onUpdate ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-12 text-fg-subtle">
+              {detail.create_sql ? t("没有外键") : t("没有可用的建表语句，无法解析外键")}
+            </p>
+          )}
+          <p className="mt-1 text-11 text-fg-subtle">
+            {t("外键来自建表语句解析，只读；新建或修改外键请在 SQL 中执行。")}
+          </p>
+        </section>
+      )}
+
       {showDdl && (
         <section>
-          <h3 className="mb-1 text-12 font-medium text-fg">{t("表定义")}</h3>
+          {section !== "all" && (
+            <h3 className="mb-1 text-12 font-medium text-fg">{t("表定义")}</h3>
+          )}
           {detail.create_sql ? (
             <pre className="ops-scroll max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-[8px] border border-line bg-surface-2/50 p-2 font-mono text-11 text-fg-muted">
               {detail.create_sql}
@@ -721,12 +981,72 @@ export function TableStructure({
         </section>
       )}
 
+      {preview?.warning && (
+        <p className="mt-2 text-11 text-warning">{preview.warning}</p>
+      )}
       {preview && (
         <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-[6px] border border-line bg-surface-2 p-2 font-mono text-11 text-fg">
           {preview.sql}
         </pre>
       )}
       {error && <ErrorText>{error}</ErrorText>}
+      </div>
+
+      {/* 底部属性抽屉：选中某行才出现，默认值 / 自增这些长尾选项放这里。 */}
+      {showColumns && editing && drawerOpen && selectedDraft && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-surface-2/40 px-2 py-1.5 text-11">
+          <span className="flex min-w-0 items-center gap-1 text-fg-muted">
+            <KeyRound size={11} className="shrink-0 text-fg-subtle" />
+            <span className="max-w-[180px] truncate font-mono text-fg">
+              {selectedDraft.name || t("未命名字段")}
+            </span>
+            <span className="shrink-0 font-mono text-fg-subtle">
+              {composeColumnType(selectedDraft) || "—"}
+            </span>
+          </span>
+          <label className="flex items-center gap-1 text-fg-muted">
+            {t("默认值")}
+            <input
+              className="h-6 w-[180px] rounded border border-line bg-surface-2 px-1 font-mono text-11 text-fg outline-none focus:border-accent"
+              value={selectedDraft.default_value ?? ""}
+              placeholder="NULL"
+              onChange={(event) =>
+                patchColumn(selectedDraft.key, {
+                  default_value: event.target.value || null,
+                })
+              }
+            />
+          </label>
+          <label className="flex items-center gap-1 text-fg-muted">
+            <input
+              type="checkbox"
+              checked={selectedDraft.auto_increment}
+              disabled={selectedDraft.primary}
+              onChange={(event) =>
+                patchColumn(selectedDraft.key, {
+                  auto_increment: event.target.checked,
+                })
+              }
+            />
+            {t("自增")}
+          </label>
+          {selectedDraft.primary && (
+            <span className="text-fg-subtle">{t("主键默认自增")}</span>
+          )}
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto h-6 w-6 px-0"
+            onClick={() => setDrawerOpen(false)}
+            aria-label={t("关闭属性面板")}
+            title={t("关闭属性面板")}
+          >
+            <X size={11} />
+          </Button>
+        </div>
+      )}
+
+      <ContextMenu {...menu.props} />
 
       <ConfirmDialog
         open={pending !== null}

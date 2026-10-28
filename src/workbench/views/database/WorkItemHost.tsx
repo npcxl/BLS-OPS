@@ -15,7 +15,7 @@ import {
   RefreshCw,
   SquareTerminal,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { databaseApi } from "@/api/ops-api";
 import type { DbSessionInfo } from "@/api/types/database";
@@ -79,13 +79,11 @@ function QueryHost({
   profileId,
   connectionName,
   session,
-  onNewQuery,
 }: {
   item: WorkItem;
   profileId: string;
   connectionName: string;
   session: DbSessionInfo | null;
-  onNewQuery: () => void;
 }) {
   const profile = useDatabaseStore(
     (state) => state.profiles.find((entry) => entry.id === profileId) ?? null,
@@ -107,7 +105,6 @@ function QueryHost({
         session={session}
         connectionName={connectionName}
         database={item.database}
-        onNewQuery={onNewQuery}
         onOpenTable={(database, table) =>
           openTable({ profileId, connectionName, database, table })
         }
@@ -127,7 +124,7 @@ function StructureHost({
   profileId: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: () => void;
+  onNewQuery: (database?: string | null) => void;
 }) {
   const { t } = useTranslation();
   const profile = useDatabaseStore(
@@ -159,7 +156,7 @@ function StructureHost({
         <Button
           variant="primary"
           size="xs"
-          onClick={onNewQuery}
+          onClick={() => onNewQuery(item.database)}
           title={t("新建一份独立的 SQL 查询")}
         >
           <FilePlus2 size={11} />
@@ -236,7 +233,7 @@ function TableHost({
   connectionName: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: () => void;
+  onNewQuery: (database?: string | null) => void;
   footer?: ReactNode;
 }) {
   const profile = useDatabaseStore(
@@ -255,7 +252,7 @@ function TableHost({
       initialView="data"
       onClose={() => onRequestClose(item)}
       onPendingChange={(count) => setStatus(item.id, { pendingCount: count })}
-      onNewQuery={onNewQuery}
+      onNewQuery={() => onNewQuery(item.database)}
       footer={footer}
     />
   );
@@ -273,7 +270,7 @@ export function WorkItemHost({
   connectionName: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: () => void;
+  onNewQuery: (database?: string | null) => void;
   footer?: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -323,7 +320,12 @@ export function WorkItemHost({
             <p className="max-w-sm text-11 leading-relaxed text-fg-subtle">
               {t("左侧双击表打开数据页；或新建一份独立 SQL 查询。")}
             </p>
-            <Button variant="primary" size="sm" onClick={onNewQuery} disabled={!session}>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onNewQuery()}
+              disabled={!session}
+            >
               <SquareTerminal size={12} />
               {t("新建查询")}
             </Button>
@@ -370,7 +372,6 @@ export function WorkItemHost({
                   profileId={profileId}
                   connectionName={connectionName}
                   session={session}
-                  onNewQuery={onNewQuery}
                 />
               )}
             </div>

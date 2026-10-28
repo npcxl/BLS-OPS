@@ -21,7 +21,7 @@ import {
   Table2,
   Trash2,
   TriangleAlert,
-} from "lucide-react";
+} from "@/components/icons";
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -299,7 +299,10 @@ export function DatabaseAssetSidebar() {
         newQuery({
           profileId: profile.id,
           connectionName: profile.name,
-          database: null,
+          database:
+            sessions[profile.id]?.current_database ??
+            profile.default_database ??
+            null,
         });
       },
     },

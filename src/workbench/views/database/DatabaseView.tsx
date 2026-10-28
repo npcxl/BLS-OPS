@@ -14,7 +14,7 @@ import { useTranslation } from "react-i18next";
 import {
   Database as DatabaseIcon,
   TriangleAlert,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
@@ -134,16 +134,22 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
     }
   }, [generation, workspaceItems]);
 
-  const handleNewQuery = () => {
+  const handleNewQuery = (database?: string | null) => {
     if (!profileId || !profile) return;
     if (!session) {
       setNotice(t("连接尚未建立，无法新建查询"));
       return;
     }
+    // 上下文优先：从表/结构/对象列表打开时用它们所属的库，
+    // 从连接空白处打开时回退到会话当前库 / 连接默认库。
     newQuery({
       profileId,
       connectionName: profile.name,
-      database: session.current_database ?? profile.default_database,
+      database:
+        database ??
+        session.current_database ??
+        profile.default_database ??
+        null,
     });
   };
 

@@ -7,7 +7,7 @@
  */
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Copy, Loader2 } from "lucide-react";
+import { AlertTriangle, Copy, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { Modal } from "@/components/ui/modal";
@@ -63,12 +63,7 @@ export function ResultsPanel({
             {t("正在执行…")}
           </>
         ) : (
-          <>
-            <span>{t("还没有结果")}</span>
-            <span className="max-w-sm text-center text-11">
-              {t("写 SQL 后按 Ctrl+Enter 执行当前语句，Ctrl+Shift+Enter 执行整个脚本。")}
-            </span>
-          </>
+          <span>{t("这次执行没有返回结果")}</span>
         )}
       </div>
     );

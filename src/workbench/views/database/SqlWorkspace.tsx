@@ -22,10 +22,10 @@ import {
   Play,
   Save,
   Square,
-  SquareTerminal,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import { useEditorTheme } from "@/lib/cm-theme";
 import { databaseApi } from "@/api/ops-api";
@@ -33,6 +33,7 @@ import type { DatabaseProfile, DbDatabase, DbSessionInfo } from "@/api/types/dat
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { saveDraft, useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
@@ -47,7 +48,6 @@ export function SqlWorkspace({
   session,
   connectionName,
   database,
-  onNewQuery,
   detached = false,
   onOpenTable: _onOpenTable,
 }: {
@@ -56,8 +56,7 @@ export function SqlWorkspace({
   session: DbSessionInfo | null;
   connectionName?: string;
   database?: string | null;
-  onNewQuery?: () => void;
-  /** 独立窗口里隐藏“新建查询/全屏”，避免再开一层。 */
+  /** 独立窗口里隐藏“全屏”，避免再开一层。 */
   detached?: boolean;
   onOpenTable: (database: string, table: string) => void;
 }) {
@@ -70,6 +69,16 @@ export function SqlWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** 首次运行后才显示结果区；未查询时编辑器占满高度。 */
+  const [hasRun, setHasRun] = useState(false);
+  /**
+   * 当前查询页使用的数据库。新建查询时从表/库/连接上下文带过来；
+   * 用户切换下拉框只改变这个值，不会反过来被 item.database 覆盖。
+   */
+  const [contextDatabase, setContextDatabase] = useState<string | null>(
+    database ?? null,
+  );
+  const [switchingDb, setSwitchingDb] = useState(false);
 
   const tab = useDatabaseWorkbenchStore((state) => state.tabs[tabId]);
   const setSql = useDatabaseWorkbenchStore((state) => state.setSql);
@@ -81,6 +90,10 @@ export function SqlWorkspace({
   );
   const saveQuery = useDatabaseWorkspaceStore((state) => state.saveQuery);
   const setItemStatus = useDatabaseWorkspaceStore((state) => state.setStatus);
+  const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
+  const profiles = useDatabaseStore((state) => state.profiles);
+  const refreshDatabases = useDatabaseStore((state) => state.refreshDatabases);
+  const openDatabaseTab = useWorkbenchStore((state) => state.openDatabaseTab);
 
   // **必须是稳定引用**：`?? []` 每次 selector 返回新数组，会让
   // useSyncExternalStore 认为快照一直在变，触发无限重渲染。
@@ -93,6 +106,19 @@ export function SqlWorkspace({
   const sqlText = tab?.sql ?? "";
   const running = tab?.runState === "running";
   const cancelling = tab?.runState === "cancelling";
+  const resultCount = tab?.results.length ?? 0;
+  const showResults = hasRun || resultCount > 0 || running || cancelling;
+
+  // 清空结果/重连后 store 会把 runState 设回 ready；这时也要收起面板，
+  // 不能因为本地的 hasRun 留下一个空白结果区。
+  useEffect(() => {
+    if (
+      resultCount === 0 &&
+      (tab?.runState === "ready" || tab?.runState === "idle")
+    ) {
+      setHasRun(false);
+    }
+  }, [resultCount, tab?.runState]);
 
   useEffect(() => {
     // 草稿按工作项隔离，多个查询互不覆盖。
@@ -156,6 +182,7 @@ export function SqlWorkspace({
       return;
     }
     setNotice(null);
+    setHasRun(true);
     void runStatements({
       tabId,
       profileId: profile.id,
@@ -163,6 +190,91 @@ export function SqlWorkspace({
       statements: parsed.statements,
     });
   }, [profile.id, runStatements, session, sqlText, tabId, t]);
+
+  const handleClearResults = () => {
+    clearResults(tabId);
+    setHasRun(false);
+    viewRef.current?.focus();
+  };
+
+  const connectionOptions = useMemo(() => {
+    const list = profiles.map((entry) => ({
+      value: entry.id,
+      label: entry.name,
+      hint: `${entry.username}@${entry.host}`,
+    }));
+    if (!list.some((entry) => entry.value === profile.id)) {
+      list.unshift({
+        value: profile.id,
+        label: profile.name,
+        hint: `${profile.username}@${profile.host}`,
+      });
+    }
+    return list;
+  }, [profile, profiles]);
+
+  const databaseOptions = useMemo(() => {
+    const list = databases
+      .filter((entry) => !entry.system)
+      .map((entry) => ({ value: entry.name, label: entry.name }));
+    const current = session?.current_database ?? contextDatabase;
+    if (current && !list.some((entry) => entry.value === current)) {
+      list.unshift({ value: current, label: current });
+    }
+    return list;
+  }, [contextDatabase, databases, session?.current_database]);
+
+  const switchDatabase = useCallback(
+    async (name: string) => {
+      if (!session || !name || name === session.current_database) return;
+      setSwitchingDb(true);
+      try {
+        await databaseApi.useDatabase(session.session_id, name);
+        const info = await databaseApi.sessionInfo(session.session_id);
+        useDatabaseStore.setState((state) => ({
+          sessions: { ...state.sessions, [profile.id]: info },
+        }));
+      } catch (failure) {
+        setContextDatabase(session.current_database ?? null);
+        setNotice(toDbError(failure).message);
+      } finally {
+        setSwitchingDb(false);
+      }
+    },
+    [profile.id, session],
+  );
+
+  useEffect(() => {
+    if (!session || databases.length > 0) return;
+    void refreshDatabases(profile.id);
+  }, [databases.length, profile.id, refreshDatabases, session]);
+
+  // 从表/库/连接上下文打开查询时，先把会话切到对应数据库；
+  // 用户之后用下拉框改库时只改 contextDatabase，不会被这里覆盖。
+  useEffect(() => {
+    if (!session || !contextDatabase) return;
+    if (session.current_database === contextDatabase) return;
+    void switchDatabase(contextDatabase);
+  }, [contextDatabase, session?.session_id, switchDatabase]);
+
+  const handleConnectionChange = (targetId: string) => {
+    if (targetId === profile.id) return;
+    const target = profiles.find((entry) => entry.id === targetId);
+    if (!target) return;
+    openDatabaseTab({
+      id: target.id,
+      name: target.name,
+      host: target.host,
+      port: target.port,
+    });
+    newQuery({
+      profileId: target.id,
+      connectionName: target.name,
+      database: target.default_database ?? contextDatabase ?? null,
+      sql: sqlText,
+      title: item?.title ?? `${target.name} · SQL`,
+    });
+  };
 
   const handleDetach = async () => {
     if (!sqlText.trim()) return;
@@ -247,21 +359,33 @@ export function SqlWorkspace({
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
-        {!detached && (
-          <>
-            <Button
-              variant="primary"
-              size="xs"
-              onClick={onNewQuery}
-              disabled={!onNewQuery}
-              title={t("新建一份独立的 SQL 查询")}
-            >
-              <SquareTerminal size={12} />
-              {t("新建查询")}
-            </Button>
-            <span className="mx-1 h-5 w-px bg-line" />
-          </>
+        <Select
+          className="w-[140px]"
+          size="sm"
+          value={profile.id}
+          ariaLabel={t("选择连接")}
+          title={t("选择连接（会为新连接打开一份查询）")}
+          onChange={handleConnectionChange}
+          options={connectionOptions}
+        />
+        <Select
+          className="w-[130px]"
+          size="sm"
+          value={session?.current_database ?? contextDatabase ?? ""}
+          placeholder={t("选择数据库")}
+          ariaLabel={t("选择数据库")}
+          title={t("选择当前查询使用的数据库")}
+          disabled={!session}
+          onChange={(value) => {
+            setContextDatabase(value);
+            void switchDatabase(value);
+          }}
+          options={databaseOptions}
+        />
+        {switchingDb && (
+          <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
         )}
+        <span className="mx-1 h-5 w-px bg-line" />
         <Button
           variant="ghost"
           size="xs"
@@ -270,7 +394,6 @@ export function SqlWorkspace({
           title={t("保存查询（不执行 SQL）")}
         >
           <Save size={12} />
-          {t("保存查询")}
         </Button>
         <Button
           variant="ghost"
@@ -279,7 +402,6 @@ export function SqlWorkspace({
           title={t("打开本地 .sql 文件")}
         >
           <FolderOpen size={12} />
-          {t("打开")}
         </Button>
         <Button
           variant="ghost"
@@ -289,7 +411,6 @@ export function SqlWorkspace({
           title={t("另存为 .sql 文件")}
         >
           <FileDown size={12} />
-          {t("保存 .sql")}
         </Button>
         <span className="mx-1 h-5 w-px bg-line" />
         <Button
@@ -311,7 +432,6 @@ export function SqlWorkspace({
             title={t("在新窗口全屏运行这份 SQL")}
           >
             <Maximize2 size={12} />
-            {t("全屏运行")}
           </Button>
         )}
         {(running || cancelling) && (
@@ -330,37 +450,54 @@ export function SqlWorkspace({
             {cancelling ? t("取消中…") : t("停止")}
           </Button>
         )}
-
         <span className="mx-1 h-5 w-px bg-line" />
-
+        {showResults && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={running || cancelling}
+            onClick={handleClearResults}
+            title={t("清空当前结果（不会重新执行）")}
+          >
+            <Eraser size={12} />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="xs"
-          onClick={() => clearResults(tabId)}
-          title={t("清空当前结果（不会重新执行）")}
+          onClick={() => setHistoryOpen(true)}
+          title={t("执行历史")}
         >
-          <Eraser size={12} />
-          {t("清空结果")}
-        </Button>
-        <Button variant="ghost" size="xs" onClick={() => setHistoryOpen(true)}>
           <History size={12} />
-          {t("历史")}
         </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={!session || !sqlText.trim()}
-          onClick={() => setExportOpen(true)}
-          title={t("导出会重新执行这条只读 SQL")}
-        >
-          <FileDown size={12} />
-          {t("导出 CSV")}
-        </Button>
+        {showResults && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={!session || !sqlText.trim()}
+            onClick={() => setExportOpen(true)}
+            title={t("导出会重新执行这条只读 SQL")}
+          >
+            <FileDown size={12} />
+          </Button>
+        )}
       </div>
 
+      {notice && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
+          <span className="min-w-0 flex-1">{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} aria-label={t("关闭")}>
+            <X size={10} />
+          </button>
+        </div>
+      )}
+
       <div
-        className="relative min-h-0 shrink-0 overflow-hidden border-b border-line"
-        style={{ height: editorHeight }}
+        className={cn(
+          "relative min-h-0 overflow-hidden",
+          showResults ? "shrink-0 border-b border-line" : "flex-1",
+        )}
+        style={showResults ? { height: editorHeight } : undefined}
         onKeyDownCapture={(event) => {
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
@@ -389,29 +526,24 @@ export function SqlWorkspace({
         />
       </div>
 
-      <div
-        className={cn(
-          "h-[4px] shrink-0 cursor-row-resize",
-          dragging ? "bg-accent/40" : "bg-transparent hover:bg-accent/20",
-        )}
-        onMouseDown={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-      />
+      {showResults && (
+        <>
+          <div
+            className={cn(
+              "h-[4px] shrink-0 cursor-row-resize",
+              dragging ? "bg-accent/40" : "bg-transparent hover:bg-accent/20",
+            )}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+          />
 
-      {notice && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-2 py-1 text-[10px] text-warning">
-          <span className="min-w-0 flex-1">{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label={t("关闭")}>
-            <X size={10} />
-          </button>
-        </div>
+          <div className="min-h-0 flex-1">
+            <ResultsPanel tabId={tabId} canResolveRows={false} />
+          </div>
+        </>
       )}
-
-      <div className="min-h-0 flex-1">
-        <ResultsPanel tabId={tabId} canResolveRows={false} />
-      </div>
 
       <ExportDialog
         open={exportOpen}

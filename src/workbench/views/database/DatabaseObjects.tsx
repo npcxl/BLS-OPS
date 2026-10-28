@@ -24,7 +24,7 @@ import {
   Search,
   Table2,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { LoadingState } from "@/components/ui/loading";
@@ -74,7 +74,7 @@ export function DatabaseObjects({
   item: WorkItem;
   profileId: string;
   connectionName: string;
-  onNewQuery: () => void;
+  onNewQuery: (database?: string | null) => void;
   onRequestClose: (item: WorkItem) => void;
 }) {
   const { t } = useTranslation();
@@ -179,7 +179,11 @@ export function DatabaseObjects({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
-        <Button variant="primary" size="xs" onClick={onNewQuery}>
+        <Button
+          variant="primary"
+          size="xs"
+          onClick={() => onNewQuery(item.objectName)}
+        >
           <FilePlus2 size={11} />
           {t("新建查询")}
         </Button>

@@ -60,6 +60,10 @@ async fn setup_schema(endpoint_opts: mysql_async::Opts) -> bool {
     let mut conn = match driver::connect_once(endpoint_opts, Duration::from_secs(10)).await {
         Ok(conn) => conn,
         Err(error) => {
+            // CI 设置 REQUIRED=1：数据库不可达必须红，不允许 skip 成假绿。
+            if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+                panic!("required MySQL integration test cannot connect: {error}");
+            }
             eprintln!("skip MySQL integration test: cannot connect for schema: {error}");
             return false;
         }

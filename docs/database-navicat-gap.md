@@ -206,15 +206,14 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 - 长 CJK 标识符按字节数判断 64 上限。
 - 保存的查询不可删除/重命名。
 - `query.rs` 错误/终态批次 `try_send` 可能丢失。
-- CI MySQL 测试全部 skip。
-- 数据库前端核心链路零组件测试。
+- 数据库前端核心链路零组件测试（已补工作项清理/草稿保留，TableBrowser 组件仍缺）。
 
 ## 5. 测试现状
 
-- 前端数据库测试：`src/workbench/views/database/test/sql-split.test.ts`，8 个纯函数用例；数据库 store/组件/关闭协调/窗口清理无测试。
-- Rust 单元：`driver.rs`、`codec.rs` 少量。
-- Rust MySQL 集成：`src-tauri/tests/database_mysql.rs` 有类型/多结果/取消、分页/写入/导出、TLS、百万行 keyset、profile 往返；DB 不可达时直接 skip。
-- CI：`.github/workflows/ci.yml:45-47` 仅 `cargo test --all-targets`，没有 MySQL service，真实集成用例在 CI 等于未执行。
+- 前端数据库测试：`sql-split.test.ts` 8 个纯函数用例；新增 `workspace-cleanup.test.ts` 4 项、`database-workbench-dispose.test.ts` 2 项；TableBrowser/关闭协调/虚拟网格仍无组件测试。
+- Rust 单元：`driver.rs`、`codec.rs`、文件名校验等；共 722 项。
+- Rust MySQL 集成：`src-tauri/tests/database_mysql.rs` 有类型/多结果/取消、分页/写入/导出、TLS、百万行 keyset、profile 往返；本地 DB 不可达时 skip。
+- CI：`.github/workflows/ci.yml` 使用 `shogo82148/actions-setup-mysql` 启动 MySQL 8.0，并设置 `BLS_TEST_MYSQL_REQUIRED=1`；数据库不可达时测试直接 panic，不允许 skip 成假绿。TLS 用例在 CA 文件缺失时仍会 skip，需要后续在 CI 生成/提供 CA。
 
 ## 6. 本轮已落地的 P0 修复（2026-10-28）
 
@@ -229,6 +228,7 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 | CSV 导出流无超时/不可取消 | 查询启动和逐行读取增加超时，`select!` 观察取消；取消/超时断开连接 | `cargo test --test database_mysql`（无 DB 时明确 skip） |
 | 查询阻塞 send 时取消无效 | `flush_batch`/ResultSetEnd 的 send 增加取消 `select!`，取消时回退 in-flight 计数 | `cargo test --lib` |
 | 查询任务 panic 会让会话永久 busy | `catch_unwind` + `SessionEntry::mark_lost`，panic 后标记失败并释放查询计数 | `cargo test --lib` |
+| CI 真实 MySQL 未执行 | GitHub Actions 启动 MySQL 8.0；`BLS_TEST_MYSQL_REQUIRED=1` 禁止 skip | `.github/workflows/ci.yml`（待 PR 实跑确认） |
 | SQL 文件任意路径读写 | Rust 侧系统对话框 + 读写一体化命令，移除前端传路径；文件名净化 | `commands::database::tests` 2 项通过 |
 | 导出任意路径写入 | `db_pick_export_path` 授权 + `db_export_start` 校验授权集合；前端路径只读 | `commands::database::tests` |
 

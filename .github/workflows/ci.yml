@@ -22,6 +22,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest]
+    env:
+      # 真实 MySQL 集成测试：CI 不允许 skip（数据库不可达时 setup_schema 会 panic）。
+      BLS_TEST_MYSQL_HOST: 127.0.0.1
+      BLS_TEST_MYSQL_PORT: "3306"
+      BLS_TEST_MYSQL_USER: root
+      BLS_TEST_MYSQL_PASSWORD: bls_test_pw
+      BLS_TEST_MYSQL_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +38,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Setup MySQL
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          mysql-version: "8.0"
+          root-password: bls_test_pw
 
       - name: Formatting
         working-directory: src-tauri

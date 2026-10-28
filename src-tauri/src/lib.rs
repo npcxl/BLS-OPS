@@ -447,6 +447,7 @@ pub fn run() {
             commands::db_query_release,
             commands::db_query_state,
             commands::db_mutate_apply,
+            commands::db_pick_export_path,
             commands::db_export_start,
             commands::db_export_status,
             commands::db_export_outcome,
@@ -455,8 +456,8 @@ pub fn run() {
             commands::db_history_list,
             commands::db_history_record,
             commands::db_history_clear,
-            commands::db_read_sql_file,
-            commands::db_write_sql_file,
+            commands::db_open_sql_file,
+            commands::db_save_sql_file,
             commands::db_module_info,
         ])
         .build(tauri::generate_context!())

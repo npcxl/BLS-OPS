@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     database::DatabaseManager,
@@ -39,6 +40,8 @@ pub struct AppState {
     pub transfers: Arc<crate::transfer::TransferCenter>,
     /// 数据库工作台：连接运行时、隧道、会话、查询与导出。
     pub database: DatabaseManager,
+    /// 用户通过系统保存对话框明确选过的导出目标；前端不能自行传任意路径。
+    pub export_paths: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -57,6 +60,7 @@ impl AppState {
             command_search: crate::command_center::CommandSearchCache::default(),
             transfers: Arc::new(crate::transfer::TransferCenter::new()),
             database: DatabaseManager::default(),
+            export_paths: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }

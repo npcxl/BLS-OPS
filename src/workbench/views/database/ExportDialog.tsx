@@ -44,6 +44,7 @@ export function ExportDialog({
 }) {
   const { t } = useTranslation();
   const [path, setPath] = useState("");
+  const [pathAuthorized, setPathAuthorized] = useState(false);
   const [maxRows, setMaxRows] = useState(0);
   const [bom, setBom] = useState(true);
   const [exportId, setExportId] = useState<string | null>(null);
@@ -80,6 +81,8 @@ export function ExportDialog({
       .slice(0, 15);
     const base = table ? `${table.table}-${stamp}` : `query-${stamp}`;
     setPath((current) => current || `${base}.csv`);
+    // 默认文件名只是提示，真正可写的路径必须由 Rust 侧另存为对话框授权。
+    setPathAuthorized(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -87,20 +90,20 @@ export function ExportDialog({
 
   const browse = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const chosen = await save({
-        title: t("导出 CSV"),
-        defaultPath: path || "export.csv",
-        filters: [{ name: "CSV", extensions: ["csv"] }],
-      });
-      if (chosen) setPath(chosen);
-    } catch {
-      // 用户取消或对话框不可用：保留手填路径。
+      const chosen = await databaseApi.pickExportPath(
+        path || "export.csv",
+      );
+      if (chosen) {
+        setPath(chosen);
+        setPathAuthorized(true);
+      }
+    } catch (failure) {
+      setError(toDbError(failure).message);
     }
   };
 
   const start = async () => {
-    if (!path.trim()) {
+    if (!path.trim() || !pathAuthorized) {
       setError(t("请选择导出文件路径"));
       return;
     }
@@ -205,8 +208,8 @@ export function ExportDialog({
             <input
               className={fieldClass}
               value={path}
-              onChange={(event) => setPath(event.target.value)}
-              placeholder="C:\\exports\\orders.csv"
+              readOnly
+              placeholder={t("请选择导出文件路径")}
             />
             <Button variant="ghost" size="sm" onClick={() => void browse()}>
               <FolderOpen size={12} />

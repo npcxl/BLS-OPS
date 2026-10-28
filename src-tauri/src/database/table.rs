@@ -810,11 +810,8 @@ pub async fn read_cell(
         Ok(Err(error)) => return Err(map_error(&error, "query")),
         Err(_) => {
             // 超时后连接上可能还有未读完的响应，不能回池复用。
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                conn.disconnect(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
             return Err(DbErrorInfo::new(
                 "timeout",
                 "读取完整字段超时：连接已丢弃，请稍后重试",

@@ -357,16 +357,11 @@ export function SqlWorkspace({
 
   const handleOpenSqlFile = async () => {
     try {
-      const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
-      const path = await openFileDialog({
-        multiple: false,
-        filters: [{ name: "SQL", extensions: ["sql"] }],
-      });
-      if (typeof path !== "string") return;
-      const content = await databaseApi.readSqlFile(path);
-      setSql(tabId, content);
+      const file = await databaseApi.openSqlFile();
+      if (!file) return;
+      setSql(tabId, file.content);
       setItemStatus(tabId, { dirty: true });
-      setNotice(t("已打开 {{path}}", { path }));
+      setNotice(t("已打开 {{path}}", { path: file.path }));
     } catch (failure) {
       setNotice(toDbError(failure).message);
     }
@@ -374,14 +369,11 @@ export function SqlWorkspace({
 
   const handleSaveSqlFile = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        title: t("保存 SQL 文件"),
-        defaultPath: `${item?.title || "query"}.sql`,
-        filters: [{ name: "SQL", extensions: ["sql"] }],
-      });
+      const path = await databaseApi.saveSqlFile(
+        sqlText,
+        item?.title || "query",
+      );
       if (!path) return;
-      await databaseApi.writeSqlFile(path, sqlText);
       setNotice(t("已保存到 {{path}}", { path }));
     } catch (failure) {
       setNotice(toDbError(failure).message);

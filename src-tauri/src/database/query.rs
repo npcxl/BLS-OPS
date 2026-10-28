@@ -24,9 +24,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{FutureExt, TryStreamExt};
-use std::panic::AssertUnwindSafe;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Row};
+use std::panic::AssertUnwindSafe;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use super::codec;

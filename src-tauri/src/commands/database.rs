@@ -368,12 +368,70 @@ pub async fn db_mutate_apply(
 // 导出
 // ---------------------------------------------------------------------------
 
+fn export_file_name(suggested: &str) -> String {
+    let trimmed = suggested.trim();
+    let base = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("export.csv");
+    if base.to_ascii_lowercase().ends_with(".csv") {
+        base.to_string()
+    } else {
+        format!("{base}.csv")
+    }
+}
+
+/// 导出路径必须由用户在系统“另存为”对话框中明确选择。
+#[tauri::command]
+pub async fn db_pick_export_path(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    suggested_name: String,
+) -> Result<Option<String>, DbErrorInfo> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(export_file_name(&suggested_name))
+        .add_filter("CSV", &["csv"])
+        .blocking_save_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let mut path = picked
+        .into_path()
+        .map_err(|error| db_error(format!("无法解析导出路径：{error}")))?;
+    if path.extension().is_none() {
+        path.set_extension("csv");
+    }
+    let path = path.to_string_lossy().to_string();
+    state
+        .export_paths
+        .lock()
+        .map_err(|_| DbErrorInfo::new("config", "导出路径授权状态不可用"))?
+        .insert(path.clone());
+    Ok(Some(path))
+}
+
 #[tauri::command]
 pub async fn db_export_start(
     state: State<'_, AppState>,
     profile_id: String,
     request: ExportRequest,
 ) -> Result<ExportStarted, DbErrorInfo> {
+    if !state
+        .export_paths
+        .lock()
+        .map_err(|_| DbErrorInfo::new("config", "导出路径授权状态不可用"))?
+        .contains(&request.target_path)
+    {
+        return Err(DbErrorInfo::new(
+            "permission",
+            "导出路径必须通过系统“另存为”对话框选择",
+        ));
+    }
     let runtime = runtime_for(&state, &profile_id).await?;
     let detail = match &request.table {
         Some(target) => Some(
@@ -455,17 +513,37 @@ pub fn db_history_clear(
 }
 
 // ---------------------------------------------------------------------------
-// SQL 文件（路径必须来自用户通过系统文件对话框选择的路径）
+// SQL 文件（对话框由 Rust 打开，前端不能自行指定任意路径）
 // ---------------------------------------------------------------------------
 
 /// 单个 SQL 文件的上限：防止误选一个巨大文件把编辑器卡死。
 const MAX_SQL_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-#[tauri::command]
-pub async fn db_read_sql_file(path: String) -> Result<String, DbErrorInfo> {
-    let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
-        DbErrorInfo::new("config", format!("无法读取 SQL 文件：{error}"))
-    })?;
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlFilePayload {
+    pub path: String,
+    pub content: String,
+}
+
+fn sql_file_name(suggested: &str) -> String {
+    let trimmed = suggested.trim();
+    let base = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("query.sql");
+    if base.to_ascii_lowercase().ends_with(".sql") {
+        base.to_string()
+    } else {
+        format!("{base}.sql")
+    }
+}
+
+async fn read_sql_file_at(path: &std::path::Path) -> Result<String, DbErrorInfo> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| DbErrorInfo::new("config", format!("无法读取 SQL 文件：{error}")))?;
     if metadata.len() > MAX_SQL_FILE_BYTES {
         return Err(DbErrorInfo::new(
             "config",
@@ -475,7 +553,7 @@ pub async fn db_read_sql_file(path: String) -> Result<String, DbErrorInfo> {
             ),
         ));
     }
-    tokio::fs::read_to_string(&path).await.map_err(|error| {
+    tokio::fs::read_to_string(path).await.map_err(|error| {
         DbErrorInfo::new(
             "config",
             format!("SQL 文件不是 UTF-8 文本或无法读取：{error}"),
@@ -483,17 +561,79 @@ pub async fn db_read_sql_file(path: String) -> Result<String, DbErrorInfo> {
     })
 }
 
-#[tauri::command]
-pub async fn db_write_sql_file(path: String, sql: String) -> Result<(), DbErrorInfo> {
+async fn write_sql_file_at(path: &std::path::Path, sql: &str) -> Result<(), DbErrorInfo> {
     if sql.len() as u64 > MAX_SQL_FILE_BYTES {
         return Err(DbErrorInfo::new(
             "config",
-            format!("SQL 内容超过 {} MiB，拒绝写入", MAX_SQL_FILE_BYTES / 1024 / 1024),
+            format!(
+                "SQL 内容超过 {} MiB，拒绝写入",
+                MAX_SQL_FILE_BYTES / 1024 / 1024
+            ),
         ));
     }
-    tokio::fs::write(&path, sql).await.map_err(|error| {
-        DbErrorInfo::new("config", format!("写入 SQL 文件失败：{error}"))
-    })
+    tokio::fs::write(path, sql)
+        .await
+        .map_err(|error| DbErrorInfo::new("config", format!("写入 SQL 文件失败：{error}")))
+}
+
+#[tauri::command]
+pub async fn db_open_sql_file(
+    app: tauri::AppHandle,
+) -> Result<Option<SqlFilePayload>, DbErrorInfo> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("SQL", &["sql"])
+        .blocking_pick_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|error| db_error(format!("无法解析文件路径：{error}")))?;
+    let content = read_sql_file_at(&path).await?;
+    Ok(Some(SqlFilePayload {
+        path: path.to_string_lossy().to_string(),
+        content,
+    }))
+}
+
+#[tauri::command]
+pub async fn db_save_sql_file(
+    app: tauri::AppHandle,
+    sql: String,
+    suggested_name: String,
+) -> Result<Option<String>, DbErrorInfo> {
+    use tauri_plugin_dialog::DialogExt;
+
+    if sql.len() as u64 > MAX_SQL_FILE_BYTES {
+        return Err(DbErrorInfo::new(
+            "config",
+            format!(
+                "SQL 内容超过 {} MiB，拒绝写入",
+                MAX_SQL_FILE_BYTES / 1024 / 1024
+            ),
+        ));
+    }
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(sql_file_name(&suggested_name))
+        .add_filter("SQL", &["sql"])
+        .blocking_save_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let mut path = picked
+        .into_path()
+        .map_err(|error| db_error(format!("无法解析文件路径：{error}")))?;
+    if path.extension().is_none() {
+        path.set_extension("sql");
+    }
+    write_sql_file_at(&path, &sql).await?;
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 /// 供前端检查同名命令是否注册（调试用；不参与业务）。
@@ -505,4 +645,25 @@ pub fn db_module_info() -> serde_json::Value {
         "supports": ["mysql8"],
         "postgres": "unimplemented"
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{export_file_name, sql_file_name};
+
+    #[test]
+    fn sql_file_name_never_contains_path_segments() {
+        assert_eq!(sql_file_name("query"), "query.sql");
+        assert_eq!(sql_file_name("../secret.sql"), "secret.sql");
+        assert_eq!(sql_file_name(r"C:\Users\me\query.SQL"), "query.SQL");
+        assert_eq!(sql_file_name("   "), "query.sql");
+    }
+
+    #[test]
+    fn export_file_name_never_contains_path_segments() {
+        assert_eq!(export_file_name("orders"), "orders.csv");
+        assert_eq!(export_file_name("../../orders.csv"), "orders.csv");
+        assert_eq!(export_file_name(r"C:\exports\orders.CSV"), "orders.CSV");
+        assert_eq!(export_file_name("  "), "export.csv");
+    }
 }

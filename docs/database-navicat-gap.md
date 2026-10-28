@@ -184,20 +184,17 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
    - 后果：一键关闭该连接全部标签、删配置和钥匙串密码、丢工作项。
    - 修复：统一 `ConfirmDialog`，明确将关闭 N 个标签/删除密码/保留 SQL 草稿。
 
-5. **SQL 文件 IPC 任意路径读写**
-   - 位置：`commands/database.rs:464-497`、`export.rs:61-66`。
-   - 后果：WebView 可读/覆盖用户可写文件；需要系统文件对话框授权或路径白名单。
-   - 修复：把文件选择移到 Rust 侧系统对话框，或使用 Tauri fs scope + 一次性授权路径；导出同理。
+5. **SQL 文件/导出路径 IPC 任意读写（已修复）**
+   - 原位置：`commands/database.rs` 旧 `db_read_sql_file`/`db_write_sql_file`、`export.rs` 的 `target_path`。
+   - 修复：SQL 打开/保存改由 Rust 系统对话框 + 读写一体命令；导出增加 `db_pick_export_path` 授权集合，`db_export_start` 只接受授权路径；文件名只取 basename 并强制扩展名。
+   - 证据：`commands/database.rs` 的 `db_open_sql_file`/`db_save_sql_file`/`db_pick_export_path`；`commands::database::tests` 2 项通过。
+   - 剩余：TLS CA 路径仍由前端选择，但只用于 TLS 初始化，不返回内容。
 
-6. **`db_read_cell`/导出无超时**
-   - 位置：`table.rs:790-799`、`export.rs:320,397-457`。
-   - 后果：服务器/NAT 挂起时永久占用连接；导出池 1 会堵住后续导出。
-   - 修复：统一连接获取/查询/流读取超时；取消/超时释放连接。
+6. **`db_read_cell`/导出无超时（已修复）**
+   - 修复：`table.rs` 连接获取 10s、查询按 `query_timeout_ms`；`export.rs` 查询启动/逐行读取超时，超时断开连接不回池。
 
-7. **查询任务阻塞 send 时无法取消**
-   - 位置：`query.rs:714-721,733`；`session.rs:116-156`。
-   - 后果：前端停止拉取后任务卡在 `tx.send().await`，会话永久 busy。
-   - 修复：`send` 用 `select!` 同时观察取消/取消令牌；增加 panic guard/drop 时释放会话连接。
+7. **查询任务阻塞 send 时无法取消（已修复）**
+   - 修复：`query.rs` 的 `flush_batch`/`ResultSetEnd` 支持取消 `select!`；任务 panic 使用 `catch_unwind` + `SessionEntry::mark_lost` 释放会话。
 
 ### P1
 
@@ -232,6 +229,8 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 | CSV 导出流无超时/不可取消 | 查询启动和逐行读取增加超时，`select!` 观察取消；取消/超时断开连接 | `cargo test --test database_mysql`（无 DB 时明确 skip） |
 | 查询阻塞 send 时取消无效 | `flush_batch`/ResultSetEnd 的 send 增加取消 `select!`，取消时回退 in-flight 计数 | `cargo test --lib` |
 | 查询任务 panic 会让会话永久 busy | `catch_unwind` + `SessionEntry::mark_lost`，panic 后标记失败并释放查询计数 | `cargo test --lib` |
+| SQL 文件任意路径读写 | Rust 侧系统对话框 + 读写一体化命令，移除前端传路径；文件名净化 | `commands::database::tests` 2 项通过 |
+| 导出任意路径写入 | `db_pick_export_path` 授权 + `db_export_start` 校验授权集合；前端路径只读 | `commands::database::tests` |
 
 ## 7. 验收原则
 

@@ -1372,6 +1372,12 @@ export const opsApi = {
     invoke<DirectorySizeResult[]>("directory_size_status_many", { sessionId, paths }),
 };
 
+/** SQL 文件内容：路径由 Rust 侧系统对话框返回，前端不自行拼接。 */
+export interface SqlFilePayload {
+  path: string;
+  content: string;
+}
+
 /**
  * 数据库工作台 API。
  *
@@ -1457,6 +1463,8 @@ export const databaseApi = {
     }),
 
   // -- 导出 ----------------------------------------------------------------
+  pickExportPath: (suggestedName: string) =>
+    invoke<string | null>("db_pick_export_path", { suggestedName }),
   exportStart: (profileId: string, request: ExportRequest) =>
     invoke<ExportStarted>("db_export_start", { profileId, request }),
   exportStatus: (exportId: string) =>
@@ -1474,10 +1482,10 @@ export const databaseApi = {
   historyClear: (profileId: string | null) =>
     invoke<void>("db_history_clear", { profileId }),
 
-  // -- SQL 文件（路径来自系统文件对话框） ---------------------------------
-  readSqlFile: (path: string) => invoke<string>("db_read_sql_file", { path }),
-  writeSqlFile: (path: string, sql: string) =>
-    invoke<void>("db_write_sql_file", { path, sql }),
+  // -- SQL 文件（对话框和读写都在 Rust 侧完成） ----------------------------
+  openSqlFile: () => invoke<SqlFilePayload | null>("db_open_sql_file"),
+  saveSqlFile: (sql: string, suggestedName: string) =>
+    invoke<string | null>("db_save_sql_file", { sql, suggestedName }),
 
   moduleInfo: () =>
     invoke<{ engine: string; driver: string; supports: string[]; postgres: string }>(

@@ -279,8 +279,7 @@ async fn run_export(
     mut cancel_rx: watch::Receiver<bool>,
 ) {
     let started = Instant::now();
-    let idle_timeout =
-        Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000));
+    let idle_timeout = Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000));
     let part_path =
         std::path::PathBuf::from(format!("{}.part-{}", request.target_path, task.export_id));
     let target_path = std::path::PathBuf::from(&request.target_path);
@@ -328,11 +327,7 @@ async fn run_export(
         }
         Err(_) => {
             // 查询没有在预算内启动：连接可能仍有未读响应，直接断开。
-            let _ = tokio::time::timeout(
-                Duration::from_secs(2),
-                conn.disconnect(),
-            )
-            .await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
             fail(
                 &task,
                 DbErrorInfo::new("timeout", "导出查询超时，已断开连接"),
@@ -503,11 +498,7 @@ async fn run_export(
     if cancelled {
         let _ = writer.flush().await;
         // 流未读完/可能阻塞，连接不能回池；断开时服务器会回滚只读事务。
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            conn.disconnect(),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
         let _ = tokio::fs::remove_file(&part_path).await;
         *task.state.write().await = "cancelled".to_string();
         *task.message.write().await = Some("导出已取消，临时文件已删除".to_string());
@@ -515,21 +506,13 @@ async fn run_export(
     }
     if let Some(error) = stream_error {
         let _ = writer.flush().await;
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            conn.disconnect(),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
         fail(&task, error, &part_path).await;
         return;
     }
     if let Some(error) = write_error {
         let _ = writer.flush().await;
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            conn.disconnect(),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
         fail(&task, error, &part_path).await;
         return;
     }

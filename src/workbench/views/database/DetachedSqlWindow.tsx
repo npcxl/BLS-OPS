@@ -6,7 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { X } from "@/components/icons";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { LoadingState } from "@/components/ui/loading";
@@ -122,7 +122,9 @@ export function DetachedSqlWindow() {
 
   const closeWindow = () => {
     try {
-      void getCurrentWindow().close();
+      void getCurrentWindow()
+        .close()
+        .catch(() => window.close());
     } catch {
       window.close();
     }

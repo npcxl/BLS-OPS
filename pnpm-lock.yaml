@@ -129,6 +129,9 @@ importers:
       '@iconify-json/material-icon-theme':
         specifier: ^1.2.70
         version: 1.2.70
+      '@iconify-json/skill-icons':
+        specifier: ^1.2.4
+        version: 1.2.4
       '@iconify-json/vscode-icons':
         specifier: ^1.2.76
         version: 1.2.76
@@ -464,6 +467,9 @@ packages:
 
   '@iconify-json/material-icon-theme@1.2.70':
     resolution: {integrity: sha512-pctYpp6/3f0TfNoX+yqiC1HRBDxL7+ybOe70MrdyvUa4KcGdtpbsyc4E1qHQTkPIkpU7+0kfP2MYU2C7BfmNrw==}
+
+  '@iconify-json/skill-icons@1.2.4':
+    resolution: {integrity: sha512-S6iRKHGlGCb/zfx3Isv1TBe5PunbDE5FEwJcaXji60+yRZMrcFFtYEI1xivKqaGKXyVZ508yjGDItsehQdJmSg==}
 
   '@iconify-json/vscode-icons@1.2.76':
     resolution: {integrity: sha512-gSu20bZiegbMFLSPHHtmliUJoOPhovTT77RNkMfr6u9ns5uC2bVZ4K5T7wUlywRAzQk4qgG7t4AULaucSsta4w==}
@@ -1857,6 +1863,10 @@ snapshots:
       '@iconify/types': 2.0.0
 
   '@iconify-json/material-icon-theme@1.2.70':
+    dependencies:
+      '@iconify/types': 2.0.0
+
+  '@iconify-json/skill-icons@1.2.4':
     dependencies:
       '@iconify/types': 2.0.0
 

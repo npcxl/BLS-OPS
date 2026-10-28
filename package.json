@@ -62,6 +62,7 @@
     "@iconify-json/fluent-emoji": "^1.2.7",
     "@iconify-json/fluent-emoji-flat": "^1.2.6",
     "@iconify-json/material-icon-theme": "^1.2.70",
+    "@iconify-json/skill-icons": "^1.2.4",
     "@iconify-json/vscode-icons": "^1.2.76",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19",

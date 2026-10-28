@@ -41,6 +41,10 @@ import {
   TableOperationDialog,
   type TableOperationRequestTarget,
 } from "./TableOperationDialog";
+import {
+  SchemaChangeDialog,
+  type SchemaDialogTarget,
+} from "./SchemaChangeDialog";
 
 const ROW_HEIGHT = 30;
 /** 稳定空数组：selector 每次返回新 `[]` 会触发无限重渲染。 */
@@ -93,11 +97,29 @@ export function DatabaseObjects({
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
   const [tableOperation, setTableOperation] =
     useState<TableOperationRequestTarget | null>(null);
-  const objectMenu = useObjectMenuBuilder((context, table, kind) =>
-    setTableOperation({
-      target: { ...context, table },
-      kind,
-    }),
+  const [schemaDialog, setSchemaDialog] = useState<SchemaDialogTarget | null>(
+    null,
+  );
+  const sessionId = useDatabaseStore(
+    (state) => state.sessions[profileId]?.session_id ?? null,
+  );
+  const ensureSession = useDatabaseStore((state) => state.ensureSession);
+  const objectMenu = useObjectMenuBuilder(
+    (context, table, kind) =>
+      setTableOperation({
+        target: { ...context, table },
+        kind,
+      }),
+    (context, table) => {
+      setSchemaDialog({
+        mode: "save_view",
+        profileId: context.profileId,
+        database: context.database,
+        name: table.name,
+        orReplace: true,
+      });
+      if (!sessionId) void ensureSession(context.profileId);
+    },
   );
 
   const [query, setQuery] = useState("");
@@ -335,6 +357,13 @@ export function DatabaseObjects({
       <TableOperationDialog
         pending={tableOperation}
         onClose={() => setTableOperation(null)}
+        onApplied={() => undefined}
+      />
+
+      <SchemaChangeDialog
+        target={schemaDialog}
+        sessionId={sessionId}
+        onClose={() => setSchemaDialog(null)}
         onApplied={() => undefined}
       />
 

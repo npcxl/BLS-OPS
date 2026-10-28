@@ -35,6 +35,9 @@ import type {
   QueryStarted,
   RowMutation,
   SaveProfileRequest,
+  SchemaChange,
+  SchemaOutcome,
+  SchemaPreview,
   TableOperationOutcome,
   TableOperationPreview,
   TableOperationRequest,
@@ -1417,6 +1420,10 @@ export const databaseApi = {
     invoke<DbTable[]>("db_metadata_tables", { profileId, database }),
   tableDetail: (profileId: string, database: string, table: string) =>
     invoke<DbTableDetail>("db_metadata_table", { profileId, database, table }),
+  previewSchemaChange: (request: SchemaChange) =>
+    invoke<SchemaPreview>("db_schema_change_preview", { request }),
+  applySchemaChange: (sessionId: string, request: SchemaChange) =>
+    invoke<SchemaOutcome>("db_schema_change_apply", { sessionId, request }),
   previewTableOperation: (
     sessionId: string,
     request: TableOperationRequest,

@@ -8,7 +8,9 @@ use tauri::State;
 use super::open_db;
 use crate::database::runtime::ProfileRuntime;
 use crate::database::session::SessionEntry;
-use crate::database::{driver, metadata, model::*, mutate, profiles, query, table, table_ops};
+use crate::database::{
+    driver, metadata, model::*, mutate, profiles, query, schema_ops, table, table_ops,
+};
 use crate::state::AppState;
 use std::sync::Arc;
 
@@ -208,6 +210,29 @@ pub async fn db_metadata_table(
 ) -> Result<DbTableDetail, DbErrorInfo> {
     let runtime = runtime_for(&state, &profile_id).await?;
     metadata::table_detail(&runtime, &state.database.metadata, &database, &table).await
+}
+
+#[tauri::command]
+pub fn db_schema_change_preview(
+    request: schema_ops::SchemaChange,
+) -> Result<schema_ops::SchemaPreview, DbErrorInfo> {
+    schema_ops::preview(&request)
+}
+
+#[tauri::command]
+pub async fn db_schema_change_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: schema_ops::SchemaChange,
+) -> Result<schema_ops::SchemaOutcome, DbErrorInfo> {
+    let (session, _runtime) = session_and_runtime(&state, &session_id).await?;
+    let outcome = schema_ops::apply(&session, &request).await?;
+    state
+        .database
+        .metadata
+        .invalidate(Some(&session.profile_id))
+        .await;
+    Ok(outcome)
 }
 
 #[tauri::command]

@@ -32,6 +32,7 @@ export function useObjectMenuBuilder(
     table: DbTable,
     kind: ObjectTableOperation,
   ) => void,
+  onEditView?: (context: ObjectMenuContext, table: DbTable) => void,
 ) {
   const { t } = useTranslation();
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
@@ -111,6 +112,15 @@ export function useObjectMenuBuilder(
               },
             ]
           : [
+              ...(onEditView
+                ? [
+                    {
+                      id: "edit-view",
+                      label: t("编辑视图定义"),
+                      onSelect: () => onEditView(context, table),
+                    },
+                  ]
+                : []),
               {
                 id: "rename-view",
                 label: t("重命名视图"),
@@ -153,6 +163,7 @@ export function useObjectMenuBuilder(
       },
     ],
     [
+      onEditView,
       onTableOperation,
       openStructure,
       openTable,

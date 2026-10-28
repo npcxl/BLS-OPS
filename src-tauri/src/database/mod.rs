@@ -36,6 +36,7 @@ pub mod mutate;
 pub mod profiles;
 pub mod query;
 pub mod runtime;
+pub mod schema_ops;
 pub mod session;
 pub mod table;
 pub mod table_ops;

@@ -49,6 +49,14 @@ import {
   TableOperationDialog,
   type TableOperationRequestTarget,
 } from "./TableOperationDialog";
+import {
+  SchemaChangeDialog,
+  type SchemaDialogTarget,
+} from "./SchemaChangeDialog";
+import {
+  CreateTableDialog,
+  type CreateTableTarget,
+} from "./CreateTableDialog";
 
 /** 10px 起点与服务器侧栏的 px-2.5 对齐，每层再缩进 12px。 */
 const indent = (level: number) => ({ paddingLeft: `${10 + level * 12}px` });
@@ -283,12 +291,30 @@ export function DatabaseAssetSidebar() {
     useState<SavedQuery | null>(null);
   const [tableOperation, setTableOperation] =
     useState<TableOperationRequestTarget | null>(null);
+  const [schemaDialog, setSchemaDialog] = useState<SchemaDialogTarget | null>(
+    null,
+  );
+  const [createTableTarget, setCreateTableTarget] =
+    useState<CreateTableTarget | null>(null);
   const menu = useContextMenu();
-  const objectMenu = useObjectMenuBuilder((context, table, kind) =>
-    setTableOperation({
-      target: { ...context, table },
-      kind,
-    }),
+  const objectMenu = useObjectMenuBuilder(
+    (context, table, kind) =>
+      setTableOperation({
+        target: { ...context, table },
+        kind,
+      }),
+    (context, table) => {
+      setSchemaDialog({
+        mode: "save_view",
+        profileId: context.profileId,
+        database: context.database,
+        name: table.name,
+        orReplace: true,
+      });
+      if (!sessions[context.profileId]) {
+        void ensureSession(context.profileId);
+      }
+    },
   );
   const statuses = useDatabaseStore((state) => state.statuses);
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
@@ -502,6 +528,19 @@ export function DatabaseAssetSidebar() {
         },
       },
       {
+        id: "new-database",
+        label: t("新建数据库"),
+        onSelect: () => {
+          open(profile);
+          setSchemaDialog({
+            mode: "create_database",
+            profileId: profile.id,
+            database: null,
+          });
+          if (!sessions[profile.id]) void ensureSession(profile.id);
+        },
+      },
+      {
         id: "refresh",
         label: t("刷新数据库"),
         onSelect: () => {
@@ -589,6 +628,33 @@ export function DatabaseAssetSidebar() {
         },
       },
       {
+        id: "new-table",
+        label: t("新建表"),
+        onSelect: () => {
+          open(profile);
+          void openDatabase(profile.id, database.name);
+          setCreateTableTarget({
+            profileId: profile.id,
+            database: database.name,
+          });
+          if (!sessions[profile.id]) void ensureSession(profile.id);
+        },
+      },
+      {
+        id: "new-view",
+        label: t("新建视图"),
+        onSelect: () => {
+          open(profile);
+          void openDatabase(profile.id, database.name);
+          setSchemaDialog({
+            mode: "save_view",
+            profileId: profile.id,
+            database: database.name,
+          });
+          if (!sessions[profile.id]) void ensureSession(profile.id);
+        },
+      },
+      {
         id: "refresh",
         label: t("刷新表列表"),
         onSelect: () => void refreshTables(profile.id, database.name),
@@ -598,6 +664,20 @@ export function DatabaseAssetSidebar() {
         id: "copy-name",
         label: t("复制库名"),
         onSelect: () => void copyText(database.name),
+      },
+      {
+        id: "drop-database",
+        label: t("删除数据库"),
+        danger: true,
+        onSelect: () => {
+          setSchemaDialog({
+            mode: "drop_database",
+            profileId: profile.id,
+            database: database.name,
+            name: database.name,
+          });
+          if (!sessions[profile.id]) void ensureSession(profile.id);
+        },
       },
     ];
   };
@@ -1149,6 +1229,38 @@ export function DatabaseAssetSidebar() {
         pending={tableOperation}
         onClose={() => setTableOperation(null)}
         onApplied={() => undefined}
+      />
+
+      <SchemaChangeDialog
+        target={schemaDialog}
+        sessionId={
+          schemaDialog
+            ? (sessions[schemaDialog.profileId]?.session_id ?? null)
+            : null
+        }
+        onClose={() => setSchemaDialog(null)}
+        onApplied={() => undefined}
+      />
+
+      <CreateTableDialog
+        target={createTableTarget}
+        sessionId={
+          createTableTarget
+            ? (sessions[createTableTarget.profileId]?.session_id ?? null)
+            : null
+        }
+        onClose={() => setCreateTableTarget(null)}
+        onApplied={(table) => {
+          if (!createTableTarget) return;
+          openTable({
+            profileId: createTableTarget.profileId,
+            connectionName:
+              profiles.find((entry) => entry.id === createTableTarget.profileId)
+                ?.name ?? "",
+            database: createTableTarget.database,
+            table,
+          });
+        }}
       />
 
       <ConnectionDialog

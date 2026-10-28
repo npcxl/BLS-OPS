@@ -13,7 +13,8 @@ use std::time::Duration;
 use mysql_async::prelude::Queryable;
 use ops_workbench_lib::database::{
     driver, export::ExportRegistry, metadata, model::*, mutate, profiles, query,
-    runtime::ProfileRuntime, session::SessionEntry, table, table_ops, tunnel::TunnelRegistry,
+    runtime::ProfileRuntime, schema_ops, session::SessionEntry, table, table_ops,
+    tunnel::TunnelRegistry,
 };
 
 fn env(key: &str, fallback: &str) -> String {
@@ -1025,4 +1026,136 @@ async fn mysql_table_operations_are_real() {
 
     let _ = tokio::time::timeout(Duration::from_secs(2), admin.disconnect()).await;
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn mysql_schema_operations_are_real() {
+    let (path, conn) = temp_app_db();
+    let base = profile();
+    let plan = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip schema ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let endpoint = match driver::resolve_plan(&TunnelRegistry::default(), plan).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("skip schema ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let mut admin = match driver::connect_once(
+        driver::build_opts(&endpoint, false).expect("opts"),
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(conn) => conn,
+        Err(error) => {
+            if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+                panic!("required schema ops test cannot connect: {error}");
+            }
+            eprintln!("skip schema ops: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let db_name = "ops_schema_ops";
+    let _ = admin
+        .query_drop(format!("DROP DATABASE IF EXISTS `{db_name}`"))
+        .await;
+
+    let (runtime, session) = runtime_for(&conn).await;
+    schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::CreateDatabase {
+            name: db_name.to_string(),
+            charset: Some("utf8mb4".to_string()),
+            collation: None,
+        },
+    )
+    .await
+    .expect("create database");
+
+    schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::CreateTable {
+            database: db_name.to_string(),
+            table: "items".to_string(),
+            columns: vec![
+                schema_ops::NewColumn {
+                    name: "id".to_string(),
+                    column_type: "BIGINT".to_string(),
+                    nullable: false,
+                    auto_increment: true,
+                    default_value: None,
+                    comment: String::new(),
+                },
+                schema_ops::NewColumn {
+                    name: "name".to_string(),
+                    column_type: "VARCHAR(64)".to_string(),
+                    nullable: false,
+                    auto_increment: false,
+                    default_value: None,
+                    comment: String::new(),
+                },
+            ],
+            primary_key: vec!["id".to_string()],
+            engine: Some("InnoDB".to_string()),
+            charset: Some("utf8mb4".to_string()),
+            collation: None,
+        },
+    )
+    .await
+    .expect("create table");
+
+    schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::SaveView {
+            database: db_name.to_string(),
+            view: "item_names".to_string(),
+            select_sql: "SELECT id, name FROM items".to_string(),
+            or_replace: false,
+        },
+    )
+    .await
+    .expect("create view");
+    let count: Option<u64> = admin
+        .query_first(format!("SELECT COUNT(*) FROM `{db_name}`.`item_names`"))
+        .await
+        .expect("query view");
+    assert_eq!(count, Some(0));
+
+    schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::DropView {
+            database: db_name.to_string(),
+            view: "item_names".to_string(),
+        },
+    )
+    .await
+    .expect("drop view");
+    schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::DropDatabase {
+            name: db_name.to_string(),
+        },
+    )
+    .await
+    .expect("drop database");
+
+    let exists: Option<u64> = admin
+        .query_first(format!(
+            "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{db_name}'"
+        ))
+        .await
+        .expect("check database");
+    assert_eq!(exists, Some(0));
+    let _ = tokio::time::timeout(Duration::from_secs(2), admin.disconnect()).await;
+    let _ = std::fs::remove_file(path);
+    let _ = runtime;
 }

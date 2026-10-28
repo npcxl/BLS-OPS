@@ -224,6 +224,52 @@ export interface DbIndex {
   columns: DbIndexColumn[];
 }
 
+export interface NewColumn {
+  name: string;
+  column_type: string;
+  nullable: boolean;
+  auto_increment: boolean;
+  default_value: string | null;
+  comment: string;
+}
+
+export type SchemaChange =
+  | {
+      action: "create_database";
+      name: string;
+      charset: string | null;
+      collation: string | null;
+    }
+  | {
+      action: "create_table";
+      database: string;
+      table: string;
+      columns: NewColumn[];
+      primary_key: string[];
+      engine: string | null;
+      charset: string | null;
+      collation: string | null;
+    }
+  | { action: "drop_database"; name: string }
+  | {
+      action: "save_view";
+      database: string;
+      view: string;
+      select_sql: string;
+      or_replace: boolean;
+    }
+  | { action: "drop_view"; database: string; view: string };
+
+export interface SchemaPreview {
+  sql: string;
+  warning: string | null;
+  destructive: boolean;
+}
+
+export interface SchemaOutcome {
+  sql: string;
+}
+
 export type TableOperationKind =
   | "rename"
   | "copy_structure"

@@ -438,6 +438,8 @@ pub fn run() {
             commands::db_metadata_databases,
             commands::db_metadata_tables,
             commands::db_metadata_table,
+            commands::db_schema_change_preview,
+            commands::db_schema_change_apply,
             commands::db_table_operation_preview,
             commands::db_table_operation_apply,
             commands::db_metadata_invalidate,

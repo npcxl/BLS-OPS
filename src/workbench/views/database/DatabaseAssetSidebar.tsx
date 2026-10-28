@@ -45,6 +45,7 @@ import {
   type SavedQuery,
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { DatabaseDuotone } from "@/components/icons";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
@@ -352,13 +353,20 @@ export function DatabaseAssetSidebar() {
     useState<SavedQuery | null>(null);
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
-  const closeSession = useDatabaseStore((state) => state.closeSession);
+  const statuses = useDatabaseStore((state) => state.statuses);
+  const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
+  const disconnectProfile = useDatabaseStore((state) => state.disconnectProfile);
   const ensureSession = useDatabaseStore((state) => state.ensureSession);
   const reconnect = useDatabaseStore((state) => state.reconnect);
 
   useEffect(() => {
     if (profiles.length === 0) void refreshProfiles();
   }, [profiles.length, refreshProfiles]);
+
+  useEffect(() => {
+    // 拉取每个连接的 Rust 侧运行状态，驱动连接图标上的绿色状态点。
+    for (const profile of profiles) void refreshStatus(profile.id);
+  }, [profiles, refreshStatus]);
 
   /*
    * 恢复上次的展开态：localStorage 只记「哪些节点是打开的」，数据不跨进程缓存，
@@ -522,19 +530,19 @@ export function DatabaseAssetSidebar() {
       },
       ...(connected
         ? [
-            {
-              id: "reconnect",
-              label: t("重新连接"),
-              onSelect: () => void reconnect(profile.id),
-            },
-            { separator: true as const },
-            {
-              id: "close",
-              label: t("关闭连接"),
-              danger: true,
-              onSelect: () => setDisconnectTarget(profile),
-            },
-          ]
+          {
+            id: "reconnect",
+            label: t("重新连接"),
+            onSelect: () => void reconnect(profile.id),
+          },
+          { separator: true as const },
+          {
+            id: "close",
+            label: t("关闭连接"),
+            danger: true,
+            onSelect: () => setDisconnectTarget(profile),
+          },
+        ]
         : []),
       {
         id: "info",
@@ -732,7 +740,9 @@ export function DatabaseAssetSidebar() {
               <ProfileRow
                 profile={profile}
                 expanded={profileOpen}
-                connected={!!sessions[profile.id]}
+                connected={
+                  statuses[profile.id]?.connected ?? !!sessions[profile.id]
+                }
                 error={profileLoadError}
                 onToggle={() => void toggleProfile(profile.id)}
                 onOpen={() => {
@@ -889,7 +899,7 @@ export function DatabaseAssetSidebar() {
                           // 分类展开态：缺省展开，收起的记录在 store 里（跨重启保留）。
                           const categoryOpen = (id: string) =>
                             expandedCategories[
-                              categoryKey(profile.id, database.name, id)
+                            categoryKey(profile.id, database.name, id)
                             ] !== false;
                           const toggleCat = (id: string) =>
                             toggleCategory(
@@ -1166,7 +1176,7 @@ export function DatabaseAssetSidebar() {
         confirmLabel={t("关闭连接")}
         onCancel={() => setDisconnectTarget(null)}
         onConfirm={() => {
-          if (disconnectTarget) void closeSession(disconnectTarget.id);
+          if (disconnectTarget) void disconnectProfile(disconnectTarget.id);
           setDisconnectTarget(null);
         }}
       />

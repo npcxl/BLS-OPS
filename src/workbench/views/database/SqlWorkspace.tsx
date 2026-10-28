@@ -1,13 +1,12 @@
 /**
  * SQL 工作区：编辑器 + 执行 + 结果 + 历史 + 导出。
  *
- * 执行语义（明确区分，不假装是 mysql CLI）：
- * - 有选区 → 只执行选区（选区里若有多条语句，逐条执行）；
- * - 无选区 → 执行光标所在语句；
- * - "执行脚本" → 按顺序执行整段（拆分器处理引号/注释，不支持 DELIMITER）。
+ * 执行语义对齐 Navicat：
+ * - 有选区 → 只运行选区（选区里若有多条语句，逐条执行）；
+ * - 无选区 → 运行编辑器里的全部 SQL；
+ * - 多语句按顺序执行，遇到错误/取消就停在该语句。
  *
- * 多语句脚本按顺序执行，遇到错误/取消就停在该语句，前面的结果显示在
- * 各自的结果集标签里。
+ * 另可把当前 SQL 放进独立窗口运行；窗口之间用 Tauri 事件同步执行状态。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -19,9 +18,9 @@ import {
   FolderOpen,
   History,
   Loader2,
+  Maximize2,
   Play,
   Save,
-  ScrollText,
   Square,
   SquareTerminal,
   X,
@@ -37,7 +36,8 @@ import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
-import { splitSqlStatements, statementAtCursor } from "./sql-split";
+import { splitSqlStatements } from "./sql-split";
+import { openDetachedSqlWindow } from "./detached-sql";
 
 const EMPTY_DATABASES: DbDatabase[] = [];
 
@@ -48,6 +48,7 @@ export function SqlWorkspace({
   connectionName,
   database,
   onNewQuery,
+  detached = false,
   onOpenTable: _onOpenTable,
 }: {
   tabId: string;
@@ -56,6 +57,8 @@ export function SqlWorkspace({
   connectionName?: string;
   database?: string | null;
   onNewQuery?: () => void;
+  /** 独立窗口里隐藏“新建查询/全屏”，避免再开一层。 */
+  detached?: boolean;
   onOpenTable: (database: string, table: string) => void;
 }) {
   const { t } = useTranslation();
@@ -134,43 +137,47 @@ export function SqlWorkspace({
     };
   }, [dragging]);
 
-  const execute = useCallback(
-    (mode: "current" | "script") => {
-      if (!session) return;
-      const view = viewRef.current;
-      const selection = view
-        ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to).trim()
-        : "";
+  const execute = useCallback(() => {
+    if (!session) return;
+    const view = viewRef.current;
+    const selection = view
+      ? view.state
+          .sliceDoc(
+            view.state.selection.main.from,
+            view.state.selection.main.to,
+          )
+          .trim()
+      : "";
+    // Navicat 行为：有选区运行选区，没有选区运行全部。
+    const parsed = splitSqlStatements(selection || sqlText);
+    if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
+    if (parsed.statements.length === 0) {
+      setNotice(t("没有可执行的语句"));
+      return;
+    }
+    setNotice(null);
+    void runStatements({
+      tabId,
+      profileId: profile.id,
+      sessionId: session.session_id,
+      statements: parsed.statements,
+    });
+  }, [profile.id, runStatements, session, sqlText, tabId, t]);
 
-      let statements: string[] = [];
-      if (mode === "script") {
-        const parsed = splitSqlStatements(sqlText);
-        statements = parsed.statements;
-        if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
-      } else if (selection) {
-        const parsed = splitSqlStatements(selection);
-        statements = parsed.statements;
-        if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
-      } else {
-        const cursor = view?.state.selection.main.head ?? sqlText.length;
-        const statement = statementAtCursor(sqlText, cursor);
-        if (statement) statements = [statement];
-      }
-
-      if (statements.length === 0) {
-        setNotice(t("没有可执行的语句"));
-        return;
-      }
-      setNotice(null);
-      void runStatements({
-        tabId,
+  const handleDetach = async () => {
+    if (!sqlText.trim()) return;
+    try {
+      await openDetachedSqlWindow({
         profileId: profile.id,
-        sessionId: session.session_id,
-        statements,
+        connectionName: connectionName ?? profile.name,
+        database: database ?? null,
+        sql: sqlText,
+        title: item?.title ?? `${profile.name} · SQL`,
       });
-    },
-    [profile.id, runStatements, session, sqlText, tabId, t],
-  );
+    } catch (failure) {
+      setNotice(toDbError(failure).message);
+    }
+  };
 
   const extensions = useMemo(
     () => [
@@ -240,17 +247,21 @@ export function SqlWorkspace({
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
-        <Button
-          variant="primary"
-          size="xs"
-          onClick={onNewQuery}
-          disabled={!onNewQuery}
-          title={t("新建一份独立的 SQL 查询")}
-        >
-          <SquareTerminal size={12} />
-          {t("新建查询")}
-        </Button>
-        <span className="mx-1 h-5 w-px bg-line" />
+        {!detached && (
+          <>
+            <Button
+              variant="primary"
+              size="xs"
+              onClick={onNewQuery}
+              disabled={!onNewQuery}
+              title={t("新建一份独立的 SQL 查询")}
+            >
+              <SquareTerminal size={12} />
+              {t("新建查询")}
+            </Button>
+            <span className="mx-1 h-5 w-px bg-line" />
+          </>
+        )}
         <Button
           variant="ghost"
           size="xs"
@@ -285,22 +296,24 @@ export function SqlWorkspace({
           variant="primary"
           size="xs"
           disabled={!session || running || cancelling}
-          onClick={() => execute("current")}
-          title={t("执行选中 SQL 或光标所在语句（Ctrl+Enter）")}
+          onClick={execute}
+          title={t("有选区运行选区，无选区运行全部（Ctrl+Enter）")}
         >
           <Play size={12} />
-          {t("执行")}
+          {t("运行")}
         </Button>
-        <Button
-          variant="secondary"
-          size="xs"
-          disabled={!session || running || cancelling}
-          onClick={() => execute("script")}
-          title={t("按顺序执行整段脚本（Ctrl+Shift+Enter）")}
-        >
-          <ScrollText size={12} />
-          {t("执行脚本")}
-        </Button>
+        {!detached && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={!sqlText.trim() || running || cancelling}
+            onClick={() => void handleDetach()}
+            title={t("在新窗口全屏运行这份 SQL")}
+          >
+            <Maximize2 size={12} />
+            {t("全屏运行")}
+          </Button>
+        )}
         {(running || cancelling) && (
           <Button
             variant="ghost"
@@ -352,7 +365,7 @@ export function SqlWorkspace({
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
-            execute(event.shiftKey ? "script" : "current");
+            execute();
           }
         }}
       >

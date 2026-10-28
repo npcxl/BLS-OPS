@@ -28,6 +28,7 @@ import type { WorkspaceTab } from "@/workbench/types";
 import { CloseWorkItemDialog, type CloseAction } from "./CloseWorkItemDialog";
 import { CloseWorkItemsDialog } from "./CloseWorkItemsDialog";
 import { DdlPanel } from "./DdlPanel";
+import { listenDetachedSqlEvents } from "./detached-sql";
 import { FieldCard } from "./FieldCard";
 import { OpenItemsPanel } from "./OpenItemsPanel";
 import { WorkItemHost } from "./WorkItemHost";
@@ -150,6 +151,35 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   useEffect(() => {
     if (ddl && ddl.profileId !== profileId) hideDdl();
   }, [ddl, hideDdl, profileId]);
+
+  // 独立 SQL 窗口执行结束后在主窗口给一条可见通知；
+  // 事件只是通知，查询结果仍属于独立窗口。
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void listenDetachedSqlEvents((event) => {
+      if (!alive || event.action !== "finished") return;
+      setNotice(
+        event.state === "completed"
+          ? t("独立窗口「{{title}}」执行完成：{{rows}} 行 · {{ms}} ms", {
+              title: event.title,
+              rows: event.rows,
+              ms: event.elapsedMs,
+            })
+          : t("独立窗口「{{title}}」执行结束：{{state}}", {
+              title: event.title,
+              state: event.state,
+            }),
+      );
+    }).then((stop) => {
+      if (alive) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [t]);
 
   // 字段卡片同样只属于当前连接、当前表的工作项。
   const activeWorkItem = workspaceItems.find((item) => item.id === activeId) ?? null;

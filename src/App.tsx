@@ -3,9 +3,21 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SplashScreen } from "@/components/ui/SplashScreen";
 import { useTrayLabels } from "@/hooks/use-tray-labels";
 import { Workbench } from "@/workbench/Workbench";
+import { DetachedSqlWindow } from "@/workbench/views/database/DetachedSqlWindow";
+import { isDetachedSqlWindow } from "@/workbench/views/database/detached-sql";
 
 /** App root — spec §72. */
 export default function App() {
+  // 独立 SQL 窗口只渲染查询页，不加载整个工作台；URL 参数固定，
+  // 因此这里的条件分支不会改变同一窗口内的 hook 顺序。
+  if (isDetachedSqlWindow()) {
+    return (
+      <ErrorBoundary>
+        <DetachedSqlWindow />
+      </ErrorBoundary>
+    );
+  }
+
   // 托盘菜单文案跟随界面语言（点 X 隐藏到托盘，托盘里恢复/退出）。
   useTrayLabels();
   // 开屏动画盖在 Workbench 上：Workbench 照常挂载加载数据，动画结束淡出

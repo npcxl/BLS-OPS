@@ -45,6 +45,12 @@ jobs:
           mysql-version: "8.0"
           root-password: bls_test_pw
 
+      # CI 的 MySQL 是临时实例，旧缓存里的 CA 与当前证书不匹配；
+      # TLS 用例在缺少 CA 时会明确 skip，避免拿过期证书误报失败。
+      - name: Remove stale TLS test CA
+        shell: pwsh
+        run: Remove-Item src-tauri/target/test-mysql-ca.pem -ErrorAction SilentlyContinue
+
       - name: Formatting
         working-directory: src-tauri
         run: cargo fmt --all -- --check
@@ -57,7 +63,8 @@ jobs:
       # SSH server: handshake, host-key trust, password auth, ProxyJump.
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --all-targets
+        # 数据库集成测试共用 ops_test schema，必须串行，否则会互相 DROP TABLE。
+        run: cargo test --all-targets -- --test-threads=1
 
       - name: cargo build
         working-directory: src-tauri

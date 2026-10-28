@@ -30,7 +30,8 @@ fn profile() -> DatabaseProfile {
         host: env("BLS_TEST_MYSQL_HOST", "127.0.0.1"),
         port: env("BLS_TEST_MYSQL_PORT", "33306").parse().unwrap_or(33306),
         username: env("BLS_TEST_MYSQL_USER", "root"),
-        default_database: Some("ops_test".to_string()),
+        // 测试库由 setup_schema 创建；连接阶段不能预选一个还不存在的库。
+        default_database: None,
         has_password: false,
         ssh_server_id: None,
         tls_mode: "disabled".to_string(),
@@ -239,7 +240,7 @@ async fn mysql_types_multi_result_and_cancel() {
         .start(query::StartQueryRequest {
             session: session.clone(),
             runtime: runtime.clone(),
-            sql: "SELECT * FROM types_demo; SELECT duplicate_a AS id, duplicate_b AS id FROM types_demo;"
+            sql: "SELECT * FROM ops_test.types_demo; SELECT duplicate_a AS id, duplicate_b AS id FROM ops_test.types_demo;"
                 .to_string(),
             budget: ResolvedBudget::resolve(None),
         })
@@ -1146,6 +1147,7 @@ async fn mysql_schema_operations_are_real() {
             columns: vec!["name".to_string()],
             unique: false,
         }],
+        primary_key: None,
     };
     schema_ops::apply_alter_table(&session, &detail, &alter)
         .await
@@ -1180,7 +1182,7 @@ async fn mysql_schema_operations_are_real() {
         &schema_ops::SchemaChange::SaveView {
             database: db_name.to_string(),
             view: "item_names".to_string(),
-            select_sql: "SELECT id, name FROM items".to_string(),
+            select_sql: "SELECT item_id, name FROM items".to_string(),
             or_replace: false,
         },
     )

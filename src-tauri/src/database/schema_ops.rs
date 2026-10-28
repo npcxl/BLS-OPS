@@ -81,6 +81,22 @@ pub struct AlterTableRequest {
     pub table: String,
     pub columns: Vec<ColumnEdit>,
     pub indexes: Vec<IndexEdit>,
+    /// 目标主键（按顺序、用**新**字段名）。`None` 表示不动主键；空数组表示删掉主键。
+    ///
+    /// `columns` 的数组顺序同时就是目标字段顺序（前端上移/下移直接改数组）。
+    #[serde(default)]
+    pub primary_key: Option<Vec<String>>,
+}
+
+fn column_from_edit(edit: &ColumnEdit) -> NewColumn {
+    NewColumn {
+        name: edit.name.clone(),
+        column_type: edit.column_type.clone(),
+        nullable: edit.nullable,
+        auto_increment: edit.auto_increment,
+        default_value: edit.default_value.clone(),
+        comment: edit.comment.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +335,7 @@ fn alter_table_sql(
 
     let mut clauses = Vec::new();
     let mut destructive = false;
+    let mut reordered = false;
     let mut renames = std::collections::HashMap::new();
     for original in &detail.columns {
         let edit = request.columns.iter().find(|column| {
@@ -374,20 +391,81 @@ fn alter_table_sql(
             ));
         }
     }
-    for column in request
+    // 字段顺序：MySQL 只能用 `MODIFY COLUMN ... AFTER` / `ADD COLUMN ... AFTER`
+    // 表达位置，所以按请求数组顺序重放一遍，只对"位置不对"的列发语句。
+    // 用户没上移/下移时不产生任何额外语句。
+    let mut simulated = detail
         .columns
         .iter()
-        .filter(|column| column.original_name.is_none())
-    {
-        let definition = NewColumn {
-            name: column.name.clone(),
-            column_type: column.column_type.clone(),
-            nullable: column.nullable,
-            auto_increment: column.auto_increment,
-            default_value: column.default_value.clone(),
-            comment: column.comment.clone(),
+        .filter_map(|original| {
+            request
+                .columns
+                .iter()
+                .find(|column| {
+                    column
+                        .original_name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&original.name))
+                })
+                .map(|column| column.name.to_ascii_lowercase())
+        })
+        .collect::<Vec<String>>();
+    let mut previous: Option<String> = None;
+    for column in &request.columns {
+        let lower = column.name.to_ascii_lowercase();
+        let tail = match previous.as_deref() {
+            Some(name) => format!(" AFTER {}", quote_identifier(name)?),
+            None => " FIRST".to_string(),
         };
-        clauses.push(format!("ADD COLUMN {}", column_sql(&definition)?));
+        if column.original_name.is_some() {
+            let Some(position) = simulated.iter().position(|name| *name == lower) else {
+                previous = Some(column.name.clone());
+                continue;
+            };
+            let current_previous = if position == 0 {
+                None
+            } else {
+                Some(simulated[position - 1].clone())
+            };
+            let expected_previous = previous.as_ref().map(|name| name.to_ascii_lowercase());
+            let in_place = match (current_previous.as_deref(), expected_previous.as_deref()) {
+                (None, None) => true,
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            };
+            if !in_place {
+                clauses.push(format!(
+                    "MODIFY COLUMN {}{}",
+                    column_sql(&column_from_edit(column))?,
+                    tail
+                ));
+                reordered = true;
+                simulated.remove(position);
+                let insert_at = expected_previous
+                    .as_deref()
+                    .and_then(|name| simulated.iter().position(|candidate| candidate == name))
+                    .map(|index| index + 1)
+                    .unwrap_or(0);
+                simulated.insert(insert_at, lower);
+            }
+        } else {
+            clauses.push(format!(
+                "ADD COLUMN {}{}",
+                column_sql(&column_from_edit(column))?,
+                tail
+            ));
+            let insert_at = previous
+                .as_deref()
+                .and_then(|name| {
+                    simulated
+                        .iter()
+                        .position(|candidate| candidate.eq_ignore_ascii_case(name))
+                })
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            simulated.insert(insert_at, lower);
+        }
+        previous = Some(column.name.clone());
     }
 
     let desired_columns = request
@@ -480,6 +558,59 @@ fn alter_table_sql(
         ));
     }
 
+    if let Some(primary_key) = request.primary_key.as_ref() {
+        for key in primary_key {
+            let Some(column) = request
+                .columns
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(key))
+            else {
+                return Err(DbErrorInfo::new("config", format!("主键字段不存在：{key}")));
+            };
+            if column.nullable {
+                return Err(DbErrorInfo::new(
+                    "config",
+                    format!("主键字段 {} 不能允许 NULL", column.name),
+                ));
+            }
+        }
+        // 自增列必须是键：从主键里摘掉自增列时 MySQL 会直接报错，先挡住。
+        for column in request
+            .columns
+            .iter()
+            .filter(|column| column.auto_increment)
+        {
+            if !primary_key
+                .iter()
+                .any(|key| key.eq_ignore_ascii_case(&column.name))
+            {
+                return Err(DbErrorInfo::new(
+                    "config",
+                    format!("自增字段 {} 必须保留在主键中，或先取消自增", column.name),
+                ));
+            }
+        }
+        let unchanged = detail.primary_key.len() == primary_key.len()
+            && detail
+                .primary_key
+                .iter()
+                .zip(primary_key.iter())
+                .all(|(left, right)| left.eq_ignore_ascii_case(right));
+        if !unchanged {
+            if !detail.primary_key.is_empty() {
+                clauses.push("DROP PRIMARY KEY".to_string());
+                destructive = true;
+            }
+            if !primary_key.is_empty() {
+                let names = primary_key
+                    .iter()
+                    .map(|name| quote_identifier(name))
+                    .collect::<Result<Vec<_>, _>>()?;
+                clauses.push(format!("ADD PRIMARY KEY ({})", names.join(", ")));
+            }
+        }
+    }
+
     if clauses.is_empty() {
         return Err(DbErrorInfo::new("config", "表结构没有变化"));
     }
@@ -489,7 +620,13 @@ fn alter_table_sql(
         quote_identifier(&request.table)?,
         clauses.join(",\n  ")
     );
-    Ok((vec![sql], None, destructive))
+    // MySQL 没有"移动列"的轻量语法，只能 MODIFY 重写整列定义，字符集/排序
+    // 规则这类不在 COLUMN_TYPE 里的属性会回落到表默认值，先提醒一句。
+    let warning = reordered.then(|| {
+        "字段顺序调整会用 MODIFY COLUMN 重写列定义，列的字符集/排序规则会回到表默认值；请确认预览 SQL。"
+            .to_string()
+    });
+    Ok((vec![sql], warning, destructive))
 }
 
 pub fn alter_table_preview(
@@ -589,12 +726,14 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
             } else {
                 "CREATE VIEW"
             };
+            let database = quote_identifier(database)?;
             Ok((
-                vec![format!(
-                    "{verb} {}.{} AS {select}",
-                    quote_identifier(database)?,
-                    quote_identifier(view)?
-                )],
+                vec![
+                    // 视图定义里的表往往不写库名；先切到目标库，
+                    // 否则共享会话没有 current database 时会报 1046。
+                    format!("USE {database}"),
+                    format!("{verb} {database}.{} AS {select}", quote_identifier(view)?),
+                ],
                 None,
                 false,
             ))
@@ -910,6 +1049,7 @@ mod alter_tests {
                     columns: vec!["name".to_string()],
                     unique: true,
                 }],
+                primary_key: None,
             },
         )
         .unwrap();
@@ -937,9 +1077,167 @@ mod alter_tests {
                     comment: String::new(),
                 }],
                 indexes: vec![],
+                primary_key: None,
             },
         )
         .unwrap_err();
         assert_eq!(error.stage, "permission");
+    }
+
+    fn base_columns() -> Vec<ColumnEdit> {
+        vec![
+            ColumnEdit {
+                original_name: Some("id".to_string()),
+                name: "id".to_string(),
+                column_type: "bigint".to_string(),
+                nullable: false,
+                auto_increment: true,
+                default_value: None,
+                comment: String::new(),
+            },
+            ColumnEdit {
+                original_name: Some("name".to_string()),
+                name: "name".to_string(),
+                column_type: "varchar(64)".to_string(),
+                nullable: false,
+                auto_increment: false,
+                default_value: None,
+                comment: String::new(),
+            },
+        ]
+    }
+
+    fn index_edits() -> Vec<IndexEdit> {
+        vec![IndexEdit {
+            original_name: Some("idx_name".to_string()),
+            name: "idx_name".to_string(),
+            columns: vec!["name".to_string()],
+            unique: false,
+        }]
+    }
+
+    #[test]
+    fn reordering_columns_emits_modify_with_position() {
+        let mut columns = base_columns();
+        columns.swap(0, 1);
+        let result = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns,
+                indexes: index_edits(),
+                primary_key: None,
+            },
+        )
+        .unwrap();
+        assert!(result.sql.contains("MODIFY COLUMN `name`"));
+        assert!(result.sql.contains("FIRST"));
+        assert!(!result.sql.contains("MODIFY COLUMN `id`"));
+    }
+
+    #[test]
+    fn adding_column_in_the_middle_uses_after() {
+        let mut columns = base_columns();
+        columns.insert(
+            1,
+            ColumnEdit {
+                original_name: None,
+                name: "created_at".to_string(),
+                column_type: "datetime".to_string(),
+                nullable: true,
+                auto_increment: false,
+                default_value: None,
+                comment: String::new(),
+            },
+        );
+        let result = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns,
+                indexes: index_edits(),
+                primary_key: None,
+            },
+        )
+        .unwrap();
+        assert!(result
+            .sql
+            .contains("ADD COLUMN `created_at` datetime NULL AFTER `id`"));
+    }
+
+    #[test]
+    fn dropping_primary_key_is_destructive() {
+        let mut columns = base_columns();
+        // 自增列必须留在主键里，这里先去掉自增再删主键。
+        columns[0].auto_increment = false;
+        let result = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns,
+                indexes: index_edits(),
+                primary_key: Some(vec![]),
+            },
+        )
+        .unwrap();
+        assert!(result.sql.contains("DROP PRIMARY KEY"));
+        assert!(result.destructive);
+    }
+
+    #[test]
+    fn changing_primary_key_replaces_it() {
+        let mut columns = base_columns();
+        // 自增列必须留在主键里，这里先去掉自增，模拟"把主键换成 name"。
+        columns[0].auto_increment = false;
+        let result = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns,
+                indexes: index_edits(),
+                primary_key: Some(vec!["name".to_string()]),
+            },
+        )
+        .unwrap();
+        assert!(result.sql.contains("DROP PRIMARY KEY"));
+        assert!(result.sql.contains("ADD PRIMARY KEY (`name`)"));
+    }
+
+    #[test]
+    fn auto_increment_column_must_stay_in_primary_key() {
+        let error = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns: base_columns(),
+                indexes: index_edits(),
+                primary_key: Some(vec!["name".to_string()]),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.stage, "config");
+    }
+
+    #[test]
+    fn nullable_primary_key_column_is_rejected() {
+        let mut columns = base_columns();
+        columns[1].nullable = true;
+        let error = alter_table_preview(
+            &detail(),
+            &AlterTableRequest {
+                database: "db".to_string(),
+                table: "users".to_string(),
+                columns,
+                indexes: index_edits(),
+                primary_key: Some(vec!["name".to_string()]),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.stage, "config");
     }
 }

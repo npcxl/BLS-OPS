@@ -45,8 +45,26 @@ pub fn record(root: &Path, remote_path: &str, content: &str) -> Result<()> {
     }
     let dir = dir_for(root, remote_path);
     std::fs::create_dir_all(&dir)?;
-    let stamp = chrono::Utc::now().timestamp_millis();
-    std::fs::write(dir.join(format!("{stamp}.txt")), content)?;
+    // 同一毫秒内连续保存会撞文件名；顺序试探到空位，保证每份历史独立。
+    let mut stamp = chrono::Utc::now().timestamp_millis();
+    loop {
+        let path = dir.join(format!("{stamp}.txt"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(content.as_bytes())?;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                stamp += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     prune(&dir);
     Ok(())
 }

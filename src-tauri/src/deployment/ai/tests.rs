@@ -598,7 +598,8 @@ fn a_cancelled_retry_wait_returns_without_sending_again() {
     // 第一次 429（可重试），退避等待中取消 → 不应再发第二次请求。
     let server = MockServer::spawn(vec![Reply::Raw {
         status: 429,
-        headers: vec![("retry-after", "1".to_string())],
+        // 给取消线程留足窗口，避免慢 runner 上退避已结束才取消。
+        headers: vec![("retry-after", "5".to_string())],
         body: "{\"error\":\"slow down\"}".to_string(),
     }]);
     let advisor = advisor(&server, "sk-x");

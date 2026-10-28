@@ -116,7 +116,7 @@ function QueryHost({
 function StructureHost({
   item,
   profileId,
-  session: _session,
+  session,
   onRequestClose,
   onNewQuery,
 }: {
@@ -198,6 +198,8 @@ function StructureHost({
           detail={detail}
           loading={loading}
           section="all"
+          profileId={profileId}
+          sessionId={session?.session_id ?? null}
           selectedColumn={
             fieldCard?.profileId === profileId &&
             fieldCard.database === item.database &&

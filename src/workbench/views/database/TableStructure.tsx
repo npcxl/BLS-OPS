@@ -1,9 +1,13 @@
 /** 表结构：字段（类型 / NULL / 默认值 / 主键 / 自增）、索引、表定义。 */
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { KeyRound } from "@/components/icons";
+import { KeyRound, Pencil } from "@/components/icons";
 import type { DbTableColumn, DbTableDetail } from "@/api/types/database";
+import { Button } from "@/components/ui/button";
 import { LoadingState } from "@/components/ui/loading";
 import { cn } from "@/lib/cn";
+import { useDatabaseStore } from "@/stores/database-store";
+import { TableDesignerDialog } from "./TableDesignerDialog";
 
 export type StructureSection = "all" | "columns" | "indexes" | "ddl";
 
@@ -13,6 +17,8 @@ export function TableStructure({
   section = "all",
   selectedColumn = null,
   onSelectColumn,
+  profileId,
+  sessionId,
 }: {
   detail: DbTableDetail | null;
   loading: boolean;
@@ -20,8 +26,14 @@ export function TableStructure({
   /** 结构工作项点击字段 → 右侧字段卡片。 */
   selectedColumn?: string | null;
   onSelectColumn?: (column: DbTableColumn) => void;
+  profileId?: string;
+  sessionId?: string | null;
 }) {
   const { t } = useTranslation();
+  const [designerOpen, setDesignerOpen] = useState(false);
+  const refreshTableDetail = useDatabaseStore(
+    (state) => state.refreshTableDetail,
+  );
 
   if (loading && !detail) {
     return <LoadingState className="h-full" />;
@@ -40,6 +52,19 @@ export function TableStructure({
 
   return (
     <div className="ops-scroll h-full overflow-y-auto p-3">
+      {detail.kind === "table" && profileId && sessionId && (
+        <div className="mb-2 flex items-center justify-end">
+          <Button
+            variant="secondary"
+            size="xs"
+            onClick={() => setDesignerOpen(true)}
+          >
+            <Pencil size={11} />
+            {t("设计表")}
+          </Button>
+        </div>
+      )}
+
       {showColumns && (
         <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-11 text-fg-muted">
           <span>
@@ -186,6 +211,26 @@ export function TableStructure({
           )}
         </section>
       )}
+
+      <TableDesignerDialog
+        target={
+          designerOpen && profileId
+            ? {
+                profileId,
+                database: detail.database,
+                table: detail.table,
+              }
+            : null
+        }
+        detail={detail}
+        sessionId={sessionId ?? null}
+        onClose={() => setDesignerOpen(false)}
+        onSaved={() => {
+          if (profileId) {
+            void refreshTableDetail(profileId, detail.database, detail.table);
+          }
+        }}
+      />
     </div>
   );
 }

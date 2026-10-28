@@ -1203,6 +1203,8 @@ export function TableBrowser({
             detail={detail}
             loading={!!loadingDetail[detailKey]}
             section={view === "structure" ? "columns" : view}
+            profileId={profile.id}
+            sessionId={session?.session_id ?? null}
           />
         </div>
       ) : (

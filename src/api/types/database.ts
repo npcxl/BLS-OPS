@@ -224,6 +224,30 @@ export interface DbIndex {
   columns: DbIndexColumn[];
 }
 
+export interface ColumnEdit {
+  original_name: string | null;
+  name: string;
+  column_type: string;
+  nullable: boolean;
+  auto_increment: boolean;
+  default_value: string | null;
+  comment: string;
+}
+
+export interface IndexEdit {
+  original_name: string | null;
+  name: string;
+  columns: string[];
+  unique: boolean;
+}
+
+export interface AlterTableRequest {
+  database: string;
+  table: string;
+  columns: ColumnEdit[];
+  indexes: IndexEdit[];
+}
+
 export interface NewColumn {
   name: string;
   column_type: string;

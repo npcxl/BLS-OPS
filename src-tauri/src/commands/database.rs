@@ -220,6 +220,46 @@ pub fn db_schema_change_preview(
 }
 
 #[tauri::command]
+pub async fn db_table_schema_preview(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: schema_ops::AlterTableRequest,
+) -> Result<schema_ops::SchemaPreview, DbErrorInfo> {
+    let (_session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let detail = metadata::table_detail(
+        &runtime,
+        &state.database.metadata,
+        &request.database,
+        &request.table,
+    )
+    .await?;
+    schema_ops::alter_table_preview(&detail, &request)
+}
+
+#[tauri::command]
+pub async fn db_table_schema_apply(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: schema_ops::AlterTableRequest,
+) -> Result<schema_ops::SchemaOutcome, DbErrorInfo> {
+    let (session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let detail = metadata::table_detail(
+        &runtime,
+        &state.database.metadata,
+        &request.database,
+        &request.table,
+    )
+    .await?;
+    let outcome = schema_ops::apply_alter_table(&session, &detail, &request).await?;
+    state
+        .database
+        .metadata
+        .invalidate(Some(&session.profile_id))
+        .await;
+    Ok(outcome)
+}
+
+#[tauri::command]
 pub async fn db_schema_change_apply(
     state: State<'_, AppState>,
     session_id: String,

@@ -1113,6 +1113,68 @@ async fn mysql_schema_operations_are_real() {
     .await
     .expect("create table");
 
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, db_name, "items")
+        .await
+        .expect("table detail");
+    let alter = schema_ops::AlterTableRequest {
+        database: db_name.to_string(),
+        table: "items".to_string(),
+        columns: vec![
+            schema_ops::ColumnEdit {
+                original_name: Some("id".to_string()),
+                name: "item_id".to_string(),
+                column_type: "BIGINT".to_string(),
+                nullable: false,
+                auto_increment: true,
+                default_value: None,
+                comment: String::new(),
+            },
+            schema_ops::ColumnEdit {
+                original_name: Some("name".to_string()),
+                name: "name".to_string(),
+                column_type: "VARCHAR(128)".to_string(),
+                nullable: false,
+                auto_increment: false,
+                default_value: None,
+                comment: "renamed type".to_string(),
+            },
+        ],
+        indexes: vec![schema_ops::IndexEdit {
+            original_name: None,
+            name: "idx_item_name".to_string(),
+            columns: vec!["name".to_string()],
+            unique: false,
+        }],
+    };
+    schema_ops::apply_alter_table(&session, &detail, &alter)
+        .await
+        .expect("alter table");
+    let type_len: Option<u64> = admin
+        .query_first(format!(
+            "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = '{db_name}' AND TABLE_NAME = 'items' AND COLUMN_NAME = 'name'"
+        ))
+        .await
+        .expect("column length");
+    assert_eq!(type_len, Some(128));
+    let renamed: Option<u64> = admin
+        .query_first(format!(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = '{db_name}' AND TABLE_NAME = 'items' AND COLUMN_NAME = 'item_id'"
+        ))
+        .await
+        .expect("renamed column");
+    assert_eq!(renamed, Some(1));
+    let index: Option<u64> = admin
+        .query_first(format!(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS \
+             WHERE TABLE_SCHEMA = '{db_name}' AND TABLE_NAME = 'items' AND INDEX_NAME = 'idx_item_name'"
+        ))
+        .await
+        .expect("new index");
+    assert_eq!(index, Some(1));
+
     schema_ops::apply(
         &session,
         &schema_ops::SchemaChange::SaveView {

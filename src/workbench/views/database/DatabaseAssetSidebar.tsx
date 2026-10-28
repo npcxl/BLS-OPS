@@ -265,6 +265,9 @@ export function DatabaseAssetSidebar() {
   const openDatabaseObjects = useDatabaseWorkspaceStore(
     (state) => state.openDatabaseObjects,
   );
+  const showConnectionInfo = useDatabaseWorkspaceStore(
+    (state) => state.showConnectionInfo,
+  );
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const savedQueries = useDatabaseWorkspaceStore((state) => state.savedQueries);
 
@@ -374,6 +377,11 @@ export function DatabaseAssetSidebar() {
             },
           ]
         : []),
+      {
+        id: "info",
+        label: t("连接信息"),
+        onSelect: () => showConnectionInfo(profile.id),
+      },
       {
         id: "new-query",
         label: t("新建查询"),
@@ -532,7 +540,10 @@ export function DatabaseAssetSidebar() {
                 connected={!!sessions[profile.id]}
                 error={profileLoadError}
                 onToggle={() => void toggleProfile(profile.id)}
-                onOpen={() => open(profile)}
+                onOpen={() => {
+                  open(profile);
+                  showConnectionInfo(profile.id);
+                }}
                 onEdit={() => setDialog({ mode: "edit", profile })}
                 onDelete={() => void remove(profile)}
                 onRefresh={() => {

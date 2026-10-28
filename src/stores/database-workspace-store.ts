@@ -139,11 +139,17 @@ interface WorkspaceState {
    * 右侧面板：默认是"已打开"列表；点 DDL 时临时切换为 DDL 预览并加宽，
    * 关闭后恢复原来的列表和宽度。
    */
-  rightPanel: "items" | "ddl";
+  rightPanel: "items" | "ddl" | "connection";
   ddl: DdlTarget | null;
   widthBeforeDdl: number | null;
   showDdl: (target: DdlTarget) => void;
   hideDdl: () => void;
+
+  /** 左侧点连接时，右侧显示该连接的属性（类型、版本、主机、TLS…）。 */
+  connectionInfo: string | null;
+  widthBeforeConnection: number | null;
+  showConnectionInfo: (profileId: string) => void;
+  hideConnectionInfo: () => void;
 
   /** 结构页点击字段后，在右侧插入的字段信息卡片。 */
   fieldCard: FieldCardTarget | null;
@@ -173,6 +179,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
   rightPanel: "items",
   ddl: null,
   widthBeforeDdl: null,
+  connectionInfo: null,
+  widthBeforeConnection: null,
   fieldCard: null,
   savedQueries: loadSaved(),
 
@@ -346,17 +354,26 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
     set({ rightWidth: Math.max(160, Math.min(560, width)) }),
 
   showDdl: (target) =>
-    set((state) => ({
-      rightPanel: "ddl",
-      ddl: target,
-      rightCollapsed: false,
-      // 已经处于 DDL 模式时不要覆盖"打开前"的宽度。
-      widthBeforeDdl:
-        state.rightPanel === "ddl" ? state.widthBeforeDdl : state.rightWidth,
-      rightWidth: Math.max(420, state.rightWidth),
-      // DDL 与字段卡片不同时占右侧。
-      fieldCard: null,
-    })),
+    set((state) => {
+      // 连接信息/DDL 互斥；以进入临时面板前的宽度为基准，避免越开越宽。
+      const baseWidth =
+        state.rightPanel === "connection"
+          ? state.widthBeforeConnection ?? state.rightWidth
+          : state.rightPanel === "ddl"
+            ? state.widthBeforeDdl ?? state.rightWidth
+            : state.rightWidth;
+      return {
+        rightPanel: "ddl",
+        ddl: target,
+        rightCollapsed: false,
+        connectionInfo: null,
+        widthBeforeConnection: null,
+        widthBeforeDdl: baseWidth,
+        rightWidth: Math.max(420, baseWidth),
+        // DDL 与字段卡片不同时占右侧。
+        fieldCard: null,
+      };
+    }),
 
   hideDdl: () =>
     set((state) => ({
@@ -366,20 +383,59 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
       widthBeforeDdl: null,
     })),
 
-  showFieldCard: (target) =>
+  showConnectionInfo: (profileId) =>
+    set((state) => {
+      const baseWidth =
+        state.rightPanel === "connection"
+          ? state.widthBeforeConnection ?? state.rightWidth
+          : state.rightPanel === "ddl"
+            ? state.widthBeforeDdl ?? state.rightWidth
+            : state.rightWidth;
+      return {
+        rightPanel: "connection",
+        connectionInfo: profileId,
+        ddl: null,
+        widthBeforeDdl: null,
+        fieldCard: null,
+        rightCollapsed: false,
+        widthBeforeConnection: baseWidth,
+        rightWidth: Math.max(300, baseWidth),
+      };
+    }),
+
+  hideConnectionInfo: () =>
     set((state) => ({
-      fieldCard: target,
-      // 字段卡片需要右侧区域可见；如果 DDL 开着，先恢复列表和宽度。
-      rightCollapsed: false,
-      ...(state.rightPanel === "ddl"
-        ? {
-            rightPanel: "items" as const,
-            ddl: null,
-            rightWidth: state.widthBeforeDdl ?? state.rightWidth,
-            widthBeforeDdl: null,
-          }
-        : {}),
+      rightPanel: "items",
+      connectionInfo: null,
+      rightWidth: state.widthBeforeConnection ?? state.rightWidth,
+      widthBeforeConnection: null,
     })),
+
+  showFieldCard: (target) =>
+    set((state) => {
+      const restoreConnection =
+        state.rightPanel === "connection"
+          ? {
+              rightPanel: "items" as const,
+              connectionInfo: null,
+              rightWidth: state.widthBeforeConnection ?? state.rightWidth,
+              widthBeforeConnection: null,
+            }
+          : {};
+      return {
+        fieldCard: target,
+        // 字段卡片需要右侧区域可见；如果 DDL/连接信息开着，先恢复列表和宽度。
+        rightCollapsed: false,
+        ...(state.rightPanel === "ddl"
+          ? {
+              rightPanel: "items" as const,
+              ddl: null,
+              rightWidth: state.widthBeforeDdl ?? state.rightWidth,
+              widthBeforeDdl: null,
+            }
+          : restoreConnection),
+      };
+    }),
   hideFieldCard: () => set({ fieldCard: null }),
 
   saveQuery: ({ itemId, profileId, connectionName, database, name, sql }) => {

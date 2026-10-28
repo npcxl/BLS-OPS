@@ -29,6 +29,7 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { WorkspaceTab } from "@/workbench/types";
 import { CloseWorkItemDialog, type CloseAction } from "./CloseWorkItemDialog";
 import { CloseWorkItemsDialog } from "./CloseWorkItemsDialog";
+import { ConnectionInfoPanel } from "./ConnectionInfoPanel";
 import { DdlPanel } from "./DdlPanel";
 import { listenDetachedSqlEvents } from "./detached-sql";
 import { FieldCard } from "./FieldCard";
@@ -67,6 +68,12 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   const rightPanel = useDatabaseWorkspaceStore((state) => state.rightPanel);
   const ddl = useDatabaseWorkspaceStore((state) => state.ddl);
   const hideDdl = useDatabaseWorkspaceStore((state) => state.hideDdl);
+  const connectionInfo = useDatabaseWorkspaceStore(
+    (state) => state.connectionInfo,
+  );
+  const hideConnectionInfo = useDatabaseWorkspaceStore(
+    (state) => state.hideConnectionInfo,
+  );
   const fieldCard = useDatabaseWorkspaceStore((state) => state.fieldCard);
   const hideFieldCard = useDatabaseWorkspaceStore((state) => state.hideFieldCard);
   const setRightCollapsed = useDatabaseWorkspaceStore((state) => state.setRightCollapsed);
@@ -159,6 +166,9 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   useEffect(() => {
     if (ddl && ddl.profileId !== profileId) hideDdl();
   }, [ddl, hideDdl, profileId]);
+
+  // 连接信息面板按 profileId 匹配显示；不要在别的连接标签里清掉它，
+  // 否则从资产树点另一个连接时，旧标签的 effect 会先把新面板关掉。
 
   // 独立 SQL 窗口执行结束后在主窗口给一条可见通知；
   // 事件只是通知，查询结果仍属于独立窗口。
@@ -362,7 +372,9 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
             ? t("展开已打开列表")
             : rightPanel === "ddl"
               ? t("关闭 DDL，恢复已打开列表")
-              : t("收起已打开列表")
+              : rightPanel === "connection"
+                ? t("关闭连接信息")
+                : t("收起已打开列表")
         }
       >
         <Button
@@ -372,9 +384,12 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
           onClick={() => {
             if (rightCollapsed) {
               hideDdl();
+              hideConnectionInfo();
               setRightCollapsed(false);
             } else if (rightPanel === "ddl") {
               hideDdl();
+            } else if (rightPanel === "connection") {
+              hideConnectionInfo();
             } else {
               setRightCollapsed(true);
             }
@@ -474,13 +489,16 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                {rightPanel === "ddl" && ddl && ddl.profileId === profileId ? (
+                {rightPanel === "connection" &&
+                connectionInfo === profileId ? (
+                  <ConnectionInfoPanel profileId={profileId} />
+                ) : rightPanel === "ddl" && ddl && ddl.profileId === profileId ? (
                   <DdlPanel target={ddl} />
                 ) : (
                   <OpenItemsPanel
-                onRequestClose={requestClose}
-                onRequestCloseOthers={requestCloseOthers}
-              />
+                    onRequestClose={requestClose}
+                    onRequestCloseOthers={requestCloseOthers}
+                  />
                 )}
               </div>
             </div>

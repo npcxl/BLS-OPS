@@ -16,12 +16,9 @@ import {
   FileCode2,
   KeyRound,
   Loader2,
-  Pencil,
-  PlugZap,
   Plus,
   RefreshCw,
   Table2,
-  Trash2,
   TriangleAlert,
 } from "@/components/icons";
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
@@ -165,11 +162,6 @@ const ProfileRow = memo(function ProfileRow({
   error,
   onToggle,
   onOpen,
-  onEdit,
-  onDelete,
-  onRefresh,
-  onConnect,
-  onDisconnect,
   onContextMenu,
 }: {
   profile: DatabaseProfile;
@@ -178,11 +170,6 @@ const ProfileRow = memo(function ProfileRow({
   error: DbErrorInfo | null;
   onToggle: () => void;
   onOpen: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onRefresh: () => void;
-  onConnect: () => void;
-  onDisconnect: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation();
@@ -215,7 +202,7 @@ const ProfileRow = memo(function ProfileRow({
       <DbEngineIcon
         engine={profile.engine}
         connected={connected}
-        size={18}
+        size={20}
       />
       <span
         className={cn(
@@ -225,69 +212,6 @@ const ProfileRow = memo(function ProfileRow({
       >
         {profile.name}
       </span>
-      <Tooltip
-        label={connected ? t("关闭连接") : t("打开连接")}
-        side="left"
-      >
-        <Button
-          variant="ghost"
-          size="xs"
-          className="hidden h-5 w-5 px-0 group-hover:flex"
-          aria-label={connected ? t("关闭连接") : t("打开连接")}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (connected) onDisconnect();
-            else onConnect();
-          }}
-        >
-          <PlugZap
-            size={12}
-            className={connected ? "text-fg" : "text-fg-subtle"}
-          />
-        </Button>
-      </Tooltip>
-      <Tooltip label={t("刷新")} side="left">
-        <Button
-          variant="ghost"
-          size="xs"
-          className="hidden h-5 w-5 px-0 group-hover:flex"
-          aria-label={t("刷新")}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRefresh();
-          }}
-        >
-          <RefreshCw size={12} />
-        </Button>
-      </Tooltip>
-      <Tooltip label={t("编辑连接")} side="left">
-        <Button
-          variant="ghost"
-          size="xs"
-          className="hidden h-5 w-5 px-0 group-hover:flex"
-          aria-label={t("编辑连接")}
-          onClick={(event) => {
-            event.stopPropagation();
-            onEdit();
-          }}
-        >
-          <Pencil size={12} />
-        </Button>
-      </Tooltip>
-      <Tooltip label={t("删除连接")} side="left">
-        <Button
-          variant="ghost"
-          size="xs"
-          className="hidden h-5 w-5 px-0 hover:text-danger group-hover:flex"
-          aria-label={t("删除连接")}
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 size={12} />
-        </Button>
-      </Tooltip>
       {error && <TriangleAlert size={12} className="shrink-0 text-danger" />}
     </div>
   );
@@ -755,17 +679,6 @@ export function DatabaseAssetSidebar() {
                   open(profile);
                   showConnectionInfo(profile.id);
                 }}
-                onEdit={() => setDialog({ mode: "edit", profile })}
-                onDelete={() => setDeleteTarget(profile)}
-                onRefresh={() => {
-                  open(profile);
-                  void refreshDatabases(profile.id);
-                }}
-                onConnect={() => {
-                  open(profile);
-                  void ensureSession(profile.id);
-                }}
-                onDisconnect={() => setDisconnectTarget(profile)}
                 onContextMenu={(event) =>
                   menu.onContextMenu(() => connectionMenu(profile))(event)
                 }

@@ -1,10 +1,12 @@
 /**
- * 数据库品牌图标：使用本地 VSCode 图标集数据，离线渲染。
+ * 数据库品牌图标：使用本地 skill-icons 数据，离线渲染。
  *
- * 已连接时保留原色；未连接时灰度化，作为连接状态的一部分。
+ * 浅色主题用 *-dark 图标（深色底），深色主题用 *-light 图标（浅色底），
+ * 保证图标自身底色和界面主题相反、品牌色始终清楚。
  */
 import { Icon } from "@iconify/react";
 import { Database } from "@/components/icons";
+import { useThemeMode } from "@/hooks/use-theme";
 import { cn } from "@/lib/cn";
 import type { DbEngine } from "@/api/types/database";
 import { DB_ENGINE_ICONS } from "./db-engine-icons";
@@ -12,7 +14,7 @@ import { DB_ENGINE_ICONS } from "./db-engine-icons";
 export function DbEngineIcon({
   engine,
   connected,
-  size = 14,
+  size = 16,
   className,
 }: {
   engine: DbEngine;
@@ -20,7 +22,13 @@ export function DbEngineIcon({
   size?: number;
   className?: string;
 }) {
-  const data = DB_ENGINE_ICONS[engine];
+  const [mode] = useThemeMode();
+  const dark =
+    mode === "dark" ||
+    (mode === "system" &&
+      !!window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const pair = DB_ENGINE_ICONS[engine];
+  const data = pair ? (dark ? pair.dark : pair.light) : undefined;
   // 未连接只靠灰度区分；暗色底上 0.35 几乎看不见，0.6 仍能认出是哪个引擎。
   const stateClass = connected
     ? "opacity-100 saturate-100"

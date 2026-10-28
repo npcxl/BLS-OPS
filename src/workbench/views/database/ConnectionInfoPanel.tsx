@@ -92,7 +92,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
     : "—";
 
   const EngineIcon = ({
-    size = 12,
+    size = 14,
     className,
   }: {
     size?: number;
@@ -112,7 +112,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
         <DbEngineIcon
           engine={profile.engine}
           connected={connected}
-          size={12}
+          size={16}
         />
         <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg">
           {t("连接信息")}

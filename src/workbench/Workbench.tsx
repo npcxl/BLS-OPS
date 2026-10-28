@@ -4,6 +4,8 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
+import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { staleWorkbenchTabIds } from "./views/database/workspace-cleanup";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 import { useAutoUpdateCheck } from "@/hooks/use-updater";
 import { UpdateNotification } from "./updater/UpdateNotification";
@@ -76,15 +78,21 @@ export function Workbench() {
     walk(rootPane);
 
     const dbTabs = tabs.filter((tab) => tab.type === "database");
-    const tabIds = new Set(dbTabs.map((tab) => tab.id));
+    const activeProfiles = new Set(
+      dbTabs
+        .map((tab) => tab.profileId)
+        .filter((id): id is string => !!id),
+    );
     const workbench = useDatabaseWorkbenchStore.getState();
-    for (const tabId of Object.keys(workbench.tabs)) {
-      if (!tabIds.has(tabId)) workbench.dispose(tabId);
-    }
-    const activeProfiles = dbTabs
-      .map((tab) => tab.profileId)
-      .filter((id): id is string => !!id);
-    void useDatabaseStore.getState().pruneSessions(activeProfiles);
+    const items = useDatabaseWorkspaceStore.getState().items;
+    const stale = staleWorkbenchTabIds(
+      Object.keys(workbench.tabs),
+      items,
+      activeProfiles,
+    );
+    // 只释放失去所属连接的工作项；切换标签不能误杀 SQL 工作项。
+    for (const tabId of stale) workbench.dispose(tabId);
+    void useDatabaseStore.getState().pruneSessions([...activeProfiles]);
   }, [rootPane]);
 
   const actions = useMemo<PaletteAction[]>(() => {

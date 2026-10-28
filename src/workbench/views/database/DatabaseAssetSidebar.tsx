@@ -32,7 +32,12 @@ import { MacSearchField } from "@/components/ui/mac-controls";
 import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
-import { useDatabaseStore } from "@/stores/database-store";
+import {
+  categoryKey,
+  detailKey,
+  tablesKey,
+  useDatabaseStore,
+} from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import {
   useDatabaseWorkspaceStore,
@@ -45,26 +50,68 @@ import { useObjectMenuBuilder } from "./object-menu";
 
 const indent = (level: number) => ({ paddingLeft: `${8 + level * 12}px` });
 
-/** 数据库下的固定分类（表/视图/函数/查询/备份），不因空数据消失。 */
+/**
+ * 数据库下的固定分类（表/视图/函数/查询/备份），不因空数据消失。
+ *
+ * 传了 `onToggle` 就是可收起的分组头：展开态由 store 记住（重启后保持上次的样子），
+ * 不传则是纯标签。
+ */
 function CategoryRow({
   label,
   count,
   icon,
   level = 2,
+  open,
+  onToggle,
 }: {
   label: string;
   count?: number;
   icon: React.ReactNode;
   level?: number;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
-  return (
-    <div
-      className="mt-1 flex items-center gap-1 py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle"
-      style={indent(level)}
-    >
+  const content = (
+    <>
+      {onToggle && (
+        <ChevronRight
+          size={9}
+          className={cn("shrink-0 transition-transform", open && "rotate-90")}
+        />
+      )}
       {icon}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {count !== undefined && <span className="shrink-0">{count}</span>}
+    </>
+  );
+
+  if (!onToggle) {
+    return (
+      <div
+        className="mt-1 flex items-center gap-1 py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle"
+        style={indent(level)}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle hover:bg-surface-hover hover:text-fg-muted"
+      style={indent(level)}
+      onClick={onToggle}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle();
+        }
+      }}
+    >
+      {content}
     </div>
   );
 }
@@ -252,6 +299,7 @@ export function DatabaseAssetSidebar() {
   const expandedProfiles = useDatabaseStore((state) => state.expandedProfiles);
   const expandedDatabases = useDatabaseStore((state) => state.expandedDatabases);
   const expandedTables = useDatabaseStore((state) => state.expandedTables);
+  const expandedCategories = useDatabaseStore((state) => state.expandedCategories);
   const databases = useDatabaseStore((state) => state.databases);
   const tables = useDatabaseStore((state) => state.tables);
   const details = useDatabaseStore((state) => state.details);
@@ -263,6 +311,7 @@ export function DatabaseAssetSidebar() {
   const toggleProfile = useDatabaseStore((state) => state.toggleProfile);
   const toggleDatabase = useDatabaseStore((state) => state.toggleDatabase);
   const toggleTable = useDatabaseStore((state) => state.toggleTable);
+  const toggleCategory = useDatabaseStore((state) => state.toggleCategory);
   const refreshDatabases = useDatabaseStore((state) => state.refreshDatabases);
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
   const refreshTableDetail = useDatabaseStore((state) => state.refreshTableDetail);
@@ -290,6 +339,8 @@ export function DatabaseAssetSidebar() {
   >(null);
   const [disconnectTarget, setDisconnectTarget] =
     useState<DatabaseProfile | null>(null);
+  const [deleteTarget, setDeleteTarget] =
+    useState<DatabaseProfile | null>(null);
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
   const closeSession = useDatabaseStore((state) => state.closeSession);
@@ -299,6 +350,79 @@ export function DatabaseAssetSidebar() {
   useEffect(() => {
     if (profiles.length === 0) void refreshProfiles();
   }, [profiles.length, refreshProfiles]);
+
+  /*
+   * 恢复上次的展开态：localStorage 只记「哪些节点是打开的」，数据不跨进程缓存，
+   * 所以按 连接 → 库 → 表 一层层把被记住的节点重新查出来。
+   * 每一层只补 `undefined` 的（真缓存/正在加载/已报错都不碰），不会自己触发自己。
+   */
+  useEffect(() => {
+    if (profiles.length === 0) return;
+    const state = useDatabaseStore.getState();
+    for (const profile of profiles) {
+      if (!state.expandedProfiles[profile.id]) continue;
+      if (
+        state.databases[profile.id] === undefined &&
+        !state.loading[profile.id] &&
+        !state.errors[profile.id]
+      ) {
+        void state.refreshDatabases(profile.id);
+      }
+    }
+  }, [profiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      for (const [profileId, list] of Object.entries(databases)) {
+        for (const database of list) {
+          if (cancelled) return;
+          const state = useDatabaseStore.getState();
+          const key = tablesKey(profileId, database.name);
+          if (!state.expandedDatabases[key]) continue;
+          if (
+            state.tables[key] !== undefined ||
+            state.loading[key] ||
+            state.errors[key]
+          ) {
+            continue;
+          }
+          // 串行：展开的库一多，并发请求会挤爆同一个连接池。
+          await state.refreshTables(profileId, database.name);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [databases]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      for (const [key, list] of Object.entries(tables)) {
+        const [profileId, database] = key.split("\u0001");
+        if (!profileId || !database) continue;
+        for (const table of list) {
+          if (cancelled) return;
+          const state = useDatabaseStore.getState();
+          const tableKey = detailKey(profileId, database, table.name);
+          if (!state.expandedTables[tableKey]) continue;
+          if (
+            state.details[tableKey] !== undefined ||
+            state.loading[tableKey] ||
+            state.errors[tableKey]
+          ) {
+            continue;
+          }
+          await state.refreshTableDetail(profileId, database, table.name);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tables]);
 
   const visibleProfiles = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -427,6 +551,13 @@ export function DatabaseAssetSidebar() {
         id: "copy-name",
         label: t("复制连接名"),
         onSelect: () => void copyText(profile.name),
+      },
+      { separator: true },
+      {
+        id: "delete",
+        label: t("删除连接"),
+        danger: true,
+        onSelect: () => setDeleteTarget(profile),
       },
     ];
   };
@@ -557,7 +688,7 @@ export function DatabaseAssetSidebar() {
                   showConnectionInfo(profile.id);
                 }}
                 onEdit={() => setDialog({ mode: "edit", profile })}
-                onDelete={() => void remove(profile)}
+                onDelete={() => setDeleteTarget(profile)}
                 onRefresh={() => {
                   open(profile);
                   void refreshDatabases(profile.id);
@@ -597,9 +728,11 @@ export function DatabaseAssetSidebar() {
                           className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
-                            // Navicat 式交互：点数据库就是打开它（展开表列表），
-                            // 同时打开该库的对象列表；收起由箭头/右键菜单负责。
+                            // 点数据库 = 连接 + 展开 + 打开对象列表。
+                            // 已经展开的不会被点回去（收起只走箭头/右键菜单），
+                            // 展开态本身存在 store 里，切到别的库再回来还是打开的。
                             open(profile);
+                            void ensureSession(profile.id);
                             if (!dbOpen) {
                               void toggleDatabase(profile.id, database.name);
                             }
@@ -680,6 +813,7 @@ export function DatabaseAssetSidebar() {
                           );
                           const groups = [
                             {
+                              id: "tables",
                               label: t("表"),
                               icon: <Table2 size={10} className="shrink-0" />,
                               items: visibleTables.filter(
@@ -687,6 +821,7 @@ export function DatabaseAssetSidebar() {
                               ),
                             },
                             {
+                              id: "views",
                               label: t("视图"),
                               icon: <Eye size={10} className="shrink-0" />,
                               items: visibleTables.filter(
@@ -699,17 +834,34 @@ export function DatabaseAssetSidebar() {
                               query.profileId === profile.id &&
                               query.database === database.name,
                           );
+                          // 分类展开态：缺省展开，收起的记录在 store 里（跨重启保留）。
+                          const categoryOpen = (id: string) =>
+                            expandedCategories[
+                              categoryKey(profile.id, database.name, id)
+                            ] !== false;
+                          const toggleCat = (id: string) =>
+                            toggleCategory(
+                              categoryKey(profile.id, database.name, id),
+                            );
                           return (
                             <>
-                              {groups.map((group) => (
-                                <Fragment key={group.label}>
+                              {groups.map((group) => {
+                                const groupOpen = categoryOpen(group.id);
+                                return (
+                                <Fragment key={group.id}>
                                   <CategoryRow
                                     label={group.label}
                                     count={group.items.length}
                                     icon={group.icon}
+                                    open={groupOpen}
+                                    onToggle={() => toggleCat(group.id)}
                                   />
-                                  {group.items.map((table) => {
-                              const tableKey = `${profile.id}\u0001${database.name}\u0001${table.name}`;
+                                  {groupOpen && group.items.map((table) => {
+                              const tableKey = detailKey(
+                                profile.id,
+                                database.name,
+                                table.name,
+                              );
                               const detail = details[tableKey];
                               const tableOpen = !!expandedTables[tableKey];
                               const tableLoading = loading[tableKey];
@@ -767,11 +919,30 @@ export function DatabaseAssetSidebar() {
                                       />
                                     </Button>
                                     {table.kind === "view" ? (
-                                      <Eye size={11} className="shrink-0 text-fg-subtle" />
+                                      <Eye
+                                        size={11}
+                                        className={cn(
+                                          "shrink-0",
+                                          tableOpen ? "text-fg" : "text-fg-subtle",
+                                        )}
+                                      />
                                     ) : (
-                                      <Table2 size={11} className="shrink-0 text-fg-subtle" />
+                                      <Table2
+                                        size={11}
+                                        className={cn(
+                                          "shrink-0",
+                                          tableOpen ? "text-fg" : "text-fg-subtle",
+                                        )}
+                                      />
                                     )}
-                                    <span className="min-w-0 flex-1 truncate text-12 text-fg">
+                                    <span
+                                      className={cn(
+                                        "min-w-0 flex-1 truncate text-12",
+                                        tableOpen
+                                          ? "font-medium text-fg"
+                                          : "text-fg-muted",
+                                      )}
+                                    >
                                       {table.name}
                                     </span>
                                     {tableError && (
@@ -848,18 +1019,24 @@ export function DatabaseAssetSidebar() {
                               );
                                   })}
                                 </Fragment>
-                              ))}
+                                );
+                              })}
                               <CategoryRow
                                 label={t("函数")}
                                 count={0}
                                 icon={<Boxes size={10} className="shrink-0" />}
+                                open={categoryOpen("functions")}
+                                onToggle={() => toggleCat("functions")}
                               />
                               <CategoryRow
                                 label={t("查询")}
                                 count={databaseQueries.length}
                                 icon={<FileCode2 size={10} className="shrink-0" />}
+                                open={categoryOpen("queries")}
+                                onToggle={() => toggleCat("queries")}
                               />
-                              {databaseQueries.map((query) => (
+                              {categoryOpen("queries") &&
+                                databaseQueries.map((query) => (
                                 <div
                                   key={query.id}
                                   className="flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 text-11 text-fg-muted hover:bg-surface-hover"
@@ -877,7 +1054,10 @@ export function DatabaseAssetSidebar() {
                                 label={t("备份")}
                                 count={0}
                                 icon={<DatabaseIcon size={10} className="shrink-0" />}
+                                open={categoryOpen("backups")}
+                                onToggle={() => toggleCat("backups")}
                               />
+
                             </>
                           );
                         })()}
@@ -943,6 +1123,21 @@ export function DatabaseAssetSidebar() {
         onConfirm={() => {
           if (disconnectTarget) void closeSession(disconnectTarget.id);
           setDisconnectTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        danger
+        title={t("删除连接「{{name}}」？", { name: deleteTarget?.name ?? "" })}
+        description={t(
+          "将关闭该连接的所有标签、删除已保存的密码和连接配置；SQL 草稿会保留。",
+        )}
+        confirmLabel={t("删除连接")}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) void remove(deleteTarget);
+          setDeleteTarget(null);
         }}
       />
 

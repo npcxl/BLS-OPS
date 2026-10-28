@@ -163,7 +163,30 @@ export function SqlWorkspace({
     };
   }, [dragging]);
 
-  const execute = useCallback(() => {
+  const switchDatabase = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!session || !name) return false;
+      if (name === session.current_database) return true;
+      setSwitchingDb(true);
+      try {
+        await databaseApi.useDatabase(session.session_id, name);
+        const info = await databaseApi.sessionInfo(session.session_id);
+        useDatabaseStore.setState((state) => ({
+          sessions: { ...state.sessions, [profile.id]: info },
+        }));
+        return true;
+      } catch (failure) {
+        setContextDatabase(session.current_database ?? null);
+        setNotice(toDbError(failure).message);
+        return false;
+      } finally {
+        setSwitchingDb(false);
+      }
+    },
+    [profile.id, session],
+  );
+
+  const execute = useCallback(async () => {
     if (!session) return;
     const view = viewRef.current;
     const selection = view
@@ -181,15 +204,31 @@ export function SqlWorkspace({
       setNotice(t("没有可执行的语句"));
       return;
     }
+
+    // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
+    if (contextDatabase && session.current_database !== contextDatabase) {
+      const switched = await switchDatabase(contextDatabase);
+      if (!switched) return;
+    }
+
     setNotice(null);
     setHasRun(true);
-    void runStatements({
+    await runStatements({
       tabId,
       profileId: profile.id,
       sessionId: session.session_id,
       statements: parsed.statements,
     });
-  }, [profile.id, runStatements, session, sqlText, tabId, t]);
+  }, [
+    contextDatabase,
+    profile.id,
+    runStatements,
+    session,
+    sqlText,
+    switchDatabase,
+    tabId,
+    t,
+  ]);
 
   const handleClearResults = () => {
     clearResults(tabId);
@@ -213,6 +252,11 @@ export function SqlWorkspace({
     return list;
   }, [profile, profiles]);
 
+  // 当前页的库上下文只在“首次进入 / 用户改库”时应用一次；
+  // 其他查询页切换共享会话的 current_database 时不能跟着来回抢占。
+  const appliedContextRef = useRef<string | null>(null);
+  const appliedSessionRef = useRef<string | null>(null);
+
   const databaseOptions = useMemo(() => {
     const list = databases
       .filter((entry) => !entry.system)
@@ -224,35 +268,23 @@ export function SqlWorkspace({
     return list;
   }, [contextDatabase, databases, session?.current_database]);
 
-  const switchDatabase = useCallback(
-    async (name: string) => {
-      if (!session || !name || name === session.current_database) return;
-      setSwitchingDb(true);
-      try {
-        await databaseApi.useDatabase(session.session_id, name);
-        const info = await databaseApi.sessionInfo(session.session_id);
-        useDatabaseStore.setState((state) => ({
-          sessions: { ...state.sessions, [profile.id]: info },
-        }));
-      } catch (failure) {
-        setContextDatabase(session.current_database ?? null);
-        setNotice(toDbError(failure).message);
-      } finally {
-        setSwitchingDb(false);
-      }
-    },
-    [profile.id, session],
-  );
-
   useEffect(() => {
     if (!session || databases.length > 0) return;
     void refreshDatabases(profile.id);
   }, [databases.length, profile.id, refreshDatabases, session]);
 
-  // 从表/库/连接上下文打开查询时，先把会话切到对应数据库；
-  // 用户之后用下拉框改库时只改 contextDatabase，不会被这里覆盖。
+  // 只在首次进入/用户改库时把会话切到该页上下文；
+  // 其他查询页改共享会话时，这里的 ref 会阻止 effect 再切回去。
   useEffect(() => {
     if (!session || !contextDatabase) return;
+    if (
+      appliedSessionRef.current === session.session_id &&
+      appliedContextRef.current === contextDatabase
+    ) {
+      return;
+    }
+    appliedSessionRef.current = session.session_id;
+    appliedContextRef.current = contextDatabase;
     if (session.current_database === contextDatabase) return;
     void switchDatabase(contextDatabase);
   }, [contextDatabase, session?.session_id, switchDatabase]);
@@ -376,10 +408,7 @@ export function SqlWorkspace({
           ariaLabel={t("选择数据库")}
           title={t("选择当前查询使用的数据库")}
           disabled={!session}
-          onChange={(value) => {
-            setContextDatabase(value);
-            void switchDatabase(value);
-          }}
+          onChange={(value) => setContextDatabase(value)}
           options={databaseOptions}
         />
         {switchingDb && (
@@ -416,8 +445,8 @@ export function SqlWorkspace({
         <Button
           variant="primary"
           size="xs"
-          disabled={!session || running || cancelling}
-          onClick={execute}
+          disabled={!session || running || cancelling || switchingDb}
+          onClick={() => void execute()}
           title={t("有选区运行选区，无选区运行全部（Ctrl+Enter）")}
         >
           <Play size={12} />
@@ -502,7 +531,7 @@ export function SqlWorkspace({
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
-            execute();
+            void execute();
           }
         }}
       >

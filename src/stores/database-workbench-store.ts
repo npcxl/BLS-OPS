@@ -154,7 +154,12 @@ interface WorkbenchDbState {
     statements: string[];
   }) => Promise<void>;
   cancel: (tabId: string) => Promise<void>;
-  dispose: (tabId: string) => void;
+  /**
+   * 释放工作项运行时资源。
+   * 默认保留草稿：标签切换/连接标签关闭不应静默丢掉用户输入。
+   * 只有用户明确关闭查询工作项时才传 clearDraft。
+   */
+  dispose: (tabId: string, options?: { clearDraft?: boolean }) => void;
   setHistoryEnabled: (enabled: boolean) => void;
 }
 
@@ -382,13 +387,13 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     }
   },
 
-  dispose: (tabId) => {
+  dispose: (tabId, options) => {
     const tab = get().tabs[tabId];
     if (tab?.queryId) {
       void databaseApi.queryRelease(tab.queryId).catch(() => undefined);
     }
-    // 工作项关闭 → 丢弃它的临时草稿；长期保存走“保存查询”。
-    clearDraft(tabId);
+    // 默认保留草稿；只有显式关闭工作项才清，避免标签切换误删用户输入。
+    if (options?.clearDraft) clearDraft(tabId);
     set((state) => {
       const tabs = { ...state.tabs };
       delete tabs[tabId];

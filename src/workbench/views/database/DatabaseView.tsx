@@ -248,7 +248,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
       setClosing(latest);
       return;
     }
-    useDatabaseWorkbenchStore.getState().dispose(latest.id);
+    useDatabaseWorkbenchStore.getState().dispose(latest.id, { clearDraft: true });
     closeItem(latest.id);
   };
 
@@ -264,7 +264,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
     );
     if (!risky) {
       for (const entry of others) {
-        useDatabaseWorkbenchStore.getState().dispose(entry.id);
+        useDatabaseWorkbenchStore.getState().dispose(entry.id, { clearDraft: true });
         closeItem(entry.id);
       }
       return;
@@ -283,7 +283,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
       }
-      useDatabaseWorkbenchStore.getState().dispose(entry.id);
+      useDatabaseWorkbenchStore.getState().dispose(entry.id, { clearDraft: true });
       closeItem(entry.id);
     }
     setClosingOthers(null);
@@ -309,7 +309,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
           action === "commit" ? "COMMIT" : "ROLLBACK",
         );
       }
-      useDatabaseWorkbenchStore.getState().dispose(item.id);
+      useDatabaseWorkbenchStore.getState().dispose(item.id, { clearDraft: true });
       closeItem(item.id);
       setClosing(null);
     } catch (failure) {

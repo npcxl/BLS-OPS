@@ -22,9 +22,67 @@ import type {
 } from "@/api/types/database";
 
 const dbKey = (profileId: string) => profileId;
-const tablesKey = (profileId: string, database: string) => `${profileId}\u0001${database}`;
-const detailKey = (profileId: string, database: string, table: string) =>
+export const tablesKey = (profileId: string, database: string) =>
+  `${profileId}\u0001${database}`;
+export const detailKey = (profileId: string, database: string, table: string) =>
   `${profileId}\u0001${database}\u0001${table}`;
+
+/** 分类节点（表/视图/函数/查询/备份）的展开态 key。 */
+export const categoryKey = (
+  profileId: string,
+  database: string,
+  category: string,
+) => `${profileId}\u0001${database}\u0001${category}`;
+
+/**
+ * 树的展开状态落 localStorage：重启后「上次打开的还是打开的」。
+ *
+ * 只存布尔，不存数据 —— 数据仍然由展开动作触发按需加载，缓存不跨进程。
+ */
+const EXPANDED_STORAGE_KEY = "blsops.database.expanded-tree";
+
+interface PersistedExpanded {
+  profiles: Record<string, boolean>;
+  databases: Record<string, boolean>;
+  tables: Record<string, boolean>;
+  categories: Record<string, boolean>;
+}
+
+const EMPTY_EXPANDED: PersistedExpanded = {
+  profiles: {},
+  databases: {},
+  tables: {},
+  categories: {},
+};
+
+const boolRecord = (value: unknown): Record<string, boolean> => {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, boolean> = {};
+  for (const [key, flag] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof flag === "boolean") out[key] = flag;
+  }
+  return out;
+};
+
+function readExpanded(): PersistedExpanded {
+  try {
+    const raw = window.localStorage.getItem(EXPANDED_STORAGE_KEY);
+    if (!raw) return EMPTY_EXPANDED;
+    const parsed = JSON.parse(raw) as Partial<PersistedExpanded> | null;
+    if (!parsed || typeof parsed !== "object") return EMPTY_EXPANDED;
+    return {
+      profiles: boolRecord(parsed.profiles),
+      databases: boolRecord(parsed.databases),
+      tables: boolRecord(parsed.tables),
+      categories: boolRecord(parsed.categories),
+    };
+  } catch {
+    // localStorage 不可用（隐私模式）或内容损坏：退回默认，不影响使用。
+    return EMPTY_EXPANDED;
+  }
+}
+
+const initialExpanded = readExpanded();
 
 /** 把所有异常统一成后端同款结构，界面只认一种错误形状。 */
 export function toDbError(error: unknown): DbErrorInfo {
@@ -65,6 +123,8 @@ interface DatabaseAssetState {
   expandedProfiles: Record<string, boolean>;
   expandedDatabases: Record<string, boolean>;
   expandedTables: Record<string, boolean>;
+  /** 分类节点（表/视图/函数/查询/备份）的展开态，`undefined` 视为展开。 */
+  expandedCategories: Record<string, boolean>;
 
   databases: Record<string, DbDatabase[]>;
   tables: Record<string, DbTable[]>;
@@ -90,6 +150,8 @@ interface DatabaseAssetState {
   toggleProfile: (profileId: string) => Promise<void>;
   toggleDatabase: (profileId: string, database: string) => Promise<void>;
   toggleTable: (profileId: string, database: string, table: string) => Promise<void>;
+  /** 纯 UI 展开态，不触发任何查询（数据在展开数据库时已一并取回）。 */
+  toggleCategory: (key: string) => void;
   refreshDatabases: (profileId: string) => Promise<void>;
   refreshTables: (profileId: string, database: string) => Promise<void>;
   refreshTableDetail: (profileId: string, database: string, table: string) => Promise<void>;
@@ -119,14 +181,33 @@ interface DatabaseAssetState {
   ) => Promise<ConnectionTestResult>;
 }
 
+/** 把当前展开态写回 localStorage（只写展开标记）。 */
+function persistExpanded(get: () => DatabaseAssetState) {
+  const state = get();
+  try {
+    window.localStorage.setItem(
+      EXPANDED_STORAGE_KEY,
+      JSON.stringify({
+        profiles: state.expandedProfiles,
+        databases: state.expandedDatabases,
+        tables: state.expandedTables,
+        categories: state.expandedCategories,
+      } satisfies PersistedExpanded),
+    );
+  } catch {
+    // 配额满/隐私模式：只影响"记住上次展开"，不影响功能。
+  }
+}
+
 export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   profiles: [],
   loadingProfiles: false,
   profileError: null,
 
-  expandedProfiles: {},
-  expandedDatabases: {},
-  expandedTables: {},
+  expandedProfiles: initialExpanded.profiles,
+  expandedDatabases: initialExpanded.databases,
+  expandedTables: initialExpanded.tables,
+  expandedCategories: initialExpanded.categories,
 
   databases: {},
   tables: {},
@@ -161,12 +242,15 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     }
   },
 
+  // 展开只在"从没加载过"时发请求：收起再展开直接命中缓存，
+  // 也避免和对象列表的自动加载撞成两次一样的查询。要最新的走刷新按钮。
   toggleProfile: async (profileId) => {
     const expanded = !get().expandedProfiles[profileId];
     set((state) => ({
       expandedProfiles: { ...state.expandedProfiles, [profileId]: expanded },
     }));
-    if (expanded) {
+    persistExpanded(get);
+    if (expanded && get().databases[profileId] === undefined) {
       await get().refreshDatabases(profileId);
     }
   },
@@ -177,7 +261,8 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     set((state) => ({
       expandedDatabases: { ...state.expandedDatabases, [key]: expanded },
     }));
-    if (expanded) {
+    persistExpanded(get);
+    if (expanded && get().tables[key] === undefined) {
       await get().refreshTables(profileId, database);
     }
   },
@@ -188,9 +273,21 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     set((state) => ({
       expandedTables: { ...state.expandedTables, [key]: expanded },
     }));
-    if (expanded) {
+    persistExpanded(get);
+    if (expanded && get().details[key] === undefined) {
       await get().refreshTableDetail(profileId, database, table);
     }
+  },
+
+  toggleCategory: (key) => {
+    set((state) => ({
+      // 缺省视为展开：只有明确收起过（false）的才需要再点一次打开。
+      expandedCategories: {
+        ...state.expandedCategories,
+        [key]: state.expandedCategories[key] === false,
+      },
+    }));
+    persistExpanded(get);
   },
 
   refreshDatabases: async (profileId) => {

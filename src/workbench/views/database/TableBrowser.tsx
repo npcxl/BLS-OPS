@@ -927,7 +927,8 @@ export function TableBrowser({
       if (outcome.state === "committed") {
         setPending([]);
         setShowPending(false);
-        await load();
+        // 必须强制重新查询；load() 会被同条件去重守卫直接 return。
+        await load(true);
       }
     } catch (failure) {
       setMutationError(toDbError(failure).message);
@@ -1541,7 +1542,8 @@ export function TableBrowser({
               className="mt-1"
               onClick={() => {
                 setPending([]);
-                void load();
+                setMutation(null);
+                void load(true);
               }}
             >
               {t("我已核对，刷新数据")}
@@ -1554,25 +1556,29 @@ export function TableBrowser({
               className="mt-1"
               onClick={() => {
                 setPending([]);
-                void load();
+                setMutation(null);
+                void load(true);
               }}
             >
               {t("发生冲突：放弃暂存并刷新")}
             </Button>
           )}
-          {mutationError?.includes("不支持事务") && (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="mt-1"
-              onClick={() => {
-                setAllowNonTransactional(true);
-                void submit(true);
-              }}
-            >
-              {t("该表不支持事务：仍要执行（无法回滚）")}
-            </Button>
-          )}
+        </div>
+      )}
+
+      {mutationError?.includes("不支持事务") && (
+        <div className="shrink-0 border-t border-warning/30 bg-warning/5 px-2 py-1 text-11">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-auto px-1 text-warning"
+            onClick={() => {
+              setAllowNonTransactional(true);
+              void submit(true);
+            }}
+          >
+            {t("该表不支持事务：仍要执行（无法回滚）")}
+          </Button>
         </div>
       )}
 

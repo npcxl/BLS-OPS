@@ -332,7 +332,8 @@ export function TableBrowser({
     !!session &&
     !profile.read_only &&
     detail?.kind === "table" &&
-    (detail?.reliable_key?.length ?? 0) > 0;
+    ((detail?.reliable_key?.length ?? 0) > 0 ||
+      (detail?.primary_key?.length ?? 0) > 0);
 
   const selectedValues = useMemo(() => {
     if (selectedRow === null || !result) return null;
@@ -493,21 +494,27 @@ export function TableBrowser({
       );
   };
 
-  /** 双击/F2：进入单元格编辑；不可编辑的类型退回完整值查看。 */
+  /** 单击/F2：进入单元格编辑；查看完整值只留在右键菜单，不弹窗。 */
   const startCellEdit = async (cell: CellAddress) => {
     if (!canEdit || !detail) {
-      openCellDetail(cell);
+      setError(t("该表没有可靠主键或是只读连接，无法直接编辑"));
       return;
     }
     const value = pageRows[cell.row]?.[cell.col];
-    const column = detail.columns[cell.col];
-    if (
-      !value ||
-      !column ||
-      /bit|blob|binary|geometry/i.test(column.data_type) ||
-      value.kind === "unsupported"
-    ) {
-      openCellDetail(cell);
+    const resultColumnName = result?.columns[cell.col]?.name;
+    const column =
+      detail.columns.find((entry) => entry.name === resultColumnName) ??
+      detail.columns[cell.col];
+    if (!value || !column) {
+      setError(t("无法定位该字段，不能编辑"));
+      return;
+    }
+    if (/bit|blob|binary|geometry/i.test(column.data_type)) {
+      setError(t("该字段是二进制类型，只能查看，不能直接编辑"));
+      return;
+    }
+    if (value.kind === "unsupported") {
+      setError(t("该字段类型不支持直接编辑"));
       return;
     }
     let text = rawText(value) ?? "";
@@ -515,7 +522,7 @@ export function TableBrowser({
       const rowValues = pageRows[cell.row];
       const located = rowValues ? keyOfRow(rowValues) : null;
       if (!located) {
-        openCellDetail(cell);
+        setError(t("无法定位整行，不能读取完整字段"));
         return;
       }
       try {
@@ -533,8 +540,7 @@ export function TableBrowser({
           (full.kind === "text" || full.kind === "json") &&
           full.truncated
         ) {
-          setError(t("字段过大，无法完整读取；只能查看，不能直接编辑"));
-          openCellDetail(cell);
+          setError(t("字段过大，无法完整读取；只能右键查看，不能直接编辑"));
           return;
         }
         text = rawText(full) ?? text;
@@ -544,7 +550,6 @@ export function TableBrowser({
         setError(
           `${t("无法读取完整字段，已阻止编辑")}：${toDbError(failure).message}`,
         );
-        openCellDetail(cell);
         return;
       }
     }

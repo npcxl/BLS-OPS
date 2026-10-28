@@ -169,6 +169,11 @@ interface DatabaseAssetState {
   /** 关闭已经不在任何标签里的会话；切换标签不会触发（标签还在）。 */
   pruneSessions: (activeProfileIds: string[]) => Promise<void>;
   refreshStatus: (profileId: string) => Promise<void>;
+  /**
+   * 显式断开一个连接：先关会话，再关掉 Rust 侧的连接运行时（隧道/连接池）。
+   * 只用于用户在侧栏点"关闭连接"；标签关闭走 pruneSessions（保留运行时，重开更快）。
+   */
+  disconnectProfile: (profileId: string) => Promise<void>;
 
   saveProfile: (
     profile: DatabaseProfile,
@@ -471,6 +476,18 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     } catch {
       // 状态是装饰性的；失败不覆盖已有值。
     }
+  },
+
+  disconnectProfile: async (profileId) => {
+    await get().closeSession(profileId);
+    try {
+      // 只关会话的话 Rust 运行时（隧道/连接池）仍在，状态会一直是 connected；
+      // 显式断开必须连运行时一起关，绿灯才会灭。
+      await databaseApi.profileClose(profileId);
+    } catch {
+      // 运行时可能已经不存在；状态以下一次 refreshStatus 为准。
+    }
+    void get().refreshStatus(profileId);
   },
 
   saveProfile: async (profile, password) => {

@@ -44,6 +44,7 @@ import {
   type SavedQuery,
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { DatabaseDuotone } from "@/components/icons";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
@@ -210,11 +211,18 @@ const ProfileRow = memo(function ProfileRow({
           />
         </Button>
       </Tooltip>
-      <DbEngineIcon
-        engine={profile.engine}
-        connected={connected}
-        size={13}
-      />
+      <span className="flex shrink-0 items-center">
+        <DbEngineIcon
+          engine={profile.engine}
+          connected={connected}
+          size={13}
+        />
+        {/* 连接状态图标：Rust 侧报告已连接时染绿（GitHub 成功绿），未连接时保持默认弱色。 */}
+        <DatabaseDuotone
+          size={12}
+          className={connected ? "text-[#3fb950]" : "text-fg-subtle"}
+        />
+      </span>
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-12",
@@ -343,13 +351,20 @@ export function DatabaseAssetSidebar() {
     useState<DatabaseProfile | null>(null);
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
-  const closeSession = useDatabaseStore((state) => state.closeSession);
+  const statuses = useDatabaseStore((state) => state.statuses);
+  const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
+  const disconnectProfile = useDatabaseStore((state) => state.disconnectProfile);
   const ensureSession = useDatabaseStore((state) => state.ensureSession);
   const reconnect = useDatabaseStore((state) => state.reconnect);
 
   useEffect(() => {
     if (profiles.length === 0) void refreshProfiles();
   }, [profiles.length, refreshProfiles]);
+
+  useEffect(() => {
+    // 拉取每个连接的 Rust 侧运行状态，驱动连接图标上的绿色状态点。
+    for (const profile of profiles) void refreshStatus(profile.id);
+  }, [profiles, refreshStatus]);
 
   /*
    * 恢复上次的展开态：localStorage 只记「哪些节点是打开的」，数据不跨进程缓存，
@@ -499,19 +514,19 @@ export function DatabaseAssetSidebar() {
       },
       ...(connected
         ? [
-            {
-              id: "reconnect",
-              label: t("重新连接"),
-              onSelect: () => void reconnect(profile.id),
-            },
-            { separator: true as const },
-            {
-              id: "close",
-              label: t("关闭连接"),
-              danger: true,
-              onSelect: () => setDisconnectTarget(profile),
-            },
-          ]
+          {
+            id: "reconnect",
+            label: t("重新连接"),
+            onSelect: () => void reconnect(profile.id),
+          },
+          { separator: true as const },
+          {
+            id: "close",
+            label: t("关闭连接"),
+            danger: true,
+            onSelect: () => setDisconnectTarget(profile),
+          },
+        ]
         : []),
       {
         id: "info",
@@ -680,7 +695,9 @@ export function DatabaseAssetSidebar() {
               <ProfileRow
                 profile={profile}
                 expanded={profileOpen}
-                connected={!!sessions[profile.id]}
+                connected={
+                  statuses[profile.id]?.connected ?? !!sessions[profile.id]
+                }
                 error={profileLoadError}
                 onToggle={() => void toggleProfile(profile.id)}
                 onOpen={() => {
@@ -837,7 +854,7 @@ export function DatabaseAssetSidebar() {
                           // 分类展开态：缺省展开，收起的记录在 store 里（跨重启保留）。
                           const categoryOpen = (id: string) =>
                             expandedCategories[
-                              categoryKey(profile.id, database.name, id)
+                            categoryKey(profile.id, database.name, id)
                             ] !== false;
                           const toggleCat = (id: string) =>
                             toggleCategory(
@@ -848,177 +865,177 @@ export function DatabaseAssetSidebar() {
                               {groups.map((group) => {
                                 const groupOpen = categoryOpen(group.id);
                                 return (
-                                <Fragment key={group.id}>
-                                  <CategoryRow
-                                    label={group.label}
-                                    count={group.items.length}
-                                    icon={group.icon}
-                                    open={groupOpen}
-                                    onToggle={() => toggleCat(group.id)}
-                                  />
-                                  {groupOpen && group.items.map((table) => {
-                              const tableKey = detailKey(
-                                profile.id,
-                                database.name,
-                                table.name,
-                              );
-                              const detail = details[tableKey];
-                              const tableOpen = !!expandedTables[tableKey];
-                              const tableLoading = loading[tableKey];
-                              const tableError = errors[tableKey] ?? null;
-                              return (
-                                <div key={tableKey}>
-                                  <div
-                                    className={cn(
-                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover",
-                                      selectedKey === tableKey &&
-                                        "bg-accent/10 ring-1 ring-inset ring-accent/20",
-                                    )}
-                                    style={indent(3)}
-                                    tabIndex={0}
-                                    onClick={() => setSelectedKey(tableKey)}
-                                    onDoubleClick={() =>
-                                      openTableItem(profile, database.name, table.name)
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter") {
-                                        openTableItem(profile, database.name, table.name);
-                                      }
-                                    }}
-                                    onContextMenu={(event) => {
-                                      event.stopPropagation();
-                                      menu.onContextMenu(() =>
-                                        objectMenu(
-                                          {
-                                            profileId: profile.id,
-                                            connectionName: profile.name,
-                                            database: database.name,
-                                          },
-                                          table,
-                                        ),
-                                      )(event);
-                                    }}
-                                    title={`${database.name}.${table.name}`}
-                                  >
-                                    <Button
-                                      variant="ghost"
-                                      size="xs"
-                                      className="h-4 w-4 shrink-0 px-0"
-                                      aria-label={t("展开")}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        void toggleTable(profile.id, database.name, table.name);
-                                      }}
-                                    >
-                                      <ChevronRight
-                                        size={10}
-                                        className={cn(
-                                          "transition-transform",
-                                          tableOpen && "rotate-90",
-                                        )}
-                                      />
-                                    </Button>
-                                    {table.kind === "view" ? (
-                                      <Eye
-                                        size={11}
-                                        className={cn(
-                                          "shrink-0",
-                                          tableOpen ? "text-fg" : "text-fg-subtle",
-                                        )}
-                                      />
-                                    ) : (
-                                      <Table2
-                                        size={11}
-                                        className={cn(
-                                          "shrink-0",
-                                          tableOpen ? "text-fg" : "text-fg-subtle",
-                                        )}
-                                      />
-                                    )}
-                                    <span
-                                      className={cn(
-                                        "min-w-0 flex-1 truncate text-12",
-                                        tableOpen
-                                          ? "font-medium text-fg"
-                                          : "text-fg-muted",
-                                      )}
-                                    >
-                                      {table.name}
-                                    </span>
-                                    {tableError && (
-                                      <TriangleAlert size={10} className="shrink-0 text-danger" />
-                                    )}
-                                  </div>
-
-                                  {tableOpen && tableLoading && <LoadingRow level={4} />}
-                                  {tableOpen && tableError && (
-                                    <ErrorRow
-                                      error={tableError}
-                                      level={4}
-                                      onRetry={() =>
-                                        void refreshTableDetail(
-                                          profile.id,
-                                          database.name,
-                                          table.name,
-                                        )
-                                      }
+                                  <Fragment key={group.id}>
+                                    <CategoryRow
+                                      label={group.label}
+                                      count={group.items.length}
+                                      icon={group.icon}
+                                      open={groupOpen}
+                                      onToggle={() => toggleCat(group.id)}
                                     />
-                                  )}
-                                  {tableOpen && detail && (
-                                    <div className="pb-1">
-                                      {detail.columns.slice(0, 80).map((column) => (
-                                        <div
-                                          key={column.name}
-                                          className="flex items-center gap-1 py-[3px] pr-1 text-11 text-fg-subtle"
-                                          style={indent(4)}
-                                          title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
-                                        >
-                                          {column.primary_key ? (
-                                            <KeyRound size={9} className="shrink-0 text-accent" />
-                                          ) : (
-                                            <span className="h-[9px] w-[9px] shrink-0" />
+                                    {groupOpen && group.items.map((table) => {
+                                      const tableKey = detailKey(
+                                        profile.id,
+                                        database.name,
+                                        table.name,
+                                      );
+                                      const detail = details[tableKey];
+                                      const tableOpen = !!expandedTables[tableKey];
+                                      const tableLoading = loading[tableKey];
+                                      const tableError = errors[tableKey] ?? null;
+                                      return (
+                                        <div key={tableKey}>
+                                          <div
+                                            className={cn(
+                                              "group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover",
+                                              selectedKey === tableKey &&
+                                              "bg-accent/10 ring-1 ring-inset ring-accent/20",
+                                            )}
+                                            style={indent(3)}
+                                            tabIndex={0}
+                                            onClick={() => setSelectedKey(tableKey)}
+                                            onDoubleClick={() =>
+                                              openTableItem(profile, database.name, table.name)
+                                            }
+                                            onKeyDown={(event) => {
+                                              if (event.key === "Enter") {
+                                                openTableItem(profile, database.name, table.name);
+                                              }
+                                            }}
+                                            onContextMenu={(event) => {
+                                              event.stopPropagation();
+                                              menu.onContextMenu(() =>
+                                                objectMenu(
+                                                  {
+                                                    profileId: profile.id,
+                                                    connectionName: profile.name,
+                                                    database: database.name,
+                                                  },
+                                                  table,
+                                                ),
+                                              )(event);
+                                            }}
+                                            title={`${database.name}.${table.name}`}
+                                          >
+                                            <Button
+                                              variant="ghost"
+                                              size="xs"
+                                              className="h-4 w-4 shrink-0 px-0"
+                                              aria-label={t("展开")}
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                void toggleTable(profile.id, database.name, table.name);
+                                              }}
+                                            >
+                                              <ChevronRight
+                                                size={10}
+                                                className={cn(
+                                                  "transition-transform",
+                                                  tableOpen && "rotate-90",
+                                                )}
+                                              />
+                                            </Button>
+                                            {table.kind === "view" ? (
+                                              <Eye
+                                                size={11}
+                                                className={cn(
+                                                  "shrink-0",
+                                                  tableOpen ? "text-fg" : "text-fg-subtle",
+                                                )}
+                                              />
+                                            ) : (
+                                              <Table2
+                                                size={11}
+                                                className={cn(
+                                                  "shrink-0",
+                                                  tableOpen ? "text-fg" : "text-fg-subtle",
+                                                )}
+                                              />
+                                            )}
+                                            <span
+                                              className={cn(
+                                                "min-w-0 flex-1 truncate text-12",
+                                                tableOpen
+                                                  ? "font-medium text-fg"
+                                                  : "text-fg-muted",
+                                              )}
+                                            >
+                                              {table.name}
+                                            </span>
+                                            {tableError && (
+                                              <TriangleAlert size={10} className="shrink-0 text-danger" />
+                                            )}
+                                          </div>
+
+                                          {tableOpen && tableLoading && <LoadingRow level={4} />}
+                                          {tableOpen && tableError && (
+                                            <ErrorRow
+                                              error={tableError}
+                                              level={4}
+                                              onRetry={() =>
+                                                void refreshTableDetail(
+                                                  profile.id,
+                                                  database.name,
+                                                  table.name,
+                                                )
+                                              }
+                                            />
                                           )}
-                                          <span className="min-w-0 flex-1 truncate text-fg-muted">
-                                            {column.name}
-                                          </span>
-                                          <span className="shrink-0 text-10">
-                                            {column.data_type}
-                                          </span>
+                                          {tableOpen && detail && (
+                                            <div className="pb-1">
+                                              {detail.columns.slice(0, 80).map((column) => (
+                                                <div
+                                                  key={column.name}
+                                                  className="flex items-center gap-1 py-[3px] pr-1 text-11 text-fg-subtle"
+                                                  style={indent(4)}
+                                                  title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
+                                                >
+                                                  {column.primary_key ? (
+                                                    <KeyRound size={9} className="shrink-0 text-accent" />
+                                                  ) : (
+                                                    <span className="h-[9px] w-[9px] shrink-0" />
+                                                  )}
+                                                  <span className="min-w-0 flex-1 truncate text-fg-muted">
+                                                    {column.name}
+                                                  </span>
+                                                  <span className="shrink-0 text-10">
+                                                    {column.data_type}
+                                                  </span>
+                                                </div>
+                                              ))}
+                                              {detail.columns.length > 80 && (
+                                                <div
+                                                  className="py-[3px] text-11 text-fg-subtle"
+                                                  style={indent(4)}
+                                                >
+                                                  {t("…另有 {{count}} 列", {
+                                                    count: detail.columns.length - 80,
+                                                  })}
+                                                </div>
+                                              )}
+                                              <Button
+                                                variant="ghost"
+                                                size="xs"
+                                                className="mt-1 h-auto px-1 text-11 text-accent"
+                                                style={indent(4)}
+                                                onClick={() => {
+                                                  open(profile);
+                                                  openStructure({
+                                                    profileId: profile.id,
+                                                    connectionName: profile.name,
+                                                    database: database.name,
+                                                    table: table.name,
+                                                  });
+                                                }}
+                                              >
+                                                {t("查看表结构 / 索引")}
+                                              </Button>
+                                            </div>
+                                          )}
                                         </div>
-                                      ))}
-                                      {detail.columns.length > 80 && (
-                                        <div
-                                          className="py-[3px] text-11 text-fg-subtle"
-                                          style={indent(4)}
-                                        >
-                                          {t("…另有 {{count}} 列", {
-                                            count: detail.columns.length - 80,
-                                          })}
-                                        </div>
-                                      )}
-                                      <Button
-                                        variant="ghost"
-                                        size="xs"
-                                        className="mt-1 h-auto px-1 text-11 text-accent"
-                                        style={indent(4)}
-                                        onClick={() => {
-                                          open(profile);
-                                          openStructure({
-                                            profileId: profile.id,
-                                            connectionName: profile.name,
-                                            database: database.name,
-                                            table: table.name,
-                                          });
-                                        }}
-                                      >
-                                        {t("查看表结构 / 索引")}
-                                      </Button>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                                  })}
-                                </Fragment>
+                                      );
+                                    })}
+                                  </Fragment>
                                 );
                               })}
                               <CategoryRow
@@ -1037,19 +1054,19 @@ export function DatabaseAssetSidebar() {
                               />
                               {categoryOpen("queries") &&
                                 databaseQueries.map((query) => (
-                                <div
-                                  key={query.id}
-                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 text-11 text-fg-muted hover:bg-surface-hover"
-                                  style={indent(3)}
-                                  onDoubleClick={() => openSavedQuery(query)}
-                                  title={query.name}
-                                >
-                                  <FileCode2 size={10} className="shrink-0 text-fg-subtle" />
-                                  <span className="min-w-0 flex-1 truncate">
-                                    {query.name}
-                                  </span>
-                                </div>
-                              ))}
+                                  <div
+                                    key={query.id}
+                                    className="flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 text-11 text-fg-muted hover:bg-surface-hover"
+                                    style={indent(3)}
+                                    onDoubleClick={() => openSavedQuery(query)}
+                                    title={query.name}
+                                  >
+                                    <FileCode2 size={10} className="shrink-0 text-fg-subtle" />
+                                    <span className="min-w-0 flex-1 truncate">
+                                      {query.name}
+                                    </span>
+                                  </div>
+                                ))}
                               <CategoryRow
                                 label={t("备份")}
                                 count={0}
@@ -1073,40 +1090,39 @@ export function DatabaseAssetSidebar() {
             query.database === null &&
             profiles.some((profile) => profile.id === query.profileId),
         ).length > 0 && (
-          <div className="mt-2 border-t border-line pt-1">
-            <div className="px-2 py-1 text-11 font-medium text-fg-subtle">
-              {t("保存的查询")}
+            <div className="mt-2 border-t border-line pt-1">
+              <div className="px-2 py-1 text-11 font-medium text-fg-subtle">
+                {t("保存的查询")}
+              </div>
+              {savedQueries
+                .filter(
+                  (query) =>
+                    query.database === null &&
+                    profiles.some((profile) => profile.id === query.profileId),
+                )
+                .map((query) => (
+                  <div
+                    key={query.id}
+                    className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pl-2 pr-1 hover:bg-surface-hover"
+                    tabIndex={0}
+                    onDoubleClick={() => openSavedQuery(query)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") openSavedQuery(query);
+                    }}
+                    title={`${query.connectionName}${query.database ? ` / ${query.database}` : ""
+                      }\n${t("双击打开这份查询")}`}
+                  >
+                    <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
+                    <span className="min-w-0 flex-1 truncate text-12 text-fg">
+                      {query.name}
+                    </span>
+                    <span className="shrink-0 text-10 text-fg-subtle">
+                      {query.connectionName}
+                    </span>
+                  </div>
+                ))}
             </div>
-            {savedQueries
-              .filter(
-                (query) =>
-                  query.database === null &&
-                  profiles.some((profile) => profile.id === query.profileId),
-              )
-              .map((query) => (
-                <div
-                  key={query.id}
-                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pl-2 pr-1 hover:bg-surface-hover"
-                  tabIndex={0}
-                  onDoubleClick={() => openSavedQuery(query)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") openSavedQuery(query);
-                  }}
-                  title={`${query.connectionName}${
-                    query.database ? ` / ${query.database}` : ""
-                  }\n${t("双击打开这份查询")}`}
-                >
-                  <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
-                  <span className="min-w-0 flex-1 truncate text-12 text-fg">
-                    {query.name}
-                  </span>
-                  <span className="shrink-0 text-10 text-fg-subtle">
-                    {query.connectionName}
-                  </span>
-                </div>
-              ))}
-          </div>
-        )}
+          )}
       </div>
 
       <ContextMenu {...menu.props} />
@@ -1121,7 +1137,7 @@ export function DatabaseAssetSidebar() {
         confirmLabel={t("关闭连接")}
         onCancel={() => setDisconnectTarget(null)}
         onConfirm={() => {
-          if (disconnectTarget) void closeSession(disconnectTarget.id);
+          if (disconnectTarget) void disconnectProfile(disconnectTarget.id);
           setDisconnectTarget(null);
         }}
       />

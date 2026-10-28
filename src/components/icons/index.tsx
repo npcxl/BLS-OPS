@@ -144,6 +144,14 @@ export const FileText: IconComponent = FileDescriptionIcon;
 export const Filter: IconComponent = FilterIcon;
 
 // ---------------------------------------------------------------------------
+// 手写 SVG 图标：itshover / lucide 均无同风格图形的自有图标
+// ---------------------------------------------------------------------------
+
+export { DatabaseDuotoneIcon } from "./database-duotone-icon";
+import { DatabaseDuotoneIcon } from "./database-duotone-icon";
+export const DatabaseDuotone: IconComponent = DatabaseDuotoneIcon;
+
+// ---------------------------------------------------------------------------
 // 方向变体：itshover 只提供 `right-chevron` / `down-chevron`，左/上方向由旋转得到
 // ---------------------------------------------------------------------------
 

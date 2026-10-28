@@ -143,13 +143,6 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         <div className="flex items-center gap-2 px-3 py-2">
-          <span
-            className={
-              connected
-                ? "h-1.5 w-1.5 shrink-0 rounded-full bg-fg"
-                : "h-1.5 w-1.5 shrink-0 rounded-full bg-line-strong"
-            }
-          />
           <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg">
             {profile.name}
           </span>

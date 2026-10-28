@@ -152,18 +152,6 @@ const ProfileRow = memo(function ProfileRow({
         {profile.name}
       </span>
       <Tooltip
-        label={connected ? t("已连接") : t("未连接")}
-        side="left"
-      >
-        <span
-          className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            connected ? "bg-fg" : "bg-line-strong",
-          )}
-          aria-label={connected ? t("已连接") : t("未连接")}
-        />
-      </Tooltip>
-      <Tooltip
         label={connected ? t("关闭连接") : t("打开连接")}
         side="left"
       >
@@ -575,8 +563,6 @@ export function DatabaseAssetSidebar() {
                   .map((database) => {
                     const key = `${profile.id}\u0001${database.name}`;
                     const dbOpen = !!expandedDatabases[key];
-                    const currentDb =
-                      sessions[profile.id]?.current_database === database.name;
                     const dbTables = tables[key] ?? [];
                     const dbLoading = loading[key];
                     const dbError = errors[key] ?? null;
@@ -637,14 +623,6 @@ export function DatabaseAssetSidebar() {
                           >
                             {database.name}
                           </span>
-                          {currentDb && (
-                            <Tooltip label={t("当前数据库")} side="left">
-                              <span
-                                className="h-1.5 w-1.5 shrink-0 rounded-full bg-fg"
-                                aria-label={t("当前数据库")}
-                              />
-                            </Tooltip>
-                          )}
                           {dbError && <TriangleAlert size={10} className="shrink-0 text-danger" />}
                           <Tooltip label={t("刷新表列表")} side="left">
                             <Button

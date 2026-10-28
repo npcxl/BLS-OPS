@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { GripVertical } from "lucide-react";
+import { GripVertical } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";

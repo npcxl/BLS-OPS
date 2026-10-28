@@ -3,17 +3,17 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { NavModule } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 import {
-  TerminalIcon,
-  WorldIcon,
-  GearIcon,
+  Database,
   FileDescriptionIcon,
-  Stack3Icon,
+  GearIcon,
   RocketIcon,
-  UnorderedListIcon,
   SparklesIcon,
-} from "@/components/its-hover";
-import { Database } from "lucide-react";
-import type { ComponentType } from "react";
+  Stack3Icon,
+  TerminalIcon,
+  UnorderedListIcon,
+  WorldIcon,
+  type IconComponent,
+} from "@/components/icons";
 
 /**
  * Primary Navigation Rail — the far-left icon strip.
@@ -23,7 +23,7 @@ import type { ComponentType } from "react";
 interface NavItem {
   id: NavModule;
   label: string;
-  icon: ComponentType<{ size?: number | string; className?: string; color?: string }>;
+  icon: IconComponent;
   divider?: boolean;
 }
 

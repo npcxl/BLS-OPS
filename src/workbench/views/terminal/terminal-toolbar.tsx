@@ -1,4 +1,4 @@
-import { Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Unplug } from "lucide-react";
+import { Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Unplug } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ToolbarIcon } from "./ToolbarIcon";
 import type { Phase } from "./terminal-phase";

@@ -10,7 +10,7 @@ import {
   Server as ServerIcon,
   Star,
   Trash2,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";

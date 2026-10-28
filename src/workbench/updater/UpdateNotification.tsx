@@ -7,7 +7,7 @@
  * instead of as a popup.
  */
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { useUpdaterStore } from "@/stores/updater-store";
 import { useUpdaterActions } from "@/hooks/use-updater";

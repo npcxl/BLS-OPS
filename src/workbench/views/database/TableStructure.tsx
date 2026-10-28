@@ -1,6 +1,6 @@
 /** 表结构：字段（类型 / NULL / 默认值 / 主键 / 自增）、索引、表定义。 */
 import { useTranslation } from "react-i18next";
-import { KeyRound } from "lucide-react";
+import { KeyRound } from "@/components/icons";
 import type { DbTableColumn, DbTableDetail } from "@/api/types/database";
 import { LoadingState } from "@/components/ui/loading";
 import { cn } from "@/lib/cn";

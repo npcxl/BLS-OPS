@@ -8,7 +8,7 @@ import {
   Replace,
   ReplaceAll,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { cn } from "@/lib/cn";
 import type { EditorView } from "@uiw/react-codemirror";
 import {

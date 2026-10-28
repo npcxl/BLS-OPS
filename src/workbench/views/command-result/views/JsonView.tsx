@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { i18n } from "@/i18n";

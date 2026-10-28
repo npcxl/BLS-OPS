@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { FileArchive, Folder, Search } from "lucide-react";
+import { FileArchive, Folder, Search } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { formatSize } from "@/lib/format";
 import type { ArchiveEntry, ArchiveFormat } from "@/lib/preview/archive";

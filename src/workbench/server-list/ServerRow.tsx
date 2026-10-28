@@ -9,7 +9,7 @@ import {
   SquareCheckBig,
   Star,
   Trash2,
-} from "lucide-react";
+} from "@/components/icons";
 import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";

@@ -1,4 +1,4 @@
-import type { LucideIcon } from "lucide-react";
+import type { IconComponent } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import {
   Boxes,
@@ -9,7 +9,7 @@ import {
   Settings,
   Sparkles,
   SquareTerminal,
-} from "lucide-react";
+} from "@/components/icons";
 import type { NavModule } from "@/workbench/types";
 import { AiPlaceholder } from "@/workbench/views/ai/AiPlaceholder";
 import { SshContextSidebar } from "./ssh-context-sidebar";
@@ -17,7 +17,7 @@ import { SettingsContextSidebar } from "./settings-context-sidebar";
 
 interface ModuleSpec {
   title: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   description: string;
   sections: string[];
 }

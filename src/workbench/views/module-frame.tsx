@@ -16,7 +16,7 @@ import {
   RefreshCw,
   TriangleAlert,
   WifiOff,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useDomainStore } from "@/stores/domain-store";

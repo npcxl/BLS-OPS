@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { CircleHelp } from "lucide-react";
+import { CircleHelp } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { GatewayRoute, ProjectCandidate, ReviewState } from "@/api/ops-api";

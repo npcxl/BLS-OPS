@@ -15,7 +15,7 @@ import {
   TriangleAlert,
   Unplug,
   WifiOff,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { selectClassSm } from "@/components/ui/modal";
 import { useTranslation } from "react-i18next";

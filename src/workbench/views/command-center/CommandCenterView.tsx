@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Search, Star, TerminalSquare } from "lucide-react";
+import { Loader2, Search, Star, TerminalSquare } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";

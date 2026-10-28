@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Check, ChevronRight, PlugZap, Plus, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronRight, PlugZap, Plus, Trash2 } from "@/components/icons";
 
 import { opsApi, toErrorMessage, type AiProviderTestResult, type AiProviderView } from "@/api/ops-api";
 import { Button } from "@/components/ui/button";

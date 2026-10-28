@@ -5,7 +5,7 @@
  * 输出是菜单项。**没有事实就不给入口** —— 没有 Docker 实例不出容器菜单，
  * 没有宿主机 Nginx 不出「重启 Nginx」，也不拿"可能"去猜。
  */
-import { Copy, FileCode2, RefreshCw, RotateCw, Square, TerminalSquare } from "lucide-react";
+import { Copy, FileCode2, RefreshCw, RotateCw, Square, TerminalSquare } from "@/components/icons";
 import type { ContextMenuItem } from "@/components/ui/context-menu";
 import type { CandidateInstance, DeploymentInstance, GatewayRoute } from "@/api/ops-api";
 

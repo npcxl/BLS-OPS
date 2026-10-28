@@ -9,7 +9,7 @@
  * 绝不在关闭时"顺手"提交事务或应用表格修改。
  */
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { AlertTriangle, Loader2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { useDatabaseStore } from "@/stores/database-store";

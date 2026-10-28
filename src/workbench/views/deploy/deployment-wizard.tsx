@@ -23,7 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleCheck, CircleDashed, LoaderCircle, TriangleAlert } from "lucide-react";
+import { CircleCheck, CircleDashed, LoaderCircle, TriangleAlert } from "@/components/icons";
 
 import { toErrorMessage, opsApi } from "@/api/ops-api";
 import type { DeploymentSession, SessionStatus } from "@/api/types/deployment";

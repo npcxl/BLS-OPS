@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Music, VideoOff } from "lucide-react";
+import { Music, VideoOff } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { useObjectUrl } from "@/hooks/use-object-url";
 import { formatSize } from "@/lib/format";

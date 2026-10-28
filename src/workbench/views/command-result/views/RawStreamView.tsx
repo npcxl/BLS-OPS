@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { copyText } from "@/lib/clipboard";
 import { segmentLine } from "@/workbench/views/terminal/result-search";

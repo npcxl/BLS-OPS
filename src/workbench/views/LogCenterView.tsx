@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "lucide-react";
+import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { selectClassSm } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";

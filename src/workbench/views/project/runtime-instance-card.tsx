@@ -8,7 +8,7 @@
  * 重启 / 停止 / 看配置。没有的事实（systemd 的重启、k8s 的容器操作）不给入口。
  */
 import { useState } from "react";
-import { CircleDashed } from "lucide-react";
+import { CircleDashed } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";

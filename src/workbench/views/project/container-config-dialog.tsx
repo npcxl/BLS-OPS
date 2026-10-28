@@ -9,7 +9,7 @@
  * 「在文件面板中打开 / 在终端中跟踪 / 复制路径」，左键直接打开文件面板。
  * 容器内路径（工作目录、挂载目标）不提供跳转 —— 面板读的是宿主机。
  */
-import { Copy, FolderOpen, TerminalSquare } from "lucide-react";
+import { Copy, FolderOpen, TerminalSquare } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { Modal } from "@/components/ui/modal";

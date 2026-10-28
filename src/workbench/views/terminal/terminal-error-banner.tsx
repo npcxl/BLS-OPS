@@ -1,4 +1,4 @@
-import { Copy, WifiOff } from "lucide-react";
+import { Copy, WifiOff } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 

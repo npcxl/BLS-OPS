@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Copy } from "lucide-react";
+import { Copy } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 /**

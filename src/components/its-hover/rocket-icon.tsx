@@ -130,4 +130,5 @@ const RocketIcon = forwardRef<AnimatedIconHandle, AnimatedIconProps>(
 );
 
 RocketIcon.displayName = "RocketIcon";
+
 export default RocketIcon;

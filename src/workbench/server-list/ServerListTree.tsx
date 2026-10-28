@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, ChevronsLeft, FolderPlus, Plus, RefreshCw, Star } from "lucide-react";
+import { ChevronRight, ChevronsLeft, FolderPlus, Plus, RefreshCw, Star } from "@/components/icons";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/mac-button";
 import { ErrorText } from "@/components/ui/modal";

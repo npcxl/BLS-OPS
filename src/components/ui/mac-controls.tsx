@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronDown, Minus, Search, X } from "lucide-react";
+import { Check, ChevronDown, Minus, Search, X } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
 export interface MacWindowControlsProps extends HTMLAttributes<HTMLDivElement> {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Search } from "lucide-react";
+import { ArrowRight, Search } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
 export interface PaletteAction {

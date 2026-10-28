@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Boxes } from "lucide-react";
+import { Boxes } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";

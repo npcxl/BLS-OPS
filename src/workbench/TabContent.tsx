@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2 } from "@/components/icons";
 import type { WorkspaceTab } from "@/workbench/types";
 import { WorkbenchHome } from "@/workbench/views/WorkbenchHome";
 import { ModulePage } from "@/workbench/ModulePage";

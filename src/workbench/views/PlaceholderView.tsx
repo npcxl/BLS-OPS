@@ -1,10 +1,10 @@
-import type { LucideIcon } from "lucide-react";
+import type { IconComponent } from "@/components/icons";
 import { useTranslation } from "react-i18next";
-import { Activity, Boxes, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Table2, Workflow } from "lucide-react";
+import { Activity, Boxes, House, LayoutGrid, Rocket, ScrollText, Server, SquareCheckBig, SquareTerminal, Table2, Workflow } from "@/components/icons";
 import type { WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
 
 /** Generic placeholder for tab types that land in later phases. phase 存 i18n key。 */
-const META: Record<WorkspaceTabType, { icon: LucideIcon; phase: string }> = {
+const META: Record<WorkspaceTabType, { icon: IconComponent; phase: string }> = {
   home: { icon: House, phase: "Phase 1" },
   module: { icon: LayoutGrid, phase: "In progress" },
   terminal: { icon: SquareTerminal, phase: "Phase 2" },

@@ -1,4 +1,4 @@
-import { Server } from "lucide-react";
+import { Server } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { ServerCapabilityProfile } from "@/api/ops-api";

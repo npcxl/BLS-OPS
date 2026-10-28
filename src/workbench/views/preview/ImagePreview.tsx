@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, ZoomIn, ZoomOut } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useObjectUrl } from "@/hooks/use-object-url";

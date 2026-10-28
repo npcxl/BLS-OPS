@@ -9,7 +9,8 @@ import {
   Play,
   Settings,
   Terminal,
-} from "lucide-react";
+  type IconComponent,
+} from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { RISK_META } from "@/api/ops-api";
 import { useTranslation } from "react-i18next";
@@ -27,7 +28,7 @@ import type { CompletionIcon, CompletionItem } from "./completion/types";
  * 这里只负责展示与鼠标操作（mousedown 抢在终端失焦之前完成）。
  */
 
-const ICONS: Record<CompletionIcon, typeof Folder> = {
+const ICONS: Record<CompletionIcon, IconComponent> = {
   command: Terminal,
   directory: Folder,
   file: FileText,

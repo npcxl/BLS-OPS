@@ -9,7 +9,7 @@ import {
   RefreshCw,
   Rows2,
   Unplug,
-} from "lucide-react";
+} from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import type { Phase } from "./terminal-phase";

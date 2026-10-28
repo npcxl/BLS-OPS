@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Lock } from "lucide-react";
+import { Lock } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";

@@ -1,26 +1,24 @@
 import { useEffect, useRef } from "react";
 import {
   Activity,
-  House,
-  Plus,
-  Rows2,
   Columns2,
-  Server,
-  Table2,
-  X,
-  type LucideIcon,
-} from "lucide-react";
-import {
   CommandCenterIcon,
   FileDescriptionIcon,
   GearIcon,
+  House,
+  Plus,
   RocketIcon,
+  Rows2,
+  Server,
   SparklesIcon,
   Stack3Icon,
+  Table2,
   TerminalIcon,
   UnorderedListIcon,
   WorldIcon,
-} from "@/components/its-hover";
+  X,
+  type IconComponent,
+} from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -28,7 +26,7 @@ import { cn } from "@/lib/cn";
 import type { NavModule, WorkbenchPane, WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
 
 /** 页签图标 = 左侧菜单同一套（its-hover），保证"页签和菜单图标一致"。 */
-type TabIcon = LucideIcon | typeof TerminalIcon;
+type TabIcon = IconComponent | typeof TerminalIcon;
 
 const MODULE_ICONS: Record<NavModule, TabIcon> = {
   ssh: TerminalIcon,

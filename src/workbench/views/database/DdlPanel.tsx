@@ -8,7 +8,7 @@ import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { MySQL, sql as sqlLanguage } from "@codemirror/lang-sql";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { Copy, Loader2, X } from "lucide-react";
+import { Copy, Loader2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { useEditorTheme } from "@/lib/cm-theme";

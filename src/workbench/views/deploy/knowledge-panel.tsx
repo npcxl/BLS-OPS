@@ -24,7 +24,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Archive, FileUp, Eye } from "lucide-react";
+import { Archive, FileUp, Eye } from "@/components/icons";
 
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import type {

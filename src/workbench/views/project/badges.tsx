@@ -1,4 +1,4 @@
-import { Box, Container, Globe, Server, Ship } from "lucide-react";
+import { Box, Container, Globe, Server, Ship } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { i18n } from "@/i18n";

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy } from "lucide-react";
+import { Copy } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import type { Terminal } from "@xterm/xterm";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Search, WrapText } from "lucide-react";
+import { Search, WrapText } from "@/components/icons";
 import CodeMirror, { EditorState, EditorView } from "@uiw/react-codemirror";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";

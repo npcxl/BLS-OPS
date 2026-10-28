@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Inbox } from "lucide-react";
+import { Inbox } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
 interface EmptyStateProps {

@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, Loader2, Trash2 } from "lucide-react";
+import { History, Loader2, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { databaseApi } from "@/api/ops-api";

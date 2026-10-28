@@ -1,5 +1,5 @@
 import type { HTMLAttributes, ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, XCircle } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
 export type StatusTone = "success" | "warning" | "danger" | "info" | "neutral";

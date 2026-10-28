@@ -1,9 +1,9 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { LoaderCircle, type LucideProps } from "lucide-react";
+import { LoaderCircle, type IconProps } from "@/components/icons";
 import { cn } from "@/lib/cn";
 
-export function Spinner({ className, ...props }: LucideProps) {
+export function Spinner({ className, ...props }: IconProps) {
   const { t } = useTranslation();
   return <LoaderCircle aria-label={t("Loading")} className={cn("animate-spin text-fg-subtle", className)} {...props} />;
 }

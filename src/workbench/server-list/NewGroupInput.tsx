@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, X } from "lucide-react";
+import { Check, X } from "@/components/icons";
 
 /**
  * Inline "new group" editor. Enter saves, Escape cancels, and there are always

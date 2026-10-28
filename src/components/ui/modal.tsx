@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { X } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useExiting } from "@/hooks/use-exiting";
 

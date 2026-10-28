@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Pencil, Trash2, X } from "lucide-react";
+import { Check, ChevronRight, Pencil, Trash2, X } from "@/components/icons";
 import type { ServerRecord } from "@/api/types/servers";
 import { cn } from "@/lib/cn";
 import type { ServerGroupSection } from "./sections";

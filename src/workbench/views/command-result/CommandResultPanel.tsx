@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, CornerDownLeft, FileCode2, Table2, type LucideIcon } from "lucide-react";
+import { Check, Copy, CornerDownLeft, FileCode2, Table2, type IconComponent } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
@@ -21,7 +21,7 @@ type PanelTab = "structured" | "raw";
 interface ViewOption {
   id: PanelTab;
   label: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   /** 结构化视图对 raw/text 输出没有意义 → 隐藏。 */
   visible: boolean;
 }

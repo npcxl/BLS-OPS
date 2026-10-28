@@ -5,7 +5,7 @@
  * 运行中的查询、待提交修改、未保存草稿都必须先汇总再确认。
  */
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import type { WorkItem } from "@/stores/database-workspace-store";

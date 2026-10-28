@@ -8,7 +8,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileDown, FolderOpen, Loader2, Square, TriangleAlert } from "lucide-react";
+import { FileDown, FolderOpen, Loader2, Square, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { databaseApi } from "@/api/ops-api";

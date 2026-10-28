@@ -8,7 +8,7 @@ import {
   Loader2,
   Pencil,
   X,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";

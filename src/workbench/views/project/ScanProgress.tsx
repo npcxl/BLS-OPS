@@ -1,4 +1,4 @@
-import { Loader2, Pause } from "lucide-react";
+import { Loader2, Pause } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { ProjectScanStatus } from "@/api/ops-api";

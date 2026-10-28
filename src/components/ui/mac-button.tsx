@@ -1,11 +1,11 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { IconComponent } from "@/components/icons";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 
 export interface MacButtonProps extends ButtonProps {
-  icon?: LucideIcon;
+  icon?: IconComponent;
   iconOnly?: boolean;
   children?: ReactNode;
   /** 图标按钮的悬停提示。传入后用统一 Tooltip 替代原生 title。 */

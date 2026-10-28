@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { FolderSearch } from "lucide-react";
+import { FolderSearch } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { GatewayRoute, ReviewState } from "@/api/ops-api";

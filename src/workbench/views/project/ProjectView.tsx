@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Boxes, Loader2, RefreshCw } from "lucide-react";
+import { Boxes, Loader2, RefreshCw } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useCommandSession } from "@/hooks/use-command-session";

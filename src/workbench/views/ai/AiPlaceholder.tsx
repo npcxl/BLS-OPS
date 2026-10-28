@@ -1,4 +1,4 @@
-import { Sparkles } from "lucide-react";
+import { Sparkles } from "@/components/icons";
 import { NO_AI_CAPABILITIES } from "./ai-contract";
 import { isAiModuleEnabled } from "./feature-flag";
 

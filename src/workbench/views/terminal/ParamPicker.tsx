@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2 } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage } from "@/api/ops-api";
 import { cn } from "@/lib/cn";

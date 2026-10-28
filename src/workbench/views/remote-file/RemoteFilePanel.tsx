@@ -28,7 +28,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
-} from "lucide-react";
+} from "@/components/icons";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";

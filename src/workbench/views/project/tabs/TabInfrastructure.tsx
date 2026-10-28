@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Database } from "lucide-react";
+import { Database } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";

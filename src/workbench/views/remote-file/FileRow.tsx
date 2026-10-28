@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { CornerDownLeft } from "lucide-react";
+import { CornerDownLeft } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import type { RemoteFileEntry } from "@/api/ops-api";
 import { cn } from "@/lib/cn";

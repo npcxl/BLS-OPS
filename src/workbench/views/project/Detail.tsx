@@ -1,4 +1,4 @@
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 
 /** A labelled key/value list used across the project graphs. */

@@ -1,4 +1,4 @@
-import { House, SquareTerminal } from "lucide-react";
+import { House, SquareTerminal } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { useWorkbenchStore } from "@/stores/workbench-store";

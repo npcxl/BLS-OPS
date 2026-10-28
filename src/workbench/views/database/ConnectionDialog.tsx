@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, FolderOpen, Loader2, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CheckCircle2, FolderOpen, Loader2, ShieldCheck, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";

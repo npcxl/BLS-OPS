@@ -13,7 +13,7 @@ import {
   Ban,
   Loader2,
   RotateCcw,
-} from "lucide-react";
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";

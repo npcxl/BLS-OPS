@@ -7,7 +7,7 @@
  */
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, KeyRound, Loader2, X } from "lucide-react";
+import { Copy, KeyRound, Loader2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { useDatabaseStore } from "@/stores/database-store";

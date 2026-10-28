@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, Loader2, Save } from "lucide-react";
+import { History, Loader2, Save } from "@/components/icons";
 import CodeMirror from "@uiw/react-codemirror";
 import type { EditorView } from "@uiw/react-codemirror";
 import { sql as sqlLang } from "@codemirror/lang-sql";

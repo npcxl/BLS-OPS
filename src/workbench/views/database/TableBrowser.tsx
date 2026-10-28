@@ -418,12 +418,13 @@ export function TableBrowser({
     if (!canEdit || !detail) return;
     const source = pageRows[cell.row];
     const column = detail.columns[cell.col];
-    if (!source || !column || column.primary_key) return;
+    if (!source || !column) return;
     if (/bit|blob|binary|geometry/i.test(column.data_type)) return;
-    const rowValues = fullValue
+    // 主键也允许在表格里改；定位仍必须使用修改前的旧键。
+    const located = keyOfRow(source);
+    const expectedRow = fullValue
       ? source.map((item, index) => (index === cell.col ? fullValue : item))
       : source;
-    const located = keyOfRow(rowValues);
     if (!located) return;
     const assignment: ColumnAssignment = { column: column.name, value };
     setPending((current) => {
@@ -450,7 +451,7 @@ export function TableBrowser({
           key: located.key,
           label: located.label,
           values: [assignment],
-          expected: expectedOfRow(rowValues),
+          expected: expectedOfRow(expectedRow),
         },
       ];
     });
@@ -503,7 +504,6 @@ export function TableBrowser({
     if (
       !value ||
       !column ||
-      column.primary_key ||
       /bit|blob|binary|geometry/i.test(column.data_type) ||
       value.kind === "unsupported"
     ) {

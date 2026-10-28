@@ -22,8 +22,19 @@ import { databaseApi } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { findColumnTypePreset, MYSQL_COLUMN_TYPE_OPTIONS } from "./column-types";
+import { parseForeignKeys } from "./foreign-keys";
 
-export type StructureSection = "all" | "columns" | "indexes" | "ddl";
+export type StructureSection = "all" | "columns" | "indexes" | "ddl" | "foreign";
+
+/** `section="all"` 时的页签顺序，对齐 Navicat。 */
+const STRUCTURE_TABS = [
+  ["columns", "表结构"],
+  ["indexes", "索引"],
+  ["ddl", "DDL"],
+  ["foreign", "外键"],
+] as const satisfies readonly (readonly [Exclude<StructureSection, "all">, string])[];
+
+type StructureTab = Exclude<StructureSection, "all">;
 
 interface DraftColumn extends ColumnEdit {
   key: string;
@@ -111,6 +122,9 @@ export function TableStructure({
 }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
+  // `section="all"`（结构工作项）时页签自己管；固定 section（表数据页的
+  // 结构/索引/DDL 子视图）由父组件决定显示哪一块，这里不出页签。
+  const [tab, setTab] = useState<StructureTab>(section === "all" ? "columns" : section);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [columns, setColumns] = useState<DraftColumn[]>([]);
   const [indexes, setIndexes] = useState<DraftIndex[]>([]);
@@ -124,6 +138,10 @@ export function TableStructure({
   const enteredTableRef = useRef<string | null>(null);
 
   const editable = detail?.kind === "table" && !!profileId && !!sessionId;
+  const foreignKeys = useMemo(
+    () => parseForeignKeys(detail?.create_sql ?? null),
+    [detail?.create_sql],
+  );
 
   // 打开结构页默认进入编辑，不再要求先点“编辑结构”。
   useEffect(() => {
@@ -157,9 +175,12 @@ export function TableStructure({
     );
   }
 
-  const showColumns = section === "all" || section === "columns";
-  const showIndexes = section === "all" || section === "indexes";
-  const showDdl = section === "all" || section === "ddl";
+  const active: StructureTab = section === "all" ? tab : section;
+  const showColumns = active === "columns";
+  const showIndexes = active === "indexes";
+  const showDdl = active === "ddl";
+  const showForeign = active === "foreign";
+  const showMeta = section === "all" || active === "columns";
 
   const startEditing = () => {
     if (!editable) return;
@@ -258,7 +279,29 @@ export function TableStructure({
         }
       }}
     >
-      <div className="mb-2 flex flex-wrap items-center justify-end gap-1">
+      <div
+        className={cn(
+          "mb-2 flex flex-wrap items-center gap-1",
+          section === "all" ? "justify-between" : "justify-end",
+        )}
+      >
+        {section === "all" && (
+          <div role="tablist" aria-label={t("表结构")} className="flex flex-wrap items-center gap-1">
+            {STRUCTURE_TABS.map(([key, label]) => (
+              <Button
+                key={key}
+                role="tab"
+                aria-selected={tab === key}
+                variant={tab === key ? "secondary" : "ghost"}
+                size="xs"
+                onClick={() => setTab(key)}
+              >
+                {t(label)}
+              </Button>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-1">
         {editing ? (
           <>
             <Button variant="ghost" size="xs" onClick={() => void save()} disabled={busy}>

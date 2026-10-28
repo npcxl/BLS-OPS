@@ -218,6 +218,11 @@ const ProfileRow = memo(function ProfileRow({
         connected={connected}
         size={18}
       />
+      {/* 连接状态图标：Rust 侧报告已连接时染绿（GitHub 成功绿），未连接时保持默认弱色。 */}
+      <DatabaseDuotone
+        size={13}
+        className={connected ? "text-[#3fb950]" : "text-fg-subtle"}
+      />
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-14",

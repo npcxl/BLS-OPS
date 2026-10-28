@@ -23,6 +23,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
@@ -32,6 +34,7 @@ import {
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { useObjectMenuBuilder } from "./object-menu";
 
 const indent = (level: number) => ({ paddingLeft: `${8 + level * 12}px` });
 
@@ -84,6 +87,7 @@ const ProfileRow = memo(function ProfileRow({
   onEdit,
   onDelete,
   onRefresh,
+  onContextMenu,
 }: {
   profile: DatabaseProfile;
   expanded: boolean;
@@ -94,6 +98,7 @@ const ProfileRow = memo(function ProfileRow({
   onEdit: () => void;
   onDelete: () => void;
   onRefresh: () => void;
+  onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -102,6 +107,7 @@ const ProfileRow = memo(function ProfileRow({
       style={indent(0)}
       onDoubleClick={onOpen}
       onClick={onOpen}
+      onContextMenu={onContextMenu}
       title={`${profile.username}@${profile.host}:${profile.port}`}
     >
       <button
@@ -206,6 +212,9 @@ export function DatabaseAssetSidebar() {
   const [dialog, setDialog] = useState<
     { mode: "create" } | { mode: "edit"; profile: DatabaseProfile } | null
   >(null);
+  const menu = useContextMenu();
+  const objectMenu = useObjectMenuBuilder();
+  const closeSession = useDatabaseStore((state) => state.closeSession);
 
   useEffect(() => {
     if (profiles.length === 0) void refreshProfiles();
@@ -271,6 +280,101 @@ export function DatabaseAssetSidebar() {
     walk(rootPane);
     for (const id of ids) closeTabById(id);
     await deleteProfile(profile.id);
+  };
+
+  const connectionMenu = (profile: DatabaseProfile) => [
+    {
+      id: "open",
+      label: t("打开连接"),
+      onSelect: () => open(profile),
+    },
+    {
+      id: "new-query",
+      label: t("新建查询"),
+      onSelect: () => {
+        open(profile);
+        newQuery({
+          profileId: profile.id,
+          connectionName: profile.name,
+          database: null,
+        });
+      },
+    },
+    {
+      id: "refresh",
+      label: t("刷新数据库"),
+      onSelect: () => {
+        open(profile);
+        void refreshDatabases(profile.id);
+      },
+    },
+    { separator: true },
+    {
+      id: "edit",
+      label: t("编辑连接"),
+      onSelect: () => setDialog({ mode: "edit", profile }),
+    },
+    {
+      id: "copy-name",
+      label: t("复制连接名"),
+      onSelect: () => void copyText(profile.name),
+    },
+    { separator: true },
+    {
+      id: "disconnect",
+      label: t("断开连接"),
+      danger: true,
+      onSelect: () => void closeSession(profile.id),
+    },
+  ];
+
+  const databaseMenu = (
+    profile: DatabaseProfile,
+    database: { name: string },
+  ) => {
+    const key = `${profile.id}\u0001${database.name}`;
+    return [
+      {
+        id: "objects",
+        label: t("打开对象列表"),
+        onSelect: () => {
+          open(profile);
+          openDatabaseObjects({
+            profileId: profile.id,
+            connectionName: profile.name,
+            database: database.name,
+          });
+        },
+      },
+      {
+        id: "new-query",
+        label: t("新建查询"),
+        onSelect: () => {
+          open(profile);
+          newQuery({
+            profileId: profile.id,
+            connectionName: profile.name,
+            database: database.name,
+          });
+        },
+      },
+      {
+        id: "refresh",
+        label: t("刷新表列表"),
+        onSelect: () => void refreshTables(profile.id, database.name),
+      },
+      { separator: true },
+      {
+        id: "toggle",
+        label: expandedDatabases[key] ? t("收起") : t("展开"),
+        onSelect: () => void toggleDatabase(profile.id, database.name),
+      },
+      {
+        id: "copy-name",
+        label: t("复制库名"),
+        onSelect: () => void copyText(database.name),
+      },
+    ];
   };
 
   return (
@@ -340,6 +444,9 @@ export function DatabaseAssetSidebar() {
                   open(profile);
                   void refreshDatabases(profile.id);
                 }}
+                onContextMenu={(event) =>
+                  menu.onContextMenu(() => connectionMenu(profile))(event)
+                }
               />
               {profileOpen && profileLoading && <LoadingRow level={1} />}
               {profileOpen && profileLoadError && (
@@ -375,6 +482,12 @@ export function DatabaseAssetSidebar() {
                               connectionName: profile.name,
                               database: database.name,
                             });
+                          }}
+                          onContextMenu={(event) => {
+                            event.stopPropagation();
+                            menu.onContextMenu(() =>
+                              databaseMenu(profile, database),
+                            )(event);
                           }}
                         >
                           <button
@@ -452,6 +565,19 @@ export function DatabaseAssetSidebar() {
                                       if (event.key === "Enter") {
                                         openTableItem(profile, database.name, table.name);
                                       }
+                                    }}
+                                    onContextMenu={(event) => {
+                                      event.stopPropagation();
+                                      menu.onContextMenu(() =>
+                                        objectMenu(
+                                          {
+                                            profileId: profile.id,
+                                            connectionName: profile.name,
+                                            database: database.name,
+                                          },
+                                          table,
+                                        ),
+                                      )(event);
                                     }}
                                     title={`${database.name}.${table.name}`}
                                   >
@@ -600,6 +726,8 @@ export function DatabaseAssetSidebar() {
           </div>
         )}
       </div>
+
+      <ContextMenu {...menu.props} />
 
       <ConnectionDialog
         open={dialog !== null}

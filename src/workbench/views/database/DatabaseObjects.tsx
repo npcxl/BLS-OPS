@@ -28,7 +28,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { LoadingState } from "@/components/ui/loading";
-import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import type { DbTable } from "@/api/types/database";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -36,6 +35,7 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+import { useObjectMenuBuilder } from "./object-menu";
 
 const ROW_HEIGHT = 30;
 /** 稳定空数组：selector 每次返回新 `[]` 会触发无限重渲染。 */
@@ -86,7 +86,7 @@ export function DatabaseObjects({
   const error = useDatabaseStore((state) => state.errors[key] ?? null);
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
-  const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
+  const objectMenu = useObjectMenuBuilder();
 
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
@@ -272,30 +272,12 @@ export function DatabaseObjects({
                     style={{ top: rowIndex * ROW_HEIGHT, height: ROW_HEIGHT }}
                     onClick={() => setSelected(table.name)}
                     onDoubleClick={() => openTableRow(table.name)}
-                    onContextMenu={menu.onContextMenu(() => [
-                      {
-                        id: "data",
-                        label: t("打开数据"),
-                        onSelect: () => openTableRow(table.name),
-                      },
-                      {
-                        id: "structure",
-                        label: t("打开结构"),
-                        onSelect: () =>
-                          openStructure({
-                            profileId,
-                            connectionName,
-                            database,
-                            table: table.name,
-                          }),
-                      },
-                      { separator: true },
-                      {
-                        id: "copy",
-                        label: t("复制表名"),
-                        onSelect: () => void copyText(table.name),
-                      },
-                    ])}
+                    onContextMenu={menu.onContextMenu(() =>
+                      objectMenu(
+                        { profileId, connectionName, database },
+                        table,
+                      ),
+                    )}
                     title={`${database}.${table.name}`}
                   >
                     {table.kind === "view" ? (

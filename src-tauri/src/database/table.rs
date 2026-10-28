@@ -787,16 +787,40 @@ pub async fn read_cell(
         where_parts.join(" AND ")
     );
 
-    let mut conn = profile
-        .interactive_pool()
-        .get_conn()
-        .await
-        .map_err(|error| map_error(&error, "tcp"))?;
+    let mut conn = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        profile.interactive_pool().get_conn(),
+    )
+    .await
+    {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(error)) => return Err(map_error(&error, "tcp")),
+        Err(_) => return Err(DbErrorInfo::new("tcp", "获取字段读取连接超时").retryable(true)),
+    };
 
-    let rows: Vec<(Option<Vec<u8>>, Option<u64>)> = conn
-        .exec(sql, Params::Positional(params))
-        .await
-        .map_err(|error| map_error(&error, "query"))?;
+    let read_timeout =
+        std::time::Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000));
+    let rows: Vec<(Option<Vec<u8>>, Option<u64>)> = match tokio::time::timeout(
+        read_timeout,
+        conn.exec(sql, Params::Positional(params)),
+    )
+    .await
+    {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => return Err(map_error(&error, "query")),
+        Err(_) => {
+            // 超时后连接上可能还有未读完的响应，不能回池复用。
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                conn.disconnect(),
+            )
+            .await;
+            return Err(DbErrorInfo::new(
+                "timeout",
+                "读取完整字段超时：连接已丢弃，请稍后重试",
+            ));
+        }
+    };
 
     if rows.len() > 1 {
         return Err(DbErrorInfo::new(

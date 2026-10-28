@@ -276,9 +276,11 @@ async fn run_export(
     request: ExportRequest,
     detail: Option<DbTableDetail>,
     task: Arc<ExportTask>,
-    cancel_rx: watch::Receiver<bool>,
+    mut cancel_rx: watch::Receiver<bool>,
 ) {
     let started = Instant::now();
+    let idle_timeout =
+        Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000));
     let part_path =
         std::path::PathBuf::from(format!("{}.part-{}", request.target_path, task.export_id));
     let target_path = std::path::PathBuf::from(&request.target_path);
@@ -317,11 +319,26 @@ async fn run_export(
 
     // 统一走预处理语句：过滤条件里的值**必须**是绑定参数，
     // 绝不能内联进 SQL。代价是导出语句必须是单条（多语句不在导出范围内）。
-    let mut result = match conn.exec_iter(sql, params).await {
-        Ok(result) => result,
-        Err(error) => {
+    let mut result = match tokio::time::timeout(idle_timeout, conn.exec_iter(sql, params)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
             let _ = conn.query_drop("ROLLBACK").await;
             fail(&task, map_error(&error, "query"), &part_path).await;
+            return;
+        }
+        Err(_) => {
+            // 查询没有在预算内启动：连接可能仍有未读响应，直接断开。
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                conn.disconnect(),
+            )
+            .await;
+            fail(
+                &task,
+                DbErrorInfo::new("timeout", "导出查询超时，已断开连接"),
+                &part_path,
+            )
+            .await;
             return;
         }
     };
@@ -400,11 +417,28 @@ async fn run_export(
                 break;
             }
 
-            let row = match stream.try_next().await {
-                Ok(Some(row)) => row,
-                Ok(None) => break,
-                Err(error) => {
+            let next = tokio::select! {
+                changed = cancel_rx.changed() => {
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        cancelled = true;
+                        break;
+                    }
+                    continue;
+                }
+                result = tokio::time::timeout(idle_timeout, stream.try_next()) => result,
+            };
+            let row = match next {
+                Ok(Ok(Some(row))) => row,
+                Ok(Ok(None)) => break,
+                Ok(Err(error)) => {
                     stream_error = Some(map_error(&error, "query"));
+                    break;
+                }
+                Err(_) => {
+                    stream_error = Some(DbErrorInfo::new(
+                        "timeout",
+                        "导出读取超时：服务器长时间没有返回下一行，已断开连接",
+                    ));
                     break;
                 }
             };
@@ -468,7 +502,12 @@ async fn run_export(
 
     if cancelled {
         let _ = writer.flush().await;
-        let _ = conn.query_drop("ROLLBACK").await;
+        // 流未读完/可能阻塞，连接不能回池；断开时服务器会回滚只读事务。
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            conn.disconnect(),
+        )
+        .await;
         let _ = tokio::fs::remove_file(&part_path).await;
         *task.state.write().await = "cancelled".to_string();
         *task.message.write().await = Some("导出已取消，临时文件已删除".to_string());
@@ -476,13 +515,21 @@ async fn run_export(
     }
     if let Some(error) = stream_error {
         let _ = writer.flush().await;
-        let _ = conn.query_drop("ROLLBACK").await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            conn.disconnect(),
+        )
+        .await;
         fail(&task, error, &part_path).await;
         return;
     }
     if let Some(error) = write_error {
         let _ = writer.flush().await;
-        let _ = conn.query_drop("ROLLBACK").await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            conn.disconnect(),
+        )
+        .await;
         fail(&task, error, &part_path).await;
         return;
     }

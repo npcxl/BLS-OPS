@@ -21,9 +21,10 @@ export function DbEngineIcon({
   className?: string;
 }) {
   const data = DB_ENGINE_ICONS[engine];
+  // 未连接只靠灰度区分；暗色底上 0.35 几乎看不见，0.6 仍能认出是哪个引擎。
   const stateClass = connected
     ? "opacity-100 saturate-100"
-    : "opacity-35 grayscale";
+    : "opacity-60 grayscale";
 
   if (!data) {
     return (

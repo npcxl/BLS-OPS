@@ -56,10 +56,14 @@ fn temp_app_db() -> (std::path::PathBuf, rusqlite::Connection) {
     (path, conn)
 }
 
-async fn setup_schema(endpoint_opts: mysql_async::Opts) {
-    let mut conn = driver::connect_once(endpoint_opts, Duration::from_secs(10))
-        .await
-        .expect("connect for schema");
+async fn setup_schema(endpoint_opts: mysql_async::Opts) -> bool {
+    let mut conn = match driver::connect_once(endpoint_opts, Duration::from_secs(10)).await {
+        Ok(conn) => conn,
+        Err(error) => {
+            eprintln!("skip MySQL integration test: cannot connect for schema: {error}");
+            return false;
+        }
+    };
 
     conn.query_drop(
         r#"
@@ -139,6 +143,7 @@ async fn setup_schema(endpoint_opts: mysql_async::Opts) {
     )
     .await
     .expect("big table");
+    true
 }
 
 async fn runtime_for(conn: &rusqlite::Connection) -> (Arc<ProfileRuntime>, Arc<SessionEntry>) {
@@ -217,7 +222,9 @@ async fn mysql_types_multi_result_and_cancel() {
         }
     };
     let opts = driver::build_opts(&endpoint, false).expect("opts");
-    setup_schema(opts).await;
+    if !setup_schema(opts).await {
+        return;
+    }
 
     let (runtime, session) = runtime_for(&conn).await;
     let queries = query::QueryRegistry::default();
@@ -363,7 +370,9 @@ async fn mysql_paging_mutation_and_export() {
             return;
         }
     };
-    setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await;
+    if !setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await {
+        return;
+    }
 
     let (runtime, session) = runtime_for(&conn).await;
     let cache = metadata::MetadataCache::default();
@@ -629,7 +638,9 @@ async fn mysql_tls_verification_is_real() {
             return;
         }
     };
-    setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await;
+    if !setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await {
+        return;
+    }
 
     async fn try_connect(
         conn: &rusqlite::Connection,
@@ -709,7 +720,9 @@ async fn mysql_million_rows_keyset_stays_bounded() {
             return;
         }
     };
-    setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await;
+    if !setup_schema(driver::build_opts(&endpoint, false).expect("opts")).await {
+        return;
+    }
 
     let (runtime, session) = runtime_for(&conn).await;
     let cache = metadata::MetadataCache::default();

@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::TryStreamExt;
+use futures_util::{FutureExt, TryStreamExt};
+use std::panic::AssertUnwindSafe;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Row};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
@@ -132,8 +133,11 @@ impl QueryRegistry {
         let task_runtime = runtime.clone();
         let task_session = session.clone();
         let task_query_id = query_id.clone();
+        let panic_session = task_session.clone();
+        let panic_tx = tx.clone();
+        let panic_state = state.clone();
         tokio::spawn(async move {
-            run_script(
+            let outcome = AssertUnwindSafe(run_script(
                 conn,
                 task_runtime.clone(),
                 task_session,
@@ -145,8 +149,29 @@ impl QueryRegistry {
                 cancel_rx,
                 in_flight,
                 in_flight_bytes,
-            )
+            ))
+            .catch_unwind()
             .await;
+            if outcome.is_err() {
+                // 任务 panic 时连接已经被 unwind 丢弃；把会话标记为 lost，
+                // 否则 conn=None + busy 会让后续查询永久拒绝执行。
+                panic_session.mark_lost().await;
+                *panic_state.write().await = STATE_FAILED.to_string();
+                let _ = panic_tx.try_send(DbBatch::Error {
+                    error: DbErrorInfo::new(
+                        "query",
+                        "查询任务异常终止，会话连接已丢弃，请重新连接",
+                    ),
+                });
+                let _ = panic_tx.try_send(DbBatch::Finished {
+                    state: STATE_FAILED.to_string(),
+                    elapsed_ms: 0,
+                    rows: 0,
+                    bytes: 0,
+                    truncated: false,
+                    truncation_reason: None,
+                });
+            }
             task_runtime.end_query();
         });
 
@@ -562,6 +587,7 @@ async fn run_script(
                                 sequence,
                                 std::mem::take(&mut batch_rows),
                                 batch_bytes,
+                                &mut cancel_rx,
                             )
                             .await
                             {
@@ -627,6 +653,7 @@ async fn run_script(
                     sequence,
                     std::mem::take(&mut batch_rows),
                     batch_bytes,
+                    &mut cancel_rx,
                 )
                 .await
                 {
@@ -640,8 +667,12 @@ async fn run_script(
             drop(stream);
         }
 
-        let _ = tx
-            .send(DbBatch::ResultSetEnd {
+        let end_sent = tokio::select! {
+            changed = cancel_rx.changed() => {
+                let _ = changed;
+                false
+            }
+            result = tx.send(DbBatch::ResultSetEnd {
                 result_set_id,
                 affected_rows: result.affected_rows(),
                 last_insert_id: result.last_insert_id().map(|value| value.to_string()),
@@ -650,8 +681,13 @@ async fn run_script(
                 rows: set_rows,
                 bytes: set_bytes,
                 elapsed_ms: started.elapsed().as_millis() as u64,
-            })
-            .await;
+            }) => result.is_ok(),
+        };
+        if !end_sent {
+            cancelled = true;
+            clean = false;
+            break;
+        }
 
         set_index += 1;
     }
@@ -705,20 +741,34 @@ async fn flush_batch(
     sequence: u64,
     rows: Vec<Vec<DbValue>>,
     bytes: usize,
+    cancel_rx: &mut watch::Receiver<bool>,
 ) -> bool {
     if rows.is_empty() {
         return true;
     }
+    // 前端停止拉取时第三批会阻塞在 send；取消信号必须能把它叫醒。
+    if *cancel_rx.borrow() {
+        return false;
+    }
     in_flight.fetch_add(1, Ordering::AcqRel);
     in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
-    tx.send(DbBatch::Rows {
-        result_set_id: result_set_id.to_string(),
-        sequence,
-        rows,
-        bytes,
-    })
-    .await
-    .is_ok()
+    let sent = tokio::select! {
+        changed = cancel_rx.changed() => {
+            let _ = changed;
+            false
+        }
+        result = tx.send(DbBatch::Rows {
+            result_set_id: result_set_id.to_string(),
+            sequence,
+            rows,
+            bytes,
+        }) => result.is_ok(),
+    };
+    if !sent {
+        in_flight.fetch_sub(1, Ordering::AcqRel);
+        in_flight_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+    sent
 }
 
 async fn finalize(

@@ -155,6 +155,15 @@ impl SessionEntry {
         inner.conn = Some(conn);
     }
 
+    /// 查询任务异常终止（panic/不可恢复错误）时把会话标记为失效，
+    /// 避免 `conn=None + state=busy` 让后续语句永久拒绝执行。
+    pub async fn mark_lost(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.state = SESSION_LOST.to_string();
+        inner.conn = None;
+        inner.transaction = "unknown".to_string();
+    }
+
     /// 主动关闭（标签页关闭时）：移除连接并尽力发送 COM_QUIT。
     pub async fn close(&self) {
         let conn = {

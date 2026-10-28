@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import {
   Boxes,
   ChevronRight,
+  ChevronsLeft,
   Database as DatabaseIcon,
   Eye,
   FileCode2,
@@ -48,7 +49,8 @@ import { ConnectionDialog } from "./ConnectionDialog";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
 
-const indent = (level: number) => ({ paddingLeft: `${8 + level * 12}px` });
+/** 10px 起点与服务器侧栏的 px-2.5 对齐，每层再缩进 12px。 */
+const indent = (level: number) => ({ paddingLeft: `${10 + level * 12}px` });
 
 /**
  * 数据库下的固定分类（表/视图/函数/查询/备份），不因空数据消失。
@@ -88,7 +90,7 @@ function CategoryRow({
   if (!onToggle) {
     return (
       <div
-        className="mt-1 flex items-center gap-1 py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle"
+        className="mt-1 flex items-center gap-1 py-1 pr-2.5 text-11 font-medium text-fg-subtle"
         style={indent(level)}
       >
         {content}
@@ -101,7 +103,7 @@ function CategoryRow({
       role="button"
       tabIndex={0}
       aria-expanded={open}
-      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle hover:bg-surface-hover hover:text-fg-muted"
+      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 text-11 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
       style={indent(level)}
       onClick={onToggle}
       onKeyDown={(event) => {
@@ -128,7 +130,7 @@ function ErrorRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex items-start gap-1.5 py-1 pr-2 text-11 leading-snug text-danger"
+      className="flex items-start gap-1.5 py-1 pr-2.5 text-11 leading-snug text-danger"
       style={indent(level)}
     >
       <TriangleAlert size={11} className="mt-0.5 shrink-0" />
@@ -186,7 +188,7 @@ const ProfileRow = memo(function ProfileRow({
   const { t } = useTranslation();
   return (
     <div
-      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
+      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover"
       style={indent(0)}
       onDoubleClick={onOpen}
       onClick={onOpen}
@@ -205,7 +207,7 @@ const ProfileRow = memo(function ProfileRow({
           }}
         >
           <ChevronRight
-            size={12}
+            size={11}
             className={cn("transition-transform", expanded && "rotate-90")}
           />
         </Button>
@@ -218,7 +220,7 @@ const ProfileRow = memo(function ProfileRow({
       <span
         className={cn(
           "min-w-0 flex-1 truncate text-12",
-          connected ? "text-fg" : "text-fg-subtle",
+          connected ? "text-fg" : "text-fg-muted",
         )}
       >
         {profile.name}
@@ -320,6 +322,9 @@ export function DatabaseAssetSidebar() {
   const openDatabaseTab = useWorkbenchStore((state) => state.openDatabaseTab);
   const closeTabById = useWorkbenchStore((state) => state.closeTabById);
   const rootPane = useWorkbenchStore((state) => state.rootPane);
+  const setSidebarCollapsed = useWorkbenchStore(
+    (state) => state.setSidebarCollapsed,
+  );
 
   const openTable = useDatabaseWorkspaceStore((state) => state.openTable);
   const openStructure = useDatabaseWorkspaceStore((state) => state.openStructure);
@@ -617,8 +622,9 @@ export function DatabaseAssetSidebar() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-        <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg-muted">
+      {/* 标题栏与服务器侧栏的 SectionTitle 同款：h-7 / px-2.5 / 11px 大写浅色。 */}
+      <div className="flex h-7 shrink-0 items-center gap-1 px-2.5">
+        <span className="min-w-0 flex-1 truncate text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">
           {t("数据库资产")}
         </span>
         <Tooltip label={t("新建连接")} side="bottom">
@@ -648,7 +654,7 @@ export function DatabaseAssetSidebar() {
         </Tooltip>
       </div>
 
-      <div className="shrink-0 px-2 py-1.5">
+      <div className="shrink-0 px-2.5 pb-1.5 pt-0.5">
         <MacSearchField
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
@@ -662,10 +668,10 @@ export function DatabaseAssetSidebar() {
         <ErrorRow error={profileError} onRetry={() => void refreshProfiles()} level={1} />
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-3">
         {visibleProfiles.length === 0 && !loadingProfiles && (
           <EmptyState
-            className="py-6"
+            className="px-2.5 py-6"
             title={t("还没有数据库连接。点击右上角 + 新建一个 MySQL 连接。")}
           />
         )}
@@ -725,7 +731,7 @@ export function DatabaseAssetSidebar() {
                     return (
                       <div key={key}>
                         <div
-                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover"
+                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
                             // 点数据库 = 连接 + 展开 + 打开对象列表。
@@ -776,7 +782,7 @@ export function DatabaseAssetSidebar() {
                               "min-w-0 flex-1 truncate text-12",
                               dbOpen
                                 ? "font-medium text-fg"
-                                : "text-fg-subtle",
+                                : "text-fg-muted",
                             )}
                           >
                             {database.name}
@@ -815,7 +821,7 @@ export function DatabaseAssetSidebar() {
                             {
                               id: "tables",
                               label: t("表"),
-                              icon: <Table2 size={10} className="shrink-0" />,
+                              icon: <Table2 size={11} className="shrink-0" />,
                               items: visibleTables.filter(
                                 (table) => table.kind === "table",
                               ),
@@ -823,7 +829,7 @@ export function DatabaseAssetSidebar() {
                             {
                               id: "views",
                               label: t("视图"),
-                              icon: <Eye size={10} className="shrink-0" />,
+                              icon: <Eye size={11} className="shrink-0" />,
                               items: visibleTables.filter(
                                 (table) => table.kind === "view",
                               ),
@@ -850,12 +856,12 @@ export function DatabaseAssetSidebar() {
                                 return (
                                 <Fragment key={group.id}>
                                   <CategoryRow
-                                    label={group.label}
-                                    count={group.items.length}
-                                    icon={group.icon}
-                                    open={groupOpen}
-                                    onToggle={() => toggleCat(group.id)}
-                                  />
+                                label={group.label}
+                                count={group.items.length}
+                                icon={group.icon}
+                                open={groupOpen}
+                                onToggle={() => toggleCat(group.id)}
+                              />
                                   {groupOpen && group.items.map((table) => {
                               const tableKey = detailKey(
                                 profile.id,
@@ -870,7 +876,7 @@ export function DatabaseAssetSidebar() {
                                 <div key={tableKey}>
                                   <div
                                     className={cn(
-                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 hover:bg-surface-hover",
+                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover",
                                       selectedKey === tableKey &&
                                         "bg-accent/10 ring-1 ring-inset ring-accent/20",
                                     )}
@@ -911,7 +917,7 @@ export function DatabaseAssetSidebar() {
                                       }}
                                     >
                                       <ChevronRight
-                                        size={10}
+                                        size={11}
                                         className={cn(
                                           "transition-transform",
                                           tableOpen && "rotate-90",
@@ -969,14 +975,14 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.slice(0, 80).map((column) => (
                                         <div
                                           key={column.name}
-                                          className="flex items-center gap-1 py-[3px] pr-1 text-11 text-fg-subtle"
+                                          className="flex items-center gap-1 py-1 pr-2.5 text-11 text-fg-muted"
                                           style={indent(4)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
                                         >
                                           {column.primary_key ? (
-                                            <KeyRound size={9} className="shrink-0 text-accent" />
+                                            <KeyRound size={10} className="shrink-0 text-accent" />
                                           ) : (
-                                            <span className="h-[9px] w-[9px] shrink-0" />
+                                            <span className="h-[10px] w-[10px] shrink-0" />
                                           )}
                                           <span className="min-w-0 flex-1 truncate text-fg-muted">
                                             {column.name}
@@ -1024,14 +1030,14 @@ export function DatabaseAssetSidebar() {
                               <CategoryRow
                                 label={t("函数")}
                                 count={0}
-                                icon={<Boxes size={10} className="shrink-0" />}
+                                icon={<Boxes size={11} className="shrink-0" />}
                                 open={categoryOpen("functions")}
                                 onToggle={() => toggleCat("functions")}
                               />
                               <CategoryRow
                                 label={t("查询")}
                                 count={databaseQueries.length}
-                                icon={<FileCode2 size={10} className="shrink-0" />}
+                                icon={<FileCode2 size={11} className="shrink-0" />}
                                 open={categoryOpen("queries")}
                                 onToggle={() => toggleCat("queries")}
                               />
@@ -1039,12 +1045,12 @@ export function DatabaseAssetSidebar() {
                                 databaseQueries.map((query) => (
                                 <div
                                   key={query.id}
-                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 text-11 text-fg-muted hover:bg-surface-hover"
+                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 text-12 text-fg hover:bg-surface-hover"
                                   style={indent(3)}
                                   onDoubleClick={() => openSavedQuery(query)}
                                   title={query.name}
                                 >
-                                  <FileCode2 size={10} className="shrink-0 text-fg-subtle" />
+                                  <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
                                   <span className="min-w-0 flex-1 truncate">
                                     {query.name}
                                   </span>
@@ -1053,7 +1059,7 @@ export function DatabaseAssetSidebar() {
                               <CategoryRow
                                 label={t("备份")}
                                 count={0}
-                                icon={<DatabaseIcon size={10} className="shrink-0" />}
+                                icon={<DatabaseIcon size={11} className="shrink-0" />}
                                 open={categoryOpen("backups")}
                                 onToggle={() => toggleCat("backups")}
                               />
@@ -1074,7 +1080,7 @@ export function DatabaseAssetSidebar() {
             profiles.some((profile) => profile.id === query.profileId),
         ).length > 0 && (
           <div className="mt-2 border-t border-line pt-1">
-            <div className="px-2 py-1 text-11 font-medium text-fg-subtle">
+            <div className="px-2.5 py-1 text-11 font-medium text-fg-subtle">
               {t("保存的查询")}
             </div>
             {savedQueries
@@ -1086,7 +1092,7 @@ export function DatabaseAssetSidebar() {
               .map((query) => (
                 <div
                   key={query.id}
-                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pl-2 pr-1 hover:bg-surface-hover"
+                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-1 pl-2.5 pr-2.5 hover:bg-surface-hover"
                   tabIndex={0}
                   onDoubleClick={() => openSavedQuery(query)}
                   onKeyDown={(event) => {

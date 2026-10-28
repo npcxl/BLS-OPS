@@ -228,6 +228,10 @@ BLS-OPS 的数据库工作台不是空壳：连接、会话、流式查询、取
 | 非事务表覆盖按钮不可达 | 按钮移出 `mutation` 条件块，按 `mutationError` 展示 | 待补真实 MySQL MyISAM 验收 |
 | 删除连接无确认 | 悬停/右键删除统一 `ConfirmDialog` | 待补组件测试 |
 | 多查询页抢占 `current_database` | 初始上下文只应用一次；执行前显式切回本页库 | 待补双查询页回归测试 |
+| `db_read_cell` 无超时 | 连接获取 10s、查询按 query_timeout，超时断开连接不回池 | `cargo check`/`cargo test --lib` |
+| CSV 导出流无超时/不可取消 | 查询启动和逐行读取增加超时，`select!` 观察取消；取消/超时断开连接 | `cargo test --test database_mysql`（无 DB 时明确 skip） |
+| 查询阻塞 send 时取消无效 | `flush_batch`/ResultSetEnd 的 send 增加取消 `select!`，取消时回退 in-flight 计数 | `cargo test --lib` |
+| 查询任务 panic 会让会话永久 busy | `catch_unwind` + `SessionEntry::mark_lost`，panic 后标记失败并释放查询计数 | `cargo test --lib` |
 
 ## 7. 验收原则
 

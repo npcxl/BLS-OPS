@@ -44,6 +44,8 @@ export function DbEngineIcon({
       icon={data}
       width={size}
       height={size}
+      // 本地图标数据直接渲染，避免首帧先出现空 span 再异步补 SVG。
+      ssr
       aria-hidden="true"
       className={cn(
         "shrink-0 transition-[filter,opacity]",

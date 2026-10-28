@@ -20,6 +20,7 @@ import {
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -28,15 +29,6 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
-
-/** 悬停时显示“上一级”：对象页只到连接，表/查询到连接 + 库。 */
-function itemTooltip(item: WorkItem): string {
-  const parents =
-    item.kind === "objects"
-      ? [item.connectionName]
-      : [item.connectionName, item.database];
-  return [...parents.filter(Boolean), item.title].join("\n");
-}
 
 export function OpenItemsPanel({
   onRequestClose,
@@ -144,47 +136,60 @@ export function OpenItemsPanel({
                 transaction === "in_transaction" ||
                 transaction === "in_transaction_read_only";
               return (
-                <div
+                <Tooltip
                   key={item.id}
-                  className={cn(
-                    "group flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1",
-                    active ? "bg-accent/10 text-fg" : "text-fg-muted hover:bg-surface-hover",
-                  )}
-                  onClick={() => setActive(item.id)}
-                  onDoubleClick={() => beginRename(item)}
-                  onContextMenu={menu.onContextMenu(() => [
-                    {
-                      id: "close",
-                      label: t("关闭"),
-                      danger: true,
-                      onSelect: () => onRequestClose(item),
-                    },
-                    {
-                      id: "close-others",
-                      label: t("关闭其他"),
-                      onSelect: () => onRequestCloseOthers(item),
-                    },
-                    { separator: true },
-                    {
-                      id: "copy",
-                      label: t("复制名称"),
-                      onSelect: () => void copyText(item.title),
-                    },
-                    {
-                      id: "pin",
-                      label: item.pinned ? t("取消固定") : t("固定"),
-                      onSelect: () => togglePin(item.id),
-                    },
-                    { separator: true },
-                    {
-                      id: "split",
-                      label: t("分屏打开"),
-                      disabled: true,
-                      hint: t("即将支持"),
-                    },
-                  ])}
-                  title={itemTooltip(item)}
+                  side="left"
+                  label={
+                    <div className="flex flex-col gap-0.5">
+                      <span>{t("连接")}：{item.connectionName}</span>
+                      {item.kind !== "objects" && item.database && (
+                        <span>{t("数据库")}：{item.database}</span>
+                      )}
+                      <span className="text-fg">{item.title}</span>
+                    </div>
+                  }
                 >
+                  <div
+                    className={cn(
+                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1",
+                      active
+                        ? "bg-accent/10 text-fg"
+                        : "text-fg-muted hover:bg-surface-hover",
+                    )}
+                    onClick={() => setActive(item.id)}
+                    onDoubleClick={() => beginRename(item)}
+                    onContextMenu={menu.onContextMenu(() => [
+                      {
+                        id: "close",
+                        label: t("关闭"),
+                        danger: true,
+                        onSelect: () => onRequestClose(item),
+                      },
+                      {
+                        id: "close-others",
+                        label: t("关闭其他"),
+                        onSelect: () => onRequestCloseOthers(item),
+                      },
+                      { separator: true },
+                      {
+                        id: "copy",
+                        label: t("复制名称"),
+                        onSelect: () => void copyText(item.title),
+                      },
+                      {
+                        id: "pin",
+                        label: item.pinned ? t("取消固定") : t("固定"),
+                        onSelect: () => togglePin(item.id),
+                      },
+                      { separator: true },
+                      {
+                        id: "split",
+                        label: t("分屏打开"),
+                        disabled: true,
+                        hint: t("即将支持"),
+                      },
+                    ])}
+                  >
                   {item.kind === "table" ? (
                     <Table2 size={12} className="shrink-0 text-fg-subtle" />
                   ) : item.kind === "structure" ? (
@@ -262,7 +267,8 @@ export function OpenItemsPanel({
                   >
                     <X size={10} />
                   </button>
-                </div>
+                  </div>
+                </Tooltip>
               );
             })}
           </div>

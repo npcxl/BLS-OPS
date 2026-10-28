@@ -66,6 +66,8 @@ interface VirtualDataGridProps {
   onCommitEdit?: (cell: CellAddress) => void;
   onCancelEdit?: () => void;
   onCellContextMenu?: (cell: CellAddress, event: React.MouseEvent) => void;
+  onRowContextMenu?: (row: number, event: React.MouseEvent) => void;
+  onColumnContextMenu?: (col: number, event: React.MouseEvent) => void;
 }
 
 export function cellText(value: DbValue): { text: string; tone: string; truncated: boolean } {
@@ -142,6 +144,8 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   onCommitEdit,
   onCancelEdit,
   onCellContextMenu,
+  onRowContextMenu,
+  onColumnContextMenu,
 }: VirtualDataGridProps) {
   const { t } = useTranslation();
   const suppressBlur = useRef(false);
@@ -266,6 +270,10 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                   width: widths[index],
                   height: HEADER_HEIGHT,
                 }}
+                onContextMenu={(event) => {
+                  event.stopPropagation();
+                  onColumnContextMenu?.(index, event);
+                }}
                 onDoubleClick={() => onSort?.(column)}
               >
                 <button
@@ -331,6 +339,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                 width: totalWidth,
               }}
               onMouseDown={() => onSelectRow(rowIndex)}
+              onContextMenu={(event) => onRowContextMenu?.(rowIndex, event)}
             >
               {visibleColumns.map((colIndex) => {
                 const value = row[colIndex] ?? { kind: "null" as const };
@@ -373,7 +382,10 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
                         onStartEdit(cell);
                       }
                     }}
-                    onContextMenu={(event) => onCellContextMenu?.(cell, event)}
+                    onContextMenu={(event) => {
+                      event.stopPropagation();
+                      onCellContextMenu?.(cell, event);
+                    }}
                     title={
                       value.kind === "text" && value.truncated
                         ? t("预览已截断，双击查看完整值")
@@ -419,14 +431,6 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
           );
         })}
 
-        {rows.length === 0 && (
-          <div
-            className="absolute flex items-center justify-center text-12 text-fg-subtle"
-            style={{ left: 0, top: HEADER_HEIGHT, width: totalWidth, height: 80 }}
-          >
-            {t("没有数据")}
-          </div>
-        )}
       </div>
 
       </div>

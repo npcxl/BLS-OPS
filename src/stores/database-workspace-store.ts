@@ -126,7 +126,6 @@ interface WorkspaceState {
   }) => string;
   setActive: (id: string) => void;
   close: (id: string) => void;
-  closeOthers: (id: string) => void;
   togglePin: (id: string) => void;
   rename: (id: string, title: string) => void;
   setStatus: (
@@ -308,12 +307,6 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
       const activeId =
         state.activeId === id ? (items[items.length - 1]?.id ?? null) : state.activeId;
       return { items, activeId };
-    }),
-
-  closeOthers: (id) =>
-    set((state) => {
-      const keep = state.items.filter((item) => item.id === id);
-      return { items: keep, activeId: keep.length > 0 ? id : null };
     }),
 
   togglePin: (id) =>

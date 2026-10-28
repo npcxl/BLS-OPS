@@ -26,6 +26,7 @@ import {
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { WorkspaceTab } from "@/workbench/types";
 import { CloseWorkItemDialog, type CloseAction } from "./CloseWorkItemDialog";
+import { CloseWorkItemsDialog } from "./CloseWorkItemsDialog";
 import { DdlPanel } from "./DdlPanel";
 import { FieldCard } from "./FieldCard";
 import { OpenItemsPanel } from "./OpenItemsPanel";
@@ -73,6 +74,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingRight, setDraggingRight] = useState(false);
   const [closing, setClosing] = useState<WorkItem | null>(null);
+  const [closingOthers, setClosingOthers] = useState<WorkItem[] | null>(null);
   /** 足够宽时字段卡片浮在列表左侧，不再挤压中央数据区。 */
   const [wide, setWide] = useState(() => window.innerWidth >= 1500);
 
@@ -184,15 +186,59 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
     ) {
       hideFieldCard();
     }
-    const transaction = session?.transaction;
+    // 工作项可能属于另一个连接：事务状态必须取它自己的会话，不能拿当前标签的。
+    const itemSession = sessions[latest.profileId] ?? session;
+    const transaction = itemSession?.transaction;
     const inTransaction =
       transaction === "in_transaction" || transaction === "in_transaction_read_only";
-    if (latest.running || latest.pendingCount > 0 || inTransaction) {
+    if (
+      latest.running ||
+      latest.pendingCount > 0 ||
+      latest.dirty ||
+      inTransaction
+    ) {
       setClosing(latest);
       return;
     }
     useDatabaseWorkbenchStore.getState().dispose(latest.id);
     closeItem(latest.id);
+  };
+
+  /** 批量关闭也必须走协调器，不能直接过滤 items。 */
+  const requestCloseOthers = (item: WorkItem) => {
+    // “关闭其他”针对右侧列表里的全部项目，不只当前连接。
+    const others = items.filter(
+      (entry) => entry.id !== item.id && !entry.pinned,
+    );
+    if (others.length === 0) return;
+    const risky = others.some(
+      (entry) => entry.running || entry.pendingCount > 0 || entry.dirty,
+    );
+    if (!risky) {
+      for (const entry of others) {
+        useDatabaseWorkbenchStore.getState().dispose(entry.id);
+        closeItem(entry.id);
+      }
+      return;
+    }
+    setClosingOthers(others);
+  };
+
+  const confirmCloseOthers = async () => {
+    const list = closingOthers ?? [];
+    for (const entry of list) {
+      if (entry.running) {
+        await useDatabaseWorkbenchStore.getState().cancel(entry.id);
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const state = useDatabaseWorkbenchStore.getState().tabs[entry.id]?.runState;
+          if (state !== "running" && state !== "cancelling") break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+      useDatabaseWorkbenchStore.getState().dispose(entry.id);
+      closeItem(entry.id);
+    }
+    setClosingOthers(null);
   };
 
   const confirmClose = async (action: CloseAction) => {
@@ -380,7 +426,10 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
                 {rightPanel === "ddl" && ddl && ddl.profileId === profileId ? (
                   <DdlPanel target={ddl} />
                 ) : (
-                  <OpenItemsPanel onRequestClose={requestClose} />
+                  <OpenItemsPanel
+                onRequestClose={requestClose}
+                onRequestCloseOthers={requestCloseOthers}
+              />
                 )}
               </div>
             </div>
@@ -400,6 +449,12 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
         item={closing}
         onCancel={() => setClosing(null)}
         onConfirm={(action) => void confirmClose(action)}
+      />
+
+      <CloseWorkItemsDialog
+        items={closingOthers}
+        onCancel={() => setClosingOthers(null)}
+        onConfirm={() => void confirmCloseOthers()}
       />
     </div>
   );

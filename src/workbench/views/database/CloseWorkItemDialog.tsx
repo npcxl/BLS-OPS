@@ -43,6 +43,7 @@ export function CloseWorkItemDialog({
 
   const running = tab?.running ?? false;
   const pending = tab?.pendingCount ?? 0;
+  const dirty = tab?.dirty ?? false;
   const transaction = session?.transaction;
   const inTransaction =
     transaction === "in_transaction" || transaction === "in_transaction_read_only";
@@ -88,6 +89,8 @@ export function CloseWorkItemDialog({
                   <Loader2 size={12} className="animate-spin" />
                   {t("取消查询并关闭")}
                 </>
+              ) : dirty ? (
+                t("丢弃草稿并关闭")
               ) : (
                 t("丢弃修改并关闭")
               )}
@@ -111,6 +114,12 @@ export function CloseWorkItemDialog({
             })}
           </p>
         )}
+        {dirty && (
+          <p className="flex items-start gap-2 rounded-[6px] border border-warning/30 bg-warning/5 px-2 py-1.5 text-warning">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            {t("SQL 草稿尚未保存，关闭会丢弃这份草稿。")}
+          </p>
+        )}
         {inTransaction && (
           <p className="flex items-start gap-2 rounded-[6px] border border-danger/30 bg-danger/5 px-2 py-1.5 text-danger">
             <AlertTriangle size={13} className="mt-0.5 shrink-0" />
@@ -119,7 +128,7 @@ export function CloseWorkItemDialog({
             )}
           </p>
         )}
-        {!running && pending === 0 && !inTransaction && (
+        {!running && pending === 0 && !dirty && !inTransaction && (
           <p className="flex items-center gap-2 text-fg-subtle">
             <X size={12} />
             {t("没有未保存内容，可以安全关闭。")}

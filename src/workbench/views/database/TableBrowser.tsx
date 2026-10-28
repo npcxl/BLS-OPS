@@ -40,6 +40,7 @@ import { LoadingState } from "@/components/ui/loading";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
+import { copyText } from "@/lib/clipboard";
 import type {
   AssignValue,
   BrowseFilter,
@@ -181,6 +182,8 @@ export function TableBrowser({
   const [editing, setEditing] = useState<{
     cell: CellAddress;
     value: string;
+    /** 大字段完整读取后的值；用于并发比较，避免跳过该列。 */
+    fullValue?: DbValue;
   } | null>(null);
   const [editor, setEditor] = useState<{
     mode: "insert" | "update";
@@ -361,17 +364,18 @@ export function TableBrowser({
       return;
     }
     setEditorLoading(true);
+    const full = [...row];
+    let failed = false;
     try {
       const keyValues = located.key.map((entry) =>
         entry.kind === "value" ? entry.value : null,
       );
-      const full = [...row];
       await Promise.all(
         truncated.map(async ({ index }) => {
           const column = detail.columns[index];
           if (!column) return;
           try {
-            full[index] = await databaseApi.readCell({
+            const value = await databaseApi.readCell({
               profileId: profile.id,
               database,
               table,
@@ -379,24 +383,46 @@ export function TableBrowser({
               column: column.name,
               maxBytes: 4 * 1024 * 1024,
             });
+            if (
+              (value.kind === "text" || value.kind === "json") &&
+              value.truncated
+            ) {
+              failed = true;
+              return;
+            }
+            full[index] = value;
           } catch {
-            // 读取失败保留预览；表单里会标记该字段被截断。
+            // 无法完整读取 → 不允许编辑，避免把预览片段写回。
+            failed = true;
           }
         }),
       );
-      setEditor({ mode, row: full });
     } finally {
       setEditorLoading(false);
     }
+    if (failed) {
+      setError(
+        t("无法读取完整字段，已阻止编辑（避免把截断预览写回数据库）"),
+      );
+      return;
+    }
+    setEditor({ mode, row: full });
   };
 
   /** 把一个单元格值并入同一行的待提交修改（同表、同主键）。 */
-  const applyCellValue = (cell: CellAddress, value: AssignValue) => {
+  const applyCellValue = (
+    cell: CellAddress,
+    value: AssignValue,
+    fullValue?: DbValue,
+  ) => {
     if (!canEdit || !detail) return;
-    const rowValues = pageRows[cell.row];
+    const source = pageRows[cell.row];
     const column = detail.columns[cell.col];
-    if (!rowValues || !column || column.primary_key) return;
+    if (!source || !column || column.primary_key) return;
     if (/blob|binary/i.test(column.data_type)) return;
+    const rowValues = fullValue
+      ? source.map((item, index) => (index === cell.col ? fullValue : item))
+      : source;
     const located = keyOfRow(rowValues);
     if (!located) return;
     const assignment: ColumnAssignment = { column: column.name, value };
@@ -488,22 +514,38 @@ export function TableBrowser({
     if ((value.kind === "text" || value.kind === "json") && value.truncated) {
       const rowValues = pageRows[cell.row];
       const located = rowValues ? keyOfRow(rowValues) : null;
-      if (located) {
-        try {
-          const full = await databaseApi.readCell({
-            profileId: profile.id,
-            database,
-            table,
-            keyValues: located.key.map((entry) =>
-              entry.kind === "value" ? entry.value : null,
-            ),
-            column: column.name,
-            maxBytes: 4 * 1024 * 1024,
-          });
-          text = rawText(full) ?? text;
-        } catch {
-          // 读不到完整值时仍允许编辑预览，但用户会看到截断提示。
+      if (!located) {
+        openCellDetail(cell);
+        return;
+      }
+      try {
+        const full = await databaseApi.readCell({
+          profileId: profile.id,
+          database,
+          table,
+          keyValues: located.key.map((entry) =>
+            entry.kind === "value" ? entry.value : null,
+          ),
+          column: column.name,
+          maxBytes: 4 * 1024 * 1024,
+        });
+        if (
+          (full.kind === "text" || full.kind === "json") &&
+          full.truncated
+        ) {
+          setError(t("字段过大，无法完整读取；只能查看，不能直接编辑"));
+          openCellDetail(cell);
+          return;
         }
+        text = rawText(full) ?? text;
+        setEditing({ cell, value: text, fullValue: full });
+        return;
+      } catch (failure) {
+        setError(
+          `${t("无法读取完整字段，已阻止编辑")}：${toDbError(failure).message}`,
+        );
+        openCellDetail(cell);
+        return;
       }
     }
     setEditing({ cell, value: text });
@@ -513,8 +555,294 @@ export function TableBrowser({
     if (!editing || editing.cell.row !== cell.row || editing.cell.col !== cell.col) {
       return;
     }
-    applyCellValue(cell, { kind: "value", value: editing.value });
+    applyCellValue(
+      cell,
+      { kind: "value", value: editing.value },
+      editing.fullValue,
+    );
     setEditing(null);
+  };
+
+  const copyCellValue = (cell: CellAddress) => {
+    const value = pageRows[cell.row]?.[cell.col];
+    const text = value ? rawText(value) : null;
+    if (text !== null) void copyText(text);
+  };
+
+  const filterByCell = (cell: CellAddress, exclude: boolean) => {
+    const column = detail?.columns[cell.col];
+    const value = pageRows[cell.row]?.[cell.col];
+    if (!column || !value) return;
+    if (value.kind === "binary" || value.kind === "unsupported") {
+      setError(t("该字段无法按值筛选"));
+      return;
+    }
+    const text = rawText(value);
+    setFilters((current) => [
+      ...current,
+      {
+        column: column.name,
+        op: text === null ? (exclude ? "not_null" : "is_null") : exclude ? "ne" : "eq",
+        value: text,
+      },
+    ]);
+    setShowFilters(true);
+    resetPaging();
+  };
+
+  const removeCellChange = (cell: CellAddress) => {
+    const row = pageRows[cell.row];
+    const column = detail?.columns[cell.col];
+    if (!row || !column) return;
+    const located = keyOfRow(row);
+    if (!located) return;
+    setPending((current) =>
+      current.flatMap((entry) => {
+        if (entry.kind !== "update" || !sameKey(entry.key, located.key)) {
+          return [entry];
+        }
+        const values = entry.values.filter((value) => value.column !== column.name);
+        return values.length > 0 ? [{ ...entry, values }] : [];
+      }),
+    );
+  };
+
+  const removeRowChange = (rowIndex: number) => {
+    const row = pageRows[rowIndex];
+    const located = row ? keyOfRow(row) : null;
+    if (!located) return;
+    setPending((current) =>
+      current.filter(
+        (entry) => entry.kind === "insert" || !sameKey(entry.key, located.key),
+      ),
+    );
+  };
+
+  /**
+   * 截断/二进制字段不能生成"看起来完整"的 INSERT/JSON；
+   * 返回 null 让调用方明确报错，而不是悄悄写入预览片段。
+   */
+  const buildInsertAssignments = (
+    row: DbValue[],
+    skipAutoIncrement: boolean,
+  ): ColumnAssignment[] | null => {
+    if (!detail) return null;
+    const assignments: ColumnAssignment[] = [];
+    for (let index = 0; index < detail.columns.length; index += 1) {
+      const column = detail.columns[index];
+      if (skipAutoIncrement && column.auto_increment) continue;
+      const value = row[index] ?? { kind: "null" as const };
+      if ((value.kind === "text" || value.kind === "json") && value.truncated) {
+        return null;
+      }
+      if (value.kind === "binary" || value.kind === "unsupported") return null;
+      const text = rawText(value);
+      assignments.push({
+        column: column.name,
+        value: text === null ? { kind: "null" } : { kind: "value", value: text },
+      });
+    }
+    return assignments;
+  };
+
+  const quoteIdentifier = (name: string) => `\`${name.replace(/`/g, "``")}\``;
+
+  const copyAsInsert = (row: DbValue[]) => {
+    const assignments = buildInsertAssignments(row, false);
+    if (!assignments) {
+      setError(t("字段内容已截断或为二进制，无法生成完整 INSERT"));
+      return;
+    }
+    const columns = assignments
+      .map((item) => quoteIdentifier(item.column))
+      .join(", ");
+    const values = assignments
+      .map((item) =>
+        item.value.kind === "value"
+          ? `'${item.value.value.replace(/'/g, "''")}'`
+          : "NULL",
+      )
+      .join(", ");
+    void copyText(
+      `INSERT INTO ${quoteIdentifier(database)}.${quoteIdentifier(table)} (${columns}) VALUES (${values});`,
+    );
+  };
+
+  const copyAsJson = (row: DbValue[]) => {
+    if (!detail) return;
+    const data: Record<string, string | null> = {};
+    for (let index = 0; index < detail.columns.length; index += 1) {
+      const value = row[index] ?? { kind: "null" as const };
+      if ((value.kind === "text" || value.kind === "json") && value.truncated) {
+        setError(t("字段内容已截断，无法生成完整 JSON"));
+        return;
+      }
+      if (value.kind === "binary" || value.kind === "unsupported") {
+        setError(t("二进制/不支持字段无法生成 JSON"));
+        return;
+      }
+      data[detail.columns[index].name] = rawText(value);
+    }
+    void copyText(JSON.stringify(data, null, 2));
+  };
+
+  const copyRowText = (row: DbValue[]) => {
+    void copyText(
+      row
+        .map((value) => rawText(value) ?? "")
+        .join("\t"),
+    );
+  };
+
+  const insertFromRow = (row: DbValue[]) => {
+    if (!canEdit) return;
+    const assignments = buildInsertAssignments(row, true);
+    if (!assignments) {
+      setError(t("字段内容已截断或为二进制，无法复制为新行"));
+      return;
+    }
+    setPending((current) => [
+      ...current,
+      { id: crypto.randomUUID(), kind: "insert", values: assignments },
+    ]);
+    setShowEditBar(true);
+  };
+
+  const deleteRowAt = (rowIndex: number) => {
+    if (!canEdit) return;
+    const row = pageRows[rowIndex];
+    const located = row ? keyOfRow(row) : null;
+    if (!row || !located) return;
+    setSelectedRow(rowIndex);
+    setPending((current) => [
+      // 同一行先删除已有的 update/delete，再标记删除，避免提交时互相冲突。
+      ...current.filter(
+        (entry) =>
+          entry.kind === "insert" || !sameKey(entry.key, located.key),
+      ),
+      {
+        id: crypto.randomUUID(),
+        kind: "delete",
+        key: located.key,
+        label: located.label,
+        expected: expectedOfRow(row),
+      },
+    ]);
+  };
+
+  const openColumnMenu = (col: number, event: React.MouseEvent) => {
+    const name = result?.columns[col]?.name;
+    if (!name) return;
+    cellMenu.onContextMenu(() => [
+      {
+        id: "sort-asc",
+        label: t("升序"),
+        onSelect: () => {
+          setSorts([{ column: name, direction: "asc" }]);
+          resetPaging();
+        },
+      },
+      {
+        id: "sort-desc",
+        label: t("降序"),
+        onSelect: () => {
+          setSorts([{ column: name, direction: "desc" }]);
+          resetPaging();
+        },
+      },
+      {
+        id: "sort-clear",
+        label: t("清除排序"),
+        onSelect: () => {
+          setSorts([]);
+          resetPaging();
+        },
+      },
+      { separator: true },
+      {
+        id: "filter",
+        label: t("筛选"),
+        onSelect: () => {
+          setDraftFilter({ column: name, op: "contains", value: "" });
+          setShowFilters(true);
+        },
+      },
+      {
+        id: "copy-column",
+        label: t("复制列名"),
+        onSelect: () => void copyText(name),
+      },
+      {
+        id: "column-info",
+        label: t("字段属性"),
+        onSelect: () =>
+          openStructure({
+            profileId: profile.id,
+            connectionName: profile.name,
+            database,
+            table,
+          }),
+      },
+    ])(event);
+  };
+
+  const openRowMenu = (rowIndex: number, event: React.MouseEvent) => {
+    const row = pageRows[rowIndex];
+    if (!row) return;
+    const located = keyOfRow(row);
+    const modified = located
+      ? pending.some(
+          (entry) => entry.kind !== "insert" && sameKey(entry.key, located.key),
+        )
+      : false;
+    cellMenu.onContextMenu(() => [
+      {
+        id: "insert",
+        label: t("新增行"),
+        onSelect: () => void openEditor("insert", null),
+      },
+      {
+        id: "copy-new",
+        label: t("复制为新行"),
+        onSelect: () => insertFromRow(row),
+      },
+      {
+        id: "form-edit",
+        label: t("表单编辑"),
+        onSelect: () => void openEditor("update", row),
+      },
+      {
+        id: "delete-row",
+        label: t("删除选中行"),
+        onSelect: () => deleteRowAt(rowIndex),
+      },
+      { separator: true },
+      {
+        id: "copy-row",
+        label: t("复制整行"),
+        onSelect: () => copyRowText(row),
+      },
+      {
+        id: "copy-json",
+        label: t("复制为 JSON"),
+        onSelect: () => copyAsJson(row),
+      },
+      {
+        id: "copy-insert",
+        label: t("复制为 INSERT"),
+        onSelect: () => copyAsInsert(row),
+      },
+      ...(modified
+        ? [
+            { separator: true as const },
+            {
+              id: "undo-row",
+              label: t("撤销行修改"),
+              onSelect: () => removeRowChange(rowIndex),
+            },
+          ]
+        : []),
+    ])(event);
   };
 
   const addUpdate = (values: ColumnAssignment[]) => {
@@ -1004,7 +1332,35 @@ export function TableBrowser({
               onCommitEdit={commitCellEdit}
               onCancelEdit={() => setEditing(null)}
               onCellContextMenu={(cell, event) => {
+                const modified = modifiedCells.has(`${cell.row}:${cell.col}`);
                 cellMenu.onContextMenu(() => [
+                  {
+                    id: "copy",
+                    label: t("复制值"),
+                    onSelect: () => copyCellValue(cell),
+                  },
+                  {
+                    id: "edit",
+                    label: t("编辑"),
+                    onSelect: () => void startCellEdit(cell),
+                  },
+                  {
+                    id: "detail",
+                    label: t("查看完整值"),
+                    onSelect: () => openCellDetail(cell),
+                  },
+                  { separator: true },
+                  {
+                    id: "filter-eq",
+                    label: t("按此值筛选"),
+                    onSelect: () => filterByCell(cell, false),
+                  },
+                  {
+                    id: "filter-ne",
+                    label: t("排除此值"),
+                    onSelect: () => filterByCell(cell, true),
+                  },
+                  { separator: true },
                   {
                     id: "null",
                     label: t("设为 NULL"),
@@ -1021,14 +1377,41 @@ export function TableBrowser({
                     label: t("使用默认值"),
                     onSelect: () => applyCellValue(cell, { kind: "default" }),
                   },
+                  ...(modified
+                    ? [
+                        { separator: true as const },
+                        {
+                          id: "undo-cell",
+                          label: t("撤销当前修改"),
+                          onSelect: () => removeCellChange(cell),
+                        },
+                      ]
+                    : []),
                   { separator: true },
                   {
-                    id: "detail",
-                    label: t("查看完整值"),
-                    onSelect: () => openCellDetail(cell),
+                    id: "copy-row",
+                    label: t("复制整行"),
+                    onSelect: () => copyRowText(pageRows[cell.row] ?? []),
+                  },
+                  {
+                    id: "copy-insert",
+                    label: t("复制为 INSERT"),
+                    onSelect: () => copyAsInsert(pageRows[cell.row] ?? []),
+                  },
+                  {
+                    id: "copy-json",
+                    label: t("复制为 JSON"),
+                    onSelect: () => copyAsJson(pageRows[cell.row] ?? []),
+                  },
+                  {
+                    id: "delete-row",
+                    label: t("删除选中行"),
+                    onSelect: () => deleteRowAt(cell.row),
                   },
                 ])(event);
               }}
+              onRowContextMenu={openRowMenu}
+              onColumnContextMenu={openColumnMenu}
               onOpenCell={openCellDetail}
             />
             )}

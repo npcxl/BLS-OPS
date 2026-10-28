@@ -31,8 +31,10 @@ import {
 
 export function OpenItemsPanel({
   onRequestClose,
+  onRequestCloseOthers,
 }: {
   onRequestClose: (item: WorkItem) => void;
+  onRequestCloseOthers: (item: WorkItem) => void;
 }) {
   const { t } = useTranslation();
   const items = useDatabaseWorkspaceStore((state) => state.items);
@@ -40,7 +42,6 @@ export function OpenItemsPanel({
   const setActive = useDatabaseWorkspaceStore((state) => state.setActive);
   const togglePin = useDatabaseWorkspaceStore((state) => state.togglePin);
   const rename = useDatabaseWorkspaceStore((state) => state.rename);
-  const closeOthers = useDatabaseWorkspaceStore((state) => state.closeOthers);
   const setRightCollapsed = useDatabaseWorkspaceStore((state) => state.setRightCollapsed);
   const transactions = useDatabaseStore((state) => state.sessions);
 
@@ -152,7 +153,7 @@ export function OpenItemsPanel({
                     {
                       id: "close-others",
                       label: t("关闭其他"),
-                      onSelect: () => closeOthers(item.id),
+                      onSelect: () => onRequestCloseOthers(item),
                     },
                     { separator: true },
                     {

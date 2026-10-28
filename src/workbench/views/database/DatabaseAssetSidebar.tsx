@@ -5,9 +5,10 @@
  * 刷新 + 搜索。**按需加载**：展开连接才查库，展开库才查表，展开表才查
  * 字段/索引；未展开的节点不会产生任何查询。
  */
-import { memo, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Boxes,
   ChevronRight,
   Database as DatabaseIcon,
   Eye,
@@ -43,6 +44,30 @@ import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
 
 const indent = (level: number) => ({ paddingLeft: `${8 + level * 12}px` });
+
+/** 数据库下的固定分类（表/视图/函数/查询/备份），不因空数据消失。 */
+function CategoryRow({
+  label,
+  count,
+  icon,
+  level = 2,
+}: {
+  label: string;
+  count?: number;
+  icon: React.ReactNode;
+  level?: number;
+}) {
+  return (
+    <div
+      className="mt-1 flex items-center gap-1 py-[3px] pr-1 text-[10px] font-medium tracking-wide text-fg-subtle"
+      style={indent(level)}
+    >
+      {icon}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {count !== undefined && <span className="shrink-0">{count}</span>}
+    </div>
+  );
+}
 
 function ErrorRow({
   error,
@@ -648,13 +673,42 @@ export function DatabaseAssetSidebar() {
                             onRetry={() => void refreshTables(profile.id, database.name)}
                           />
                         )}
-                        {dbOpen &&
-                          dbTables
-                            .filter((table) => {
-                              const needle = filter.trim().toLowerCase();
-                              return !needle || table.name.toLowerCase().includes(needle);
-                            })
-                            .map((table) => {
+                        {dbOpen && (() => {
+                          const needle = filter.trim().toLowerCase();
+                          const visibleTables = dbTables.filter((table) =>
+                            !needle || table.name.toLowerCase().includes(needle),
+                          );
+                          const groups = [
+                            {
+                              label: t("表"),
+                              icon: <Table2 size={10} className="shrink-0" />,
+                              items: visibleTables.filter(
+                                (table) => table.kind === "table",
+                              ),
+                            },
+                            {
+                              label: t("视图"),
+                              icon: <Eye size={10} className="shrink-0" />,
+                              items: visibleTables.filter(
+                                (table) => table.kind === "view",
+                              ),
+                            },
+                          ];
+                          const databaseQueries = savedQueries.filter(
+                            (query) =>
+                              query.profileId === profile.id &&
+                              query.database === database.name,
+                          );
+                          return (
+                            <>
+                              {groups.map((group) => (
+                                <Fragment key={group.label}>
+                                  <CategoryRow
+                                    label={group.label}
+                                    count={group.items.length}
+                                    icon={group.icon}
+                                  />
+                                  {group.items.map((table) => {
                               const tableKey = `${profile.id}\u0001${database.name}\u0001${table.name}`;
                               const detail = details[tableKey];
                               const tableOpen = !!expandedTables[tableKey];
@@ -668,7 +722,7 @@ export function DatabaseAssetSidebar() {
                                       selectedKey === tableKey &&
                                         "bg-accent/10 ring-1 ring-inset ring-accent/20",
                                     )}
-                                    style={indent(2)}
+                                    style={indent(3)}
                                     tabIndex={0}
                                     onClick={() => setSelectedKey(tableKey)}
                                     onDoubleClick={() =>
@@ -725,11 +779,11 @@ export function DatabaseAssetSidebar() {
                                     )}
                                   </div>
 
-                                  {tableOpen && tableLoading && <LoadingRow level={3} />}
+                                  {tableOpen && tableLoading && <LoadingRow level={4} />}
                                   {tableOpen && tableError && (
                                     <ErrorRow
                                       error={tableError}
-                                      level={3}
+                                      level={4}
                                       onRetry={() =>
                                         void refreshTableDetail(
                                           profile.id,
@@ -745,7 +799,7 @@ export function DatabaseAssetSidebar() {
                                         <div
                                           key={column.name}
                                           className="flex items-center gap-1 py-[3px] pr-1 text-11 text-fg-subtle"
-                                          style={indent(3)}
+                                          style={indent(4)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
                                         >
                                           {column.primary_key ? (
@@ -764,7 +818,7 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.length > 80 && (
                                         <div
                                           className="py-[3px] text-11 text-fg-subtle"
-                                          style={indent(3)}
+                                          style={indent(4)}
                                         >
                                           {t("…另有 {{count}} 列", {
                                             count: detail.columns.length - 80,
@@ -775,7 +829,7 @@ export function DatabaseAssetSidebar() {
                                         variant="ghost"
                                         size="xs"
                                         className="mt-1 h-auto px-1 text-11 text-accent"
-                                        style={indent(3)}
+                                        style={indent(4)}
                                         onClick={() => {
                                           open(profile);
                                           openStructure({
@@ -792,12 +846,41 @@ export function DatabaseAssetSidebar() {
                                   )}
                                 </div>
                               );
-                            })}
-                        {dbOpen && !dbLoading && !dbError && dbTables.length === 0 && (
-                          <p className="py-1 text-11 text-fg-subtle" style={indent(2)}>
-                            {t("没有表或视图")}
-                          </p>
-                        )}
+                                  })}
+                                </Fragment>
+                              ))}
+                              <CategoryRow
+                                label={t("函数")}
+                                count={0}
+                                icon={<Boxes size={10} className="shrink-0" />}
+                              />
+                              <CategoryRow
+                                label={t("查询")}
+                                count={databaseQueries.length}
+                                icon={<FileCode2 size={10} className="shrink-0" />}
+                              />
+                              {databaseQueries.map((query) => (
+                                <div
+                                  key={query.id}
+                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-[4px] pr-1 text-11 text-fg-muted hover:bg-surface-hover"
+                                  style={indent(3)}
+                                  onDoubleClick={() => openSavedQuery(query)}
+                                  title={query.name}
+                                >
+                                  <FileCode2 size={10} className="shrink-0 text-fg-subtle" />
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {query.name}
+                                  </span>
+                                </div>
+                              ))}
+                              <CategoryRow
+                                label={t("备份")}
+                                count={0}
+                                icon={<DatabaseIcon size={10} className="shrink-0" />}
+                              />
+                            </>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -805,16 +888,20 @@ export function DatabaseAssetSidebar() {
           );
         })}
 
-        {savedQueries.filter((query) =>
-          profiles.some((profile) => profile.id === query.profileId),
+        {savedQueries.filter(
+          (query) =>
+            query.database === null &&
+            profiles.some((profile) => profile.id === query.profileId),
         ).length > 0 && (
           <div className="mt-2 border-t border-line pt-1">
             <div className="px-2 py-1 text-11 font-medium text-fg-subtle">
               {t("保存的查询")}
             </div>
             {savedQueries
-              .filter((query) =>
-                profiles.some((profile) => profile.id === query.profileId),
+              .filter(
+                (query) =>
+                  query.database === null &&
+                  profiles.some((profile) => profile.id === query.profileId),
               )
               .map((query) => (
                 <div

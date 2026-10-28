@@ -139,14 +139,15 @@
   --font-command-output: "Cascadia Mono", "Sarasa Mono SC", "JetBrains Mono", Consolas, monospace;
 
   /* ── Type scale ── */
-  --text-10: 10px;
-  --text-10--line-height: 14px;
-  --text-11: 11px;
-  --text-11--line-height: 16px;
-  --text-12: 12px;
-  --text-12--line-height: 18px;
-  --text-13: 13px;
-  --text-13--line-height: 20px;
+  /* 小字号整体上调 1px：10–13px 在 2K/高 DPI 下太碎，正文和树节点优先可读性。 */
+  --text-10: 11px;
+  --text-10--line-height: 15px;
+  --text-11: 12px;
+  --text-11--line-height: 17px;
+  --text-12: 13px;
+  --text-12--line-height: 19px;
+  --text-13: 14px;
+  --text-13--line-height: 21px;
   --text-14: 14px;
   --text-14--line-height: 22px;
   --text-16: 16px;

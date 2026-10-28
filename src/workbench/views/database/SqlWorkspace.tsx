@@ -37,6 +37,7 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
+import { SaveQueryDialog } from "./SaveQueryDialog";
 import { splitSqlStatements } from "./sql-split";
 import { openDetachedSqlWindow } from "./detached-sql";
 
@@ -69,6 +70,7 @@ export function SqlWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [saveQueryOpen, setSaveQueryOpen] = useState(false);
   /** 首次运行后才显示结果区；未查询时编辑器占满高度。 */
   const [hasRun, setHasRun] = useState(false);
   /**
@@ -344,15 +346,21 @@ export function SqlWorkspace({
 
   const handleSaveQuery = () => {
     if (!item) return;
+    setSaveQueryOpen(true);
+  };
+
+  const confirmSaveQuery = (name: string) => {
+    if (!item) return;
     saveQuery({
       itemId: tabId,
       profileId: profile.id,
       connectionName: item.connectionName || connectionName || profile.name,
       database: item.database ?? database ?? null,
-      name: item.title,
+      name,
       sql: sqlText,
     });
-    setNotice(t("查询已保存，可在左侧「保存的查询」中找到"));
+    setSaveQueryOpen(false);
+    setNotice(t("查询已保存，可在左侧「查询」中找到"));
   };
 
   const handleOpenSqlFile = async () => {
@@ -565,6 +573,13 @@ export function SqlWorkspace({
           </div>
         </>
       )}
+
+      <SaveQueryDialog
+        open={saveQueryOpen}
+        initialName={item?.title ?? ""}
+        onCancel={() => setSaveQueryOpen(false)}
+        onConfirm={confirmSaveQuery}
+      />
 
       <ExportDialog
         open={exportOpen}

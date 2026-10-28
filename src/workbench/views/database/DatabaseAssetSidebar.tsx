@@ -77,7 +77,7 @@ function CategoryRow({
     <>
       {onToggle && (
         <ChevronRight
-          size={11}
+          size={14}
           className={cn("shrink-0 transition-transform", open && "rotate-90")}
         />
       )}
@@ -90,7 +90,7 @@ function CategoryRow({
   if (!onToggle) {
     return (
       <div
-        className="mt-1 flex items-center gap-1 py-1 pr-2.5 text-11 font-medium text-fg-subtle"
+        className="mt-1 flex items-center gap-1 py-1.5 pr-2.5 text-13 font-medium text-fg-subtle"
         style={indent(level)}
       >
         {content}
@@ -103,7 +103,7 @@ function CategoryRow({
       role="button"
       tabIndex={0}
       aria-expanded={open}
-      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 text-11 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
+      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-12 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
       style={indent(level)}
       onClick={onToggle}
       onKeyDown={(event) => {
@@ -130,15 +130,15 @@ function ErrorRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex items-start gap-1.5 py-1 pr-2.5 text-11 leading-snug text-danger"
+      className="flex items-start gap-1.5 py-1.5 pr-2.5 text-12 leading-snug text-danger"
       style={indent(level)}
     >
-      <TriangleAlert size={11} className="mt-0.5 shrink-0" />
+      <TriangleAlert size={14} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1 break-words">{error.message}</span>
       <Button
         variant="ghost"
         size="xs"
-        className="h-auto shrink-0 px-1 text-11 text-accent"
+        className="h-auto shrink-0 px-1 text-12 text-accent"
         onClick={(event) => {
           event.stopPropagation();
           onRetry();
@@ -152,8 +152,8 @@ function ErrorRow({
 
 function LoadingRow({ level }: { level: number }) {
   return (
-    <div className="flex items-center gap-1.5 py-1 text-11 text-fg-subtle" style={indent(level)}>
-      <Loader2 size={10} className="animate-spin" />
+    <div className="flex items-center gap-1.5 py-1.5 text-12 text-fg-subtle" style={indent(level)}>
+      <Loader2 size={12} className="animate-spin" />
     </div>
   );
 }
@@ -188,7 +188,7 @@ const ProfileRow = memo(function ProfileRow({
   const { t } = useTranslation();
   return (
     <div
-      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover"
+      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover"
       style={indent(0)}
       onDoubleClick={onOpen}
       onClick={onOpen}
@@ -199,7 +199,7 @@ const ProfileRow = memo(function ProfileRow({
         <Button
           variant="ghost"
           size="xs"
-          className="h-4 w-4 shrink-0 px-0"
+          className="h-5 w-5 shrink-0 px-0"
           aria-label={t("展开")}
           onClick={(event) => {
             event.stopPropagation();
@@ -207,7 +207,7 @@ const ProfileRow = memo(function ProfileRow({
           }}
         >
           <ChevronRight
-            size={11}
+            size={14}
             className={cn("transition-transform", expanded && "rotate-90")}
           />
         </Button>
@@ -215,11 +215,11 @@ const ProfileRow = memo(function ProfileRow({
       <DbEngineIcon
         engine={profile.engine}
         connected={connected}
-        size={13}
+        size={18}
       />
       <span
         className={cn(
-          "min-w-0 flex-1 truncate text-12",
+          "min-w-0 flex-1 truncate text-14",
           connected ? "text-fg" : "text-fg-muted",
         )}
       >
@@ -232,7 +232,7 @@ const ProfileRow = memo(function ProfileRow({
         <Button
           variant="ghost"
           size="xs"
-          className="hidden h-4 w-4 px-0 group-hover:flex"
+          className="hidden h-5 w-5 px-0 group-hover:flex"
           aria-label={connected ? t("关闭连接") : t("打开连接")}
           onClick={(event) => {
             event.stopPropagation();
@@ -241,7 +241,7 @@ const ProfileRow = memo(function ProfileRow({
           }}
         >
           <PlugZap
-            size={10}
+            size={12}
             className={connected ? "text-fg" : "text-fg-subtle"}
           />
         </Button>
@@ -250,45 +250,45 @@ const ProfileRow = memo(function ProfileRow({
         <Button
           variant="ghost"
           size="xs"
-          className="hidden h-4 w-4 px-0 group-hover:flex"
+          className="hidden h-5 w-5 px-0 group-hover:flex"
           aria-label={t("刷新")}
           onClick={(event) => {
             event.stopPropagation();
             onRefresh();
           }}
         >
-          <RefreshCw size={10} />
+          <RefreshCw size={12} />
         </Button>
       </Tooltip>
       <Tooltip label={t("编辑连接")} side="left">
         <Button
           variant="ghost"
           size="xs"
-          className="hidden h-4 w-4 px-0 group-hover:flex"
+          className="hidden h-5 w-5 px-0 group-hover:flex"
           aria-label={t("编辑连接")}
           onClick={(event) => {
             event.stopPropagation();
             onEdit();
           }}
         >
-          <Pencil size={10} />
+          <Pencil size={12} />
         </Button>
       </Tooltip>
       <Tooltip label={t("删除连接")} side="left">
         <Button
           variant="ghost"
           size="xs"
-          className="hidden h-4 w-4 px-0 hover:text-danger group-hover:flex"
+          className="hidden h-5 w-5 px-0 hover:text-danger group-hover:flex"
           aria-label={t("删除连接")}
           onClick={(event) => {
             event.stopPropagation();
             onDelete();
           }}
         >
-          <Trash2 size={10} />
+          <Trash2 size={12} />
         </Button>
       </Tooltip>
-      {error && <TriangleAlert size={10} className="shrink-0 text-danger" />}
+      {error && <TriangleAlert size={12} className="shrink-0 text-danger" />}
     </div>
   );
 });
@@ -336,6 +336,9 @@ export function DatabaseAssetSidebar() {
   );
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const savedQueries = useDatabaseWorkspaceStore((state) => state.savedQueries);
+  const deleteSavedQuery = useDatabaseWorkspaceStore(
+    (state) => state.deleteSavedQuery,
+  );
 
   const [filter, setFilter] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -346,6 +349,8 @@ export function DatabaseAssetSidebar() {
     useState<DatabaseProfile | null>(null);
   const [deleteTarget, setDeleteTarget] =
     useState<DatabaseProfile | null>(null);
+  const [deleteQueryTarget, setDeleteQueryTarget] =
+    useState<SavedQuery | null>(null);
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
   const closeSession = useDatabaseStore((state) => state.closeSession);
@@ -567,6 +572,21 @@ export function DatabaseAssetSidebar() {
     ];
   };
 
+  const savedQueryMenu = (query: SavedQuery) => [
+    {
+      id: "open",
+      label: t("打开查询"),
+      onSelect: () => openSavedQuery(query),
+    },
+    { separator: true },
+    {
+      id: "delete",
+      label: t("删除保存的查询"),
+      danger: true,
+      onSelect: () => setDeleteQueryTarget(query),
+    },
+  ];
+
   const databaseMenu = (
     profile: DatabaseProfile,
     database: { name: string },
@@ -624,7 +644,7 @@ export function DatabaseAssetSidebar() {
     <div className="flex h-full min-h-0 flex-col">
       {/* 标题栏与服务器侧栏的 SectionTitle 同款：h-7 / px-2.5 / 11px 大写浅色。 */}
       <div className="flex h-7 shrink-0 items-center gap-1 px-2.5">
-        <span className="min-w-0 flex-1 truncate text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">
+        <span className="min-w-0 flex-1 truncate text-12 font-semibold uppercase tracking-[0.08em] text-fg-subtle">
           {t("数据库资产")}
         </span>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -673,7 +693,7 @@ export function DatabaseAssetSidebar() {
           onChange={(event) => setFilter(event.target.value)}
           onClear={() => setFilter("")}
           placeholder={t("搜索连接…")}
-          className="h-[28px] text-12"
+          className="h-[30px] text-13"
         />
       </div>
 
@@ -744,7 +764,7 @@ export function DatabaseAssetSidebar() {
                     return (
                       <div key={key}>
                         <div
-                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover"
+                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover"
                           style={indent(1)}
                           onClick={() => {
                             // 点数据库 = 连接 + 展开 + 打开对象列表。
@@ -771,7 +791,7 @@ export function DatabaseAssetSidebar() {
                           <Button
                             variant="ghost"
                             size="xs"
-                            className="h-4 w-4 shrink-0 px-0"
+                            className="h-5 w-5 shrink-0 px-0"
                             aria-label={t("展开")}
                             onClick={(event) => {
                               event.stopPropagation();
@@ -779,12 +799,12 @@ export function DatabaseAssetSidebar() {
                             }}
                           >
                             <ChevronRight
-                              size={11}
+                              size={14}
                               className={cn("transition-transform", dbOpen && "rotate-90")}
                             />
                           </Button>
                           <DatabaseIcon
-                            size={11}
+                            size={14}
                             className={cn(
                               "shrink-0",
                               dbOpen ? "text-fg" : "text-fg-muted",
@@ -792,7 +812,7 @@ export function DatabaseAssetSidebar() {
                           />
                           <span
                             className={cn(
-                              "min-w-0 flex-1 truncate text-12",
+                              "min-w-0 flex-1 truncate text-14",
                               dbOpen
                                 ? "font-medium text-fg"
                                 : "text-fg-muted",
@@ -800,19 +820,19 @@ export function DatabaseAssetSidebar() {
                           >
                             {database.name}
                           </span>
-                          {dbError && <TriangleAlert size={10} className="shrink-0 text-danger" />}
+                          {dbError && <TriangleAlert size={12} className="shrink-0 text-danger" />}
                           <Tooltip label={t("刷新表列表")} side="left">
                             <Button
                               variant="ghost"
                               size="xs"
-                              className="hidden h-4 w-4 px-0 group-hover:flex"
+                              className="hidden h-5 w-5 px-0 group-hover:flex"
                               aria-label={t("刷新表列表")}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 void refreshTables(profile.id, database.name);
                               }}
                             >
-                              <RefreshCw size={10} />
+                              <RefreshCw size={12} />
                             </Button>
                           </Tooltip>
                         </div>
@@ -834,7 +854,7 @@ export function DatabaseAssetSidebar() {
                             {
                               id: "tables",
                               label: t("表"),
-                              icon: <Table2 size={11} className="shrink-0" />,
+                              icon: <Table2 size={14} className="shrink-0" />,
                               items: visibleTables.filter(
                                 (table) => table.kind === "table",
                               ),
@@ -842,7 +862,7 @@ export function DatabaseAssetSidebar() {
                             {
                               id: "views",
                               label: t("视图"),
-                              icon: <Eye size={11} className="shrink-0" />,
+                              icon: <Eye size={14} className="shrink-0" />,
                               items: visibleTables.filter(
                                 (table) => table.kind === "view",
                               ),
@@ -889,7 +909,7 @@ export function DatabaseAssetSidebar() {
                                 <div key={tableKey}>
                                   <div
                                     className={cn(
-                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 hover:bg-surface-hover",
+                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
                                       selectedKey === tableKey &&
                                         "bg-accent/10 ring-1 ring-inset ring-accent/20",
                                     )}
@@ -922,7 +942,7 @@ export function DatabaseAssetSidebar() {
                                     <Button
                                       variant="ghost"
                                       size="xs"
-                                      className="h-4 w-4 shrink-0 px-0"
+                                      className="h-5 w-5 shrink-0 px-0"
                                       aria-label={t("展开")}
                                       onClick={(event) => {
                                         event.stopPropagation();
@@ -930,7 +950,7 @@ export function DatabaseAssetSidebar() {
                                       }}
                                     >
                                       <ChevronRight
-                                        size={11}
+                                        size={14}
                                         className={cn(
                                           "transition-transform",
                                           tableOpen && "rotate-90",
@@ -939,7 +959,7 @@ export function DatabaseAssetSidebar() {
                                     </Button>
                                     {table.kind === "view" ? (
                                       <Eye
-                                        size={11}
+                                        size={14}
                                         className={cn(
                                           "shrink-0",
                                           tableOpen ? "text-fg" : "text-fg-muted",
@@ -947,7 +967,7 @@ export function DatabaseAssetSidebar() {
                                       />
                                     ) : (
                                       <Table2
-                                        size={11}
+                                        size={14}
                                         className={cn(
                                           "shrink-0",
                                           tableOpen ? "text-fg" : "text-fg-muted",
@@ -956,7 +976,7 @@ export function DatabaseAssetSidebar() {
                                     )}
                                     <span
                                       className={cn(
-                                        "min-w-0 flex-1 truncate text-12",
+                                        "min-w-0 flex-1 truncate text-14",
                                         tableOpen
                                           ? "font-medium text-fg"
                                           : "text-fg-muted",
@@ -965,7 +985,7 @@ export function DatabaseAssetSidebar() {
                                       {table.name}
                                     </span>
                                     {tableError && (
-                                      <TriangleAlert size={10} className="shrink-0 text-danger" />
+                                      <TriangleAlert size={12} className="shrink-0 text-danger" />
                                     )}
                                   </div>
 
@@ -988,26 +1008,26 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.slice(0, 80).map((column) => (
                                         <div
                                           key={column.name}
-                                          className="flex items-center gap-1 py-1 pr-2.5 text-11 text-fg-muted"
+                                          className="flex items-center gap-1 py-1.5 pr-2.5 text-12 text-fg-muted"
                                           style={indent(4)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
                                         >
                                           {column.primary_key ? (
-                                            <KeyRound size={10} className="shrink-0 text-accent" />
+                                            <KeyRound size={12} className="shrink-0 text-accent" />
                                           ) : (
                                             <span className="h-[10px] w-[10px] shrink-0" />
                                           )}
                                           <span className="min-w-0 flex-1 truncate text-fg-muted">
                                             {column.name}
                                           </span>
-                                          <span className="shrink-0 text-10">
+                                          <span className="shrink-0 text-11">
                                             {column.data_type}
                                           </span>
                                         </div>
                                       ))}
                                       {detail.columns.length > 80 && (
                                         <div
-                                          className="py-1 text-11 text-fg-subtle"
+                                          className="py-1.5 text-12 text-fg-subtle"
                                           style={indent(4)}
                                         >
                                           {t("…另有 {{count}} 列", {
@@ -1018,7 +1038,7 @@ export function DatabaseAssetSidebar() {
                                       <Button
                                         variant="ghost"
                                         size="xs"
-                                        className="mt-1 h-auto px-1 text-11 text-accent"
+                                        className="mt-1 h-auto px-1 text-12 text-accent"
                                         style={indent(4)}
                                         onClick={() => {
                                           open(profile);
@@ -1043,14 +1063,14 @@ export function DatabaseAssetSidebar() {
                               <CategoryRow
                                 label={t("函数")}
                                 count={0}
-                                icon={<Boxes size={11} className="shrink-0" />}
+                                icon={<Boxes size={14} className="shrink-0" />}
                                 open={categoryOpen("functions")}
                                 onToggle={() => toggleCat("functions")}
                               />
                               <CategoryRow
                                 label={t("查询")}
                                 count={databaseQueries.length}
-                                icon={<FileCode2 size={11} className="shrink-0" />}
+                                icon={<FileCode2 size={14} className="shrink-0" />}
                                 open={categoryOpen("queries")}
                                 onToggle={() => toggleCat("queries")}
                               />
@@ -1058,12 +1078,18 @@ export function DatabaseAssetSidebar() {
                                 databaseQueries.map((query) => (
                                 <div
                                   key={query.id}
-                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 text-12 text-fg hover:bg-surface-hover"
+                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-13 text-fg hover:bg-surface-hover"
                                   style={indent(3)}
                                   onDoubleClick={() => openSavedQuery(query)}
+                                  onContextMenu={(event) => {
+                                    event.stopPropagation();
+                                    menu.onContextMenu(() =>
+                                      savedQueryMenu(query),
+                                    )(event);
+                                  }}
                                   title={query.name}
                                 >
-                                  <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
+                                  <FileCode2 size={14} className="shrink-0 text-fg-subtle" />
                                   <span className="min-w-0 flex-1 truncate">
                                     {query.name}
                                   </span>
@@ -1072,7 +1098,7 @@ export function DatabaseAssetSidebar() {
                               <CategoryRow
                                 label={t("备份")}
                                 count={0}
-                                icon={<DatabaseIcon size={11} className="shrink-0" />}
+                                icon={<DatabaseIcon size={14} className="shrink-0" />}
                                 open={categoryOpen("backups")}
                                 onToggle={() => toggleCat("backups")}
                               />
@@ -1093,7 +1119,7 @@ export function DatabaseAssetSidebar() {
             profiles.some((profile) => profile.id === query.profileId),
         ).length > 0 && (
           <div className="mt-2 border-t border-line pt-1">
-            <div className="px-2.5 py-1 text-11 font-medium text-fg-subtle">
+            <div className="px-2.5 py-1.5 text-12 font-medium text-fg-subtle">
               {t("保存的查询")}
             </div>
             {savedQueries
@@ -1105,21 +1131,25 @@ export function DatabaseAssetSidebar() {
               .map((query) => (
                 <div
                   key={query.id}
-                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-1 pl-2.5 pr-2.5 hover:bg-surface-hover"
+                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pl-2.5 pr-2.5 hover:bg-surface-hover"
                   tabIndex={0}
                   onDoubleClick={() => openSavedQuery(query)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") openSavedQuery(query);
                   }}
+                  onContextMenu={(event) => {
+                    event.stopPropagation();
+                    menu.onContextMenu(() => savedQueryMenu(query))(event);
+                  }}
                   title={`${query.connectionName}${
                     query.database ? ` / ${query.database}` : ""
                   }\n${t("双击打开这份查询")}`}
                 >
-                  <FileCode2 size={11} className="shrink-0 text-fg-subtle" />
-                  <span className="min-w-0 flex-1 truncate text-12 text-fg">
+                  <FileCode2 size={14} className="shrink-0 text-fg-subtle" />
+                  <span className="min-w-0 flex-1 truncate text-14 text-fg">
                     {query.name}
                   </span>
-                  <span className="shrink-0 text-10 text-fg-subtle">
+                  <span className="shrink-0 text-11 text-fg-subtle">
                     {query.connectionName}
                   </span>
                 </div>
@@ -1157,6 +1187,21 @@ export function DatabaseAssetSidebar() {
         onConfirm={() => {
           if (deleteTarget) void remove(deleteTarget);
           setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteQueryTarget !== null}
+        danger
+        title={t("删除保存的查询「{{name}}」？", {
+          name: deleteQueryTarget?.name ?? "",
+        })}
+        description={t("只删除本地保存的 SQL，不会删除数据库里的数据。")}
+        confirmLabel={t("删除")}
+        onCancel={() => setDeleteQueryTarget(null)}
+        onConfirm={() => {
+          if (deleteQueryTarget) deleteSavedQuery(deleteQueryTarget.id);
+          setDeleteQueryTarget(null);
         }}
       />
 

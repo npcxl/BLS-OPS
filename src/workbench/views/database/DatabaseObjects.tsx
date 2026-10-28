@@ -21,13 +21,14 @@ import {
   FilePlus2,
   Loader2,
   RefreshCw,
-  Search,
   Table2,
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { EmptyState } from "@/components/ui/empty-state";
 import { LoadingState } from "@/components/ui/loading";
+import { MacSearchField } from "@/components/ui/mac-controls";
 import { cn } from "@/lib/cn";
 import type { DbTable } from "@/api/types/database";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -221,23 +222,16 @@ export function DatabaseObjects({
       </div>
 
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-2">
-        <Search size={11} className="shrink-0 text-fg-subtle" />
-        <input
-          autoFocus
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t("搜索表 / 视图…")}
-          className="h-[24px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-        />
-        {query && (
-          <button
-            type="button"
-            className="shrink-0 text-11 text-fg-subtle hover:text-fg"
-            onClick={() => setQuery("")}
-          >
-            {t("清除")}
-          </button>
-        )}
+        <div className="min-w-0 flex-1">
+          <MacSearchField
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onClear={() => setQuery("")}
+            placeholder={t("搜索表 / 视图…")}
+            className="h-[24px] text-11"
+          />
+        </div>
         <span className="shrink-0 text-11 text-fg-subtle">
           {t("{{count}} 个匹配", { count: rows.length })}
         </span>
@@ -258,9 +252,12 @@ export function DatabaseObjects({
           {tableList === undefined && !error ? (
             <LoadingState className="h-full" />
           ) : rows.length === 0 ? (
-            <p className="px-3 py-3 text-12 text-fg-subtle">
-              {tables.length === 0 ? t("没有表或视图") : t("没有匹配的表")}
-            </p>
+            <EmptyState
+              className="h-full"
+              title={
+                tables.length === 0 ? t("没有表或视图") : t("没有匹配的表")
+              }
+            />
           ) : (
             <div style={{ height: rows.length * ROW_HEIGHT, position: "relative" }}>
               {visible.map((table, index) => {

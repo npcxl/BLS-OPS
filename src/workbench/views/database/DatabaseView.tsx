@@ -14,8 +14,10 @@ import { useTranslation } from "react-i18next";
 import {
   Database as DatabaseIcon,
   TriangleAlert,
+  X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
@@ -353,20 +355,9 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
       {session?.transaction === "in_transaction_read_only" && (
         <span className="shrink-0 text-warning">{t("只读事务")}</span>
       )}
-      <button
-        type="button"
-        className="shrink-0 rounded px-1.5 py-0.5 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
-        onClick={() => {
-          if (rightCollapsed) {
-            hideDdl();
-            setRightCollapsed(false);
-          } else if (rightPanel === "ddl") {
-            hideDdl();
-          } else {
-            setRightCollapsed(true);
-          }
-        }}
-        title={
+      <Tooltip
+        side="top"
+        label={
           rightCollapsed
             ? t("展开已打开列表")
             : rightPanel === "ddl"
@@ -374,25 +365,43 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
               : t("收起已打开列表")
         }
       >
-        {t("已打开 {{count}}", { count: workspaceItems.length })}
-      </button>
-      <Button
-        variant="ghost"
-        size="xs"
-        onClick={() => void invalidate(profileId)}
-        title={t("刷新元数据缓存")}
-      >
-        {t("刷新")}
-      </Button>
-      <Button
-        variant="ghost"
-        size="xs"
-        disabled={!session}
-        onClick={() => void reconnect(profileId)}
-        title={t("重新连接（不恢复事务/临时表）")}
-      >
-        {t("重连")}
-      </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-auto px-1.5 py-0.5 text-11"
+          onClick={() => {
+            if (rightCollapsed) {
+              hideDdl();
+              setRightCollapsed(false);
+            } else if (rightPanel === "ddl") {
+              hideDdl();
+            } else {
+              setRightCollapsed(true);
+            }
+          }}
+        >
+          {t("已打开 {{count}}", { count: workspaceItems.length })}
+        </Button>
+      </Tooltip>
+      <Tooltip side="top" label={t("刷新元数据缓存")}>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={() => void invalidate(profileId)}
+        >
+          {t("刷新")}
+        </Button>
+      </Tooltip>
+      <Tooltip side="top" label={t("重新连接（不恢复事务/临时表）")}>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!session}
+          onClick={() => void reconnect(profileId)}
+        >
+          {t("重连")}
+        </Button>
+      </Tooltip>
       <span className="ml-1 shrink-0">
         {session ? `#${session.connection_id}` : t("未连接")}
         {status?.tunnel_local_port ? ` · 127.0.0.1:${status.tunnel_local_port}` : ""}
@@ -405,9 +414,15 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
       {notice && (
         <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1 text-11 text-warning">
           <span className="min-w-0 flex-1">{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label={t("关闭")}>
-            ×
-          </button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-4 w-4 px-0"
+            aria-label={t("关闭")}
+            onClick={() => setNotice(null)}
+          >
+            <X size={11} />
+          </Button>
         </div>
       )}
 

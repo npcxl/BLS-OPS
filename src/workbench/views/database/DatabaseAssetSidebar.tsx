@@ -15,16 +15,20 @@ import {
   KeyRound,
   Loader2,
   Pencil,
+  PlugZap,
   Plus,
   RefreshCw,
-  Search,
   Table2,
   Trash2,
   TriangleAlert,
 } from "@/components/icons";
 import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { EmptyState } from "@/components/ui/empty-state";
+import { MacSearchField } from "@/components/ui/mac-controls";
+import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -56,16 +60,17 @@ function ErrorRow({
     >
       <TriangleAlert size={11} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1 break-words">{error.message}</span>
-      <button
-        type="button"
-        className="shrink-0 rounded px-1 text-11 text-accent hover:bg-surface-hover"
+      <Button
+        variant="ghost"
+        size="xs"
+        className="h-auto shrink-0 px-1 text-11 text-accent"
         onClick={(event) => {
           event.stopPropagation();
           onRetry();
         }}
       >
         {t("重试")}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -88,6 +93,8 @@ const ProfileRow = memo(function ProfileRow({
   onEdit,
   onDelete,
   onRefresh,
+  onConnect,
+  onDisconnect,
   onContextMenu,
 }: {
   profile: DatabaseProfile;
@@ -99,6 +106,8 @@ const ProfileRow = memo(function ProfileRow({
   onEdit: () => void;
   onDelete: () => void;
   onRefresh: () => void;
+  onConnect: () => void;
+  onDisconnect: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation();
@@ -111,62 +120,113 @@ const ProfileRow = memo(function ProfileRow({
       onContextMenu={onContextMenu}
       title={`${profile.username}@${profile.host}:${profile.port}`}
     >
-      <button
-        type="button"
-        aria-label={t("展开")}
-        className="flex h-4 w-4 shrink-0 items-center justify-center text-fg-subtle hover:text-fg"
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggle();
-        }}
-      >
-        <ChevronRight
-          size={12}
-          className={cn("transition-transform", expanded && "rotate-90")}
-        />
-      </button>
-      <DatabaseIcon size={13} className="shrink-0 text-fg-subtle" />
-      <span className="min-w-0 flex-1 truncate text-12 text-fg">{profile.name}</span>
+      <Tooltip label={t("展开")} side="right">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-4 w-4 shrink-0 px-0"
+          aria-label={t("展开")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+        >
+          <ChevronRight
+            size={12}
+            className={cn("transition-transform", expanded && "rotate-90")}
+          />
+        </Button>
+      </Tooltip>
+      <DatabaseIcon
+        size={13}
+        className={cn(
+          "shrink-0",
+          connected ? "text-fg" : "text-fg-subtle",
+        )}
+      />
       <span
         className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          connected ? "bg-success" : "bg-line-strong",
+          "min-w-0 flex-1 truncate text-12",
+          connected ? "text-fg" : "text-fg-subtle",
         )}
-        title={connected ? t("已连接") : t("未连接")}
-      />
-      <button
-        type="button"
-        aria-label={t("刷新")}
-        className="hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:text-fg group-hover:flex"
-        onClick={(event) => {
-          event.stopPropagation();
-          onRefresh();
-        }}
       >
-        <RefreshCw size={10} />
-      </button>
-      <button
-        type="button"
-        aria-label={t("编辑连接")}
-        className="hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:text-fg group-hover:flex"
-        onClick={(event) => {
-          event.stopPropagation();
-          onEdit();
-        }}
+        {profile.name}
+      </span>
+      <Tooltip
+        label={connected ? t("已连接") : t("未连接")}
+        side="left"
       >
-        <Pencil size={10} />
-      </button>
-      <button
-        type="button"
-        aria-label={t("删除连接")}
-        className="hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:text-danger group-hover:flex"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDelete();
-        }}
+        <span
+          className={cn(
+            "h-1.5 w-1.5 shrink-0 rounded-full",
+            connected ? "bg-fg" : "bg-line-strong",
+          )}
+          aria-label={connected ? t("已连接") : t("未连接")}
+        />
+      </Tooltip>
+      <Tooltip
+        label={connected ? t("关闭连接") : t("打开连接")}
+        side="left"
       >
-        <Trash2 size={10} />
-      </button>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-4 w-4 px-0 group-hover:flex"
+          aria-label={connected ? t("关闭连接") : t("打开连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (connected) onDisconnect();
+            else onConnect();
+          }}
+        >
+          <PlugZap
+            size={10}
+            className={connected ? "text-fg" : "text-fg-subtle"}
+          />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("刷新")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-4 w-4 px-0 group-hover:flex"
+          aria-label={t("刷新")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRefresh();
+          }}
+        >
+          <RefreshCw size={10} />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("编辑连接")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-4 w-4 px-0 group-hover:flex"
+          aria-label={t("编辑连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+        >
+          <Pencil size={10} />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("删除连接")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-4 w-4 px-0 hover:text-danger group-hover:flex"
+          aria-label={t("删除连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 size={10} />
+        </Button>
+      </Tooltip>
       {error && <TriangleAlert size={10} className="shrink-0 text-danger" />}
     </div>
   );
@@ -218,6 +278,8 @@ export function DatabaseAssetSidebar() {
   const menu = useContextMenu();
   const objectMenu = useObjectMenuBuilder();
   const closeSession = useDatabaseStore((state) => state.closeSession);
+  const ensureSession = useDatabaseStore((state) => state.ensureSession);
+  const reconnect = useDatabaseStore((state) => state.reconnect);
 
   useEffect(() => {
     if (profiles.length === 0) void refreshProfiles();
@@ -285,54 +347,69 @@ export function DatabaseAssetSidebar() {
     await deleteProfile(profile.id);
   };
 
-  const connectionMenu = (profile: DatabaseProfile) => [
-    {
-      id: "open",
-      label: t("打开连接"),
-      onSelect: () => open(profile),
-    },
-    {
-      id: "new-query",
-      label: t("新建查询"),
-      onSelect: () => {
-        open(profile);
-        newQuery({
-          profileId: profile.id,
-          connectionName: profile.name,
-          database:
-            sessions[profile.id]?.current_database ??
-            profile.default_database ??
-            null,
-        });
+  const connectionMenu = (profile: DatabaseProfile) => {
+    const connected = !!sessions[profile.id];
+    return [
+      {
+        id: "open",
+        label: t("打开连接"),
+        onSelect: () => {
+          open(profile);
+          void ensureSession(profile.id);
+        },
       },
-    },
-    {
-      id: "refresh",
-      label: t("刷新数据库"),
-      onSelect: () => {
-        open(profile);
-        void refreshDatabases(profile.id);
+      ...(connected
+        ? [
+            {
+              id: "reconnect",
+              label: t("重新连接"),
+              onSelect: () => void reconnect(profile.id),
+            },
+            { separator: true as const },
+            {
+              id: "close",
+              label: t("关闭连接"),
+              danger: true,
+              onSelect: () => setDisconnectTarget(profile),
+            },
+          ]
+        : []),
+      {
+        id: "new-query",
+        label: t("新建查询"),
+        onSelect: () => {
+          open(profile);
+          newQuery({
+            profileId: profile.id,
+            connectionName: profile.name,
+            database:
+              sessions[profile.id]?.current_database ??
+              profile.default_database ??
+              null,
+          });
+        },
       },
-    },
-    { separator: true },
-    {
-      id: "edit",
-      label: t("编辑连接"),
-      onSelect: () => setDialog({ mode: "edit", profile }),
-    },
-    {
-      id: "copy-name",
-      label: t("复制连接名"),
-      onSelect: () => void copyText(profile.name),
-    },
-    { separator: true },
-    {
-      id: "disconnect",
-      label: t("断开连接"),
-      danger: true,
-      onSelect: () => setDisconnectTarget(profile),
-    },
-  ];
+      {
+        id: "refresh",
+        label: t("刷新数据库"),
+        onSelect: () => {
+          open(profile);
+          void refreshDatabases(profile.id);
+        },
+      },
+      { separator: true },
+      {
+        id: "edit",
+        label: t("编辑连接"),
+        onSelect: () => setDialog({ mode: "edit", profile }),
+      },
+      {
+        id: "copy-name",
+        label: t("复制连接名"),
+        onSelect: () => void copyText(profile.name),
+      },
+    ];
+  };
 
   const databaseMenu = (
     profile: DatabaseProfile,
@@ -389,34 +466,41 @@ export function DatabaseAssetSidebar() {
         <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg-muted">
           {t("数据库资产")}
         </span>
-        <button
-          type="button"
-          aria-label={t("新建连接")}
-          className="flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg"
-          onClick={() => setDialog({ mode: "create" })}
-        >
-          <Plus size={13} />
-        </button>
-        <button
-          type="button"
-          aria-label={t("刷新")}
-          className="flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg"
-          onClick={() => void refreshProfiles()}
-        >
-          <RefreshCw size={11} className={cn(loadingProfiles && "animate-spin")} />
-        </button>
+        <Tooltip label={t("新建连接")} side="bottom">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-5 w-5 px-0"
+            aria-label={t("新建连接")}
+            onClick={() => setDialog({ mode: "create" })}
+          >
+            <Plus size={13} />
+          </Button>
+        </Tooltip>
+        <Tooltip label={t("刷新")} side="bottom">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-5 w-5 px-0"
+            aria-label={t("刷新")}
+            onClick={() => void refreshProfiles()}
+          >
+            <RefreshCw
+              size={11}
+              className={cn(loadingProfiles && "animate-spin")}
+            />
+          </Button>
+        </Tooltip>
       </div>
 
       <div className="shrink-0 px-2 py-1.5">
-        <div className="relative">
-          <Search size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg-subtle" />
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder={t("搜索连接…")}
-            className="h-[28px] w-full rounded-[6px] border border-line bg-surface-2 pl-6 pr-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          />
-        </div>
+        <MacSearchField
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          onClear={() => setFilter("")}
+          placeholder={t("搜索连接…")}
+          className="h-[28px] text-12"
+        />
       </div>
 
       {profileError && (
@@ -425,9 +509,10 @@ export function DatabaseAssetSidebar() {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {visibleProfiles.length === 0 && !loadingProfiles && (
-          <p className="px-2 py-3 text-[11px] leading-relaxed text-fg-subtle">
-            {t("还没有数据库连接。点击右上角 + 新建一个 MySQL 连接。")}
-          </p>
+          <EmptyState
+            className="py-6"
+            title={t("还没有数据库连接。点击右上角 + 新建一个 MySQL 连接。")}
+          />
         )}
 
         {visibleProfiles.map((profile) => {
@@ -450,6 +535,11 @@ export function DatabaseAssetSidebar() {
                   open(profile);
                   void refreshDatabases(profile.id);
                 }}
+                onConnect={() => {
+                  open(profile);
+                  void ensureSession(profile.id);
+                }}
+                onDisconnect={() => setDisconnectTarget(profile)}
                 onContextMenu={(event) =>
                   menu.onContextMenu(() => connectionMenu(profile))(event)
                 }
@@ -496,10 +586,11 @@ export function DatabaseAssetSidebar() {
                             )(event);
                           }}
                         >
-                          <button
-                            type="button"
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="h-4 w-4 shrink-0 px-0"
                             aria-label={t("展开")}
-                            className="flex h-4 w-4 shrink-0 items-center justify-center text-fg-subtle"
                             onClick={(event) => {
                               event.stopPropagation();
                               void toggleDatabase(profile.id, database.name);
@@ -509,7 +600,7 @@ export function DatabaseAssetSidebar() {
                               size={11}
                               className={cn("transition-transform", dbOpen && "rotate-90")}
                             />
-                          </button>
+                          </Button>
                           <DatabaseIcon size={11} className="shrink-0 text-fg-subtle" />
                           <span
                             className={cn(
@@ -520,17 +611,20 @@ export function DatabaseAssetSidebar() {
                             {database.name}
                           </span>
                           {dbError && <TriangleAlert size={10} className="shrink-0 text-danger" />}
-                          <button
-                            type="button"
-                            aria-label={t("刷新")}
-                            className="hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:text-fg group-hover:flex"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void refreshTables(profile.id, database.name);
-                            }}
-                          >
-                            <RefreshCw size={9} />
-                          </button>
+                          <Tooltip label={t("刷新表列表")} side="left">
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              className="hidden h-4 w-4 px-0 group-hover:flex"
+                              aria-label={t("刷新表列表")}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void refreshTables(profile.id, database.name);
+                              }}
+                            >
+                              <RefreshCw size={9} />
+                            </Button>
+                          </Tooltip>
                         </div>
 
                         {dbOpen && dbLoading && <LoadingRow level={2} />}
@@ -587,10 +681,11 @@ export function DatabaseAssetSidebar() {
                                     }}
                                     title={`${database.name}.${table.name}`}
                                   >
-                                    <button
-                                      type="button"
+                                    <Button
+                                      variant="ghost"
+                                      size="xs"
+                                      className="h-4 w-4 shrink-0 px-0"
                                       aria-label={t("展开")}
-                                      className="flex h-4 w-4 shrink-0 items-center justify-center text-fg-subtle"
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void toggleTable(profile.id, database.name, table.name);
@@ -603,7 +698,7 @@ export function DatabaseAssetSidebar() {
                                           tableOpen && "rotate-90",
                                         )}
                                       />
-                                    </button>
+                                    </Button>
                                     {table.kind === "view" ? (
                                       <Eye size={11} className="shrink-0 text-fg-subtle" />
                                     ) : (
@@ -663,9 +758,10 @@ export function DatabaseAssetSidebar() {
                                           })}
                                         </div>
                                       )}
-                                      <button
-                                        type="button"
-                                        className="mt-1 rounded px-1 text-11 text-accent hover:bg-surface-hover"
+                                      <Button
+                                        variant="ghost"
+                                        size="xs"
+                                        className="mt-1 h-auto px-1 text-11 text-accent"
                                         style={indent(3)}
                                         onClick={() => {
                                           open(profile);
@@ -678,7 +774,7 @@ export function DatabaseAssetSidebar() {
                                         }}
                                       >
                                         {t("查看表结构 / 索引")}
-                                      </button>
+                                      </Button>
                                     </div>
                                   )}
                                 </div>
@@ -738,11 +834,11 @@ export function DatabaseAssetSidebar() {
       <ConfirmDialog
         open={disconnectTarget !== null}
         danger
-        title={t("断开连接「{{name}}」？", { name: disconnectTarget?.name ?? "" })}
+        title={t("关闭连接「{{name}}」？", { name: disconnectTarget?.name ?? "" })}
         description={t(
-          "断开后，该连接上未提交的事务会回滚，临时表会丢失；工作项和 SQL 草稿会保留。",
+          "关闭后，该连接上未提交的事务会回滚，临时表会丢失；工作项和 SQL 草稿会保留。",
         )}
-        confirmLabel={t("断开连接")}
+        confirmLabel={t("关闭连接")}
         onCancel={() => setDisconnectTarget(null)}
         onConfirm={() => {
           if (disconnectTarget) void closeSession(disconnectTarget.id);

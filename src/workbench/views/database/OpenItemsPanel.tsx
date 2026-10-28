@@ -20,6 +20,7 @@ import {
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { IconButton } from "@/components/ui/mac-button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -242,31 +243,31 @@ export function OpenItemsPanel({
                     />
                   )}
 
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={item.pinned ? PinOff : Pin}
+                    size="xs"
                     aria-label={item.pinned ? t("取消固定") : t("固定")}
+                    tip={item.pinned ? t("取消固定") : t("固定")}
                     className={cn(
-                      "hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:text-fg group-hover:flex",
+                      "hidden h-4 w-4 px-0 text-fg-subtle hover:text-fg group-hover:flex",
                       item.pinned && "flex text-accent",
                     )}
                     onClick={(event) => {
                       event.stopPropagation();
                       togglePin(item.id);
                     }}
-                  >
-                    {item.pinned ? <PinOff size={9} /> : <Pin size={9} />}
-                  </button>
-                  <button
-                    type="button"
+                  />
+                  <IconButton
+                    icon={X}
+                    size="xs"
                     aria-label={t("关闭")}
-                    className="hidden h-4 w-4 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-danger group-hover:flex"
+                    tip={t("关闭")}
+                    className="hidden h-4 w-4 px-0 text-fg-subtle hover:bg-surface-hover hover:text-danger group-hover:flex"
                     onClick={(event) => {
                       event.stopPropagation();
                       onRequestClose(item);
                     }}
-                  >
-                    <X size={10} />
-                  </button>
+                  />
                   </div>
                 </Tooltip>
               );

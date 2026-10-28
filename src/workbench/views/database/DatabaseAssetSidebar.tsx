@@ -77,7 +77,7 @@ function CategoryRow({
     <>
       {onToggle && (
         <ChevronRight
-          size={9}
+          size={11}
           className={cn("shrink-0 transition-transform", open && "rotate-90")}
         />
       )}
@@ -627,31 +627,44 @@ export function DatabaseAssetSidebar() {
         <span className="min-w-0 flex-1 truncate text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">
           {t("数据库资产")}
         </span>
-        <Tooltip label={t("新建连接")} side="bottom">
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-5 w-5 px-0"
-            aria-label={t("新建连接")}
-            onClick={() => setDialog({ mode: "create" })}
-          >
-            <Plus size={13} />
-          </Button>
-        </Tooltip>
-        <Tooltip label={t("刷新")} side="bottom">
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-5 w-5 px-0"
-            aria-label={t("刷新")}
-            onClick={() => void refreshProfiles()}
-          >
-            <RefreshCw
-              size={11}
-              className={cn(loadingProfiles && "animate-spin")}
-            />
-          </Button>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Tooltip label={t("刷新")} side="bottom">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-5 w-5 px-0"
+              aria-label={t("刷新")}
+              onClick={() => void refreshProfiles()}
+            >
+              <RefreshCw
+                size={12}
+                className={cn(loadingProfiles && "animate-spin")}
+              />
+            </Button>
+          </Tooltip>
+          <Tooltip label={t("折叠侧栏")} side="bottom">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-5 w-5 px-0"
+              aria-label={t("折叠侧栏")}
+              onClick={() => setSidebarCollapsed(true)}
+            >
+              <ChevronsLeft size={12} />
+            </Button>
+          </Tooltip>
+          <Tooltip label={t("新建连接")} side="bottom">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-5 w-5 px-0"
+              aria-label={t("新建连接")}
+              onClick={() => setDialog({ mode: "create" })}
+            >
+              <Plus size={12} />
+            </Button>
+          </Tooltip>
+        </div>
       </div>
 
       <div className="shrink-0 px-2.5 pb-1.5 pt-0.5">
@@ -774,7 +787,7 @@ export function DatabaseAssetSidebar() {
                             size={11}
                             className={cn(
                               "shrink-0",
-                              dbOpen ? "text-fg" : "text-fg-subtle",
+                              dbOpen ? "text-fg" : "text-fg-muted",
                             )}
                           />
                           <span
@@ -799,7 +812,7 @@ export function DatabaseAssetSidebar() {
                                 void refreshTables(profile.id, database.name);
                               }}
                             >
-                              <RefreshCw size={9} />
+                              <RefreshCw size={10} />
                             </Button>
                           </Tooltip>
                         </div>
@@ -929,7 +942,7 @@ export function DatabaseAssetSidebar() {
                                         size={11}
                                         className={cn(
                                           "shrink-0",
-                                          tableOpen ? "text-fg" : "text-fg-subtle",
+                                          tableOpen ? "text-fg" : "text-fg-muted",
                                         )}
                                       />
                                     ) : (
@@ -937,7 +950,7 @@ export function DatabaseAssetSidebar() {
                                         size={11}
                                         className={cn(
                                           "shrink-0",
-                                          tableOpen ? "text-fg" : "text-fg-subtle",
+                                          tableOpen ? "text-fg" : "text-fg-muted",
                                         )}
                                       />
                                     )}
@@ -994,7 +1007,7 @@ export function DatabaseAssetSidebar() {
                                       ))}
                                       {detail.columns.length > 80 && (
                                         <div
-                                          className="py-[3px] text-11 text-fg-subtle"
+                                          className="py-1 text-11 text-fg-subtle"
                                           style={indent(4)}
                                         >
                                           {t("…另有 {{count}} 列", {

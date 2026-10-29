@@ -190,7 +190,9 @@ impl QueryRegistry {
             }
             task_runtime.end_query();
             task_finished.store(true, Ordering::Release);
-            task_done.notify_waiters();
+            // notify_one 会保存一个 permit，release 在检查 finished 与
+            // 创建 notified() 之间发生的完成通知不会丢失。
+            task_done.notify_one();
         });
 
         Ok(QueryStarted {
@@ -251,13 +253,13 @@ impl QueryRegistry {
             .cloned()
             .ok_or_else(|| DbErrorInfo::new("cancelled", "查询任务不存在或已关闭"))?;
 
-        let current = entry.handle.state.read().await.clone();
-        if is_terminal(&current) || entry.finished.load(Ordering::Acquire) {
-            return Ok(current);
-        }
-
         {
+            // 状态迁移和终态判断必须同一把写锁：否则任务可能在 read 之后
+            // 写入 completed，取消流程再把终态覆盖成 cancelling。
             let mut state = entry.handle.state.write().await;
+            if is_terminal(&state) || entry.finished.load(Ordering::Acquire) {
+                return Ok(state.clone());
+            }
             *state = STATE_CANCELLING.to_string();
         }
 
@@ -269,10 +271,11 @@ impl QueryRegistry {
         match entry.runtime.kill_query(entry.handle.thread_id).await {
             Ok(()) => Ok(STATE_CANCELLING.to_string()),
             Err(error) => {
-                // 取消请求没能发出去：这条连接上的语句/事务状态不可信。
-                entry.handle.cancel_failed.store(true, Ordering::Release);
-                {
-                    let mut state = entry.handle.state.write().await;
+                // KILL 失败时任务可能已经自然完成；只在仍处于 cancelling
+                // 时覆盖终态，避免把真实 completed 改写成 unknown。
+                let mut state = entry.handle.state.write().await;
+                if *state == STATE_CANCELLING {
+                    entry.handle.cancel_failed.store(true, Ordering::Release);
                     *state = STATE_OUTCOME_UNKNOWN.to_string();
                 }
                 Err(error)

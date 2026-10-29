@@ -790,12 +790,26 @@ async fn execute_statements(
         {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                session.release_conn(conn, true).await;
+                let fatal = error.is_fatal();
+                // 断连后协议状态不可信，绝不能把连接放回会话复用。
+                session.release_conn(conn, !fatal).await;
                 let mut mapped = map_error(&error, "query");
-                if index > 0 {
-                    mapped.detail = Some(format!(
-                        "前 {index} 条 DDL 已执行；MySQL DDL 可能隐式提交，对象可能部分完成"
-                    ));
+                if fatal {
+                    mapped.stage = "outcome_unknown".to_string();
+                    mapped.retryable = false;
+                }
+                let partial = if index > 0 {
+                    format!("前 {index} 条 DDL 已执行；MySQL DDL 可能隐式提交，对象可能部分完成")
+                } else if fatal {
+                    "连接在 DDL 执行中断开；该语句是否生效未知".to_string()
+                } else {
+                    String::new()
+                };
+                if !partial.is_empty() {
+                    mapped.detail = Some(match mapped.detail {
+                        Some(existing) => format!("{existing}；{partial}"),
+                        None => partial,
+                    });
                 }
                 return Err(mapped);
             }

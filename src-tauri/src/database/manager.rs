@@ -37,6 +37,10 @@ pub struct DatabaseManager {
     init_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// 关闭/配置变更代次：初始化期间被 close 的连接必须丢弃。
     epochs: Arc<Mutex<HashMap<String, u64>>>,
+    /// 同一 session_id 的并发创建串行化，避免旧会话替换时互相 close/泄漏。
+    session_init_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// 会话关闭代次：创建期间被 close_session 关闭的会话不能重新插回。
+    session_epochs: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl DatabaseManager {
@@ -60,6 +64,30 @@ impl DatabaseManager {
     async fn bump_epoch(&self, profile_id: &str) -> u64 {
         let mut epochs = self.epochs.lock().await;
         let epoch = epochs.entry(profile_id.to_string()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
+        *epoch
+    }
+
+    async fn session_init_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.session_init_locks.lock().await;
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn session_epoch(&self, session_id: &str) -> u64 {
+        self.session_epochs
+            .lock()
+            .await
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    async fn bump_session_epoch(&self, session_id: &str) -> u64 {
+        let mut epochs = self.session_epochs.lock().await;
+        let epoch = epochs.entry(session_id.to_string()).or_insert(0);
         *epoch = epoch.wrapping_add(1);
         *epoch
     }
@@ -157,8 +185,14 @@ impl DatabaseManager {
         session_id: &str,
     ) -> Result<DbSessionInfo, DbErrorInfo> {
         let profile_id = plan.profile.id.clone();
-        let runtime = self.runtime(plan).await?;
+        // 同一 session_id 的并发创建串行化；close_session 不需要等这个锁，
+        // 它通过 session epoch 让创建完成后拒绝插回。
+        let init_lock = self.session_init_lock(session_id).await;
+        let _init_guard = init_lock.lock().await;
         let epoch = self.current_epoch(&profile_id).await;
+        let session_epoch = self.session_epoch(session_id).await;
+
+        let runtime = self.runtime(plan).await?;
         let timeout = Duration::from_millis(runtime.endpoint.profile.connect_timeout_ms);
         let opts = driver::build_opts(&runtime.endpoint, false)?;
 
@@ -182,6 +216,7 @@ impl DatabaseManager {
 
         // 建立会话期间连接被断开/配置被修改：不能把新会话挂到已关闭的 runtime 上。
         if self.current_epoch(&profile_id).await != epoch
+            || self.session_epoch(session_id).await != session_epoch
             || !self.is_current_runtime(&runtime).await
         {
             entry.close().await;
@@ -191,16 +226,32 @@ impl DatabaseManager {
             ));
         }
 
-        // 同 id 的旧会话必须先关掉，否则它的连接会泄漏。
+        // 同 id 的旧会话必须先停查询再关闭，否则旧连接会泄漏或继续跑。
         if let Some(old) = self.sessions.remove(session_id).await {
             self.queries.release_session(session_id).await;
             old.close().await;
         }
         self.sessions.insert(entry.clone()).await;
+
+        // 注册前后都检查代次：close_profile/close_session 可能恰好发生在这两步之间。
+        if self.current_epoch(&profile_id).await != epoch
+            || self.session_epoch(session_id).await != session_epoch
+            || !self.is_current_runtime(&runtime).await
+        {
+            if self.sessions.remove_if_same(&entry).await.is_some() {
+                entry.close().await;
+            }
+            return Err(DbErrorInfo::new(
+                "config",
+                "会话关闭期间创建完成，已拒绝重新注册；请重试",
+            ));
+        }
         Ok(entry.info().await)
     }
 
     pub async fn close_session(&self, session_id: &str) {
+        // 先递增代次再移除：in-flight open_session 即使已建好连接也不能插回。
+        self.bump_session_epoch(session_id).await;
         self.queries.release_session(session_id).await;
         if let Some(entry) = self.sessions.remove(session_id).await {
             entry.close().await;
@@ -380,5 +431,20 @@ mod tests {
         assert_eq!(manager.bump_epoch("a").await, 1);
         assert_eq!(manager.current_epoch("a").await, 1);
         assert_eq!(manager.current_epoch("b").await, 0);
+    }
+
+    #[tokio::test]
+    async fn session_locks_and_epochs_are_per_session() {
+        let manager = DatabaseManager::default();
+        let first = manager.session_init_lock("s1").await;
+        let same = manager.session_init_lock("s1").await;
+        let other = manager.session_init_lock("s2").await;
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        assert_eq!(manager.session_epoch("s1").await, 0);
+        assert_eq!(manager.bump_session_epoch("s1").await, 1);
+        assert_eq!(manager.session_epoch("s1").await, 1);
+        assert_eq!(manager.session_epoch("s2").await, 0);
     }
 }

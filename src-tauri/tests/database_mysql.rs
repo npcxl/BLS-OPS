@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use ops_workbench_lib::database::{
-    driver, export::ExportRegistry, metadata, model::*, mutate, profiles, query,
-    runtime::ProfileRuntime, schema_ops, session::SessionEntry, table, table_ops,
+    driver, export::ExportRegistry, manager::DatabaseManager, metadata, model::*, mutate, profiles,
+    query, runtime::ProfileRuntime, schema_ops, session::SessionEntry, table, table_ops,
     tunnel::TunnelRegistry,
 };
 
@@ -324,6 +324,31 @@ async fn mysql_types_multi_result_and_cancel() {
     assert!(matches!(duplicate_rows[0][1], DbValue::Int { .. }));
 
     let _ = queries.release(&started.query_id).await;
+    assert_eq!(queries.active_count().await, 0);
+    assert_eq!(session.state().await, "ready");
+
+    // 正常完成/释放循环：不能泄漏任务，也不能把连接状态弄坏。
+    for _ in 0..20 {
+        let quick = queries
+            .start(query::StartQueryRequest {
+                session: session.clone(),
+                runtime: runtime.clone(),
+                sql: "SELECT 1".to_string(),
+                budget: ResolvedBudget::resolve(None),
+            })
+            .await
+            .expect("quick start");
+        let batches = drain(&queries, &quick.query_id).await;
+        assert!(
+            batches.iter().any(
+                |batch| matches!(batch, DbBatch::Finished { state, .. } if state == "completed")
+            ),
+            "quick query must complete"
+        );
+        let _ = queries.release(&quick.query_id).await;
+        assert_eq!(queries.active_count().await, 0, "release leaked a task");
+        assert_eq!(session.state().await, "ready", "session state leaked");
+    }
 
     // -- 服务端取消 ------------------------------------------------------
     let slow = queries
@@ -351,6 +376,16 @@ async fn mysql_types_multi_result_and_cancel() {
         "取消必须有明确终态，收到 {final_state}"
     );
     let _ = queries.release(&slow.query_id).await;
+    assert_eq!(
+        queries.active_count().await,
+        0,
+        "release must remove the task from the registry"
+    );
+    assert_eq!(
+        session.state().await,
+        "lost",
+        "cancelled query must not leave a reusable unknown-state connection"
+    );
 
     runtime.close().await;
     let _ = std::fs::remove_file(path);
@@ -1194,6 +1229,26 @@ async fn mysql_schema_operations_are_real() {
         .expect("query view");
     assert_eq!(count, Some(0));
 
+    // USE 成功、CREATE VIEW 失败：必须返回部分执行详情，不能报告成功。
+    let partial = schema_ops::apply(
+        &session,
+        &schema_ops::SchemaChange::SaveView {
+            database: db_name.to_string(),
+            view: "broken_view".to_string(),
+            select_sql: "SELECT * FROM missing_table".to_string(),
+            or_replace: false,
+        },
+    )
+    .await
+    .expect_err("broken view must fail");
+    assert!(
+        partial
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("前 1 条")),
+        "partial DDL detail missing: {partial:?}"
+    );
+
     schema_ops::apply(
         &session,
         &schema_ops::SchemaChange::DropView {
@@ -1222,4 +1277,59 @@ async fn mysql_schema_operations_are_real() {
     let _ = tokio::time::timeout(Duration::from_secs(2), admin.disconnect()).await;
     let _ = std::fs::remove_file(path);
     let _ = runtime;
+}
+
+#[tokio::test]
+async fn mysql_manager_session_creation_is_serialized() {
+    let (path, conn) = temp_app_db();
+    let base = profile();
+    let plan_a = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip manager session race: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let plan_b = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip manager session race: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let manager = DatabaseManager::default();
+    let (first, second) = tokio::join!(
+        manager.open_session(plan_a, "race-session"),
+        manager.open_session(plan_b, "race-session"),
+    );
+    if first.is_err() && second.is_err() {
+        let error = format!(
+            "first={:?} second={:?}",
+            first.as_ref().err(),
+            second.as_ref().err()
+        );
+        let _ = manager.close_profile(&base.id).await;
+        let _ = std::fs::remove_file(path);
+        if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+            panic!("required manager session race cannot connect: {error}");
+        }
+        eprintln!("skip manager session race: {error}");
+        return;
+    }
+    assert_eq!(
+        manager.sessions.count_for_profile(&base.id).await,
+        1,
+        "concurrent open_session must leave exactly one registered session"
+    );
+
+    manager.close_session("race-session").await;
+    assert_eq!(
+        manager.sessions.count_for_profile(&base.id).await,
+        0,
+        "close_session must remove the raced session"
+    );
+    manager.close_profile(&base.id).await;
+    let _ = std::fs::remove_file(path);
 }

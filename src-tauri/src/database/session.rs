@@ -211,6 +211,19 @@ impl SessionRegistry {
         self.entries.lock().await.remove(session_id)
     }
 
+    /// 只移除仍然指向 `entry` 的会话，避免晚到的创建流程删掉新会话。
+    pub async fn remove_if_same(&self, entry: &Arc<SessionEntry>) -> Option<Arc<SessionEntry>> {
+        let mut entries = self.entries.lock().await;
+        if entries
+            .get(&entry.session_id)
+            .is_some_and(|current| Arc::ptr_eq(current, entry))
+        {
+            entries.remove(&entry.session_id)
+        } else {
+            None
+        }
+    }
+
     pub async fn for_profile(&self, profile_id: &str) -> Vec<Arc<SessionEntry>> {
         self.entries
             .lock()

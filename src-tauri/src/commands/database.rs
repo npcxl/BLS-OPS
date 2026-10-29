@@ -236,11 +236,22 @@ pub async fn db_table_schema_preview(
     schema_ops::alter_table_preview(&detail, &request)
 }
 
+fn ensure_preview_matches(expected_sql: &str, actual_sql: &str) -> Result<(), DbErrorInfo> {
+    if expected_sql.trim() != actual_sql.trim() {
+        return Err(DbErrorInfo::new(
+            "config",
+            "对象结构在预览后发生变化，已拒绝执行；请重新预览 DDL",
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn db_table_schema_apply(
     state: State<'_, AppState>,
     session_id: String,
     request: schema_ops::AlterTableRequest,
+    expected_sql: String,
 ) -> Result<schema_ops::SchemaOutcome, DbErrorInfo> {
     let (session, runtime) = session_and_runtime(&state, &session_id).await?;
     let detail = metadata::table_detail(
@@ -250,13 +261,16 @@ pub async fn db_table_schema_apply(
         &request.table,
     )
     .await?;
-    let outcome = schema_ops::apply_alter_table(&session, &detail, &request).await?;
+    let preview = schema_ops::alter_table_preview(&detail, &request)?;
+    ensure_preview_matches(&expected_sql, &preview.sql)?;
+    let outcome = schema_ops::apply_alter_table(&session, &detail, &request).await;
+    // 部分 DDL 可能已经隐式提交；失败也必须刷新元数据缓存。
     state
         .database
         .metadata
         .invalidate(Some(&session.profile_id))
         .await;
-    Ok(outcome)
+    outcome
 }
 
 #[tauri::command]
@@ -264,15 +278,18 @@ pub async fn db_schema_change_apply(
     state: State<'_, AppState>,
     session_id: String,
     request: schema_ops::SchemaChange,
+    expected_sql: String,
 ) -> Result<schema_ops::SchemaOutcome, DbErrorInfo> {
     let (session, _runtime) = session_and_runtime(&state, &session_id).await?;
-    let outcome = schema_ops::apply(&session, &request).await?;
+    let preview = schema_ops::preview(&request)?;
+    ensure_preview_matches(&expected_sql, &preview.sql)?;
+    let outcome = schema_ops::apply(&session, &request).await;
     state
         .database
         .metadata
         .invalidate(Some(&session.profile_id))
         .await;
-    Ok(outcome)
+    outcome
 }
 
 #[tauri::command]
@@ -297,6 +314,7 @@ pub async fn db_table_operation_apply(
     state: State<'_, AppState>,
     session_id: String,
     request: table_ops::TableOperationRequest,
+    expected_sql: String,
 ) -> Result<table_ops::TableOperationOutcome, DbErrorInfo> {
     let (session, runtime) = session_and_runtime(&state, &session_id).await?;
     let detail = metadata::table_detail(
@@ -306,13 +324,16 @@ pub async fn db_table_operation_apply(
         &request.table,
     )
     .await?;
-    let outcome = table_ops::apply(&session, &detail, &request).await?;
+    let preview = table_ops::preview(&detail, &request)?;
+    ensure_preview_matches(&expected_sql, &preview.sql)?;
+    let outcome = table_ops::apply(&session, &detail, &request).await;
+    // 复制表等操作可能第一条 DDL 成功、第二条失败。
     state
         .database
         .metadata
         .invalidate(Some(&session.profile_id))
         .await;
-    Ok(outcome)
+    outcome
 }
 
 #[tauri::command]

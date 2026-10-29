@@ -185,6 +185,7 @@ function TableHost({
   onRequestClose,
   onNewQuery,
   footer,
+  active,
 }: {
   item: WorkItem;
   profileId: string;
@@ -193,6 +194,7 @@ function TableHost({
   onRequestClose: (item: WorkItem) => void;
   onNewQuery: (database?: string | null) => void;
   footer?: ReactNode;
+  active: boolean;
 }) {
   const profile = useDatabaseStore(
     (state) => state.profiles.find((entry) => entry.id === profileId) ?? null,
@@ -212,6 +214,7 @@ function TableHost({
       onPendingChange={(count) => setStatus(item.id, { pendingCount: count })}
       onNewQuery={() => onNewQuery(item.database)}
       footer={footer}
+      active={active}
     />
   );
 }
@@ -307,6 +310,7 @@ export function WorkItemHost({
                   onRequestClose={onRequestClose}
                   onNewQuery={onNewQuery}
                   footer={footer}
+                  active={active}
                 />
               ) : item.kind === "structure" ? (
                 <StructureHost

@@ -1423,12 +1423,28 @@ export const databaseApi = {
     invoke<DbTableDetail>("db_metadata_table", { profileId, database, table }),
   previewTableSchema: (sessionId: string, request: AlterTableRequest) =>
     invoke<SchemaPreview>("db_table_schema_preview", { sessionId, request }),
-  applyTableSchema: (sessionId: string, request: AlterTableRequest) =>
-    invoke<SchemaOutcome>("db_table_schema_apply", { sessionId, request }),
+  applyTableSchema: (
+    sessionId: string,
+    request: AlterTableRequest,
+    expectedSql: string,
+  ) =>
+    invoke<SchemaOutcome>("db_table_schema_apply", {
+      sessionId,
+      request,
+      expectedSql,
+    }),
   previewSchemaChange: (request: SchemaChange) =>
     invoke<SchemaPreview>("db_schema_change_preview", { request }),
-  applySchemaChange: (sessionId: string, request: SchemaChange) =>
-    invoke<SchemaOutcome>("db_schema_change_apply", { sessionId, request }),
+  applySchemaChange: (
+    sessionId: string,
+    request: SchemaChange,
+    expectedSql: string,
+  ) =>
+    invoke<SchemaOutcome>("db_schema_change_apply", {
+      sessionId,
+      request,
+      expectedSql,
+    }),
   previewTableOperation: (
     sessionId: string,
     request: TableOperationRequest,
@@ -1440,10 +1456,12 @@ export const databaseApi = {
   applyTableOperation: (
     sessionId: string,
     request: TableOperationRequest,
+    expectedSql: string,
   ) =>
     invoke<TableOperationOutcome>("db_table_operation_apply", {
       sessionId,
       request,
+      expectedSql,
     }),
   invalidateMetadata: (profileId: string | null) =>
     invoke<MetadataCacheStatus>("db_metadata_invalidate", { profileId }),

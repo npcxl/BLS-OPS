@@ -59,6 +59,7 @@ import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { VirtualDataGrid, type CellAddress } from "./VirtualDataGrid";
 import { TableStructure } from "./TableStructure";
+import { shouldEvictInactiveResult } from "./result-cache";
 import { EditRowDialog } from "./EditRowDialog";
 import { ExportDialog } from "./ExportDialog";
 
@@ -134,6 +135,7 @@ export function TableBrowser({
   onPendingChange,
   onNewQuery,
   footer,
+  active = true,
 }: {
   tabId: string;
   profile: DatabaseProfile;
@@ -146,6 +148,8 @@ export function TableBrowser({
   onPendingChange?: (count: number) => void;
   onNewQuery?: () => void;
   footer?: ReactNode;
+  /** 非活动页保留状态，但大结果集按预算淘汰。 */
+  active?: boolean;
 }) {
   const { t } = useTranslation();
   const details = useDatabaseStore((state) => state.details);
@@ -276,6 +280,35 @@ export function TableBrowser({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (
+      !active &&
+      result &&
+      shouldEvictInactiveResult({
+        active,
+        rowCount: result.rows.length,
+        pendingChanges: pending.length,
+      })
+    ) {
+      // 隐藏页不保留大结果；筛选/分页/草稿仍在，切回来强制重查。
+      setResult(null);
+      setTotal(null);
+      setSelectedRow(null);
+      setSelectedCell(null);
+      setEditing(null);
+      setCellDetail(null);
+      lastLoadKeyRef.current = "";
+      return;
+    }
+    if (active && !wasActive && !result) {
+      lastLoadKeyRef.current = "";
+      void load(true);
+    }
+  }, [active, load, pending.length, result]);
 
   const resetPaging = () => {
     setPageIndex(0);

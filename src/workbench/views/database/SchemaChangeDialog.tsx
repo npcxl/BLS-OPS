@@ -142,7 +142,7 @@ export function SchemaChangeDialog({
     setBusy(true);
     setError(null);
     try {
-      await databaseApi.applySchemaChange(sessionId, change);
+      await databaseApi.applySchemaChange(sessionId, change, preview.sql);
       if (target?.mode === "create_database" || target?.mode === "drop_database") {
         if (target.mode === "drop_database") {
           const database = target.database ?? target.name ?? "";

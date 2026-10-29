@@ -129,7 +129,7 @@ export function CreateTableDialog({
     setBusy(true);
     setError(null);
     try {
-      await databaseApi.applySchemaChange(sessionId, change);
+      await databaseApi.applySchemaChange(sessionId, change, preview.sql);
       await refreshTables(target.profileId, target.database);
       onApplied(change.table);
       onClose();

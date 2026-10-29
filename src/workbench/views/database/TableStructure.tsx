@@ -431,7 +431,7 @@ export function TableStructure({
     setBusy(true);
     setError(null);
     try {
-      await databaseApi.applyTableSchema(sessionId, value);
+      await databaseApi.applyTableSchema(sessionId, value, preview?.sql ?? "");
       await refreshTableDetail(profileId, value.database, value.table);
       setEditing(false);
       setPending(null);

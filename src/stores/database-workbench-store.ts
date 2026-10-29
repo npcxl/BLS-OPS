@@ -530,11 +530,13 @@ async function drainQuery(args: DrainArgs): Promise<{
       } else if (payload.kind === "rows") {
         args.onUpdate((tab) => ({
           ...tab,
-          results: tab.results.map((result) =>
-            result.key === payload.result_set_id
-              ? { ...result, rows: result.rows.concat(payload.rows) }
-              : result,
-          ),
+          results: tab.results.map((result) => {
+            if (result.key !== payload.result_set_id) return result;
+            // 追加批次不能每批 concat 整个历史数组：100 万行时是 O(n²) 复制。
+            // 仅原地追加当前批次，并返回新的 result 对象触发 UI 更新。
+            result.rows.push(...payload.rows);
+            return { ...result, rows: result.rows };
+          }),
         }));
       } else if (payload.kind === "result_set_end") {
         args.onUpdate((tab) => ({

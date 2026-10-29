@@ -19,7 +19,7 @@
 //! 丢弃连接，绝不把可疑连接放回池里）。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ use futures_util::{FutureExt, TryStreamExt};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Row};
 use std::panic::AssertUnwindSafe;
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, Notify, RwLock};
 
 use super::codec;
 use super::driver;
@@ -54,6 +54,8 @@ pub struct QueryHandle {
     pub thread_id: u32,
     pub state: Arc<RwLock<String>>,
     cancel: watch::Sender<bool>,
+    /// KILL QUERY 发送失败后，任务即使自行结束也不能报告 completed。
+    cancel_failed: Arc<AtomicBool>,
     pub in_flight: Arc<AtomicUsize>,
     pub in_flight_bytes: Arc<AtomicUsize>,
     pub started_at: i64,
@@ -62,6 +64,10 @@ pub struct QueryHandle {
 pub struct QueryEntry {
     pub handle: Arc<QueryHandle>,
     pub runtime: Arc<ProfileRuntime>,
+    pub session: Arc<SessionEntry>,
+    /// 任务是否已经真正退出（释放连接、结束计数）。
+    finished: Arc<AtomicBool>,
+    done: Arc<Notify>,
     receiver: Mutex<mpsc::Receiver<DbBatch>>,
 }
 
@@ -105,6 +111,9 @@ impl QueryRegistry {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let in_flight = Arc::new(AtomicUsize::new(0));
         let in_flight_bytes = Arc::new(AtomicUsize::new(0));
+        let cancel_failed = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(Notify::new());
 
         let handle = Arc::new(QueryHandle {
             query_id: query_id.clone(),
@@ -114,6 +123,7 @@ impl QueryRegistry {
             thread_id,
             state: state.clone(),
             cancel: cancel_tx,
+            cancel_failed: cancel_failed.clone(),
             in_flight: in_flight.clone(),
             in_flight_bytes: in_flight_bytes.clone(),
             started_at: crate::db::AppDb::now(),
@@ -124,6 +134,9 @@ impl QueryRegistry {
             Arc::new(QueryEntry {
                 handle: handle.clone(),
                 runtime: runtime.clone(),
+                session: session.clone(),
+                finished: finished.clone(),
+                done: done.clone(),
                 receiver: Mutex::new(rx),
             }),
         );
@@ -136,6 +149,8 @@ impl QueryRegistry {
         let panic_session = task_session.clone();
         let panic_tx = tx.clone();
         let panic_state = state.clone();
+        let task_finished = finished.clone();
+        let task_done = done.clone();
         tokio::spawn(async move {
             let outcome = AssertUnwindSafe(run_script(
                 conn,
@@ -147,6 +162,7 @@ impl QueryRegistry {
                 tx,
                 state,
                 cancel_rx,
+                cancel_failed,
                 in_flight,
                 in_flight_bytes,
             ))
@@ -173,6 +189,8 @@ impl QueryRegistry {
                 });
             }
             task_runtime.end_query();
+            task_finished.store(true, Ordering::Release);
+            task_done.notify_waiters();
         });
 
         Ok(QueryStarted {
@@ -234,7 +252,7 @@ impl QueryRegistry {
             .ok_or_else(|| DbErrorInfo::new("cancelled", "查询任务不存在或已关闭"))?;
 
         let current = entry.handle.state.read().await.clone();
-        if is_terminal(&current) {
+        if is_terminal(&current) || entry.finished.load(Ordering::Acquire) {
             return Ok(current);
         }
 
@@ -252,6 +270,7 @@ impl QueryRegistry {
             Ok(()) => Ok(STATE_CANCELLING.to_string()),
             Err(error) => {
                 // 取消请求没能发出去：这条连接上的语句/事务状态不可信。
+                entry.handle.cancel_failed.store(true, Ordering::Release);
                 {
                     let mut state = entry.handle.state.write().await;
                     *state = STATE_OUTCOME_UNKNOWN.to_string();
@@ -268,6 +287,19 @@ impl QueryRegistry {
             let _ = entry.handle.cancel.send(true);
             // 任务可能正卡在 socket 读取上：主动 KILL 一次，避免连接长期挂着。
             let _ = entry.runtime.kill_query(entry.handle.thread_id).await;
+
+            // 不能只把任务从注册表移除就假定资源已经释放：等任务真正退出；
+            // 超时说明物理连接仍被占用，标记会话失效，绝不复用状态未知的连接。
+            if !entry.finished.load(Ordering::Acquire) {
+                let notified = entry.done.notified();
+                if tokio::time::timeout(Duration::from_secs(2), notified)
+                    .await
+                    .is_err()
+                    && !entry.finished.load(Ordering::Acquire)
+                {
+                    entry.session.mark_lost().await;
+                }
+            }
         }
     }
 
@@ -347,6 +379,7 @@ async fn run_script(
     tx: mpsc::Sender<DbBatch>,
     state: Arc<RwLock<String>>,
     mut cancel_rx: watch::Receiver<bool>,
+    cancel_failed: Arc<AtomicBool>,
     in_flight: Arc<AtomicUsize>,
     in_flight_bytes: Arc<AtomicUsize>,
 ) {
@@ -698,7 +731,7 @@ async fn run_script(
         cancelled = true;
     }
 
-    let final_state = if outcome_unknown {
+    let final_state = if outcome_unknown || cancel_failed.load(Ordering::Acquire) {
         STATE_OUTCOME_UNKNOWN
     } else if cancelled {
         STATE_CANCELLED
@@ -723,7 +756,12 @@ async fn run_script(
     .await;
 
     // 取消/超时/截断/未知/协议致命错误：连接不可信，绝不能放回会话继续用。
-    let keep = clean && !outcome_unknown && !timed_out && !cancelled && !truncated;
+    let keep = clean
+        && !outcome_unknown
+        && !timed_out
+        && !cancelled
+        && !truncated
+        && !cancel_failed.load(Ordering::Acquire);
     session.release_conn(conn, keep).await;
 }
 

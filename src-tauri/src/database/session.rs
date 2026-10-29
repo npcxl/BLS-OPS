@@ -150,6 +150,13 @@ impl SessionEntry {
 
         let transaction = driver::transaction_state(&conn).to_string();
         let mut inner = self.inner.lock().await;
+        // 查询被强制标记 lost 后，后台任务即使晚到也不能把连接放回会话复用。
+        if inner.state == SESSION_LOST {
+            drop(inner);
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
+            return;
+        }
         inner.transaction = transaction;
         inner.state = SESSION_READY.to_string();
         inner.conn = Some(conn);

@@ -784,21 +784,32 @@ async fn execute_statements(
         ));
     }
     let mut conn = session.acquire_conn().await?;
-    for statement in statements {
+    for (index, statement) in statements.iter().enumerate() {
         match tokio::time::timeout(Duration::from_secs(30), conn.query_drop(statement.as_str()))
             .await
         {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 session.release_conn(conn, true).await;
-                return Err(map_error(&error, "query"));
+                let mut mapped = map_error(&error, "query");
+                if index > 0 {
+                    mapped.detail = Some(format!(
+                        "前 {index} 条 DDL 已执行；MySQL DDL 可能隐式提交，对象可能部分完成"
+                    ));
+                }
+                return Err(mapped);
             }
             Err(_) => {
                 session.release_conn(conn, false).await;
                 return Err(DbErrorInfo::new(
                     "timeout",
-                    "schema 操作超时：连接已丢弃，请检查对象是否已部分创建",
-                ));
+                    "schema 操作超时：连接已丢弃，语句结果未知，请重新检查对象状态",
+                )
+                .with_detail(format!(
+                    "第 {} 条语句执行中超时；前 {} 条可能已完成",
+                    index + 1,
+                    index
+                )));
             }
         }
     }

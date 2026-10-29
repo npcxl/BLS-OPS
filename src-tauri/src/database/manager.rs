@@ -33,9 +33,45 @@ pub struct DatabaseManager {
     pub exports: ExportRegistry,
     pub metadata: MetadataCache,
     runtimes: Arc<Mutex<HashMap<String, Arc<ProfileRuntime>>>>,
+    /// 同一 profile 的首次连接只允许一个 in-flight；不同 profile 用不同锁。
+    init_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// 关闭/配置变更代次：初始化期间被 close 的连接必须丢弃。
+    epochs: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl DatabaseManager {
+    async fn init_lock(&self, profile_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.init_locks.lock().await;
+        locks
+            .entry(profile_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn current_epoch(&self, profile_id: &str) -> u64 {
+        self.epochs
+            .lock()
+            .await
+            .get(profile_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    async fn bump_epoch(&self, profile_id: &str) -> u64 {
+        let mut epochs = self.epochs.lock().await;
+        let epoch = epochs.entry(profile_id.to_string()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
+        *epoch
+    }
+
+    async fn is_current_runtime(&self, runtime: &Arc<ProfileRuntime>) -> bool {
+        self.runtimes
+            .lock()
+            .await
+            .get(&runtime.profile_id)
+            .is_some_and(|current| Arc::ptr_eq(current, runtime))
+    }
+
     /// 取得（或建立）一条连接配置的运行时。
     pub async fn runtime(&self, plan: EndpointPlan) -> Result<Arc<ProfileRuntime>, DbErrorInfo> {
         let profile_id = plan.profile.id.clone();
@@ -43,12 +79,29 @@ impl DatabaseManager {
             return Ok(existing);
         }
 
-        // 锁外建立：SSH + TCP + 认证可能需要几十秒。
+        // Singleflight：同一 profile 的并发调用排在同一条初始化队列上；
+        // 锁是 per-profile 的，不同连接配置仍然可以并行建立。
+        let init_lock = self.init_lock(&profile_id).await;
+        let _init_guard = init_lock.lock().await;
+
+        if let Some(existing) = self.runtimes.lock().await.get(&profile_id).cloned() {
+            return Ok(existing);
+        }
+        let epoch = self.current_epoch(&profile_id).await;
+
+        // SSH + TCP + 认证可能需要几十秒；只阻塞同一 profile。
         let runtime = Arc::new(ProfileRuntime::connect(&self.tunnels, plan).await?);
+
+        if self.current_epoch(&profile_id).await != epoch {
+            runtime.close().await;
+            return Err(DbErrorInfo::new(
+                "config",
+                "连接初始化期间配置已变更或连接已关闭，请重试",
+            ));
+        }
 
         let mut runtimes = self.runtimes.lock().await;
         if let Some(existing) = runtimes.get(&profile_id).cloned() {
-            // 并发首次连接：保留先到的，丢弃后到的（避免两条 SSH 隧道）。
             drop(runtimes);
             runtime.close().await;
             return Ok(existing);
@@ -59,6 +112,8 @@ impl DatabaseManager {
 
     /// 配置变更/删除/手动断开：先停任务，再关会话，最后关池与隧道。
     pub async fn close_profile(&self, profile_id: &str) {
+        // 代次先递增：正在初始化的 runtime 完成后会发现 epoch 改变并自行关闭。
+        self.bump_epoch(profile_id).await;
         let runtime = self.runtimes.lock().await.remove(profile_id);
         self.queries.release_profile(profile_id).await;
         self.exports.remove_profile(profile_id).await;
@@ -103,6 +158,7 @@ impl DatabaseManager {
     ) -> Result<DbSessionInfo, DbErrorInfo> {
         let profile_id = plan.profile.id.clone();
         let runtime = self.runtime(plan).await?;
+        let epoch = self.current_epoch(&profile_id).await;
         let timeout = Duration::from_millis(runtime.endpoint.profile.connect_timeout_ms);
         let opts = driver::build_opts(&runtime.endpoint, false)?;
 
@@ -115,7 +171,7 @@ impl DatabaseManager {
 
         let entry = Arc::new(SessionEntry::new(
             session_id.to_string(),
-            profile_id,
+            profile_id.clone(),
             runtime.generation,
             conn,
             version,
@@ -123,6 +179,17 @@ impl DatabaseManager {
             runtime.endpoint.read_only,
         ));
         entry.set_current_database(current_database).await;
+
+        // 建立会话期间连接被断开/配置被修改：不能把新会话挂到已关闭的 runtime 上。
+        if self.current_epoch(&profile_id).await != epoch
+            || !self.is_current_runtime(&runtime).await
+        {
+            entry.close().await;
+            return Err(DbErrorInfo::new(
+                "config",
+                "建立会话期间连接已关闭或配置已变更，请重试",
+            ));
+        }
 
         // 同 id 的旧会话必须先关掉，否则它的连接会泄漏。
         if let Some(old) = self.sessions.remove(session_id).await {
@@ -293,4 +360,25 @@ pub fn check_generation(expected: u64, actual: u64) -> Result<(), DbErrorInfo> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DatabaseManager;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn init_lock_is_per_profile_and_epochs_advance() {
+        let manager = DatabaseManager::default();
+        let a1 = manager.init_lock("a").await;
+        let a2 = manager.init_lock("a").await;
+        let b = manager.init_lock("b").await;
+        assert!(Arc::ptr_eq(&a1, &a2));
+        assert!(!Arc::ptr_eq(&a1, &b));
+
+        assert_eq!(manager.current_epoch("a").await, 0);
+        assert_eq!(manager.bump_epoch("a").await, 1);
+        assert_eq!(manager.current_epoch("a").await, 1);
+        assert_eq!(manager.current_epoch("b").await, 0);
+    }
 }

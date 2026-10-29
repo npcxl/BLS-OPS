@@ -5,6 +5,7 @@ import {
   assessCloseRisk,
   buildCloseBatch,
   hasCloseRisk,
+  settleQueriesBeforeClose,
 } from "../close-coordination";
 
 function item(patch: Partial<WorkItem> = {}): WorkItem {
@@ -66,5 +67,49 @@ describe("close coordination", () => {
     expect(batch.dirty).toBe(1);
     expect(batch.inTransaction).toBe(1);
     expect(batch.risks).toHaveLength(3);
+  });
+});
+
+describe("query settlement before close", () => {
+  it("cancels running queries and waits until safe terminal", async () => {
+    const states: Record<string, "running" | "cancelling" | "cancelled"> = {
+      a: "running",
+      b: "cancelling",
+    };
+    const cancelled: string[] = [];
+    let sleeps = 0;
+    await settleQueriesBeforeClose(["a", "b"], {
+      cancel: async (id) => {
+        cancelled.push(id);
+        states[id] = "cancelled";
+      },
+      readState: (id) => states[id],
+      sleep: async () => {
+        sleeps += 1;
+      },
+    });
+    expect(cancelled).toEqual(["a", "b"]);
+    expect(sleeps).toBe(0);
+  });
+
+  it("refuses to close when cancellation never reaches a terminal state", async () => {
+    await expect(
+      settleQueriesBeforeClose(["a"], {
+        cancel: async () => undefined,
+        readState: () => "cancelling",
+        timeoutMs: 20,
+        intervalMs: 10,
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow(/取消超时/);
+  });
+
+  it("refuses to close an outcome_unknown query", async () => {
+    await expect(
+      settleQueriesBeforeClose(["a"], {
+        cancel: async () => undefined,
+        readState: () => "outcome_unknown",
+      }),
+    ).rejects.toThrow(/结果未知/);
   });
 });

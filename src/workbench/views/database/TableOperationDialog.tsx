@@ -139,7 +139,11 @@ export function TableOperationDialog({
     setBusy(true);
     setError(null);
     try {
-      await databaseApi.applyTableOperation(sessionId, request()!);
+      await databaseApi.applyTableOperation(
+        sessionId,
+        request()!,
+        preview.sql,
+      );
       const store = useDatabaseWorkspaceStore.getState();
       const workbench = useDatabaseWorkbenchStore.getState();
       if (pending.kind === "rename") {

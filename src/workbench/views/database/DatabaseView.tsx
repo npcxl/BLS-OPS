@@ -33,6 +33,7 @@ import {
   assessCloseRisk,
   buildCloseBatch,
   hasCloseRisk,
+  settleQueriesBeforeClose,
   type CloseBatch,
 } from "./close-coordination";
 import { ConnectionInfoPanel } from "./ConnectionInfoPanel";
@@ -274,7 +275,20 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   const confirmCloseOthers = async (action: CloseBatchAction) => {
     const batch = closingOthers;
     if (!batch) return;
+    const workbench = useDatabaseWorkbenchStore.getState();
     try {
+      // 顺序必须是：取消查询 → 等后端终态 → 回滚事务 → 关闭工作项。
+      await settleQueriesBeforeClose(
+        batch.items.map((item) => item.id),
+        {
+          cancel: async (id) => {
+            await useDatabaseWorkbenchStore.getState().cancel(id);
+          },
+          readState: (id) =>
+            useDatabaseWorkbenchStore.getState().tabs[id]?.runState,
+        },
+      );
+
       if (action === "rollback") {
         const profiles = [
           ...new Set(
@@ -287,22 +301,14 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
           await runSessionCommand(profileId, "ROLLBACK");
         }
       }
+
       for (const risk of batch.risks) {
-        if (risk.running) {
-          await useDatabaseWorkbenchStore.getState().cancel(risk.item.id);
-          for (let attempt = 0; attempt < 50; attempt += 1) {
-            const state = useDatabaseWorkbenchStore.getState().tabs[risk.item.id]?.runState;
-            if (state !== "running" && state !== "cancelling") break;
-            await new Promise((resolve) => setTimeout(resolve, 100));
-          }
-        }
-        useDatabaseWorkbenchStore.getState().dispose(risk.item.id, {
-          clearDraft: true,
-        });
+        workbench.dispose(risk.item.id, { clearDraft: true });
         closeItem(risk.item.id);
       }
       setClosingOthers(null);
     } catch (failure) {
+      // 查询超时/结果未知/回滚失败时保持对话框与工作项，不做部分关闭。
       setNotice(toDbError(failure).message);
     }
   };
@@ -311,16 +317,14 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
     const item = closing;
     if (!item) return;
     try {
-      // 先停掉运行中的查询，否则 COMMIT/ROLLBACK 会撞上"会话正忙"。
-      if (item.running) {
-        await useDatabaseWorkbenchStore.getState().cancel(item.id);
-        // 最多等 5 秒让查询走到终态；仍不结束就让 COMMIT 自己报错。
-        for (let attempt = 0; attempt < 50; attempt += 1) {
-          const state = useDatabaseWorkbenchStore.getState().tabs[item.id]?.runState;
-          if (state !== "running" && state !== "cancelling") break;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-      }
+      // 先停查询并确认终态；超时/未知时禁止继续 COMMIT/ROLLBACK 或关闭。
+      await settleQueriesBeforeClose([item.id], {
+        cancel: async (id) => {
+          await useDatabaseWorkbenchStore.getState().cancel(id);
+        },
+        readState: (id) =>
+          useDatabaseWorkbenchStore.getState().tabs[id]?.runState,
+      });
       if (action === "commit" || action === "rollback") {
         await runSessionCommand(
           item.profileId,

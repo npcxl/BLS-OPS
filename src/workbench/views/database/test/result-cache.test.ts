@@ -73,4 +73,21 @@ describe("global result cache budget", () => {
     resetInactiveResultRegistryForTests();
     localStorage.removeItem("ops.db.globalResultBytes");
   });
+
+  it("bounds 100 hidden work items to the shared budget", () => {
+    resetInactiveResultRegistryForTests();
+    localStorage.setItem("ops.db.globalResultBytes", String(8 * 1024 * 1024));
+    const evicted: string[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      registerInactiveResult(`item-${index}`, 1024 * 1024, () =>
+        evicted.push(`item-${index}`),
+      );
+    }
+    // 8 MiB 预算 / 每页 1 MiB：只留下最新 8 页。
+    expect(evicted).toHaveLength(92);
+    expect(evicted[0]).toBe("item-0");
+    expect(evicted.at(-1)).toBe("item-91");
+    resetInactiveResultRegistryForTests();
+    localStorage.removeItem("ops.db.globalResultBytes");
+  });
 });

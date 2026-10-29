@@ -75,6 +75,59 @@ export function findColumnTypePreset(value: string): ColumnTypePreset | null {
   return MYSQL_COLUMN_TYPES.find((preset) => preset.value === target) ?? null;
 }
 
+/** 取基础类型名：`INT UNSIGNED` / `decimal(10,2)` / `varchar(64)` → `int` / `decimal` / `varchar`。 */
+function baseName(value: string): string {
+  return value.trim().toLowerCase().split(/[\s(]/, 1)[0] ?? "";
+}
+
+/** 该类型是否接受「长度」参数。 */
+const LENGTH_TYPES = new Set([
+  "char",
+  "varchar",
+  "binary",
+  "varbinary",
+  "bit",
+  "tinyint",
+  "smallint",
+  "mediumint",
+  "int",
+  "integer",
+  "bigint",
+  "decimal",
+  "numeric",
+  "float",
+  "double",
+  "time",
+  "datetime",
+  "timestamp",
+  "year",
+]);
+
+/** 该类型是否接受「小数点」（小数位）参数。 */
+const SCALE_TYPES = new Set(["decimal", "numeric", "float", "double"]);
+
+/** 该类型能否自增 —— MySQL 只允许整数类型。 */
+const AUTO_INCREMENT_TYPES = new Set([
+  "tinyint",
+  "smallint",
+  "mediumint",
+  "int",
+  "integer",
+  "bigint",
+]);
+
+export function typeSupportsLength(value: string): boolean {
+  return LENGTH_TYPES.has(baseName(value));
+}
+
+export function typeSupportsScale(value: string): boolean {
+  return SCALE_TYPES.has(baseName(value));
+}
+
+export function typeSupportsAutoIncrement(value: string): boolean {
+  return AUTO_INCREMENT_TYPES.has(baseName(value));
+}
+
 /** 拼出完整类型（`varchar(255)` / `decimal(10,0)` / `int`），给只有一列类型的表单用。 */
 export function columnTypeTemplate(preset: ColumnTypePreset): string {
   if (!preset.length) return preset.value;

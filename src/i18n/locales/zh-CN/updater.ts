@@ -42,7 +42,7 @@ export default {
   "{{count}} files have unsaved changes": "{{count}} 个文件有未保存的修改",
   "{{count}} long-running tasks": "{{count}} 个长时间任务正在运行",
   "The downloaded update is kept, so you can restart later from Settings without downloading it again.":
-    "已下载的更新会保留，你可以稍后在设置页重启，无需重新下载。",
+    "已下载的更新会保留，可在设置页重启。",
 
   // -- 错误分类（一一对应 UpdateErrorCode）--
   "No network connection. Check your connection and try again.": "网络不可用，请检查网络后重试。",

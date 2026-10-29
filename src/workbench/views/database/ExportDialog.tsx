@@ -234,7 +234,7 @@ export function ExportDialog({
               checked={bom}
               onChange={(event) => setBom(event.target.checked)}
             />
-            {t("UTF-8 BOM（Excel 打开中文更稳）")}
+            {t("UTF-8 BOM")}
           </label>
         </div>
 

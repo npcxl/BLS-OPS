@@ -95,10 +95,10 @@ export function OpenItemsPanel({
         <button
           type="button"
           aria-label={t("收起已打开列表")}
-          className="flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg"
+          className="flex h-6 w-6 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg"
           onClick={() => setRightCollapsed(true)}
         >
-          <PanelRightClose size={12} />
+          <PanelRightClose size={15} />
         </button>
       </div>
 

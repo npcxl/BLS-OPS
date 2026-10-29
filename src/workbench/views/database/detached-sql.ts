@@ -12,12 +12,25 @@
 import { isTauri } from "@tauri-apps/api/core";
 
 export interface DetachedSqlPayload {
+  /** 缺省 = 可编辑查询窗口。 */
+  kind?: "sql";
   profileId: string;
   connectionName: string;
   database: string | null;
   sql: string;
   title: string;
 }
+
+/** 只读 DDL 窗口：不开查询 tab、不建会话，只渲染一段建表语句。 */
+export interface DetachedDdlPayload {
+  kind: "ddl";
+  sql: string;
+  title: string;
+  connectionName?: string;
+  database?: string | null;
+}
+
+export type DetachedPayload = DetachedSqlPayload | DetachedDdlPayload;
 
 export type DetachedSqlEvent =
   | { action: "opened"; id: string; title: string }
@@ -38,21 +51,17 @@ export function detachedSqlStorageKey(id: string) {
   return `${STORAGE_PREFIX}${id}`;
 }
 
-export function readDetachedSqlPayload(
-  id: string,
-): DetachedSqlPayload | null {
+export function readDetachedSqlPayload(id: string): DetachedPayload | null {
   try {
     const raw = localStorage.getItem(detachedSqlStorageKey(id));
     if (!raw) return null;
-    return JSON.parse(raw) as DetachedSqlPayload;
+    return JSON.parse(raw) as DetachedPayload;
   } catch {
     return null;
   }
 }
 
-export function consumeDetachedSqlPayload(
-  id: string,
-): DetachedSqlPayload | null {
+export function consumeDetachedSqlPayload(id: string): DetachedPayload | null {
   const payload = readDetachedSqlPayload(id);
   try {
     localStorage.removeItem(detachedSqlStorageKey(id));
@@ -80,9 +89,7 @@ async function tauriRuntime(): Promise<boolean> {
   }
 }
 
-export async function openDetachedSqlWindow(
-  payload: DetachedSqlPayload,
-): Promise<void> {
+async function openDetachedWindow(payload: DetachedPayload): Promise<void> {
   const id = crypto.randomUUID();
   const key = detachedSqlStorageKey(id);
   try {
@@ -149,6 +156,23 @@ export async function openDetachedSqlWindow(
     localStorage.removeItem(key);
     throw error;
   }
+}
+
+/** 独立 SQL 查询窗口（可编辑、可执行）。 */
+export async function openDetachedSqlWindow(
+  payload: DetachedSqlPayload,
+): Promise<void> {
+  await openDetachedWindow(payload);
+}
+
+/** 独立 DDL 窗口（只读查看，不建会话）。 */
+export async function openDetachedDdlWindow(input: {
+  sql: string;
+  title: string;
+  connectionName?: string;
+  database?: string | null;
+}): Promise<void> {
+  await openDetachedWindow({ kind: "ddl", ...input });
 }
 
 /** 广播独立窗口生命周期；环境不支持时静默失败，绝不能影响查询本身。 */

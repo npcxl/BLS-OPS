@@ -6,19 +6,21 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "@/components/icons";
+import { Copy, X } from "@/components/icons";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { LoadingState } from "@/components/ui/loading";
+import { copyText } from "@/lib/clipboard";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { DdlCode } from "./DdlCode";
 import { SqlWorkspace } from "./SqlWorkspace";
 import {
   consumeDetachedSqlPayload,
   detachedSqlId,
   emitDetachedSqlEvent,
-  type DetachedSqlPayload,
+  type DetachedPayload,
 } from "./detached-sql";
 
 const TERMINAL_STATES = ["completed", "failed", "cancelled", "outcome_unknown"];
@@ -26,22 +28,25 @@ const TERMINAL_STATES = ["completed", "failed", "cancelled", "outcome_unknown"];
 export function DetachedSqlWindow() {
   const { t } = useTranslation();
   const id = detachedSqlId();
-  const [payload] = useState<DetachedSqlPayload | null>(() =>
+  const [payload] = useState<DetachedPayload | null>(() =>
     id ? consumeDetachedSqlPayload(id) : null,
   );
   const [tabId, setTabId] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
+  const [wrap, setWrap] = useState(true);
+  const [copied, setCopied] = useState(false);
   const initialized = useRef(false);
 
+  const sqlPayload = payload && payload.kind !== "ddl" ? payload : null;
   const profile = useDatabaseStore(
     (state) =>
-      payload
-        ? state.profiles.find((entry) => entry.id === payload.profileId) ?? null
+      sqlPayload
+        ? state.profiles.find((entry) => entry.id === sqlPayload.profileId) ?? null
         : null,
   );
   const session = useDatabaseStore(
     (state) =>
-      payload ? state.sessions[payload.profileId] ?? null : null,
+      sqlPayload ? state.sessions[sqlPayload.profileId] ?? null : null,
   );
   const refreshProfiles = useDatabaseStore((state) => state.refreshProfiles);
   const ensureSession = useDatabaseStore((state) => state.ensureSession);
@@ -51,24 +56,26 @@ export function DetachedSqlWindow() {
       setSetupError(t("缺少 SQL 参数：请从主窗口重新全屏运行"));
       return;
     }
+    // DDL 窗口只读：不建查询 tab，也不需要数据库会话。
+    if (!sqlPayload) return;
     if (initialized.current) return;
     initialized.current = true;
 
     const workbench = useDatabaseWorkbenchStore.getState();
     const workspace = useDatabaseWorkspaceStore.getState();
     const nextId = workspace.newQuery({
-      profileId: payload.profileId,
-      connectionName: payload.connectionName,
-      database: payload.database,
-      sql: payload.sql,
-      title: payload.title,
+      profileId: sqlPayload.profileId,
+      connectionName: sqlPayload.connectionName,
+      database: sqlPayload.database,
+      sql: sqlPayload.sql,
+      title: sqlPayload.title,
     });
-    workbench.ensureTab(nextId, payload.profileId);
-    workbench.setSql(nextId, payload.sql);
+    workbench.ensureTab(nextId, sqlPayload.profileId);
+    workbench.setSql(nextId, sqlPayload.sql);
     setTabId(nextId);
 
     void refreshProfiles();
-    void ensureSession(payload.profileId);
+    void ensureSession(sqlPayload.profileId);
     void emitDetachedSqlEvent({
       action: "opened",
       id: id ?? nextId,
@@ -130,6 +137,12 @@ export function DetachedSqlWindow() {
     }
   };
 
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   if (setupError) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3 bg-surface-1 px-6 text-center">
@@ -137,6 +150,59 @@ export function DetachedSqlWindow() {
         <Button variant="ghost" size="sm" onClick={closeWindow}>
           {t("关闭窗口")}
         </Button>
+      </div>
+    );
+  }
+
+  // 只读 DDL 窗口：没有会话、没有执行，只有一段可复制可折行的建表语句。
+  if (payload?.kind === "ddl") {
+    return (
+      <div className="flex h-screen min-h-0 flex-col bg-surface-1">
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
+          <span
+            className="min-w-0 flex-1 truncate text-12 font-medium text-fg"
+            title={payload.title}
+          >
+            {payload.title}
+          </span>
+          {payload.database && (
+            <span className="shrink-0 text-11 text-fg-subtle">{payload.database}</span>
+          )}
+          <Button
+            variant={wrap ? "secondary" : "ghost"}
+            size="xs"
+            onClick={() => setWrap((value) => !value)}
+            title={t("长行自动换行")}
+          >
+            {t("折行")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 w-6 px-0"
+            onClick={() => {
+              void copyText(payload.sql).then((ok) => {
+                if (ok) setCopied(true);
+              });
+            }}
+            title={copied ? t("已复制") : t("复制 DDL")}
+            aria-label={copied ? t("已复制") : t("复制 DDL")}
+          >
+            <Copy size={12} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 w-6 px-0"
+            onClick={closeWindow}
+            title={t("关闭窗口")}
+          >
+            <X size={12} />
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1 p-2">
+          <DdlCode sql={payload.sql} wrap={wrap} />
+        </div>
       </div>
     );
   }

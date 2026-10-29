@@ -9,7 +9,9 @@ import type { DbValue } from "@/api/types/database";
 
 export const DEFAULT_INACTIVE_RESULT_ROWS = 500;
 export const DEFAULT_INACTIVE_RESULT_BYTES = 8 * 1024 * 1024;
-export const DEFAULT_GLOBAL_RESULT_BYTES = 64 * 1024 * 1024;
+// 200k 行批次基准显示实际 JS 堆约为“文本长度估算”的 2 倍；
+// 32 MiB 预算对应约 70 MiB 实际保留量，避免 100 个隐藏页吃满内存。
+export const DEFAULT_GLOBAL_RESULT_BYTES = 32 * 1024 * 1024;
 
 interface InactiveCacheEntry {
   id: string;

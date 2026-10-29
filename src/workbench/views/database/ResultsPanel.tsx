@@ -1,20 +1,30 @@
 /**
  * SQL 结果面板：多结果集分别展示，每个结果集保留自己的列、影响行数与错误。
  *
- * 交互：结果集标签、行/单元格选择、复制单元格/整行、双击查看完整（已接收）
- * 值。**任意 SQL 没有可靠行定位**，所以这里不提供"重新读取完整字段"，
- * 截断的值会明确标注。
+ * 交互：结果集标签、Excel 式行列选择、复制（TSV/CSV/JSON）、双击查看完整
+ * （已接收）值。**任意 SQL 没有可靠行定位**，所以这里：
+ * - 不提供"重新读取完整字段"，截断的值会明确标注；
+ * - 网格是只读的（`editable=false`）：粘贴/Delete/F2 都在网格层被拦掉，
+ *   不会误改服务器数据。
  */
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Copy, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { Modal } from "@/components/ui/modal";
-import type { DbValue } from "@/api/types/database";
+import type { DbColumn, DbValue } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
-import { VirtualDataGrid, type CellAddress } from "./VirtualDataGrid";
+import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
+import { EMPTY_SELECTION } from "./grid/selection";
+import { copyMenuItems } from "./grid/copy-menu";
+import { copySelectionToClipboard } from "./grid/copy-service";
+import type { CopyFormat } from "./grid/copy-format";
+
+const EMPTY_ROWS: DbValue[][] = [];
+const EMPTY_COLUMNS: DbColumn[] = [];
 
 function copyCellText(value: DbValue): string {
   if (value.kind === "null") return "NULL";
@@ -26,24 +36,19 @@ function copyCellText(value: DbValue): string {
   return value.value;
 }
 
-export function ResultsPanel({
-  tabId,
-  canResolveRows,
-}: {
-  tabId: string;
-  canResolveRows: boolean;
-}) {
+export function ResultsPanel({ tabId }: { tabId: string }) {
   const { t } = useTranslation();
   const tab = useDatabaseWorkbenchStore((state) => state.tabs[tabId]);
   const setActive = useDatabaseWorkbenchStore((state) => state.setActiveResult);
-  const { status: copyStatus, copy } = useCopyFeedback();
+  const { status: copyStatus, copy, notify } = useCopyFeedback();
+  const gridApi = useRef<DataGridApi | null>(null);
+  const menu = useContextMenu();
 
-  const [selectedRow, setSelectedRow] = useState<number | null>(null);
-  const [selectedCell, setSelectedCell] = useState<CellAddress | null>(null);
   const [detail, setDetail] = useState<{
     column: string;
     value: DbValue;
   } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const results = tab?.results ?? [];
   const activeKey = tab?.activeResultKey ?? results[0]?.key ?? null;
@@ -51,6 +56,59 @@ export function ResultsPanel({
     () => results.find((result) => result.key === activeKey) ?? results[0] ?? null,
     [activeKey, results],
   );
+  const rows = active?.rows ?? EMPTY_ROWS;
+  const columns = active?.columns ?? EMPTY_COLUMNS;
+
+  const runCopy = useCallback(
+    async (format: CopyFormat, includeHeaders = false) => {
+      const selection = gridApi.current?.getSelection() ?? EMPTY_SELECTION;
+      if (selection.mode === null) return;
+      const outcome = await copySelectionToClipboard({
+        columns,
+        rows,
+        selection,
+        format,
+        includeHeaders,
+        table: null,
+      });
+      if (!outcome.ok) {
+        notify(false);
+        if (outcome.reason === "too_large") {
+          setNotice(t("选中内容超过复制上限，请改用导出。"));
+        } else if (outcome.reason === "no_target") {
+          setNotice(t("SQL 结果没有可靠的表名与字段信息，无法生成 INSERT。"));
+        } else if (outcome.reason === "unsafe_values") {
+          setNotice(t("选中数据包含截断或二进制字段，无法生成完整的 INSERT。"));
+        }
+        return;
+      }
+      notify(outcome.written);
+      if (!outcome.written) return;
+      if (outcome.partialCells > 0) {
+        setNotice(
+          t(
+            "已复制 {{cells}} 个单元格；其中 {{partial}} 个字段为截断预览或不支持类型，完整内容请查看详情或导出。",
+            { cells: outcome.cells, partial: outcome.partialCells },
+          ),
+        );
+      } else {
+        setNotice(null);
+      }
+    },
+    [columns, notify, rows, t],
+  );
+
+  const openCopyMenu = (event: React.MouseEvent) => {
+    const hasSelection = (gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null;
+    menu.onContextMenu(() =>
+      copyMenuItems({
+        t,
+        hasSelection,
+        canInsert: false,
+        onCopy: (format, includeHeaders) => void runCopy(format, includeHeaders),
+      }),
+    )(event);
+  };
 
   if (!tab) return null;
 
@@ -69,21 +127,8 @@ export function ResultsPanel({
     );
   }
 
-  const rows = active?.rows ?? [];
-  const columns = active?.columns ?? [];
-
   const copySelected = () => {
-    if (!active) return;
-    if (selectedCell) {
-      const value = rows[selectedCell.row]?.[selectedCell.col];
-      if (value) void copy(copyCellText(value));
-      return;
-    }
-    if (selectedRow !== null) {
-      const row = rows[selectedRow];
-      if (!row) return;
-      void copy(row.map(copyCellText).join("\t"));
-    }
+    void runCopy("tsv");
   };
 
   return (
@@ -97,8 +142,6 @@ export function ResultsPanel({
               type="button"
               onClick={() => {
                 setActive(tabId, result.key);
-                setSelectedRow(null);
-                setSelectedCell(null);
               }}
               className={cn(
                 "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
@@ -176,6 +219,15 @@ export function ResultsPanel({
         </div>
       )}
 
+      {notice && (
+        <div className="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
+          <span className="min-w-0 flex-1">{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} aria-label={t("关闭")}>
+            ×
+          </button>
+        </div>
+      )}
+
       {active?.error && (
         <div className="border-b border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
           <div className="flex items-center gap-1.5 font-medium">
@@ -199,17 +251,18 @@ export function ResultsPanel({
       <div className="min-h-0 flex-1">
         {columns.length > 0 ? (
           <VirtualDataGrid
+            apiRef={gridApi}
             columns={columns}
             rows={rows}
-            selectedRow={selectedRow}
-            selectedCell={selectedCell}
-            onSelectRow={setSelectedRow}
-            onSelectCell={setSelectedCell}
-            canResolveRows={canResolveRows}
-            onOpenCell={(cell) => {
+            editable={false}
+            onCopy={({ format }) => void runCopy("tsv", format === "tsv-headers")}
+            onOpenCell={(cell: CellAddress) => {
               const value = rows[cell.row]?.[cell.col];
               if (value) setDetail({ column: columns[cell.col]?.name ?? "", value });
             }}
+            onCellContextMenu={(_cell, event) => openCopyMenu(event)}
+            onRowContextMenu={(_row, event) => openCopyMenu(event)}
+            onColumnContextMenu={(_col, event) => openCopyMenu(event)}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-1 text-12 text-fg-subtle">
@@ -229,6 +282,7 @@ export function ResultsPanel({
       </div>
 
       <CopyNotice status={copyStatus} />
+      <ContextMenu {...menu.props} />
 
       <Modal
         open={detail !== null}

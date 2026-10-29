@@ -182,8 +182,7 @@ export default {
   "Delete {{name}} permanently?": "永久删除 {{name}}？",
   "This cannot be undone — no copy is kept in the recycle bin.": "此操作不可撤销 —— 回收站里不会保留副本。",
   "This cannot be undone — the file is gone for good.": "此操作不可撤销，文件将被彻底删除。",
-  "Deleted files wait here before they are gone for good. Restore anything you still need.":
-    "删除的文件会先放在这里，确认不再需要后再彻底删除。",
+  "Files land here before deletion.": "删除前先放这里。",
   "The recycle bin is empty.": "回收站是空的。",
   "{{count}} items": "{{count}} 项",
   "Empty recycle bin": "清空回收站",
@@ -194,8 +193,7 @@ export default {
 
   // -- 传输任务中心（TransferCenterDialog）--
   Transfers: "传输任务",
-  "Transfers keep running in the background, even if you close this panel.":
-    "关闭面板后，传输仍会在后台继续。",
+  "Closing this panel won't stop transfers.": "关闭面板不会中断传输。",
   "No transfers yet.": "还没有传输任务。",
   "Transferring": "传输中",
   "Skipped (already exists)": "已跳过（同名文件已存在）",

@@ -106,12 +106,16 @@ pub fn plan_from_profile(
     profile: &DatabaseProfile,
     password_override: Option<&str>,
 ) -> Result<EndpointPlan, DbErrorInfo> {
-    if profile.engine != super::model::ENGINE_MYSQL && profile.engine != super::model::ENGINE_REDIS
-    {
+    // MariaDB 与 MySQL 同协议，直接复用 MySQL 驱动；只有真正没有驱动的引擎
+    // 才拒绝。配置仍然保存，等适配后不用重新填。
+    let supported = profile.engine == super::model::ENGINE_MYSQL
+        || profile.engine == super::model::ENGINE_REDIS
+        || profile.engine == "mariadb";
+    if !supported {
         return Err(DbErrorInfo::new(
             "unsupported",
             format!(
-                "{} 适配尚未实现：当前只支持 MySQL 与 Redis（配置已保存，可稍后直接使用）",
+                "{} 适配尚未实现：当前支持 MySQL / MariaDB 与 Redis（配置已保存，可稍后直接使用）",
                 profile.engine
             ),
         ));

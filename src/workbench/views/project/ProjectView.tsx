@@ -235,7 +235,6 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
 
   return (
     <ModuleFrame
-      tab={tab}
       session={session}
       toolbar={
         <Button

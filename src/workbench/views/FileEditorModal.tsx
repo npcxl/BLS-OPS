@@ -25,6 +25,7 @@ import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
 import { useInspectionMode } from "@/stores/inspection-store";
+import { comboFromEvent, useShortcutBindings } from "@/stores/shortcut-store";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -75,6 +76,7 @@ export default function FileEditorModal({
   const viewRef = useRef<EditorView | null>(null);
   // 巡检模式：可以看、可以搜，但不能写回。
   const inspection = useInspectionMode();
+  const shortcutKeys = useShortcutBindings();
 
   useEffect(() => {
     let cancelled = false;
@@ -266,7 +268,7 @@ export default function FileEditorModal({
           <div
             className="relative overflow-hidden rounded-[6px] border border-line"
             onKeyDown={(event) => {
-              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+              if (comboFromEvent(event.nativeEvent) === shortcutKeys.editor_save) {
                 event.preventDefault();
                 void save();
               }
@@ -274,7 +276,7 @@ export default function FileEditorModal({
             // Ctrl+F 必须在捕获阶段拦下：searchKeymap 挂在编辑器 DOM 上，
             // 冒泡阶段拦截时它已经把默认面板打开了。
             onKeyDownCapture={(event) => {
-              if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+              if (comboFromEvent(event.nativeEvent) === shortcutKeys.editor_find) {
                 event.preventDefault();
                 event.stopPropagation();
                 setSearchOpen(true);

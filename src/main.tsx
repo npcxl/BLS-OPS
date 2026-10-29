@@ -1,6 +1,5 @@
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { SettingsWindow } from "@/workbench/SettingsWindow";
 import { ShortcutsWindow } from "@/workbench/ShortcutsWindow";
 import { initTheme } from "@/hooks/use-theme";
 import { initTerminalFont } from "@/workbench/views/terminal/terminal-font";
@@ -37,17 +36,22 @@ window.addEventListener("contextmenu", (event) => {
  * bug worth debugging twice.
  */
 /**
- * `?view=settings` 是独立设置窗口（由 Rust 的 `open_settings_window` 打开）。
- * 同一份前端产物，只渲染设置内容 —— 不重复打包，也不会在第二个窗口里再开
- * 一套工作台。
+ * 独立窗口（快捷键一览）由 Rust 的 `open_shortcuts_window` 创建，视图标识通过
+ * 初始化脚本写成 `window.__BLS_VIEW__`。
+ *
+ * 为什么不用查询参数：`WebviewUrl::App("index.html?view=…")` 在部分平台上
+ * 会被当成路径的一部分，前端读到 `null` 就渲染出一个空窗口。初始化脚本在页面
+ * 脚本之前执行，变量一定存在；查询参数只作为手动打开时的兜底。
  */
-const view = new URLSearchParams(window.location.search).get("view");
+declare global {
+  interface Window {
+    __BLS_VIEW__?: string;
+  }
+}
+
+const view =
+  window.__BLS_VIEW__ ?? new URLSearchParams(window.location.search).get("view") ?? undefined;
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  view === "settings" ? (
-    <SettingsWindow />
-  ) : view === "shortcuts" ? (
-    <ShortcutsWindow />
-  ) : (
-    <App />
-  ),
+  view === "shortcuts" ? <ShortcutsWindow /> : <App />,
 );

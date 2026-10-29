@@ -94,14 +94,12 @@ export function ServerPicker({ tabId }: { tabId: string }) {
 }
 
 export function ModuleFrame({
-  tab,
   session,
   icon,
   toolbar,
   toolbar2,
   children,
 }: {
-  tab: { id: string; title: string; subtitle?: string };
   session: CommandSession;
   /** Optional leading glyph in the header row. Omit for a plain toolbar. */
   icon?: ReactNode | React.ElementType;
@@ -113,12 +111,12 @@ export function ModuleFrame({
 }) {
   const { t } = useTranslation();
   const Glyph = icon as React.ElementType | undefined;
-  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
   if (!session.hasTarget) {
     // The module view is wrapped in `ModuleWithSidebar`, which already shows the
     // server list on the left. A full-screen picker here would just duplicate it,
-    // so we only point the user at the sidebar and let them close a stray tab.
+    // so we only point the user at the sidebar; the tab itself closes from its
+    // own close button.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
         <p className="text-13 text-fg-muted">{t("Pick a server from the left sidebar")}</p>
@@ -127,9 +125,6 @@ export function ModuleFrame({
             "Logs, containers, gateways and other modules run on a specific server. Pick one from the left list to view its content here.",
           )}
         </p>
-        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
-          {t("Close tab")}
-        </Button>
       </div>
     );
   }

@@ -685,8 +685,6 @@ export const opsApi = {
   editorHistoryRead: (path: string, id: string) =>
     invoke<string>("editor_history_read", { path, id }),
 
-  /** 在独立窗口里打开设置（已打开则聚焦，不重复创建）。 */
-  openSettingsWindow: () => invoke<void>("open_settings_window"),
   /** 在独立窗口里打开快捷键一览。 */
   openShortcutsWindow: () => invoke<void>("open_shortcuts_window"),
 

@@ -145,8 +145,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
-            // 设置 / 快捷键独立窗口
-            commands::open_settings_window,
+            // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）
             commands::backup_export,

@@ -33,6 +33,7 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { useInspectionMode } from "@/stores/inspection-store";
+import { comboFromEvent, useShortcutBindings } from "@/stores/shortcut-store";
 import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
 import type { EditorSyncEventPayload } from "@/api/types/editor-sync";
 import { editorSyncEvent } from "@/lib/events";
@@ -155,6 +156,8 @@ function RemoteFilePanelImpl({
   const [transferOpen, setTransferOpen] = useState(false);
   /** 巡检模式（只读）：所有写入口都要过它。 */
   const inspection = useInspectionMode();
+  /** 文件面板的键位也走可自定义的绑定表。 */
+  const shortcutKeys = useShortcutBindings();
 
   /**
    * 巡检模式的统一闸门：写操作先过这里，并说清为什么没执行。
@@ -865,20 +868,21 @@ function RemoteFilePanelImpl({
     // 焦点在编辑框 / 代码编辑器里：按键归它们。不放行的话 Backspace 删不了字，
     // 还会把面板退回上一级 —— 看起来就是"编辑时按退格在回退"。
     if (isEditableTarget(event.target)) return;
-    if (event.key === "Backspace") {
+    const combo = comboFromEvent(event.nativeEvent);
+    if (!combo) return;
+    if (combo === shortcutKeys.file_up) {
       event.preventDefault();
       goUp();
       return;
     }
-    if (event.key === "Enter" && selectedEntry) {
+    if (!selectedEntry) return;
+    if (combo === shortcutKeys.file_open) {
       event.preventDefault();
       openEntry(selectedEntry);
-    }
-    if (event.key === "F2" && selectedEntry) {
+    } else if (combo === shortcutKeys.file_rename) {
       event.preventDefault();
       renameEntry(selectedEntry);
-    }
-    if (event.key === "Delete" && selectedEntry) {
+    } else if (combo === shortcutKeys.file_delete) {
       event.preventDefault();
       removeEntry(selectedEntry);
     }

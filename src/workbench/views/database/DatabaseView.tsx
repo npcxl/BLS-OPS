@@ -37,6 +37,7 @@ import {
   settleQueriesBeforeClose,
   type CloseBatch,
 } from "./close-coordination";
+import { ConnectionDialog } from "./ConnectionDialog";
 import { ConnectionInfoPanel } from "./ConnectionInfoPanel";
 import { DdlPanel } from "./DdlPanel";
 import { listenDetachedSqlEvents } from "./detached-sql";
@@ -55,7 +56,43 @@ function StageBadge({ stage }: { stage: string }) {
   );
 }
 
+/**
+ * 标签入口：草稿标签只渲染连接表单 —— 一个还没保存的连接不该建会话。
+ */
 export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
+  if (tab.draftNewConnection) return <NewConnectionPane tabId={tab.id} />;
+  return <ConnectionWorkspace tab={tab} />;
+}
+
+/**
+ * 「新建连接」标签的内容。
+ *
+ * 保存成功后关掉这张草稿标签并跳到刚保存的连接：用户下一步一定是连上去看库，
+ * 而不是回到一张已填完的空表单。列表按 `updated_at` 排序，新连接自然在最前。
+ */
+function NewConnectionPane({ tabId }: { tabId: string }) {
+  const closeTabById = useWorkbenchStore((state) => state.closeTabById);
+  const openDatabaseTab = useWorkbenchStore((state) => state.openDatabaseTab);
+  return (
+    <ConnectionDialog
+      variant="inline"
+      open
+      profile={null}
+      onClose={() => closeTabById(tabId)}
+      onSaved={(saved) => {
+        closeTabById(tabId);
+        openDatabaseTab({
+          id: saved.id,
+          name: saved.name,
+          host: saved.host,
+          port: saved.port,
+        });
+      }}
+    />
+  );
+}
+
+function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const { t } = useTranslation();
   const profileId = tab.profileId ?? null;
 
@@ -63,6 +100,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   const sessions = useDatabaseStore((state) => state.sessions);
   const sessionErrors = useDatabaseStore((state) => state.sessionErrors);
   const ensureSession = useDatabaseStore((state) => state.ensureSession);
+  const clearSessionError = useDatabaseStore((state) => state.clearSessionError);
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
   const reconnect = useDatabaseStore((state) => state.reconnect);
   const runSessionCommand = useDatabaseStore((state) => state.runSessionCommand);
@@ -70,6 +108,10 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
 
   const items = useDatabaseWorkspaceStore((state) => state.items);
   const activeId = useDatabaseWorkspaceStore((state) => state.activeId);
+  const closeRequest = useDatabaseWorkspaceStore((state) => state.closeRequest);
+  const consumeCloseRequest = useDatabaseWorkspaceStore(
+    (state) => state.consumeCloseRequest,
+  );
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const closeItem = useDatabaseWorkspaceStore((state) => state.close);
   const rightCollapsed = useDatabaseWorkspaceStore((state) => state.rightCollapsed);
@@ -262,6 +304,22 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
     closeItem(latest.id);
   };
 
+  // 快捷键 / 命令面板投递的关闭请求：交给本连接的事务安全协调器处理。
+  // 只认属于当前连接的请求，多个数据库标签不会互相误关。
+  useEffect(() => {
+    if (!closeRequest || closeRequest.profileId !== profileId) return;
+    const item = items.find((entry) => entry.id === closeRequest.id);
+    const mode = closeRequest.mode;
+    consumeCloseRequest(closeRequest.id);
+    if (!item) return;
+    // 两种模式都走同一套风险检查，只是目标集合不同。
+    if (mode === "right") requestCloseRight(item);
+    else requestClose(item);
+    // requestClose 每次渲染都是新闭包，进依赖会让 effect 反复触发；
+    // 它只读取最新的 items/sessions，这里的闭包值已经足够。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeRequest, consumeCloseRequest, items, profileId]);
+
   /** 批量关闭也必须走协调器，不能直接过滤 items。 */
   const requestCloseOthers = (item: WorkItem) => {
     // “关闭其他”针对右侧列表里的全部项目，不只当前连接。
@@ -375,9 +433,6 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
         <p className="max-w-sm text-center text-11 leading-relaxed text-fg-subtle">
           {t("双击左侧表打开数据页；每个连接的工作项和查询都独立保存。")}
         </p>
-        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
-          {t("关闭标签")}
-        </Button>
       </div>
     );
   }
@@ -498,13 +553,25 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
       )}
 
       {!session && sessionError && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
+        <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
           <StageBadge stage={sessionError.stage} />
-          <span className="min-w-0 flex-1 truncate" title={sessionError.detail ?? sessionError.message}>
-            {sessionError.message}
-          </span>
+          <div className="min-w-0 flex-1">
+            <p className="break-words leading-relaxed">{sessionError.message}</p>
+            {sessionError.detail && (
+              <p className="mt-0.5 break-words text-10 text-fg-subtle">{sessionError.detail}</p>
+            )}
+          </div>
           <Button variant="ghost" size="xs" onClick={() => void ensureSession(profileId)}>
             {t("重试")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="shrink-0"
+            aria-label={t("关闭")}
+            onClick={() => clearSessionError(profileId)}
+          >
+            <X size={11} />
           </Button>
         </div>
       )}

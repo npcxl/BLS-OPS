@@ -23,6 +23,7 @@ import {
   Table2,
   Trash2,
   TriangleAlert,
+  X,
 } from "@/components/icons";
 import type {
   DatabaseProfile,
@@ -34,6 +35,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MacSearchField } from "@/components/ui/mac-controls";
+import { pushToast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -41,6 +43,7 @@ import {
   categoryKey,
   detailKey,
   tablesKey,
+  toDbError,
   useDatabaseStore,
 } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
@@ -203,9 +206,12 @@ function ErrorRow({
   error,
   onRetry,
   level,
+  onDismiss,
 }: {
   error: DbErrorInfo;
   onRetry: () => void;
+  /** 常驻的错误行必须关得掉，否则树里一直挂着一条红字。 */
+  onDismiss?: () => void;
   level: number;
 }) {
   const { t } = useTranslation();
@@ -215,7 +221,12 @@ function ErrorRow({
       style={indent(level)}
     >
       <TriangleAlert size={14} className="mt-0.5 shrink-0" />
-      <span className="min-w-0 flex-1 break-words">{error.message}</span>
+      <div className="min-w-0 flex-1">
+        <p className="break-words">{error.message}</p>
+        {error.detail && (
+          <p className="mt-0.5 break-words text-11 text-fg-subtle">{error.detail}</p>
+        )}
+      </div>
       <Button
         variant="ghost"
         size="xs"
@@ -227,6 +238,20 @@ function ErrorRow({
       >
         {t("重试")}
       </Button>
+      {onDismiss && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-auto shrink-0 px-1"
+          aria-label={t("关闭")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDismiss();
+          }}
+        >
+          <X size={11} />
+        </Button>
+      )}
     </div>
   );
 }
@@ -243,6 +268,7 @@ const ProfileRow = memo(function ProfileRow({
   profile,
   expanded,
   connected,
+  connecting,
   error,
   query,
   selected,
@@ -259,6 +285,8 @@ const ProfileRow = memo(function ProfileRow({
   profile: DatabaseProfile;
   expanded: boolean;
   connected: boolean;
+  /** Redis 建连进行中：按钮显示转圈，且不接受第二次点击。 */
+  connecting: boolean;
   error: DbErrorInfo | null;
   query: string;
   selected: boolean;
@@ -325,13 +353,18 @@ const ProfileRow = memo(function ProfileRow({
           size="xs"
           className="hidden h-5 w-5 shrink-0 px-0 group-hover:flex"
           aria-label={connected ? t("关闭连接") : t("打开连接")}
+          disabled={connecting}
           onClick={(event) => {
             event.stopPropagation();
             if (connected) onDisconnect();
             else onConnect();
           }}
         >
-          <PlugZap size={12} className={connected ? "text-fg" : "text-fg-subtle"} />
+          {connecting ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <PlugZap size={12} className={connected ? "text-fg" : "text-fg-subtle"} />
+          )}
         </Button>
       </Tooltip>
       <Tooltip label={t("刷新")} side="left">
@@ -376,7 +409,11 @@ const ProfileRow = memo(function ProfileRow({
           <Trash2 size={12} />
         </Button>
       </Tooltip>
-      {error && <TriangleAlert size={12} className="shrink-0 text-danger" />}
+      {error && (
+        <Tooltip label={error.message} side="left">
+          <TriangleAlert size={12} className="shrink-0 text-danger" />
+        </Tooltip>
+      )}
     </div>
   );
 });
@@ -399,10 +436,14 @@ export function DatabaseAssetSidebar() {
   const loading = useDatabaseStore((state) => state.loading);
   const errors = useDatabaseStore((state) => state.errors);
   const sessions = useDatabaseStore((state) => state.sessions);
+  const sessionErrors = useDatabaseStore((state) => state.sessionErrors);
 
   const refreshProfiles = useDatabaseStore((state) => state.refreshProfiles);
   const toggleProfile = useDatabaseStore((state) => state.toggleProfile);
   const redisConnect = useDatabaseStore((state) => state.redisConnect);
+  const redisConnecting = useDatabaseStore((state) => state.redisConnecting);
+  const redisReconnect = useDatabaseStore((state) => state.redisReconnect);
+  const clearSessionError = useDatabaseStore((state) => state.clearSessionError);
   const toggleDatabase = useDatabaseStore((state) => state.toggleDatabase);
   const toggleTable = useDatabaseStore((state) => state.toggleTable);
   const toggleCategory = useDatabaseStore((state) => state.toggleCategory);
@@ -412,6 +453,8 @@ export function DatabaseAssetSidebar() {
   const deleteProfile = useDatabaseStore((state) => state.deleteProfile);
 
   const openDatabaseTab = useWorkbenchStore((state) => state.openDatabaseTab);
+  // 新建连接走标签页（不再弹窗）：表单填完直接落在数据库列表里。
+  const openNewConnectionTab = useWorkbenchStore((state) => state.openNewConnectionTab);
   const closeTabById = useWorkbenchStore((state) => state.closeTabById);
   const rootPane = useWorkbenchStore((state) => state.rootPane);
   const setSidebarCollapsed = useWorkbenchStore(
@@ -640,12 +683,26 @@ export function DatabaseAssetSidebar() {
     };
     walk(rootPane);
     for (const id of ids) closeTabById(id);
-    await deleteProfile(profile.id);
+    try {
+      await deleteProfile(profile.id);
+    } catch (failure) {
+      // 删配置失败以前是没人接的 promise rejection：界面毫无反应。
+      const info = toDbError(failure);
+      pushToast(info.message, "error", {
+        title: t("{{name}} · 删除失败", { name: profile.name }),
+        label: info.stage,
+        detail: info.detail ?? undefined,
+        persist: true,
+      });
+    }
   };
 
   const connectionMenu = (profile: DatabaseProfile) => {
-    const connected = !!sessions[profile.id];
     const isRedis = profile.engine === "redis";
+    // Redis 没有 SQL 会话，连接与否只看 Rust 运行时状态（statuses）。
+    const connected = isRedis
+      ? !!statuses[profile.id]?.connected
+      : !!sessions[profile.id];
     return [
       {
         id: "open",
@@ -662,7 +719,8 @@ export function DatabaseAssetSidebar() {
             id: "reconnect",
             label: t("重新连接"),
             onSelect: () => {
-              if (isRedis) void redisConnect(profile.id);
+              // Redis 的 db_redis_connect 会复用已有运行时，重连必须先关掉旧的。
+              if (isRedis) void redisReconnect(profile.id);
               else void reconnect(profile.id);
             },
           },
@@ -675,11 +733,17 @@ export function DatabaseAssetSidebar() {
           },
         ]
         : []),
-      {
-        id: "info",
-        label: t("连接信息"),
-        onSelect: () => showConnectionInfo(profile.id),
-      },
+      // Redis 标签整块是键浏览器，没有可挂连接信息面板的右侧区域，
+      // 留一个点了没反应的菜单项比不给更糟。
+      ...(isRedis
+        ? []
+        : [
+            {
+              id: "info",
+              label: t("连接信息"),
+              onSelect: () => showConnectionInfo(profile.id),
+            },
+          ]),
       // Redis 没有 SQL 查询与库/表目录：新建查询、新建库、刷新库列表只对 SQL 引擎出现。
       ...(isRedis
         ? []
@@ -928,7 +992,7 @@ export function DatabaseAssetSidebar() {
               size="xs"
               className="h-5 w-5 px-0"
               aria-label={t("新建连接")}
-              onClick={() => setDialog({ mode: "create" })}
+              onClick={() => openNewConnectionTab()}
             >
               <Plus size={12} />
             </Button>
@@ -959,36 +1023,51 @@ export function DatabaseAssetSidebar() {
         )}
 
         {visibleProfiles.map((profile) => {
+          const isRedis = profile.engine === "redis";
           const profileOpen = !!expandedProfiles[profile.id];
           const profileDatabases = databases[profile.id] ?? [];
           const profileLoading = loading[profile.id];
           const profileLoadError = errors[profile.id] ?? null;
+          // Redis 的连接状态只认 statuses（它根本没有 SQL 会话）；
+          // SQL 引擎保留会话兜底，避免状态回读慢时绿灯闪一下。
+          const profileConnected = isRedis
+            ? !!statuses[profile.id]?.connected
+            : (statuses[profile.id]?.connected ?? !!sessions[profile.id]);
+          // Redis 建连失败必须在树里看得见，不能只躺在 sessionErrors 里。
+          const profileSessionError = isRedis
+            ? (sessionErrors[profile.id] ?? null)
+            : null;
           return (
             <div key={profile.id}>
               <ProfileRow
                 profile={profile}
                 expanded={profileOpen}
-                connected={
-                  statuses[profile.id]?.connected ?? !!sessions[profile.id]
-                }
-                error={profileLoadError}
+                connected={profileConnected}
+                connecting={isRedis && !!redisConnecting[profile.id]}
+                error={profileSessionError ?? profileLoadError}
                 query={filter}
                 selected={selectedKey === `conn:${profile.id}`}
                 onSelect={() => setSelectedKey(`conn:${profile.id}`)}
                 onToggle={() => void toggleProfile(profile.id)}
                 onOpen={() => {
                   open(profile);
-                  showConnectionInfo(profile.id);
+                  // Redis 标签整块是键浏览器：双击就是"打开并连接"。
+                  if (isRedis) void redisConnect(profile.id);
+                  else showConnectionInfo(profile.id);
                 }}
                 onEdit={() => setDialog({ mode: "edit", profile })}
                 onDelete={() => setDeleteTarget(profile)}
                 onRefresh={() => {
                   open(profile);
-                  void refreshDatabases(profile.id);
+                  // Redis 没有库/表目录，"刷新"只回读连接状态。
+                  if (isRedis) void refreshStatus(profile.id);
+                  else void refreshDatabases(profile.id);
                 }}
                 onConnect={() => {
                   open(profile);
-                  void ensureSession(profile.id);
+                  // Redis 只能走 db_redis_connect：db_connect 只接受 SQL 引擎。
+                  if (isRedis) void redisConnect(profile.id);
+                  else void ensureSession(profile.id);
                 }}
                 onDisconnect={() => setDisconnectTarget(profile)}
                 onContextMenu={(event) =>
@@ -1000,6 +1079,15 @@ export function DatabaseAssetSidebar() {
                 <ErrorRow
                   error={profileLoadError}
                   onRetry={() => void refreshDatabases(profile.id)}
+                  level={1}
+                />
+              )}
+              {/* Redis 建连失败：展开连接时把原话贴出来，而不是只留一个红三角。 */}
+              {profileOpen && profileSessionError && (
+                <ErrorRow
+                  error={profileSessionError}
+                  onRetry={() => void redisConnect(profile.id)}
+                  onDismiss={() => clearSessionError(profile.id)}
                   level={1}
                 />
               )}
@@ -1519,6 +1607,11 @@ export function DatabaseAssetSidebar() {
           // 已经展开的不要因为保存再收起（toggle 会翻转）。
           if (!useDatabaseStore.getState().expandedProfiles[saved.id]) {
             void toggleProfile(saved.id);
+          }
+          // 改过配置的 Redis 连接：Rust 侧运行时还握着旧主机/密码/TLS，
+          // 不重建会继续连旧配置（db_redis_connect 只会复用运行时）。
+          if (dialog?.mode === "edit" && saved.engine === "redis") {
+            void redisReconnect(saved.id);
           }
         }}
       />

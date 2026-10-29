@@ -174,7 +174,6 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
 
   return (
     <ModuleFrame
-      tab={tab}
       session={session}
       toolbar={
         <>

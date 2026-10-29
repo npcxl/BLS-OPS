@@ -106,11 +106,9 @@ export default {
 
   // -- 生产环境保护（巡检模式 / 环境标记）--
   Safety: "安全",
-  "Read-only inside the app. A free shell still follows your server account's permissions.":
-    "只读范围限于应用内；终端里仍按服务器账号的权限执行。",
+  "Read-only inside the app.": "仅限制应用内操作。",
   "Inspection mode (read-only)": "巡检模式（只读）",
-  "Turns off uploads, edits, deletes and service changes inside the app.":
-    "开启后，应用内的上传、编辑、删除与服务变更都不可用。",
+  "Disables writes and service changes.": "禁用写入与服务变更。",
   "Not specified": "未标记",
   Production: "生产",
   Staging: "预发",
@@ -122,8 +120,7 @@ export default {
 
   // -- 快捷键一览（settings-shortcuts）--
   "Keyboard shortcuts": "快捷键",
-  "Every shortcut in the app, grouped by where you use it.":
-    "按使用场景分组，查阅应用内全部快捷键。",
+  "All shortcuts, grouped by context.": "按场景分组。",
   Workspace: "工作台",
   Editors: "编辑器",
   "SQL workspace": "SQL 工作区",
@@ -176,4 +173,11 @@ export default {
   "Move through the asset tree": "在资产树中移动",
   "Open the focused tree entry": "打开当前条目",
   "Select the focused tree entry": "选中当前条目",
+
+  // -- 自定义快捷键（settings-shortcuts）--
+  "Change shortcut": "修改快捷键",
+  Reset: "恢复默认",
+  "Press the new combination… (Esc cancels, Backspace clears)":
+    "按下新的组合键…（Esc 取消，Backspace 清除）",
+  "Not set": "未设置",
 } as const;

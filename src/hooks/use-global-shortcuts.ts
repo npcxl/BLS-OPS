@@ -1,107 +1,102 @@
 import { useEffect } from "react";
-import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
+import {
+  comboFromEvent,
+  useShortcutBindings,
+  type ShortcutActionId,
+} from "@/stores/shortcut-store";
+import { useWorkbenchStore } from "@/stores/workbench-store";
 
 /**
- * Global keyboard shortcuts — spec §26.
+ * 全局快捷键 —— 键位来自 `shortcut-store`，用户可以在设置里改或关掉。
  *
- * Ctrl + K       Command Palette
- * Ctrl + Shift + P  Action Palette
- * Ctrl + T       New SSH Tab
- * Ctrl + Shift + T  Reopen Session
- * Ctrl + W       Close Tab
- * Ctrl + \        Split
- * Ctrl + J       AI Panel
- * Ctrl + B       Sidebar
- * Ctrl + `       Terminal
+ * 默认：
+ * Ctrl + K          命令面板
+ * Ctrl + Shift + P  命令面板（动作）
+ * Ctrl + T          新建终端标签
+ * Ctrl + Shift + T  重开最近一次会话
+ * Ctrl + W          关闭当前标签
+ * Ctrl + \          垂直分屏
+ * Ctrl + J          AI 模块
+ * Ctrl + B          折叠 / 展开侧栏
+ * Ctrl + `          新建终端
+ *
+ * 输入框里只认命令面板类动作：用户正在打字时按 Ctrl+B 不该把侧栏收起来。
  */
 export function useGlobalShortcuts() {
-  const setCommandPaletteOpen = useWorkbenchStore((s) => s.setCommandPaletteOpen);
-  const toggleSidebar = useWorkbenchStore((s) => s.toggleSidebar);
-  const openTab = useWorkbenchStore((s) => s.openTab);
-  const closeTab = useWorkbenchStore((s) => s.closeTab);
-  const focusedPaneId = useWorkbenchStore((s) => s.focusedPaneId);
-  const rootPane = useWorkbenchStore((s) => s.rootPane);
+  const bindings = useShortcutBindings();
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        if (e.key === "k" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-          e.preventDefault();
-          setCommandPaletteOpen(true);
-        }
-        return;
-      }
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 输入法组合中不抢键。
+      if (event.isComposing) return;
+      const combo = comboFromEvent(event);
+      if (!combo) return;
 
-      const ctrl = e.ctrlKey || e.metaKey;
-      const shift = e.shiftKey;
+      const id = (Object.keys(bindings) as ShortcutActionId[]).find(
+        (action) => bindings[action] === combo,
+      );
+      if (!id) return;
 
-      if (ctrl && !shift && e.key === "k") {
-        e.preventDefault();
-        setCommandPaletteOpen(true);
-      }
+      const target = event.target;
+      const inEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (inEditable && id !== "command_palette" && id !== "action_palette") return;
 
-      if (ctrl && shift && e.key === "P") {
-        e.preventDefault();
-        setCommandPaletteOpen(true);
-      }
-
-      if (ctrl && !shift && e.key === "t") {
-        e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" });
-      }
-
-      if (ctrl && shift && e.key === "T") {
-        e.preventDefault();
-        // Reopen the most recent session recorded in SQLite.
-        const last = useDomainStore.getState().sessions.find((session) => session.server_id);
-        if (!last) return;
-        openTab({
-          id: crypto.randomUUID(),
-          type: "terminal",
-          title: last.server_name,
-          subtitle: `${last.server_host}:${last.server_port}`,
-          serverId: last.server_id,
-          sessionId: crypto.randomUUID(),
-        });
-      }
-
-      if (ctrl && !shift && e.key === "w") {
-        e.preventDefault();
-        if (focusedPaneId) {
-          const pane = findPane(rootPane, focusedPaneId);
-          if (pane && pane.activeTabId) {
-            closeTab(focusedPaneId, pane.activeTabId);
-          }
-        }
-      }
-
-      if (ctrl && !shift && e.key === "\\") {
-        e.preventDefault();
-        if (focusedPaneId) {
-          useWorkbenchStore.getState().splitPane(focusedPaneId, "vertical");
-        }
-      }
-
-      if (ctrl && !shift && e.key === "j") {
-        e.preventDefault();
-        useWorkbenchStore.getState().openModuleTab("ai");
-      }
-
-      if (ctrl && !shift && e.key === "b") {
-        e.preventDefault();
-        toggleSidebar();
-      }
-
-      if (ctrl && !shift && e.key === "`") {
-        e.preventDefault();
-        openTab({ id: crypto.randomUUID(), type: "terminal", title: "Terminal" });
-      }
+      event.preventDefault();
+      runShortcut(id);
     };
-
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [setCommandPaletteOpen, toggleSidebar, openTab, closeTab, focusedPaneId, rootPane]);
+  }, [bindings]);
+}
+
+function runShortcut(id: ShortcutActionId): void {
+  const workbench = useWorkbenchStore.getState();
+  switch (id) {
+    case "command_palette":
+    case "action_palette":
+      workbench.setCommandPaletteOpen(true);
+      return;
+    case "new_terminal":
+      workbench.openTab({ id: crypto.randomUUID(), type: "terminal", title: "New Terminal" });
+      return;
+    case "new_terminal_tab":
+      workbench.openTab({ id: crypto.randomUUID(), type: "terminal", title: "Terminal" });
+      return;
+    case "reopen_session": {
+      // 重开最近一次连接过的服务器（会话记录来自 SQLite）。
+      const last = useDomainStore.getState().sessions.find((session) => session.server_id);
+      if (!last) return;
+      workbench.openTab({
+        id: crypto.randomUUID(),
+        type: "terminal",
+        title: last.server_name,
+        subtitle: `${last.server_host}:${last.server_port}`,
+        serverId: last.server_id,
+        sessionId: crypto.randomUUID(),
+      });
+      return;
+    }
+    case "close_tab": {
+      const paneId = workbench.focusedPaneId;
+      if (!paneId) return;
+      const pane = findPane(workbench.rootPane, paneId);
+      if (pane?.activeTabId) workbench.closeTab(paneId, pane.activeTabId);
+      return;
+    }
+    case "split_pane":
+      if (workbench.focusedPaneId) workbench.splitPane(workbench.focusedPaneId, "vertical");
+      return;
+    case "ai_panel":
+      workbench.openModuleTab("ai");
+      return;
+    case "toggle_sidebar":
+      workbench.toggleSidebar();
+      return;
+  }
 }
 
 function findPane(root: any, id: string): any {

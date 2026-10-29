@@ -24,6 +24,7 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { pushToast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { databaseApi } from "@/api/ops-api";
@@ -40,6 +41,22 @@ import { toDbError, useDatabaseStore } from "@/stores/database-store";
 
 /** 前端累计键数上限：持续翻页不设限会一直涨内存（10 万行 ≈ 30 MB）。 */
 const MAX_SCAN_KEYS = 5_000;
+
+/**
+ * 键浏览器里的操作失败：弹到顶部 alert（带阶段 + 后端原文）。
+ *
+ * 以前是顶栏下方一条 11px 红字，滚一下就看不见了。这类错误用户能自己重试，
+ * 所以不常驻（8s 自动消失，仍然可以手动关）。
+ */
+function alertRedisFailure(failure: unknown, title: string): void {
+  const info = toDbError(failure);
+  pushToast(info.message, "error", {
+    title,
+    label: info.stage,
+    detail: info.detail ?? undefined,
+    persist: false,
+  });
+}
 
 /** 与后端 `SET_PAGE_MAX` 对齐：SSCAN 单页最多 500 个成员。 */
 const SET_PAGE_SIZE = 500;
@@ -85,8 +102,14 @@ export function RedisBrowser({
   const { t } = useTranslation();
   const status = useDatabaseStore((state) => state.statuses[profile.id]);
   const sessionError = useDatabaseStore((state) => state.sessionErrors[profile.id]);
+  const connecting = useDatabaseStore(
+    (state) => !!state.redisConnecting[profile.id],
+  );
   const redisConnect = useDatabaseStore((state) => state.redisConnect);
+  const redisReconnect = useDatabaseStore((state) => state.redisReconnect);
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
+  /** Redis 的连接状态唯一来源：Rust 运行时状态，绝不看 SQL 会话。 */
+  const connected = !!status?.connected;
 
   const [dbIndex, setDbIndex] = useState(() => {
     const parsed = Number(profile.default_database ?? "0");
@@ -97,7 +120,6 @@ export function RedisBrowser({
   const [cursor, setCursor] = useState(0);
   const [dbsize, setDbsize] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // SCAN 竞态守卫：递增序号标识"最新一次扫描"。晚到的旧响应直接丢弃，
   // 否则旧结果会覆盖新结果（cursor 回退）或把同一批键 append 两次（重复键）。
@@ -116,10 +138,23 @@ export function RedisBrowser({
 
   const writable = !profile.read_only;
 
-  // 首次挂载：未连接就自动建连。
+  /*
+   * 首次挂载：先回读运行时状态，确认没连上才建连。
+   *
+   * 不能拿挂载瞬间的 statuses 判断 —— 侧栏刚点过"打开连接"时状态可能还没
+   * 写回，那样会再发一条 db_redis_connect。store 里还有 in-flight 去重兜底。
+   */
   useEffect(() => {
-    if (!status?.connected) void redisConnect(profile.id);
-    void refreshStatus(profile.id);
+    let cancelled = false;
+    void (async () => {
+      await refreshStatus(profile.id);
+      if (cancelled) return;
+      if (useDatabaseStore.getState().statuses[profile.id]?.connected) return;
+      await redisConnect(profile.id);
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.id]);
 
@@ -127,7 +162,6 @@ export function RedisBrowser({
     async (reset: boolean) => {
       const seq = ++scanSeqRef.current;
       setScanning(true);
-      setError(null);
       try {
         const page = await databaseApi.redisScan(
           profile.id,
@@ -151,30 +185,31 @@ export function RedisBrowser({
         setCursor(page.cursor);
         setDbsize(page.dbsize);
       } catch (failure) {
-        if (seq === scanSeqRef.current) setError(toDbError(failure).message);
+        if (seq === scanSeqRef.current) alertRedisFailure(failure, t("扫描失败"));
       } finally {
         // 只有最新请求有权解除扫描态，避免旧请求提前解除。
         if (seq === scanSeqRef.current) setScanning(false);
       }
     },
-    [profile.id, dbIndex, pattern, cursor],
+    [profile.id, dbIndex, pattern, cursor, t],
   );
 
-  // db 或模式变化：从头扫一页。
+  // db 或模式变化：从头扫一页。没连上时绝不发 SCAN，否则只会拿到
+  // "Redis 连接尚未建立"这种没意义的报错。
   useEffect(() => {
+    if (!connected) return;
     void runScan(true);
     setSelectedKey(null);
     setKeyInfo(null);
     setPayload(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.id, dbIndex, status?.connected]);
+  }, [profile.id, dbIndex, connected]);
 
   const loadKey = useCallback(
     async (key: string, full = false) => {
       const seq = ++keySeqRef.current;
       setSelectedKey(key);
       setLoadingValue(true);
-      setError(null);
       try {
         const [info, value] = await Promise.all([
           databaseApi.redisKeyInfo(profile.id, dbIndex, key),
@@ -187,30 +222,29 @@ export function RedisBrowser({
         setPayload(value);
       } catch (failure) {
         if (seq !== keySeqRef.current) return;
-        setError(toDbError(failure).message);
+        alertRedisFailure(failure, t("读取键失败"));
         setKeyInfo(null);
         setPayload(null);
       } finally {
         if (seq === keySeqRef.current) setLoadingValue(false);
       }
     },
-    [profile.id, dbIndex],
+    [profile.id, dbIndex, t],
   );
 
   /** 写操作统一包装：成功后重读当前键 + 刷新列表 TTL/存在性。 */
   const mutate = useCallback(
     async (action: () => Promise<void>, successNotice?: string) => {
-      setError(null);
       try {
         await action();
         if (successNotice) setNotice(successNotice);
         if (selectedKey) await loadKey(selectedKey);
         void runScan(true);
       } catch (failure) {
-        setError(toDbError(failure).message);
+        alertRedisFailure(failure, t("操作失败"));
       }
     },
-    [selectedKey, loadKey, runScan],
+    [selectedKey, loadKey, runScan, t],
   );
 
   return (
@@ -223,10 +257,16 @@ export function RedisBrowser({
         <span
           className={cn(
             "h-1.5 w-1.5 shrink-0 rounded-full",
-            status?.connected ? "bg-success" : sessionError ? "bg-danger" : "bg-warning",
+            connected
+              ? "bg-success"
+              : sessionError
+                ? "bg-danger"
+                : connecting
+                  ? "bg-warning"
+                  : "bg-fg-subtle/40",
           )}
         />
-        {status?.connected && status.server_version && (
+        {connected && status.server_version && (
           <span className="shrink-0 text-11 text-fg-subtle">
             Redis {status.server_version}
           </span>
@@ -258,15 +298,21 @@ export function RedisBrowser({
             </Button>
           </Tooltip>
         )}
-        <Tooltip label={t("刷新")} side="bottom">
+        <Tooltip label={connected ? t("刷新") : t("重新连接")} side="bottom">
           <Button
             variant="ghost"
             size="xs"
             className="h-5 w-5 px-0"
-            aria-label={t("刷新")}
-            onClick={() => void runScan(true)}
+            aria-label={connected ? t("刷新") : t("重新连接")}
+            disabled={connecting}
+            onClick={() =>
+              void (connected ? runScan(true) : redisReconnect(profile.id))
+            }
           >
-            <RefreshCw size={11} className={cn(scanning && "animate-spin")} />
+            <RefreshCw
+              size={11}
+              className={cn((scanning || connecting) && "animate-spin")}
+            />
           </Button>
         </Tooltip>
       </div>
@@ -293,7 +339,12 @@ export function RedisBrowser({
           placeholder={t("键名模式，例如 user:* 或 session:*")}
           aria-label={t("键名模式")}
         />
-        <Button variant="secondary" size="xs" disabled={scanning} onClick={() => void runScan(true)}>
+        <Button
+          variant="secondary"
+          size="xs"
+          disabled={scanning || !connected}
+          onClick={() => void runScan(true)}
+        >
           {scanning ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
           {t("扫描")}
         </Button>
@@ -322,22 +373,43 @@ export function RedisBrowser({
         )}
       </div>
 
-      {error && (
-        <div className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
-          <TriangleAlert size={12} className="shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{error}</span>
-          <button className="shrink-0" onClick={() => setError(null)} aria-label={t("关闭")}>
-            <X size={11} />
-          </button>
+      {/* 连接/扫描错误统一走顶部 alert（ToastHost），这里只留内容区的空态说明。 */}
+      {!connected ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6">
+          {connecting ? (
+            <>
+              <Loader2 size={18} className="animate-spin text-fg-subtle" />
+              <p className="text-12 text-fg-subtle">
+                {t("正在连接 {{name}}…", { name: profile.name })}
+              </p>
+            </>
+          ) : (
+            <>
+              <TriangleAlert
+                size={18}
+                className={sessionError ? "text-danger" : "text-fg-subtle"}
+              />
+              <p className="max-w-md text-center text-12 leading-relaxed text-fg-muted">
+                {sessionError?.message ?? t("连接已关闭，未连接到 Redis。")}
+              </p>
+              {sessionError?.detail && (
+                <p className="max-w-md break-words text-center text-11 text-fg-subtle">
+                  {sessionError.detail}
+                </p>
+              )}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void redisReconnect(profile.id)}
+              >
+                <RefreshCw size={12} />
+                {t("重新连接")}
+              </Button>
+            </>
+          )}
         </div>
-      )}
-      {sessionError && !error && (
-        <div className="border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
-          {sessionError.message}
-        </div>
-      )}
-
-      <div className="flex min-h-0 flex-1">
+      ) : (
+        <div className="flex min-h-0 flex-1">
         {/* 键列表 */}
         <div className="flex w-[280px] shrink-0 flex-col border-r border-line">
           <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
@@ -423,7 +495,8 @@ export function RedisBrowser({
             />
           )}
         </div>
-      </div>
+        </div>
+      )}
 
       {pubsubOpen && writable && (
         <PubSubPanel

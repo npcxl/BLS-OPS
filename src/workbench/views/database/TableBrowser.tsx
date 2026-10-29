@@ -63,6 +63,7 @@ import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
+import { useScopedShortcut } from "./shortcuts";
 import { TableStructure } from "./TableStructure";
 import {
   estimateRowsBytes,
@@ -1364,21 +1365,18 @@ export function TableBrowser({
       .join("\n");
   }, [database, detail?.reliable_key, pending, table]);
 
-  // 表格数据也支持 Ctrl+S 提交暂存修改，和结构编辑保持一致。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        (event.ctrlKey || event.metaKey) &&
-        event.key.toLowerCase() === "s" &&
-        pending.length > 0
-      ) {
-        event.preventDefault();
-        if (!submitting) void submit();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pending.length, submit, submitting]);
+  // Ctrl+S 提交暂存修改：只在当前工作项活动时装监听 ——
+  // 隐藏的表页（切走但常驻）不能抢这个快捷键，否则会提交到看不见的表上。
+  useScopedShortcut({
+    key: "s",
+    ctrl: true,
+    enabled: active && pending.length > 0,
+    // 正在单元格里打字时也要能保存。
+    allowInInput: true,
+    run: () => {
+      if (!submitting) void submit();
+    },
+  });
 
   const sortBy = (column: { name: string }) => {
     const current = sorts[0];

@@ -107,11 +107,9 @@ export default {
 
   // -- 生產環境保護（巡檢模式 / 環境標記）--
   Safety: "安全",
-  "Read-only inside the app. A free shell still follows your server account's permissions.":
-    "唯讀範圍限於應用程式內；終端機裡仍依伺服器帳號的權限執行。",
+  "Read-only inside the app.": "僅限制應用程式內操作。",
   "Inspection mode (read-only)": "巡檢模式（唯讀）",
-  "Turns off uploads, edits, deletes and service changes inside the app.":
-    "開啟後，應用程式內的上傳、編輯、刪除與服務變更都無法使用。",
+  "Disables writes and service changes.": "停用寫入與服務變更。",
   "Not specified": "未標記",
   Production: "生產",
   Staging: "預發",
@@ -123,8 +121,7 @@ export default {
 
   // -- 快捷鍵一覽（settings-shortcuts）--
   "Keyboard shortcuts": "快速鍵",
-  "Every shortcut in the app, grouped by where you use it.":
-    "依使用情境分組，查閱應用程式內全部快速鍵。",
+  "All shortcuts, grouped by context.": "依情境分組。",
   Workspace: "工作台",
   Editors: "編輯器",
   "SQL workspace": "SQL 工作區",
@@ -177,4 +174,11 @@ export default {
   "Move through the asset tree": "在資產樹中移動",
   "Open the focused tree entry": "開啟目前項目",
   "Select the focused tree entry": "選取目前項目",
+
+  // -- 自訂快速鍵（settings-shortcuts）--
+  "Change shortcut": "修改快速鍵",
+  Reset: "恢復預設",
+  "Press the new combination… (Esc cancels, Backspace clears)":
+    "按下新的組合鍵…（Esc 取消，Backspace 清除）",
+  "Not set": "未設定",
 } as const;

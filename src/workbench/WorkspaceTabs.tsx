@@ -42,24 +42,33 @@ const MODULE_ICONS: Record<NavModule, TabIcon> = {
   settings: GearIcon,
 };
 
-function tabIcon(tab: WorkspaceTab): TabIcon {
-  const byType: Partial<Record<WorkspaceTabType, TabIcon>> = {
-    home: House,
-    terminal: TerminalIcon,
-    server: Server,
-    // 监控不在左侧菜单里，用 lucide Activity。
-    monitor: Activity,
-    service: WorldIcon,
-    logs: FileDescriptionIcon,
-    project: Stack3Icon,
-    command_center: CommandCenterIcon,
-    workflow: UnorderedListIcon,
-    deployment: RocketIcon,
-  };
+/**
+ * 每种标签页的图标。用 `Record` 而不是 `Partial` + 兜底：
+ * 新增 tab 类型时这里漏配会直接编译失败，而不是静默回退成终端图标
+ * （数据库标签就曾因此显示成 `>_`）。
+ */
+const TAB_ICONS: Record<WorkspaceTabType, TabIcon> = {
+  home: House,
+  // `module` 真实图标由 `tab.module` 决定，这里只是缺省值。
+  module: GearIcon,
+  terminal: TerminalIcon,
+  server: Server,
+  // 监控不在左侧菜单里，用 lucide Activity。
+  monitor: Activity,
+  service: WorldIcon,
+  logs: FileDescriptionIcon,
+  project: Stack3Icon,
+  command_center: CommandCenterIcon,
+  workflow: UnorderedListIcon,
+  deployment: RocketIcon,
+  database: Table2,
+};
+
+export function tabIcon(tab: WorkspaceTab): TabIcon {
   if (tab.type === "module") {
     return tab.module ? MODULE_ICONS[tab.module] : GearIcon;
   }
-  return byType[tab.type] ?? TerminalIcon;
+  return TAB_ICONS[tab.type];
 }
 
 /**

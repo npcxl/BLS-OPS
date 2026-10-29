@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import type { ServerRecord } from "@/api/ops-api";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -7,7 +6,6 @@ import { useWorkbenchStore } from "@/stores/workbench-store";
 export function TerminalPicker({ tabId, servers }: { tabId: string; servers: ServerRecord[] }) {
   const { t } = useTranslation();
   const updateTab = useWorkbenchStore((s) => s.updateTab);
-  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
   const attach = (server: ServerRecord) =>
     updateTab(tabId, {
@@ -41,9 +39,6 @@ export function TerminalPicker({ tabId, servers }: { tabId: string; servers: Ser
           ))}
         </div>
       )}
-      <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        {t("Close this tab")}
-      </Button>
     </div>
   );
 }

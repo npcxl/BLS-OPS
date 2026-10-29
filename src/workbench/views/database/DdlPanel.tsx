@@ -18,6 +18,7 @@ import {
 } from "@/stores/database-workspace-store";
 import { DdlCode } from "./DdlCode";
 import { openDetachedDdlWindow } from "./detached-sql";
+import { useScopedShortcut } from "./shortcuts";
 
 export function DdlPanel({ target }: { target: DdlTarget }) {
   const { t } = useTranslation();
@@ -47,14 +48,13 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  useEffect(() => {
-    if (!expanded) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expanded]);
+  // 全屏时 Esc 退出：只在展开状态下装监听，收起时完全不响应。
+  useScopedShortcut({
+    key: "Escape",
+    enabled: expanded,
+    allowInInput: true,
+    run: () => setExpanded(false),
+  });
 
   const createSql = detail?.create_sql ?? "";
 

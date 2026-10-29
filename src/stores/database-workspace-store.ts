@@ -163,6 +163,23 @@ interface WorkspaceState {
   showFieldCard: (target: FieldCardTarget) => void;
   hideFieldCard: () => void;
 
+  /**
+   * 外部（快捷键 / 命令面板）请求关闭某个工作项。
+   *
+   * 关闭必须经过 `DatabaseView` 里的事务安全协调器（检查运行中查询、
+   * 待提交修改、未保存草稿、未提交事务），所以这里只**投递请求**，
+   * 由对应连接的 DatabaseView 消费后再决定是否弹确认。
+   */
+  closeRequest: {
+    id: string;
+    profileId: string;
+    /** one = 只关这一项；right = 关它右侧的全部（命令面板用）。 */
+    mode: "one" | "right";
+  } | null;
+  requestClose: (id: string, profileId: string, mode?: "one" | "right") => void;
+  /** 消费掉请求；只清匹配的那一条，避免误清后续新请求。 */
+  consumeCloseRequest: (id: string) => void;
+
   saveQuery: (args: {
     itemId: string;
     profileId: string;
@@ -189,7 +206,15 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
   connectionInfo: null,
   widthBeforeConnection: null,
   fieldCard: null,
+  closeRequest: null,
   savedQueries: loadSaved(),
+
+  requestClose: (id, profileId, mode = "one") =>
+    set({ closeRequest: { id, profileId, mode } }),
+  consumeCloseRequest: (id) =>
+    set((state) =>
+      state.closeRequest?.id === id ? { closeRequest: null } : {},
+    ),
 
   openTable: ({ profileId, connectionName, database, table }) => {
     const id = tableId(profileId, database, table);

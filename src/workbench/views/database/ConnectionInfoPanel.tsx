@@ -76,11 +76,16 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
 
   if (!profile) return null;
 
-  const connected = !!session;
+  // Redis 没有 SQL 会话：连接状态只能看 Rust 运行时状态（statuses），
+  // 用 sessions 判断会让已连接的 Redis 永远显示"未连接"。
+  const isRedis = profile.engine === "redis";
+  const connected = isRedis ? !!status?.connected : !!session;
   const version = session?.server_version ?? status?.server_version ?? t("未知");
   const tls = session?.tls_active
     ? [session.tls_version, session.tls_cipher].filter(Boolean).join(" · ")
-    : t("未启用");
+    : isRedis && profile.tls_mode !== "disabled"
+      ? profile.tls_mode
+      : t("未启用");
   const tunnel = status?.tunnel_active
     ? `127.0.0.1:${status.tunnel_local_port ?? "?"}`
     : t("未启用");

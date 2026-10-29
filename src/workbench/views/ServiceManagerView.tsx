@@ -219,7 +219,6 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
 
   return (
     <ModuleFrame
-      tab={tab}
       session={session}
       icon={SquareCheck}
       toolbar={

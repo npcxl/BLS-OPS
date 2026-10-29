@@ -29,53 +29,58 @@ pub async fn app_info(state: State<'_, AppState>) -> Result<AppInfo, String> {
     })
 }
 
-/// 在独立窗口里打开设置。
+/// 独立窗口的视图标识怎么传给前端。
 ///
-/// 对照着主界面调设置时，来回切标签会丢掉上下文；独立窗口更顺手。
-/// 已存在就聚焦，不重复开第二个 —— 多开只会让"改的是哪份设置"变得含糊。
-#[tauri::command]
-pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+/// **不用 URL 查询参数**：`WebviewUrl::App("index.html?view=…")` 在部分平台上会被
+/// 当成路径的一部分处理，前端读不到 `view`，窗口就渲染出一个空壳（白屏）。
+/// 初始化脚本在页面脚本之前执行，变量一定存在。
+const VIEW_SCRIPT_PREFIX: &str = "window.__BLS_VIEW__=";
+
+fn view_script(view: &str) -> String {
+    format!("{VIEW_SCRIPT_PREFIX}'{view}';")
+}
+
+/// 开（或聚焦）一个独立窗口。
+///
+/// 命令是 `async` 的：同步命令会在主线程上执行，而创建 WebView 窗口本身要把
+/// 任务派回事件循环 —— 两者撞在一起会卡死（表现为"新窗口白屏 + 整个应用无响应"）。
+async fn open_view_window(
+    app: tauri::AppHandle,
+    label: &'static str,
+    view: &'static str,
+    title: &'static str,
+    size: (f64, f64),
+    min_size: (f64, f64),
+) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    if let Some(window) = app.get_webview_window("settings") {
+    if let Some(window) = app.get_webview_window(label) {
         let _ = window.show();
         let _ = window.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        WebviewUrl::App("index.html?view=settings".into()),
-    )
-    .title("Settings")
-    .inner_size(720.0, 700.0)
-    .min_inner_size(560.0, 480.0)
-    .build()
-    .map(|_| ())
-    .map_err(|error| format!("无法打开设置窗口：{error}"))
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::App("index.html".into()))
+        .title(title)
+        .inner_size(size.0, size.1)
+        .min_inner_size(min_size.0, min_size.1)
+        .initialization_script(&view_script(view))
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开窗口：{error}"))
 }
 
 /// 在独立窗口里打开快捷键一览（对照操作时不用来回切设置）。
 #[tauri::command]
-pub fn open_shortcuts_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-
-    if let Some(window) = app.get_webview_window("shortcuts") {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return Ok(());
-    }
-    WebviewWindowBuilder::new(
-        &app,
+pub async fn open_shortcuts_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_view_window(
+        app,
         "shortcuts",
-        WebviewUrl::App("index.html?view=shortcuts".into()),
+        "shortcuts",
+        "Keyboard shortcuts",
+        (640.0, 620.0),
+        (460.0, 360.0),
     )
-    .title("Keyboard shortcuts")
-    .inner_size(640.0, 560.0)
-    .min_inner_size(460.0, 360.0)
-    .build()
-    .map(|_| ())
-    .map_err(|error| format!("无法打开快捷键窗口：{error}"))
+    .await
 }
 
 /// 托盘菜单文案随前端语言（i18n 只在前端做，见 `crate::tray`）。

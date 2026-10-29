@@ -12,6 +12,16 @@ import { CheckCircle2, FolderOpen, Loader2, ShieldCheck, TriangleAlert } from "@
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
+import { pushToast } from "@/components/ui/toast";
+import { DbEngineIcon } from "./DbEngineIcon";
+import {
+  DB_ENGINES,
+  engineMeta,
+  isDefaultPort,
+  isEngineSupported,
+  isFileEngine,
+  usernameForEngine,
+} from "./db-engines";
 import type {
   ConnectionTestResult,
   DatabaseProfile,
@@ -67,11 +77,17 @@ export function ConnectionDialog({
   profile,
   onClose,
   onSaved,
+  variant = "modal",
 }: {
   open: boolean;
   profile: DatabaseProfile | null;
   onClose: () => void;
   onSaved: (profile: DatabaseProfile) => void;
+  /**
+   * `inline`：作为标签页内容渲染（新建连接走这条路径），不再套一层弹窗。
+   * 表单本身完全复用 —— 两种形态下校验、测试连接、保存逻辑都不该有两份。
+   */
+  variant?: "modal" | "inline";
 }) {
   const { t } = useTranslation();
   const servers = useDomainStore((state) => state.servers);
@@ -103,23 +119,39 @@ export function ConnectionDialog({
   const patch = (value: Partial<DatabaseProfile>) =>
     setDraft((current) => ({ ...current, ...value }));
 
-  /** 只有 MySQL / Redis 有真实驱动；其余引擎允许先存配置，但不给"测试连接"。 */
-  const engineSupported = draft.engine === "mysql" || draft.engine === "redis";
+  /** 有真实驱动的引擎才给"测试连接"；其余允许先存配置。 */
+  const engineSupported = isEngineSupported(draft.engine);
+  const fileEngine = isFileEngine(draft.engine);
+  const meta = engineMeta(draft.engine);
 
-  /** 切引擎时联动默认值：端口/用户名随引擎走，Redis 补上模式字段。 */
+  /**
+   * 切引擎时联动默认值：
+   * - 端口只在"当前值还是某个默认端口"时才跟着换，不覆盖用户手填的端口；
+   * - 文件型（SQLite）没有主机/端口/用户名，清掉以免留下误导性配置。
+   */
   const changeEngine = (engine: DatabaseProfile["engine"]) => {
-    if (engine === "redis") {
+    const next = engineMeta(engine);
+    if (next.transport === "file") {
       patch({
         engine,
-        port: draft.port === 3306 ? 6379 : draft.port,
-        redis_mode: draft.redis_mode ?? "standalone",
+        host: "",
+        port: 0,
+        username: "",
+        ssh_server_id: null,
+        tls_mode: "disabled",
+        tls_ca_path: null,
+        tls_server_name: null,
+        redis_mode: null,
       });
       return;
     }
     patch({
       engine,
-      port: draft.port === 6379 ? 3306 : draft.port,
-      username: draft.username.trim() === "" && engine === "mysql" ? "root" : draft.username,
+      port: isDefaultPort(draft.port) ? next.defaultPort : draft.port,
+      // 用户名只有 MySQL/MariaDB 有默认值：切到 Redis 时清掉自动填的 root，
+      // 否则会拿 root 去 AUTH 一个空密码，默认配置永远连不上。
+      username: usernameForEngine(next.id, draft.username),
+      redis_mode: next.id === "redis" ? (draft.redis_mode ?? "standalone") : null,
     });
   };
 
@@ -129,15 +161,23 @@ export function ConnectionDialog({
       setError(t("连接名称不能为空"));
       return;
     }
-    // Redis 6+ 的 ACL 才有用户名：Redis 不强制用户名。
-    const usernameRequired = draft.engine !== "redis";
-    if (!draft.host.trim() || (usernameRequired && !draft.username.trim())) {
-      setError(t("主机和用户名不能为空"));
-      return;
-    }
-    if (draft.port < 1 || draft.port > 65535) {
-      setError(t("端口必须在 1 到 65535 之间"));
-      return;
+    if (fileEngine) {
+      // 文件型数据库：库就是文件路径，没有主机/端口/用户名。
+      if (!(draft.default_database ?? "").trim()) {
+        setError(t("请填写数据库文件路径"));
+        return;
+      }
+    } else {
+      // Redis 6+ 的 ACL 才有用户名：Redis 不强制用户名。
+      const usernameRequired = draft.engine !== "redis";
+      if (!draft.host.trim() || (usernameRequired && !draft.username.trim())) {
+        setError(t("主机和用户名不能为空"));
+        return;
+      }
+      if (draft.port < 1 || draft.port > 65535) {
+        setError(t("端口必须在 1 到 65535 之间"));
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -149,7 +189,14 @@ export function ConnectionDialog({
       onSaved(saved);
       onClose();
     } catch (failure) {
-      setError(toDbError(failure).message);
+      const info = toDbError(failure);
+      setError(info.message);
+      pushToast(info.message, "error", {
+        title: t("保存连接失败"),
+        label: info.stage,
+        detail: info.detail ?? undefined,
+        persist: true,
+      });
     } finally {
       setBusy(false);
     }
@@ -176,6 +223,13 @@ export function ConnectionDialog({
         tunnel_local_port: null,
         read_only: draft.read_only,
       });
+      // 结果面板在表单下方，屏幕小的时候看不见 —— 同样弹到顶部。
+      pushToast(info.message, "error", {
+        title: t("测试连接失败"),
+        label: info.stage,
+        detail: info.detail ?? undefined,
+        persist: false,
+      });
     } finally {
       setTesting(false);
     }
@@ -196,53 +250,58 @@ export function ConnectionDialog({
     }
   };
 
-  return (
-    <Modal
-      open={open}
-      title={profile ? t("编辑数据库连接") : t("新建数据库连接")}
-      description={t(
-        "密码保存在系统钥匙串，不会写入本地数据库，也不会回传到界面。",
-      )}
-      width={560}
-      onClose={busy ? undefined : onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
-            {t("取消")}
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy || testing || !engineSupported}
-            title={engineSupported ? undefined : t("该类型尚未适配，暂不能测试连接")}
-            onClick={() => void runTest()}
-          >
-            {testing ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
-            {t("测试连接")}
-          </Button>
-          <Button variant="primary" size="sm" disabled={busy} onClick={() => void save()}>
-            {busy ? t("保存中…") : t("保存")}
-          </Button>
-        </>
-      }
-    >
+  const title = profile ? t("编辑数据库连接") : t("新建数据库连接");
+  const description = t(
+    "密码保存在系统钥匙串，不会写入本地数据库，也不会回传到界面。",
+  );
+
+  const footer = (
+    <>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
+        {t("取消")}
+      </Button>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={busy || testing || !engineSupported}
+        title={engineSupported ? undefined : t("该类型尚未适配，暂不能测试连接")}
+        onClick={() => void runTest()}
+      >
+        {testing ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+        {t("测试连接")}
+      </Button>
+      <Button variant="primary" size="sm" disabled={busy} onClick={() => void save()}>
+        {busy ? t("保存中…") : t("保存")}
+      </Button>
+    </>
+  );
+
+  const body = (
       <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-[150px_1fr] items-end gap-2 rounded-[8px] border border-line bg-surface-2/60 p-2">
+        <div className="grid grid-cols-[220px_1fr] items-end gap-2 rounded-[8px] border border-line bg-surface-2/60 p-2">
           <Field label={t("数据库类型")}>
             <Select
               value={draft.engine}
               ariaLabel={t("数据库类型")}
               onChange={(value) => changeEngine(value as DatabaseProfile["engine"])}
-              options={[
-                { value: "mysql", label: t("MySQL（不区分版本）"), hint: "MySQL 8.x" },
-                { value: "redis", label: t("Redis"), hint: "Redis 6+ / 键浏览器" },
+              options={DB_ENGINES.map((engine) => ({
                 // 未适配的引擎也可以选：先把连接配置存下来，等适配完直接能用。
-                { value: "mariadb", label: t("MariaDB（尚未适配）") },
-                { value: "postgres", label: t("PostgreSQL（尚未适配）") },
-                { value: "sqlite", label: t("SQLite（尚未适配）") },
-                { value: "sqlserver", label: t("SQL Server（尚未适配）") },
-                { value: "oracle", label: t("Oracle（尚未适配）") },
-              ]}
+                value: engine.id,
+                label: engine.supported
+                  ? engine.label
+                  : `${engine.label}（${t("尚未适配")}）`,
+                icon: <DbEngineIcon engine={engine.id} connected size={13} />,
+                hint:
+                  engine.id === "mysql"
+                    ? "MySQL 8.x"
+                    : engine.id === "redis"
+                      ? "Redis 6+"
+                      : engine.id === "mariadb"
+                        ? t("按 MySQL 协议")
+                        : engine.transport === "file"
+                          ? t("文件型")
+                          : undefined,
+              }))}
             />
           </Field>
           <p className="pb-0.5 text-11 leading-relaxed text-fg-subtle">
@@ -250,11 +309,11 @@ export function ConnectionDialog({
               ? t(
                   "Redis 走独立的键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），不提供 SQL 工作台。",
                 )
-              : engineSupported
-                ? t("MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。")
-                : t(
-                    "该类型尚未适配：可以先保存连接配置，连接会失败。Redis 已有独立模块。",
-                  )}
+              : draft.engine === "mariadb"
+                ? t("MariaDB 与 MySQL 同协议，直接按 MySQL 连接；个别认证插件可能需在服务端调整。")
+                : engineSupported
+                  ? t("连接使用原生协议驱动，不区分小版本。")
+                  : t("该类型尚未适配：可以先保存连接配置，连接时会明确提示暂不支持。")}
           </p>
         </div>
 
@@ -267,83 +326,90 @@ export function ConnectionDialog({
           />
         </Field>
 
-        <div className="grid grid-cols-[1fr_100px] gap-2">
-          <Field label={t("主机")}>
-            <input
-              className={fieldClass}
-              value={draft.host}
-              onChange={(event) => patch({ host: event.target.value })}
-              placeholder="db.internal"
-            />
-          </Field>
-          <Field label={t("端口")}>
-            <input
-              className={fieldClass}
-              type="number"
-              min={1}
-              max={65535}
-              value={draft.port}
-              onChange={(event) => patch({ port: Number(event.target.value) || 0 })}
-            />
-          </Field>
-        </div>
+        {/* 文件型数据库没有主机/端口/账号：显示这些字段只会让人以为要填。 */}
+        {!fileEngine && (
+          <>
+            <div className="grid grid-cols-[1fr_100px] gap-2">
+              <Field label={t("主机")}>
+                <input
+                  className={fieldClass}
+                  value={draft.host}
+                  onChange={(event) => patch({ host: event.target.value })}
+                  placeholder="db.internal"
+                />
+              </Field>
+              <Field label={t("端口")}>
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={draft.port}
+                  onChange={(event) => patch({ port: Number(event.target.value) || 0 })}
+                />
+              </Field>
+            </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <Field
-            label={draft.engine === "redis" ? t("用户名（ACL，可选）") : t("用户名")}
-            hint={draft.engine === "redis" ? t("Redis 6+ ACL 才有用户名；留空 = 只用密码") : undefined}
-          >
-            <input
-              className={fieldClass}
-              value={draft.username}
-              onChange={(event) => patch({ username: event.target.value })}
-            />
-          </Field>
-          <Field
-            label={t("密码")}
-            hint={
-              profile?.has_password && !clearPassword
-                ? t("留空 = 保留系统钥匙串里的密码")
-                : undefined
-            }
-          >
-            <input
-              className={fieldClass}
-              type="password"
-              value={password}
-              disabled={clearPassword}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder={profile?.has_password ? "••••••••" : ""}
-            />
-          </Field>
-        </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field
+                label={draft.engine === "redis" ? t("用户名（ACL，可选）") : t("用户名")}
+                hint={
+                  draft.engine === "redis"
+                    ? t("Redis 6+ ACL 才有用户名；留空 = 只用密码")
+                    : undefined
+                }
+              >
+                <input
+                  className={fieldClass}
+                  value={draft.username}
+                  onChange={(event) => patch({ username: event.target.value })}
+                />
+              </Field>
+              <Field
+                label={t("密码")}
+                hint={
+                  profile?.has_password && !clearPassword
+                    ? t("留空 = 保留系统钥匙串里的密码")
+                    : draft.engine === "redis"
+                      ? t("Redis 默认没有密码；只有开了 requirepass / ACL 才需要填")
+                      : undefined
+                }
+              >
+                <input
+                  className={fieldClass}
+                  type="password"
+                  value={password}
+                  disabled={clearPassword}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder={profile?.has_password ? "••••••••" : ""}
+                />
+              </Field>
+            </div>
 
-        {profile?.has_password && (
-          <label className="flex items-center gap-1.5 text-11 text-fg-muted">
-            <input
-              type="checkbox"
-              checked={clearPassword}
-              onChange={(event) => {
-                setClearPassword(event.target.checked);
-                if (event.target.checked) setPassword("");
-              }}
-            />
-            {t("清除已保存的密码（连接将使用空密码）")}
-          </label>
+            {profile?.has_password && (
+              <label className="flex items-center gap-1.5 text-11 text-fg-muted">
+                <input
+                  type="checkbox"
+                  checked={clearPassword}
+                  onChange={(event) => {
+                    setClearPassword(event.target.checked);
+                    if (event.target.checked) setPassword("");
+                  }}
+                />
+                {t("清除已保存的密码（连接将使用空密码）")}
+              </label>
+            )}
+          </>
         )}
 
-        <Field
-          label={draft.engine === "redis" ? t("默认 db index（0-15，可选）") : t("默认数据库（可选）")}
-        >
+        <Field label={t(meta.databaseLabel)}>
           <input
             className={fieldClass}
             value={draft.default_database ?? ""}
             onChange={(event) =>
               patch({ default_database: event.target.value.trim() || null })
             }
-            placeholder={
-              draft.engine === "redis" ? t("留空 = db 0；cluster 模式忽略") : t("留空则连接后手动选择")
-            }
+            placeholder={t(meta.databasePlaceholder)}
           />
         </Field>
 
@@ -588,6 +654,34 @@ export function ConnectionDialog({
           </div>
         )}
       </div>
+  );
+
+  // 新建连接：作为标签页内容渲染，不再套弹窗。
+  if (variant === "inline") {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-surface-1">
+        <div className="flex shrink-0 flex-col gap-0.5 border-b border-line px-4 py-2.5">
+          <span className="text-13 font-medium text-fg">{title}</span>
+          <span className="text-11 text-fg-subtle">{description}</span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{body}</div>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-2">
+          {footer}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Modal
+      open={open}
+      title={title}
+      description={description}
+      width={680}
+      onClose={busy ? undefined : onClose}
+      footer={footer}
+    >
+      {body}
     </Modal>
   );
 }

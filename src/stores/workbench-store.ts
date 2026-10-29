@@ -217,6 +217,8 @@ interface WorkbenchState {
     host: string;
     port: number;
   }) => void;
+  /** 打开「新建连接」草稿标签（表单内嵌，保存后自动关闭）。 */
+  openNewConnectionTab: () => void;
   closeTab: (paneId: string, tabId: string) => void;
   closeTabById: (tabId: string) => void;
   closeOtherTabs: (paneId: string, tabId: string) => void;
@@ -554,6 +556,38 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
         rootPane: replacePane(state.rootPane, paneId, {
           ...pane,
           tabs,
+          activeTabId: tab.id,
+        }),
+        focusedPaneId: paneId,
+      };
+    }),
+
+  openNewConnectionTab: () =>
+    set((state) => {
+      const paneId = state.focusedPaneId ?? firstLeafPane(state.rootPane).id;
+      const pane = findPane(state.rootPane, paneId);
+      if (!pane || !isLeafPane(pane)) return state;
+      // 已经开着一张草稿就聚焦它：叠出两张空白表单没有任何好处。
+      const existing = pane.tabs.find((tab) => tab.draftNewConnection);
+      if (existing) {
+        return {
+          activeModule: "database",
+          rootPane: replacePane(state.rootPane, paneId, { ...pane, activeTabId: existing.id }),
+          focusedPaneId: paneId,
+        };
+      }
+      const tab = normalizeTab({
+        id: uuid(),
+        type: "database",
+        module: "database",
+        title: "新建连接",
+        draftNewConnection: true,
+      });
+      return {
+        activeModule: "database",
+        rootPane: replacePane(state.rootPane, paneId, {
+          ...pane,
+          tabs: [...pane.tabs, tab],
           activeTabId: tab.id,
         }),
         focusedPaneId: paneId,

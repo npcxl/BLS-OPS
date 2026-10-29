@@ -1,4 +1,3 @@
-import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 
@@ -12,7 +11,6 @@ export function MonitorPicker({
 }) {
   const { t } = useTranslation();
   const updateTab = useWorkbenchStore((s) => s.updateTab);
-  const closeTabById = useWorkbenchStore((s) => s.closeTabById);
 
   const attach = (server: { id: string; name: string; host: string; port: number }) =>
     updateTab(tabId, {
@@ -46,9 +44,6 @@ export function MonitorPicker({
           ))}
         </div>
       )}
-      <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        {t("Close this tab")}
-      </Button>
     </div>
   );
 }

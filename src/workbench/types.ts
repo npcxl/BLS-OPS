@@ -34,6 +34,11 @@ export interface WorkspaceTab {
   sessionId?: string;
   /** 数据库标签绑定的连接配置（`type === "database"`）。 */
   profileId?: string;
+  /**
+   * 「新建连接」的草稿标签：内容就是连接表单，保存成功后标签自动关闭并跳到
+   * 该连接。用标签页而不是弹窗 —— 弹窗盖住列表，填完还要重新找位置。
+   */
+  draftNewConnection?: boolean;
   /** `user@host[:port]` typed into quick connect (no saved server). */
   quickTarget?: string;
   /** Credential chosen for a quick connect. */

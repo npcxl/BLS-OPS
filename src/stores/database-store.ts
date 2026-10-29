@@ -20,6 +20,8 @@ import type {
   DbTableDetail,
   ProfileRuntimeStatus,
 } from "@/api/types/database";
+import { pushToast } from "@/components/ui/toast";
+import { i18n } from "@/i18n";
 
 const dbKey = (profileId: string) => profileId;
 export const tablesKey = (profileId: string, database: string) =>
@@ -144,6 +146,8 @@ interface DatabaseAssetState {
   sessions: Record<string, DbSessionInfo>;
   sessionErrors: Record<string, DbErrorInfo | null>;
   statuses: Record<string, ProfileRuntimeStatus>;
+  /** Redis 建连进行中：侧栏与键浏览器共用，用于显示"连接中"而不是空列表。 */
+  redisConnecting: Record<string, boolean>;
 
   /** 左侧树点击表 → 通知已打开的数据库标签切换到这个表。 */
   openTableRequest: OpenTableRequest | null;
@@ -170,8 +174,12 @@ interface DatabaseAssetState {
   invalidate: (profileId: string) => Promise<void>;
 
   ensureSession: (profileId: string) => Promise<DbSessionInfo | null>;
+  /** 清掉某连接的连接错误（标签里的错误条点了 ×）。 */
+  clearSessionError: (profileId: string) => void;
   /** Redis：建连（db_redis_connect），不产生 SQL 会话。 */
   redisConnect: (profileId: string) => Promise<void>;
+  /** Redis：关掉运行时再建连（改过配置 / 用户点"重新连接"时用）。 */
+  redisReconnect: (profileId: string) => Promise<void>;
   /**
    * 强制重连：关闭旧会话（不尝试恢复事务/临时表），再建立新会话。
    * 只用于用户显式点击"重新连接"；绝不自动调用。
@@ -198,6 +206,36 @@ interface DatabaseAssetState {
     profile: DatabaseProfile,
     password: string | null,
   ) => Promise<ConnectionTestResult>;
+}
+
+/** 按已加载的连接配置判断引擎；配置还没拉到时按 SQL 处理。 */
+function isRedisProfile(get: () => DatabaseAssetState, profileId: string): boolean {
+  return get().profiles.find((profile) => profile.id === profileId)?.engine === "redis";
+}
+
+/**
+ * 同一 profile 的 Redis 建连请求去重表。
+ *
+ * 侧栏手动连接与键浏览器挂载时的自动建连会同时触发，合并成一个 promise
+ * 后只发一次 `db_redis_connect`（Rust 侧虽然单飞，前端也不该白跑一趟）。
+ */
+const redisConnectInFlight = new Map<string, Promise<void>>();
+
+/**
+ * 连接类错误：既留在 `sessionErrors`（树里能定位到具体连接），也弹到顶部
+ * alert —— 只靠树上一个小红三角，用户根本不知道哪儿错了。
+ */
+function reportConnectError(
+  profile: DatabaseProfile | undefined,
+  info: DbErrorInfo,
+  action: string,
+): void {
+  pushToast(info.message, "error", {
+    title: profile ? `${profile.name} · ${action}` : action,
+    label: info.stage,
+    detail: info.detail ?? undefined,
+    persist: true,
+  });
 }
 
 /** 把当前展开态写回 localStorage（只写展开标记）。 */
@@ -240,6 +278,7 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   sessions: {},
   sessionErrors: {},
   statuses: {},
+  redisConnecting: {},
   openTableRequest: null,
 
   requestTable: (profileId, database, table, view = "data") =>
@@ -421,6 +460,13 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   },
 
   ensureSession: async (profileId) => {
+    // 防御：Redis 没有 SQL 会话。任何入口误用 ensureSession 都必须改走
+    // db_redis_connect —— 送进 db_connect 只会被后端以 unsupported 拒绝。
+    if (isRedisProfile(get, profileId)) {
+      await get().redisConnect(profileId);
+      return null;
+    }
+
     const existing = get().sessions[profileId];
     if (existing) return existing;
 
@@ -435,30 +481,70 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
       void get().refreshStatus(profileId);
       return info;
     } catch (error) {
+      const info = toDbError(error);
       set((state) => ({
-        sessionErrors: { ...state.sessionErrors, [profileId]: toDbError(error) },
+        sessionErrors: { ...state.sessionErrors, [profileId]: info },
       }));
+      reportConnectError(
+        get().profiles.find((profile) => profile.id === profileId),
+        info,
+        i18n.t("连接失败"),
+      );
       return null;
     }
   },
 
   /**
    * Redis 连接：走 db_redis_connect（无 SQL 会话概念），结果只体现在
-   * statuses（绿点）里；错误放进 sessionErrors 供侧栏展示。
+   * statuses（绿点）里；错误放进 sessionErrors 供侧栏 / 键浏览器展示。
+   *
+   * 同一 profile 的并发调用合并成一次 IPC：侧栏手动点"打开连接"和键浏览器
+   * 挂载时的自动建连经常同时发生，不能各发一条。
    */
-  redisConnect: async (profileId) => {
-    set((state) => ({
-      sessionErrors: { ...state.sessionErrors, [profileId]: null },
-    }));
-    try {
-      await databaseApi.redisConnect(profileId);
-    } catch (error) {
+  redisConnect: (profileId) => {
+    const inflight = redisConnectInFlight.get(profileId);
+    if (inflight) return inflight;
+
+    const task = (async () => {
       set((state) => ({
-        sessionErrors: { ...state.sessionErrors, [profileId]: toDbError(error) },
+        redisConnecting: { ...state.redisConnecting, [profileId]: true },
+        sessionErrors: { ...state.sessionErrors, [profileId]: null },
       }));
-    } finally {
-      void get().refreshStatus(profileId);
-    }
+      try {
+        const status = await databaseApi.redisConnect(profileId);
+        // Redis 的连接状态唯一来源就是 statuses，绝不写 sessions。
+        set((state) => ({
+          statuses: { ...state.statuses, [profileId]: status },
+        }));
+      } catch (error) {
+        const info = toDbError(error);
+        set((state) => ({
+          sessionErrors: { ...state.sessionErrors, [profileId]: info },
+        }));
+        reportConnectError(
+          get().profiles.find((profile) => profile.id === profileId),
+          info,
+          i18n.t("Redis 连接失败"),
+        );
+        // 失败后回读一次：上一次的运行时可能还在，绿灯不能凭旧值亮着。
+        void get().refreshStatus(profileId);
+      } finally {
+        set((state) => ({
+          redisConnecting: { ...state.redisConnecting, [profileId]: false },
+        }));
+        redisConnectInFlight.delete(profileId);
+      }
+    })();
+
+    redisConnectInFlight.set(profileId, task);
+    return task;
+  },
+
+  redisReconnect: async (profileId) => {
+    // db_redis_connect 对已存在的运行时会直接复用，改过主机/密码/TLS 后
+    // 不关旧的等于没重连：必须先把 Rust 侧运行时关掉。
+    await get().disconnectProfile(profileId);
+    await get().redisConnect(profileId);
   },
 
   runSessionCommand: async (profileId, sql) => {
@@ -565,6 +651,12 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     }
   },
 
+  clearSessionError: (profileId) => {
+    set((state) => ({
+      sessionErrors: { ...state.sessionErrors, [profileId]: null },
+    }));
+  },
+
   refreshStatus: async (profileId) => {
     try {
       const status = await databaseApi.profileStatus(profileId);
@@ -578,12 +670,12 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     await get().closeSession(profileId);
     try {
       // 只关会话的话 Rust 运行时（隧道/连接池）仍在，状态会一直是 connected；
-      // 显式断开必须连运行时一起关，绿灯才会灭。
+      // 显式断开必须连运行时一起关，绿灯才会灭。Redis 没有会话，全靠这一步。
       await databaseApi.profileClose(profileId);
     } catch {
       // 运行时可能已经不存在；状态以下一次 refreshStatus 为准。
     }
-    void get().refreshStatus(profileId);
+    await get().refreshStatus(profileId);
   },
 
   saveProfile: async (profile, password) => {

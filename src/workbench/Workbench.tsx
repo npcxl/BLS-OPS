@@ -213,6 +213,32 @@ export function Workbench() {
               .refreshTables(context.profileId, context.database),
         },
       );
+      databaseActions.push(
+        {
+          id: "db-close-item",
+          title: t("关闭当前工作项"),
+          category: t("Module: Database"),
+          description: context.database,
+          keywords: ["close", "work item", context.database],
+          onSelect: () => {
+            const workspace = useDatabaseWorkspaceStore.getState();
+            const item = workspace.items.find((entry) => entry.id === workspace.activeId);
+            if (item) workspace.requestClose(item.id, item.profileId);
+          },
+        },
+        {
+          id: "db-close-right",
+          title: t("关闭右侧工作项"),
+          category: t("Module: Database"),
+          description: context.database,
+          keywords: ["close", "right", context.database],
+          onSelect: () => {
+            const workspace = useDatabaseWorkspaceStore.getState();
+            const item = workspace.items.find((entry) => entry.id === workspace.activeId);
+            if (item) workspace.requestClose(item.id, item.profileId, "right");
+          },
+        },
+      );
       if (activeDbItem.objectName) {
         const table = activeDbItem.objectName;
         databaseActions.push({

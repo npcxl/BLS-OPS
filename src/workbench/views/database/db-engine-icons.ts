@@ -16,7 +16,23 @@ const REDIS_ICON: IconifyIcon = {
   height: 32,
 };
 
+/** SQL Server：品牌红圆底 + 数据库圆柱（简化图形，离线可渲染）。 */
+const SQLSERVER_ICON: IconifyIcon = {
+  body: '<g fill="none"><circle cx="16" cy="16" r="14" fill="#c74634"/><path fill="#fff" d="M16 6.8c-4.2 0-7.6 1.1-7.6 2.5v13.4c0 1.4 3.4 2.5 7.6 2.5s7.6-1.1 7.6-2.5V9.3c0-1.4-3.4-2.5-7.6-2.5Zm0 1.7c3.6 0 5.9.9 5.9 1.3c0 .5-2.3 1.3-5.9 1.3s-5.9-.8-5.9-1.3c0-.4 2.3-1.3 5.9-1.3Zm5.9 4.4v2.3c-1.5.8-3.7 1.3-5.9 1.3s-4.4-.5-5.9-1.3v-2.3c1.6.8 3.7 1.2 5.9 1.2s4.3-.4 5.9-1.2Zm0 5.2v2.3c-1.5.8-3.7 1.3-5.9 1.3s-4.4-.5-5.9-1.3v-2.3c1.6.8 3.7 1.2 5.9 1.2s4.3-.4 5.9-1.2Zm0 5.2v2.2c-1.5.8-3.7 1.2-5.9 1.2s-4.4-.4-5.9-1.2v-2.2c1.6.8 3.7 1.2 5.9 1.2s4.3-.4 5.9-1.2Z"/></g>',
+  width: 32,
+  height: 32,
+};
+
+/** Oracle：品牌红椭圆环（官方标志就是这个形状）。 */
+const ORACLE_ICON: IconifyIcon = {
+  body: '<g fill="none"><circle cx="16" cy="16" r="14" fill="#c74634"/><ellipse cx="16" cy="16" rx="8.6" ry="4.8" stroke="#fff" stroke-width="2.6"/></g>',
+  width: 32,
+  height: 32,
+};
+
 export const DB_ENGINE_ICONS: Partial<Record<DbEngine, DbEngineIconPair>> = {
+  sqlserver: { light: SQLSERVER_ICON, dark: SQLSERVER_ICON },
+  oracle: { light: ORACLE_ICON, dark: ORACLE_ICON },
   // 品牌红在明暗两套里都够读，先共用一个图形。
   redis: { light: REDIS_ICON, dark: REDIS_ICON },
   "mysql": {

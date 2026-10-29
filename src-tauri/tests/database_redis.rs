@@ -8,6 +8,18 @@
 //! Redis 不可达时**跳过**（打印原因）；`BLS_TEST_REDIS_REQUIRED=1` 时
 //! 不可达必须红（CI 用），不允许 skip 成假绿。
 //!
+//! 认证/TLS 组合（都是 Standalone）：
+//! ```bash
+//! # 仅密码
+//! BLS_TEST_REDIS_PORT=36380 BLS_TEST_REDIS_PASSWORD=s3cret cargo test --test database_redis
+//! # ACL 用户名 + 密码
+//! BLS_TEST_REDIS_PORT=36381 BLS_TEST_REDIS_USERNAME=bls BLS_TEST_REDIS_PASSWORD=bls-pass \
+//!   cargo test --test database_redis
+//! # TLS
+//! BLS_TEST_REDIS_TLS=verify_ca BLS_TEST_REDIS_CA=/path/ca.crt \
+//!   BLS_TEST_REDIS_SERVER_NAME=localhost cargo test --test database_redis
+//! ```
+//!
 //! 覆盖：三阶段建连 + PING、SCAN 分页与模式过滤、string 读写、hash 增删改、
 //! list push/set/remove、set 增删、zset 增改删、TTL/RENAME/DEL、PUBLISH。
 
@@ -19,6 +31,12 @@ fn env(key: &str, fallback: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| fallback.to_string())
 }
 
+/// 空字符串视作"没设置"，便于用环境变量切换 ACL / TLS 组合。
+fn env_opt(key: &str) -> Option<String> {
+    let value = env(key, "");
+    (!value.is_empty()).then_some(value)
+}
+
 fn profile() -> DatabaseProfile {
     let now = chrono::Utc::now().timestamp_millis();
     DatabaseProfile {
@@ -27,13 +45,14 @@ fn profile() -> DatabaseProfile {
         engine: "redis".to_string(),
         host: env("BLS_TEST_REDIS_HOST", "127.0.0.1"),
         port: env("BLS_TEST_REDIS_PORT", "36379").parse().unwrap_or(36379),
-        username: String::new(),
+        // Redis 6+ ACL：留空 = 只发 AUTH <password>（Redis 5 及更早的写法）。
+        username: env("BLS_TEST_REDIS_USERNAME", ""),
         default_database: Some("0".to_string()),
         has_password: false,
         ssh_server_id: None,
-        tls_mode: "disabled".to_string(),
-        tls_ca_path: None,
-        tls_server_name: None,
+        tls_mode: env("BLS_TEST_REDIS_TLS", "disabled"),
+        tls_ca_path: env_opt("BLS_TEST_REDIS_CA"),
+        tls_server_name: env_opt("BLS_TEST_REDIS_SERVER_NAME"),
         read_only: false,
         redis_mode: Some("standalone".to_string()),
         sentinel_master: None,

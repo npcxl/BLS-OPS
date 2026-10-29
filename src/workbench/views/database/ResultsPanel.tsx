@@ -41,6 +41,28 @@ const EMPTY_COLUMNS: DbColumn[] = [];
 /** 底部区域的三块视图：消息（日志）/ 摘要（结果集一览）/ 结果 N（数据网格）。 */
 type ResultView = "messages" | "summary" | "result";
 
+/**
+ * 结果区 tab 的键盘移动：← → 循环、Home/End 跳首尾。
+ * 焦点到哪个 tab 就切到哪个（不需要再按 Enter），和 VS Code 一致。
+ */
+function moveResultFocus(current: HTMLButtonElement, key: string) {
+  const list = current.closest<HTMLElement>("[role='tablist']");
+  if (!list) return;
+  const tabs = Array.from(list.querySelectorAll<HTMLButtonElement>("[role='tab']"));
+  const index = tabs.indexOf(current);
+  if (index < 0) return;
+  const target =
+    key === "ArrowRight"
+      ? tabs[(index + 1) % tabs.length]
+      : key === "ArrowLeft"
+        ? tabs[(index - 1 + tabs.length) % tabs.length]
+        : key === "Home"
+          ? tabs[0]
+          : tabs[tabs.length - 1];
+  target?.focus();
+  target?.click();
+}
+
 function copyCellText(value: DbValue): string {
   if (value.kind === "null") return "NULL";
   if (value.kind === "unsupported") return value.preview;
@@ -173,27 +195,51 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1">
+      <div
+        role="tablist"
+        aria-label={t("执行结果")}
+        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1"
+      >
         <button
           type="button"
+          role="tab"
+          aria-selected={view === "messages"}
+          tabIndex={view === "messages" ? 0 : -1}
           onClick={() => setView("messages")}
+          onKeyDown={(event) => {
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+              event.preventDefault();
+              moveResultFocus(event.currentTarget, event.key);
+            }
+          }}
           className={cn(
-            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
+            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
             view === "messages"
               ? "bg-surface-3 text-fg"
               : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+            "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
           )}
         >
           {t("消息")}
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={view === "summary"}
+          tabIndex={view === "summary" ? 0 : -1}
           onClick={() => setView("summary")}
+          onKeyDown={(event) => {
+            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+              event.preventDefault();
+              moveResultFocus(event.currentTarget, event.key);
+            }
+          }}
           className={cn(
-            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
+            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
             view === "summary"
               ? "bg-surface-3 text-fg"
               : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+            "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
           )}
         >
           {t("摘要")}
@@ -205,15 +251,25 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
             <button
               key={result.key}
               type="button"
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
               onClick={() => {
                 setActive(tabId, result.key);
                 setView("result");
               }}
+              onKeyDown={(event) => {
+                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+                  event.preventDefault();
+                  moveResultFocus(event.currentTarget, event.key);
+                }
+              }}
               className={cn(
-                "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
+                "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
                 isActive
                   ? "bg-surface-3 text-fg"
                   : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+                "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
               )}
               title={result.statement}
             >

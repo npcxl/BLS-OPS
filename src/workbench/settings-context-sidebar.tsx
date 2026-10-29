@@ -145,24 +145,8 @@ export function SettingsContextSidebar() {
     }
   };
 
-  // 独立设置窗口里不再显示"在新窗口打开"（点了只会聚焦自己）。
-  const standalone = new URLSearchParams(window.location.search).get("view") === "settings";
-
   return (
     <div className="flex flex-col gap-5 p-3 pb-6">
-      {!standalone && (
-        <div className="-mb-2 flex justify-end">
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-6 px-1.5"
-            onClick={() => void opsApi.openSettingsWindow()}
-          >
-            {t("Open in new window")}
-          </Button>
-        </div>
-      )}
-
       <Group title={t("Appearance")}>
         <ListGroup>
           <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -209,18 +193,14 @@ export function SettingsContextSidebar() {
 
       <Group
         title={t("Safety")}
-        hint={t(
-          "Read-only inside the app. A free shell still follows your server account's permissions.",
-        )}
+        hint={t("Read-only inside the app.")}
       >
         <ListGroup>
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="min-w-0">
               <div className="text-12 text-fg">{t("Inspection mode (read-only)")}</div>
               <div className="text-11 leading-relaxed text-fg-subtle">
-                {t(
-                  "Turns off uploads, edits, deletes and service changes inside the app.",
-                )}
+                {t("Disables writes and service changes.")}
               </div>
             </div>
             <Switch

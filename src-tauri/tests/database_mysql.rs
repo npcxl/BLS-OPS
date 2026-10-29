@@ -1333,3 +1333,89 @@ async fn mysql_manager_session_creation_is_serialized() {
     manager.close_profile(&base.id).await;
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn mysql_ddl_disconnect_is_reported_unknown() {
+    let (path, conn) = temp_app_db();
+    let base = profile();
+    let plan = match driver::plan_from_profile(&conn, &base, Some(&password())) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("skip ddl disconnect: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let endpoint = match driver::resolve_plan(&TunnelRegistry::default(), plan).await {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!("skip ddl disconnect: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    let mut admin = match driver::connect_once(
+        driver::build_opts(&endpoint, false).expect("opts"),
+        Duration::from_secs(10),
+    )
+    .await
+    {
+        Ok(conn) => conn,
+        Err(error) => {
+            if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+                panic!("required ddl disconnect cannot connect: {error}");
+            }
+            eprintln!("skip ddl disconnect: {error}");
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+    };
+    admin
+        .query_drop("DROP DATABASE IF EXISTS ops_ddl_kill")
+        .await
+        .expect("clean");
+    admin
+        .query_drop("CREATE DATABASE ops_ddl_kill")
+        .await
+        .expect("database");
+    admin
+        .query_drop("CREATE TABLE ops_ddl_kill.t (id INT PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .expect("table");
+    admin
+        .query_drop("LOCK TABLES ops_ddl_kill.t WRITE")
+        .await
+        .expect("lock");
+
+    let (runtime, session) = runtime_for(&conn).await;
+    let thread_id = session.thread_id;
+    let session_for_ddl = session.clone();
+    let task = tokio::spawn(async move {
+        schema_ops::apply(
+            &session_for_ddl,
+            &schema_ops::SchemaChange::DropDatabase {
+                name: "ops_ddl_kill".to_string(),
+            },
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    admin
+        .query_drop(format!("KILL CONNECTION {thread_id}"))
+        .await
+        .expect("kill ddl connection");
+    let error = task.await.expect("join").expect_err("killed DDL must fail");
+    assert_eq!(
+        error.stage, "outcome_unknown",
+        "unexpected error: {error:?}"
+    );
+    assert_eq!(session.state().await, "lost");
+
+    let _ = admin.query_drop("UNLOCK TABLES").await;
+    let _ = admin
+        .query_drop("DROP DATABASE IF EXISTS ops_ddl_kill")
+        .await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), admin.disconnect()).await;
+    runtime.close().await;
+    let _ = std::fs::remove_file(path);
+}

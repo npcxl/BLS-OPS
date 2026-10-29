@@ -37,40 +37,17 @@ import type {
   RedisZEntry,
 } from "@/api/types/database";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import {
+  TTL_PRESETS,
+  decodePubsubMessage,
+  formatTtl,
+  initialDbIndex,
+  kindBadgeClass,
+  mergeHashFields,
+  mergeKeyPage,
+} from "./redis-format";
 
 /** 类型徽标配色：一眼分清 string/hash/list/set/zset/stream。 */
-const KIND_BADGE: Record<string, string> = {
-  string: "bg-accent/15 text-accent",
-  hash: "bg-ai/15 text-ai",
-  list: "bg-success/15 text-success",
-  set: "bg-warning/15 text-warning",
-  zset: "bg-danger/15 text-danger",
-  stream: "bg-fg-subtle/20 text-fg-muted",
-  other: "bg-surface-hover text-fg-muted",
-};
-
-function kindBadgeClass(kind: string) {
-  return KIND_BADGE[kind] ?? KIND_BADGE.other;
-}
-
-function formatTtl(ttlMs: number): string {
-  if (ttlMs === -1) return "∞";
-  if (ttlMs < 0) return "—";
-  const seconds = Math.round(ttlMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
-  return `${Math.round(seconds / 86400)}d`;
-}
-
-/** 快捷 TTL 选项（毫秒）；null = 永久。 */
-const TTL_PRESETS: Array<{ label: string; ms: number | null }> = [
-  { label: "1h", ms: 3_600_000 },
-  { label: "24h", ms: 86_400_000 },
-  { label: "7d", ms: 7 * 86_400_000 },
-  { label: "∞", ms: null },
-];
-
 export function RedisBrowser({
   profile,
 }: {
@@ -82,10 +59,7 @@ export function RedisBrowser({
   const redisConnect = useDatabaseStore((state) => state.redisConnect);
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
 
-  const [dbIndex, setDbIndex] = useState(() => {
-    const parsed = Number(profile.default_database ?? "0");
-    return Number.isInteger(parsed) && parsed >= 0 && parsed <= 15 ? parsed : 0;
-  });
+  const [dbIndex, setDbIndex] = useState(() => initialDbIndex(profile));
   const [pattern, setPattern] = useState("*");
   const [keys, setKeys] = useState<RedisKeyBrief[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -132,14 +106,8 @@ export function RedisBrowser({
         );
         // 过期响应：期间已有更新的扫描发起，丢弃，绝不覆盖新状态。
         if (seq !== scanSeqRef.current) return;
-        setKeys((current) => {
-          const merged = reset ? page.keys : [...current, ...page.keys];
-          // 兜底去重：SCAN 重扫到同一个键、或双击"继续扫描"时不产生重复行。
-          const seen = new Set<string>();
-          return merged.filter((entry) =>
-            seen.has(entry.key) ? false : (seen.add(entry.key), true),
-          );
-        });
+        // 兜底去重：SCAN 重扫到同一个键、或双击"继续扫描"时不产生重复行。
+        setKeys((current) => mergeKeyPage(current, page.keys, reset));
         setCursor(page.cursor);
         setDbsize(page.dbsize);
       } catch (failure) {
@@ -763,10 +731,7 @@ function HashEditor({
         hashCursor,
         200,
       );
-      setRows((current) => {
-        const seen = new Set(current.map((entry) => entry.field));
-        return [...current, ...page.fields.filter((entry) => !seen.has(entry.field))];
-      });
+      setRows((current) => mergeHashFields(current, page.fields));
       setHashCursor(page.cursor);
     } catch (failure) {
       setLoadError(toDbError(failure).message);
@@ -1349,24 +1314,6 @@ function StreamTable({ payload }: { payload: Extract<RedisValuePayload, { kind: 
 // ---------------------------------------------------------------------------
 // pub/sub 面板
 // ---------------------------------------------------------------------------
-
-/**
- * 消息负载解码：Rust 侧统一推 Base64（二进制无损）。
- * Base64 解码后再尝试严格 UTF-8：文本消息正常显示，
- * 真二进制消息回退显示 Base64（数据本体可复制还原）。
- */
-function decodePubsubMessage(event: RedisPubSubEvent): string {
-  if (event.messageBase64) {
-    try {
-      const raw = atob(event.messageBase64);
-      const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      return `base64: ${event.messageBase64}`;
-    }
-  }
-  return event.message ?? "";
-}
 
 function PubSubPanel({
   profile,

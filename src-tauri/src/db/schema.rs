@@ -57,7 +57,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -861,6 +861,11 @@ CREATE TABLE IF NOT EXISTS database_profiles (
     read_only INTEGER NOT NULL DEFAULT 1,
     connect_timeout_ms INTEGER NOT NULL DEFAULT 10000,
     query_timeout_ms INTEGER NOT NULL DEFAULT 60000,
+    -- Redis 扩展（v17）：standalone 之外的模式配置。MySQL 全部为 NULL。
+    -- `standalone` | `sentinel` | `cluster`
+    redis_mode TEXT,
+    sentinel_master TEXT,
+    nodes_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -1142,6 +1147,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // 老库就地升级，SSH / 部署 / 监控一行代码都不用改。
         conn.execute_batch(DATABASE_SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", 16u32)?;
+    }
+    if version < 17 {
+        // Redis 扩展：database_profiles 加 3 个可空列（连接模式 / sentinel
+        // master 名 / 节点列表 JSON）。MySQL 的行保持 NULL，行为不变。
+        // 表可能不存在（部分测试库只建了别的表），先确认再 ALTER。
+        let has_profiles: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'database_profiles'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_profiles > 0 {
+            add_column(&conn, "database_profiles", "redis_mode", "TEXT")?;
+            add_column(&conn, "database_profiles", "sentinel_master", "TEXT")?;
+            add_column(&conn, "database_profiles", "nodes_json", "TEXT")?;
+        }
+        conn.pragma_update(None, "user_version", 17u32)?;
     }
     Ok(())
 }

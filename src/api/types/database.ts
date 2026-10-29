@@ -9,9 +9,9 @@
  */
 
 /**
- * 常用关系型数据库。当前只有 `mysql` 有真实适配器；其余值出现在连接表单
- * 里是为了让"支持边界"可见，UI 会禁用并标注"尚未实现"——不能在还没有
- * 驱动/类型/取消实现时假装可选。
+ * 支持的数据库引擎。当前 `mysql` 与 `redis` 有真实适配器；其余值出现在
+ * 连接表单里是为了让"支持边界"可见，UI 会禁用并标注"尚未实现"——不能在
+ * 还没有驱动/类型/取消实现时假装可选。
  */
 export type DbEngine =
   | "mysql"
@@ -19,7 +19,12 @@ export type DbEngine =
   | "postgres"
   | "sqlite"
   | "sqlserver"
-  | "oracle";
+  | "oracle"
+  /** Redis：键值引擎，走独立的 db_redis_* 命令族与键浏览器视图。 */
+  | "redis";
+
+/** Redis 连接模式。cluster 只有 db 0；sentinel/cluster 直连（不走 SSH 隧道）。 */
+export type RedisMode = "standalone" | "sentinel" | "cluster";
 
 export type TlsMode = "disabled" | "verify_ca" | "verify_identity";
 
@@ -38,6 +43,12 @@ export interface DatabaseProfile {
   tls_ca_path: string | null;
   tls_server_name: string | null;
   read_only: boolean;
+  /** Redis 专用：连接模式；MySQL 为 null。 */
+  redis_mode: RedisMode | null;
+  /** Redis sentinel 模式的 master 名。 */
+  sentinel_master: string | null;
+  /** Redis sentinel/cluster 附加节点，JSON 字符串数组。 */
+  nodes_json: string | null;
   connect_timeout_ms: number;
   query_timeout_ms: number;
   created_at: number;
@@ -520,4 +531,81 @@ export interface HistoryWrite {
   rows: number;
   elapsed_ms: number;
   error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Redis 引擎（db_redis_* 命令族）
+// ---------------------------------------------------------------------------
+
+/** 键列表里的一行。ttl_ms：-1 = 永久，-2 = 不存在。 */
+export interface RedisKeyBrief {
+  key: string;
+  kind: string;
+  ttl_ms: number;
+}
+
+/** SCAN 的一页；cursor 为 0 表示已扫完。 */
+export interface RedisScanPage {
+  cursor: number;
+  keys: RedisKeyBrief[];
+  dbsize: number;
+}
+
+/** 键元信息。memory_bytes：None = 服务器不支持或键已不存在。 */
+export interface RedisKeyInfo {
+  key: string;
+  kind: string;
+  ttl_ms: number;
+  memory_bytes: number | null;
+}
+
+export interface RedisFieldEntry {
+  field: string;
+  /** 二进制值以 `b64:` 前缀 + Base64 编码传输（数据无损）。 */
+  value: string;
+}
+
+/** HSCAN 的一页；cursor 为 0 表示已取完。 */
+export interface RedisHashPage {
+  cursor: number;
+  fields: RedisFieldEntry[];
+  length: number;
+}
+
+export interface RedisZEntry {
+  member: string;
+  score: number;
+}
+
+export interface RedisStreamEntry {
+  id: string;
+  fields: RedisFieldEntry[];
+}
+
+/** 键值的类型化载荷：UI 按 kind 分支渲染与编辑。 */
+export type RedisValuePayload =
+  | { kind: "string"; value: string; binary: boolean }
+  | { kind: "hash"; fields: RedisFieldEntry[]; length: number; cursor: number }
+  | { kind: "list"; items: string[]; length: number; truncated: boolean }
+  | { kind: "set"; members: string[]; length: number; truncated: boolean }
+  | { kind: "zset"; entries: RedisZEntry[]; length: number; truncated: boolean }
+  | { kind: "stream"; entries: RedisStreamEntry[]; length: number }
+  | { kind: "other"; type_name: string };
+
+/** list 写操作形态（与 Rust ListWrite 对应）。 */
+export type RedisListWrite =
+  | { push: { front: boolean; value: string } }
+  | { set: { index: number; value: string } }
+  | { remove: { value: string } };
+
+/** 订阅事件（经 Tauri Channel 推送）。 */
+export interface RedisPubSubEvent {
+  event: "subscribed" | "message" | "error" | "closed" | "unsubscribed";
+  subId: string;
+  profileId?: string;
+  channel?: string;
+  /** 系统类事件的文本（错误/关闭原因）。 */
+  message?: string;
+  /** 消息事件的字节负载：统一 Base64 编码（二进制无损），前端解码显示。 */
+  messageBase64?: string;
 }

@@ -42,6 +42,9 @@ fn profile() -> DatabaseProfile {
         query_timeout_ms: 30_000,
         created_at: now,
         updated_at: now,
+        redis_mode: None,
+        sentinel_master: None,
+        nodes_json: None,
     }
 }
 

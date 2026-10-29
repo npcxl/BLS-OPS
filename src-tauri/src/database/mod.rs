@@ -25,6 +25,8 @@
 //! * 不自动重试写 SQL / 提交事务。
 //! * 不把"取消前端 Promise"当作服务器取消（见 `query` 的 KILL 流程）。
 //! * PostgreSQL 只在模型里留了枚举值：连接会被明确拒绝，绝不返回假成功。
+//! * Redis 是与 SQL 管线平行的键值引擎（`redis_driver`）：独立的命令族
+//!   `db_redis_*` 与键浏览器视图，不走 session/query/事务。
 
 pub mod codec;
 pub mod driver;
@@ -35,6 +37,7 @@ pub mod model;
 pub mod mutate;
 pub mod profiles;
 pub mod query;
+pub mod redis_driver;
 pub mod runtime;
 pub mod schema_ops;
 pub mod session;
@@ -44,3 +47,4 @@ pub mod tunnel;
 
 pub use manager::DatabaseManager;
 pub use model::*;
+pub use redis_driver::RedisManager;

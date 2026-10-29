@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    database::DatabaseManager,
+    database::{DatabaseManager, RedisManager},
     db::AppDb,
     deployment::ai::model::AiReviewRegistry,
     deployment::artifact::tasks::TaskRegistry,
@@ -40,6 +40,8 @@ pub struct AppState {
     pub transfers: Arc<crate::transfer::TransferCenter>,
     /// 数据库工作台：连接运行时、隧道、会话、查询与导出。
     pub database: DatabaseManager,
+    /// Redis 引擎：与 SQL 管线平行的键值会话与订阅任务。
+    pub redis: RedisManager,
     /// 用户通过系统保存对话框明确选过的导出目标；前端不能自行传任意路径。
     pub export_paths: Arc<Mutex<HashSet<String>>>,
 }
@@ -60,6 +62,7 @@ impl AppState {
             command_search: crate::command_center::CommandSearchCache::default(),
             transfers: Arc::new(crate::transfer::TransferCenter::new()),
             database: DatabaseManager::default(),
+            redis: RedisManager::default(),
             export_paths: Arc::new(Mutex::new(HashSet::new())),
         }
     }

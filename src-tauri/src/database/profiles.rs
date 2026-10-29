@@ -11,7 +11,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 
 use super::model::{
-    DatabaseProfile, DbErrorInfo, ENGINE_MYSQL, ENGINE_POSTGRES, TLS_DISABLED, TLS_VERIFY_CA,
+    DatabaseProfile, DbErrorInfo, ENGINE_MYSQL, ENGINE_POSTGRES, ENGINE_REDIS,
+    REDIS_MODE_CLUSTER, REDIS_MODE_SENTINEL, REDIS_MODE_STANDALONE, TLS_DISABLED, TLS_VERIFY_CA,
     TLS_VERIFY_IDENTITY,
 };
 
@@ -35,6 +36,9 @@ fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DatabaseProfile
         tls_ca_path: row.get("tls_ca_path")?,
         tls_server_name: row.get("tls_server_name")?,
         read_only: row.get::<_, i64>("read_only")? != 0,
+        redis_mode: row.get("redis_mode")?,
+        sentinel_master: row.get("sentinel_master")?,
+        nodes_json: row.get("nodes_json")?,
         connect_timeout_ms: row.get::<_, i64>("connect_timeout_ms")?.max(1_000) as u64,
         query_timeout_ms: row.get::<_, i64>("query_timeout_ms")?.max(1_000) as u64,
         created_at: row.get("created_at")?,
@@ -59,7 +63,7 @@ pub fn get_profile(conn: &Connection, id: &str) -> Result<Option<DatabaseProfile
 
 /// 配置校验：错误信息是给人看的，且**不做任何网络 I/O**。
 pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<(), DbErrorInfo> {
-    if profile.engine != ENGINE_MYSQL {
+    if profile.engine != ENGINE_MYSQL && profile.engine != ENGINE_REDIS {
         return Err(DbErrorInfo::new(
             "unsupported",
             if profile.engine == ENGINE_POSTGRES {
@@ -67,7 +71,7 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
                     .to_string()
             } else {
                 format!(
-                    "不支持的数据库类型：{}（当前只实现 MySQL 协议，不区分 8.0/8.4 小版本）",
+                    "不支持的数据库类型：{}（当前支持 MySQL 与 Redis）",
                     profile.engine
                 )
             },
@@ -79,11 +83,15 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
     if profile.host.trim().is_empty() {
         return Err(DbErrorInfo::new("config", "数据库主机不能为空"));
     }
-    if profile.username.trim().is_empty() {
+    // Redis 6+ 的 ACL 才有用户名，绝大多数部署只有密码；MySQL 必填。
+    if profile.engine == ENGINE_MYSQL && profile.username.trim().is_empty() {
         return Err(DbErrorInfo::new("config", "用户名不能为空"));
     }
     if profile.port == 0 {
         return Err(DbErrorInfo::new("config", "端口必须在 1 到 65535 之间"));
+    }
+    if profile.engine == ENGINE_REDIS {
+        validate_redis_profile(profile)?;
     }
     if !matches!(
         profile.tls_mode.as_str(),
@@ -130,6 +138,42 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
     Ok(())
 }
 
+/// Redis 配置校验：模式必须合法，sentinel 必须有 master 名。
+fn validate_redis_profile(profile: &DatabaseProfile) -> Result<(), DbErrorInfo> {
+    let mode = profile.redis_mode.as_deref().unwrap_or(REDIS_MODE_STANDALONE);
+    if !matches!(
+        mode,
+        REDIS_MODE_STANDALONE | REDIS_MODE_SENTINEL | REDIS_MODE_CLUSTER
+    ) {
+        return Err(DbErrorInfo::new(
+            "config",
+            format!("未知的 Redis 连接模式：{mode}"),
+        ));
+    }
+    if mode == REDIS_MODE_SENTINEL
+        && profile
+            .sentinel_master
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return Err(DbErrorInfo::new(
+            "config",
+            "sentinel 模式必须填写 master 名称",
+        ));
+    }
+    if let Some(nodes) = profile.nodes_json.as_deref() {
+        if serde_json::from_str::<Vec<String>>(nodes).is_err() {
+            return Err(DbErrorInfo::new(
+                "config",
+                "节点列表必须是 JSON 字符串数组，例如 [\"10.0.0.2:26379\"]",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// 保存（插入或更新）。密码只在 `password = Some` 时写钥匙串。
 pub fn save_profile(
     conn: &Connection,
@@ -168,8 +212,9 @@ pub fn save_profile(
         INSERT INTO database_profiles (
             id, name, engine, host, port, username, default_database, secret_ref,
             ssh_server_id, tls_mode, tls_ca_path, tls_server_name, read_only,
+            redis_mode, sentinel_master, nodes_json,
             connect_timeout_ms, query_timeout_ms, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             engine=excluded.engine,
@@ -183,6 +228,9 @@ pub fn save_profile(
             tls_ca_path=excluded.tls_ca_path,
             tls_server_name=excluded.tls_server_name,
             read_only=excluded.read_only,
+            redis_mode=excluded.redis_mode,
+            sentinel_master=excluded.sentinel_master,
+            nodes_json=excluded.nodes_json,
             connect_timeout_ms=excluded.connect_timeout_ms,
             query_timeout_ms=excluded.query_timeout_ms,
             updated_at=excluded.updated_at
@@ -217,6 +265,9 @@ pub fn save_profile(
                 .map(str::trim)
                 .filter(|value| !value.is_empty()),
             i64::from(profile.read_only),
+            profile.redis_mode.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+            profile.sentinel_master.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+            profile.nodes_json.as_deref().map(str::trim).filter(|v| !v.is_empty()),
             profile.connect_timeout_ms as i64,
             profile.query_timeout_ms as i64,
             created_at,

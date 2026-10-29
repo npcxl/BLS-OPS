@@ -73,6 +73,10 @@ fn connection_fields_changed(old: &DatabaseProfile, new: &DatabaseProfile) -> bo
         || old.read_only != new.read_only
         || old.connect_timeout_ms != new.connect_timeout_ms
         || old.query_timeout_ms != new.query_timeout_ms
+        // Redis 专属连接参数：模式/哨兵 master/集群节点任一变化都要求断开重连。
+        || old.redis_mode != new.redis_mode
+        || old.sentinel_master != new.sentinel_master
+        || old.nodes_json != new.nodes_json
 }
 
 #[tauri::command]
@@ -97,6 +101,9 @@ pub async fn db_profile_save(
         .unwrap_or(false);
     if reset {
         state.database.close_profile(&saved.id).await;
+        // Redis 的运行时不归 SQL 管理器管，同样要断开（否则改完配置
+        // 旧连接还挂在内存里，前端状态与真实配置不一致）。
+        state.redis.close_profile(&saved.id).await;
     }
     Ok(saved)
 }
@@ -104,6 +111,7 @@ pub async fn db_profile_save(
 #[tauri::command]
 pub async fn db_profile_delete(state: State<'_, AppState>, id: String) -> Result<(), DbErrorInfo> {
     state.database.close_profile(&id).await;
+    state.redis.close_profile(&id).await;
     let conn = open_db(&state).map_err(db_error)?;
     profiles::delete_profile(&conn, &id).map_err(db_error)
 }
@@ -118,6 +126,14 @@ pub async fn db_test_connection(
         profiles::validate_profile(&conn, &request.profile)?;
         driver::plan_from_profile(&conn, &request.profile, request.password.as_deref())?
     };
+    // Redis 与 MySQL 的测试路径完全平行：建连 + PING + 立即关闭，
+    // 不留运行时（测试连接不该有副作用）。
+    if plan.profile.engine == ENGINE_REDIS {
+        let profile_id = plan.profile.id.clone();
+        let result = state.redis.test_connection(&state.database.tunnels, plan).await;
+        let _ = state.redis.close_profile(&profile_id).await;
+        return Ok(result);
+    }
     Ok(state.database.test_connection(plan).await)
 }
 
@@ -132,6 +148,12 @@ pub async fn db_connect(
     session_id: String,
 ) -> Result<DbSessionInfo, DbErrorInfo> {
     let plan = plan_for(&state, &profile_id)?;
+    if plan.profile.engine == ENGINE_REDIS {
+        return Err(DbErrorInfo::new(
+            "unsupported",
+            "Redis 连接请使用键浏览器入口（db_redis_connect）",
+        ));
+    }
     state.database.open_session(plan, &session_id).await
 }
 
@@ -157,6 +179,17 @@ pub async fn db_profile_status(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<ProfileRuntimeStatus, DbErrorInfo> {
+    // 引擎路由：Redis 的运行时在 RedisManager，状态从那边读。
+    let is_redis = {
+        let conn = open_db(&state).map_err(db_error)?;
+        profiles::get_profile(&conn, &profile_id)
+            .map_err(db_error)?
+            .map(|profile| profile.engine == ENGINE_REDIS)
+            .unwrap_or(false)
+    };
+    if is_redis {
+        return Ok(state.redis.status(&profile_id).await);
+    }
     Ok(state.database.profile_status(&profile_id).await)
 }
 
@@ -166,6 +199,7 @@ pub async fn db_profile_close(
     profile_id: String,
 ) -> Result<(), DbErrorInfo> {
     state.database.close_profile(&profile_id).await;
+    state.redis.close_profile(&profile_id).await;
     Ok(())
 }
 
@@ -792,4 +826,242 @@ mod tests {
         assert_eq!(export_file_name(r"C:\exports\orders.CSV"), "orders.CSV");
         assert_eq!(export_file_name("  "), "export.csv");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Redis 引擎：与 SQL 管线平行的键值命令族。
+// 命名统一 `db_redis_*`；所有命令按 profile_id 定位会话（Redis 没有
+// 逻辑会话/事务的概念），db_index 由前端显式传（0..=15）。
+// ---------------------------------------------------------------------------
+
+use crate::database::redis_driver::{
+    ListWrite, RedisHashPage, RedisKeyInfo, RedisScanPage, RedisSession, RedisValuePayload,
+};
+
+async fn redis_session_for(
+    state: &State<'_, AppState>,
+    profile_id: &str,
+) -> Result<Arc<RedisSession>, DbErrorInfo> {
+    state.redis.session(profile_id).await
+}
+
+#[tauri::command]
+pub async fn db_redis_connect(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<ProfileRuntimeStatus, DbErrorInfo> {
+    let plan = plan_for(&state, &profile_id)?;
+    if plan.profile.engine != ENGINE_REDIS {
+        return Err(DbErrorInfo::new(
+            "unsupported",
+            format!("db_redis_connect 只接受 Redis 连接（当前 {}）", plan.profile.engine),
+        ));
+    }
+    let session = state.redis.runtime(&state.database.tunnels, plan).await?;
+    Ok(session.status(0).await)
+}
+
+#[tauri::command]
+pub async fn db_redis_scan(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    pattern: Option<String>,
+    cursor: u64,
+    count: Option<usize>,
+) -> Result<RedisScanPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session
+        .scan(db_index, pattern.as_deref().unwrap_or("*"), cursor, count.unwrap_or(100))
+        .await
+}
+
+#[tauri::command]
+pub async fn db_redis_key_info(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+) -> Result<RedisKeyInfo, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.key_info(db_index, &key).await
+}
+
+#[tauri::command]
+pub async fn db_redis_read_value(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+) -> Result<RedisValuePayload, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.read_value(db_index, &key).await
+}
+
+#[tauri::command]
+pub async fn db_redis_write_string(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    value: String,
+    // true = value 是原始字节的 Base64 编码，写入前解码（二进制无损往返）。
+    binary: Option<bool>,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session
+        .write_string(db_index, &key, &value, binary.unwrap_or(false))
+        .await
+}
+
+/// 新建 string 键：SET NX 原子写入，键已存在时报错、绝不静默覆盖。
+#[tauri::command]
+pub async fn db_redis_key_create(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    value: String,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.create_string_key(db_index, &key, &value).await
+}
+
+/// HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。
+#[tauri::command]
+pub async fn db_redis_hash_scan(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    cursor: u64,
+    count: Option<usize>,
+) -> Result<RedisHashPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session
+        .hash_scan(db_index, &key, cursor, count.unwrap_or(200))
+        .await
+}
+
+#[tauri::command]
+pub async fn db_redis_write_hash_field(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    field: String,
+    // None = 删除字段。
+    value: Option<String>,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.write_hash_field(db_index, &key, &field, value.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_redis_write_list(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    action: ListWrite,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.write_list(db_index, &key, action).await
+}
+
+#[tauri::command]
+pub async fn db_redis_write_set(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    member: String,
+    add: bool,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.write_set(db_index, &key, &member, add).await
+}
+
+#[tauri::command]
+pub async fn db_redis_write_zset(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    member: String,
+    // None = 移除成员。
+    score: Option<f64>,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.write_zset(db_index, &key, &member, score).await
+}
+
+#[tauri::command]
+pub async fn db_redis_key_delete(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.delete_key(db_index, &key).await
+}
+
+#[tauri::command]
+pub async fn db_redis_key_expire(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    // None = PERSIST（永久）。
+    ttl_ms: Option<i64>,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.expire_key(db_index, &key, ttl_ms).await
+}
+
+#[tauri::command]
+pub async fn db_redis_key_rename(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    old_key: String,
+    new_key: String,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.rename_key(db_index, &old_key, &new_key).await
+}
+
+#[tauri::command]
+pub async fn db_redis_publish(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    channel: String,
+    message: String,
+) -> Result<i64, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.publish(db_index, &channel, &message).await
+}
+
+/// 订阅：后台长任务把消息经 Channel 推给前端；返回 sub_id。
+#[tauri::command]
+pub async fn db_redis_subscribe(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    channel: String,
+    on_message: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<String, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    state
+        .redis
+        .subscribe(session, db_index, channel, on_message)
+        .await
+}
+
+#[tauri::command]
+pub async fn db_redis_unsubscribe(state: State<'_, AppState>, sub_id: String) -> Result<(), DbErrorInfo> {
+    state.redis.unsubscribe(&sub_id).await;
+    Ok(())
 }

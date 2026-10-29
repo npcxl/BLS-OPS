@@ -16,9 +16,12 @@ import {
   FileCode2,
   KeyRound,
   Loader2,
+  Pencil,
+  PlugZap,
   Plus,
   RefreshCw,
   Table2,
+  Trash2,
   TriangleAlert,
 } from "@/components/icons";
 import type {
@@ -246,6 +249,11 @@ const ProfileRow = memo(function ProfileRow({
   onToggle,
   onOpen,
   onSelect,
+  onEdit,
+  onDelete,
+  onRefresh,
+  onConnect,
+  onDisconnect,
   onContextMenu,
 }: {
   profile: DatabaseProfile;
@@ -257,6 +265,11 @@ const ProfileRow = memo(function ProfileRow({
   onToggle: () => void;
   onOpen: () => void;
   onSelect: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onRefresh: () => void;
+  onConnect: () => void;
+  onDisconnect: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation();
@@ -305,6 +318,64 @@ const ProfileRow = memo(function ProfileRow({
       >
         <Highlight text={profile.name} query={query} />
       </span>
+      {/* 行内快捷操作：悬浮才出现，避免连接列表变成按钮墙。 */}
+      <Tooltip label={connected ? t("关闭连接") : t("打开连接")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-5 w-5 shrink-0 px-0 group-hover:flex"
+          aria-label={connected ? t("关闭连接") : t("打开连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (connected) onDisconnect();
+            else onConnect();
+          }}
+        >
+          <PlugZap size={12} className={connected ? "text-fg" : "text-fg-subtle"} />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("刷新")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-5 w-5 shrink-0 px-0 group-hover:flex"
+          aria-label={t("刷新")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRefresh();
+          }}
+        >
+          <RefreshCw size={12} />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("编辑连接")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-5 w-5 shrink-0 px-0 group-hover:flex"
+          aria-label={t("编辑连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+        >
+          <Pencil size={12} />
+        </Button>
+      </Tooltip>
+      <Tooltip label={t("删除连接")} side="left">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="hidden h-5 w-5 shrink-0 px-0 hover:text-danger group-hover:flex"
+          aria-label={t("删除连接")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 size={12} />
+        </Button>
+      </Tooltip>
       {error && <TriangleAlert size={12} className="shrink-0 text-danger" />}
     </div>
   );
@@ -331,6 +402,7 @@ export function DatabaseAssetSidebar() {
 
   const refreshProfiles = useDatabaseStore((state) => state.refreshProfiles);
   const toggleProfile = useDatabaseStore((state) => state.toggleProfile);
+  const redisConnect = useDatabaseStore((state) => state.redisConnect);
   const toggleDatabase = useDatabaseStore((state) => state.toggleDatabase);
   const toggleTable = useDatabaseStore((state) => state.toggleTable);
   const toggleCategory = useDatabaseStore((state) => state.toggleCategory);
@@ -573,13 +645,15 @@ export function DatabaseAssetSidebar() {
 
   const connectionMenu = (profile: DatabaseProfile) => {
     const connected = !!sessions[profile.id];
+    const isRedis = profile.engine === "redis";
     return [
       {
         id: "open",
         label: t("打开连接"),
         onSelect: () => {
           open(profile);
-          void ensureSession(profile.id);
+          if (isRedis) void redisConnect(profile.id);
+          else void ensureSession(profile.id);
         },
       },
       ...(connected
@@ -587,7 +661,10 @@ export function DatabaseAssetSidebar() {
           {
             id: "reconnect",
             label: t("重新连接"),
-            onSelect: () => void reconnect(profile.id),
+            onSelect: () => {
+              if (isRedis) void redisConnect(profile.id);
+              else void reconnect(profile.id);
+            },
           },
           { separator: true as const },
           {
@@ -603,42 +680,47 @@ export function DatabaseAssetSidebar() {
         label: t("连接信息"),
         onSelect: () => showConnectionInfo(profile.id),
       },
-      {
-        id: "new-query",
-        label: t("新建查询"),
-        onSelect: () => {
-          open(profile);
-          newQuery({
-            profileId: profile.id,
-            connectionName: profile.name,
-            database:
-              sessions[profile.id]?.current_database ??
-              profile.default_database ??
-              null,
-          });
-        },
-      },
-      {
-        id: "new-database",
-        label: t("新建数据库"),
-        onSelect: () => {
-          open(profile);
-          setSchemaDialog({
-            mode: "create_database",
-            profileId: profile.id,
-            database: null,
-          });
-          if (!sessions[profile.id]) void ensureSession(profile.id);
-        },
-      },
-      {
-        id: "refresh",
-        label: t("刷新数据库"),
-        onSelect: () => {
-          open(profile);
-          void refreshDatabases(profile.id);
-        },
-      },
+      // Redis 没有 SQL 查询与库/表目录：新建查询、新建库、刷新库列表只对 SQL 引擎出现。
+      ...(isRedis
+        ? []
+        : [
+            {
+              id: "new-query",
+              label: t("新建查询"),
+              onSelect: () => {
+                open(profile);
+                newQuery({
+                  profileId: profile.id,
+                  connectionName: profile.name,
+                  database:
+                    sessions[profile.id]?.current_database ??
+                    profile.default_database ??
+                    null,
+                });
+              },
+            },
+            {
+              id: "new-database",
+              label: t("新建数据库"),
+              onSelect: () => {
+                open(profile);
+                setSchemaDialog({
+                  mode: "create_database",
+                  profileId: profile.id,
+                  database: null,
+                });
+                if (!sessions[profile.id]) void ensureSession(profile.id);
+              },
+            },
+            {
+              id: "refresh",
+              label: t("刷新数据库"),
+              onSelect: () => {
+                open(profile);
+                void refreshDatabases(profile.id);
+              },
+            },
+          ]),
       { separator: true },
       {
         id: "edit",
@@ -898,6 +980,17 @@ export function DatabaseAssetSidebar() {
                   open(profile);
                   showConnectionInfo(profile.id);
                 }}
+                onEdit={() => setDialog({ mode: "edit", profile })}
+                onDelete={() => setDeleteTarget(profile)}
+                onRefresh={() => {
+                  open(profile);
+                  void refreshDatabases(profile.id);
+                }}
+                onConnect={() => {
+                  open(profile);
+                  void ensureSession(profile.id);
+                }}
+                onDisconnect={() => setDisconnectTarget(profile)}
                 onContextMenu={(event) =>
                   menu.onContextMenu(() => connectionMenu(profile))(event)
                 }

@@ -465,6 +465,23 @@ pub fn run() {
             commands::db_open_sql_file,
             commands::db_save_sql_file,
             commands::db_module_info,
+            commands::db_redis_connect,
+            commands::db_redis_scan,
+            commands::db_redis_key_info,
+            commands::db_redis_read_value,
+            commands::db_redis_hash_scan,
+            commands::db_redis_write_string,
+            commands::db_redis_write_hash_field,
+            commands::db_redis_write_list,
+            commands::db_redis_write_set,
+            commands::db_redis_write_zset,
+            commands::db_redis_key_delete,
+            commands::db_redis_key_create,
+            commands::db_redis_key_expire,
+            commands::db_redis_key_rename,
+            commands::db_redis_publish,
+            commands::db_redis_subscribe,
+            commands::db_redis_unsubscribe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

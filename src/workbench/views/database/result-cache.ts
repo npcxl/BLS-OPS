@@ -9,6 +9,67 @@ import type { DbValue } from "@/api/types/database";
 
 export const DEFAULT_INACTIVE_RESULT_ROWS = 500;
 export const DEFAULT_INACTIVE_RESULT_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_GLOBAL_RESULT_BYTES = 64 * 1024 * 1024;
+
+interface InactiveCacheEntry {
+  id: string;
+  bytes: number;
+  evict: () => void;
+  touched: number;
+}
+
+const inactiveCaches = new Map<string, InactiveCacheEntry>();
+let touchCounter = 0;
+
+export function globalResultByteBudget(): number {
+  try {
+    const raw = Number(localStorage.getItem("ops.db.globalResultBytes"));
+    if (!Number.isFinite(raw)) return DEFAULT_GLOBAL_RESULT_BYTES;
+    return Math.min(512 * 1024 * 1024, Math.max(8 * 1024 * 1024, Math.trunc(raw)));
+  } catch {
+    return DEFAULT_GLOBAL_RESULT_BYTES;
+  }
+}
+
+export function unregisterInactiveResult(id: string): void {
+  inactiveCaches.delete(id);
+}
+
+/** 登记一个隐藏工作项的结果；超出全局预算时淘汰最久未访问的隐藏页。 */
+export function registerInactiveResult(
+  id: string,
+  bytes: number,
+  evict: () => void,
+): void {
+  inactiveCaches.set(id, {
+    id,
+    bytes,
+    evict,
+    touched: ++touchCounter,
+  });
+  enforceGlobalResultBudget(id);
+}
+
+export function enforceGlobalResultBudget(keepId?: string): void {
+  let total = 0;
+  for (const entry of inactiveCaches.values()) total += entry.bytes;
+  if (total <= globalResultByteBudget()) return;
+
+  const candidates = [...inactiveCaches.values()]
+    .filter((entry) => entry.id !== keepId)
+    .sort((a, b) => a.touched - b.touched);
+  for (const entry of candidates) {
+    if (total <= globalResultByteBudget()) break;
+    inactiveCaches.delete(entry.id);
+    total -= entry.bytes;
+    entry.evict();
+  }
+}
+
+export function resetInactiveResultRegistryForTests(): void {
+  inactiveCaches.clear();
+  touchCounter = 0;
+}
 
 export function inactiveResultRowBudget(): number {
   try {

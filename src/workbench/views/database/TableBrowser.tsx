@@ -67,7 +67,9 @@ import {
   estimateRowsBytes,
   inactiveResultByteBudget,
   inactiveResultRowBudget,
+  registerInactiveResult,
   shouldEvictInactiveResult,
+  unregisterInactiveResult,
 } from "./result-cache";
 import { EditRowDialog } from "./EditRowDialog";
 import { ExportDialog } from "./ExportDialog";
@@ -187,7 +189,7 @@ function sameKey(a: AssignValue[], b: AssignValue[]): boolean {
 }
 
 export function TableBrowser({
-  tabId: _tabId,
+  tabId,
   profile,
   session,
   database,
@@ -392,6 +394,22 @@ export function TableBrowser({
       void load(true);
     }
   }, [active, load, pending.length, result, resultBytes]);
+
+  // 所有隐藏的数据页共享一个全局预算，避免 100 个工作项各自保留 8 MiB。
+  useEffect(() => {
+    if (active || !result || pending.length > 0) {
+      unregisterInactiveResult(tabId);
+      return;
+    }
+    registerInactiveResult(tabId, resultBytes, () => {
+      setResult(null);
+      setTotal(null);
+      setEditing(null);
+      setCellDetail(null);
+      lastLoadKeyRef.current = "";
+    });
+    return () => unregisterInactiveResult(tabId);
+  }, [active, pending.length, result, resultBytes, tabId]);
 
   const resetPaging = () => {
     setPageIndex(0);

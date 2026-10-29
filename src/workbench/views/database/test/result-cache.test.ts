@@ -3,6 +3,8 @@ import {
   DEFAULT_INACTIVE_RESULT_BYTES,
   DEFAULT_INACTIVE_RESULT_ROWS,
   estimateRowsBytes,
+  registerInactiveResult,
+  resetInactiveResultRegistryForTests,
   shouldEvictInactiveResult,
 } from "../result-cache";
 
@@ -57,5 +59,18 @@ describe("result cache budget", () => {
         bytes: DEFAULT_INACTIVE_RESULT_BYTES + 1,
       }),
     ).toBe(true);
+  });
+});
+
+describe("global result cache budget", () => {
+  it("evicts the oldest hidden cache when the shared budget is exceeded", () => {
+    resetInactiveResultRegistryForTests();
+    localStorage.setItem("ops.db.globalResultBytes", String(8 * 1024 * 1024));
+    const evicted: string[] = [];
+    registerInactiveResult("a", 5 * 1024 * 1024, () => evicted.push("a"));
+    registerInactiveResult("b", 5 * 1024 * 1024, () => evicted.push("b"));
+    expect(evicted).toEqual(["a"]);
+    resetInactiveResultRegistryForTests();
+    localStorage.removeItem("ops.db.globalResultBytes");
   });
 });

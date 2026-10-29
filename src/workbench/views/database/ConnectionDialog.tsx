@@ -52,6 +52,9 @@ function newProfile(): DatabaseProfile {
     tls_ca_path: null,
     tls_server_name: null,
     read_only: true,
+    redis_mode: null,
+    sentinel_master: null,
+    nodes_json: null,
     connect_timeout_ms: 10_000,
     query_timeout_ms: 60_000,
     created_at: now,
@@ -100,13 +103,32 @@ export function ConnectionDialog({
   const patch = (value: Partial<DatabaseProfile>) =>
     setDraft((current) => ({ ...current, ...value }));
 
+  /** 切引擎时联动默认值：端口/用户名随引擎走，Redis 补上模式字段。 */
+  const changeEngine = (engine: DatabaseProfile["engine"]) => {
+    if (engine === "redis") {
+      patch({
+        engine,
+        port: draft.port === 3306 ? 6379 : draft.port,
+        redis_mode: draft.redis_mode ?? "standalone",
+      });
+      return;
+    }
+    patch({
+      engine,
+      port: draft.port === 6379 ? 3306 : draft.port,
+      username: draft.username.trim() === "" && engine === "mysql" ? "root" : draft.username,
+    });
+  };
+
   const save = async () => {
     setError(null);
     if (!draft.name.trim()) {
       setError(t("连接名称不能为空"));
       return;
     }
-    if (!draft.host.trim() || !draft.username.trim()) {
+    // Redis 6+ 的 ACL 才有用户名：Redis 不强制用户名。
+    const usernameRequired = draft.engine !== "redis";
+    if (!draft.host.trim() || (usernameRequired && !draft.username.trim())) {
       setError(t("主机和用户名不能为空"));
       return;
     }
@@ -201,11 +223,10 @@ export function ConnectionDialog({
             <Select
               value={draft.engine}
               ariaLabel={t("数据库类型")}
-              onChange={(value) =>
-                patch({ engine: value as DatabaseProfile["engine"] })
-              }
+              onChange={(value) => changeEngine(value as DatabaseProfile["engine"])}
               options={[
                 { value: "mysql", label: t("MySQL（不区分版本）"), hint: "MySQL 8.x" },
+                { value: "redis", label: t("Redis"), hint: "Redis 6+ / 键浏览器" },
                 {
                   value: "mariadb",
                   label: t("MariaDB（尚未实现）"),
@@ -227,9 +248,13 @@ export function ConnectionDialog({
             />
           </Field>
           <p className="pb-0.5 text-11 leading-relaxed text-fg-subtle">
-            {t(
-              "MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。其它引擎只保留适配器边界，当前版本不可选。",
-            )}
+            {draft.engine === "redis"
+              ? t(
+                  "Redis 走独立的键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），不提供 SQL 工作台。",
+                )
+              : t(
+                  "MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。其它引擎只保留适配器边界，当前版本不可选。",
+                )}
           </p>
         </div>
 
@@ -264,7 +289,10 @@ export function ConnectionDialog({
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <Field label={t("用户名")}>
+          <Field
+            label={draft.engine === "redis" ? t("用户名（ACL，可选）") : t("用户名")}
+            hint={draft.engine === "redis" ? t("Redis 6+ ACL 才有用户名；留空 = 只用密码") : undefined}
+          >
             <input
               className={fieldClass}
               value={draft.username}
@@ -304,16 +332,93 @@ export function ConnectionDialog({
           </label>
         )}
 
-        <Field label={t("默认数据库（可选）")}>
+        <Field
+          label={draft.engine === "redis" ? t("默认 db index（0-15，可选）") : t("默认数据库（可选）")}
+        >
           <input
             className={fieldClass}
             value={draft.default_database ?? ""}
             onChange={(event) =>
               patch({ default_database: event.target.value.trim() || null })
             }
-            placeholder={t("留空则连接后手动选择")}
+            placeholder={
+              draft.engine === "redis" ? t("留空 = db 0；cluster 模式忽略") : t("留空则连接后手动选择")
+            }
           />
         </Field>
+
+        {draft.engine === "redis" && (
+          <div className="rounded-[8px] border border-line bg-surface-2/60 p-2">
+            <div className="mb-1.5 text-11 font-medium text-fg-muted">{t("Redis 连接模式")}</div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label={t("模式")}>
+                <Select
+                  value={draft.redis_mode ?? "standalone"}
+                  ariaLabel={t("Redis 连接模式")}
+                  onChange={(value) =>
+                    patch({ redis_mode: value as DatabaseProfile["redis_mode"] })
+                  }
+                  options={[
+                    { value: "standalone", label: t("单机（Standalone）"), hint: t("支持 SSH 隧道") },
+                    { value: "sentinel", label: t("哨兵（Sentinel）"), hint: t("直连，不走隧道") },
+                    { value: "cluster", label: t("集群（Cluster）"), hint: t("直连，仅 db 0") },
+                  ]}
+                />
+              </Field>
+              {(draft.redis_mode ?? "standalone") === "sentinel" && (
+                <Field label={t("Master 名称")} hint={t("sentinel.conf 里的 mymaster 之类的名字")}>
+                  <input
+                    className={fieldClass}
+                    value={draft.sentinel_master ?? ""}
+                    onChange={(event) =>
+                      patch({ sentinel_master: event.target.value.trim() || null })
+                    }
+                    placeholder="mymaster"
+                  />
+                </Field>
+              )}
+            </div>
+            {draft.redis_mode === "sentinel" && (
+              <div className="mt-2">
+                <Field
+                  label={t("其余哨兵节点（可选，JSON 数组）")}
+                  hint={t("例如 [\"10.0.0.2:26379\",\"10.0.0.3:26379\"]；主机:端口已包含首个哨兵")}
+                >
+                  <input
+                    className={fieldClass}
+                    value={draft.nodes_json ?? ""}
+                    onChange={(event) =>
+                      patch({ nodes_json: event.target.value.trim() || null })
+                    }
+                  />
+                </Field>
+              </div>
+            )}
+            {draft.redis_mode === "cluster" && (
+              <div className="mt-2">
+                <Field
+                  label={t("其余集群节点（可选，JSON 数组）")}
+                  hint={t("至少给出一个可达节点即可，客户端会自动发现其余分片")}
+                >
+                  <input
+                    className={fieldClass}
+                    value={draft.nodes_json ?? ""}
+                    onChange={(event) =>
+                      patch({ nodes_json: event.target.value.trim() || null })
+                    }
+                  />
+                </Field>
+              </div>
+            )}
+            {(draft.redis_mode ?? "standalone") !== "standalone" && (
+              <p className="mt-2 text-11 leading-relaxed text-fg-subtle">
+                {t(
+                  "哨兵/集群模式下所有节点必须能从本机直连（不支持经 SSH 隧道），且当前版本不支持订阅（pub/sub）。",
+                )}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="rounded-[8px] border border-line p-2">
           <div className="mb-1.5 text-11 font-medium text-fg-muted">{t("SSH 隧道")}</div>
@@ -423,9 +528,13 @@ export function ConnectionDialog({
             onChange={(event) => patch({ read_only: event.target.checked })}
           />
           <span className="text-11 leading-relaxed text-fg-muted">
-            {t(
-              "只读连接：连接后执行 SET SESSION TRANSACTION READ ONLY，写语句会被服务器拒绝。要修改数据请显式关闭。",
-            )}
+            {draft.engine === "redis"
+              ? t(
+                  "只读连接：键的写入、删除、TTL 修改与 PUBLISH 都会被拒绝，只能浏览。要修改数据请显式关闭。",
+                )
+              : t(
+                  "只读连接：连接后执行 SET SESSION TRANSACTION READ ONLY，写语句会被服务器拒绝。要修改数据请显式关闭。",
+                )}
           </span>
         </label>
 

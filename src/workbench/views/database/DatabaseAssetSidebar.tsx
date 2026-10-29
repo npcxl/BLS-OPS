@@ -314,6 +314,7 @@ export function DatabaseAssetSidebar() {
 
   const refreshProfiles = useDatabaseStore((state) => state.refreshProfiles);
   const toggleProfile = useDatabaseStore((state) => state.toggleProfile);
+  const redisConnect = useDatabaseStore((state) => state.redisConnect);
   const toggleDatabase = useDatabaseStore((state) => state.toggleDatabase);
   const toggleTable = useDatabaseStore((state) => state.toggleTable);
   const toggleCategory = useDatabaseStore((state) => state.toggleCategory);
@@ -521,13 +522,15 @@ export function DatabaseAssetSidebar() {
 
   const connectionMenu = (profile: DatabaseProfile) => {
     const connected = !!sessions[profile.id];
+    const isRedis = profile.engine === "redis";
     return [
       {
         id: "open",
         label: t("打开连接"),
         onSelect: () => {
           open(profile);
-          void ensureSession(profile.id);
+          if (isRedis) void redisConnect(profile.id);
+          else void ensureSession(profile.id);
         },
       },
       ...(connected
@@ -535,7 +538,10 @@ export function DatabaseAssetSidebar() {
           {
             id: "reconnect",
             label: t("重新连接"),
-            onSelect: () => void reconnect(profile.id),
+            onSelect: () => {
+              if (isRedis) void redisConnect(profile.id);
+              else void reconnect(profile.id);
+            },
           },
           { separator: true as const },
           {
@@ -551,29 +557,34 @@ export function DatabaseAssetSidebar() {
         label: t("连接信息"),
         onSelect: () => showConnectionInfo(profile.id),
       },
-      {
-        id: "new-query",
-        label: t("新建查询"),
-        onSelect: () => {
-          open(profile);
-          newQuery({
-            profileId: profile.id,
-            connectionName: profile.name,
-            database:
-              sessions[profile.id]?.current_database ??
-              profile.default_database ??
-              null,
-          });
-        },
-      },
-      {
-        id: "refresh",
-        label: t("刷新数据库"),
-        onSelect: () => {
-          open(profile);
-          void refreshDatabases(profile.id);
-        },
-      },
+      // Redis 没有 SQL 查询与库/表目录：这两项只对 SQL 引擎出现。
+      ...(isRedis
+        ? []
+        : [
+          {
+            id: "new-query",
+            label: t("新建查询"),
+            onSelect: () => {
+              open(profile);
+              newQuery({
+                profileId: profile.id,
+                connectionName: profile.name,
+                database:
+                  sessions[profile.id]?.current_database ??
+                  profile.default_database ??
+                  null,
+              });
+            },
+          },
+          {
+            id: "refresh",
+            label: t("刷新数据库"),
+            onSelect: () => {
+              open(profile);
+              void refreshDatabases(profile.id);
+            },
+          },
+        ]),
       { separator: true },
       {
         id: "edit",
@@ -763,7 +774,9 @@ export function DatabaseAssetSidebar() {
                 }}
                 onConnect={() => {
                   open(profile);
-                  void ensureSession(profile.id);
+                  // Redis 走 db_redis_connect（键浏览器自己管理连接）。
+                  if (profile.engine === "redis") void redisConnect(profile.id);
+                  else void ensureSession(profile.id);
                 }}
                 onDisconnect={() => setDisconnectTarget(profile)}
                 onContextMenu={(event) =>

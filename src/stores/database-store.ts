@@ -170,6 +170,8 @@ interface DatabaseAssetState {
   invalidate: (profileId: string) => Promise<void>;
 
   ensureSession: (profileId: string) => Promise<DbSessionInfo | null>;
+  /** Redis：建连（db_redis_connect），不产生 SQL 会话。 */
+  redisConnect: (profileId: string) => Promise<void>;
   /**
    * 强制重连：关闭旧会话（不尝试恢复事务/临时表），再建立新会话。
    * 只用于用户显式点击"重新连接"；绝不自动调用。
@@ -269,6 +271,10 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
       expandedProfiles: { ...state.expandedProfiles, [profileId]: expanded },
     }));
     persistExpanded(get);
+    // Redis 没有"数据库/表"目录树：展开只翻展开态，不做 SQL 元数据请求。
+    const isRedis =
+      get().profiles.find((entry) => entry.id === profileId)?.engine === "redis";
+    if (isRedis) return;
     if (expanded && get().databases[profileId] === undefined) {
       await get().refreshDatabases(profileId);
     }
@@ -340,6 +346,10 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   },
 
   refreshDatabases: async (profileId) => {
+    // Redis 没有 SQL 元数据目录树；这里直接返回，避免调用 SQL 命令报错。
+    if (get().profiles.find((entry) => entry.id === profileId)?.engine === "redis") {
+      return;
+    }
     const key = dbKey(profileId);
     set((state) => ({
       loading: { ...state.loading, [key]: true },
@@ -437,6 +447,25 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
         sessionErrors: { ...state.sessionErrors, [profileId]: toDbError(error) },
       }));
       return null;
+    }
+  },
+
+  /**
+   * Redis 连接：走 db_redis_connect（无 SQL 会话概念），结果只体现在
+   * statuses（绿点）里；错误放进 sessionErrors 供侧栏展示。
+   */
+  redisConnect: async (profileId) => {
+    set((state) => ({
+      sessionErrors: { ...state.sessionErrors, [profileId]: null },
+    }));
+    try {
+      await databaseApi.redisConnect(profileId);
+    } catch (error) {
+      set((state) => ({
+        sessionErrors: { ...state.sessionErrors, [profileId]: toDbError(error) },
+      }));
+    } finally {
+      void get().refreshStatus(profileId);
     }
   },
 

@@ -106,7 +106,9 @@ pub fn plan_from_profile(
     profile: &DatabaseProfile,
     password_override: Option<&str>,
 ) -> Result<EndpointPlan, DbErrorInfo> {
-    if profile.engine != super::model::ENGINE_MYSQL {
+    if profile.engine != super::model::ENGINE_MYSQL
+        && profile.engine != super::model::ENGINE_REDIS
+    {
         return Err(DbErrorInfo::new(
             "unsupported",
             if profile.engine == super::model::ENGINE_POSTGRES {

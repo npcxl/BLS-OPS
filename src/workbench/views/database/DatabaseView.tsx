@@ -34,6 +34,7 @@ import { DdlPanel } from "./DdlPanel";
 import { listenDetachedSqlEvents } from "./detached-sql";
 import { FieldCard } from "./FieldCard";
 import { OpenItemsPanel } from "./OpenItemsPanel";
+import { RedisBrowser } from "./RedisBrowser";
 import { WorkItemHost } from "./WorkItemHost";
 
 const FIELD_CARD_WIDTH = 260;
@@ -111,6 +112,11 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
 
   useEffect(() => {
     if (!profileId) return;
+    // Redis 连接不走 SQL 会话：键浏览器自己负责建连（db_redis_connect）。
+    if (profiles.find((entry) => entry.id === profileId)?.engine === "redis") {
+      void refreshStatus(profileId);
+      return;
+    }
     if (!session) void ensureSession(profileId);
     void refreshStatus(profileId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -342,6 +348,12 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
         </Button>
       </div>
     );
+  }
+
+  // Redis 引擎：整块替换为键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），
+  // 不进入 SQL 工作台的工作项体系。
+  if (profile.engine === "redis") {
+    return <RedisBrowser profile={profile} />;
   }
 
   const showFieldCard = !!fieldCard && fieldCard.profileId === profileId;

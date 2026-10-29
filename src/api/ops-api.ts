@@ -8,6 +8,7 @@
  * when adding types.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { Channel } from "@tauri-apps/api/core";
 
 import type {
   BrowseRequest,
@@ -33,6 +34,11 @@ import type {
   QueryBudget,
   QueryHistoryEntry,
   QueryStarted,
+  RedisKeyInfo,
+  RedisListWrite,
+  RedisPubSubEvent,
+  RedisScanPage,
+  RedisValuePayload,
   RowMutation,
   SaveProfileRequest,
 } from "@/api/types/database";
@@ -1491,6 +1497,100 @@ export const databaseApi = {
     invoke<{ engine: string; driver: string; supports: string[]; postgres: string }>(
       "db_module_info",
     ),
+
+  // -- Redis 引擎（键浏览器，独立于 SQL 管线） -----------------------------
+  redisConnect: (profileId: string) =>
+    invoke<ProfileRuntimeStatus>("db_redis_connect", { profileId }),
+  redisScan: (
+    profileId: string,
+    dbIndex: number,
+    pattern: string,
+    cursor: number,
+    count: number,
+  ) =>
+    invoke<RedisScanPage>("db_redis_scan", {
+      profileId,
+      dbIndex,
+      pattern,
+      cursor,
+      count,
+    }),
+  redisKeyInfo: (profileId: string, dbIndex: number, key: string) =>
+    invoke<RedisKeyInfo>("db_redis_key_info", { profileId, dbIndex, key }),
+  redisReadValue: (profileId: string, dbIndex: number, key: string) =>
+    invoke<RedisValuePayload>("db_redis_read_value", { profileId, dbIndex, key }),
+  redisWriteString: (profileId: string, dbIndex: number, key: string, value: string) =>
+    invoke<void>("db_redis_write_string", { profileId, dbIndex, key, value }),
+  redisWriteHashField: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    field: string,
+    /** null = 删除字段。 */
+    value: string | null,
+  ) =>
+    invoke<void>("db_redis_write_hash_field", {
+      profileId,
+      dbIndex,
+      key,
+      field,
+      value,
+    }),
+  redisWriteList: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    action: RedisListWrite,
+  ) => invoke<void>("db_redis_write_list", { profileId, dbIndex, key, action }),
+  redisWriteSet: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    member: string,
+    add: boolean,
+  ) => invoke<void>("db_redis_write_set", { profileId, dbIndex, key, member, add }),
+  redisWriteZset: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    member: string,
+    /** null = 移除成员。 */
+    score: number | null,
+  ) =>
+    invoke<void>("db_redis_write_zset", {
+      profileId,
+      dbIndex,
+      key,
+      member,
+      score,
+    }),
+  redisKeyDelete: (profileId: string, dbIndex: number, key: string) =>
+    invoke<void>("db_redis_key_delete", { profileId, dbIndex, key }),
+  redisKeyExpire: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    /** null = PERSIST（永久）。 */
+    ttlMs: number | null,
+  ) => invoke<void>("db_redis_key_expire", { profileId, dbIndex, key, ttlMs }),
+  redisKeyRename: (profileId: string, dbIndex: number, oldKey: string, newKey: string) =>
+    invoke<void>("db_redis_key_rename", { profileId, dbIndex, oldKey, newKey }),
+  redisPublish: (profileId: string, dbIndex: number, channel: string, message: string) =>
+    invoke<number>("db_redis_publish", { profileId, dbIndex, channel, message }),
+  redisSubscribe: (
+    profileId: string,
+    dbIndex: number,
+    channel: string,
+    onMessage: (event: RedisPubSubEvent) => void,
+  ) =>
+    invoke<string>("db_redis_subscribe", {
+      profileId,
+      dbIndex,
+      channel,
+      onMessage: new Channel<RedisPubSubEvent>(onMessage),
+    }),
+  redisUnsubscribe: (subId: string) =>
+    invoke<void>("db_redis_unsubscribe", { subId }),
 };
 
 export type DatabaseApiError = DbErrorInfo;

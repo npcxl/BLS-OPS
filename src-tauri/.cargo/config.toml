@@ -1,0 +1,4 @@
+# 项目路径含中文会导致 MSVC（aws-lc-sys 的 cl.exe）在编译时僵死，
+# 因此构建目录必须落在纯 ASCII 路径。对 IDE 的 rust-analyzer 同样生效。
+[build]
+target-dir = "C:\\Users\\Administrator\\bls-ops-target"

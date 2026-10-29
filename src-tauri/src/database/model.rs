@@ -20,6 +20,14 @@ pub const ENGINE_MYSQL: &str = "mysql";
 /// PostgreSQL 只在模型层留位：连接表单会明确标注"尚未实现"，
 /// 后端拒绝连接，绝不返回假成功。
 pub const ENGINE_POSTGRES: &str = "postgres";
+/// Redis：独立于 SQL 管线的键值引擎（键浏览器视图，不走 session/query）。
+pub const ENGINE_REDIS: &str = "redis";
+
+/// Redis 连接模式。
+pub const REDIS_MODE_STANDALONE: &str = "standalone";
+pub const REDIS_MODE_SENTINEL: &str = "sentinel";
+pub const REDIS_MODE_CLUSTER: &str = "cluster";
+pub const DEFAULT_REDIS_PORT: u16 = 6379;
 
 /// TLS 模式。**没有** `preferred`（自动降级）：一旦选择 TLS 就必须成功，
 /// 连不上就报 TLS 错误，而不是悄悄退回明文。
@@ -68,6 +76,12 @@ pub struct DatabaseProfile {
     pub tls_server_name: Option<String>,
     /// 服务端只读：连接后执行 `SET SESSION TRANSACTION READ ONLY`。
     pub read_only: bool,
+    /// Redis 专用：`standalone` | `sentinel` | `cluster`。MySQL 为 `None`。
+    pub redis_mode: Option<String>,
+    /// Redis sentinel 模式的 master 名。其余模式为 `None`。
+    pub sentinel_master: Option<String>,
+    /// Redis sentinel/cluster 的额外节点列表，JSON 数组 `["host:port", …]`。
+    pub nodes_json: Option<String>,
     pub connect_timeout_ms: u64,
     pub query_timeout_ms: u64,
     pub created_at: i64,

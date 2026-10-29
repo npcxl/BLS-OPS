@@ -25,6 +25,7 @@ import { DbEngineIcon } from "./DbEngineIcon";
 
 const ENGINE_LABEL: Record<DbEngine, string> = {
   mysql: "MySQL",
+  redis: "Redis",
   mariadb: "MariaDB",
   postgres: "PostgreSQL",
   sqlite: "SQLite",

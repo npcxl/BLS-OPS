@@ -33,6 +33,18 @@ notify = "7"
 mysql_async = { version = "0.37", default-features = false, features = [
     "default-rustls-ring",
 ] }
+# Redis 引擎：与 MySQL 管线平行的键值驱动。
+# * `tokio-comp` / `connection-manager`：async 连接管理（自动重连）。
+# * `tokio-rustls-comp`：async TLS 走 rustls —— 与项目其余部分一致，
+#   不引入 native-tls/OpenSSL。
+# * `cluster-async` / `sentinel`：cluster 与哨兵两种拓扑。
+redis = { version = "0.27", default-features = false, features = [
+    "tokio-comp",
+    "connection-manager",
+    "tokio-rustls-comp",
+    "cluster-async",
+    "sentinel",
+] }
 # 查询结果以 `TryStream` 拉取，用 `next()` 逐行推进 —— 这是背压的基础。
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # 显式安装 rustls provider：同一进程里 reqwest 与 mysql_async 都会用 rustls，

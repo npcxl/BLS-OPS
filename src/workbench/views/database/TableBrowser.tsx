@@ -59,7 +59,12 @@ import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { VirtualDataGrid, type CellAddress } from "./VirtualDataGrid";
 import { TableStructure } from "./TableStructure";
-import { shouldEvictInactiveResult } from "./result-cache";
+import {
+  estimateRowsBytes,
+  inactiveResultByteBudget,
+  inactiveResultRowBudget,
+  shouldEvictInactiveResult,
+} from "./result-cache";
 import { EditRowDialog } from "./EditRowDialog";
 import { ExportDialog } from "./ExportDialog";
 
@@ -281,6 +286,10 @@ export function TableBrowser({
     void load();
   }, [load]);
 
+  const resultBytes = useMemo(
+    () => (result ? estimateRowsBytes(result.rows) : 0),
+    [result],
+  );
   const wasActiveRef = useRef(active);
   useEffect(() => {
     const wasActive = wasActiveRef.current;
@@ -292,6 +301,9 @@ export function TableBrowser({
         active,
         rowCount: result.rows.length,
         pendingChanges: pending.length,
+        bytes: resultBytes,
+        rowBudget: inactiveResultRowBudget(),
+        byteBudget: inactiveResultByteBudget(),
       })
     ) {
       // 隐藏页不保留大结果；筛选/分页/草稿仍在，切回来强制重查。
@@ -308,7 +320,7 @@ export function TableBrowser({
       lastLoadKeyRef.current = "";
       void load(true);
     }
-  }, [active, load, pending.length, result]);
+  }, [active, load, pending.length, result, resultBytes]);
 
   const resetPaging = () => {
     setPageIndex(0);

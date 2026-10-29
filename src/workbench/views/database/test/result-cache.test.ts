@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_INACTIVE_RESULT_BYTES,
   DEFAULT_INACTIVE_RESULT_ROWS,
+  estimateRowsBytes,
   shouldEvictInactiveResult,
 } from "../result-cache";
 
@@ -37,5 +39,23 @@ describe("result cache budget", () => {
         pendingChanges: 0,
       }),
     ).toBe(false);
+  });
+
+  it("evicts by byte budget and estimates text/binary values", () => {
+    const rows = [
+      [
+        { kind: "text" as const, value: "a".repeat(100), truncated: false, bytes: 100 },
+        { kind: "binary" as const, base64: "AAAA", bytes: 3, truncated: false },
+      ],
+    ];
+    expect(estimateRowsBytes(rows)).toBeGreaterThan(100);
+    expect(
+      shouldEvictInactiveResult({
+        active: false,
+        rowCount: 1,
+        pendingChanges: 0,
+        bytes: DEFAULT_INACTIVE_RESULT_BYTES + 1,
+      }),
+    ).toBe(true);
   });
 });

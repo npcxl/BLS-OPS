@@ -13,6 +13,7 @@
 import { create } from "zustand";
 
 import { databaseApi } from "@/api/ops-api";
+import { recordDbBatch } from "@/lib/db-perf";
 import type {
   DbColumn,
   DbErrorInfo,
@@ -486,17 +487,20 @@ async function drainQuery(args: DrainArgs): Promise<{
 
   for (let guard = 0; guard < 100_000; guard += 1) {
     let batch;
+    const ipcStarted = performance.now();
     try {
       batch = await databaseApi.queryNext(args.queryId);
     } catch (failure) {
       error = toDbError(failure);
       break;
     }
+    const ipcMs = performance.now() - ipcStarted;
+    const processStarted = performance.now();
 
     state = batch.state;
     let finished = false;
-    if (batch.batch) {
-      const payload = batch.batch;
+    const payload = batch.batch;
+    if (payload) {
       if (payload.kind === "result_set") {
         args.onUpdate((tab) => {
           const merged = upsertResultSet(tab.results, {
@@ -594,6 +598,19 @@ async function drainQuery(args: DrainArgs): Promise<{
         }));
       }
     }
+
+    recordDbBatch({
+      at: Date.now(),
+      ipcMs,
+      processMs: performance.now() - processStarted,
+      kind: payload?.kind ?? "empty",
+      rows: payload?.kind === "rows" ? payload.rows.length : 0,
+      bytes: payload?.kind === "rows" ? payload.bytes : 0,
+      resultSetId:
+        payload?.kind === "rows" || payload?.kind === "result_set"
+          ? payload.result_set_id
+          : null,
+    });
 
     // 只有"收到 Finished"或"终态且没有批次"才算结束：
     // 否则状态先变终态时会把 Finished 里的行数/截断信息丢掉。

@@ -43,6 +43,7 @@ import { LoadingState } from "@/components/ui/loading";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
+import { pushToast } from "@/components/ui/toast";
 import { copyText } from "@/lib/clipboard";
 import type {
   AssignValue,
@@ -1221,11 +1222,24 @@ export function TableBrowser({
         // 已经落库：队列与撤销历史一起清空，避免"撤销"把已提交的改动找回队列。
         dispatchPending({ type: "reset" });
         setShowPending(false);
+        pushToast(
+          t("已提交 {{count}} 处修改", {
+            count: outcome.outcomes.filter((item) => item.status === "applied").length,
+          }),
+          "success",
+        );
         // 必须强制重新查询；load() 会被同条件去重守卫直接 return。
         await load(true);
+      } else {
+        pushToast(
+          outcome.state === "rolled_back" ? t("已回滚，未写入数据库") : t("结果未知，请勿自动重试"),
+          "error",
+        );
       }
     } catch (failure) {
-      setMutationError(toDbError(failure).message);
+      const message = toDbError(failure).message;
+      setMutationError(message);
+      pushToast(message, "error");
     } finally {
       setSubmitting(false);
     }
@@ -1720,11 +1734,13 @@ export function TableBrowser({
             {!result && !error ? (
               <LoadingState className="h-full" />
             ) : (
+            // 行号起点用 pageIndex*pageSize：`result.offset` 是 Rust 返回的
+            // **下一页起点**（后端已 += 本页行数），首页会被显示成 101 开始。
             <VirtualDataGrid
               apiRef={gridApi}
               columns={result?.columns ?? EMPTY_COLUMNS}
               rows={pageRows}
-              rowOffset={result?.offset ?? 0}
+              rowOffset={pageIndex * pageSize}
               editable={canEdit}
               onSort={(column) => sortBy(column)}
               sortColumn={sorts[0]?.column ?? null}

@@ -5,7 +5,7 @@
  * 刷新 + 搜索。**按需加载**：展开连接才查库，展开库才查表，展开表才查
  * 字段/索引；未展开的节点不会产生任何查询。
  */
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Boxes,
@@ -21,7 +21,11 @@ import {
   Table2,
   TriangleAlert,
 } from "@/components/icons";
-import type { DatabaseProfile, DbErrorInfo } from "@/api/types/database";
+import type {
+  DatabaseProfile,
+  DbErrorInfo,
+  DbTableColumn,
+} from "@/api/types/database";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -110,20 +114,85 @@ function CategoryRow({
   return (
     <div
       role="button"
-      tabIndex={0}
       aria-expanded={open}
       className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-12 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
       style={indent(level)}
+      {...rowKeyboardProps({
+        expanded: open,
+        onToggle,
+        onOpen: onToggle,
+        onSelect: onToggle,
+      })}
       onClick={onToggle}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onToggle();
-        }
-      }}
     >
       {content}
     </div>
+  );
+}
+
+/** 树行键盘导航：↑↓ 换行、→← 展开收起、Enter 打开、Space 选中。 */
+function moveRowFocus(current: HTMLElement, delta: number) {
+  const container = current.closest<HTMLElement>("[data-tree-scroll]");
+  if (!container) return;
+  const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-tree-row]"));
+  const index = rows.indexOf(current);
+  if (index < 0) return;
+  const next = rows[Math.max(0, Math.min(rows.length - 1, index + delta))];
+  next?.focus();
+}
+
+function rowKeyboardProps({
+  expanded,
+  onToggle,
+  onOpen,
+  onSelect,
+}: {
+  expanded?: boolean;
+  onToggle?: () => void;
+  onOpen: () => void;
+  onSelect?: () => void;
+}) {
+  return {
+    tabIndex: 0,
+    "data-tree-row": true,
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onOpen();
+        return;
+      }
+      if (event.key === " ") {
+        event.preventDefault();
+        onSelect?.();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveRowFocus(event.currentTarget, event.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+      if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && onToggle) {
+        event.preventDefault();
+        if (Boolean(expanded) !== (event.key === "ArrowRight")) onToggle();
+      }
+    },
+  };
+}
+
+/** 搜索命中的第一个片段高亮，配合 `data-tree-scroll` 里的 mark 做定位。 */
+function Highlight({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return <>{text}</>;
+  const index = text.toLowerCase().indexOf(needle.toLowerCase());
+  if (index < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark className="rounded-[3px] bg-accent/25 px-0.5 text-fg">
+        {text.slice(index, index + needle.length)}
+      </mark>
+      {text.slice(index + needle.length)}
+    </>
   );
 }
 
@@ -172,25 +241,37 @@ const ProfileRow = memo(function ProfileRow({
   expanded,
   connected,
   error,
+  query,
+  selected,
   onToggle,
   onOpen,
+  onSelect,
   onContextMenu,
 }: {
   profile: DatabaseProfile;
   expanded: boolean;
   connected: boolean;
   error: DbErrorInfo | null;
+  query: string;
+  selected: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  onSelect: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   const { t } = useTranslation();
   return (
     <div
-      className="group flex cursor-default items-center gap-1.5 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover"
+      className={cn(
+        "group flex cursor-default items-center gap-1.5 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
+        selected && "bg-accent/10 ring-1 ring-inset ring-accent/20",
+      )}
       style={indent(0)}
+      {...rowKeyboardProps({ expanded, onToggle, onOpen, onSelect })}
+      onFocus={onSelect}
+      // 单击只选中，双击才打开连接（与表的交互保持一致）。
+      onClick={onSelect}
       onDoubleClick={onOpen}
-      onClick={onOpen}
       onContextMenu={onContextMenu}
       title={`${profile.username}@${profile.host}:${profile.port}`}
     >
@@ -222,7 +303,7 @@ const ProfileRow = memo(function ProfileRow({
           connected ? "text-fg" : "text-fg-muted",
         )}
       >
-        {profile.name}
+        <Highlight text={profile.name} query={query} />
       </span>
       {error && <TriangleAlert size={12} className="shrink-0 text-danger" />}
     </div>
@@ -272,6 +353,7 @@ export function DatabaseAssetSidebar() {
   const showConnectionInfo = useDatabaseWorkspaceStore(
     (state) => state.showConnectionInfo,
   );
+  const showFieldCard = useDatabaseWorkspaceStore((state) => state.showFieldCard);
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const savedQueries = useDatabaseWorkspaceStore((state) => state.savedQueries);
   const deleteSavedQuery = useDatabaseWorkspaceStore(
@@ -279,7 +361,9 @@ export function DatabaseAssetSidebar() {
   );
 
   const [filter, setFilter] = useState("");
+  // 选中与"已打开"分开：选中只是当前焦点行，不改变任何打开状态。
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const treeRef = useRef<HTMLDivElement | null>(null);
   const [dialog, setDialog] = useState<
     { mode: "create" } | { mode: "edit"; profile: DatabaseProfile } | null
   >(null);
@@ -330,6 +414,13 @@ export function DatabaseAssetSidebar() {
     // 拉取每个连接的 Rust 侧运行状态，驱动连接图标上的绿色状态点。
     for (const profile of profiles) void refreshStatus(profile.id);
   }, [profiles, refreshStatus]);
+
+  // 搜索时把第一个命中滚进视口：过滤后命中项可能被上方节点挤出可视区。
+  useEffect(() => {
+    if (!filter.trim()) return;
+    const hit = treeRef.current?.querySelector("mark");
+    hit?.scrollIntoView({ block: "nearest" });
+  }, [filter]);
 
   /*
    * 恢复上次的展开态：localStorage 只记「哪些节点是打开的」，数据不跨进程缓存，
@@ -569,6 +660,40 @@ export function DatabaseAssetSidebar() {
     ];
   };
 
+  /** 字段行右键：只读展示，改字段请到结构页。 */
+  const fieldMenu = (
+    profile: DatabaseProfile,
+    database: string,
+    table: string,
+    column: DbTableColumn,
+  ) => [
+    {
+      id: "copy-field-name",
+      label: t("复制字段名"),
+      onSelect: () => void copyText(column.name),
+    },
+    {
+      id: "copy-field-type",
+      label: t("复制字段类型"),
+      onSelect: () => void copyText(column.column_type),
+    },
+    { separator: true as const },
+    {
+      id: "field-info",
+      label: t("查看字段信息"),
+      onSelect: () => {
+        // 字段卡片挂在数据库标签上，先确保那个标签在。
+        open(profile);
+        showFieldCard({
+          profileId: profile.id,
+          database,
+          table,
+          column: column.name,
+        });
+      },
+    },
+  ];
+
   const savedQueryMenu = (query: SavedQuery) => [
     {
       id: "open",
@@ -743,7 +868,7 @@ export function DatabaseAssetSidebar() {
         <ErrorRow error={profileError} onRetry={() => void refreshProfiles()} level={1} />
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto pb-3">
+      <div ref={treeRef} data-tree-scroll className="min-h-0 flex-1 overflow-y-auto pb-3">
         {visibleProfiles.length === 0 && !loadingProfiles && (
           <EmptyState
             className="px-2.5 py-6"
@@ -765,6 +890,9 @@ export function DatabaseAssetSidebar() {
                   statuses[profile.id]?.connected ?? !!sessions[profile.id]
                 }
                 error={profileLoadError}
+                query={filter}
+                selected={selectedKey === `conn:${profile.id}`}
+                onSelect={() => setSelectedKey(`conn:${profile.id}`)}
                 onToggle={() => void toggleProfile(profile.id)}
                 onOpen={() => {
                   open(profile);
@@ -795,25 +923,36 @@ export function DatabaseAssetSidebar() {
                     const dbTables = tables[key] ?? [];
                     const dbLoading = loading[key];
                     const dbError = errors[key] ?? null;
+                    const selectionKey = `db:${key}`;
+                    // 双击数据库 = 连上 + 标记已打开 + 展开 + 打开对象列表。
+                    const openDb = () => {
+                      open(profile);
+                      void ensureSession(profile.id);
+                      void openDatabase(profile.id, database.name);
+                      openDatabaseObjects({
+                        profileId: profile.id,
+                        connectionName: profile.name,
+                        database: database.name,
+                      });
+                    };
                     return (
                       <div key={key}>
                         <div
-                          className="group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover"
+                          className={cn(
+                            "group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
+                            selectedKey === selectionKey &&
+                              "bg-accent/10 ring-1 ring-inset ring-accent/20",
+                          )}
                           style={indent(1)}
-                          onClick={() => {
-                            // 点数据库 = 连接 + 打开 + 展开 + 打开对象列表。
-                            // 打开状态独立于展开态，切换当前库不会把它变灰。
-                            open(profile);
-                            void ensureSession(profile.id);
-                            if (!dbOpened || !dbOpen) {
-                              void openDatabase(profile.id, database.name);
-                            }
-                            openDatabaseObjects({
-                              profileId: profile.id,
-                              connectionName: profile.name,
-                              database: database.name,
-                            });
-                          }}
+                          {...rowKeyboardProps({
+                            expanded: dbOpen,
+                            onToggle: () => void toggleDatabase(profile.id, database.name),
+                            onSelect: () => setSelectedKey(selectionKey),
+                            onOpen: openDb,
+                          })}
+                          onFocus={() => setSelectedKey(selectionKey)}
+                          onClick={() => setSelectedKey(selectionKey)}
+                          onDoubleClick={openDb}
                           onContextMenu={(event) => {
                             event.stopPropagation();
                             menu.onContextMenu(() =>
@@ -827,12 +966,9 @@ export function DatabaseAssetSidebar() {
                             className="h-5 w-5 shrink-0 px-0"
                             aria-label={t("展开")}
                             onClick={(event) => {
+                              // 箭头只控制展开，不把库标成"已打开"。
                               event.stopPropagation();
-                              if (!dbOpen) {
-                                void openDatabase(profile.id, database.name);
-                              } else {
-                                void toggleDatabase(profile.id, database.name);
-                              }
+                              void toggleDatabase(profile.id, database.name);
                             }}
                           >
                             <ChevronRight
@@ -855,7 +991,7 @@ export function DatabaseAssetSidebar() {
                                 : "text-fg-muted",
                             )}
                           >
-                            {database.name}
+                            <Highlight text={database.name} query={filter} />
                           </span>
                           {dbError && <TriangleAlert size={12} className="shrink-0 text-danger" />}
                           <Tooltip label={t("刷新表列表")} side="left">
@@ -951,16 +1087,23 @@ export function DatabaseAssetSidebar() {
                                         "bg-accent/10 ring-1 ring-inset ring-accent/20",
                                     )}
                                     style={indent(3)}
-                                    tabIndex={0}
+                                    {...rowKeyboardProps({
+                                      expanded: tableOpen,
+                                      onToggle: () =>
+                                        void toggleTable(
+                                          profile.id,
+                                          database.name,
+                                          table.name,
+                                        ),
+                                      onSelect: () => setSelectedKey(tableKey),
+                                      onOpen: () =>
+                                        openTableItem(profile, database.name, table.name),
+                                    })}
+                                    onFocus={() => setSelectedKey(tableKey)}
                                     onClick={() => setSelectedKey(tableKey)}
                                     onDoubleClick={() =>
                                       openTableItem(profile, database.name, table.name)
                                     }
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter") {
-                                        openTableItem(profile, database.name, table.name);
-                                      }
-                                    }}
                                     onContextMenu={(event) => {
                                       event.stopPropagation();
                                       menu.onContextMenu(() =>
@@ -1019,7 +1162,7 @@ export function DatabaseAssetSidebar() {
                                           : "text-fg-muted",
                                       )}
                                     >
-                                      {table.name}
+                                      <Highlight text={table.name} query={filter} />
                                     </span>
                                     {tableError && (
                                       <TriangleAlert size={12} className="shrink-0 text-danger" />
@@ -1045,9 +1188,20 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.slice(0, 80).map((column) => (
                                         <div
                                           key={column.name}
-                                          className="flex items-center gap-1 py-1.5 pr-2.5 text-12 text-fg-muted"
+                                          className="flex items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-12 text-fg-muted hover:bg-surface-hover"
                                           style={indent(4)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
+                                          onContextMenu={(event) => {
+                                            event.stopPropagation();
+                                            menu.onContextMenu(() =>
+                                              fieldMenu(
+                                                profile,
+                                                database.name,
+                                                table.name,
+                                                column,
+                                              ),
+                                            )(event);
+                                          }}
                                         >
                                           {column.primary_key ? (
                                             <KeyRound size={12} className="shrink-0 text-accent" />

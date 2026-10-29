@@ -274,20 +274,12 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     }
   },
 
+  // 只改"展开"，不碰"已打开"：点箭头看一眼表列表，不该把库标成已打开。
   toggleDatabase: async (profileId, database) => {
     const key = tablesKey(profileId, database);
     const expanded = !get().expandedDatabases[key];
     set((state) => ({
       expandedDatabases: { ...state.expandedDatabases, [key]: expanded },
-      // 展开动作也视为打开；收起只改变展开，不撤销“已打开”状态。
-      ...(expanded
-        ? {
-            openedDatabases: {
-              ...state.openedDatabases,
-              [key]: true,
-            },
-          }
-        : {}),
     }));
     persistExpanded(get);
     if (expanded && get().tables[key] === undefined) {

@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { useDomainStore } from "@/stores/domain-store";
-import { useDatabaseStore } from "@/stores/database-store";
+import { tablesKey, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { staleWorkbenchTabIds } from "./views/database/workspace-cleanup";
@@ -15,6 +15,7 @@ import { ContextSidebar } from "./ContextSidebar";
 import { Workspace } from "./Workspace";
 import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
+import { ToastHost } from "@/components/ui/toast";
 import type { WorkspaceTabType } from "./types";
 
 /** The P3 management modules, as command-palette entries. label/description 存 i18n key。 */
@@ -57,6 +58,12 @@ export function Workbench() {
   const servers = useDomainStore((s) => s.servers);
   const sessions = useDomainStore((s) => s.sessions);
   const rootPane = useWorkbenchStore((s) => s.rootPane);
+
+  // 命令面板里的数据库命令需要"当前连接 + 当前库"：取数据库标签的活动工作项。
+  const dbProfiles = useDatabaseStore((s) => s.profiles);
+  const dbTables = useDatabaseStore((s) => s.tables);
+  const dbItems = useDatabaseWorkspaceStore((s) => s.items);
+  const dbActiveId = useDatabaseWorkspaceStore((s) => s.activeId);
 
   useEffect(() => {
     void refreshAll();
@@ -173,7 +180,69 @@ export function Workbench() {
           }),
       }));
 
+    // 数据库命令：需要"当前连接 + 当前库"，因此只在数据库标签有活动工作项时出现。
+    const databaseActions: PaletteAction[] = [];
+    const activeDbItem = dbItems.find((item) => item.id === dbActiveId) ?? null;
+    const dbProfile = activeDbItem
+      ? dbProfiles.find((profile) => profile.id === activeDbItem.profileId) ?? null
+      : null;
+    if (activeDbItem?.database && dbProfile) {
+      const context = {
+        profileId: activeDbItem.profileId,
+        connectionName: dbProfile.name,
+        database: activeDbItem.database,
+      };
+      databaseActions.push(
+        {
+          id: "db-new-query",
+          title: t("新建 SQL 查询（{{database}}）", { database: context.database }),
+          category: t("Module: Database"),
+          description: `${dbProfile.name} · ${context.database}`,
+          keywords: ["sql", "query", "database", context.database, dbProfile.name],
+          onSelect: () => useDatabaseWorkspaceStore.getState().newQuery(context),
+        },
+        {
+          id: "db-refresh-tables",
+          title: t("刷新表列表（{{database}}）", { database: context.database }),
+          category: t("Module: Database"),
+          description: `${dbProfile.name} · ${context.database}`,
+          keywords: ["refresh", "tables", context.database, dbProfile.name],
+          onSelect: () =>
+            void useDatabaseStore
+              .getState()
+              .refreshTables(context.profileId, context.database),
+        },
+      );
+      if (activeDbItem.objectName) {
+        const table = activeDbItem.objectName;
+        databaseActions.push({
+          id: "db-open-structure",
+          title: t("打开表结构（{{table}}）", { table }),
+          category: t("Module: Database"),
+          description: context.database,
+          keywords: ["structure", "ddl", table, context.database],
+          onSelect: () =>
+            useDatabaseWorkspaceStore.getState().openStructure({ ...context, table }),
+        });
+      }
+      const cachedTables = dbTables[tablesKey(context.profileId, context.database)] ?? [];
+      for (const table of cachedTables.slice(0, 50)) {
+        databaseActions.push({
+          id: `db-open-table-${table.name}`,
+          title: t("打开表数据（{{table}}）", { table: table.name }),
+          category: t("Module: Database"),
+          description: context.database,
+          keywords: ["table", "data", table.name, context.database],
+          onSelect: () =>
+            useDatabaseWorkspaceStore
+              .getState()
+              .openTable({ ...context, table: table.name }),
+        });
+      }
+    }
+
     return [
+      ...databaseActions,
       ...connectActions,
       ...monitorActions,
       ...managerActions,
@@ -194,7 +263,17 @@ export function Workbench() {
           openTab({ id: crypto.randomUUID(), type: "home", title: t("Home") }),
       },
     ];
-  }, [openTab, openModuleTab, servers, sessions, t]);
+  }, [
+    dbActiveId,
+    dbItems,
+    dbProfiles,
+    dbTables,
+    openTab,
+    openModuleTab,
+    servers,
+    sessions,
+    t,
+  ]);
 
   // 外层外壳半透明磨砂；内层白卡片与命令面板保持实色（见 `.app-shell`）。
   return (
@@ -208,6 +287,7 @@ export function Workbench() {
       <CommandPalette open={commandPaletteOpen} actions={actions} onClose={() => setCommandPaletteOpen(false)} />
       <HostKeyDialog />
       <UpdateNotification />
+      <ToastHost />
     </div>
   );
 }

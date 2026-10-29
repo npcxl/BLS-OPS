@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Copy, Loader2, Maximize2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { pushToast } from "@/components/ui/toast";
 import { copyText } from "@/lib/clipboard";
 import { useDatabaseStore } from "@/stores/database-store";
 import {
@@ -74,7 +75,12 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
               title: `${target.table} · DDL`,
               connectionName: profileName,
               database: target.database,
-            })
+            }).catch((failure: unknown) =>
+              pushToast(
+                failure instanceof Error ? failure.message : String(failure),
+                "error",
+              ),
+            )
           }
           title={t("在新窗口打开")}
           aria-label={t("在新窗口打开")}

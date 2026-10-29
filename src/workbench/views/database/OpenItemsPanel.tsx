@@ -25,18 +25,38 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
+import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import {
   orderedItems,
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
 
+/** 执行失败 / 结果未知的行内标记：不展开结果也能看出哪个工作项出过问题。 */
+function RunStateBadge({ itemId }: { itemId: string }) {
+  const { t } = useTranslation();
+  const state = useDatabaseWorkbenchStore((s) => s.tabs[itemId]?.runState);
+  if (state !== "failed" && state !== "outcome_unknown") return null;
+  return (
+    <span
+      className="shrink-0 rounded bg-danger/20 px-1 text-[9px] leading-4 text-danger"
+      title={
+        state === "outcome_unknown" ? t("结果未知，请勿自动重试") : t("执行失败")
+      }
+    >
+      !
+    </span>
+  );
+}
+
 export function OpenItemsPanel({
   onRequestClose,
   onRequestCloseOthers,
+  onRequestCloseRight,
 }: {
   onRequestClose: (item: WorkItem) => void;
   onRequestCloseOthers: (item: WorkItem) => void;
+  onRequestCloseRight: (item: WorkItem) => void;
 }) {
   const { t } = useTranslation();
   const items = useDatabaseWorkspaceStore((state) => state.items);
@@ -171,6 +191,12 @@ export function OpenItemsPanel({
                         label: t("关闭其他"),
                         onSelect: () => onRequestCloseOthers(item),
                       },
+                      {
+                        id: "close-right",
+                        label: t("关闭右侧"),
+                        disabled: item.id === visible[visible.length - 1]?.id,
+                        onSelect: () => onRequestCloseRight(item),
+                      },
                       { separator: true },
                       {
                         id: "copy",
@@ -222,6 +248,7 @@ export function OpenItemsPanel({
                   {item.running && (
                     <Loader2 size={10} className="shrink-0 animate-spin text-accent" />
                   )}
+                  <RunStateBadge itemId={item.id} />
                   {item.pendingCount > 0 && (
                     <span
                       className="shrink-0 rounded bg-warning/20 px-1 text-[9px] text-warning"

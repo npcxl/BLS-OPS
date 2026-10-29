@@ -49,6 +49,12 @@
   --success: 43 173 90;
   --warning: 225 163 38;
   --danger: 226 83 74;
+
+  /* ── 数据网格选择态 ──
+   * 选择是"薄薄一层膜"，不是实心色块：亮色主题用低透明度 accent，
+   * 深色主题（见下方）再降一档，避免盖住等宽文本或变成高亮条。 */
+  --grid-selection-bg: rgb(49 117 241 / 0.12);
+  --grid-selection-border: rgb(49 117 241 / 0.55);
 }
 
 :root[data-theme="dark"] {
@@ -86,6 +92,9 @@
   --success: 79 209 134;
   --warning: 240 187 78;
   --danger: 242 96 87;
+
+  --grid-selection-bg: rgb(91 156 255 / 0.16);
+  --grid-selection-border: rgb(91 156 255 / 0.45);
 }
 
 @theme {
@@ -118,6 +127,10 @@
   --color-success: rgb(var(--success));
   --color-warning: rgb(var(--warning));
   --color-danger: rgb(var(--danger));
+
+  /* ── 数据网格选择态（亮/暗成对定义）── */
+  --color-grid-selection: var(--grid-selection-bg);
+  --color-grid-selection-border: var(--grid-selection-border);
 
   /* ── Tabs（阴影走 --tab-active-shadow，不在这里注册）── */
   --color-tab-hover: rgb(var(--tab-hover));

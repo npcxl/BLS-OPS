@@ -1,8 +1,13 @@
 /**
- * SQL 结果面板：多结果集分别展示，每个结果集保留自己的列、影响行数与错误。
+ * SQL 结果面板：像 DBeaver 一样分三块 —— **消息 / 摘要 / 结果 N**。
  *
- * 交互：结果集标签、Excel 式行列选择、复制（TSV/CSV/JSON）、双击查看完整
- * （已接收）值。**任意 SQL 没有可靠行定位**，所以这里：
+ * - 消息：每个语句一段（语句 → 返回行/影响行 → 查询时间），末尾总耗时；
+ * - 摘要：一行一个结果集（状态、行数、耗时、语句），点行跳到对应结果；
+ * - 结果 N：数据网格。每个结果集保留自己的列、影响行数与错误；
+ *   错误条直接显示在网格上方，不必切到消息页。
+ *
+ * 交互：Excel 式行列选择、复制（TSV/CSV/JSON）、双击查看完整（已接收）值。
+ * **任意 SQL 没有可靠行定位**，所以这里：
  * - 不提供"重新读取完整字段"，截断的值会明确标注；
  * - 网格是只读的（`editable=false`）：粘贴/Delete/F2 都在网格层被拦掉，
  *   不会误改服务器数据。
@@ -22,9 +27,18 @@ import { EMPTY_SELECTION } from "./grid/selection";
 import { copyMenuItems } from "./grid/copy-menu";
 import { copySelectionToClipboard } from "./grid/copy-service";
 import type { CopyFormat } from "./grid/copy-format";
+import {
+  buildMessageLog,
+  buildSummaryRows,
+  buildSummaryTsv,
+  statementLine,
+} from "./result-log";
 
 const EMPTY_ROWS: DbValue[][] = [];
 const EMPTY_COLUMNS: DbColumn[] = [];
+
+/** 底部区域的三块视图：消息（日志）/ 摘要（结果集一览）/ 结果 N（数据网格）。 */
+type ResultView = "messages" | "summary" | "result";
 
 function copyCellText(value: DbValue): string {
   if (value.kind === "null") return "NULL";
@@ -49,6 +63,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
     value: DbValue;
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [view, setView] = useState<ResultView>("result");
 
   const results = tab?.results ?? [];
   const activeKey = tab?.activeResultKey ?? results[0]?.key ?? null;
@@ -58,6 +73,15 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   );
   const rows = active?.rows ?? EMPTY_ROWS;
   const columns = active?.columns ?? EMPTY_COLUMNS;
+
+  /** 消息视图：每个语句一段（语句 → 结果 → 耗时），末尾给总耗时。 */
+  const messageText = useMemo(
+    () => buildMessageLog(results, tab?.elapsedMs ?? 0, t),
+    [results, t, tab?.elapsedMs],
+  );
+
+  const summaryRows = useMemo(() => buildSummaryRows(results, t), [results, t]);
+  const summaryText = useMemo(() => buildSummaryTsv(summaryRows, t), [summaryRows, t]);
 
   const runCopy = useCallback(
     async (format: CopyFormat, includeHeaders = false) => {
@@ -127,21 +151,56 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
     );
   }
 
-  const copySelected = () => {
+  /** 右侧「复制」按钮随当前视图走：日志/摘要整段复制，结果走网格选择。 */
+  const copyCurrent = () => {
+    if (view === "messages") {
+      void copy(messageText);
+      return;
+    }
+    if (view === "summary") {
+      void copy(summaryText);
+      return;
+    }
     void runCopy("tsv");
   };
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1">
+        <button
+          type="button"
+          onClick={() => setView("messages")}
+          className={cn(
+            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
+            view === "messages"
+              ? "bg-surface-3 text-fg"
+              : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+          )}
+        >
+          {t("消息")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("summary")}
+          className={cn(
+            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
+            view === "summary"
+              ? "bg-surface-3 text-fg"
+              : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
+          )}
+        >
+          {t("摘要")}
+        </button>
+        <span className="mx-0.5 h-4 w-px shrink-0 bg-line" />
         {results.map((result) => {
-          const isActive = result.key === (active?.key ?? "");
+          const isActive = view === "result" && result.key === (active?.key ?? "");
           return (
             <button
               key={result.key}
               type="button"
               onClick={() => {
                 setActive(tabId, result.key);
+                setView("result");
               }}
               className={cn(
                 "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12",
@@ -198,9 +257,13 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
               {(tab.bytes / 1024).toFixed(0)} KiB
             </span>
           )}
-          <Button variant="ghost" size="xs" disabled={!active} onClick={copySelected}>
+          <Button variant="ghost" size="xs" onClick={copyCurrent}>
             <Copy size={10} />
-            {t("复制")}
+            {view === "messages"
+              ? t("复制日志")
+              : view === "summary"
+                ? t("复制摘要")
+                : t("复制")}
           </Button>
         </span>
       </div>
@@ -228,58 +291,116 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
         </div>
       )}
 
-      {active?.error && (
-        <div className="border-b border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
-          <div className="flex items-center gap-1.5 font-medium">
-            <AlertTriangle size={11} />
-            {active.error.stage}
-            {active.error.code !== null && (
-              <span className="opacity-80">
-                #{active.error.code} {active.error.sql_state ?? ""}
-              </span>
-            )}
-          </div>
-          <div className="mt-0.5 break-words">{active.error.message}</div>
-          {active.error.detail && (
-            <div className="mt-0.5 break-words text-11 opacity-80">
-              {active.error.detail}
+      {view === "messages" ? (
+        <pre className="ops-scroll min-h-0 flex-1 select-text overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-11 leading-[1.7] text-fg-muted">
+          {messageText}
+        </pre>
+      ) : view === "summary" ? (
+        <div className="ops-scroll min-h-0 flex-1 select-text overflow-auto">
+          <table className="w-full table-fixed border-collapse text-11">
+            <thead className="sticky top-0 z-[1] bg-surface-2 text-fg-subtle">
+              <tr>
+                <th className="w-10 border-b border-line px-2 py-1 text-left font-normal">#</th>
+                <th className="w-14 border-b border-line px-2 py-1 text-left font-normal">
+                  {t("状态")}
+                </th>
+                <th className="w-24 border-b border-line px-2 py-1 text-left font-normal">
+                  {t("行数")}
+                </th>
+                <th className="w-20 border-b border-line px-2 py-1 text-left font-normal">
+                  {t("耗时")}
+                </th>
+                <th className="border-b border-line px-2 py-1 text-left font-normal">
+                  {t("语句")}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaryRows.map((row) => (
+                <tr
+                  key={row.key}
+                  className="cursor-default border-b border-line/40 hover:bg-surface-hover"
+                  onClick={() => {
+                    setActive(tabId, row.key);
+                    setView("result");
+                  }}
+                >
+                  <td className="px-2 py-1 text-fg-subtle">{row.index}</td>
+                  <td className={cn("px-2 py-1", row.ok ? "text-success" : "text-danger")}>
+                    {row.status}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1 text-fg-muted">{row.counts}</td>
+                  <td className="whitespace-nowrap px-2 py-1 text-fg-subtle">{row.elapsed}</td>
+                  <td
+                    className="truncate px-2 py-1 font-mono text-fg-muted"
+                    title={row.error ? `${row.statement}\n${row.error}` : row.statement}
+                  >
+                    {row.statement}
+                    {row.error && (
+                      <span className="ml-2 text-danger">{statementLine(row.error, 60)}</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <>
+          {active?.error && (
+            <div className="border-b border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
+              <div className="flex items-center gap-1.5 font-medium">
+                <AlertTriangle size={11} />
+                {active.error.stage}
+                {active.error.code !== null && (
+                  <span className="opacity-80">
+                    #{active.error.code} {active.error.sql_state ?? ""}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 break-words">{active.error.message}</div>
+              {active.error.detail && (
+                <div className="mt-0.5 break-words text-11 opacity-80">
+                  {active.error.detail}
+                </div>
+              )}
             </div>
           )}
-        </div>
-      )}
 
-      <div className="min-h-0 flex-1">
-        {columns.length > 0 ? (
-          <VirtualDataGrid
-            apiRef={gridApi}
-            columns={columns}
-            rows={rows}
-            editable={false}
-            onCopy={({ format }) => void runCopy("tsv", format === "tsv-headers")}
-            onOpenCell={(cell: CellAddress) => {
-              const value = rows[cell.row]?.[cell.col];
-              if (value) setDetail({ column: columns[cell.col]?.name ?? "", value });
-            }}
-            onCellContextMenu={(_cell, event) => openCopyMenu(event)}
-            onRowContextMenu={(_row, event) => openCopyMenu(event)}
-            onColumnContextMenu={(_col, event) => openCopyMenu(event)}
-          />
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-12 text-fg-subtle">
-            <span>
-              {t("影响 {{count}} 行", { count: active?.affectedRows ?? 0 })}
-            </span>
-            {active?.lastInsertId && (
-              <span className="text-[11px]">
-                last_insert_id = {active.lastInsertId}
-              </span>
-            )}
-            {active?.info && (
-              <span className="max-w-md text-center text-[11px]">{active.info}</span>
+          <div className="min-h-0 flex-1">
+            {columns.length > 0 ? (
+              <VirtualDataGrid
+                apiRef={gridApi}
+                columns={columns}
+                rows={rows}
+                editable={false}
+                onCopy={({ format }) => void runCopy("tsv", format === "tsv-headers")}
+                onOpenCell={(cell: CellAddress) => {
+                  const value = rows[cell.row]?.[cell.col];
+                  if (value) setDetail({ column: columns[cell.col]?.name ?? "", value });
+                }}
+                onCellContextMenu={(_cell, event) => openCopyMenu(event)}
+                onRowContextMenu={(_row, event) => openCopyMenu(event)}
+                onColumnContextMenu={(_col, event) => openCopyMenu(event)}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-1 text-12 text-fg-subtle">
+                <span>
+                  {t("影响 {{count}} 行", { count: active?.affectedRows ?? 0 })}
+                </span>
+                {active?.lastInsertId && (
+                  <span className="text-[11px]">
+                    last_insert_id = {active.lastInsertId}
+                  </span>
+                )}
+                {active?.info && (
+                  <span className="max-w-md text-center text-[11px]">{active.info}</span>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       <CopyNotice status={copyStatus} />
       <ContextMenu {...menu.props} />

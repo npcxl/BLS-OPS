@@ -5,7 +5,7 @@
  * SQL 草稿、结果集和待提交修改都留在原来的组件实例里，切换回来即恢复。
  * 这也是"切换不能清空待提交修改"的实现方式。
  */
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Database as DatabaseIcon,
@@ -255,6 +255,14 @@ export function WorkItemHost({
     }
   }, [activeId, effectiveActiveId, items.length, setActive]);
 
+  // 常驻隐藏会让浏览器把焦点丢到 body；记住每项最后聚焦的元素，切回时还给它。
+  const lastFocusRef = useRef<Record<string, HTMLElement | null>>({});
+  useEffect(() => {
+    if (!effectiveActiveId) return;
+    const element = lastFocusRef.current[effectiveActiveId];
+    if (element?.isConnected) element.focus({ preventScroll: true });
+  }, [effectiveActiveId]);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {!session && (
@@ -300,6 +308,9 @@ export function WorkItemHost({
               key={item.id}
               className={cn("absolute inset-0 min-h-0", !active && "hidden")}
               aria-hidden={!active}
+              onFocusCapture={(event) => {
+                lastFocusRef.current[item.id] = event.target as HTMLElement;
+              }}
             >
               {item.kind === "table" ? (
                 <TableHost

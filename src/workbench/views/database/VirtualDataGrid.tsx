@@ -172,7 +172,11 @@ type Hit =
 interface VirtualDataGridProps {
   columns: DbColumn[];
   rows: DbValue[][];
-  /** 行号从 1 开始的偏移（分页时显示全局行号）。 */
+  /**
+   * 0 基行偏移：第 n 行显示 `rowOffset + n + 1`。
+   * 分页时传 `(pageIndex * pageSize)` —— **不要传 `BrowseResult.offset`**，
+   * 后端返回的是"下一页起点"（已加上本页行数）。
+   */
   rowOffset?: number;
   className?: string;
   apiRef?: RefObject<DataGridApi | null>;
@@ -349,8 +353,6 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   );
   const [dragging, setDragging] = useState<SelectionMode | null>(null);
   const dragRef = useRef<{ x: number; y: number; mode: SelectionMode } | null>(null);
-  const pressRef = useRef<{ x: number; y: number } | null>(null);
-  const dragMovedRef = useRef(false);
 
   const bounds: GridBounds = useMemo(
     () => ({ rows: rows.length, cols: columns.length }),
@@ -513,13 +515,6 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   // ---- 拖动选择 -----------------------------------------------------------
   const applyDrag = useCallback(
     (clientX: number, clientY: number, mode: SelectionMode) => {
-      const press = pressRef.current;
-      if (
-        press &&
-        (Math.abs(clientX - press.x) > 3 || Math.abs(clientY - press.y) > 3)
-      ) {
-        dragMovedRef.current = true;
-      }
       const hit = hitTest(clientX, clientY);
       if (!hit) return;
       if (hit.kind === "cell") {
@@ -537,24 +532,46 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     [hitTest, store],
   );
 
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (event: MouseEvent) => {
-      if (!dragRef.current) return;
-      dragRef.current = { ...dragRef.current, x: event.clientX, y: event.clientY };
-      applyDrag(event.clientX, event.clientY, dragging);
-    };
-    const onUp = () => {
-      dragRef.current = null;
-      setDragging(null);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [applyDrag, dragging]);
+  /**
+   * 监听**在 mousedown 里同步挂上**，不放在 effect 里：一次极快的点击可能在
+   * effect 执行前就结束，那样 mouseup 永远收不到，拖动状态会卡住、之后不按
+   * 键移动鼠标还会继续扩选。
+   */
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  const stopDrag = useCallback(() => {
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = null;
+    dragRef.current = null;
+    setDragging(null);
+  }, []);
+
+  const beginDrag = useCallback(
+    (event: React.MouseEvent, mode: SelectionMode) => {
+      stopDrag();
+      dragRef.current = { x: event.clientX, y: event.clientY, mode };
+      const onMove = (moveEvent: MouseEvent) => {
+        if (!dragRef.current) return;
+        dragRef.current = {
+          ...dragRef.current,
+          x: moveEvent.clientX,
+          y: moveEvent.clientY,
+        };
+        applyDrag(moveEvent.clientX, moveEvent.clientY, mode);
+      };
+      const onUp = () => stopDrag();
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      dragCleanupRef.current = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      setDragging(mode);
+    },
+    [applyDrag, stopDrag],
+  );
+
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   // 拖到视口边缘时自动滚动：跨可视区域选择靠它把未渲染的行"拉"出来。
   useEffect(() => {
@@ -591,8 +608,6 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     if (target.closest("[data-sort-button]")) return;
     const hit = hitTest(event.clientX, event.clientY);
     if (!hit) return;
-    pressRef.current = { x: event.clientX, y: event.clientY };
-    dragMovedRef.current = false;
     // 不用浏览器文本选区模拟数据选择：直接吃掉默认行为。
     event.preventDefault();
     containerRef.current?.focus({ preventScroll: true });
@@ -618,24 +633,25 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     }
     if (hit.kind === "columnHeader") {
       store.set(selectColumnAt(state, hit.col, gridBounds, modifiers));
-      dragRef.current = { x: event.clientX, y: event.clientY, mode: "column" };
-      setDragging("column");
+      beginDrag(event, "column");
       return;
     }
     if (hit.kind === "rowHeader") {
       store.set(selectRowAt(state, hit.row, gridBounds, modifiers));
       onSelectRow?.(hit.row);
-      dragRef.current = { x: event.clientX, y: event.clientY, mode: "row" };
-      setDragging("row");
+      beginDrag(event, "row");
       return;
     }
     store.set(selectCellAt(state, hit.point, gridBounds, modifiers));
     onSelectRow?.(hit.point.row);
     onSelectCell?.(hit.point);
-    dragRef.current = { x: event.clientX, y: event.clientY, mode: "cell" };
-    setDragging("cell");
+    beginDrag(event, "cell");
   };
 
+  /**
+   * 双击进入编辑（F2 也行）。**单击只选择**：如果单击就进编辑，输入框会抢走
+   * 焦点，随后的 Ctrl+C 会被输入框当成原生复制 —— 选中区域的 TSV 复制就没了。
+   */
   const onDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     if (target.closest("[data-cell-editor]") || target.closest("[data-sort-button]")) return;
@@ -646,18 +662,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       if (column) onSort?.(column);
       return;
     }
-  };
-
-  const onClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    // 双击的第二下 detail=2，不重复开始编辑。
-    if (event.detail !== 1) return;
-    const target = event.target as HTMLElement;
-    if (target.closest("[data-cell-editor]") || target.closest("[data-sort-button]")) {
-      return;
-    }
-    if (dragMovedRef.current) return;
-    const hit = hitTest(event.clientX, event.clientY);
-    if (hit?.kind === "cell") startEdit(hit.point);
+    if (hit.kind === "cell") startEdit(hit.point);
   };
 
   /**
@@ -869,7 +874,6 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
         tabIndex={0}
         onScroll={onScroll}
         onMouseDown={onMouseDown}
-        onClick={onClick}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
         onKeyDown={onKeyDown}

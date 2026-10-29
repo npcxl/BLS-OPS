@@ -3,7 +3,8 @@
  *
  * 执行语义对齐 Navicat：
  * - 有选区 → 只运行选区（选区里若有多条语句，逐条执行）；
- * - 无选区 → 运行编辑器里的全部 SQL；
+ * - 无选区 → 只运行光标所在的那条语句；
+ * - Ctrl+Shift+Enter / 「运行脚本」→ 按顺序执行整段脚本；
  * - 多语句按顺序执行，遇到错误/取消就停在该语句。
  *
  * 另可把当前 SQL 放进独立窗口运行；窗口之间用 Tauri 事件同步执行状态。
@@ -14,6 +15,7 @@ import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { MySQL, sql as sqlLanguage } from "@codemirror/lang-sql";
 import {
   Eraser,
+  FileCode2,
   FileDown,
   FolderOpen,
   History,
@@ -38,7 +40,8 @@ import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
 import { SaveQueryDialog } from "./SaveQueryDialog";
-import { splitSqlStatements } from "./sql-split";
+import { splitSqlStatements, statementAtCursor } from "./sql-split";
+import { formatSql } from "./sql-format";
 import { openDetachedSqlWindow } from "./detached-sql";
 
 const EMPTY_DATABASES: DbDatabase[] = [];
@@ -188,49 +191,57 @@ export function SqlWorkspace({
     [profile.id, session],
   );
 
-  const execute = useCallback(async () => {
-    if (!session) return;
-    const view = viewRef.current;
-    const selection = view
-      ? view.state
-          .sliceDoc(
-            view.state.selection.main.from,
-            view.state.selection.main.to,
-          )
-          .trim()
-      : "";
-    // Navicat 行为：有选区运行选区，没有选区运行全部。
-    const parsed = splitSqlStatements(selection || sqlText);
-    if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
-    if (parsed.statements.length === 0) {
-      setNotice(t("没有可执行的语句"));
-      return;
-    }
+  const execute = useCallback(
+    async (scope: "auto" | "all" = "auto") => {
+      if (!session) return;
+      const view = viewRef.current;
+      const selection = view
+        ? view.state
+            .sliceDoc(
+              view.state.selection.main.from,
+              view.state.selection.main.to,
+            )
+            .trim()
+        : "";
+      // Navicat 行为：有选区跑选区；没有选区时只跑光标所在语句。
+      // `all` 是显式的"执行整段脚本"，由 Ctrl+Shift+Enter 或"运行脚本"触发。
+      const source =
+        scope === "all"
+          ? sqlText
+          : selection || statementAtCursor(sqlText, view?.state.selection.main.head ?? 0);
+      const parsed = splitSqlStatements(source);
+      if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
+      if (parsed.statements.length === 0) {
+        setNotice(t("没有可执行的语句"));
+        return;
+      }
 
-    // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
-    if (contextDatabase && session.current_database !== contextDatabase) {
-      const switched = await switchDatabase(contextDatabase);
-      if (!switched) return;
-    }
+      // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
+      if (contextDatabase && session.current_database !== contextDatabase) {
+        const switched = await switchDatabase(contextDatabase);
+        if (!switched) return;
+      }
 
-    setNotice(null);
-    setHasRun(true);
-    await runStatements({
+      setNotice(null);
+      setHasRun(true);
+      await runStatements({
+        tabId,
+        profileId: profile.id,
+        sessionId: session.session_id,
+        statements: parsed.statements,
+      });
+    },
+    [
+      contextDatabase,
+      profile.id,
+      runStatements,
+      session,
+      sqlText,
+      switchDatabase,
       tabId,
-      profileId: profile.id,
-      sessionId: session.session_id,
-      statements: parsed.statements,
-    });
-  }, [
-    contextDatabase,
-    profile.id,
-    runStatements,
-    session,
-    sqlText,
-    switchDatabase,
-    tabId,
-    t,
-  ]);
+      t,
+    ],
+  );
 
   const handleClearResults = () => {
     clearResults(tabId);
@@ -335,6 +346,33 @@ export function SqlWorkspace({
     ],
     [schema],
   );
+
+  /** 格式化：有选区只排选区，否则排整段；写回编辑器后仍会走 onChange 落草稿。 */
+  const handleFormatSql = () => {
+    const view = viewRef.current;
+    if (!view) {
+      const next = formatSql(sqlText);
+      if (next && next !== sqlText) {
+        setSql(tabId, next);
+        setItemStatus(tabId, { dirty: true });
+      }
+      return;
+    }
+    const { from, to } = view.state.selection.main;
+    const selected = view.state.sliceDoc(from, to);
+    if (selected.trim()) {
+      view.dispatch({ changes: { from, to, insert: formatSql(selected) } });
+    } else {
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: formatSql(view.state.doc.toString()),
+        },
+      });
+    }
+    view.focus();
+  };
 
   const handleSqlChange = (value: string) => {
     setSql(tabId, value);
@@ -441,16 +479,35 @@ export function SqlWorkspace({
         >
           <FileDown size={12} />
         </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!sqlText.trim()}
+          onClick={handleFormatSql}
+          title={t("格式化 SQL（Ctrl+Shift+F）")}
+        >
+          <FileCode2 size={12} />
+          {t("格式化")}
+        </Button>
         <span className="mx-1 h-5 w-px bg-line" />
         <Button
           variant="primary"
           size="xs"
           disabled={!session || running || cancelling || switchingDb}
-          onClick={() => void execute()}
+          onClick={() => void execute("auto")}
           title={t("有选区运行选区，无选区运行全部（Ctrl+Enter）")}
         >
           <Play size={12} />
           {t("运行")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!session || running || cancelling || switchingDb || !sqlText.trim()}
+          onClick={() => void execute("all")}
+          title={t("按顺序执行整段脚本（Ctrl+Shift+Enter）")}
+        >
+          {t("运行脚本")}
         </Button>
         {!detached && (
           <Button
@@ -531,7 +588,18 @@ export function SqlWorkspace({
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
-            void execute();
+            // Ctrl+Enter = 选区/当前语句；Ctrl+Shift+Enter = 整段脚本。
+            void execute(event.shiftKey ? "all" : "auto");
+            return;
+          }
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            event.shiftKey &&
+            event.key.toLowerCase() === "f"
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            handleFormatSql();
           }
         }}
       >
@@ -569,7 +637,7 @@ export function SqlWorkspace({
           />
 
           <div className="min-h-0 flex-1">
-            <ResultsPanel tabId={tabId} canResolveRows={false} />
+            <ResultsPanel tabId={tabId} />
           </div>
         </>
       )}

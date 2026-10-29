@@ -16,18 +16,26 @@ describe("opened database state", () => {
     });
   });
 
-  it("expanding marks the database opened; collapsing keeps it opened", async () => {
+  it("展开只改变展开态，不把库标成已打开", async () => {
     const store = useDatabaseStore.getState();
     await store.toggleDatabase(PROFILE, DATABASE);
 
     let state = useDatabaseStore.getState();
-    expect(state.openedDatabases[KEY]).toBe(true);
     expect(state.expandedDatabases[KEY]).toBe(true);
+    expect(state.openedDatabases[KEY]).toBeUndefined();
 
     await useDatabaseStore.getState().toggleDatabase(PROFILE, DATABASE);
     state = useDatabaseStore.getState();
-    expect(state.openedDatabases[KEY]).toBe(true);
     expect(state.expandedDatabases[KEY]).toBe(false);
+    expect(state.openedDatabases[KEY]).toBeUndefined();
+  });
+
+  it("openDatabase 才标记已打开并展开", async () => {
+    await useDatabaseStore.getState().openDatabase(PROFILE, DATABASE);
+
+    const state = useDatabaseStore.getState();
+    expect(state.openedDatabases[KEY]).toBe(true);
+    expect(state.expandedDatabases[KEY]).toBe(true);
   });
 
   it("closing clears both opened and expanded state", async () => {

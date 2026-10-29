@@ -763,6 +763,27 @@ pub fn preview(change: &SchemaChange) -> Result<SchemaPreview, DbErrorInfo> {
     })
 }
 
+fn ddl_error(index: usize, fatal: bool, mut mapped: DbErrorInfo) -> DbErrorInfo {
+    if fatal {
+        mapped.stage = "outcome_unknown".to_string();
+        mapped.retryable = false;
+    }
+    let partial = if index > 0 {
+        format!("前 {index} 条 DDL 已执行；MySQL DDL 可能隐式提交，对象可能部分完成")
+    } else if fatal {
+        "连接在 DDL 执行中断开；该语句是否生效未知".to_string()
+    } else {
+        String::new()
+    };
+    if !partial.is_empty() {
+        mapped.detail = Some(match mapped.detail {
+            Some(existing) => format!("{existing}；{partial}"),
+            None => partial,
+        });
+    }
+    mapped
+}
+
 async fn execute_statements(
     session: &SessionEntry,
     statements: &[String],
@@ -793,25 +814,7 @@ async fn execute_statements(
                 let fatal = error.is_fatal();
                 // 断连后协议状态不可信，绝不能把连接放回会话复用。
                 session.release_conn(conn, !fatal).await;
-                let mut mapped = map_error(&error, "query");
-                if fatal {
-                    mapped.stage = "outcome_unknown".to_string();
-                    mapped.retryable = false;
-                }
-                let partial = if index > 0 {
-                    format!("前 {index} 条 DDL 已执行；MySQL DDL 可能隐式提交，对象可能部分完成")
-                } else if fatal {
-                    "连接在 DDL 执行中断开；该语句是否生效未知".to_string()
-                } else {
-                    String::new()
-                };
-                if !partial.is_empty() {
-                    mapped.detail = Some(match mapped.detail {
-                        Some(existing) => format!("{existing}；{partial}"),
-                        None => partial,
-                    });
-                }
-                return Err(mapped);
+                return Err(ddl_error(index, fatal, map_error(&error, "query")));
             }
             Err(_) => {
                 session.release_conn(conn, false).await;
@@ -1264,5 +1267,42 @@ mod alter_tests {
         )
         .unwrap_err();
         assert_eq!(error.stage, "config");
+    }
+}
+
+#[cfg(test)]
+mod ddl_error_tests {
+    use super::ddl_error;
+    use crate::database::model::DbErrorInfo;
+
+    #[test]
+    fn fatal_error_is_outcome_unknown_and_not_retryable() {
+        let mapped = ddl_error(
+            0,
+            true,
+            DbErrorInfo::new("tcp", "connection reset").retryable(true),
+        );
+        assert_eq!(mapped.stage, "outcome_unknown");
+        assert!(!mapped.retryable);
+        assert!(mapped
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("是否生效未知")));
+    }
+
+    #[test]
+    fn partial_failure_keeps_executed_count() {
+        let mapped = ddl_error(1, false, DbErrorInfo::new("query", "bad view"));
+        assert_eq!(mapped.stage, "query");
+        assert!(mapped
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("前 1 条")));
+    }
+
+    #[test]
+    fn first_non_fatal_failure_has_no_partial_detail() {
+        let mapped = ddl_error(0, false, DbErrorInfo::new("query", "bad ddl"));
+        assert!(mapped.detail.is_none());
     }
 }

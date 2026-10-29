@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { FileDown, FolderOpen, Loader2, Square, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { pushToast } from "@/components/ui/toast";
 import { databaseApi } from "@/api/ops-api";
 import type {
   BrowseFilter,
@@ -143,6 +144,14 @@ export function ExportDialog({
               setBusy(false);
               const final = await databaseApi.exportOutcome(started.export_id);
               setOutcome(final);
+              if (final.state === "completed") {
+                pushToast(
+                  t("导出完成：{{rows}} 行", { rows: final.rows.toLocaleString() }),
+                  "success",
+                );
+              } else if (final.state === "failed") {
+                pushToast(final.error?.message ?? t("导出失败"), "error");
+              }
             }
           } catch (failure) {
             stopPolling();

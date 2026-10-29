@@ -22,6 +22,7 @@ import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import {
+  orderedItems,
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
@@ -92,6 +93,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
   const [draggingRight, setDraggingRight] = useState(false);
   const [closing, setClosing] = useState<WorkItem | null>(null);
   const [closingOthers, setClosingOthers] = useState<CloseBatch | null>(null);
+  const [closingScope, setClosingScope] = useState<"others" | "right">("others");
   /** 足够宽时字段卡片浮在列表左侧，不再挤压中央数据区。 */
   const [wide, setWide] = useState(() => window.innerWidth >= 1500);
 
@@ -269,6 +271,26 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
       }
       return;
     }
+    setClosingScope("others");
+    setClosingOthers(batch);
+  };
+
+  /** 关闭右侧：按右侧列表的顺序（固定项置顶）关掉该项之后的项目。 */
+  const requestCloseRight = (item: WorkItem) => {
+    const ordered = orderedItems(items);
+    const index = ordered.findIndex((entry) => entry.id === item.id);
+    if (index < 0) return;
+    const targets = ordered.slice(index + 1).filter((entry) => !entry.pinned);
+    if (targets.length === 0) return;
+    const batch = buildCloseBatch(targets, sessions);
+    if (!batch.risks.some(hasCloseRisk)) {
+      for (const entry of targets) {
+        useDatabaseWorkbenchStore.getState().dispose(entry.id, { clearDraft: true });
+        closeItem(entry.id);
+      }
+      return;
+    }
+    setClosingScope("right");
     setClosingOthers(batch);
   };
 
@@ -520,6 +542,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
                   <OpenItemsPanel
                     onRequestClose={requestClose}
                     onRequestCloseOthers={requestCloseOthers}
+                    onRequestCloseRight={requestCloseRight}
                   />
                 )}
               </div>
@@ -544,6 +567,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
 
       <CloseWorkItemsDialog
         batch={closingOthers}
+        scope={closingScope}
         onCancel={() => setClosingOthers(null)}
         onConfirm={(action) => void confirmCloseOthers(action)}
       />

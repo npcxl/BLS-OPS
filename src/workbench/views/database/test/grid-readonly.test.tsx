@@ -72,7 +72,7 @@ let root: Root;
 let handlers: Handlers;
 let apiRef: RefObject<DataGridApi | null>;
 
-function mount(editable: boolean) {
+function mount(editable: boolean, rowOffset = 0) {
   handlers = {
     onCopy: vi.fn<Handlers["onCopy"]>(),
     onPaste: vi.fn<Handlers["onPaste"]>(),
@@ -91,6 +91,7 @@ function mount(editable: boolean) {
       <VirtualDataGrid
         columns={columns}
         rows={rows}
+        rowOffset={rowOffset}
         editable={editable}
         apiRef={apiRef}
         canUndo
@@ -206,5 +207,23 @@ describe("可编辑网格", () => {
     });
     expect(apiRef.current?.getSelection().mode).toBeNull();
     expect(handlers.onCopy).not.toHaveBeenCalled();
+  });
+});
+
+describe("行号列", () => {
+  const gutterTexts = () =>
+    [...grid().querySelectorAll('[role="row"]')].map(
+      (row) => row.firstElementChild?.textContent,
+    );
+
+  it("首页从 1 开始", () => {
+    mount(false, 0);
+    expect(gutterTexts()).toEqual(["1", "2"]);
+  });
+
+  it("分页偏移后显示全局行号（不是下一页起点的回显值）", () => {
+    // 第 3 页、每页 100 行 → 201 起。传 result.offset 会变成 301。
+    mount(false, 200);
+    expect(gutterTexts()).toEqual(["201", "202"]);
   });
 });

@@ -9,7 +9,7 @@
 //! 再把 plan 交给这里的 async 方法。
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -37,8 +37,8 @@ pub struct DatabaseManager {
     init_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// 关闭/配置变更代次：初始化期间被 close 的连接必须丢弃。
     epochs: Arc<Mutex<HashMap<String, u64>>>,
-    /// 同一 session_id 的并发创建串行化，避免旧会话替换时互相 close/泄漏。
-    session_init_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// 同一 session_id 的并发创建串行化；只保留弱引用，关闭后自动回收。
+    session_init_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     /// 会话关闭代次：创建期间被 close_session 关闭的会话不能重新插回。
     session_epochs: Arc<Mutex<HashMap<String, u64>>>,
 }
@@ -70,10 +70,14 @@ impl DatabaseManager {
 
     async fn session_init_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
         let mut locks = self.session_init_locks.lock().await;
-        locks
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        // 回收已经没人持有的 session 锁，避免长期运行后 map 只增不减。
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(session_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(session_id.to_string(), Arc::downgrade(&lock));
+        lock
     }
 
     async fn session_epoch(&self, session_id: &str) -> u64 {

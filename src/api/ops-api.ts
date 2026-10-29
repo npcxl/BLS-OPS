@@ -1535,6 +1535,9 @@ export const databaseApi = {
       cursor,
       count,
     }),
+  /** 新建 string 键：SET NX 原子写入，键已存在时报错、不覆盖。 */
+  redisCreateString: (profileId: string, dbIndex: number, key: string, value: string) =>
+    invoke<void>("db_redis_key_create", { profileId, dbIndex, key, value }),
   /** binary = true 时 value 是 Base64，后端解码后写入（二进制无损往返）。 */
   redisWriteString: (
     profileId: string,

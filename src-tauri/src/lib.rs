@@ -470,6 +470,7 @@ pub fn run() {
             commands::db_redis_write_set,
             commands::db_redis_write_zset,
             commands::db_redis_key_delete,
+            commands::db_redis_key_create,
             commands::db_redis_key_expire,
             commands::db_redis_key_rename,
             commands::db_redis_publish,

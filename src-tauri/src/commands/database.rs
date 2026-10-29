@@ -788,6 +788,19 @@ pub async fn db_redis_write_string(
         .await
 }
 
+/// 新建 string 键：SET NX 原子写入，键已存在时报错、绝不静默覆盖。
+#[tauri::command]
+pub async fn db_redis_key_create(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    value: String,
+) -> Result<(), DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.create_string_key(db_index, &key, &value).await
+}
+
 /// HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。
 #[tauri::command]
 pub async fn db_redis_hash_scan(

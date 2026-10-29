@@ -93,10 +93,17 @@ export function RedisBrowser({
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // SCAN 竞态守卫：递增序号标识"最新一次扫描"。晚到的旧响应直接丢弃，
+  // 否则旧结果会覆盖新结果（cursor 回退）或把同一批键 append 两次（重复键）。
+  const scanSeqRef = useRef(0);
+
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [keyInfo, setKeyInfo] = useState<RedisKeyInfo | null>(null);
   const [payload, setPayload] = useState<RedisValuePayload | null>(null);
   const [loadingValue, setLoadingValue] = useState(false);
+
+  // 键详情竞态守卫：快速连点两个键时，晚到的旧键响应不能覆盖新键。
+  const keySeqRef = useRef(0);
 
   const [pubsubOpen, setPubsubOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -112,6 +119,7 @@ export function RedisBrowser({
 
   const runScan = useCallback(
     async (reset: boolean) => {
+      const seq = ++scanSeqRef.current;
       setScanning(true);
       setError(null);
       try {
@@ -122,13 +130,23 @@ export function RedisBrowser({
           reset ? 0 : cursor,
           100,
         );
-        setKeys((current) => (reset ? page.keys : [...current, ...page.keys]));
+        // 过期响应：期间已有更新的扫描发起，丢弃，绝不覆盖新状态。
+        if (seq !== scanSeqRef.current) return;
+        setKeys((current) => {
+          const merged = reset ? page.keys : [...current, ...page.keys];
+          // 兜底去重：SCAN 重扫到同一个键、或双击"继续扫描"时不产生重复行。
+          const seen = new Set<string>();
+          return merged.filter((entry) =>
+            seen.has(entry.key) ? false : (seen.add(entry.key), true),
+          );
+        });
         setCursor(page.cursor);
         setDbsize(page.dbsize);
       } catch (failure) {
-        setError(toDbError(failure).message);
+        if (seq === scanSeqRef.current) setError(toDbError(failure).message);
       } finally {
-        setScanning(false);
+        // 只有最新请求有权解除扫描态，避免旧请求提前解除。
+        if (seq === scanSeqRef.current) setScanning(false);
       }
     },
     [profile.id, dbIndex, pattern, cursor],
@@ -145,6 +163,7 @@ export function RedisBrowser({
 
   const loadKey = useCallback(
     async (key: string) => {
+      const seq = ++keySeqRef.current;
       setSelectedKey(key);
       setLoadingValue(true);
       setError(null);
@@ -153,14 +172,17 @@ export function RedisBrowser({
           databaseApi.redisKeyInfo(profile.id, dbIndex, key),
           databaseApi.redisReadValue(profile.id, dbIndex, key),
         ]);
+        // 期间用户已点选了另一个键：丢弃本次响应。
+        if (seq !== keySeqRef.current) return;
         setKeyInfo(info);
         setPayload(value);
       } catch (failure) {
+        if (seq !== keySeqRef.current) return;
         setError(toDbError(failure).message);
         setKeyInfo(null);
         setPayload(null);
       } finally {
-        setLoadingValue(false);
+        if (seq === keySeqRef.current) setLoadingValue(false);
       }
     },
     [profile.id, dbIndex],
@@ -277,8 +299,10 @@ export function RedisBrowser({
                 const key = window.prompt(t("新键名"));
                 if (!key?.trim()) return;
                 const value = window.prompt(t("初始值"), "") ?? "";
+                // 新建走 SET NX：键已存在时报错，绝不静默覆盖旧键。
                 void mutate(
-                  () => databaseApi.redisWriteString(profile.id, dbIndex, key.trim(), value),
+                  () =>
+                    databaseApi.redisCreateString(profile.id, dbIndex, key.trim(), value),
                   t("键已创建"),
                 );
               }}

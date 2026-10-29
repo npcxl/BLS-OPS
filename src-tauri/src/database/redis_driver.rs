@@ -842,12 +842,30 @@ impl RedisSession {
     }
 
     /// 新键的统一入口：string 类型 + 初始值（编辑器"新建键"）。
+    ///
+    /// 用 SET NX 原子写入：键已存在时直接报错，**绝不静默覆盖**旧键
+    /// （普通 SET 的覆盖语义留给编辑器里对已存在键的"保存修改"）。
     pub async fn create_string_key(&self, db: i64, key: &str, value: &str) -> Result<(), DbErrorInfo> {
-        self.ensure_writable("SET(新建键)")?;
+        self.ensure_writable("SET NX(新建键)")?;
         if key.trim().is_empty() {
             return Err(DbErrorInfo::new("config", "键名不能为空"));
         }
-        self.write_string(db, key, value, false).await
+        let mut conn = self.acquire(db).await?;
+        let created: Option<()> = redis::cmd("SET")
+            .arg(key)
+            .arg(value)
+            .arg("NX")
+            .query_async(&mut conn)
+            .await
+            .map_err(stage_err("write"))?;
+        if created.is_none() {
+            // SET NX 命中已存在的键时返回 Nil。
+            return Err(DbErrorInfo::new(
+                "write",
+                format!("键「{key}」已存在，未覆盖。如需修改请选中该键后在编辑器保存。"),
+            ));
+        }
+        Ok(())
     }
 
     /// 删除键。

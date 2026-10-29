@@ -39,7 +39,13 @@ import { LoadingState } from "@/components/ui/loading";
 import { databaseApi } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
-import { findColumnTypePreset, MYSQL_COLUMN_TYPE_OPTIONS } from "./column-types";
+import {
+  findColumnTypePreset,
+  MYSQL_COLUMN_TYPE_OPTIONS,
+  typeSupportsAutoIncrement,
+  typeSupportsLength,
+  typeSupportsScale,
+} from "./column-types";
 import { parseForeignKeys } from "./foreign-keys";
 
 export type StructureSection = "all" | "columns" | "indexes" | "ddl" | "foreign";
@@ -175,8 +181,7 @@ export function TableStructure({
   const [tab, setTab] = useState<StructureTab>(section === "all" ? "columns" : section);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   // Navicat 式底部属性抽屉：选中某行才出现，可手动关掉。
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+
   const [fieldClipboard, setFieldClipboard] = useState<DraftColumn[]>([]);
   const menu = useContextMenu();
   const [columns, setColumns] = useState<DraftColumn[]>([]);
@@ -238,8 +243,6 @@ export function TableStructure({
   const dirty =
     editing &&
     draftSignature(columns, indexes) !== draftSignature(baseline.columns, baseline.indexes);
-  const selectedDraft = columns.find((column) => column.key === selectedKey) ?? null;
-
   const startEditing = () => {
     if (!editable) return;
     const draft = fromDetail(detail);
@@ -420,6 +423,36 @@ export function TableStructure({
     );
   };
 
+  /**
+   * 换类型时的连带规则：不支持长度/小数位的类型清空对应输入框，
+   * 不支持自增的类型取消自增（MySQL 只允许整数自增）。
+   */
+  const applyColumnType = (
+    key: string,
+    base: string,
+    preset?: { length?: string; scale?: string },
+  ) => {
+    setColumns((current) =>
+      current.map((column) =>
+        column.key === key
+          ? {
+              ...column,
+              base_type: base,
+              length: typeSupportsLength(base) ? (preset?.length ?? column.length) : "",
+              scale: typeSupportsScale(base) ? (preset?.scale ?? column.scale) : "",
+              auto_increment: typeSupportsAutoIncrement(base)
+                ? column.auto_increment
+                : false,
+            }
+          : column,
+      ),
+    );
+  };
+
+  /** 复合主键里的序号（1、2、3…）。 */
+  const primaryOrder = (key: string) =>
+    columns.filter((column) => column.primary).findIndex((column) => column.key === key) + 1;
+
   const patchIndex = (key: string, patch: Partial<DraftIndex>) => {
     setIndexes((current) =>
       current.map((index) => (index.key === key ? { ...index, ...patch } : index)),
@@ -594,9 +627,8 @@ export function TableStructure({
                 <col className="w-[52px]" />
                 <col className="w-[52px]" />
                 <col />
-                {/* 编辑态：默认值/自增在底部抽屉里；只读态才放到表格里。 */}
-                {!editing && <col className="w-[130px]" />}
-                {!editing && <col className="w-[56px]" />}
+                <col className="w-[130px]" />
+                <col className="w-[56px]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
                 <tr>
@@ -608,8 +640,8 @@ export function TableStructure({
                   <th className="px-2 py-1 text-center font-medium">{t("虚拟")}</th>
                   <th className="px-2 py-1 text-center font-medium">{t("键")}</th>
                   <th className="px-2 py-1 text-left font-medium">{t("注释")}</th>
-                  {!editing && <th className="px-2 py-1 text-left font-medium">{t("默认值")}</th>}
-                  {!editing && <th className="px-2 py-1 text-center font-medium">{t("自增")}</th>}
+                  <th className="px-2 py-1 text-left font-medium">{t("默认值")}</th>
+                  <th className="px-2 py-1 text-center font-medium">{t("自增")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -626,14 +658,9 @@ export function TableStructure({
                           selectedColumn ===
                             (draft?.name ?? (column as DbTableColumn).name)) &&
                           "bg-accent/10",
-                        drawerOpen && selectedKey === draft?.key && "bg-accent/10",
                       )}
                       onClick={() => {
-                        if (draft) {
-                          setFocusedKey(draft.key);
-                          setSelectedKey(draft.key);
-                          setDrawerOpen(true);
-                        }
+                        if (draft) setFocusedKey(draft.key);
                         if (!editing && editable) startEditing();
                         else if (!editing) onSelectColumn?.(column as DbTableColumn);
                       }}
@@ -641,8 +668,6 @@ export function TableStructure({
                         draft
                           ? menu.onContextMenu(() => {
                               setFocusedKey(draft.key);
-                              setSelectedKey(draft.key);
-                              setDrawerOpen(true);
                               return columnMenuItems(draft, index);
                             })
                           : undefined
@@ -670,11 +695,10 @@ export function TableStructure({
                               options={MYSQL_COLUMN_TYPE_OPTIONS}
                               placeholder={t("类型")}
                               ariaLabel={t("类型")}
-                              onChange={(next) => patchColumn(draft.key, { base_type: next })}
+                              onChange={(next) => applyColumnType(draft.key, next)}
                               onPick={(option) => {
                                 const preset = findColumnTypePreset(option.value);
-                                patchColumn(draft.key, {
-                                  base_type: option.value,
+                                applyColumnType(draft.key, option.value, {
                                   length: preset?.length ?? "",
                                   scale: preset?.scale ?? "",
                                 });
@@ -688,8 +712,14 @@ export function TableStructure({
                       <td className="px-2 py-1 font-mono text-fg-muted">
                         {draft ? (
                           <input
-                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
+                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
                             value={draft.length}
+                            disabled={!typeSupportsLength(draft.base_type)}
+                            title={
+                              typeSupportsLength(draft.base_type)
+                                ? undefined
+                                : t("该类型不支持长度")
+                            }
                             onChange={(event) =>
                               patchColumn(draft.key, { length: event.target.value })
                             }
@@ -702,8 +732,14 @@ export function TableStructure({
                       <td className="px-2 py-1 font-mono text-fg-muted">
                         {draft ? (
                           <input
-                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent"
+                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-12 text-fg outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-40"
                             value={draft.scale}
+                            disabled={!typeSupportsScale(draft.base_type)}
+                            title={
+                              typeSupportsScale(draft.base_type)
+                                ? undefined
+                                : t("该类型不支持小数点")
+                            }
                             onChange={(event) =>
                               patchColumn(draft.key, { scale: event.target.value })
                             }
@@ -718,6 +754,8 @@ export function TableStructure({
                           <input
                             type="checkbox"
                             checked={!draft.nullable}
+                            disabled={draft.primary}
+                            title={draft.primary ? t("主键列必须 NOT NULL") : undefined}
                             onChange={(event) =>
                               patchColumn(draft.key, { nullable: !event.target.checked })
                             }
@@ -739,12 +777,38 @@ export function TableStructure({
                         />
                       </td>
                       <td className="px-2 py-1 text-center text-fg-muted">
-                        {primary && (
+                        {draft ? (
+                          // 主键可以多列组合：每勾一列按顺序编号 1、2、3…
+                          <label
+                            className="inline-flex cursor-pointer items-center gap-0.5 font-mono text-11 text-accent"
+                            title={t("勾选加入主键，可多列组合")}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.primary}
+                              onChange={(event) =>
+                                patchColumn(draft.key, {
+                                  primary: event.target.checked,
+                                  nullable: event.target.checked ? false : draft.nullable,
+                                })
+                              }
+                            />
+                            {draft.primary && (
+                              <span className="inline-flex items-center gap-0.5">
+                                <KeyRound size={11} />
+                                {primaryOrder(draft.key)}
+                              </span>
+                            )}
+                          </label>
+                        ) : primary ? (
                           <span className="inline-flex items-center gap-0.5 font-mono text-11 text-accent">
                             <KeyRound size={11} />
-                            1
+                            {detail.primary_key.findIndex((key) =>
+                              key.toLowerCase() ===
+                              (column as DbTableColumn).name.toLowerCase(),
+                            ) + 1}
                           </span>
-                        )}
+                        ) : null}
                       </td>
                       <td className="px-2 py-1 text-fg-subtle">
                         {draft ? (
@@ -777,18 +841,48 @@ export function TableStructure({
                           </span>
                         )}
                       </td>
-                      {!editing && (
-                        <>
-                          <td className="px-2 py-1 font-mono text-11 text-fg-muted">
-                            {(column as DbTableColumn).default_value === null
-                              ? "NULL"
-                              : (column as DbTableColumn).default_value}
-                          </td>
-                          <td className="px-2 py-1 text-center text-11 text-fg-muted">
-                            {(column as DbTableColumn).auto_increment ? "AUTO" : ""}
-                          </td>
-                        </>
-                      )}
+                      <td className="px-2 py-1 font-mono text-11 text-fg-muted">
+                        {draft ? (
+                          <input
+                            className="w-full rounded border border-line bg-surface-2 px-1 py-0.5 font-mono text-11 text-fg outline-none focus:border-accent"
+                            value={draft.default_value ?? ""}
+                            placeholder="NULL"
+                            onChange={(event) =>
+                              patchColumn(draft.key, {
+                                default_value: event.target.value || null,
+                              })
+                            }
+                            onFocus={() => setFocusedKey(draft.key)}
+                          />
+                        ) : (column as DbTableColumn).default_value === null ? (
+                          "NULL"
+                        ) : (
+                          (column as DbTableColumn).default_value
+                        )}
+                      </td>
+                      <td className="px-2 py-1 text-center text-11 text-fg-muted">
+                        {draft ? (
+                          <input
+                            type="checkbox"
+                            checked={draft.auto_increment}
+                            disabled={!typeSupportsAutoIncrement(draft.base_type)}
+                            title={
+                              typeSupportsAutoIncrement(draft.base_type)
+                                ? undefined
+                                : t("仅整数类型支持自增")
+                            }
+                            onChange={(event) =>
+                              patchColumn(draft.key, {
+                                auto_increment: event.target.checked,
+                              })
+                            }
+                          />
+                        ) : (column as DbTableColumn).auto_increment ? (
+                          "AUTO"
+                        ) : (
+                          ""
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -972,7 +1066,7 @@ export function TableStructure({
             <h3 className="mb-1 text-12 font-medium text-fg">{t("表定义")}</h3>
           )}
           {detail.create_sql ? (
-            <pre className="ops-scroll max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-[8px] border border-line bg-surface-2/50 p-2 font-mono text-11 text-fg-muted">
+            <pre className="ops-scroll max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-[8px] border border-line bg-surface-2/40 p-3 font-mono text-12 leading-[1.8] text-fg-muted">
               {detail.create_sql}
             </pre>
           ) : (
@@ -991,60 +1085,6 @@ export function TableStructure({
       )}
       {error && <ErrorText>{error}</ErrorText>}
       </div>
-
-      {/* 底部属性抽屉：选中某行才出现，默认值 / 自增这些长尾选项放这里。 */}
-      {showColumns && editing && drawerOpen && selectedDraft && (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-surface-2/40 px-2 py-1.5 text-11">
-          <span className="flex min-w-0 items-center gap-1 text-fg-muted">
-            <KeyRound size={11} className="shrink-0 text-fg-subtle" />
-            <span className="max-w-[180px] truncate font-mono text-fg">
-              {selectedDraft.name || t("未命名字段")}
-            </span>
-            <span className="shrink-0 font-mono text-fg-subtle">
-              {composeColumnType(selectedDraft) || "—"}
-            </span>
-          </span>
-          <label className="flex items-center gap-1 text-fg-muted">
-            {t("默认值")}
-            <input
-              className="h-6 w-[180px] rounded border border-line bg-surface-2 px-1 font-mono text-11 text-fg outline-none focus:border-accent"
-              value={selectedDraft.default_value ?? ""}
-              placeholder="NULL"
-              onChange={(event) =>
-                patchColumn(selectedDraft.key, {
-                  default_value: event.target.value || null,
-                })
-              }
-            />
-          </label>
-          <label className="flex items-center gap-1 text-fg-muted">
-            <input
-              type="checkbox"
-              checked={selectedDraft.auto_increment}
-              disabled={selectedDraft.primary}
-              onChange={(event) =>
-                patchColumn(selectedDraft.key, {
-                  auto_increment: event.target.checked,
-                })
-              }
-            />
-            {t("自增")}
-          </label>
-          {selectedDraft.primary && (
-            <span className="text-fg-subtle">{t("主键默认自增")}</span>
-          )}
-          <Button
-            variant="ghost"
-            size="xs"
-            className="ml-auto h-6 w-6 px-0"
-            onClick={() => setDrawerOpen(false)}
-            aria-label={t("关闭属性面板")}
-            title={t("关闭属性面板")}
-          >
-            <X size={11} />
-          </Button>
-        </div>
-      )}
 
       <ContextMenu {...menu.props} />
 

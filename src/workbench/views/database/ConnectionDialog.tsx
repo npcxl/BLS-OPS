@@ -103,6 +103,9 @@ export function ConnectionDialog({
   const patch = (value: Partial<DatabaseProfile>) =>
     setDraft((current) => ({ ...current, ...value }));
 
+  /** 只有 MySQL / Redis 有真实驱动；其余引擎允许先存配置，但不给"测试连接"。 */
+  const engineSupported = draft.engine === "mysql" || draft.engine === "redis";
+
   /** 切引擎时联动默认值：端口/用户名随引擎走，Redis 补上模式字段。 */
   const changeEngine = (engine: DatabaseProfile["engine"]) => {
     if (engine === "redis") {
@@ -207,7 +210,13 @@ export function ConnectionDialog({
           <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
             {t("取消")}
           </Button>
-          <Button variant="secondary" size="sm" disabled={busy || testing} onClick={() => void runTest()}>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy || testing || !engineSupported}
+            title={engineSupported ? undefined : t("该类型尚未适配，暂不能测试连接")}
+            onClick={() => void runTest()}
+          >
             {testing ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
             {t("测试连接")}
           </Button>
@@ -227,23 +236,12 @@ export function ConnectionDialog({
               options={[
                 { value: "mysql", label: t("MySQL（不区分版本）"), hint: "MySQL 8.x" },
                 { value: "redis", label: t("Redis"), hint: "Redis 6+ / 键浏览器" },
-                {
-                  value: "mariadb",
-                  label: t("MariaDB（尚未实现）"),
-                  disabled: true,
-                },
-                {
-                  value: "postgres",
-                  label: t("PostgreSQL（尚未实现）"),
-                  disabled: true,
-                },
-                { value: "sqlite", label: t("SQLite（尚未实现）"), disabled: true },
-                {
-                  value: "sqlserver",
-                  label: t("SQL Server（尚未实现）"),
-                  disabled: true,
-                },
-                { value: "oracle", label: t("Oracle（尚未实现）"), disabled: true },
+                // 未适配的引擎也可以选：先把连接配置存下来，等适配完直接能用。
+                { value: "mariadb", label: t("MariaDB（尚未适配）") },
+                { value: "postgres", label: t("PostgreSQL（尚未适配）") },
+                { value: "sqlite", label: t("SQLite（尚未适配）") },
+                { value: "sqlserver", label: t("SQL Server（尚未适配）") },
+                { value: "oracle", label: t("Oracle（尚未适配）") },
               ]}
             />
           </Field>
@@ -252,9 +250,11 @@ export function ConnectionDialog({
               ? t(
                   "Redis 走独立的键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），不提供 SQL 工作台。",
                 )
-              : t(
-                  "MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。其它引擎只保留适配器边界，当前版本不可选。",
-                )}
+              : engineSupported
+                ? t("MySQL 使用原生协议驱动，不区分 8.0/8.4 小版本。")
+                : t(
+                    "该类型尚未适配：可以先保存连接配置，连接会失败。Redis 已有独立模块。",
+                  )}
           </p>
         </div>
 

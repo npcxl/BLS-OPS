@@ -39,6 +39,26 @@ export function formatSeconds(ms: number): string {
   return ms < 1000 ? `${(ms / 1000).toFixed(3)}s` : `${(ms / 1000).toFixed(2)}s`;
 }
 
+/**
+ * 总耗时：取「后端报的总量」与「各语句耗时之和」的较大值。
+ *
+ * 后端 `Finished` 批次是 `try_send` 发出的，通道满时会被丢弃 —— 这种情况下
+ * `tab.elapsedMs` 会停在 0，但每条语句的 `result_set_end` 已经带回了各自的
+ * 耗时。只看总量会显示 `总耗时: 0.000s`，比一条语句还快，明显是错的。
+ * 反过来，总量包含解析与 IPC 开销，通常大于求和，所以取 max 而不是直接求和。
+ */
+export function totalElapsedMs(
+  results: readonly StatementResultLike[],
+  reportedMs: number | null | undefined,
+): number {
+  const sum = results.reduce(
+    (acc, item) => acc + (Number.isFinite(item.elapsedMs) ? item.elapsedMs : 0),
+    0,
+  );
+  const reported = Number.isFinite(reportedMs) ? (reportedMs as number) : 0;
+  return Math.max(reported, sum);
+}
+
 /** 语句只显示第一行非空内容，长 SQL 用省略号收掉。 */
 export function statementLine(sql: string, max = 120): string {
   const line =
@@ -52,7 +72,7 @@ export function statementLine(sql: string, max = 120): string {
 /** 消息页：每个语句一段（语句 → 结果/错误 → 耗时），末尾一行总耗时。 */
 export function buildMessageLog(
   results: readonly StatementResultLike[],
-  totalElapsedMs: number,
+  reportedTotalMs: number,
   t: TFunction,
 ): string {
   if (results.length === 0) return t("这次执行没有返回结果");
@@ -83,9 +103,10 @@ export function buildMessageLog(
   });
 
   lines.push(
-    `> ${t("总耗时")}: ${formatSeconds(totalElapsedMs)} · ${t("共 {{count}} 个结果", {
-      count: results.length,
-    })}`,
+    `> ${t("总耗时")}: ${formatSeconds(totalElapsedMs(results, reportedTotalMs))} · ${t(
+      "共 {{count}} 个结果",
+      { count: results.length },
+    )}`,
   );
   return lines.join("\n");
 }

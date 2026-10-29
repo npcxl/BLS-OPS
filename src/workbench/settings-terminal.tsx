@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { selectClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { useTerminalFont } from "@/hooks/use-terminal-font";
-import { cn } from "@/lib/cn";
+
 import { Group, ListGroup, Switch } from "./settings-parts";
 import { TERMINAL_FONTS, resolveFontStack } from "./views/terminal/terminal-font";
 import { readCompactPrompt, saveCompactPrompt } from "./views/terminal/terminal-prompt";
@@ -49,18 +49,13 @@ export function TerminalSettingsGroup() {
       <ListGroup>
         <div className="flex items-center justify-between gap-3 px-3 py-2">
           <span className="shrink-0 text-12 text-fg">{t("Font")}</span>
-          <select
-            className={cn(selectClass, "max-w-40")}
+          <Select
+            className="max-w-40"
             value={fontId}
-            aria-label={t("Font")}
-            onChange={(event) => setFontId(event.target.value)}
-          >
-            {TERMINAL_FONTS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {t(option.label)}
-              </option>
-            ))}
-          </select>
+            ariaLabel={t("Font")}
+            options={TERMINAL_FONTS.map((option) => ({ value: option.id, label: t(option.label) }))}
+            onChange={setFontId}
+          />
         </div>
         <div className="px-3 py-2">
           <pre

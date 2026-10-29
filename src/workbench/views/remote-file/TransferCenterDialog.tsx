@@ -121,7 +121,7 @@ export function TransferCenterDialog({
       width={600}
       title={t("Transfers")}
       description={t(
-        "Uploads and downloads run in the background. Temporary files are renamed into place only after they are complete.",
+        "Transfers keep running in the background, even if you close this panel.",
       )}
       onClose={onClose}
       footer={

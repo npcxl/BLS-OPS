@@ -8,6 +8,7 @@
  * 滚动时窗口变化自然补齐（未渲染的行本来就没有 DOM）。
  */
 import type { ReactElement } from "react";
+import { cn } from "@/lib/cn";
 import { useSelectionSnapshot, type SelectionStore } from "./selection-store";
 import { liveRange } from "./selection";
 
@@ -104,6 +105,48 @@ export function SelectionOverlay({
           }}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * 提交结果的行级瞬态底色（已提交=绿、失败=红）。
+ *
+ * 同样走覆盖层：只画几条带子，行内容一个都不重渲染。
+ * 只画窗口内的行，滚出去再滚回来也正确（索引不变）。
+ */
+export function RowToneOverlay({
+  tones,
+  window: view,
+  rowHeight,
+  headerHeight,
+  width,
+}: {
+  tones: { index: number; tone: "committed" | "failed" }[];
+  window: OverlayWindow;
+  rowHeight: number;
+  headerHeight: number;
+  width: number;
+}) {
+  if (tones.length === 0) return null;
+  return (
+    <>
+      {tones
+        .filter((row) => row.index >= view.firstRow && row.index <= view.lastRow)
+        .map((row) => (
+          <div
+            key={`tone-${row.index}`}
+            className={cn(
+              "pointer-events-none absolute left-0 z-[19]",
+              row.tone === "committed" ? "bg-success/10" : "bg-danger/12",
+            )}
+            style={{
+              top: headerHeight + row.index * rowHeight,
+              height: rowHeight,
+              width,
+            }}
+          />
+        ))}
     </>
   );
 }

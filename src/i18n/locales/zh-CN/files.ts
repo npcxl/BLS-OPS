@@ -173,18 +173,17 @@ export default {
   "Move to recycle bin": "移入回收站",
   "Move file to recycle bin": "移入回收站",
   "Move folder to recycle bin": "移入回收站",
-  'Move file "{{name}}" to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.':
-    "把文件“{{name}}”移动到服务器的 ~/.bls-ops-trash，可在回收站里恢复。",
-  'Move folder "{{name}}" and everything inside to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.':
-    "把文件夹“{{name}}”及其内容移动到服务器的 ~/.bls-ops-trash，可在回收站里恢复。",
+  'Move file "{{name}}" to the recycle bin? You can restore it later.':
+    "把文件“{{name}}”移入回收站？之后可以恢复。",
+  'Move folder "{{name}}" and everything inside to the recycle bin? You can restore it later.':
+    "把文件夹“{{name}}”及其内容移入回收站？之后可以恢复。",
   "Delete permanently…": "永久删除…",
   "Delete permanently": "永久删除",
   "Delete {{name}} permanently?": "永久删除 {{name}}？",
   "This cannot be undone — no copy is kept in the recycle bin.": "此操作不可撤销 —— 回收站里不会保留副本。",
-  "This cannot be undone — the file is removed from the server's recycle bin.":
-    "此操作不可撤销 —— 文件会从服务器回收站里删除。",
-  "Deleted files are moved to ~/.bls-ops-trash on the server. Restore them here, or delete them permanently.":
-    "删除的文件会移到服务器的 ~/.bls-ops-trash 目录。可以在这里恢复，或永久删除。",
+  "This cannot be undone — the file is gone for good.": "此操作不可撤销，文件将被彻底删除。",
+  "Deleted files wait here before they are gone for good. Restore anything you still need.":
+    "删除的文件会先放在这里，确认不再需要后再彻底删除。",
   "The recycle bin is empty.": "回收站是空的。",
   "{{count}} items": "{{count}} 项",
   "Empty recycle bin": "清空回收站",
@@ -195,8 +194,8 @@ export default {
 
   // -- 传输任务中心（TransferCenterDialog）--
   Transfers: "传输任务",
-  "Uploads and downloads run in the background. Temporary files are renamed into place only after they are complete.":
-    "上传与下载在后台进行；临时文件只有完整写完才会替换目标文件。",
+  "Transfers keep running in the background, even if you close this panel.":
+    "关闭面板后，传输仍会在后台继续。",
   "No transfers yet.": "还没有传输任务。",
   "Transferring": "传输中",
   "Skipped (already exists)": "已跳过（同名文件已存在）",

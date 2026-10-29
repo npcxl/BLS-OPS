@@ -11,9 +11,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 
 use super::model::{
-    DatabaseProfile, DbErrorInfo, ENGINE_MYSQL, ENGINE_POSTGRES, ENGINE_REDIS,
-    REDIS_MODE_CLUSTER, REDIS_MODE_SENTINEL, REDIS_MODE_STANDALONE, TLS_DISABLED, TLS_VERIFY_CA,
-    TLS_VERIFY_IDENTITY,
+    DatabaseProfile, DbErrorInfo, ENGINE_MYSQL, ENGINE_POSTGRES, ENGINE_REDIS, REDIS_MODE_CLUSTER,
+    REDIS_MODE_SENTINEL, REDIS_MODE_STANDALONE, TLS_DISABLED, TLS_VERIFY_CA, TLS_VERIFY_IDENTITY,
 };
 
 fn secret_ref_for(profile_id: &str) -> String {
@@ -61,20 +60,27 @@ pub fn get_profile(conn: &Connection, id: &str) -> Result<Option<DatabaseProfile
     }
 }
 
+/// 允许保存的引擎。只有 mysql/redis 有驱动，其余先允许存配置
+/// （连接时会明确报"尚未适配"），这样加新引擎不用改配置表结构。
+const KNOWN_ENGINES: &[&str] = &[
+    ENGINE_MYSQL,
+    ENGINE_REDIS,
+    "mariadb",
+    ENGINE_POSTGRES,
+    "sqlite",
+    "sqlserver",
+    "oracle",
+];
+
 /// 配置校验：错误信息是给人看的，且**不做任何网络 I/O**。
 pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<(), DbErrorInfo> {
-    if profile.engine != ENGINE_MYSQL && profile.engine != ENGINE_REDIS {
+    if !KNOWN_ENGINES.contains(&profile.engine.as_str()) {
         return Err(DbErrorInfo::new(
             "unsupported",
-            if profile.engine == ENGINE_POSTGRES {
-                "PostgreSQL 适配尚未实现：本版本只支持 MySQL 协议（不区分 8.0/8.4 小版本）"
-                    .to_string()
-            } else {
-                format!(
-                    "不支持的数据库类型：{}（当前支持 MySQL 与 Redis）",
-                    profile.engine
-                )
-            },
+            format!(
+                "不支持的数据库类型：{}（可选 MySQL / Redis / MariaDB / PostgreSQL / SQLite / SQL Server / Oracle）",
+                profile.engine
+            ),
         ));
     }
     if profile.name.trim().is_empty() {
@@ -140,7 +146,10 @@ pub fn validate_profile(conn: &Connection, profile: &DatabaseProfile) -> Result<
 
 /// Redis 配置校验：模式必须合法，sentinel 必须有 master 名。
 fn validate_redis_profile(profile: &DatabaseProfile) -> Result<(), DbErrorInfo> {
-    let mode = profile.redis_mode.as_deref().unwrap_or(REDIS_MODE_STANDALONE);
+    let mode = profile
+        .redis_mode
+        .as_deref()
+        .unwrap_or(REDIS_MODE_STANDALONE);
     if !matches!(
         mode,
         REDIS_MODE_STANDALONE | REDIS_MODE_SENTINEL | REDIS_MODE_CLUSTER

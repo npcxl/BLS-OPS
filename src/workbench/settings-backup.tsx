@@ -166,7 +166,7 @@ export function BackupSettingsGroup() {
     <Group
       title={t("Backup & restore")}
       hint={t(
-        "Move servers, groups, tags, jump hosts, projects and preferences to another machine. Secrets are never exported — rebind credentials after importing.",
+        "Bring your servers, groups, tags, jump hosts, projects and preferences to a new machine. Rebinding credentials is the only step left.",
       )}
     >
       <ListGroup>
@@ -174,7 +174,9 @@ export function BackupSettingsGroup() {
           <div className="min-w-0">
             <div className="text-12 text-fg">{t("Export configuration")}</div>
             <div className="text-11 leading-relaxed text-fg-subtle">
-              {t("Writes a JSON file. Passwords and private keys stay in the system credential manager.")}
+              {t(
+                "Creates a file you can take to another machine. Passwords and private keys are not included.",
+              )}
             </div>
           </div>
           <Button variant="secondary" size="xs" disabled={busy !== null} onClick={() => void exportConfig()}>

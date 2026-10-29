@@ -21,7 +21,7 @@ import {
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { IconButton } from "@/components/ui/mac-button";
-import { Tooltip } from "@/components/ui/tooltip";
+
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -31,6 +31,16 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+
+/** 列表内 ↑↓ 移动焦点：按 DOM 顺序走，跨连接分组也是连续的。 */
+function moveItemFocus(current: HTMLElement, delta: number) {
+  const list = current.closest<HTMLElement>("[data-item-list]");
+  if (!list) return;
+  const rows = Array.from(list.querySelectorAll<HTMLElement>("[data-item-row]"));
+  const index = rows.indexOf(current);
+  if (index < 0) return;
+  rows[Math.max(0, Math.min(rows.length - 1, index + delta))]?.focus();
+}
 
 /** 执行失败 / 结果未知的行内标记：不展开结果也能看出哪个工作项出过问题。 */
 function RunStateBadge({ itemId }: { itemId: string }) {
@@ -137,7 +147,12 @@ export function OpenItemsPanel({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+      <div
+        role="listbox"
+        aria-label={t("已打开")}
+        data-item-list
+        className="min-h-0 flex-1 overflow-y-auto px-1 pb-2"
+      >
         {visible.length === 0 && (
           <p className="px-2 py-3 text-[11px] leading-relaxed text-fg-subtle">
             {items.length === 0
@@ -156,28 +171,49 @@ export function OpenItemsPanel({
               const inTransaction =
                 transaction === "in_transaction" ||
                 transaction === "in_transaction_read_only";
+              // 行提示用原生 title：100 个工作项时不必为每行挂一个 Tooltip
+              // 实例（每个都要 hooks + 事件监听），渲染成本差一个量级。
+              const rowTitle = `${t("连接")}：${item.connectionName}${
+                item.kind !== "objects" && item.database
+                  ? ` · ${t("数据库")}：${item.database}`
+                  : ""
+              } · ${item.title}`;
               return (
-                <Tooltip
-                  key={item.id}
-                  side="left"
-                  label={
-                    <div className="flex flex-col gap-0.5">
-                      <span>{t("连接")}：{item.connectionName}</span>
-                      {item.kind !== "objects" && item.database && (
-                        <span>{t("数据库")}：{item.database}</span>
-                      )}
-                      <span className="text-fg">{item.title}</span>
-                    </div>
-                  }
-                >
                   <div
+                    key={item.id}
+                    data-item-row
+                    role="option"
+                    aria-selected={active}
+                    tabIndex={0}
+                    title={rowTitle}
                     className={cn(
-                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1",
+                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1 outline-none",
                       active
                         ? "bg-accent/10 text-fg"
                         : "text-fg-muted hover:bg-surface-hover",
+                      "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
                     )}
                     onClick={() => setActive(item.id)}
+                    onFocus={() => setActive(item.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                        event.preventDefault();
+                        moveItemFocus(
+                          event.currentTarget,
+                          event.key === "ArrowDown" ? 1 : -1,
+                        );
+                        return;
+                      }
+                      if (event.key === "F2") {
+                        event.preventDefault();
+                        beginRename(item);
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setActive(item.id);
+                      }
+                    }}
                     onDoubleClick={() => beginRename(item)}
                     onContextMenu={menu.onContextMenu(() => [
                       {
@@ -274,7 +310,9 @@ export function OpenItemsPanel({
                     icon={item.pinned ? PinOff : Pin}
                     size="xs"
                     aria-label={item.pinned ? t("取消固定") : t("固定")}
-                    tip={item.pinned ? t("取消固定") : t("固定")}
+                    // 用原生 title：tip 会为每个按钮挂一个 Tooltip 实例，
+                    // 100 个工作项就是 200 个，渲染成本比提示本身值钱。
+                    title={item.pinned ? t("取消固定") : t("固定")}
                     className={cn(
                       "hidden h-4 w-4 px-0 text-fg-subtle hover:text-fg group-hover:flex",
                       item.pinned && "flex text-accent",
@@ -288,7 +326,7 @@ export function OpenItemsPanel({
                     icon={X}
                     size="xs"
                     aria-label={t("关闭")}
-                    tip={t("关闭")}
+                    title={t("关闭")}
                     className="hidden h-4 w-4 px-0 text-fg-subtle hover:bg-surface-hover hover:text-danger group-hover:flex"
                     onClick={(event) => {
                       event.stopPropagation();
@@ -296,7 +334,6 @@ export function OpenItemsPanel({
                     }}
                   />
                   </div>
-                </Tooltip>
               );
             })}
           </div>

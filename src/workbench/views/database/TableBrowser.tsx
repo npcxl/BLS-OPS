@@ -274,6 +274,13 @@ export function TableBrowser({
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [allowNonTransactional, setAllowNonTransactional] = useState(false);
+  /** 提交后几秒内的行级底色（已提交 / 失败）。 */
+  const [rowFlash, setRowFlash] = useState<
+    { index: number; tone: "committed" | "failed" }[]
+  >([]);
+  const rowFlashTimer = useRef<number | null>(null);
+  /** 已提交但还没刷新完的主键：等新数据回来后按主键把行标绿。 */
+  const committedKeys = useRef<AssignValue[][]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [cellDetail, setCellDetail] = useState<{
     column: string;
@@ -827,6 +834,37 @@ export function TableBrowser({
     );
   };
 
+  /**
+   * 提交结果的行级瞬态标记：绿=已提交、红=失败，2.4 秒后自动消失。
+   * 走网格覆盖层渲染，不会让可见行重新渲染。
+   */
+  const showRowFlash = (rows: { index: number; tone: "committed" | "failed" }[]) => {
+    if (rows.length === 0) return;
+    setRowFlash(rows);
+    if (rowFlashTimer.current !== null) window.clearTimeout(rowFlashTimer.current);
+    rowFlashTimer.current = window.setTimeout(() => setRowFlash([]), 2400);
+  };
+
+  /**
+   * 提交失败时把待提交项映射回网格坐标：按主键匹配当前页的行，
+   * 列取该项第一个被改的字段（删除项取第一个主键列）。
+   * 找不到（比如行被别处改了）就返回 null，失败项退化成不可点击。
+   */
+  const locatePendingRow = (entry: Pending): CellAddress | null => {
+    if (entry.kind === "insert") return null;
+    const row = pageRows.findIndex((candidate) => {
+      const located = keyOfRow(candidate);
+      return located ? sameKey(located.key, entry.key) : false;
+    });
+    if (row < 0) return null;
+    const columnName =
+      entry.kind === "update" ? entry.values[0]?.column : detail?.reliable_key?.[0];
+    const col = columnName
+      ? (detail?.columns.findIndex((column) => column.name === columnName) ?? -1)
+      : 0;
+    return { row, col: Math.max(col, 0) };
+  };
+
   const removeRowChange = (rowIndex: number) => {
     const row = pageRows[rowIndex];
     const located = row ? keyOfRow(row) : null;
@@ -1189,8 +1227,10 @@ export function TableBrowser({
     setSubmitting(true);
     setMutationError(null);
     setMutation(null);
+    // 快照：成功后 pending 会被 reset，回写结果时还要按它算行号。
+    const submitted = pending;
     try {
-      const rows: RowMutation[] = pending.map((entry) => {
+      const rows: RowMutation[] = submitted.map((entry) => {
         if (entry.kind === "insert") {
           return { kind: "insert", key: null, values: entry.values, expected: null };
         }
@@ -1218,7 +1258,19 @@ export function TableBrowser({
         allowNonTransactional: allow,
       });
       setMutation(outcome);
+      // 失败的行直接在网格里标红；成功的行等刷新回来再按主键标绿。
+      showRowFlash(
+        outcome.outcomes.flatMap((item, index) => {
+          if (item.status === "applied") return [];
+          const entry = submitted[index];
+          const target = entry ? locatePendingRow(entry) : null;
+          return target ? [{ index: target.row, tone: "failed" as const }] : [];
+        }),
+      );
       if (outcome.state === "committed") {
+        committedKeys.current = submitted.flatMap((entry) =>
+          entry.kind === "insert" ? [] : [entry.key],
+        );
         // 已经落库：队列与撤销历史一起清空，避免"撤销"把已提交的改动找回队列。
         dispatchPending({ type: "reset" });
         setShowPending(false);
@@ -1361,6 +1413,30 @@ export function TableBrowser({
   const columns = detail?.columns ?? [];
   // 引用必须稳定：`?? []` 每次都新建数组，会让网格误判"换了数据"而重置选择。
   const pageRows = result?.rows ?? EMPTY_ROWS;
+
+  // 提交成功 → 刷新回来后按主键把改过的行标绿（行号可能已经变了，不能用旧索引）。
+  useEffect(() => {
+    if (committedKeys.current.length === 0) return;
+    const keys = committedKeys.current;
+    committedKeys.current = [];
+    showRowFlash(
+      pageRows.flatMap((row, index) => {
+        const located = keyOfRow(row);
+        return located && keys.some((key) => sameKey(key, located.key))
+          ? [{ index, tone: "committed" as const }]
+          : [];
+      }),
+    );
+    // showRowFlash 只做 setState + 定时器，不进依赖避免重复触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageRows, keyOfRow]);
+
+  useEffect(
+    () => () => {
+      if (rowFlashTimer.current !== null) window.clearTimeout(rowFlashTimer.current);
+    },
+    [],
+  );
 
   const modifiedCells = useMemo(() => {
     const set = new Set<string>();
@@ -1747,6 +1823,7 @@ export function TableBrowser({
               sortDirection={sorts[0]?.direction ?? null}
               modifiedCells={modifiedCells}
               deletedRows={deletedRows}
+              rowTones={rowFlash}
               editingCell={editing?.cell ?? null}
               editingValue={editing?.value ?? ""}
               onEditingValueChange={(value) =>
@@ -2074,14 +2151,37 @@ export function TableBrowser({
         </div>
         {mutation?.outcomes.some((outcome) => outcome.status !== "applied") && (
           <ul className="mt-1 flex flex-col gap-0.5 text-11 text-danger">
-            {mutation.outcomes.map((outcome, index) =>
-              outcome.status === "applied" ? null : (
+            {mutation.outcomes.map((outcome, index) => {
+              if (outcome.status === "applied") return null;
+              const entry = pending[index];
+              const target = entry ? locatePendingRow(entry) : null;
+              const fields =
+                entry && entry.kind === "update"
+                  ? entry.values.map((value) => value.column).join(", ")
+                  : null;
+              return (
                 <li key={index}>
-                  {t("第 {{row}} 项", { row: index + 1 })} ·{" "}
-                  {outcome.error ? outcome.error.message : outcome.status}
+                  {/* 失败的记录可以点：关掉弹窗，直接跳到出错的单元格。 */}
+                  <button
+                    type="button"
+                    disabled={!target}
+                    className={cn("text-left", target && "hover:underline")}
+                    title={target ? t("定位到该记录") : undefined}
+                    onClick={() => {
+                      if (!target) return;
+                      setShowPending(false);
+                      gridApi.current?.focusCell(target);
+                    }}
+                  >
+                    {t("第 {{row}} 项", { row: index + 1 })}
+                    {entry && entry.kind !== "insert" ? ` · ${entry.label}` : ""}
+                    {fields ? ` · ${fields}` : ""}
+                    {" — "}
+                    {outcome.error ? outcome.error.message : outcome.status}
+                  </button>
                 </li>
-              ),
-            )}
+              );
+            })}
           </ul>
         )}
         {pending.length > 0 && (

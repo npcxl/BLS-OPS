@@ -572,6 +572,15 @@ export interface RedisHashPage {
   length: number;
 }
 
+/** SSCAN 的一页；cursor 为 0 表示已取完。 */
+export interface RedisSetPage {
+  cursor: number;
+  members: string[];
+  length: number;
+  /** 触发字节预算被截断（这一页可能不完整）。 */
+  truncated: boolean;
+}
+
 export interface RedisZEntry {
   member: string;
   score: number;
@@ -584,10 +593,25 @@ export interface RedisStreamEntry {
 
 /** 键值的类型化载荷：UI 按 kind 分支渲染与编辑。 */
 export type RedisValuePayload =
-  | { kind: "string"; value: string; binary: boolean }
+  | {
+      kind: "string";
+      value: string;
+      binary: boolean;
+      /** STRLEN 的真实字节数（不是 value.length）。 */
+      bytes: number;
+      /** 只取到了前 256 KiB：值不完整，禁止回写，需显式读取全量。 */
+      truncated: boolean;
+    }
   | { kind: "hash"; fields: RedisFieldEntry[]; length: number; cursor: number }
   | { kind: "list"; items: string[]; length: number; truncated: boolean }
-  | { kind: "set"; members: string[]; length: number; truncated: boolean }
+  | {
+      kind: "set";
+      members: string[];
+      length: number;
+      truncated: boolean;
+      /** 下一页 SSCAN cursor；0 = 已取完。 */
+      cursor: number;
+    }
   | { kind: "zset"; entries: RedisZEntry[]; length: number; truncated: boolean }
   | { kind: "stream"; entries: RedisStreamEntry[]; length: number }
   | { kind: "other"; type_name: string };

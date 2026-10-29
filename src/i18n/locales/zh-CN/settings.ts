@@ -10,7 +10,6 @@ export default {
   System: "系统",
   Light: "浅色",
   Dark: "深色",
-
   // -- 终端 --
   Terminal: "终端",
   "The font is shared by the terminal and the command output panel.":
@@ -18,7 +17,6 @@ export default {
   "Compact prompt": "精简提示符",
   "Shows only the current path instead of user@host (e.g. ~#, /opt#, /opt/app#). One command is sent to the remote shell after connecting — session only, no server config file is touched.":
     "提示符只保留当前路径、去掉 user@host（如 ~#、/opt#、/opt/app#）。连接成功后向远程 shell 发送一条命令生效：仅本次会话有效，不修改服务器上的任何配置文件。",
-
   // -- 凭据 --
   Credentials: "凭据",
   "Add credential": "新增凭据",
@@ -75,11 +73,11 @@ export default {
 
   // -- 配置备份与恢复（settings-backup） --
   "Backup & restore": "备份与恢复",
-  "Move servers, groups, tags, jump hosts, projects and preferences to another machine. Secrets are never exported — rebind credentials after importing.":
-    "把服务器、分组、标签、跳板、项目与偏好迁移到另一台机器。密钥不会被导出，导入后需要重新绑定凭据。",
+  "Bring your servers, groups, tags, jump hosts, projects and preferences to a new machine. Rebinding credentials is the only step left.":
+    "把服务器、分组、标签、跳板、项目与偏好带到新机器，导入后重新绑定凭据即可。",
   "Export configuration": "导出配置",
-  "Writes a JSON file. Passwords and private keys stay in the system credential manager.":
-    "写出一份 JSON 文件。密码与私钥仍留在系统凭据管理器里。",
+  "Creates a file you can take to another machine. Passwords and private keys are not included.":
+    "生成一个配置文件，方便带到新机器。密码与私钥不会包含在内。",
   "Import configuration": "导入配置",
   "Preview first":
     "先预览再导入",
@@ -108,11 +106,11 @@ export default {
 
   // -- 生产环境保护（巡检模式 / 环境标记）--
   Safety: "安全",
-  "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.":
-    "只是客户端的防误操作：能挡住误点，挡不住执意执行的人。真正的只读终端需要服务器上配受限账号。",
+  "Read-only inside the app. A free shell still follows your server account's permissions.":
+    "只读范围限于应用内；终端里仍按服务器账号的权限执行。",
   "Inspection mode (read-only)": "巡检模式（只读）",
-  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
-    "在本应用内禁用上传、编辑、删除与服务变更。它无法把自由终端变成只读。",
+  "Turns off uploads, edits, deletes and service changes inside the app.":
+    "开启后，应用内的上传、编辑、删除与服务变更都不可用。",
   "Not specified": "未标记",
   Production: "生产",
   Staging: "预发",
@@ -121,4 +119,61 @@ export default {
   Environment: "环境",
   "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
     "生产服务器会在各处高亮；确认框也会先说明目标服务器。「未标记」表示这台机器还没分类。",
+
+  // -- 快捷键一览（settings-shortcuts）--
+  "Keyboard shortcuts": "快捷键",
+  "Every shortcut in the app, grouped by where you use it.":
+    "按使用场景分组，查阅应用内全部快捷键。",
+  Workspace: "工作台",
+  Editors: "编辑器",
+  "SQL workspace": "SQL 工作区",
+  "File panel": "文件面板",
+  "Command palette": "命令面板",
+  "Command palette (actions)": "命令面板（动作）",
+  "New terminal tab": "新建终端标签",
+  "Reopen the most recent session": "重新打开最近一次会话",
+  "Close the current tab": "关闭当前标签",
+  "Split the pane vertically": "垂直分屏",
+  "Open the AI module": "打开 AI 模块",
+  "Collapse or expand the sidebar": "折叠 / 展开侧栏",
+  "New terminal": "新建终端",
+  "Save (editor, server form, database edits)": "保存（编辑器 / 服务器表单 / 数据库修改）",
+  "Find in the editor or preview": "在编辑器或预览中查找",
+  "Toggle replace in the search box": "在查找框里展开 / 收起替换",
+  "Close a dialog, menu or search box": "关闭弹窗、菜单或查找框",
+  "Run the selection or current statement": "执行选中内容或当前语句",
+  "Run the whole script": "执行整段脚本",
+  "Format SQL": "格式化 SQL",
+  "Open the selected entry": "打开选中项",
+  "Rename in place": "就地重命名",
+  "Move the selected entry to the recycle bin": "把选中项移入回收站",
+  "Go up one directory": "返回上一级目录",
+  "Open in new window": "在新窗口打开",
+  Global: "全局",
+  "Move through a list, menu or palette": "在列表 / 菜单 / 命令面板中移动",
+  "Run the highlighted entry": "执行选中的条目",
+  "Paste into the terminal": "粘贴到终端",
+  "Accept the highlighted completion and run it": "接受选中的补全并立即执行",
+  "Move through completion candidates": "在补全候选间移动",
+  "Accept the highlighted completion": "接受选中的补全",
+  "Accept the highlighted completion (without running)": "接受选中的补全（不执行）",
+  "Dismiss the completion list": "收起补全候选",
+  "Next match in the search box": "跳到下一个匹配",
+  "Previous match in the search box": "跳到上一个匹配",
+  "Submit pending row changes": "提交待保存的行修改",
+  "Copy the selected cells": "复制选中的单元格",
+  "Paste into the grid": "粘贴到表格",
+  "Select all cells": "全选单元格",
+  "Undo a cell edit": "撤销单元格修改",
+  "Redo a cell edit": "重做单元格修改",
+  "Jump to the first row": "跳到第一行",
+  "Jump to the last row": "跳到最后一行",
+  "Edit the selected cell": "编辑选中的单元格",
+  "Edit the cell, then move down": "编辑单元格并下移",
+  "Commit and move right": "提交并右移",
+  "Commit and move left": "提交并左移",
+  "Cancel the cell edit": "取消单元格编辑",
+  "Move through the asset tree": "在资产树中移动",
+  "Open the focused tree entry": "打开当前条目",
+  "Select the focused tree entry": "选中当前条目",
 } as const;

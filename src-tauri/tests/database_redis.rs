@@ -93,9 +93,13 @@ async fn redis_string_write_read_delete() {
         .write_string(0, key, "hello redis", false)
         .await
         .expect("set");
-    let payload = session.read_value(0, key).await.expect("get");
+    let payload = session.read_value(0, key, false).await.expect("get");
     match payload {
-        ops_workbench_lib::database::redis_driver::RedisValuePayload::String { value, binary } => {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String {
+            value,
+            binary,
+            ..
+        } => {
             assert_eq!(value, "hello redis");
             assert!(!binary);
         }
@@ -103,7 +107,7 @@ async fn redis_string_write_read_delete() {
     }
     session.delete_key(0, key).await.expect("del");
     // 删除后读取必须报"键不存在"。
-    assert!(session.read_value(0, key).await.is_err());
+    assert!(session.read_value(0, key, false).await.is_err());
 }
 
 /// hash 一律 HSCAN 分页：大 hash 每页最多 HASH_PAGE_MAX 条，cursor 续扫收齐。
@@ -118,14 +122,22 @@ async fn redis_hash_scan_pagination_and_binary_base64() {
     let hash_key = "bls:test:big-hash";
     for index in 0..12 {
         session
-            .write_hash_field(0, hash_key, &format!("f{index}"), Some(&format!("v{index}")))
+            .write_hash_field(
+                0,
+                hash_key,
+                &format!("f{index}"),
+                Some(&format!("v{index}")),
+            )
             .await
             .expect("hset");
     }
     let mut cursor = 0u64;
     let mut fields = Vec::new();
     for _ in 0..50 {
-        let page = session.hash_scan(0, hash_key, cursor, 5).await.expect("hscan");
+        let page = session
+            .hash_scan(0, hash_key, cursor, 5)
+            .await
+            .expect("hscan");
         fields.extend(page.fields);
         cursor = page.cursor;
         if cursor == 0 {
@@ -144,8 +156,16 @@ async fn redis_hash_scan_pagination_and_binary_base64() {
         let mut conn = session.acquire(0).await.expect("conn");
         let _: () = conn.set(bin_key, raw.clone()).await.expect("set bytes");
     }
-    match session.read_value(0, bin_key).await.expect("get binary") {
-        ops_workbench_lib::database::redis_driver::RedisValuePayload::String { value, binary } => {
+    match session
+        .read_value(0, bin_key, false)
+        .await
+        .expect("get binary")
+    {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String {
+            value,
+            binary,
+            ..
+        } => {
             assert!(binary, "binary flag must be set");
             use base64::Engine as _;
             let decoded = base64::engine::general_purpose::STANDARD
@@ -161,14 +181,25 @@ async fn redis_hash_scan_pagination_and_binary_base64() {
         .write_string(0, bin_key, rewritten, true)
         .await
         .expect("set base64");
-    match session.read_value(0, bin_key).await.expect("get rewritten") {
-        ops_workbench_lib::database::redis_driver::RedisValuePayload::String { value, binary } => {
+    match session
+        .read_value(0, bin_key, false)
+        .await
+        .expect("get rewritten")
+    {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String {
+            value,
+            binary,
+            ..
+        } => {
             assert!(binary);
             assert_eq!(value, rewritten, "base64 write path must roundtrip");
         }
         other => panic!("unexpected payload: {other:?}"),
     }
-    session.delete_key(0, bin_key).await.expect("cleanup binary");
+    session
+        .delete_key(0, bin_key)
+        .await
+        .expect("cleanup binary");
 }
 
 #[tokio::test]
@@ -191,8 +222,16 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_hash_field(0, hash_key, "field_b", Some("keep"))
         .await
         .expect("hset b");
-    match session.read_value(0, hash_key).await.expect("hscan page 1") {
-        ops_workbench_lib::database::redis_driver::RedisValuePayload::Hash { fields, length, cursor } => {
+    match session
+        .read_value(0, hash_key, false)
+        .await
+        .expect("hscan page 1")
+    {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::Hash {
+            fields,
+            length,
+            cursor,
+        } => {
             assert_eq!(length, 2);
             let field_a = fields.iter().find(|entry| entry.field == "field_a");
             assert_eq!(field_a.map(|entry| entry.value.as_str()), Some("2"));
@@ -242,7 +281,11 @@ async fn redis_hash_list_set_zset_roundtrip() {
         )
         .await
         .expect("lset");
-    match session.read_value(0, list_key).await.expect("lrange") {
+    match session
+        .read_value(0, list_key, false)
+        .await
+        .expect("lrange")
+    {
         ops_workbench_lib::database::redis_driver::RedisValuePayload::List { items, .. } => {
             assert_eq!(items, vec!["one".to_string(), "TWO".to_string()]);
         }
@@ -252,7 +295,9 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_list(
             0,
             list_key,
-            ops_workbench_lib::database::redis_driver::ListWrite::Remove { value: "one".into() },
+            ops_workbench_lib::database::redis_driver::ListWrite::Remove {
+                value: "one".into(),
+            },
         )
         .await
         .expect("lrem");
@@ -264,7 +309,11 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_set(0, set_key, "member-1", true)
         .await
         .expect("sadd");
-    match session.read_value(0, set_key).await.expect("smembers") {
+    match session
+        .read_value(0, set_key, false)
+        .await
+        .expect("smembers")
+    {
         ops_workbench_lib::database::redis_driver::RedisValuePayload::Set { members, .. } => {
             assert!(members.contains(&"member-1".to_string()));
         }
@@ -286,7 +335,11 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_zset(0, zset_key, "alpha", Some(3.25))
         .await
         .expect("zadd update");
-    match session.read_value(0, zset_key).await.expect("zrange") {
+    match session
+        .read_value(0, zset_key, false)
+        .await
+        .expect("zrange")
+    {
         ops_workbench_lib::database::redis_driver::RedisValuePayload::Zset { entries, .. } => {
             assert_eq!(entries.len(), 1);
             assert!((entries[0].score - 3.25).abs() < f64::EPSILON);
@@ -315,7 +368,10 @@ async fn redis_scan_pattern_and_pagination() {
     let mut cursor = 0u64;
     let mut found = Vec::new();
     for _ in 0..50 {
-        let page = session.scan(0, "bls:scan:*", cursor, 2).await.expect("scan");
+        let page = session
+            .scan(0, "bls:scan:*", cursor, 2)
+            .await
+            .expect("scan");
         found.extend(page.keys.into_iter().map(|brief| brief.key));
         cursor = page.cursor;
         if cursor == 0 {
@@ -337,10 +393,16 @@ async fn redis_expire_rename_publish() {
         return;
     };
     let key = "bls:test:ttl";
-    session.write_string(0, key, "temp", false).await.expect("set");
+    session
+        .write_string(0, key, "temp", false)
+        .await
+        .expect("set");
 
     // EXPIRE 1 秒 → TTL 应为正毫秒。
-    session.expire_key(0, key, Some(1_000)).await.expect("expire");
+    session
+        .expire_key(0, key, Some(1_000))
+        .await
+        .expect("expire");
     let info = session.key_info(0, key).await.expect("key_info");
     assert!(info.ttl_ms > 0 && info.ttl_ms <= 1_100);
 
@@ -351,10 +413,10 @@ async fn redis_expire_rename_publish() {
 
     // RENAME → 旧键消失，新键存在。
     session
-        .rename_key(0, key, "bls:test:ttl-renamed")
+        .rename_key(0, key, "bls:test:ttl-renamed", false)
         .await
         .expect("rename");
-    assert!(session.read_value(0, key).await.is_err());
+    assert!(session.read_value(0, key, false).await.is_err());
     session
         .delete_key(0, "bls:test:ttl-renamed")
         .await
@@ -366,4 +428,192 @@ async fn redis_expire_rename_publish() {
         .await
         .expect("publish");
     assert_eq!(receivers, 0);
+}
+
+/// TTL 必须是毫秒精度：500ms 用 EXPIRE 会被抬成 1s，PEXPIRE 才对得上。
+#[tokio::test]
+async fn redis_ttl_keeps_millisecond_precision() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    let key = "bls:test:ttl-ms";
+    session.write_string(0, key, "v", false).await.expect("set");
+
+    session
+        .expire_key(0, key, Some(500))
+        .await
+        .expect("pexpire 500");
+    let info = session.key_info(0, key).await.expect("key_info");
+    assert!(
+        info.ttl_ms > 0 && info.ttl_ms <= 600,
+        "500ms TTL 应保留毫秒精度，实际 {}ms",
+        info.ttl_ms
+    );
+
+    session.delete_key(0, key).await.expect("cleanup");
+}
+
+/// 重命名默认 RENAMENX：目标存在必须报错且不动任何键；显式 overwrite 才覆盖。
+#[tokio::test]
+async fn redis_rename_refuses_overwrite_by_default() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    let from = "bls:test:rename-from";
+    let to = "bls:test:rename-to";
+    session
+        .write_string(0, from, "from", false)
+        .await
+        .expect("set from");
+    session
+        .write_string(0, to, "to", false)
+        .await
+        .expect("set to");
+
+    // 默认不覆盖：报错，且两个键都还在。
+    assert!(session.rename_key(0, from, to, false).await.is_err());
+    assert_eq!(
+        session.key_info(0, from).await.expect("from alive").ttl_ms,
+        -1
+    );
+    assert_eq!(session.key_info(0, to).await.expect("to alive").ttl_ms, -1);
+
+    // 显式覆盖：成功，旧键消失（读值应报"键不存在"）。
+    session
+        .rename_key(0, from, to, true)
+        .await
+        .expect("overwrite rename");
+    assert!(session.read_value(0, from, false).await.is_err());
+
+    session.delete_key(0, to).await.expect("cleanup");
+}
+
+/// set 走 SSCAN 游标分页：一页装不完就必须给 cursor，翻完刚好覆盖全部成员。
+#[tokio::test]
+async fn redis_set_uses_sscan_pages() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    let key = "bls:test:set-scan";
+    session.delete_key(0, key).await.ok();
+    // 600 个**非整数**成员 → set 走 hashtable 编码（intset/listpack 会一次回全），
+    // 这样才能真正测到 SSCAN 分批。
+    for index in 0..600 {
+        session
+            .write_set(0, key, &format!("member-{index}-padding"), true)
+            .await
+            .expect("sadd");
+    }
+
+    match session.read_value(0, key, false).await.expect("set page 1") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::Set {
+            members,
+            length,
+            cursor,
+            truncated,
+        } => {
+            assert_eq!(length, 600);
+            // intset/listpack 编码下 SSCAN 会一次回全部（COUNT 只是提示），
+            // 此时 cursor=0、truncated=false；hashtable 编码才会分批。
+            assert_eq!(truncated, cursor != 0, "truncated 必须与“还有下一页”一致");
+
+            let mut seen = std::collections::HashSet::new();
+            seen.extend(members);
+            let mut next = cursor;
+            let mut rounds = 0;
+            while next != 0 && rounds < 20 {
+                let page = session
+                    .set_scan(0, key, next, 500)
+                    .await
+                    .expect("sscan page");
+                seen.extend(page.members);
+                next = page.cursor;
+                rounds += 1;
+            }
+            assert_eq!(next, 0, "游标必须能扫完");
+            assert_eq!(seen.len(), 600, "翻页必须覆盖全部成员且不重复");
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+
+    session.delete_key(0, key).await.expect("cleanup");
+}
+
+/// 字节预算：5000 个 1 MB 成员同样危险，超过 4 MiB 就该截断。
+#[tokio::test]
+async fn redis_collection_reads_are_byte_budgeted() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    let key = "bls:test:set-big";
+    session.delete_key(0, key).await.ok();
+    // 10 × 500 KiB = 5 MiB > READ_BYTES_MAX(4 MiB)。
+    let big = "x".repeat(500 * 1024);
+    for index in 0..10 {
+        session
+            .write_set(0, key, &format!("{big}-{index}"), true)
+            .await
+            .expect("sadd big");
+    }
+
+    match session.read_value(0, key, false).await.expect("set page") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::Set {
+            members,
+            truncated,
+            ..
+        } => {
+            assert!(truncated, "超过字节预算必须标记 truncated");
+            assert!(
+                members.len() < 10,
+                "5 MiB 的集合不能整段返回，实际 {} 条",
+                members.len()
+            );
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+
+    session.delete_key(0, key).await.expect("cleanup");
+}
+
+/// 大 string 只回预览（带 truncated + 真实字节数），显式请求才给全量。
+#[tokio::test]
+async fn redis_string_reads_are_budgeted() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    let key = "bls:test:big-string";
+    // 300 KiB：超过 256 KiB 预览预算，但远小于 8 MiB 全量上限。
+    let value = "x".repeat(300 * 1024);
+    session
+        .write_string(0, key, &value, false)
+        .await
+        .expect("set");
+
+    match session.read_value(0, key, false).await.expect("preview") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String {
+            value: preview,
+            bytes,
+            truncated,
+            ..
+        } => {
+            assert!(truncated, "超过预览预算必须标记 truncated");
+            assert_eq!(bytes, 300 * 1024, "bytes 必须是 STRLEN 的真实值");
+            assert_eq!(preview.len(), 256 * 1024, "预览只取前 256 KiB");
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+
+    match session.read_value(0, key, true).await.expect("full") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String {
+            value: full,
+            truncated,
+            ..
+        } => {
+            assert!(!truncated);
+            assert_eq!(full.len(), 300 * 1024, "全量读取必须完整");
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+
+    session.delete_key(0, key).await.expect("cleanup");
 }

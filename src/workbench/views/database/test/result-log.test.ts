@@ -7,6 +7,7 @@ import {
   buildSummaryTsv,
   formatSeconds,
   statementLine,
+  totalElapsedMs,
   type StatementResultLike,
 } from "../result-log";
 
@@ -127,6 +128,31 @@ describe("消息视图", () => {
 
   it("没有结果时给一句明确说明", () => {
     expect(buildMessageLog([], 0, t)).toBe("这次执行没有返回结果");
+  });
+});
+
+describe("总耗时兜底", () => {
+  it("后端没回总量（0）时用各语句耗时之和，不能比单条还快", () => {
+    expect(totalElapsedMs([result({ elapsedMs: 4 })], 0)).toBe(4);
+    expect(buildMessageLog([result({ elapsedMs: 4 })], 0, t)).toContain("> 总耗时: 0.004s");
+  });
+
+  it("多语句求和", () => {
+    expect(
+      totalElapsedMs([result({ elapsedMs: 4 }), result({ key: "2", elapsedMs: 6 })], 0),
+    ).toBe(10);
+  });
+
+  it("后端总量更大时用总量（含解析与 IPC 开销）", () => {
+    expect(totalElapsedMs([result({ elapsedMs: 4 })], 40)).toBe(40);
+  });
+
+  it("NaN / 缺失字段按 0 处理，不会把总和吞掉", () => {
+    expect(totalElapsedMs([result({ elapsedMs: Number.NaN })], Number.NaN)).toBe(0);
+    expect(
+      totalElapsedMs([result({ elapsedMs: Number.NaN }), result({ key: "2", elapsedMs: 7 })], 0),
+    ).toBe(7);
+    expect(totalElapsedMs([], 0)).toBe(0);
   });
 });
 

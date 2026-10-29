@@ -52,6 +52,15 @@ pub const STREAM_READ_MAX: usize = 1_000;
 pub const PUBSUB_MAX: usize = 16;
 /// Hash 单次 HSCAN 的条目上限：hash 一律走 HSCAN 分页，绝不 HGETALL。
 pub const HASH_PAGE_MAX: usize = 200;
+/// String 默认只取这么多字节做预览：超过就先 STRLEN、只 GETRANGE 前 N 字节，
+/// 避免一个几百 MB 的 value 把内存和 Tauri IPC 一起打满。前端可显式要全量。
+pub const STRING_PREVIEW_MAX: i64 = 256 * 1024;
+/// String 全量读取的硬上限（即便前端显式请求也不越过）：再大就请用 redis-cli / 导出。
+pub const STRING_FULL_MAX: i64 = 8 * 1024 * 1024;
+/// Set 单次 SSCAN 的成员上限（SSET 一律游标分页，绝不 SMEMBERS 全量）。
+pub const SET_PAGE_MAX: usize = 500;
+/// 单次读值的**字节**预算（与条目数预算并行）：5000 个 1 MB 成员同样会打满内存。
+pub const READ_BYTES_MAX: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 连接表示
@@ -67,10 +76,7 @@ pub enum RedisConn {
 
 /// 转发 `ConnectionLike`：让 `AsyncCommands`（set/hset/del/…）直接可用。
 impl redis::aio::ConnectionLike for RedisConn {
-    fn req_packed_command<'a>(
-        &'a mut self,
-        cmd: &'a Cmd,
-    ) -> redis::RedisFuture<'a, RedisValue> {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> redis::RedisFuture<'a, RedisValue> {
         match self {
             RedisConn::Single(conn) => conn.req_packed_command(cmd),
             RedisConn::Cluster(conn) => conn.req_packed_command(cmd),
@@ -152,6 +158,16 @@ pub struct RedisHashPage {
     pub length: i64,
 }
 
+/// SSCAN 的一页：cursor 为 0 表示已取完。
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisSetPage {
+    pub cursor: u64,
+    pub members: Vec<String>,
+    pub length: i64,
+    /// 触发字节预算被截断（这页可能不完整，下一页仍然有效）。
+    pub truncated: bool,
+}
+
 /// zset 的一行。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisZEntry {
@@ -175,6 +191,11 @@ pub enum RedisValuePayload {
         /// true = `value` 是原始字节的 Base64 编码（二进制值），写回时需
         /// 先 Base64 解码。这样数据本体永不损坏（不做有损替换）。
         binary: bool,
+        /// STRLEN 的真实字节数（不是 `value` 的长度）。
+        bytes: i64,
+        /// true = 只返回了前 `STRING_PREVIEW_MAX` 字节，值不完整。
+        /// 这种载荷**不允许**回写，必须显式请求全量。
+        truncated: bool,
     },
     Hash {
         fields: Vec<RedisFieldEntry>,
@@ -192,6 +213,8 @@ pub enum RedisValuePayload {
         members: Vec<String>,
         length: i64,
         truncated: bool,
+        /// 下一页 SSCAN cursor；0 = 已取完。
+        cursor: u64,
     },
     Zset {
         entries: Vec<RedisZEntry>,
@@ -204,9 +227,7 @@ pub enum RedisValuePayload {
         length: i64,
     },
     /// 未知/模块类型：只报类型名，不假装能读。
-    Other {
-        type_name: String,
-    },
+    Other { type_name: String },
 }
 
 /// 键元信息（详情面板头部）。
@@ -277,8 +298,7 @@ impl RedisSession {
             REDIS_MODE_STANDALONE => {
                 let endpoint = driver::resolve_plan(tunnels, plan).await?;
                 session.tunnel = endpoint.tunnel;
-                session.connect_addr =
-                    Some((endpoint.connect_host.clone(), endpoint.connect_port));
+                session.connect_addr = Some((endpoint.connect_host.clone(), endpoint.connect_port));
                 let db = session.default_db()?;
                 let conn = session
                     .build_single(&endpoint.connect_host, endpoint.connect_port, db, "connect")
@@ -286,11 +306,7 @@ impl RedisSession {
                 session.single_conns.lock().await.insert(db, conn);
             }
             REDIS_MODE_SENTINEL => {
-                let master = session
-                    .profile
-                    .sentinel_master
-                    .clone()
-                    .unwrap_or_default();
+                let master = session.profile.sentinel_master.clone().unwrap_or_default();
                 let nodes = session.topology_nodes();
                 let (host, port) = discover_master_via_sentinel(
                     &nodes,
@@ -302,9 +318,7 @@ impl RedisSession {
                 .await?;
                 session.connect_addr = Some((host.clone(), port));
                 let db = session.default_db()?;
-                let conn = session
-                    .build_single(&host, port, db, "sentinel")
-                    .await?;
+                let conn = session.build_single(&host, port, db, "sentinel").await?;
                 session.single_conns.lock().await.insert(db, conn);
             }
             REDIS_MODE_CLUSTER => {
@@ -315,10 +329,9 @@ impl RedisSession {
                         node_url(&host, port, &session.profile, session.password.clone())
                     })
                     .collect::<Vec<_>>();
-                let client = redis::cluster::ClusterClient::new(nodes)
-                    .map_err(|error| {
-                        DbErrorInfo::new("connect", format!("ClusterClient 初始化失败：{error}"))
-                    })?;
+                let client = redis::cluster::ClusterClient::new(nodes).map_err(|error| {
+                    DbErrorInfo::new("connect", format!("ClusterClient 初始化失败：{error}"))
+                })?;
                 let conn = tokio::time::timeout(timeout, client.get_async_connection())
                     .await
                     .map_err(|_| DbErrorInfo::new("connect", "连接超时"))?
@@ -336,9 +349,9 @@ impl RedisSession {
         // PING：任何模式下都要求成功才算"已连接"。
         let pong: String = {
             let mut conn = session.acquire(session.default_db()?).await?;
-            conn.query(Cmd::new().arg("PING")).await.map_err(|error| {
-                DbErrorInfo::new("auth", format!("PING 失败：{error}"))
-            })?
+            conn.query(Cmd::new().arg("PING"))
+                .await
+                .map_err(|error| DbErrorInfo::new("auth", format!("PING 失败：{error}")))?
         };
         if pong != "PONG" {
             return Err(DbErrorInfo::new("auth", format!("PING 返回异常：{pong}")));
@@ -413,7 +426,12 @@ impl RedisSession {
             ));
         }
         let info = connection_info(host, port, db, &self.profile, self.password.clone())?;
-        connect_manager(info, Duration::from_millis(self.profile.connect_timeout_ms), stage).await
+        connect_manager(
+            info,
+            Duration::from_millis(self.profile.connect_timeout_ms),
+            stage,
+        )
+        .await
     }
 
     /// 取指定 db 的连接句柄（克隆共享句柄，不长时间持锁）。
@@ -523,11 +541,7 @@ impl RedisSession {
             let kind =
                 String::from_redis_value(&replies[index * 2]).unwrap_or_else(|_| "none".into());
             let ttl_ms = i64::from_redis_value(&replies[index * 2 + 1]).unwrap_or(-2);
-            briefs.push(RedisKeyBrief {
-                key,
-                kind,
-                ttl_ms,
-            });
+            briefs.push(RedisKeyBrief { key, kind, ttl_ms });
         }
         Ok(briefs)
     }
@@ -555,7 +569,16 @@ impl RedisSession {
     }
 
     /// 读取键值（按类型分支）。未知类型返回 `Other`，绝不假装能读。
-    pub async fn read_value(&self, db: i64, key: &str) -> Result<RedisValuePayload, DbErrorInfo> {
+    ///
+    /// `full = true` 才允许 string 读到 `STRING_FULL_MAX`；默认只给
+    /// `STRING_PREVIEW_MAX` 字节的预览（先 STRLEN 再决定 GET 还是 GETRANGE），
+    /// 既不会为看一眼就把整值搬过 IPC，也不会把截断内容当成完整值回写。
+    pub async fn read_value(
+        &self,
+        db: i64,
+        key: &str,
+        full: bool,
+    ) -> Result<RedisValuePayload, DbErrorInfo> {
         let mut conn = self.acquire(db).await?;
         let kind: String = conn
             .query(Cmd::new().arg("TYPE").arg(key))
@@ -563,24 +586,55 @@ impl RedisSession {
             .map_err(stage_err("read"))?;
         match kind.as_str() {
             "string" => {
-                let raw: RedisValue = conn
-                    .query(Cmd::new().arg("GET").arg(key))
+                let bytes: i64 = conn
+                    .query(Cmd::new().arg("STRLEN").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
+                if full && bytes > STRING_FULL_MAX {
+                    return Err(DbErrorInfo::new(
+                        "config",
+                        format!(
+                            "值有 {bytes} 字节，超过单次读取上限 {STRING_FULL_MAX} 字节；请在 redis-cli 或导出工具中查看"
+                        ),
+                    ));
+                }
+                let truncated = !full && bytes > STRING_PREVIEW_MAX;
+                let raw: RedisValue = if truncated {
+                    conn.query(
+                        Cmd::new()
+                            .arg("GETRANGE")
+                            .arg(key)
+                            .arg(0)
+                            .arg(STRING_PREVIEW_MAX - 1),
+                    )
+                    .await
+                    .map_err(stage_err("read"))?
+                } else {
+                    conn.query(Cmd::new().arg("GET").arg(key))
+                        .await
+                        .map_err(stage_err("read"))?
+                };
                 match raw {
                     RedisValue::Nil => Ok(RedisValuePayload::String {
                         value: String::new(),
                         binary: false,
+                        bytes,
+                        truncated: false,
                     }),
-                    RedisValue::BulkString(bytes) => match String::from_utf8(bytes.clone()) {
+                    RedisValue::BulkString(raw_bytes) => match String::from_utf8(raw_bytes.clone())
+                    {
                         Ok(value) => Ok(RedisValuePayload::String {
                             value,
                             binary: false,
+                            bytes,
+                            truncated,
                         }),
                         // 二进制值：Base64 编码传输，字节本体无损（前端写回时解码）。
                         Err(_) => Ok(RedisValuePayload::String {
-                            value: BASE64_STANDARD.encode(&bytes),
+                            value: BASE64_STANDARD.encode(&raw_bytes),
                             binary: true,
+                            bytes,
+                            truncated,
                         }),
                     },
                     _ => Err(DbErrorInfo::new("read", "GET 返回了意外形状")),
@@ -609,31 +663,47 @@ impl RedisSession {
                     .query(Cmd::new().arg("LLEN").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
-                let items: Vec<String> = conn
-                    .query(Cmd::new().arg("LRANGE").arg(key).arg(0).arg(READ_ITEMS_MAX as i64 - 1))
+                let mut items: Vec<String> = conn
+                    .query(
+                        Cmd::new()
+                            .arg("LRANGE")
+                            .arg(key)
+                            .arg(0)
+                            .arg(READ_ITEMS_MAX as i64 - 1),
+                    )
                     .await
                     .map_err(stage_err("read"))?;
-                let truncated = length as usize > READ_ITEMS_MAX;
+                // 条目数与字节数双重预算：5000 个 1 MB 成员同样会打满内存。
+                let trimmed = trim_strings_by_bytes(&mut items);
+                let truncated = length as usize > READ_ITEMS_MAX || trimmed;
                 Ok(RedisValuePayload::List {
                     items,
                     length,
                     truncated,
                 })
             }
+            // set 走 SSCAN 游标分页：SRANDMEMBER 是随机采样，同一个键每次
+            // 打开看到的成员都不一样，既不能翻页也无法"看全"。
             "set" => {
                 let length: i64 = conn
                     .query(Cmd::new().arg("SCARD").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
-                let members: Vec<String> = conn
-                    .query(Cmd::new().arg("SRANDMEMBER").arg(key).arg(READ_ITEMS_MAX as i64))
+                let raw: RedisValue = conn
+                    .query(&mut sscan_cmd(key, 0, SET_PAGE_MAX))
                     .await
                     .map_err(stage_err("read"))?;
-                let truncated = length as usize > READ_ITEMS_MAX;
+                let (cursor, mut members) = parse_scan_reply(&raw)?;
+                // 注意：**不能**在这里 truncate。SCAN 的 COUNT 只是提示，服务端
+                // 可能一次返回更多；砍掉尾部成员会让游标跳过它们，永久看不到。
+                let trimmed = trim_strings_by_bytes(&mut members);
                 Ok(RedisValuePayload::Set {
                     members,
                     length,
-                    truncated,
+                    // truncated 的语义是"这不是全部"：还有下一页或被字节预算截断。
+                    // 小集合（intset/listpack）一次就回全，长度等于 length 时不算截断。
+                    truncated: trimmed || cursor != 0,
+                    cursor,
                 })
             }
             "zset" => {
@@ -642,15 +712,24 @@ impl RedisSession {
                     .await
                     .map_err(stage_err("read"))?;
                 let raw: Vec<(String, f64)> = conn
-                    .query(Cmd::new().arg("ZRANGE").arg(key).arg(0).arg(READ_ITEMS_MAX as i64 - 1).arg("WITHSCORES"))
+                    .query(
+                        Cmd::new()
+                            .arg("ZRANGE")
+                            .arg(key)
+                            .arg(0)
+                            .arg(READ_ITEMS_MAX as i64 - 1)
+                            .arg("WITHSCORES"),
+                    )
                     .await
                     .map_err(stage_err("read"))?;
-                let truncated = length as usize > READ_ITEMS_MAX;
+                let mut entries: Vec<RedisZEntry> = raw
+                    .into_iter()
+                    .map(|(member, score)| RedisZEntry { member, score })
+                    .collect();
+                let trimmed = trim_zset_by_bytes(&mut entries);
+                let truncated = length as usize > READ_ITEMS_MAX || trimmed;
                 Ok(RedisValuePayload::Zset {
-                    entries: raw
-                        .into_iter()
-                        .map(|(member, score)| RedisZEntry { member, score })
-                        .collect(),
+                    entries,
                     length,
                     truncated,
                 })
@@ -661,7 +740,15 @@ impl RedisSession {
                     .await
                     .map_err(stage_err("read"))?;
                 let raw: RedisValue = conn
-                    .query(Cmd::new().arg("XRANGE").arg(key).arg("-").arg("+").arg("COUNT").arg(STREAM_READ_MAX))
+                    .query(
+                        Cmd::new()
+                            .arg("XRANGE")
+                            .arg(key)
+                            .arg("-")
+                            .arg("+")
+                            .arg("COUNT")
+                            .arg(STREAM_READ_MAX),
+                    )
                     .await
                     .map_err(stage_err("read"))?;
                 Ok(RedisValuePayload::Stream {
@@ -702,6 +789,35 @@ impl RedisSession {
         })
     }
 
+    /// SSCAN 续扫一页：前端在 `Set.cursor != 0` 时用它翻页。
+    pub async fn set_scan(
+        &self,
+        db: i64,
+        key: &str,
+        cursor: u64,
+        count: usize,
+    ) -> Result<RedisSetPage, DbErrorInfo> {
+        let count = count.clamp(1, SET_PAGE_MAX);
+        let mut conn = self.acquire(db).await?;
+        let length: i64 = conn
+            .query(Cmd::new().arg("SCARD").arg(key))
+            .await
+            .map_err(stage_err("read"))?;
+        let raw: RedisValue = conn
+            .query(&mut sscan_cmd(key, cursor, count))
+            .await
+            .map_err(stage_err("read"))?;
+        let (next, mut members) = parse_scan_reply(&raw)?;
+        // 同样不 truncate：截断会让游标越过被砍掉的成员。
+        let trimmed = trim_strings_by_bytes(&mut members);
+        Ok(RedisSetPage {
+            cursor: next,
+            members,
+            length,
+            truncated: trimmed,
+        })
+    }
+
     // -----------------------------------------------------------------
     // 写操作（read_only 闸门 + 阶段化错误）
     // -----------------------------------------------------------------
@@ -721,15 +837,9 @@ impl RedisSession {
             let bytes = BASE64_STANDARD
                 .decode(value.trim())
                 .map_err(|error| DbErrorInfo::new("write", format!("Base64 解码失败：{error}")))?;
-            let _: () = conn
-                .set(key, bytes)
-                .await
-                .map_err(stage_err("write"))?;
+            let _: () = conn.set(key, bytes).await.map_err(stage_err("write"))?;
         } else {
-            let _: () = conn
-                .set(key, value)
-                .await
-                .map_err(stage_err("write"))?;
+            let _: () = conn.set(key, value).await.map_err(stage_err("write"))?;
         }
         Ok(())
     }
@@ -753,10 +863,7 @@ impl RedisSession {
                     .map_err(stage_err("write"))?;
             }
             None => {
-                let _: i64 = conn
-                    .hdel(key, field)
-                    .await
-                    .map_err(stage_err("write"))?;
+                let _: i64 = conn.hdel(key, field).await.map_err(stage_err("write"))?;
             }
         }
         Ok(())
@@ -845,7 +952,12 @@ impl RedisSession {
     ///
     /// 用 SET NX 原子写入：键已存在时直接报错，**绝不静默覆盖**旧键
     /// （普通 SET 的覆盖语义留给编辑器里对已存在键的"保存修改"）。
-    pub async fn create_string_key(&self, db: i64, key: &str, value: &str) -> Result<(), DbErrorInfo> {
+    pub async fn create_string_key(
+        &self,
+        db: i64,
+        key: &str,
+        value: &str,
+    ) -> Result<(), DbErrorInfo> {
         self.ensure_writable("SET NX(新建键)")?;
         if key.trim().is_empty() {
             return Err(DbErrorInfo::new("config", "键名不能为空"));
@@ -877,16 +989,26 @@ impl RedisSession {
     }
 
     /// 设置 TTL；`ttl_ms = None` 表示 PERSIST（永久）。
-    pub async fn expire_key(&self, db: i64, key: &str, ttl_ms: Option<i64>) -> Result<(), DbErrorInfo> {
-        self.ensure_writable("EXPIRE/PERSIST")?;
+    ///
+    /// 用 PEXPIRE 而不是 EXPIRE：前端预设里有 500ms / 5s，EXPIRE 会把
+    /// 毫秒截断（500ms 甚至被抬成 1s），设置出来的过期时间和用户输入对不上。
+    pub async fn expire_key(
+        &self,
+        db: i64,
+        key: &str,
+        ttl_ms: Option<i64>,
+    ) -> Result<(), DbErrorInfo> {
+        self.ensure_writable("PEXPIRE/PERSIST")?;
         let mut conn = self.acquire(db).await?;
         match ttl_ms {
             Some(ms) => {
-                let seconds = (ms / 1000).max(1);
-                let _: i64 = conn
-                    .expire(key, seconds)
+                let changed: i64 = conn
+                    .query(Cmd::new().arg("PEXPIRE").arg(key).arg(ms.max(1)))
                     .await
                     .map_err(stage_err("write"))?;
+                if changed == 0 {
+                    return Err(DbErrorInfo::new("write", "键不存在或已过期，TTL 未设置"));
+                }
             }
             None => {
                 let _: bool = conn.persist(key).await.map_err(stage_err("write"))?;
@@ -895,14 +1017,36 @@ impl RedisSession {
         Ok(())
     }
 
-    /// 重命名键（RENAME：目标存在会被覆盖，前端要提示）。
-    pub async fn rename_key(&self, db: i64, old: &str, new: &str) -> Result<(), DbErrorInfo> {
-        self.ensure_writable("RENAME")?;
+    /// 重命名键。
+    ///
+    /// 默认走 RENAMENX：目标键已存在时直接报错，绝不静默覆盖别人的数据。
+    /// 只有调用方显式确认覆盖（`overwrite = true`）才退回 RENAME 语义。
+    pub async fn rename_key(
+        &self,
+        db: i64,
+        old: &str,
+        new: &str,
+        overwrite: bool,
+    ) -> Result<(), DbErrorInfo> {
+        self.ensure_writable(if overwrite { "RENAME" } else { "RENAMENX" })?;
         if new.trim().is_empty() {
             return Err(DbErrorInfo::new("config", "新键名不能为空"));
         }
         let mut conn = self.acquire(db).await?;
-        let _: () = conn.rename(old, new).await.map_err(stage_err("write"))?;
+        if overwrite {
+            let _: () = conn.rename(old, new).await.map_err(stage_err("write"))?;
+            return Ok(());
+        }
+        let moved: i64 = conn
+            .query(Cmd::new().arg("RENAMENX").arg(old).arg(new))
+            .await
+            .map_err(stage_err("write"))?;
+        if moved == 0 {
+            return Err(DbErrorInfo::new(
+                "write",
+                format!("目标键「{new}」已存在；确认覆盖后可重试"),
+            ));
+        }
         Ok(())
     }
 
@@ -947,7 +1091,8 @@ impl Drop for PubSubTask {
         }
         self.handle.abort();
     }
-}/// 运行时注册表：profile → 会话，sub_id → 订阅任务。
+}
+/// 运行时注册表：profile → 会话，sub_id → 订阅任务。
 #[derive(Clone, Default)]
 pub struct RedisManager {
     runtimes: Arc<Mutex<HashMap<String, Arc<RedisSession>>>>,
@@ -968,10 +1113,7 @@ impl RedisManager {
         // 单飞：同一 profile 的并发请求在这里串行化。
         let guard = {
             let mut locks = self.open_locks.lock().await;
-            locks
-                .entry(profile_id.clone())
-                .or_default()
-                .clone()
+            locks.entry(profile_id.clone()).or_default().clone()
         };
         let _permit = guard.lock().await;
         if let Some(existing) = self.runtimes.lock().await.get(&profile_id).cloned() {
@@ -1133,10 +1275,12 @@ async fn build_pubsub_connection(
     session: &RedisSession,
     db: i64,
 ) -> Result<redis::aio::PubSub, DbErrorInfo> {
-    let (host, port) = session
-        .connect_addr
-        .clone()
-        .ok_or_else(|| DbErrorInfo::new("query", "cluster 模式的订阅暂不支持：请改用 standalone/sentinel 连接"))?;
+    let (host, port) = session.connect_addr.clone().ok_or_else(|| {
+        DbErrorInfo::new(
+            "query",
+            "cluster 模式的订阅暂不支持：请改用 standalone/sentinel 连接",
+        )
+    })?;
     if session.profile.tls_mode != TLS_DISABLED && session.tunnel.is_some() {
         return Err(DbErrorInfo::new(
             "config",
@@ -1241,8 +1385,50 @@ fn parse_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<String>), DbErrorInfo>
 /// HSCAN 命令：cursor 续扫 + COUNT 提示（服务端可能返回更多，解析时截断）。
 fn hscan_cmd(key: &str, cursor: u64, count: usize) -> Cmd {
     let mut cmd = Cmd::new();
-    cmd.arg("HSCAN").arg(key).arg(cursor).arg("COUNT").arg(count);
+    cmd.arg("HSCAN")
+        .arg(key)
+        .arg(cursor)
+        .arg("COUNT")
+        .arg(count);
     cmd
+}
+
+/// SSCAN 命令：与 HSCAN 同形状，响应是 [cursor, [member, ...]]。
+fn sscan_cmd(key: &str, cursor: u64, count: usize) -> Cmd {
+    let mut cmd = Cmd::new();
+    cmd.arg("SSCAN")
+        .arg(key)
+        .arg(cursor)
+        .arg("COUNT")
+        .arg(count);
+    cmd
+}
+
+/// 字节预算：依次累加成员长度，超过 `READ_BYTES_MAX` 就截断并返回 true。
+/// 至少保留 1 条，否则单个超大成员会让整页变成空白。
+fn trim_strings_by_bytes(values: &mut Vec<String>) -> bool {
+    let mut used = 0usize;
+    for index in 0..values.len() {
+        used += values[index].len();
+        if used > READ_BYTES_MAX {
+            values.truncate(index.max(1));
+            return true;
+        }
+    }
+    false
+}
+
+/// zset 的字节预算（member 字符串占绝大部分，score 忽略不计）。
+fn trim_zset_by_bytes(entries: &mut Vec<RedisZEntry>) -> bool {
+    let mut used = 0usize;
+    for index in 0..entries.len() {
+        used += entries[index].member.len();
+        if used > READ_BYTES_MAX {
+            entries.truncate(index.max(1));
+            return true;
+        }
+    }
+    false
 }
 
 /// HSCAN 回复：[bulk(cursor), [field, value, field, value, ...]]。
@@ -1275,12 +1461,19 @@ fn parse_hash_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<RedisFieldEntry>)
                 }
                 _ => String::from_redis_value(value)
                     .ok()
-                    .map(|text| RedisFieldEntry { field: field.clone(), value: text }),
+                    .map(|text| RedisFieldEntry {
+                        field: field.clone(),
+                        value: text,
+                    }),
             })
-            .unwrap_or(RedisFieldEntry { field, value: String::new() });
+            .unwrap_or(RedisFieldEntry {
+                field,
+                value: String::new(),
+            });
         fields.push(entry);
     }
-    fields.truncate(HASH_PAGE_MAX);
+    // 不在这里 truncate：HSCAN 的 COUNT 只是提示，砍掉尾部字段会让游标
+    // 直接跳过它们（下一次翻阅再也看不到）。要控制体积就调小 count。
     Ok((cursor, fields))
 }
 
@@ -1305,15 +1498,20 @@ fn parse_stream_reply(raw: &RedisValue) -> Result<Vec<RedisStreamEntry>, DbError
                 let entry = chunk
                     .get(1)
                     .and_then(|value| match value {
-                        RedisValue::BulkString(bytes) => Some(RedisFieldEntry::from_bytes(
-                            field.clone(),
-                            bytes,
-                        )),
+                        RedisValue::BulkString(bytes) => {
+                            Some(RedisFieldEntry::from_bytes(field.clone(), bytes))
+                        }
                         _ => String::from_redis_value(value)
                             .ok()
-                            .map(|text| RedisFieldEntry { field: field.clone(), value: text }),
+                            .map(|text| RedisFieldEntry {
+                                field: field.clone(),
+                                value: text,
+                            }),
                     })
-                    .unwrap_or(RedisFieldEntry { field, value: String::new() });
+                    .unwrap_or(RedisFieldEntry {
+                        field,
+                        value: String::new(),
+                    });
                 fields.push(entry);
             }
         }

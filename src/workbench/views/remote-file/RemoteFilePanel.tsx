@@ -1316,13 +1316,12 @@ function RemoteFilePanelImpl({
         description={
           deleteTarget?.kind === "directory"
             ? t(
-                'Move folder "{{name}}" and everything inside to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.',
+                'Move folder "{{name}}" and everything inside to the recycle bin? You can restore it later.',
                 { name: deleteTarget?.name ?? "" },
               )
-            : t(
-                'Move file "{{name}}" to ~/.bls-ops-trash on the server. You can restore it from the recycle bin.',
-                { name: deleteTarget?.name ?? "" },
-              )
+            : t('Move file "{{name}}" to the recycle bin? You can restore it later.', {
+                name: deleteTarget?.name ?? "",
+              })
         }
         confirmLabel={t("Move to recycle bin")}
         onConfirm={confirmRemove}

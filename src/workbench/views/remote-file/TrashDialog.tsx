@@ -97,7 +97,7 @@ export function TrashDialog({
       width={560}
       title={t("Recycle bin")}
       description={t(
-        "Deleted files are moved to ~/.bls-ops-trash on the server. Restore them here, or delete them permanently.",
+        "Deleted files wait here before they are gone for good. Restore anything you still need.",
       )}
       onClose={onClose}
       footer={
@@ -173,7 +173,7 @@ export function TrashDialog({
         open={purgeTarget !== null}
         danger
         title={t("Delete {{name}} permanently?", { name: purgeTarget?.name ?? "" })}
-        description={t("This cannot be undone — the file is removed from the server's recycle bin.")}
+        description={t("This cannot be undone — the file is gone for good.")}
         confirmLabel={t("Delete permanently")}
         pending={busy}
         onCancel={() => setPurgeTarget(null)}

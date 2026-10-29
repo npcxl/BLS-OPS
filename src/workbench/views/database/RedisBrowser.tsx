@@ -38,6 +38,12 @@ import type {
 } from "@/api/types/database";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 
+/** 前端累计键数上限：持续翻页不设限会一直涨内存（10 万行 ≈ 30 MB）。 */
+const MAX_SCAN_KEYS = 5_000;
+
+/** 与后端 `SET_PAGE_MAX` 对齐：SSCAN 单页最多 500 个成员。 */
+const SET_PAGE_SIZE = 500;
+
 /** 类型徽标配色：一眼分清 string/hash/list/set/zset/stream。 */
 const KIND_BADGE: Record<string, string> = {
   string: "bg-accent/15 text-accent",
@@ -136,9 +142,11 @@ export function RedisBrowser({
           const merged = reset ? page.keys : [...current, ...page.keys];
           // 兜底去重：SCAN 重扫到同一个键、或双击"继续扫描"时不产生重复行。
           const seen = new Set<string>();
-          return merged.filter((entry) =>
+          const deduped = merged.filter((entry) =>
             seen.has(entry.key) ? false : (seen.add(entry.key), true),
           );
+          // 前端累计上限：无限翻页会把内存吃光（10 万行约 30 MB 且不再释放）。
+          return deduped.slice(0, MAX_SCAN_KEYS);
         });
         setCursor(page.cursor);
         setDbsize(page.dbsize);
@@ -162,7 +170,7 @@ export function RedisBrowser({
   }, [profile.id, dbIndex, status?.connected]);
 
   const loadKey = useCallback(
-    async (key: string) => {
+    async (key: string, full = false) => {
       const seq = ++keySeqRef.current;
       setSelectedKey(key);
       setLoadingValue(true);
@@ -170,7 +178,8 @@ export function RedisBrowser({
       try {
         const [info, value] = await Promise.all([
           databaseApi.redisKeyInfo(profile.id, dbIndex, key),
-          databaseApi.redisReadValue(profile.id, dbIndex, key),
+          // 默认只取预览：大 string 只回前 256 KiB，完整内容要显式 full。
+          databaseApi.redisReadValue(profile.id, dbIndex, key, full),
         ]);
         // 期间用户已点选了另一个键：丢弃本次响应。
         if (seq !== keySeqRef.current) return;
@@ -366,10 +375,16 @@ export function RedisBrowser({
                   variant="ghost"
                   size="xs"
                   className="w-full"
-                  disabled={scanning}
+                  disabled={scanning || keys.length >= MAX_SCAN_KEYS}
                   onClick={() => void runScan(false)}
                 >
-                  {scanning ? t("扫描中…") : t("继续扫描（还有更多键）")}
+                  {scanning
+                    ? t("扫描中…")
+                    : keys.length >= MAX_SCAN_KEYS
+                      ? t("已到 {{count}} 个键上限，请用模式缩小范围", {
+                          count: MAX_SCAN_KEYS,
+                        })
+                      : t("继续扫描（还有更多键）")}
                 </Button>
               </div>
             )}
@@ -398,6 +413,7 @@ export function RedisBrowser({
               keyInfo={keyInfo}
               payload={payload}
               mutate={mutate}
+              onReadFull={() => void loadKey(selectedKey, true)}
               onDeleted={() => {
                 setSelectedKey(null);
                 setKeyInfo(null);
@@ -431,6 +447,7 @@ function ValuePanel({
   keyInfo,
   payload,
   mutate,
+  onReadFull,
   onDeleted,
 }: {
   profile: DatabaseProfile;
@@ -439,12 +456,16 @@ function ValuePanel({
   keyInfo: RedisKeyInfo | null;
   payload: RedisValuePayload | null;
   mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  /** 大 string 只回了预览：显式请求全量（后端有 8 MiB 硬上限）。 */
+  onReadFull: () => void;
   onDeleted: () => void;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only;
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  // 默认不覆盖：RENAMENX 目标存在即报错，勾选后才退回 RENAME。
+  const [renameOverwrite, setRenameOverwrite] = useState(false);
 
   if (!payload) {
     return (
@@ -490,6 +511,7 @@ function ValuePanel({
                 aria-label={t("重命名键")}
                 onClick={() => {
                   setRenameValue(selectedKey);
+                  setRenameOverwrite(false);
                   setRenaming(true);
                 }}
               >
@@ -543,14 +565,28 @@ function ValuePanel({
             onChange={(event) => setRenameValue(event.target.value)}
             autoFocus
           />
-          <span className="text-10 text-warning">{t("目标键存在会被覆盖")}</span>
+          <label className="flex shrink-0 items-center gap-1 text-10 text-warning">
+            <input
+              type="checkbox"
+              checked={renameOverwrite}
+              onChange={(event) => setRenameOverwrite(event.target.checked)}
+            />
+            {t("覆盖同名键")}
+          </label>
           <Button
             variant="secondary"
             size="xs"
             onClick={() =>
               void mutate(
                 () =>
-                  databaseApi.redisKeyRename(profile.id, dbIndex, selectedKey, renameValue),
+                  databaseApi.redisKeyRename(
+                    profile.id,
+                    dbIndex,
+                    selectedKey,
+                    renameValue,
+                    // 默认 RENAMENX：目标已存在就报错，勾选后才允许覆盖。
+                    renameOverwrite,
+                  ),
                 t("已重命名"),
               ).then(() => setRenaming(false))
             }
@@ -570,6 +606,7 @@ function ValuePanel({
           selectedKey={selectedKey}
           payload={payload}
           mutate={mutate}
+          onReadFull={onReadFull}
         />
       )}
       {payload.kind === "hash" && (
@@ -628,17 +665,20 @@ function StringEditor({
   selectedKey,
   payload,
   mutate,
+  onReadFull,
 }: {
   profile: DatabaseProfile;
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "string" }>;
   mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  onReadFull: () => void;
 }) {
   const { t } = useTranslation();
   // 二进制值以 Base64 显示，仍可编辑 —— 保存时后端先 Base64 解码再写入，
   // 字节本体无损往返。
-  const writable = !profile.read_only;
+  // 截断的预览**不能**编辑：把前 256 KiB 写回去等于毁掉原值。
+  const writable = !profile.read_only && !payload.truncated;
   const [value, setValue] = useState(payload.value);
   useEffect(() => setValue(payload.value), [payload.value]);
 
@@ -654,6 +694,18 @@ function StringEditor({
 
   return (
     <div className="flex flex-col gap-1.5">
+      {payload.truncated && (
+        <div className="flex flex-wrap items-center gap-2 rounded-[6px] border border-warning/40 bg-warning/10 px-2 py-1 text-11 text-warning">
+          <span className="min-w-0 flex-1">
+            {t("值有 {{bytes}} 字节，这里只显示前 256 KiB（不可编辑）", {
+              bytes: payload.bytes.toLocaleString(),
+            })}
+          </span>
+          <Button variant="secondary" size="xs" onClick={onReadFull}>
+            {t("读取完整值")}
+          </Button>
+        </div>
+      )}
       <div className="flex items-center gap-2 text-11 text-fg-subtle">
         {payload.binary ? (
           <>
@@ -663,7 +715,7 @@ function StringEditor({
             <span>{t("以 Base64 编码显示，保存时自动解码，数据无损")}</span>
           </>
         ) : (
-          <span>{t("{{bytes}} 字节", { bytes: payload.value.length })}</span>
+          <span>{t("{{bytes}} 字节", { bytes: payload.bytes.toLocaleString() })}</span>
         )}
         {isJson && (
           <button
@@ -684,6 +736,7 @@ function StringEditor({
         className="min-h-[220px] resize-y rounded-[8px] border border-line bg-surface-1 p-2 font-mono text-12 leading-relaxed text-fg outline-none focus:border-accent disabled:bg-surface-2 disabled:text-fg-subtle"
         value={value}
         onChange={(event) => setValue(event.target.value)}
+        readOnly={payload.truncated}
         spellCheck={false}
       />
       {writable && value !== payload.value && (
@@ -1111,14 +1164,48 @@ function SetEditor({
   const { t } = useTranslation();
   const writable = !profile.read_only;
   const [newMember, setNewMember] = useState("");
+  // SSCAN 续扫：首屏只给一页，剩下的按游标追加（顺序稳定、不重复）。
+  const [extra, setExtra] = useState<string[]>([]);
+  const [cursor, setCursor] = useState(payload.cursor);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    setExtra([]);
+    setCursor(payload.cursor);
+  }, [payload]);
+
+  const members = useMemo(() => {
+    const seen = new Set<string>();
+    return [...payload.members, ...extra].filter((member) =>
+      seen.has(member) ? false : (seen.add(member), true),
+    );
+  }, [payload.members, extra]);
+
+  const loadMore = async () => {
+    if (cursor === 0 || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await databaseApi.redisSetScan(
+        profile.id,
+        dbIndex,
+        selectedKey,
+        cursor,
+        SET_PAGE_SIZE,
+      );
+      setExtra((current) => [...current, ...page.members]);
+      setCursor(page.cursor);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="text-11 text-fg-subtle">
         {payload.length} 成员
-        {payload.truncated && `（${t("显示前 {{count}} 个", { count: payload.members.length })}）`}
+        {payload.truncated && `（${t("显示前 {{count}} 个", { count: members.length })}）`}
       </div>
       <div className="overflow-hidden rounded-[8px] border border-line">
-        {payload.members.map((member) => (
+        {members.map((member) => (
           <div key={member} className="flex items-center gap-2 border-b border-line/60 px-2 py-1 last:border-b-0">
             <span className="min-w-0 flex-1 truncate font-mono text-11 text-fg">{member}</span>
             {writable && (
@@ -1140,6 +1227,15 @@ function SetEditor({
           </div>
         ))}
       </div>
+      {cursor !== 0 && (
+        <Button variant="ghost" size="xs" disabled={loadingMore} onClick={() => void loadMore()}>
+          {loadingMore
+            ? t("加载中…")
+            : t("加载更多（还有 {{count}} 个）", {
+                count: Math.max(payload.length - members.length, 0),
+              })}
+        </Button>
+      )}
       {writable && (
         <div className="flex items-center gap-2">
           <input
@@ -1387,8 +1483,25 @@ function PubSubPanel({
 
   // Channel 回调经 ref 保持稳定，避免重订阅。
   const onMessageRef = useRef((event: RedisPubSubEvent) => {
+    // 连接断开/服务端结束任务时后端会推 closed：前端同步复位，
+    // 输入框解锁、可以重新订阅，而不是一直显示"已订阅"却收不到消息。
+    if (event.event === "closed") setSubId(null);
     setMessages((current) => [...current.slice(-199), event]);
   });
+
+  const subIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    subIdRef.current = subId;
+  }, [subId]);
+
+  // 面板关掉/组件卸载时必须退订：否则后端 PubSubTask 会一直占着连接收消息。
+  useEffect(
+    () => () => {
+      const id = subIdRef.current;
+      if (id) void databaseApi.redisUnsubscribe(id).catch(() => undefined);
+    },
+    [],
+  );
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -1426,7 +1539,16 @@ function PubSubPanel({
     <div className="absolute inset-y-0 right-0 z-20 flex w-[360px] flex-col border-l border-line bg-surface-1 shadow-[-12px_0_32px_rgb(15_23_42/0.08)]">
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="flex-1 text-12 font-medium text-fg-muted">{t("发布 / 订阅")}</span>
-        <Button variant="ghost" size="xs" className="h-5 w-5 px-0" onClick={onClose} aria-label={t("关闭")}>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-5 w-5 px-0"
+          aria-label={t("关闭")}
+          onClick={() => {
+            // 关闭面板顺手退订，不能把订阅任务漏在后端。
+            void unsubscribe().finally(onClose);
+          }}
+        >
           <X size={12} />
         </Button>
       </div>

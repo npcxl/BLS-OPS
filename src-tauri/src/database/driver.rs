@@ -106,16 +106,14 @@ pub fn plan_from_profile(
     profile: &DatabaseProfile,
     password_override: Option<&str>,
 ) -> Result<EndpointPlan, DbErrorInfo> {
-    if profile.engine != super::model::ENGINE_MYSQL
-        && profile.engine != super::model::ENGINE_REDIS
+    if profile.engine != super::model::ENGINE_MYSQL && profile.engine != super::model::ENGINE_REDIS
     {
         return Err(DbErrorInfo::new(
             "unsupported",
-            if profile.engine == super::model::ENGINE_POSTGRES {
-                "PostgreSQL 适配尚未实现：本版本只支持 MySQL 8.0 / 8.4"
-            } else {
-                "不支持的数据库类型"
-            },
+            format!(
+                "{} 适配尚未实现：当前只支持 MySQL 与 Redis（配置已保存，可稍后直接使用）",
+                profile.engine
+            ),
         ));
     }
 

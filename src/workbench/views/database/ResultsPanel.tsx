@@ -32,6 +32,7 @@ import {
   buildSummaryRows,
   buildSummaryTsv,
   statementLine,
+  totalElapsedMs,
 } from "./result-log";
 
 const EMPTY_ROWS: DbValue[][] = [];
@@ -73,6 +74,12 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   );
   const rows = active?.rows ?? EMPTY_ROWS;
   const columns = active?.columns ?? EMPTY_COLUMNS;
+
+  /**
+   * 总耗时不能只看 `tab.elapsedMs`：后端 `Finished` 批次是 `try_send` 发的，
+   * 通道满会被丢掉，这时总量停在 0，比单条语句还快。用各条耗时之和兜底。
+   */
+  const totalElapsed = totalElapsedMs(results, tab?.elapsedMs);
 
   /** 消息视图：每个语句一段（语句 → 结果 → 耗时），末尾给总耗时。 */
   const messageText = useMemo(
@@ -250,7 +257,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
               {t("结果已截断")}
             </span>
           )}
-          {tab.elapsedMs > 0 && <span>{tab.elapsedMs} ms</span>}
+          {totalElapsed > 0 && <span>{totalElapsed} ms</span>}
           {tab.receivedRows > 0 && (
             <span>
               {tab.receivedRows.toLocaleString()} {t("行")} ·{" "}

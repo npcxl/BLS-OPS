@@ -39,6 +39,7 @@ import type {
   RedisPubSubEvent,
   RedisHashPage,
   RedisScanPage,
+  RedisSetPage,
   RedisValuePayload,
   RowMutation,
   SaveProfileRequest,
@@ -683,6 +684,11 @@ export const opsApi = {
   /** 读取一份历史版本的内容。 */
   editorHistoryRead: (path: string, id: string) =>
     invoke<string>("editor_history_read", { path, id }),
+
+  /** 在独立窗口里打开设置（已打开则聚焦，不重复创建）。 */
+  openSettingsWindow: () => invoke<void>("open_settings_window"),
+  /** 在独立窗口里打开快捷键一览。 */
+  openShortcutsWindow: () => invoke<void>("open_shortcuts_window"),
 
   // -- 文件传输任务中心 -------------------------------------------------------
   /**
@@ -1567,8 +1573,19 @@ export const databaseApi = {
     }),
   redisKeyInfo: (profileId: string, dbIndex: number, key: string) =>
     invoke<RedisKeyInfo>("db_redis_key_info", { profileId, dbIndex, key }),
-  redisReadValue: (profileId: string, dbIndex: number, key: string) =>
-    invoke<RedisValuePayload>("db_redis_read_value", { profileId, dbIndex, key }),
+  /** `full = false` 只取预览（大 string 会被截断并带 truncated 标记）。 */
+  redisReadValue: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    full = false,
+  ) =>
+    invoke<RedisValuePayload>("db_redis_read_value", {
+      profileId,
+      dbIndex,
+      key,
+      full,
+    }),
   /** HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。 */
   redisHashScan: (
     profileId: string,
@@ -1578,6 +1595,21 @@ export const databaseApi = {
     count: number,
   ) =>
     invoke<RedisHashPage>("db_redis_hash_scan", {
+      profileId,
+      dbIndex,
+      key,
+      cursor,
+      count,
+    }),
+  /** SSCAN 续扫一页：set 一律游标分页，不用 SMEMBERS / SRANDMEMBER。 */
+  redisSetScan: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    cursor: number,
+    count: number,
+  ) =>
+    invoke<RedisSetPage>("db_redis_set_scan", {
       profileId,
       dbIndex,
       key,
@@ -1654,8 +1686,21 @@ export const databaseApi = {
     /** null = PERSIST（永久）。 */
     ttlMs: number | null,
   ) => invoke<void>("db_redis_key_expire", { profileId, dbIndex, key, ttlMs }),
-  redisKeyRename: (profileId: string, dbIndex: number, oldKey: string, newKey: string) =>
-    invoke<void>("db_redis_key_rename", { profileId, dbIndex, oldKey, newKey }),
+  /** 默认 RENAMENX：目标已存在会报错；`overwrite = true` 才覆盖。 */
+  redisKeyRename: (
+    profileId: string,
+    dbIndex: number,
+    oldKey: string,
+    newKey: string,
+    overwrite = false,
+  ) =>
+    invoke<void>("db_redis_key_rename", {
+      profileId,
+      dbIndex,
+      oldKey,
+      newKey,
+      overwrite,
+    }),
   redisPublish: (profileId: string, dbIndex: number, channel: string, message: string) =>
     invoke<number>("db_redis_publish", { profileId, dbIndex, channel, message }),
   redisSubscribe: (

@@ -45,7 +45,11 @@ import {
   type SelectionState,
 } from "./grid/selection";
 import { createSelectionStore } from "./grid/selection-store";
-import { ColumnSelectionOverlay, SelectionOverlay } from "./grid/SelectionOverlay";
+import {
+  ColumnSelectionOverlay,
+  RowToneOverlay,
+  SelectionOverlay,
+} from "./grid/SelectionOverlay";
 
 const ROW_HEIGHT = 28;
 const HEADER_HEIGHT = 42;
@@ -66,6 +70,8 @@ export interface DataGridApi {
   selectAll(): void;
   /** 相对移动焦点（确认编辑后 Enter/Tab 的落点），并保证可见。 */
   moveFocus(delta: CellPoint): void;
+  /** 跳到指定单元格并滚进视口（提交失败时定位到出错的记录/字段）。 */
+  focusCell(cell: CellPoint): void;
   focus(): void;
 }
 
@@ -216,6 +222,8 @@ interface VirtualDataGridProps {
   modifiedCells?: Set<string>;
   /** 已标记删除的行（当前页索引）。 */
   deletedRows?: Set<number>;
+  /** 提交结果的瞬态行底色：已提交（绿）/ 失败（红），由宿主短暂给几秒。 */
+  rowTones?: { index: number; tone: "committed" | "failed" }[];
   onCellContextMenu?: (cell: CellAddress, event: React.MouseEvent) => void;
   onRowContextMenu?: (row: number, event: React.MouseEvent) => void;
   onColumnContextMenu?: (col: number, event: React.MouseEvent) => void;
@@ -338,6 +346,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   sortDirection,
   modifiedCells,
   deletedRows,
+  rowTones,
   onCellContextMenu,
   onRowContextMenu,
   onColumnContextMenu,
@@ -834,6 +843,11 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
         store.set(next);
         ensureVisible(next.focus);
       },
+      focusCell: (cell) => {
+        const next = focusAt(store.getSnapshot(), cell, store.getBounds(), false);
+        store.set(next);
+        ensureVisible(next.focus);
+      },
       focus: () => containerRef.current?.focus({ preventScroll: true }),
     };
     return () => {
@@ -994,6 +1008,14 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
               />
             );
           })}
+
+          <RowToneOverlay
+            tones={rowTones ?? []}
+            window={overlayWindow}
+            rowHeight={ROW_HEIGHT}
+            headerHeight={HEADER_HEIGHT}
+            width={width}
+          />
 
           <SelectionOverlay
             store={store}

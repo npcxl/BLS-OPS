@@ -7,6 +7,7 @@ import { TerminalSettingsGroup } from "../settings-terminal";
 import {
   DEFAULT_TERMINAL_FONT_ID,
   TERMINAL_FONT_KEY,
+  TERMINAL_FONTS,
   resolveFontStack,
   setTerminalFontId,
 } from "../views/terminal/terminal-font";
@@ -33,17 +34,20 @@ afterEach(() => {
 });
 
 const preview = () => container.querySelector<HTMLElement>('[data-testid="terminal-font-preview"]');
-const select = () => container.querySelector<HTMLSelectElement>("select");
+/** 自绘下拉的触发器（原生 select 已不再使用）。 */
+const combobox = () => container.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
+const labelOf = (id: string) => TERMINAL_FONTS.find((font) => font.id === id)?.label ?? id;
 
-/** 受控 select 必须走 native setter，否则 React 收不到这次变更。 */
+/** 打开下拉并点选某个字体（选项面板是 portal，挂在 body 上）。 */
 function chooseFont(id: string) {
-  const element = select();
-  if (!element) throw new Error("font select not rendered");
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-  act(() => {
-    setter?.call(element, id);
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  const trigger = combobox();
+  if (!trigger) throw new Error("font select not rendered");
+  act(() => trigger.click());
+  const option = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(
+    (item) => item.textContent?.includes(labelOf(id)),
+  );
+  if (!option) throw new Error("font option not rendered");
+  act(() => option.click());
 }
 
 describe("TerminalSettingsGroup", () => {
@@ -51,9 +55,17 @@ describe("TerminalSettingsGroup", () => {
     act(() => {
       root.render(<TerminalSettingsGroup />);
     });
-    expect(select()).not.toBeNull();
-    expect(select()?.options.length).toBeGreaterThan(1);
-    expect(select()?.value).toBe(DEFAULT_TERMINAL_FONT_ID);
+    const trigger = combobox();
+    expect(trigger).not.toBeNull();
+    // 当前项就是默认字体。
+    expect(trigger?.textContent).toContain(labelOf(DEFAULT_TERMINAL_FONT_ID));
+
+    act(() => trigger!.click());
+    const options = document.querySelectorAll('[role="option"]');
+    expect(options.length).toBeGreaterThan(1);
+    // 选中项带 aria-selected，阅读器与测试都能据此判断"当前是哪个"。
+    const selected = document.querySelector('[role="option"][aria-selected="true"]');
+    expect(selected?.textContent).toContain(labelOf(DEFAULT_TERMINAL_FONT_ID));
   });
 
   it("预览块用的是与终端完全相同的那套字体栈", () => {
@@ -76,7 +88,7 @@ describe("TerminalSettingsGroup", () => {
     const stack = resolveFontStack("consolas");
     expect(stack).toContain("Consolas");
     expect(preview()?.style.fontFamily).toBe(stack);
-    expect(select()?.value).toBe("consolas");
+    expect(combobox()?.textContent).toContain(labelOf("consolas"));
     // 终端读的就是这个变量 —— 预览与实际渲染不可能各说各话。
     expect(document.documentElement.style.getPropertyValue("--font-terminal")).toBe(stack);
     expect(window.localStorage.getItem(TERMINAL_FONT_KEY)).toBe("consolas");

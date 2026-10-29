@@ -74,11 +74,11 @@ export default {
 
   // -- 設定備份與還原（settings-backup） --
   "Backup & restore": "備份與還原",
-  "Move servers, groups, tags, jump hosts, projects and preferences to another machine. Secrets are never exported — rebind credentials after importing.":
-    "把伺服器、群組、標籤、跳板、專案與偏好遷移到另一台機器。金鑰不會被匯出，匯入後需要重新綁定憑證。",
+  "Bring your servers, groups, tags, jump hosts, projects and preferences to a new machine. Rebinding credentials is the only step left.":
+    "把伺服器、群組、標籤、跳板、專案與偏好帶到新機器，匯入後重新綁定憑證即可。",
   "Export configuration": "匯出設定",
-  "Writes a JSON file. Passwords and private keys stay in the system credential manager.":
-    "寫出一份 JSON 檔案。密碼與私鑰仍留在系統憑證管理員裡。",
+  "Creates a file you can take to another machine. Passwords and private keys are not included.":
+    "產生一個設定檔，方便帶到新機器。密碼與私鑰不會包含在內。",
   "Import configuration": "匯入設定",
   "Preview first: you decide whether existing entries are kept or overwritten.":
     "先預覽再匯入：已存在的項目是保留還是覆蓋，由你決定。",
@@ -107,11 +107,11 @@ export default {
 
   // -- 生產環境保護（巡檢模式 / 環境標記）--
   Safety: "安全",
-  "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.":
-    "只是客戶端的防誤操作：能擋住誤點，擋不住執意執行的人。真正的唯讀終端需要伺服器上設定受限帳號。",
+  "Read-only inside the app. A free shell still follows your server account's permissions.":
+    "唯讀範圍限於應用程式內；終端機裡仍依伺服器帳號的權限執行。",
   "Inspection mode (read-only)": "巡檢模式（唯讀）",
-  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.":
-    "在本應用內停用上傳、編輯、刪除與服務變更。它無法把自由終端變成唯讀。",
+  "Turns off uploads, edits, deletes and service changes inside the app.":
+    "開啟後，應用程式內的上傳、編輯、刪除與服務變更都無法使用。",
   "Not specified": "未標記",
   Production: "生產",
   Staging: "預發",
@@ -120,4 +120,61 @@ export default {
   Environment: "環境",
   "Production servers are highlighted everywhere and are the first thing a confirmation dialog names.":
     "生產伺服器會在各處高亮；確認框也會先說明目標伺服器。「未標記」表示這台機器還沒分類。",
+
+  // -- 快捷鍵一覽（settings-shortcuts）--
+  "Keyboard shortcuts": "快速鍵",
+  "Every shortcut in the app, grouped by where you use it.":
+    "依使用情境分組，查閱應用程式內全部快速鍵。",
+  Workspace: "工作台",
+  Editors: "編輯器",
+  "SQL workspace": "SQL 工作區",
+  "File panel": "檔案面板",
+  "Command palette": "命令面板",
+  "Command palette (actions)": "命令面板（動作）",
+  "New terminal tab": "新增終端機標籤",
+  "Reopen the most recent session": "重新開啟最近一次工作階段",
+  "Close the current tab": "關閉目前標籤",
+  "Split the pane vertically": "垂直分割",
+  "Open the AI module": "開啟 AI 模組",
+  "Collapse or expand the sidebar": "收合 / 展開側邊欄",
+  "New terminal": "新增終端機",
+  "Save (editor, server form, database edits)": "儲存（編輯器 / 伺服器表單 / 資料庫修改）",
+  "Find in the editor or preview": "在編輯器或預覽中尋找",
+  "Toggle replace in the search box": "在尋找框裡展開 / 收合取代",
+  "Close a dialog, menu or search box": "關閉對話框、選單或尋找框",
+  "Run the selection or current statement": "執行選取內容或目前敘述",
+  "Run the whole script": "執行整段指令碼",
+  "Format SQL": "格式化 SQL",
+  "Open the selected entry": "開啟選取項目",
+  "Rename in place": "就地重新命名",
+  "Move the selected entry to the recycle bin": "把選取項目移到回收站",
+  "Go up one directory": "回到上一層目錄",
+  "Open in new window": "在新視窗開啟",
+  Global: "全域",
+  "Move through a list, menu or palette": "在清單 / 選單 / 命令面板中移動",
+  "Run the highlighted entry": "執行選取的項目",
+  "Paste into the terminal": "貼到終端機",
+  "Accept the highlighted completion and run it": "接受選取的自動完成並立即執行",
+  "Move through completion candidates": "在自動完成候選間移動",
+  "Accept the highlighted completion": "接受選取的自動完成",
+  "Accept the highlighted completion (without running)": "接受選取的自動完成（不執行）",
+  "Dismiss the completion list": "收起自動完成候選",
+  "Next match in the search box": "跳到下一個相符項",
+  "Previous match in the search box": "跳到上一個相符項",
+  "Submit pending row changes": "提交待儲存的列修改",
+  "Copy the selected cells": "複製選取的儲存格",
+  "Paste into the grid": "貼到表格",
+  "Select all cells": "全選儲存格",
+  "Undo a cell edit": "復原儲存格修改",
+  "Redo a cell edit": "重做儲存格修改",
+  "Jump to the first row": "跳到第一列",
+  "Jump to the last row": "跳到最後一列",
+  "Edit the selected cell": "編輯選取的儲存格",
+  "Edit the cell, then move down": "編輯儲存格並下移",
+  "Commit and move right": "提交並右移",
+  "Commit and move left": "提交並左移",
+  "Cancel the cell edit": "取消儲存格編輯",
+  "Move through the asset tree": "在資產樹中移動",
+  "Open the focused tree entry": "開啟目前項目",
+  "Select the focused tree entry": "選取目前項目",
 } as const;

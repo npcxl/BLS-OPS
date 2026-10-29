@@ -1,5 +1,7 @@
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { SettingsWindow } from "@/workbench/SettingsWindow";
+import { ShortcutsWindow } from "@/workbench/ShortcutsWindow";
 import { initTheme } from "@/hooks/use-theme";
 import { initTerminalFont } from "@/workbench/views/terminal/terminal-font";
 import "./styles/globals.css";
@@ -34,4 +36,18 @@ window.addEventListener("contextmenu", (event) => {
  * second one. That makes connect/disconnect/reconnect unreliable and is not a
  * bug worth debugging twice.
  */
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+/**
+ * `?view=settings` 是独立设置窗口（由 Rust 的 `open_settings_window` 打开）。
+ * 同一份前端产物，只渲染设置内容 —— 不重复打包，也不会在第二个窗口里再开
+ * 一套工作台。
+ */
+const view = new URLSearchParams(window.location.search).get("view");
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  view === "settings" ? (
+    <SettingsWindow />
+  ) : view === "shortcuts" ? (
+    <ShortcutsWindow />
+  ) : (
+    <App />
+  ),
+);

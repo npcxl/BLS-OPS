@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight, KeyRound, Monitor, Moon, Plus, ShieldCheck, Sun, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
-import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import {
   CREDENTIAL_TYPES,
   opsApi,
@@ -23,6 +24,7 @@ import { EmptyRow, Group, ListGroup, Switch } from "./settings-parts";
 import { setInspectionMode, useInspectionMode } from "@/stores/inspection-store";
 import { TerminalSettingsGroup } from "./settings-terminal";
 import { BackupSettingsGroup } from "./settings-backup";
+import { ShortcutSettingsGroup } from "./settings-shortcuts";
 import { cn } from "@/lib/cn";
 
 /**
@@ -143,8 +145,24 @@ export function SettingsContextSidebar() {
     }
   };
 
+  // 独立设置窗口里不再显示"在新窗口打开"（点了只会聚焦自己）。
+  const standalone = new URLSearchParams(window.location.search).get("view") === "settings";
+
   return (
     <div className="flex flex-col gap-5 p-3 pb-6">
+      {!standalone && (
+        <div className="-mb-2 flex justify-end">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 px-1.5"
+            onClick={() => void opsApi.openSettingsWindow()}
+          >
+            {t("Open in new window")}
+          </Button>
+        </div>
+      )}
+
       <Group title={t("Appearance")}>
         <ListGroup>
           <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -176,18 +194,13 @@ export function SettingsContextSidebar() {
               无需重启。选择器里用各自语言的名字展示，方便任何用户找到它。 */}
           <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-2">
             <span className="shrink-0 text-12 text-fg">{t("Language")}</span>
-            <select
-              className={cn(selectClass, "max-w-40")}
+            <Select
+              className="max-w-40"
               value={locale}
-              aria-label={t("Language")}
-              onChange={(event) => setLocale(event.target.value as (typeof locales)[number]["code"])}
-            >
-              {locales.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.native}
-                </option>
-              ))}
-            </select>
+              ariaLabel={t("Language")}
+              options={locales.map((item) => ({ value: item.code, label: item.native }))}
+              onChange={(next) => setLocale(next as (typeof locales)[number]["code"])}
+            />
           </div>
         </ListGroup>
       </Group>
@@ -197,7 +210,7 @@ export function SettingsContextSidebar() {
       <Group
         title={t("Safety")}
         hint={t(
-          "Client-side guard rails only: they stop accidental clicks, not a determined operator. A read-only shell still needs a restricted account on the server.",
+          "Read-only inside the app. A free shell still follows your server account's permissions.",
         )}
       >
         <ListGroup>
@@ -206,7 +219,7 @@ export function SettingsContextSidebar() {
               <div className="text-12 text-fg">{t("Inspection mode (read-only)")}</div>
               <div className="text-11 leading-relaxed text-fg-subtle">
                 {t(
-                  "Blocks uploads, edits, deletes and service changes in this app. It cannot make a free shell read-only.",
+                  "Turns off uploads, edits, deletes and service changes inside the app.",
                 )}
               </div>
             </div>
@@ -220,6 +233,8 @@ export function SettingsContextSidebar() {
       </Group>
 
       <BackupSettingsGroup />
+
+      <ShortcutSettingsGroup />
 
       <Group
         title={t("Credentials")}
@@ -493,17 +508,13 @@ export function CredentialForm({
         </Field>
 
         <Field label={t("Type")}>
-          <select
-            className={selectClass}
+          <Select
+            className="w-full"
             value={form.credential_type}
-            onChange={(event) => setForm({ ...form, credential_type: event.target.value })}
-          >
-            {CREDENTIAL_TYPES.map((type) => (
-              <option key={type.value} value={type.value}>
-                {t(type.label)}
-              </option>
-            ))}
-          </select>
+            ariaLabel={t("Type")}
+            options={CREDENTIAL_TYPES.map((type) => ({ value: type.value, label: t(type.label) }))}
+            onChange={(next) => setForm({ ...form, credential_type: next })}
+          />
         </Field>
 
         <Field

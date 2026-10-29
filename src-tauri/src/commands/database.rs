@@ -130,7 +130,10 @@ pub async fn db_test_connection(
     // 不留运行时（测试连接不该有副作用）。
     if plan.profile.engine == ENGINE_REDIS {
         let profile_id = plan.profile.id.clone();
-        let result = state.redis.test_connection(&state.database.tunnels, plan).await;
+        let result = state
+            .redis
+            .test_connection(&state.database.tunnels, plan)
+            .await;
         let _ = state.redis.close_profile(&profile_id).await;
         return Ok(result);
     }
@@ -835,7 +838,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 use crate::database::redis_driver::{
-    ListWrite, RedisHashPage, RedisKeyInfo, RedisScanPage, RedisSession, RedisValuePayload,
+    ListWrite, RedisHashPage, RedisKeyInfo, RedisScanPage, RedisSession, RedisSetPage,
+    RedisValuePayload,
 };
 
 async fn redis_session_for(
@@ -854,7 +858,10 @@ pub async fn db_redis_connect(
     if plan.profile.engine != ENGINE_REDIS {
         return Err(DbErrorInfo::new(
             "unsupported",
-            format!("db_redis_connect 只接受 Redis 连接（当前 {}）", plan.profile.engine),
+            format!(
+                "db_redis_connect 只接受 Redis 连接（当前 {}）",
+                plan.profile.engine
+            ),
         ));
     }
     let session = state.redis.runtime(&state.database.tunnels, plan).await?;
@@ -872,7 +879,12 @@ pub async fn db_redis_scan(
 ) -> Result<RedisScanPage, DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
     session
-        .scan(db_index, pattern.as_deref().unwrap_or("*"), cursor, count.unwrap_or(100))
+        .scan(
+            db_index,
+            pattern.as_deref().unwrap_or("*"),
+            cursor,
+            count.unwrap_or(100),
+        )
         .await
 }
 
@@ -893,9 +905,13 @@ pub async fn db_redis_read_value(
     profile_id: String,
     db_index: i64,
     key: String,
+    // false/缺省 = 只给预览（大 string 只取前 256 KiB 并带 truncated 标记）。
+    full: Option<bool>,
 ) -> Result<RedisValuePayload, DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
-    session.read_value(db_index, &key).await
+    session
+        .read_value(db_index, &key, full.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -927,6 +943,20 @@ pub async fn db_redis_key_create(
     session.create_string_key(db_index, &key, &value).await
 }
 
+/// SSCAN 续扫一页：set 一律游标分页，绝不 SMEMBERS / SRANDMEMBER 采样。
+#[tauri::command]
+pub async fn db_redis_set_scan(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    cursor: u64,
+    count: usize,
+) -> Result<RedisSetPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.set_scan(db_index, &key, cursor, count).await
+}
+
 /// HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。
 #[tauri::command]
 pub async fn db_redis_hash_scan(
@@ -954,7 +984,9 @@ pub async fn db_redis_write_hash_field(
     value: Option<String>,
 ) -> Result<(), DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
-    session.write_hash_field(db_index, &key, &field, value.as_deref()).await
+    session
+        .write_hash_field(db_index, &key, &field, value.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -1027,9 +1059,13 @@ pub async fn db_redis_key_rename(
     db_index: i64,
     old_key: String,
     new_key: String,
+    // false/缺省 = RENAMENX（目标已存在就报错）；true = 用户明确同意覆盖。
+    overwrite: Option<bool>,
 ) -> Result<(), DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
-    session.rename_key(db_index, &old_key, &new_key).await
+    session
+        .rename_key(db_index, &old_key, &new_key, overwrite.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -1061,7 +1097,10 @@ pub async fn db_redis_subscribe(
 }
 
 #[tauri::command]
-pub async fn db_redis_unsubscribe(state: State<'_, AppState>, sub_id: String) -> Result<(), DbErrorInfo> {
+pub async fn db_redis_unsubscribe(
+    state: State<'_, AppState>,
+    sub_id: String,
+) -> Result<(), DbErrorInfo> {
     state.redis.unsubscribe(&sub_id).await;
     Ok(())
 }

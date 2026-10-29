@@ -21,6 +21,18 @@ interface CommandPaletteProps {
   onClose: () => void;
 }
 
+/**
+ * 执行一个面板动作。动作自己负责把失败展示给用户（多数是异步 + 内部提示），
+ * 这里只兜住同步异常：不能让一次抛错把整个面板的键盘交互带崩。
+ */
+function runAction(action: PaletteAction): void {
+  try {
+    action.onSelect();
+  } catch (error) {
+    console.error("[palette] action failed", error);
+  }
+}
+
 export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,6 +72,8 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      // 输入法组合中的回车是"确认候选词"，不能当成执行命令。
+      if (e.isComposing) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -73,9 +87,16 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
         setActiveIndex((i) => Math.max(i - 1, 0));
       }
       if (e.key === "Enter") {
+        // 焦点落在列表项按钮上：交给按钮自己的 click。否则 button 的默认
+        // 激活与本处理器会各跑一次，动作被触发两遍。
+        if (e.target instanceof HTMLElement && e.target.closest("[data-palette-item]")) return;
         e.preventDefault();
-        filtered[activeIndex]?.onSelect();
+        const action = filtered[activeIndex];
+        if (!action) return;
+        // 先关再执行：动作可能打开新标签或弹窗，面板留着会挡住结果；也避免
+        // 动作同步抛错时把面板永久卡在"按了回车但没反应"的状态。
         onClose();
+        runAction(action);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -121,6 +142,7 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
               <button
                 key={action.id}
                 type="button"
+                data-palette-item="true"
                 ref={index === activeIndex ? activeItemRef : undefined}
                 className={cn(
                   "flex w-full items-center gap-3 rounded-[7px] px-3 py-2 text-left transition-colors",
@@ -130,8 +152,8 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
                 )}
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => {
-                  action.onSelect();
                   onClose();
+                  runAction(action);
                 }}
               >
                 <div className="min-w-0 flex-1">

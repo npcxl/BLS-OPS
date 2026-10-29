@@ -1837,10 +1837,10 @@ export function TableBrowser({
             )}
           </div>
 
-          {/* 底部只有一行：待提交操作 + 总数 + 分页 + 全局状态 */}
-          <div className="flex h-8 shrink-0 items-center justify-end gap-2 overflow-x-auto border-t border-line px-2 text-11 text-fg-subtle">
+          {/* 待提交操作 + 总数 + 分页 + 全局状态；窗口窄时换行，不互相压字。 */}
+          <div className="flex min-h-8 shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-line px-2 py-1 text-11 text-fg-subtle">
             {pending.length > 0 && (
-              <>
+              <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
                 <span className="text-accent">
                   {t("待提交 {{count}} 项", { count: pending.length })}
                 </span>
@@ -1871,7 +1871,7 @@ export function TableBrowser({
                 >
                   {t("放弃")}
                 </Button>
-              </>
+              </span>
             )}
             {mutation?.state === "outcome_unknown" && (
               <span className="text-danger">{t("结果未知，请勿自动重试")}</span>
@@ -1887,7 +1887,7 @@ export function TableBrowser({
                 {mutationError}
               </span>
             )}
-            <span className="flex items-center gap-3">
+            <span className="flex shrink-0 items-center gap-3 whitespace-nowrap">
               <span>
                 {total === null
                   ? loading
@@ -1920,7 +1920,7 @@ export function TableBrowser({
                 </Button>
               </span>
               <Select
-                className="w-[84px]"
+                className="w-[84px] shrink-0"
                 size="sm"
                 value={String(pageSize)}
                 ariaLabel={t("每页行数")}
@@ -1935,12 +1935,9 @@ export function TableBrowser({
               />
             </span>
             {footer && (
-              <>
-                <span className="mx-1 h-4 w-px shrink-0 bg-line" />
-                <div className="flex min-w-0 shrink-0 items-center gap-2">
-                  {footer}
-                </div>
-              </>
+              <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+                {footer}
+              </div>
             )}
           </div>
         </>

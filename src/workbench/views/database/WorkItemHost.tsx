@@ -352,7 +352,7 @@ export function WorkItemHost({
       </div>
 
       {footer && activeItem?.kind !== "table" && (
-        <footer className="flex h-8 shrink-0 items-center justify-end gap-3 overflow-hidden border-t border-line px-3 text-11 text-fg-subtle">
+        <footer className="flex min-h-8 shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-line px-3 py-1 text-11 text-fg-subtle">
           {footer}
         </footer>
       )}

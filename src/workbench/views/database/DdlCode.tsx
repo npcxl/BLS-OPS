@@ -76,7 +76,11 @@ const ddlReadability = EditorView.theme({
     paddingRight: "8px",
     marginRight: "10px",
     borderRight: "1px solid rgb(var(--line))",
-    backgroundColor: "transparent",
+    // 横向滚动时行号会浮在代码上面：给它一层磨砂底，否则数字和 SQL 叠在一起看不清。
+    backgroundColor: "rgb(var(--surface-2) / 0.94)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    zIndex: 2,
     color: "rgb(var(--fg-subtle))",
   },
   ".cm-activeLine": { backgroundColor: "transparent" },

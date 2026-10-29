@@ -21,6 +21,7 @@ export {
   CornerDownLeft,
   Database,
   Eraser,
+  ExternalLink,
   FileArchive,
   FilePlus2,
   Folder,

@@ -395,7 +395,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
    * 其他工作项由 WorkItemHost 渲染在最底部；不再有单独的第二行。
    */
   const footerContent = (
-    <div className="flex min-w-0 items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
       <span
         className={cn(
           "h-1.5 w-1.5 shrink-0 rounded-full",
@@ -461,7 +461,7 @@ export function DatabaseView({ tab }: { tab: WorkspaceTab }) {
           {t("重连")}
         </Button>
       </Tooltip>
-      <span className="ml-1 shrink-0">
+      <span className="ml-1 shrink-0 whitespace-nowrap">
         {session ? `#${session.connection_id}` : t("未连接")}
         {status?.tunnel_local_port ? ` · 127.0.0.1:${status.tunnel_local_port}` : ""}
       </span>

@@ -612,28 +612,36 @@ function StringEditor({
   mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const writable = !profile.read_only && !payload.binary;
+  // 二进制值以 Base64 显示，仍可编辑 —— 保存时后端先 Base64 解码再写入，
+  // 字节本体无损往返。
+  const writable = !profile.read_only;
   const [value, setValue] = useState(payload.value);
   useEffect(() => setValue(payload.value), [payload.value]);
 
   const isJson = useMemo(() => {
+    if (payload.binary) return false;
     try {
       JSON.parse(payload.value);
       return true;
     } catch {
       return false;
     }
-  }, [payload.value]);
+  }, [payload.value, payload.binary]);
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2 text-11 text-fg-subtle">
-        <span>
-          {payload.binary
-            ? t("二进制值（有损预览，不可编辑）")
-            : t("{{bytes}} 字节", { bytes: payload.value.length })}
-        </span>
-        {!payload.binary && isJson && (
+        {payload.binary ? (
+          <>
+            <span className="rounded bg-warning/15 px-1 py-px text-10 font-medium text-warning">
+              {t("二进制")}
+            </span>
+            <span>{t("以 Base64 编码显示，保存时自动解码，数据无损")}</span>
+          </>
+        ) : (
+          <span>{t("{{bytes}} 字节", { bytes: payload.value.length })}</span>
+        )}
+        {isJson && (
           <button
             className="text-accent"
             onClick={() => {
@@ -651,7 +659,6 @@ function StringEditor({
       <textarea
         className="min-h-[220px] resize-y rounded-[8px] border border-line bg-surface-1 p-2 font-mono text-12 leading-relaxed text-fg outline-none focus:border-accent disabled:bg-surface-2 disabled:text-fg-subtle"
         value={value}
-        disabled={!writable}
         onChange={(event) => setValue(event.target.value)}
         spellCheck={false}
       />
@@ -662,7 +669,14 @@ function StringEditor({
             size="xs"
             onClick={() =>
               void mutate(
-                () => databaseApi.redisWriteString(profile.id, dbIndex, selectedKey, value),
+                () =>
+                  databaseApi.redisWriteString(
+                    profile.id,
+                    dbIndex,
+                    selectedKey,
+                    value,
+                    payload.binary,
+                  ),
                 t("已保存"),
               )
             }
@@ -701,11 +715,49 @@ function HashEditor({
   const [newField, setNewField] = useState("");
   const [newValue, setNewValue] = useState("");
 
+  // hash 走 HSCAN 分页：首页来自 payload，"加载更多"用 cursor 续扫。
+  const [rows, setRows] = useState<RedisFieldEntry[]>(payload.fields);
+  const [hashCursor, setHashCursor] = useState(payload.cursor);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // 键重读（写操作后）或切换键：行列表重置为服务端最新首页。
+  useEffect(() => {
+    setRows(payload.fields);
+    setHashCursor(payload.cursor);
+    setLoadError(null);
+  }, [payload]);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    setLoadError(null);
+    try {
+      const page = await databaseApi.redisHashScan(
+        profile.id,
+        dbIndex,
+        selectedKey,
+        hashCursor,
+        200,
+      );
+      setRows((current) => {
+        const seen = new Set(current.map((entry) => entry.field));
+        return [...current, ...page.fields.filter((entry) => !seen.has(entry.field))];
+      });
+      setHashCursor(page.cursor);
+    } catch (failure) {
+      setLoadError(toDbError(failure).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="text-11 text-fg-subtle">{payload.length} 字段</div>
+      <div className="text-11 text-fg-subtle">
+        {t("{{shown}} / {{total}} 字段", { shown: rows.length, total: payload.length })}
+      </div>
       <div className="overflow-hidden rounded-[8px] border border-line">
-        {payload.fields.map((entry) => (
+        {rows.map((entry) => (
           <div
             key={entry.field}
             className="flex items-center gap-2 border-b border-line/60 px-2 py-1 last:border-b-0"
@@ -790,6 +842,22 @@ function HashEditor({
           </div>
         ))}
       </div>
+      {loadError && <p className="text-11 text-danger">{loadError}</p>}
+      {hashCursor !== 0 && (
+        <Button
+          variant="ghost"
+          size="xs"
+          className="w-full"
+          disabled={loadingMore}
+          onClick={() => void loadMore()}
+        >
+          {loadingMore ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            t("加载更多字段（HSCAN 续扫）")
+          )}
+        </Button>
+      )}
       {writable && (
         <div className="flex items-center gap-2">
           <input
@@ -1258,6 +1326,24 @@ function StreamTable({ payload }: { payload: Extract<RedisValuePayload, { kind: 
 // pub/sub 面板
 // ---------------------------------------------------------------------------
 
+/**
+ * 消息负载解码：Rust 侧统一推 Base64（二进制无损）。
+ * Base64 解码后再尝试严格 UTF-8：文本消息正常显示，
+ * 真二进制消息回退显示 Base64（数据本体可复制还原）。
+ */
+function decodePubsubMessage(event: RedisPubSubEvent): string {
+  if (event.messageBase64) {
+    try {
+      const raw = atob(event.messageBase64);
+      const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return `base64: ${event.messageBase64}`;
+    }
+  }
+  return event.message ?? "";
+}
+
 function PubSubPanel({
   profile,
   dbIndex,
@@ -1372,8 +1458,16 @@ function PubSubPanel({
                 </span>
               )}
             </div>
-            {event.message && (
-              <div className="mt-0.5 break-all font-mono text-11 text-fg">{event.message}</div>
+            {event.messageBase64 ? (
+              <div className="mt-0.5 break-all font-mono text-11 text-fg">
+                {decodePubsubMessage(event)}
+              </div>
+            ) : (
+              event.message && (
+                <div className="mt-0.5 break-all font-mono text-11 text-fg">
+                  {event.message}
+                </div>
+              )
             )}
           </div>
         ))}

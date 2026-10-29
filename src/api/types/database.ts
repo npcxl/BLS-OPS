@@ -463,7 +463,15 @@ export interface RedisKeyInfo {
 
 export interface RedisFieldEntry {
   field: string;
+  /** 二进制值以 `b64:` 前缀 + Base64 编码传输（数据无损）。 */
   value: string;
+}
+
+/** HSCAN 的一页；cursor 为 0 表示已取完。 */
+export interface RedisHashPage {
+  cursor: number;
+  fields: RedisFieldEntry[];
+  length: number;
 }
 
 export interface RedisZEntry {
@@ -479,7 +487,7 @@ export interface RedisStreamEntry {
 /** 键值的类型化载荷：UI 按 kind 分支渲染与编辑。 */
 export type RedisValuePayload =
   | { kind: "string"; value: string; binary: boolean }
-  | { kind: "hash"; fields: RedisFieldEntry[]; length: number }
+  | { kind: "hash"; fields: RedisFieldEntry[]; length: number; cursor: number }
   | { kind: "list"; items: string[]; length: number; truncated: boolean }
   | { kind: "set"; members: string[]; length: number; truncated: boolean }
   | { kind: "zset"; entries: RedisZEntry[]; length: number; truncated: boolean }
@@ -498,5 +506,8 @@ export interface RedisPubSubEvent {
   subId: string;
   profileId?: string;
   channel?: string;
+  /** 系统类事件的文本（错误/关闭原因）。 */
   message?: string;
+  /** 消息事件的字节负载：统一 Base64 编码（二进制无损），前端解码显示。 */
+  messageBase64?: string;
 }

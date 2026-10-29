@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use redis::aio::ConnectionManager;
 use redis::cluster_async::ClusterConnection;
 use redis::{AsyncCommands, Cmd, FromRedisValue, RedisError, Value as RedisValue};
@@ -48,6 +50,8 @@ pub const READ_ITEMS_MAX: usize = 5_000;
 pub const STREAM_READ_MAX: usize = 1_000;
 /// pub/sub 订阅数上限：防止订阅面板把连接数吃爆。
 pub const PUBSUB_MAX: usize = 16;
+/// Hash 单次 HSCAN 的条目上限：hash 一律走 HSCAN 分页，绝不 HGETALL。
+pub const HASH_PAGE_MAX: usize = 200;
 
 // ---------------------------------------------------------------------------
 // 连接表示
@@ -115,10 +119,37 @@ pub struct RedisKeyBrief {
 }
 
 /// hash 的一行。
+///
+/// 字段值按 UTF-8 传输；不是合法 UTF-8 的值以 Base64 前缀
+/// `b64:` 标记（数据本体不损坏，前端可还原）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisFieldEntry {
     pub field: String,
     pub value: String,
+}
+
+impl RedisFieldEntry {
+    /// 把原始字节安全地变成可传输的字符串：UTF-8 直传，二进制走 Base64。
+    pub fn from_bytes(field: String, bytes: &[u8]) -> Self {
+        match std::str::from_utf8(bytes) {
+            Ok(value) => Self {
+                field,
+                value: value.to_string(),
+            },
+            Err(_) => Self {
+                field,
+                value: format!("b64:{}", BASE64_STANDARD.encode(bytes)),
+            },
+        }
+    }
+}
+
+/// HSCAN 的一页：cursor 为 0 表示已取完。
+#[derive(Debug, Clone, Serialize)]
+pub struct RedisHashPage {
+    pub cursor: u64,
+    pub fields: Vec<RedisFieldEntry>,
+    pub length: i64,
 }
 
 /// zset 的一行。
@@ -141,12 +172,15 @@ pub struct RedisStreamEntry {
 pub enum RedisValuePayload {
     String {
         value: String,
-        /// 字节不是合法 UTF-8（二进制值）：只做有损预览，禁止编辑。
+        /// true = `value` 是原始字节的 Base64 编码（二进制值），写回时需
+        /// 先 Base64 解码。这样数据本体永不损坏（不做有损替换）。
         binary: bool,
     },
     Hash {
         fields: Vec<RedisFieldEntry>,
         length: i64,
+        /// 下一页 HSCAN cursor；0 = 已取完（小 hash 一页就完）。
+        cursor: u64,
     },
     List {
         items: Vec<String>,
@@ -543,29 +577,31 @@ impl RedisSession {
                             value,
                             binary: false,
                         }),
+                        // 二进制值：Base64 编码传输，字节本体无损（前端写回时解码）。
                         Err(_) => Ok(RedisValuePayload::String {
-                            value: String::from_utf8_lossy(&bytes).into_owned(),
+                            value: BASE64_STANDARD.encode(&bytes),
                             binary: true,
                         }),
                     },
                     _ => Err(DbErrorInfo::new("read", "GET 返回了意外形状")),
                 }
             }
+            // hash 一律 HSCAN 分页：大 hash 绝不执行 HGETALL（O(N) 全量
+            // 拉取会长时间阻塞连接与 UI）。cursor 交给前端续扫。
             "hash" => {
                 let length: i64 = conn
                     .query(Cmd::new().arg("HLEN").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
-                let pairs: Vec<(String, String)> = conn
-                    .query(Cmd::new().arg("HGETALL").arg(key))
+                let raw: RedisValue = conn
+                    .query(&mut hscan_cmd(key, 0, HASH_PAGE_MAX))
                     .await
                     .map_err(stage_err("read"))?;
+                let (cursor, fields) = parse_hash_scan_reply(&raw)?;
                 Ok(RedisValuePayload::Hash {
-                    fields: pairs
-                        .into_iter()
-                        .map(|(field, value)| RedisFieldEntry { field, value })
-                        .collect(),
+                    fields,
                     length,
+                    cursor,
                 })
             }
             "list" => {
@@ -640,18 +676,61 @@ impl RedisSession {
         }
     }
 
+    /// HSCAN 续扫一页：前端在 `Hash.cursor != 0` 时用它翻页。
+    pub async fn hash_scan(
+        &self,
+        db: i64,
+        key: &str,
+        cursor: u64,
+        count: usize,
+    ) -> Result<RedisHashPage, DbErrorInfo> {
+        let count = count.clamp(1, HASH_PAGE_MAX);
+        let mut conn = self.acquire(db).await?;
+        let length: i64 = conn
+            .query(Cmd::new().arg("HLEN").arg(key))
+            .await
+            .map_err(stage_err("read"))?;
+        let raw: RedisValue = conn
+            .query(&mut hscan_cmd(key, cursor, count))
+            .await
+            .map_err(stage_err("read"))?;
+        let (next, fields) = parse_hash_scan_reply(&raw)?;
+        Ok(RedisHashPage {
+            cursor: next,
+            fields,
+            length,
+        })
+    }
+
     // -----------------------------------------------------------------
     // 写操作（read_only 闸门 + 阶段化错误）
     // -----------------------------------------------------------------
 
-    /// SET string 值。
-    pub async fn write_string(&self, db: i64, key: &str, value: &str) -> Result<(), DbErrorInfo> {
+    /// SET string 值；`binary = true` 时 `value` 是 Base64，先解码成字节
+    /// 再写入（保证二进制数据无损往返）。
+    pub async fn write_string(
+        &self,
+        db: i64,
+        key: &str,
+        value: &str,
+        binary: bool,
+    ) -> Result<(), DbErrorInfo> {
         self.ensure_writable("SET")?;
         let mut conn = self.acquire(db).await?;
-        let _: () = conn
-            .set(key, value)
-            .await
-            .map_err(stage_err("write"))?;
+        if binary {
+            let bytes = BASE64_STANDARD
+                .decode(value.trim())
+                .map_err(|error| DbErrorInfo::new("write", format!("Base64 解码失败：{error}")))?;
+            let _: () = conn
+                .set(key, bytes)
+                .await
+                .map_err(stage_err("write"))?;
+        } else {
+            let _: () = conn
+                .set(key, value)
+                .await
+                .map_err(stage_err("write"))?;
+        }
         Ok(())
     }
 
@@ -768,7 +847,7 @@ impl RedisSession {
         if key.trim().is_empty() {
             return Err(DbErrorInfo::new("config", "键名不能为空"));
         }
-        self.write_string(db, key, value).await
+        self.write_string(db, key, value, false).await
     }
 
     /// 删除键。
@@ -855,25 +934,36 @@ impl Drop for PubSubTask {
 pub struct RedisManager {
     runtimes: Arc<Mutex<HashMap<String, Arc<RedisSession>>>>,
     pubsubs: Arc<Mutex<HashMap<String, PubSubTask>>>,
+    /// 每个 profile 一把建连锁：并发首连只允许一次 `RedisSession::open`，
+    /// 其余调用等锁后直接命中缓存，杜绝重复建连。
+    open_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl RedisManager {
-    /// 取得（或建立）一个 profile 的会话。并发首次连接先到先得。
+    /// 取得（或建立）一个 profile 的会话。并发首次连接只建一次。
     pub async fn runtime(
         &self,
         tunnels: &TunnelRegistry,
         plan: EndpointPlan,
     ) -> Result<Arc<RedisSession>, DbErrorInfo> {
         let profile_id = plan.profile.id.clone();
+        // 单飞：同一 profile 的并发请求在这里串行化。
+        let guard = {
+            let mut locks = self.open_locks.lock().await;
+            locks
+                .entry(profile_id.clone())
+                .or_default()
+                .clone()
+        };
+        let _permit = guard.lock().await;
         if let Some(existing) = self.runtimes.lock().await.get(&profile_id).cloned() {
             return Ok(existing);
         }
         let session = RedisSession::open(tunnels, plan).await?;
-        let mut runtimes = self.runtimes.lock().await;
-        if let Some(existing) = runtimes.get(&profile_id).cloned() {
-            return Ok(existing);
-        }
-        runtimes.insert(profile_id, session.clone());
+        self.runtimes
+            .lock()
+            .await
+            .insert(profile_id.clone(), session.clone());
         Ok(session)
     }
 
@@ -923,6 +1013,7 @@ impl RedisManager {
     /// 关闭 profile：会话 + 该 profile 的全部订阅。
     pub async fn close_profile(&self, profile_id: &str) {
         self.runtimes.lock().await.remove(profile_id);
+        self.open_locks.lock().await.remove(profile_id);
         let mut pubsubs = self.pubsubs.lock().await;
         let ids: Vec<String> = pubsubs
             .iter()
@@ -1077,13 +1168,15 @@ async fn run_pubsub_loop(
             message = stream.next() => {
                 match message {
                     Some(message) => {
-                        let payload = String::from_utf8_lossy(message.get_payload_bytes()).into_owned();
+                        // 消息字节一律 Base64 编码推送：不做有损 UTF-8 转换，
+                        // 二进制消息原样到达，前端自行尝试解码显示。
+                        let payload = BASE64_STANDARD.encode(message.get_payload_bytes());
                         let _ = sink.send(serde_json::json!({
                             "event": "message",
                             "subId": sub_id,
                             "profileId": profile_id,
                             "channel": message.get_channel_name(),
-                            "message": payload,
+                            "messageBase64": payload,
                         }));
                     }
                     None => {
@@ -1127,6 +1220,52 @@ fn parse_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<String>), DbErrorInfo>
     Ok((cursor, keys))
 }
 
+/// HSCAN 命令：cursor 续扫 + COUNT 提示（服务端可能返回更多，解析时截断）。
+fn hscan_cmd(key: &str, cursor: u64, count: usize) -> Cmd {
+    let mut cmd = Cmd::new();
+    cmd.arg("HSCAN").arg(key).arg(cursor).arg("COUNT").arg(count);
+    cmd
+}
+
+/// HSCAN 回复：[bulk(cursor), [field, value, field, value, ...]]。
+/// 超出 HASH_PAGE_MAX 的部分截断（COUNT 只是提示，不强制上限）。
+fn parse_hash_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<RedisFieldEntry>), DbErrorInfo> {
+    let items = match raw {
+        RedisValue::Array(items) if items.len() == 2 => items,
+        _ => return Err(DbErrorInfo::new("read", "HSCAN 返回了意外形状")),
+    };
+    let cursor_bytes = match &items[0] {
+        RedisValue::BulkString(bytes) => bytes.clone(),
+        _ => return Err(DbErrorInfo::new("read", "HSCAN cursor 形状异常")),
+    };
+    let cursor = String::from_utf8_lossy(&cursor_bytes)
+        .parse::<u64>()
+        .map_err(|error| DbErrorInfo::new("read", format!("cursor 解析失败：{error}")))?;
+    let flat = match &items[1] {
+        RedisValue::Array(flat) => flat,
+        RedisValue::Nil => return Ok((cursor, Vec::new())),
+        _ => return Err(DbErrorInfo::new("read", "HSCAN 字段列表形状异常")),
+    };
+    let mut fields = Vec::with_capacity(flat.len() / 2);
+    for chunk in flat.chunks(2) {
+        let field = String::from_redis_value(&chunk[0]).unwrap_or_default();
+        let entry = chunk
+            .get(1)
+            .and_then(|value| match value {
+                RedisValue::BulkString(bytes) => {
+                    Some(RedisFieldEntry::from_bytes(field.clone(), bytes))
+                }
+                _ => String::from_redis_value(value)
+                    .ok()
+                    .map(|text| RedisFieldEntry { field: field.clone(), value: text }),
+            })
+            .unwrap_or(RedisFieldEntry { field, value: String::new() });
+        fields.push(entry);
+    }
+    fields.truncate(HASH_PAGE_MAX);
+    Ok((cursor, fields))
+}
+
 /// XRANGE 回复：[[id, [field, value, ...]], ...]。
 fn parse_stream_reply(raw: &RedisValue) -> Result<Vec<RedisStreamEntry>, DbErrorInfo> {
     let items = match raw {
@@ -1145,11 +1284,19 @@ fn parse_stream_reply(raw: &RedisValue) -> Result<Vec<RedisStreamEntry>, DbError
         if let RedisValue::Array(flat) = &pair[1] {
             for chunk in flat.chunks(2) {
                 let field = String::from_redis_value(&chunk[0]).unwrap_or_default();
-                let value = chunk
+                let entry = chunk
                     .get(1)
-                    .map(|value| String::from_redis_value(value).unwrap_or_default())
-                    .unwrap_or_default();
-                fields.push(RedisFieldEntry { field, value });
+                    .and_then(|value| match value {
+                        RedisValue::BulkString(bytes) => Some(RedisFieldEntry::from_bytes(
+                            field.clone(),
+                            bytes,
+                        )),
+                        _ => String::from_redis_value(value)
+                            .ok()
+                            .map(|text| RedisFieldEntry { field: field.clone(), value: text }),
+                    })
+                    .unwrap_or(RedisFieldEntry { field, value: String::new() });
+                fields.push(entry);
             }
         }
         entries.push(RedisStreamEntry { id, fields });

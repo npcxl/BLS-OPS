@@ -71,6 +71,10 @@ fn connection_fields_changed(old: &DatabaseProfile, new: &DatabaseProfile) -> bo
         || old.read_only != new.read_only
         || old.connect_timeout_ms != new.connect_timeout_ms
         || old.query_timeout_ms != new.query_timeout_ms
+        // Redis 专属连接参数：模式/哨兵 master/集群节点任一变化都要求断开重连。
+        || old.redis_mode != new.redis_mode
+        || old.sentinel_master != new.sentinel_master
+        || old.nodes_json != new.nodes_json
 }
 
 #[tauri::command]
@@ -95,6 +99,9 @@ pub async fn db_profile_save(
         .unwrap_or(false);
     if reset {
         state.database.close_profile(&saved.id).await;
+        // Redis 的运行时不归 SQL 管理器管，同样要断开（否则改完配置
+        // 旧连接还挂在内存里，前端状态与真实配置不一致）。
+        state.redis.close_profile(&saved.id).await;
     }
     Ok(saved)
 }
@@ -702,7 +709,7 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 use crate::database::redis_driver::{
-    ListWrite, RedisKeyInfo, RedisScanPage, RedisSession, RedisValuePayload,
+    ListWrite, RedisHashPage, RedisKeyInfo, RedisScanPage, RedisSession, RedisValuePayload,
 };
 
 async fn redis_session_for(
@@ -772,9 +779,29 @@ pub async fn db_redis_write_string(
     db_index: i64,
     key: String,
     value: String,
+    // true = value 是原始字节的 Base64 编码，写入前解码（二进制无损往返）。
+    binary: Option<bool>,
 ) -> Result<(), DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
-    session.write_string(db_index, &key, &value).await
+    session
+        .write_string(db_index, &key, &value, binary.unwrap_or(false))
+        .await
+}
+
+/// HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。
+#[tauri::command]
+pub async fn db_redis_hash_scan(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    cursor: u64,
+    count: Option<usize>,
+) -> Result<RedisHashPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session
+        .hash_scan(db_index, &key, cursor, count.unwrap_or(200))
+        .await
 }
 
 #[tauri::command]

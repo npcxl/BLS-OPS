@@ -37,6 +37,7 @@ import type {
   RedisKeyInfo,
   RedisListWrite,
   RedisPubSubEvent,
+  RedisHashPage,
   RedisScanPage,
   RedisValuePayload,
   RowMutation,
@@ -1519,8 +1520,36 @@ export const databaseApi = {
     invoke<RedisKeyInfo>("db_redis_key_info", { profileId, dbIndex, key }),
   redisReadValue: (profileId: string, dbIndex: number, key: string) =>
     invoke<RedisValuePayload>("db_redis_read_value", { profileId, dbIndex, key }),
-  redisWriteString: (profileId: string, dbIndex: number, key: string, value: string) =>
-    invoke<void>("db_redis_write_string", { profileId, dbIndex, key, value }),
+  /** HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。 */
+  redisHashScan: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    cursor: number,
+    count: number,
+  ) =>
+    invoke<RedisHashPage>("db_redis_hash_scan", {
+      profileId,
+      dbIndex,
+      key,
+      cursor,
+      count,
+    }),
+  /** binary = true 时 value 是 Base64，后端解码后写入（二进制无损往返）。 */
+  redisWriteString: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    value: string,
+    binary?: boolean,
+  ) =>
+    invoke<void>("db_redis_write_string", {
+      profileId,
+      dbIndex,
+      key,
+      value,
+      binary,
+    }),
   redisWriteHashField: (
     profileId: string,
     dbIndex: number,

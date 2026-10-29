@@ -463,6 +463,7 @@ pub fn run() {
             commands::db_redis_scan,
             commands::db_redis_key_info,
             commands::db_redis_read_value,
+            commands::db_redis_hash_scan,
             commands::db_redis_write_string,
             commands::db_redis_write_hash_field,
             commands::db_redis_write_list,

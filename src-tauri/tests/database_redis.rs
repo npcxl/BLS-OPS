@@ -90,7 +90,7 @@ async fn redis_string_write_read_delete() {
     };
     let key = "bls:test:string";
     session
-        .write_string(0, key, "hello redis")
+        .write_string(0, key, "hello redis", false)
         .await
         .expect("set");
     let payload = session.read_value(0, key).await.expect("get");
@@ -104,6 +104,71 @@ async fn redis_string_write_read_delete() {
     session.delete_key(0, key).await.expect("del");
     // 删除后读取必须报"键不存在"。
     assert!(session.read_value(0, key).await.is_err());
+}
+
+/// hash 一律 HSCAN 分页：大 hash 每页最多 HASH_PAGE_MAX 条，cursor 续扫收齐。
+/// 二进制 string 值必须 Base64 无损往返（禁止有损 UTF-8 替换）。
+#[tokio::test]
+async fn redis_hash_scan_pagination_and_binary_base64() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+
+    // hash：写入 12 个字段，COUNT=5 强制 HSCAN 分页。
+    let hash_key = "bls:test:big-hash";
+    for index in 0..12 {
+        session
+            .write_hash_field(0, hash_key, &format!("f{index}"), Some(&format!("v{index}")))
+            .await
+            .expect("hset");
+    }
+    let mut cursor = 0u64;
+    let mut fields = Vec::new();
+    for _ in 0..50 {
+        let page = session.hash_scan(0, hash_key, cursor, 5).await.expect("hscan");
+        fields.extend(page.fields);
+        cursor = page.cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(fields.len(), 12, "expected 12 fields via paged hscan");
+    session.delete_key(0, hash_key).await.expect("cleanup hash");
+
+    // 二进制 string：写入非法 UTF-8 字节，读回应标记 binary 且 Base64
+    // 解码后与原字节完全一致。
+    let bin_key = "bls:test:binary";
+    let raw: Vec<u8> = vec![0x00, 0xFF, 0xFE, 0x01, 0x80, 0x7F];
+    {
+        use redis::AsyncCommands;
+        let mut conn = session.acquire(0).await.expect("conn");
+        let _: () = conn.set(bin_key, raw.clone()).await.expect("set bytes");
+    }
+    match session.read_value(0, bin_key).await.expect("get binary") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String { value, binary } => {
+            assert!(binary, "binary flag must be set");
+            use base64::Engine as _;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(&value)
+                .expect("value must be valid base64");
+            assert_eq!(decoded, raw, "base64 roundtrip must preserve bytes");
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+    // Base64 写回路径：binary=true 写入，读回仍是同一批字节。
+    let rewritten = "AA/+AQCB"; // base64([0x00, 0xFF, 0xFE, 0x01, 0x00, 0x81])
+    session
+        .write_string(0, bin_key, rewritten, true)
+        .await
+        .expect("set base64");
+    match session.read_value(0, bin_key).await.expect("get rewritten") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::String { value, binary } => {
+            assert!(binary);
+            assert_eq!(value, rewritten, "base64 write path must roundtrip");
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+    session.delete_key(0, bin_key).await.expect("cleanup binary");
 }
 
 #[tokio::test]
@@ -126,11 +191,13 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_hash_field(0, hash_key, "field_b", Some("keep"))
         .await
         .expect("hset b");
-    match session.read_value(0, hash_key).await.expect("hgetall") {
-        ops_workbench_lib::database::redis_driver::RedisValuePayload::Hash { fields, length } => {
+    match session.read_value(0, hash_key).await.expect("hscan page 1") {
+        ops_workbench_lib::database::redis_driver::RedisValuePayload::Hash { fields, length, cursor } => {
             assert_eq!(length, 2);
             let field_a = fields.iter().find(|entry| entry.field == "field_a");
             assert_eq!(field_a.map(|entry| entry.value.as_str()), Some("2"));
+            // 2 个字段的 hash 一页 HSCAN 就应扫完。
+            assert_eq!(cursor, 0);
         }
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -240,7 +307,7 @@ async fn redis_scan_pattern_and_pagination() {
     };
     for index in 0..5 {
         session
-            .write_string(0, &format!("bls:scan:{index}"), "x")
+            .write_string(0, &format!("bls:scan:{index}"), "x", false)
             .await
             .expect("seed");
     }
@@ -270,7 +337,7 @@ async fn redis_expire_rename_publish() {
         return;
     };
     let key = "bls:test:ttl";
-    session.write_string(0, key, "temp").await.expect("set");
+    session.write_string(0, key, "temp", false).await.expect("set");
 
     // EXPIRE 1 秒 → TTL 应为正毫秒。
     session.expire_key(0, key, Some(1_000)).await.expect("expire");

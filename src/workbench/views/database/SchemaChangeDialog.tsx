@@ -165,6 +165,19 @@ export function SchemaChangeDialog({
       onApplied();
       onClose();
     } catch (failure) {
+      // schema 变更可能部分完成；刷新实际对象列表，不把失败当成成功。
+      if (target) {
+        if (
+          target.mode === "create_database" ||
+          target.mode === "drop_database"
+        ) {
+          await refreshDatabases(target.profileId).catch(() => undefined);
+        } else if (target.database) {
+          await refreshTables(target.profileId, target.database).catch(
+            () => undefined,
+          );
+        }
+      }
       setError(toDbError(failure).message);
     } finally {
       setBusy(false);

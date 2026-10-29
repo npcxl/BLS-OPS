@@ -172,6 +172,15 @@ export function TableOperationDialog({
       onApplied();
       onClose();
     } catch (failure) {
+      // DDL 可能部分成功/结果未知：刷新树，让界面反映真实对象状态，
+      // 不自动关闭任何工作项。
+      if (pending) {
+        await refreshTables(
+          pending.target.profileId,
+          pending.target.database,
+        ).catch(() => undefined);
+        void invalidate(pending.target.profileId);
+      }
       setError(toDbError(failure).message);
     } finally {
       setBusy(false);

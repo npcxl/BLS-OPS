@@ -14,6 +14,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type ReactNode,
@@ -35,7 +36,9 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+
 import { LoadingState } from "@/components/ui/loading";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
@@ -48,6 +51,7 @@ import type {
   BrowseSort,
   ColumnAssignment,
   DatabaseProfile,
+  DbColumn,
   DbSessionInfo,
   DbTableDetail,
   DbValue,
@@ -57,7 +61,7 @@ import type {
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
-import { VirtualDataGrid, type CellAddress } from "./VirtualDataGrid";
+import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
 import { TableStructure } from "./TableStructure";
 import {
   estimateRowsBytes,
@@ -67,8 +71,33 @@ import {
 } from "./result-cache";
 import { EditRowDialog } from "./EditRowDialog";
 import { ExportDialog } from "./ExportDialog";
+import {
+  EMPTY_SELECTION,
+  MAX_ENUMERATED_CELLS,
+  iterateSelectionCells,
+  selectionStats,
+  type SelectionState,
+} from "./grid/selection";
+import { copyMenuItems } from "./grid/copy-menu";
+import { copySelectionToClipboard } from "./grid/copy-service";
+import type { CopyFormat } from "./grid/copy-format";
+import { parseClipboardMatrix, planPaste, type PastePlan } from "./grid/paste";
+import {
+  canRedo,
+  canUndo,
+  commitHistory,
+  createHistory,
+  redoHistory,
+  resetHistory,
+  undoHistory,
+  type HistoryState,
+} from "./grid/edit-history";
 
 const PAGE_SIZES = [100, 200, 500];
+const EMPTY_ROWS: DbValue[][] = [];
+const EMPTY_COLUMNS: DbColumn[] = [];
+/** 二进制/位/几何列在网格里只能看，不能改，也不参与粘贴。 */
+const READ_ONLY_COLUMN = /bit|blob|binary|geometry/i;
 
 function rawText(value: DbValue): string | null {
   switch (value.kind) {
@@ -110,6 +139,34 @@ type Pending =
       expected: ColumnAssignment[];
     }
   | { id: string; kind: "insert"; values: ColumnAssignment[] };
+
+const NO_PENDING: Pending[] = [];
+
+type PendingAction =
+  | { type: "update"; resolve: (current: Pending[]) => Pending[] }
+  | { type: "undo" }
+  | { type: "redo" }
+  | { type: "reset" };
+
+/**
+ * 待提交队列的 reducer：**每次变更都留一个撤销点**。
+ * 排队的数据从不直接落库，撤销/重做只是换一个快照，安全性不受影响。
+ */
+function pendingReducer(
+  state: HistoryState<Pending[]>,
+  action: PendingAction,
+): HistoryState<Pending[]> {
+  switch (action.type) {
+    case "update":
+      return commitHistory(state, action.resolve(state.present));
+    case "undo":
+      return undoHistory(state);
+    case "redo":
+      return redoHistory(state);
+    case "reset":
+      return resetHistory(state, NO_PENDING);
+  }
+}
 
 function keyToString(key: AssignValue[]): string {
   return key
@@ -186,8 +243,7 @@ export function TableBrowser({
   const [error, setError] = useState<string | null>(null);
   /** 第二行（新增/删除/应用修改）默认收起，点“表格修改”才展开。 */
   const [showEditBar, setShowEditBar] = useState(false);
-  const [selectedRow, setSelectedRow] = useState<number | null>(null);
-  const [selectedCell, setSelectedCell] = useState<CellAddress | null>(null);
+  const gridApi = useRef<DataGridApi | null>(null);
   const [editing, setEditing] = useState<{
     cell: CellAddress;
     value: string;
@@ -198,7 +254,18 @@ export function TableBrowser({
     mode: "insert" | "update";
     row: DbValue[] | null;
   } | null>(null);
-  const [pending, setPending] = useState<Pending[]>([]);
+  const [pendingState, dispatchPending] = useReducer(
+    pendingReducer,
+    undefined,
+    () => createHistory<Pending[]>(NO_PENDING),
+  );
+  const pending = pendingState.present;
+  /** 所有对待提交队列的写入都走这里：自动留撤销点，且不绕过事务安全。 */
+  const setPending = useCallback(
+    (resolve: (current: Pending[]) => Pending[]) =>
+      dispatchPending({ type: "update", resolve }),
+    [],
+  );
   const [showPending, setShowPending] = useState(false);
   const [mutation, setMutation] = useState<MutationResult | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -211,6 +278,14 @@ export function TableBrowser({
   } | null>(null);
   const requestNonce = useRef(0);
   const cellMenu = useContextMenu();
+  const { status: copyStatus, notify: notifyCopy } = useCopyFeedback();
+
+  /** 复制/粘贴的轻提示（成功但内容有截断也会走这里）。 */
+  const [gridNotice, setGridNotice] = useState<string | null>(null);
+  const [pastePreview, setPastePreview] = useState<{
+    target: CellAddress;
+    plan: PastePlan;
+  } | null>(null);
 
   const [draftFilter, setDraftFilter] = useState<{
     column: string;
@@ -272,8 +347,6 @@ export function TableBrowser({
       if (nonce !== requestNonce.current) return;
       setResult(next);
       if (shouldCount) setTotal(next.exact_rows);
-      setSelectedRow(null);
-      setSelectedCell(null);
     } catch (failure) {
       if (nonce !== requestNonce.current) return;
       setError(toDbError(failure).message);
@@ -309,8 +382,6 @@ export function TableBrowser({
       // 隐藏页不保留大结果；筛选/分页/草稿仍在，切回来强制重查。
       setResult(null);
       setTotal(null);
-      setSelectedRow(null);
-      setSelectedCell(null);
       setEditing(null);
       setCellDetail(null);
       lastLoadKeyRef.current = "";
@@ -380,10 +451,15 @@ export function TableBrowser({
     ((detail?.reliable_key?.length ?? 0) > 0 ||
       (detail?.primary_key?.length ?? 0) > 0);
 
-  const selectedValues = useMemo(() => {
-    if (selectedRow === null || !result) return null;
-    return result.rows[selectedRow] ?? null;
-  }, [result, selectedRow]);
+  /**
+   * 当前焦点行 —— 只在按钮点击/菜单构建时读取，不进 React state：
+   * 选择每帧都可能变，让它触发父组件重渲染会把整个表格拖慢。
+   */
+  const focusedRow = (): DbValue[] | null => {
+    const row = gridApi.current?.getFocus()?.row;
+    if (row === null || row === undefined) return null;
+    return pageRows[row] ?? null;
+  };
 
   /**
    * 打开表单编辑前，把被结果预算截断的大字段**按主键重新读完整**。
@@ -503,6 +579,76 @@ export function TableBrowser({
     });
   };
 
+  /**
+   * 批量写入待提交队列（粘贴 / Delete 用）。
+   *
+   * 一次 `setPending` 而不是 N 次，避免 10×10 粘贴触发 100 次渲染；定位与并发
+   * 预期值规则和单格编辑**完全一致**（同一主键合并成一条 UPDATE）。
+   * 校验在 dispatch 之前完成，reducer 保持纯函数（StrictMode 双执行不会重复计数）。
+   */
+  const applyCellValues = (
+    cells: ReadonlyArray<{ row: number; col: number; value: AssignValue }>,
+  ): number => {
+    if (!canEdit || !detail) return 0;
+    const prepared: {
+      key: AssignValue[];
+      label: string;
+      expected: ColumnAssignment[];
+      column: string;
+      value: AssignValue;
+    }[] = [];
+    for (const cell of cells) {
+      const source = pageRows[cell.row];
+      const column = detail.columns[cell.col];
+      if (!source || !column) continue;
+      if (READ_ONLY_COLUMN.test(column.data_type)) continue;
+      const located = keyOfRow(source);
+      if (!located) continue;
+      prepared.push({
+        key: located.key,
+        label: located.label,
+        expected: expectedOfRow(source),
+        column: column.name,
+        value: cell.value,
+      });
+    }
+    if (prepared.length === 0) return 0;
+
+    setPending((current) => {
+      const working = current.map((entry) =>
+        entry.kind === "update" ? { ...entry, values: [...entry.values] } : entry,
+      );
+      const indexByKey = new Map<string, number>();
+      working.forEach((entry, index) => {
+        if (entry.kind === "update") indexByKey.set(keyToString(entry.key), index);
+      });
+      for (const item of prepared) {
+        const assignment: ColumnAssignment = { column: item.column, value: item.value };
+        const key = keyToString(item.key);
+        const at = indexByKey.get(key);
+        if (at === undefined) {
+          working.push({
+            id: crypto.randomUUID(),
+            kind: "update",
+            key: item.key,
+            label: item.label,
+            values: [assignment],
+            expected: item.expected,
+          });
+          indexByKey.set(key, working.length - 1);
+          continue;
+        }
+        const entry = working[at];
+        if (entry.kind !== "update") continue;
+        const position = entry.values.findIndex((value) => value.column === item.column);
+        if (position >= 0) entry.values[position] = assignment;
+        else entry.values.push(assignment);
+      }
+      return working;
+    });
+    return prepared.length;
+  };
+
   /** 查看完整值：有可靠键时按主键重读，否则只显示已接收的预览。 */
   const openCellDetail = (cell: CellAddress) => {
     const column = result?.columns[cell.col]?.name;
@@ -601,7 +747,10 @@ export function TableBrowser({
     setEditing({ cell, value: text });
   };
 
-  const commitCellEdit = (cell: CellAddress) => {
+  const commitCellEdit = (
+    cell: CellAddress,
+    move: "down" | "up" | "right" | "left" | null = null,
+  ) => {
     if (!editing || editing.cell.row !== cell.row || editing.cell.col !== cell.col) {
       return;
     }
@@ -611,12 +760,14 @@ export function TableBrowser({
       editing.fullValue,
     );
     setEditing(null);
-  };
-
-  const copyCellValue = (cell: CellAddress) => {
-    const value = pageRows[cell.row]?.[cell.col];
-    const text = value ? rawText(value) : null;
-    if (text !== null) void copyText(text);
+    if (move) {
+      // 确认后把焦点交给网格（Excel 式：Enter 下一行、Tab 右一格）。
+      gridApi.current?.moveFocus({
+        row: move === "down" ? 1 : move === "up" ? -1 : 0,
+        col: move === "right" ? 1 : move === "left" ? -1 : 0,
+      });
+      gridApi.current?.focus();
+    }
   };
 
   const filterByCell = (cell: CellAddress, exclude: boolean) => {
@@ -695,55 +846,6 @@ export function TableBrowser({
     return assignments;
   };
 
-  const quoteIdentifier = (name: string) => `\`${name.replace(/`/g, "``")}\``;
-
-  const copyAsInsert = (row: DbValue[]) => {
-    const assignments = buildInsertAssignments(row, false);
-    if (!assignments) {
-      setError(t("字段内容已截断或为二进制，无法生成完整 INSERT"));
-      return;
-    }
-    const columns = assignments
-      .map((item) => quoteIdentifier(item.column))
-      .join(", ");
-    const values = assignments
-      .map((item) =>
-        item.value.kind === "value"
-          ? `'${item.value.value.replace(/'/g, "''")}'`
-          : "NULL",
-      )
-      .join(", ");
-    void copyText(
-      `INSERT INTO ${quoteIdentifier(database)}.${quoteIdentifier(table)} (${columns}) VALUES (${values});`,
-    );
-  };
-
-  const copyAsJson = (row: DbValue[]) => {
-    if (!detail) return;
-    const data: Record<string, string | null> = {};
-    for (let index = 0; index < detail.columns.length; index += 1) {
-      const value = row[index] ?? { kind: "null" as const };
-      if ((value.kind === "text" || value.kind === "json") && value.truncated) {
-        setError(t("字段内容已截断，无法生成完整 JSON"));
-        return;
-      }
-      if (value.kind === "binary" || value.kind === "unsupported") {
-        setError(t("二进制/不支持字段无法生成 JSON"));
-        return;
-      }
-      data[detail.columns[index].name] = rawText(value);
-    }
-    void copyText(JSON.stringify(data, null, 2));
-  };
-
-  const copyRowText = (row: DbValue[]) => {
-    void copyText(
-      row
-        .map((value) => rawText(value) ?? "")
-        .join("\t"),
-    );
-  };
-
   const insertFromRow = (row: DbValue[]) => {
     if (!canEdit) return;
     const assignments = buildInsertAssignments(row, true);
@@ -763,7 +865,6 @@ export function TableBrowser({
     const row = pageRows[rowIndex];
     const located = row ? keyOfRow(row) : null;
     if (!row || !located) return;
-    setSelectedRow(rowIndex);
     setPending((current) => [
       // 同一行先删除已有的 update/delete，再标记删除，避免提交时互相冲突。
       ...current.filter(
@@ -779,6 +880,133 @@ export function TableBrowser({
       },
     ]);
   };
+
+  // ---- 复制 / 粘贴 / 清空 / 撤销 -----------------------------------------
+  const runCopy = async (format: CopyFormat, includeHeaders = false) => {
+    const selection = gridApi.current?.getSelection() ?? EMPTY_SELECTION;
+    if (selection.mode === null) return;
+    const outcome = await copySelectionToClipboard({
+      columns: result?.columns ?? EMPTY_COLUMNS,
+      rows: result?.rows ?? EMPTY_ROWS,
+      selection,
+      format,
+      includeHeaders,
+      // 只有确认是表（而不是视图/任意结果）才提供 INSERT。
+      table: detail?.kind === "table" ? { database, table } : null,
+    });
+    if (!outcome.ok) {
+      notifyCopy(false);
+      if (outcome.reason === "too_large") {
+        setGridNotice(t("选中内容超过复制上限，请改用「导出」按整表导出。"));
+      } else if (outcome.reason === "no_target") {
+        setGridNotice(t("当前结果没有可靠的表名与字段信息，无法生成 INSERT。"));
+      } else if (outcome.reason === "unsafe_values") {
+        setGridNotice(t("选中数据包含截断或二进制字段，无法生成完整的 INSERT。"));
+      }
+      return;
+    }
+    notifyCopy(outcome.written);
+    if (!outcome.written) return;
+    if (outcome.partialCells > 0) {
+      setGridNotice(
+        t(
+          "已复制 {{cells}} 个单元格；其中 {{partial}} 个字段为截断预览或不支持类型，完整内容请查看详情或导出。",
+          { cells: outcome.cells, partial: outcome.partialCells },
+        ),
+      );
+    } else {
+      setGridNotice(null);
+    }
+  };
+
+  const handlePaste = (target: CellAddress, text: string) => {
+    if (!canEdit || !detail) {
+      setError(t("该表没有可靠主键或是只读连接，无法粘贴"));
+      return;
+    }
+    const matrix = parseClipboardMatrix(text);
+    if (matrix.length === 0) return;
+    const plan = planPaste({
+      matrix,
+      start: target,
+      columns: (result?.columns ?? []).map((column) => {
+        const meta = detail.columns.find((item) => item.name === column.name);
+        return {
+          name: column.name,
+          dataType: meta?.data_type ?? column.type_name,
+          nullable: meta?.nullable ?? column.nullable,
+        };
+      }),
+      rowCount: pageRows.length,
+      isRowMutable: (row) => keyOfRow(pageRows[row] ?? []) !== null,
+    });
+    if (plan.cells.length === 0) {
+      setError(t("粘贴内容没有可写入的单元格（只读列 / 类型不符）"));
+      return;
+    }
+    setPastePreview({ target, plan });
+  };
+
+  const applyPaste = () => {
+    if (!pastePreview) return;
+    const applied = applyCellValues(pastePreview.plan.cells);
+    setPastePreview(null);
+    if (applied > 0) {
+      setShowEditBar(true);
+      setError(null);
+      setGridNotice(t("已加入待提交队列：{{count}} 个单元格", { count: applied }));
+    }
+  };
+
+  const handleClear = (selection: SelectionState) => {
+    if (!canEdit || !detail) return;
+    if (selection.mode === "row") {
+      setError(t("按行选择时请用右键「删除选中行」；Delete 只清空单元格"));
+      return;
+    }
+    const stats = selectionStats(selection);
+    if (stats.cells > MAX_ENUMERATED_CELLS) {
+      setError(
+        t("选择范围过大（{{count}} 格），请缩小范围后再清空", { count: stats.cells }),
+      );
+      return;
+    }
+    const cells: { row: number; col: number; value: AssignValue }[] = [];
+    for (const point of iterateSelectionCells(selection, MAX_ENUMERATED_CELLS)) {
+      const column = detail.columns[point.col];
+      if (!column || READ_ONLY_COLUMN.test(column.data_type)) continue;
+      // NOT NULL 列清成空串，可空列清成 NULL：不猜默认值，也不触发约束错误。
+      cells.push({
+        row: point.row,
+        col: point.col,
+        value: column.nullable ? { kind: "null" } : { kind: "value", value: "" },
+      });
+    }
+    const applied = applyCellValues(cells);
+    if (applied > 0) {
+      setShowEditBar(true);
+      setGridNotice(t("已清空 {{count}} 个单元格（未提交）", { count: applied }));
+    }
+  };
+
+  /** 粘贴目标里有没有主键列：只提示，不阻止（与表格内编辑主键的既有行为一致）。 */
+  const pastePrimaryKeys = (plan: PastePlan): string[] => {
+    if (!detail) return [];
+    const names = new Set<string>();
+    for (const cell of plan.cells) {
+      const column = detail.columns[cell.col];
+      if (column?.primary_key) names.add(column.name);
+    }
+    return [...names];
+  };
+
+  const copyMenu = (hasSelection: boolean) =>
+    copyMenuItems({
+      t,
+      hasSelection,
+      canInsert: detail?.kind === "table",
+      onCopy: (format, includeHeaders) => void runCopy(format, includeHeaders),
+    });
 
   const openColumnMenu = (col: number, event: React.MouseEvent) => {
     const name = result?.columns[col]?.name;
@@ -822,6 +1050,9 @@ export function TableBrowser({
         label: t("复制列名"),
         onSelect: () => void copyText(name),
       },
+      { separator: true },
+      ...copyMenu((gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null),
+      { separator: true },
       {
         id: "column-info",
         label: t("字段属性"),
@@ -867,21 +1098,7 @@ export function TableBrowser({
         onSelect: () => deleteRowAt(rowIndex),
       },
       { separator: true },
-      {
-        id: "copy-row",
-        label: t("复制整行"),
-        onSelect: () => copyRowText(row),
-      },
-      {
-        id: "copy-json",
-        label: t("复制为 JSON"),
-        onSelect: () => copyAsJson(row),
-      },
-      {
-        id: "copy-insert",
-        label: t("复制为 INSERT"),
-        onSelect: () => copyAsInsert(row),
-      },
+      ...copyMenu((gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null),
       ...(modified
         ? [
             { separator: true as const },
@@ -896,8 +1113,12 @@ export function TableBrowser({
   };
 
   const addUpdate = (values: ColumnAssignment[]) => {
-    if (!selectedValues) return;
-    const located = keyOfRow(selectedValues);
+    const row = focusedRow();
+    if (!row) {
+      setError(t("请先在表格里选择一个单元格"));
+      return;
+    }
+    const located = keyOfRow(row);
     if (!located) return;
     setPending((current) => [
       ...current,
@@ -907,14 +1128,18 @@ export function TableBrowser({
         key: located.key,
         label: located.label,
         values,
-        expected: expectedOfRow(selectedValues),
+        expected: expectedOfRow(row),
       },
     ]);
   };
 
   const addDelete = () => {
-    if (!selectedValues) return;
-    const located = keyOfRow(selectedValues);
+    const row = focusedRow();
+    if (!row) {
+      setError(t("请先在表格里选择一个单元格"));
+      return;
+    }
+    const located = keyOfRow(row);
     if (!located) return;
     setPending((current) => [
       ...current,
@@ -923,7 +1148,7 @@ export function TableBrowser({
         kind: "delete",
         key: located.key,
         label: located.label,
-        expected: expectedOfRow(selectedValues),
+        expected: expectedOfRow(row),
       },
     ]);
   };
@@ -975,7 +1200,8 @@ export function TableBrowser({
       });
       setMutation(outcome);
       if (outcome.state === "committed") {
-        setPending([]);
+        // 已经落库：队列与撤销历史一起清空，避免"撤销"把已提交的改动找回队列。
+        dispatchPending({ type: "reset" });
         setShowPending(false);
         // 必须强制重新查询；load() 会被同条件去重守卫直接 return。
         await load(true);
@@ -1008,6 +1234,51 @@ export function TableBrowser({
     }
     setPageIndex((index) => Math.max(0, index - 1));
   };
+
+  const quoteIdentifier = (name: string) => `\`${name.replace(/`/g, "``")}\``;
+
+  // 提交前的 DML 预览：把待提交队列翻译成即将执行的 SQL（只读，不执行）。
+  const dmlPreview = useMemo(() => {
+    const target = `${quoteIdentifier(database)}.${quoteIdentifier(table)}`;
+    const literal = (value: AssignValue) =>
+      value.kind === "null"
+        ? "NULL"
+        : value.kind === "default"
+          ? "DEFAULT"
+          : `'${value.value.replace(/'/g, "''")}'`;
+    const whereOf = (entry: Extract<Pending, { kind: "update" | "delete" }>) => {
+      if (entry.expected.length > 0) {
+        return entry.expected
+          .map((item) => `${quoteIdentifier(item.column)} = ${literal(item.value)}`)
+          .join(" AND ");
+      }
+      const keys = detail?.reliable_key ?? [];
+      return entry.key
+        .map(
+          (value, index) =>
+            `${quoteIdentifier(keys[index] ?? `key${index + 1}`)} = ${literal(value)}`,
+        )
+        .join(" AND ");
+    };
+    return pending
+      .map((entry) => {
+        if (entry.kind === "insert") {
+          const columns = entry.values
+            .map((item) => quoteIdentifier(item.column))
+            .join(", ");
+          const values = entry.values.map((item) => literal(item.value)).join(", ");
+          return `INSERT INTO ${target} (${columns}) VALUES (${values});`;
+        }
+        if (entry.kind === "delete") {
+          return `DELETE FROM ${target} WHERE ${whereOf(entry)};`;
+        }
+        const sets = entry.values
+          .map((item) => `${quoteIdentifier(item.column)} = ${literal(item.value)}`)
+          .join(", ");
+        return `UPDATE ${target} SET ${sets} WHERE ${whereOf(entry)};`;
+      })
+      .join("\n");
+  }, [database, detail?.reliable_key, pending, table]);
 
   // 表格数据也支持 Ctrl+S 提交暂存修改，和结构编辑保持一致。
   useEffect(() => {
@@ -1056,7 +1327,8 @@ export function TableBrowser({
   };
 
   const columns = detail?.columns ?? [];
-  const pageRows = result?.rows ?? [];
+  // 引用必须稳定：`?? []` 每次都新建数组，会让网格误判"换了数据"而重置选择。
+  const pageRows = result?.rows ?? EMPTY_ROWS;
 
   const modifiedCells = useMemo(() => {
     const set = new Set<string>();
@@ -1224,8 +1496,15 @@ export function TableBrowser({
           <Button
             variant="ghost"
             size="xs"
-            disabled={!canEdit || selectedRow === null || editorLoading}
-            onClick={() => void openEditor("update", selectedValues)}
+            disabled={!canEdit || editorLoading}
+            onClick={() => {
+              const row = focusedRow();
+              if (!row) {
+                setError(t("请先在表格里选择一个单元格"));
+                return;
+              }
+              void openEditor("update", row);
+            }}
             title={t("用表单编辑当前行")}
           >
             <Pencil size={11} />
@@ -1234,7 +1513,7 @@ export function TableBrowser({
           <Button
             variant="ghost"
             size="xs"
-            disabled={!canEdit || selectedRow === null}
+            disabled={!canEdit}
             onClick={addDelete}
             title={t("删除")}
           >
@@ -1251,13 +1530,34 @@ export function TableBrowser({
             {submitting ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
             {t("应用修改")}
           </Button>
+          <span className="ml-1 flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!canUndo(pendingState)}
+              onClick={() => dispatchPending({ type: "undo" })}
+              title={t("撤销未提交修改（Ctrl+Z）")}
+            >
+              {t("撤销")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!canRedo(pendingState)}
+              onClick={() => dispatchPending({ type: "redo" })}
+              title={t("重做（Ctrl+Shift+Z）")}
+            >
+              {t("重做")}
+            </Button>
+          </span>
           <Button
             variant="ghost"
             size="xs"
             disabled={pending.length === 0}
-            onClick={() => setPending([])}
+            onClick={() => setPending(() => NO_PENDING)}
+            title={t("放弃全部未提交修改")}
           >
-            {t("撤销")}
+            {t("放弃")}
           </Button>
 
         </div>
@@ -1389,23 +1689,28 @@ export function TableBrowser({
               {error}
             </div>
           )}
+          {gridNotice && (
+            <div className="flex items-center gap-2 border-b border-accent/30 bg-accent/10 px-2 py-1 text-11 text-accent">
+              <span className="min-w-0 flex-1">{gridNotice}</span>
+              <button type="button" onClick={() => setGridNotice(null)} aria-label={t("关闭")}>
+                <X size={10} />
+              </button>
+            </div>
+          )}
 
           <div className="min-h-0 flex-1">
             {!result && !error ? (
               <LoadingState className="h-full" />
             ) : (
             <VirtualDataGrid
-              columns={result?.columns ?? []}
+              apiRef={gridApi}
+              columns={result?.columns ?? EMPTY_COLUMNS}
               rows={pageRows}
               rowOffset={result?.offset ?? 0}
-              selectedRow={selectedRow}
-              selectedCell={selectedCell}
-              onSelectRow={setSelectedRow}
-              onSelectCell={setSelectedCell}
+              editable={canEdit}
               onSort={(column) => sortBy(column)}
               sortColumn={sorts[0]?.column ?? null}
               sortDirection={sorts[0]?.direction ?? null}
-              canResolveRows={canEdit}
               modifiedCells={modifiedCells}
               deletedRows={deletedRows}
               editingCell={editing?.cell ?? null}
@@ -1416,17 +1721,24 @@ export function TableBrowser({
               onStartEdit={(cell) => void startCellEdit(cell)}
               onCommitEdit={commitCellEdit}
               onCancelEdit={() => setEditing(null)}
+              onCopy={({ format }) => void runCopy("tsv", format === "tsv-headers")}
+              onPaste={handlePaste}
+              onClear={handleClear}
+              onUndo={() => dispatchPending({ type: "undo" })}
+              onRedo={() => dispatchPending({ type: "redo" })}
+              canUndo={canUndo(pendingState)}
+              canRedo={canRedo(pendingState)}
               onCellContextMenu={(cell, event) => {
                 const modified = modifiedCells.has(`${cell.row}:${cell.col}`);
+                const hasSelection =
+                  (gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null;
                 cellMenu.onContextMenu(() => [
-                  {
-                    id: "copy",
-                    label: t("复制值"),
-                    onSelect: () => copyCellValue(cell),
-                  },
+                  ...copyMenu(hasSelection),
+                  { separator: true },
                   {
                     id: "edit",
                     label: t("编辑"),
+                    disabled: !canEdit,
                     onSelect: () => void startCellEdit(cell),
                   },
                   {
@@ -1449,17 +1761,20 @@ export function TableBrowser({
                   {
                     id: "null",
                     label: t("设为 NULL"),
+                    disabled: !canEdit,
                     onSelect: () => applyCellValue(cell, { kind: "null" }),
                   },
                   {
                     id: "empty",
                     label: t("设为空字符串"),
+                    disabled: !canEdit,
                     onSelect: () =>
                       applyCellValue(cell, { kind: "value", value: "" }),
                   },
                   {
                     id: "default",
                     label: t("使用默认值"),
+                    disabled: !canEdit,
                     onSelect: () => applyCellValue(cell, { kind: "default" }),
                   },
                   ...(modified
@@ -1474,23 +1789,9 @@ export function TableBrowser({
                     : []),
                   { separator: true },
                   {
-                    id: "copy-row",
-                    label: t("复制整行"),
-                    onSelect: () => copyRowText(pageRows[cell.row] ?? []),
-                  },
-                  {
-                    id: "copy-insert",
-                    label: t("复制为 INSERT"),
-                    onSelect: () => copyAsInsert(pageRows[cell.row] ?? []),
-                  },
-                  {
-                    id: "copy-json",
-                    label: t("复制为 JSON"),
-                    onSelect: () => copyAsJson(pageRows[cell.row] ?? []),
-                  },
-                  {
                     id: "delete-row",
                     label: t("删除选中行"),
+                    disabled: !canEdit,
                     onSelect: () => deleteRowAt(cell.row),
                   },
                 ])(event);
@@ -1532,7 +1833,7 @@ export function TableBrowser({
                 <Button
                   variant="ghost"
                   size="xs"
-                  onClick={() => setPending([])}
+                  onClick={() => setPending(() => NO_PENDING)}
                 >
                   {t("放弃")}
                 </Button>
@@ -1625,7 +1926,7 @@ export function TableBrowser({
               size="xs"
               className="mt-1"
               onClick={() => {
-                setPending([]);
+                dispatchPending({ type: "reset" });
                 setMutation(null);
                 void load(true);
               }}
@@ -1639,7 +1940,7 @@ export function TableBrowser({
               size="xs"
               className="mt-1"
               onClick={() => {
-                setPending([]);
+                dispatchPending({ type: "reset" });
                 setMutation(null);
                 void load(true);
               }}
@@ -1740,6 +2041,28 @@ export function TableBrowser({
             </div>
           ))}
         </div>
+        {mutation?.outcomes.some((outcome) => outcome.status !== "applied") && (
+          <ul className="mt-1 flex flex-col gap-0.5 text-11 text-danger">
+            {mutation.outcomes.map((outcome, index) =>
+              outcome.status === "applied" ? null : (
+                <li key={index}>
+                  {t("第 {{row}} 项", { row: index + 1 })} ·{" "}
+                  {outcome.error ? outcome.error.message : outcome.status}
+                </li>
+              ),
+            )}
+          </ul>
+        )}
+        {pending.length > 0 && (
+          <details className="mt-1 rounded-[6px] border border-line bg-surface-2/40 px-2 py-1">
+            <summary className="cursor-default select-none text-11 text-fg-subtle">
+              {t("预览 DML（{{count}} 条）", { count: pending.length })}
+            </summary>
+            <pre className="ops-scroll mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-11 leading-[1.7] text-fg-muted">
+              {dmlPreview}
+            </pre>
+          </details>
+        )}
         {mutationError && <ErrorText>{mutationError}</ErrorText>}
       </Modal>
 
@@ -1774,6 +2097,81 @@ export function TableBrowser({
         title={t("导出表数据")}
       />
 
+      {/* 粘贴预览：先看清会改多少格、哪些被跳过，再决定写入待提交队列。 */}
+      <Modal
+        open={pastePreview !== null}
+        title={t("粘贴预览")}
+        width={560}
+        onClose={() => setPastePreview(null)}
+        footer={
+          <>
+            <Button variant="ghost" size="xs" onClick={() => setPastePreview(null)}>
+              {t("取消")}
+            </Button>
+            <Button variant="primary" size="xs" onClick={applyPaste}>
+              {t("写入待提交队列")}
+            </Button>
+          </>
+        }
+      >
+        {pastePreview && (
+          <div className="flex flex-col gap-2 text-12 text-fg">
+            <p>
+              {t(
+                "将写入 {{cells}} 个单元格（{{rows}} 行 × {{cols}} 列），起点为焦点单元格。",
+                {
+                  cells: pastePreview.plan.cells.length,
+                  rows: pastePreview.plan.rows,
+                  cols: pastePreview.plan.cols,
+                },
+              )}
+            </p>
+            {pastePreview.plan.skipped.length > 0 && (
+              <div className="rounded border border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
+                <p>
+                  {t("{{count}} 个单元格被跳过：", {
+                    count: pastePreview.plan.skipped.length,
+                  })}
+                </p>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {pastePreview.plan.skipped.slice(0, 8).map((skip) => (
+                    <li key={`${skip.row}:${skip.col}`} className="font-mono">
+                      {skip.column} @ {skip.row + 1}:{skip.col + 1} ·{" "}
+                      {skip.reason === "read_only"
+                        ? t("只读列（二进制/位/几何）")
+                        : skip.reason === "type_mismatch"
+                          ? t("类型不符")
+                          : t("该行没有可靠唯一键")}
+                    </li>
+                  ))}
+                  {pastePreview.plan.skipped.length > 8 && (
+                    <li>{t("…等 {{count}} 项", { count: pastePreview.plan.skipped.length - 8 })}</li>
+                  )}
+                </ul>
+              </div>
+            )}
+            {pastePrimaryKeys(pastePreview.plan).length > 0 && (
+              <p className="rounded border border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
+                {t(
+                  "目标包含主键列（{{columns}}）：提交时按主键定位，重复主键会让整笔事务回滚。",
+                  { columns: pastePrimaryKeys(pastePreview.plan).join(", ") },
+                )}
+              </p>
+            )}
+            {pastePreview.plan.clipped > 0 && (
+              <p className="text-11 text-fg-subtle">
+                {t("{{count}} 个单元格超出当前已加载范围，已丢弃（不会扩展查询）。", {
+                  count: pastePreview.plan.clipped,
+                })}
+              </p>
+            )}
+            <p className="text-11 text-fg-subtle">
+              {t("粘贴只写入待提交队列，仍需点「应用修改」才会在事务里提交。")}
+            </p>
+          </div>
+        )}
+      </Modal>
+
       {result?.truncated && (
         <span className="pointer-events-none absolute bottom-1 right-2 z-10 flex items-center gap-1 rounded bg-warning/20 px-1.5 py-0.5 text-10 text-warning">
           <AlertTriangle size={9} />
@@ -1781,6 +2179,7 @@ export function TableBrowser({
         </span>
       )}
 
+      <CopyNotice status={copyStatus} />
       <ContextMenu {...cellMenu.props} />
     </div>
   );

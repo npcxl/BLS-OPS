@@ -134,6 +134,10 @@ export function CreateTableDialog({
       onApplied(change.table);
       onClose();
     } catch (failure) {
+      // 建表可能已成功但后续刷新失败，也可能部分完成；重新读取列表。
+      await refreshTables(target.profileId, target.database).catch(
+        () => undefined,
+      );
       setError(toDbError(failure).message);
     } finally {
       setBusy(false);

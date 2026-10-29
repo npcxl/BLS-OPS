@@ -86,7 +86,7 @@ describe("global result cache budget", () => {
     // 8 MiB 预算 / 每页 1 MiB：只留下最新 8 页。
     expect(evicted).toHaveLength(92);
     expect(evicted[0]).toBe("item-0");
-    expect(evicted.at(-1)).toBe("item-91");
+    expect(evicted[evicted.length - 1]).toBe("item-91");
     resetInactiveResultRegistryForTests();
     localStorage.removeItem("ops.db.globalResultBytes");
   });

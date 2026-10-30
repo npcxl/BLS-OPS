@@ -38,7 +38,8 @@ import { ValuePanel } from "./RedisKeyDetail";
 import { RedisKeyGrid } from "./RedisKeyGrid";
 import { PubSubPanel } from "./RedisPubSubPanel";
 import { RedisStatusBar } from "./RedisStatusBar";
-import { RedisToolbar } from "./RedisToolbar";
+import { RedisToolbar, type KeyTypeFilter } from "./RedisToolbar";
+import type { RedisGridView } from "./RedisKeyGrid";
 import {
   alertRedisFailure,
   formatTtl,
@@ -50,25 +51,22 @@ import { useRedisConnection } from "./useRedisConnection";
 import { useRedisKeyScan } from "./useRedisKeyScan";
 import { useRedisKeySelection } from "./useRedisKeySelection";
 
-const DETAIL_WIDTH_KEY = "bls-ops.redis.detail-width";
-const DETAIL_MIN = 300;
-const DETAIL_MAX = 900;
-const DEFAULT_DETAIL_WIDTH = 420;
+const EDITOR_HEIGHT_KEY = "bls-ops.redis.editor-height";
+const EDITOR_MIN = 180;
+const EDITOR_MAX = 620;
+const DEFAULT_EDITOR_HEIGHT = 300;
 
-function readDetailWidth(): number {
+function readEditorHeight(): number {
   try {
-    const raw = Number(localStorage.getItem(DETAIL_WIDTH_KEY));
-    if (Number.isFinite(raw) && raw >= DETAIL_MIN && raw <= DETAIL_MAX) return raw;
+    const raw = Number(localStorage.getItem(EDITOR_HEIGHT_KEY));
+    if (Number.isFinite(raw) && raw >= EDITOR_MIN && raw <= EDITOR_MAX) return raw;
   } catch {
-    // localStorage 不可用就用默认宽度。
+    // localStorage 不可用就用默认高度。
   }
-  return DEFAULT_DETAIL_WIDTH;
+  return DEFAULT_EDITOR_HEIGHT;
 }
 
-/** 窄窗口阈值：低于它就自动收起详情栏，保证键列表不被挤没。 */
-const NARROW_WIDTH = 880;
-/** 键列表至少保留的宽度（详情栏最多占剩余空间）。 */
-const GRID_MIN_WIDTH = 320;
+
 
 export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const { t } = useTranslation();
@@ -86,15 +84,30 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [detailWidth, setDetailWidth] = useState(readDetailWidth);
-  const [detailVisible, setDetailVisible] = useState(true);
-  const [containerWidth, setContainerWidth] = useState(0);
+  // 编辑器在**下方**（参考图），高度可拖拽；视图/类型过滤只影响已加载的行。
+  const [editorHeight, setEditorHeight] = useState(readEditorHeight);
+  const [editorVisible, setEditorVisible] = useState(true);
+  const [view, setView] = useState<RedisGridView>("list");
+  const [typeFilter, setTypeFilter] = useState<KeyTypeFilter>("all");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const detailSeqRef = useRef(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const draggingRef = useRef(false);
 
   const writable = !profile.read_only;
+
+  // 类型过滤只筛已加载的行：不触发全库扫描，也不改 SCAN 语义。
+  const visibleKeys = useMemo(
+    () =>
+      typeFilter === "all"
+        ? scan.keys
+        : scan.keys.filter((entry) =>
+            typeFilter === "other"
+              ? !["string", "hash", "list", "set", "zset", "stream"].includes(entry.kind)
+              : entry.kind === typeFilter,
+          ),
+    [scan.keys, typeFilter],
+  );
 
   /** 读取一个键的元信息 + 值。晚到的旧响应直接丢弃（快速连点两个键）。 */
   const loadKey = useCallback(
@@ -187,7 +200,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
             ? [selection.activeKey]
             : [];
       if (targets.length === 0) return;
-      const byKey = new Map(scan.keys.map((entry) => [entry.key, entry]));
+      const byKey = new Map(visibleKeys.map((entry) => [entry.key, entry]));
       const rows = targets.map((key) => {
         const entry = byKey.get(key);
         return entry
@@ -204,7 +217,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         ok ? "success" : "error",
       );
     },
-    [selection.selected, selection.activeKey, scan.keys, t],
+    [selection.selected, selection.activeKey, visibleKeys, t],
   );
 
   const requestDelete = useCallback((keys: string[]) => {
@@ -312,7 +325,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     }
     if (meta && key === "a") {
       event.preventDefault();
-      selection.selectAll(scan.keys);
+      selection.selectAll(visibleKeys);
       return;
     }
     if (meta && key === "c") {
@@ -353,34 +366,36 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       if (scan.keys.length === 0) return;
       event.preventDefault();
       const current = selection.activeKey
-        ? scan.keys.findIndex((entry) => entry.key === selection.activeKey)
+        ? visibleKeys.findIndex((entry) => entry.key === selection.activeKey)
         : -1;
       const next = Math.max(
         0,
         Math.min(scan.keys.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)),
       );
-      const target = scan.keys[next];
+      const target = visibleKeys[next];
       if (target) {
-        selection.click(target.key, next, { ctrl: false, shift: false }, scan.keys);
+        selection.click(target.key, next, { ctrl: false, shift: false }, visibleKeys);
         openKey(target.key);
       }
     }
   };
 
-  // 详情栏宽度拖拽：4px 抓手，松手落 localStorage。
+  // 编辑器高度拖拽：横向 4px 抓手，松手落 localStorage（沿用项目习惯）。
   useEffect(() => {
     const move = (event: MouseEvent) => {
       if (!draggingRef.current) return;
-      const base = window.innerWidth - event.clientX;
-      setDetailWidth(Math.max(DETAIL_MIN, Math.min(DETAIL_MAX, base)));
+      const node = rootRef.current;
+      if (!node) return;
+      const next = node.getBoundingClientRect().bottom - event.clientY;
+      setEditorHeight(Math.max(EDITOR_MIN, Math.min(EDITOR_MAX, next)));
     };
     const up = () => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
       try {
-        localStorage.setItem(DETAIL_WIDTH_KEY, String(detailWidth));
+        localStorage.setItem(EDITOR_HEIGHT_KEY, String(editorHeight));
       } catch {
-        // 存不进去只影响下次默认宽度。
+        // 存不进去只影响下次默认高度。
       }
     };
     window.addEventListener("mousemove", move);
@@ -389,25 +404,11 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
-  }, [detailWidth]);
-
-  // 容器宽度决定布局形态：窄窗口把详情改成浮层，键列表保持最小可用宽度。
-  useEffect(() => {
-    const node = rootRef.current;
-    if (!node) return;
-    const observer = new ResizeObserver(() => setContainerWidth(node.clientWidth));
-    observer.observe(node);
-    setContainerWidth(node.clientWidth);
-    return () => observer.disconnect();
-  }, []);
+  }, [editorHeight]);
 
   const dbOptions = useMemo(() => redisDbIndexes(profile), [profile]);
-  const narrow = containerWidth > 0 && containerWidth < NARROW_WIDTH;
-  // 详情栏最多占"总宽 - 键列表最小宽"，窗口缩小时自动收窄而不是把网格挤没。
-  const effectiveDetailWidth = Math.max(
-    260,
-    Math.min(detailWidth, Math.max(260, containerWidth - GRID_MIN_WIDTH)),
-  );
+
+
 
   /** 详情内容只写一次：宽窗口是第三栏，窄窗口是右侧浮层。 */
   const detailPane = detailKey ? (
@@ -455,27 +456,24 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       onKeyDown={onKeyDown}
     >
       <RedisToolbar
-        profileName={profile.name}
-        host={profile.host}
-        port={profile.port}
         dbIndex={scan.dbIndex}
         dbOptions={dbOptions}
-        serverVersion={connection.serverVersion}
-        connected={connection.connected}
-        connecting={connection.connecting}
-        sessionError={connection.error}
-        onReconnect={() => connection.reconnect()}
         onDbChange={changeDb}
-        writable={writable}
+        typeFilter={typeFilter}
+        onTypeFilterChange={setTypeFilter}
         pattern={scan.pattern}
         scanning={scan.scanning}
         onPatternChange={scan.setPattern}
         onScan={() => scan.rescan()}
+        connected={connection.connected}
+        connecting={connection.connecting}
+        onReconnect={() => connection.reconnect()}
+        writable={writable}
         onNewKey={() => setNewKeyOpen(true)}
         onTogglePubsub={() => setPubsubOpen((open) => !open)}
         pubsubOpen={pubsubOpen}
-        detailVisible={detailVisible}
-        onToggleDetail={() => setDetailVisible((visible) => !visible)}
+        editorVisible={editorVisible}
+        onToggleEditor={() => setEditorVisible((visible) => !visible)}
         patternRef={searchRef}
       />
 
@@ -503,23 +501,25 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       )}
 
 
-      {/* 主体：网格 + 可拖拽分栏 + 详情 */}
-      <div className="flex min-h-0 flex-1">
+      {/* 主体：键数据主区（上）+ 键值编辑器（下，参考图的底部停靠） */}
+      <div className="flex min-h-0 flex-1 flex-col">
         {connection.connected ? (
           <RedisKeyGrid
-            keys={scan.keys}
+            keys={visibleKeys}
             selected={selection.selected}
             activeKey={selection.activeKey}
             scanning={scan.scanning}
             hasMore={scan.hasMore}
             capped={scan.capped}
+            view={view}
+            onViewChange={setView}
             onRowClick={(key, index, mods) =>
-              selection.click(key, index, mods, scan.keys)
+              selection.click(key, index, mods, visibleKeys)
             }
             onRowOpen={openKey}
             onRowContextMenu={(event, key) => {
               if (!selection.selected.has(key)) {
-                selection.click(key, 0, { ctrl: false, shift: false }, scan.keys);
+                selection.click(key, 0, { ctrl: false, shift: false }, visibleKeys);
               }
               menu.onContextMenu(() => keyMenu(key))(event);
             }}
@@ -552,34 +552,27 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           </div>
         )}
 
-        {/* 宽窗口：详情作为第三栏，可拖拽调宽 */}
-        {connection.connected && detailVisible && !narrow && (
+        {/* 键值编辑器：底部停靠，高度可拖拽；未选键时给空状态而不是消失 */}
+        {connection.connected && editorVisible && (
           <>
             <div
               role="separator"
-              aria-orientation="vertical"
-              aria-label={t("调整详情宽度")}
-              className="w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-accent/40"
+              aria-orientation="horizontal"
+              aria-label={t("调整编辑器高度")}
+              className="h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-accent/40"
               onMouseDown={() => {
                 draggingRef.current = true;
               }}
             />
             <div
-              className="min-h-0 shrink-0 overflow-hidden border-l border-line"
-              style={{ width: effectiveDetailWidth }}
+              className="min-h-0 shrink-0 overflow-hidden border-t border-line"
+              style={{ height: editorHeight }}
             >
               {detailPane}
             </div>
           </>
         )}
       </div>
-
-      {/* 窄窗口：详情改成右侧浮层，键列表保持可用宽度 */}
-      {connection.connected && detailVisible && narrow && (
-        <div className="absolute inset-y-0 right-0 z-20 w-[min(440px,88%)] border-l border-line bg-surface-1 shadow-2xl">
-          {detailPane}
-        </div>
-      )}
 
       {pubsubOpen && connection.connected && (
         <PubSubPanel

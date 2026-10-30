@@ -1,20 +1,134 @@
 /**
- * 键网格：Key / 类型 / TTL 三列，虚拟滚动 + 多选。
+ * 键数据主区：列表 / 分隔符树两种视图 + 虚拟滚动 + 多选。
  *
- * 为什么是网格而不是原来的按钮列表：
- * - Navicat 式的"一眼扫完"必须能对齐列看类型与 TTL；
- * - 10 万键不可能全量渲染 DOM，这里只渲染可视区（行高固定 26px）；
- * - 单击选中、双击打开、Ctrl/Shift 多选由父级统一处理，网格只上报原始事件。
+ * 对齐 Navicat 键数据编辑器的读法：
+ * - 表头固定 `键 / 类型 / TTL`，行高紧凑（20px），整行选中；
+ * - 树视图按**键名分隔符**分组（默认 `:`，与参考图 `bls → auth → refresh` 一致），
+ *   这是"键命名空间树"，不是第二棵数据库连接树；
+ * - 虚拟滚动只渲染可视区，10 万行也不会卡；列表/树切换在表头右端。
+ *
+ * 参考图里的 `值` / `大小` 两列没有复刻：它们要对每个可见键执行 GET 与
+ * MEMORY USAGE，既越过后端边界也违反"禁止对所有键执行 MEMORY USAGE"。
+ * 大小只在详情面板按需取（`key_info.memory_bytes`）。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "@/components/icons";
+import { ChevronRight, Loader2 } from "@/components/icons";
 import type { RedisKeyBrief } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { formatTtl, kindBadgeClass } from "./redis-shared";
 
-const ROW_HEIGHT = 26;
-const OVERSCAN = 10;
+const ROW_HEIGHT = 20;
+const OVERSCAN = 12;
+
+export type RedisGridView = "list" | "tree";
+
+/** 树视图的一行：分组或叶子键。 */
+interface GridRow {
+  id: string;
+  depth: number;
+  label: string;
+  kind: string;
+  ttlMs: number;
+  /** 叶子行才有键名；分组行是 undefined。 */
+  key?: string;
+  childCount: number;
+  expanded: boolean;
+}
+
+function splitKey(key: string, separator: string): string[] {
+  if (!separator) return [key];
+  return key.split(separator);
+}
+
+/**
+ * 把键列表按分隔符折叠成树。分组只由**已加载**的键构成，不额外发请求。
+ */
+function buildRows(
+  keys: RedisKeyBrief[],
+  view: RedisGridView,
+  expandedGroups: Set<string>,
+  separator: string,
+): GridRow[] {
+  if (view === "list") {
+    return keys.map((entry) => ({
+      id: entry.key,
+      depth: 0,
+      label: entry.key,
+      kind: entry.kind,
+      ttlMs: entry.ttl_ms,
+      key: entry.key,
+      childCount: 0,
+      expanded: false,
+    }));
+  }
+
+  interface Node {
+    children: Map<string, Node>;
+    keys: RedisKeyBrief[];
+  }
+  const root: Node = { children: new Map(), keys: [] };
+  for (const entry of keys) {
+    const parts = splitKey(entry.key, separator).filter((part) => part.length > 0);
+    if (parts.length <= 1) {
+      root.keys.push(entry);
+      continue;
+    }
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      let child = node.children.get(part);
+      if (!child) {
+        child = { children: new Map(), keys: [] };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+    node.keys.push(entry);
+  }
+
+  const rows: GridRow[] = [];
+  const walk = (node: Node, depth: number, pathPrefix: string) => {
+    for (const entry of node.keys) {
+      rows.push({
+        id: entry.key,
+        depth,
+        label: entry.key,
+        kind: entry.kind,
+        ttlMs: entry.ttl_ms,
+        key: entry.key,
+        childCount: 0,
+        expanded: false,
+      });
+    }
+    const names = [...node.children.keys()].sort();
+    for (const name of names) {
+      const child = node.children.get(name)!;
+      const path = pathPrefix ? `${pathPrefix}${separator}${name}` : name;
+      const count = countLeaves(child);
+      const expanded = expandedGroups.has(path);
+      rows.push({
+        id: `group:${path}`,
+        depth,
+        label: name,
+        kind: "group",
+        ttlMs: -1,
+        childCount: count,
+        expanded,
+      });
+      if (expanded) walk(child, depth + 1, path);
+    }
+  };
+  walk(root, 0, "");
+  return rows;
+}
+
+function countLeaves(node: { children: Map<string, unknown>; keys: unknown[] }): number {
+  let total = node.keys.length;
+  for (const child of node.children.values()) {
+    total += countLeaves(child as { children: Map<string, unknown>; keys: unknown[] });
+  }
+  return total;
+}
 
 export function RedisKeyGrid({
   keys,
@@ -23,6 +137,8 @@ export function RedisKeyGrid({
   scanning,
   hasMore,
   capped,
+  view,
+  onViewChange,
   onRowClick,
   onRowOpen,
   onRowContextMenu,
@@ -34,6 +150,8 @@ export function RedisKeyGrid({
   scanning: boolean;
   hasMore: boolean;
   capped: boolean;
+  view: RedisGridView;
+  onViewChange: (view: RedisGridView) => void;
   onRowClick: (key: string, index: number, mods: { ctrl: boolean; shift: boolean }) => void;
   onRowOpen: (key: string) => void;
   onRowContextMenu: (event: React.MouseEvent, key: string) => void;
@@ -43,8 +161,8 @@ export function RedisKeyGrid({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(480);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
 
-  // 视口高度变化（窗口缩放 / 拖拽分栏）时重算渲染窗口。
   useEffect(() => {
     const node = viewportRef.current;
     if (!node) return;
@@ -54,29 +172,71 @@ export function RedisKeyGrid({
     return () => observer.disconnect();
   }, []);
 
-  const onScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(event.currentTarget.scrollTop);
-    const target = event.currentTarget;
-    // 快到底部时自动续扫一页（等同于"加载更多"，不必再点按钮）。
-    if (
-      hasMore &&
-      !scanning &&
-      target.scrollHeight - target.scrollTop - target.clientHeight < ROW_HEIGHT * 20
-    ) {
-      onLoadMore();
-    }
-  }, [hasMore, scanning, onLoadMore]);
+  const rows = useMemo(
+    () => buildRows(keys, view, expandedGroups, ":"),
+    [keys, view, expandedGroups],
+  );
+
+  const toggleGroup = useCallback((path: string) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const onScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      setScrollTop(event.currentTarget.scrollTop);
+      const target = event.currentTarget;
+      if (
+        hasMore &&
+        !scanning &&
+        target.scrollHeight - target.scrollTop - target.clientHeight < ROW_HEIGHT * 20
+      ) {
+        onLoadMore();
+      }
+    },
+    [hasMore, scanning, onLoadMore],
+  );
 
   const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2;
-  const slice = keys.slice(start, start + visibleCount);
+  const slice = rows.slice(start, start + visibleCount);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-1">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line px-2 text-10 font-medium text-fg-subtle">
-        <span className="min-w-0 flex-1">{t("键名")}</span>
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line bg-surface-2/60 px-2 text-10 font-medium text-fg-subtle">
+        <span className="min-w-0 flex-1">{t("键")}</span>
         <span className="w-16 shrink-0">{t("类型")}</span>
         <span className="w-14 shrink-0 text-right">{t("TTL")}</span>
+        <div className="ml-1 flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            aria-label={t("列表视图")}
+            aria-pressed={view === "list"}
+            className={cn(
+              "rounded px-1 text-10",
+              view === "list" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
+            )}
+            onClick={() => onViewChange("list")}
+          >
+            {t("列表")}
+          </button>
+          <button
+            type="button"
+            aria-label={t("树视图")}
+            aria-pressed={view === "tree"}
+            className={cn(
+              "rounded px-1 text-10",
+              view === "tree" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
+            )}
+            onClick={() => onViewChange("tree")}
+          >
+            {t("树")}
+          </button>
+        </div>
       </div>
       <div
         ref={viewportRef}
@@ -84,59 +244,87 @@ export function RedisKeyGrid({
         onScroll={onScroll}
         role="grid"
         tabIndex={0}
-        aria-rowcount={keys.length}
+        aria-rowcount={rows.length}
         aria-label={t("键列表")}
       >
-        {keys.length === 0 && !scanning && (
+        {rows.length === 0 && !scanning && (
           <p className="px-3 py-6 text-11 leading-relaxed text-fg-subtle">
             {t("没有匹配的键。调整模式后回车重新扫描。")}
           </p>
         )}
-        <div style={{ height: keys.length * ROW_HEIGHT, position: "relative" }}>
-          {slice.map((entry, offset) => {
+        <div style={{ height: rows.length * ROW_HEIGHT, position: "relative" }}>
+          {slice.map((row, offset) => {
             const index = start + offset;
-            const isSelected = selected.has(entry.key);
+            const isGroup = row.key === undefined;
+            const isSelected = row.key !== undefined && selected.has(row.key);
             return (
               <div
-                key={entry.key}
+                key={row.id}
                 role="row"
                 aria-selected={isSelected}
+                aria-expanded={isGroup ? row.expanded : undefined}
                 className={cn(
-                  "absolute left-0 right-0 flex cursor-default items-center gap-2 px-2 text-12",
+                  "absolute left-0 right-0 flex cursor-default items-center gap-2 pr-2 text-11",
                   isSelected
-                    ? "bg-accent/12 text-fg"
-                    : index % 2 === 0
-                      ? "text-fg"
-                      : "bg-surface-2/40 text-fg",
-                  entry.key === activeKey && "ring-1 ring-inset ring-accent/40",
-                  "hover:bg-surface-hover",
+                    ? "bg-accent/20 text-fg"
+                    : "text-fg hover:bg-surface-hover",
+                  row.key !== undefined && row.key === activeKey && "ring-1 ring-inset ring-accent/40",
                 )}
-                style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT }}
-                onClick={(event) =>
-                  onRowClick(entry.key, index, {
+                style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT, paddingLeft: 8 + row.depth * 14 }}
+                onClick={(event) => {
+                  if (isGroup) {
+                    toggleGroup(row.id.slice("group:".length));
+                    return;
+                  }
+                  onRowClick(row.key!, index, {
                     ctrl: event.ctrlKey || event.metaKey,
                     shift: event.shiftKey,
-                  })
-                }
-                onDoubleClick={() => onRowOpen(entry.key)}
-                onContextMenu={(event) => onRowContextMenu(event, entry.key)}
+                  });
+                }}
+                onDoubleClick={() => {
+                  if (row.key) onRowOpen(row.key);
+                }}
+                onContextMenu={(event) => {
+                  if (row.key) onRowContextMenu(event, row.key);
+                }}
               >
-                <span className="min-w-0 flex-1 truncate font-mono text-11" title={entry.key}>
-                  {entry.key}
-                </span>
-                <span className="w-16 shrink-0">
-                  <span
-                    className={cn(
-                      "rounded px-1 py-px text-9 font-medium",
-                      kindBadgeClass(entry.kind),
-                    )}
-                  >
-                    {entry.kind}
-                  </span>
-                </span>
-                <span className="w-14 shrink-0 text-right text-10 text-fg-subtle">
-                  {formatTtl(entry.ttl_ms)}
-                </span>
+                {isGroup ? (
+                  <>
+                    <ChevronRight
+                      size={11}
+                      className={cn(
+                        "shrink-0 text-fg-subtle transition-transform",
+                        row.expanded && "rotate-90",
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate font-mono" title={row.label}>
+                      {row.label}
+                    </span>
+                    <span className="w-16 shrink-0 text-10 text-fg-subtle">
+                      {t("({{count}})", { count: row.childCount })}
+                    </span>
+                    <span className="w-14 shrink-0 text-right text-10 text-fg-subtle">—</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate font-mono" title={row.label}>
+                      {row.label}
+                    </span>
+                    <span className="w-16 shrink-0">
+                      <span
+                        className={cn(
+                          "rounded px-1 py-px text-9 font-medium",
+                          kindBadgeClass(row.kind),
+                        )}
+                      >
+                        {row.kind}
+                      </span>
+                    </span>
+                    <span className="w-14 shrink-0 text-right text-10 text-fg-subtle">
+                      {formatTtl(row.ttlMs)}
+                    </span>
+                  </>
+                )}
               </div>
             );
           })}

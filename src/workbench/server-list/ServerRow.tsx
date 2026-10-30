@@ -144,7 +144,7 @@ export const ServerRow = memo(function ServerRow({
         onClick={() => onOpen(server)}
       >
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-14 text-fg">{server.name}</span>
+          <span className="truncate text-12 text-fg">{server.name}</span>
           {server.proxy_jump_id && (
             <span className="shrink-0 rounded-[4px] border border-line px-1 text-11 text-fg-subtle">
               {t("Jump")}

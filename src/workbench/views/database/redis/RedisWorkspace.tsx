@@ -87,6 +87,9 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   // 编辑器在**下方**（参考图），高度可拖拽；视图/类型过滤只影响已加载的行。
   const [editorHeight, setEditorHeight] = useState(readEditorHeight);
   const [editorVisible, setEditorVisible] = useState(true);
+  /** 键网格至少保留的高度：编辑器再高也不能把列表挤没。 */
+  const GRID_MIN_HEIGHT = 180;
+  const [containerHeight, setContainerHeight] = useState(0);
   const [view, setView] = useState<RedisGridView>("list");
   const [typeFilter, setTypeFilter] = useState<KeyTypeFilter>("all");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -164,14 +167,31 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     [loadKey, selection],
   );
 
+  /** 键空间变化时清空选择/详情，避免旧库的键值留在新画面里。 */
+  const resetKeyState = useCallback(() => {
+    selection.clear();
+    setDetailKey(null);
+    setKeyInfo(null);
+    setPayload(null);
+    detailSeqRef.current += 1;
+  }, [selection]);
+
+  /** 搜索 / 刷新：先清旧状态再重扫（旧响应由序号守卫丢弃）。 */
+  const refreshKeys = useCallback(() => {
+    resetKeyState();
+    scan.rescan();
+  }, [resetKeyState, scan]);
+
+  // 切换连接（profile 变化）同样要清掉上一个连接的键与详情。
+  useEffect(() => {
+    resetKeyState();
+  }, [profile.id, resetKeyState]);
+
   /** 切库：清空列表与详情，旧响应靠各自的序号守卫丢弃。 */
   const changeDb = useCallback(
     (value: number) => {
       scan.setDbIndex(value);
-      selection.clear();
-      setDetailKey(null);
-      setKeyInfo(null);
-      setPayload(null);
+      resetKeyState();
       detailSeqRef.current += 1;
     },
     [scan, selection],
@@ -288,7 +308,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           id: "refresh",
           label: t("刷新列表"),
           hint: "F5",
-          onSelect: () => scan.rescan(),
+          onSelect: () => refreshKeys(),
         },
         ...(writable
           ? [
@@ -310,7 +330,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           : []),
       ];
     },
-    [copySelection, openKey, requestDelete, scan, selection.selected, t, writable],
+    [copySelection, openKey, requestDelete, refreshKeys, selection.selected, t, writable],
   );
 
   /** 键盘：全部作用在已加载的结果上，绝不触发全库扫描。 */
@@ -339,7 +359,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     }
     if (event.key === "F5") {
       event.preventDefault();
-      scan.rescan();
+      refreshKeys();
       return;
     }
     if (event.key === "F2" || event.key === "Enter") {
@@ -362,22 +382,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       }
       return;
     }
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      if (scan.keys.length === 0) return;
-      event.preventDefault();
-      const current = selection.activeKey
-        ? visibleKeys.findIndex((entry) => entry.key === selection.activeKey)
-        : -1;
-      const next = Math.max(
-        0,
-        Math.min(scan.keys.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)),
-      );
-      const target = visibleKeys[next];
-      if (target) {
-        selection.click(target.key, next, { ctrl: false, shift: false }, visibleKeys);
-        openKey(target.key);
-      }
-    }
+    // 上下键由 RedisKeyGrid 处理：只有它知道展开后的行序与哪些行是分组。
   };
 
   // 编辑器高度拖拽：横向 4px 抓手，松手落 localStorage（沿用项目习惯）。
@@ -406,7 +411,24 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     };
   }, [editorHeight]);
 
+  // 容器高度决定编辑器可用高度：窗口变矮时自动压缩编辑器，网格始终可用。
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setContainerHeight(node.clientHeight));
+    observer.observe(node);
+    setContainerHeight(node.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
   const dbOptions = useMemo(() => redisDbIndexes(profile), [profile]);
+  const effectiveEditorHeight =
+    containerHeight > 0
+      ? Math.max(
+          140,
+          Math.min(editorHeight, Math.max(140, containerHeight - GRID_MIN_HEIGHT)),
+        )
+      : editorHeight;
 
 
 
@@ -464,7 +486,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         pattern={scan.pattern}
         scanning={scan.scanning}
         onPatternChange={scan.setPattern}
-        onScan={() => scan.rescan()}
+        onScan={refreshKeys}
         connected={connection.connected}
         connecting={connection.connecting}
         onReconnect={() => connection.reconnect()}
@@ -513,13 +535,29 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
             capped={scan.capped}
             view={view}
             onViewChange={setView}
-            onRowClick={(key, index, mods) =>
-              selection.click(key, index, mods, visibleKeys)
-            }
-            onRowOpen={openKey}
+            onRowClick={(key, index, mods) => {
+              selection.click(key, index, mods, visibleKeys);
+              // 单击 = 选中并加载详情（对齐参考图）；Ctrl/Shift 只做多选。
+              if (!mods.ctrl && !mods.shift) void loadKey(key);
+            }}
+            onRowOpen={(key) => {
+              openKey(key);
+              // 双击 = 进入编辑：展开底部编辑器并把光标放进值输入框。
+              setEditorVisible(true);
+              window.setTimeout(() => {
+                document
+                  .querySelector<HTMLElement>(
+                    "[data-redis-editor] textarea, [data-redis-editor] input",
+                  )
+                  ?.focus();
+              }, 0);
+            }}
+            onNavigate={openKey}
             onRowContextMenu={(event, key) => {
               if (!selection.selected.has(key)) {
-                selection.click(key, 0, { ctrl: false, shift: false }, visibleKeys);
+                // 用真实索引：Shift 连选依赖锚点下标，不能写死成 0。
+                const index = Math.max(0, visibleKeys.findIndex((entry) => entry.key === key));
+                selection.click(key, index, { ctrl: false, shift: false }, visibleKeys);
               }
               menu.onContextMenu(() => keyMenu(key))(event);
             }}
@@ -553,7 +591,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         )}
 
         {/* 键值编辑器：底部停靠，高度可拖拽；未选键时给空状态而不是消失 */}
-        {connection.connected && editorVisible && (
+        {connection.connected && editorVisible && detailKey && (
           <>
             <div
               role="separator"
@@ -565,8 +603,9 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
               }}
             />
             <div
+              data-redis-editor
               className="min-h-0 shrink-0 overflow-hidden border-t border-line"
-              style={{ height: editorHeight }}
+              style={{ height: effectiveEditorHeight }}
             >
               {detailPane}
             </div>

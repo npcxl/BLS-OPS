@@ -66,11 +66,17 @@ export function useRedisKeyScan(
       if (!connected) return;
       const seq = ++seqRef.current;
       setScanning(true);
+      // 「键包含」与 SCAN MATCH 的语义对齐：
+      // - 用户没带通配符 → 按**包含**匹配，包一层 `*...*`；
+      // - 用户写了 * / ? / [] → 尊重他写的 MATCH 表达式，不再多包一层。
+      const raw = pattern.trim();
+      const hasWildcard = /[*?[\]]/.test(raw);
+      const match = raw.length === 0 ? "*" : hasWildcard ? raw : `*${raw}*`;
       try {
         const page = await databaseApi.redisScan(
           profile.id,
           dbIndex,
-          pattern || "*",
+          match,
           reset ? 0 : cursor,
           SCAN_PAGE_SIZE,
         );

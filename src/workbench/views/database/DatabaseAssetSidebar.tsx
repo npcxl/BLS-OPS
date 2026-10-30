@@ -341,7 +341,7 @@ const ProfileRow = memo(function ProfileRow({
       />
       <span
         className={cn(
-          "min-w-0 flex-1 truncate text-14",
+          "min-w-0 flex-1 truncate text-12",
           connected ? "text-fg" : "text-fg-muted",
         )}
       >
@@ -1225,7 +1225,7 @@ export function DatabaseAssetSidebar() {
                           />
                           <span
                             className={cn(
-                              "min-w-0 flex-1 truncate text-14",
+                              "min-w-0 flex-1 truncate text-12",
                               dbOpened
                                 ? "font-medium text-fg"
                                 : "text-fg-muted",
@@ -1396,7 +1396,7 @@ export function DatabaseAssetSidebar() {
                                     )}
                                     <span
                                       className={cn(
-                                        "min-w-0 flex-1 truncate text-14",
+                                        "min-w-0 flex-1 truncate text-12",
                                         tableOpen
                                           ? "font-medium text-fg"
                                           : "text-fg-muted",
@@ -1560,7 +1560,7 @@ export function DatabaseAssetSidebar() {
                   }\n${t("双击打开这份查询")}`}
                 >
                   <FileCode2 size={14} className="shrink-0 text-fg-subtle" />
-                  <span className="min-w-0 flex-1 truncate text-14 text-fg">
+                  <span className="min-w-0 flex-1 truncate text-12 text-fg">
                     {query.name}
                   </span>
                   <span className="shrink-0 text-11 text-fg-subtle">

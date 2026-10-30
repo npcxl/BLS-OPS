@@ -143,6 +143,7 @@ export function RedisKeyGrid({
   onRowOpen,
   onRowContextMenu,
   onLoadMore,
+  onNavigate,
 }: {
   keys: RedisKeyBrief[];
   selected: Set<string>;
@@ -156,6 +157,8 @@ export function RedisKeyGrid({
   onRowOpen: (key: string) => void;
   onRowContextMenu: (event: React.MouseEvent, key: string) => void;
   onLoadMore: () => void;
+  /** 上下键移动到某个键（树视图下跳过分组行）。 */
+  onNavigate: (key: string) => void;
 }) {
   const { t } = useTranslation();
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -205,6 +208,24 @@ export function RedisKeyGrid({
   const visibleCount = Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2;
   const slice = rows.slice(start, start + visibleCount);
 
+  /**
+   * 上下键只在**键行**之间移动：树视图的分组行不是键，不能被导航选中。
+   * 索引用当前展开后的 rows（含分组），目标只取 key 行，与画面顺序一致。
+   */
+  const onViewportKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const keyRows = rows.filter((row) => row.key !== undefined);
+    if (keyRows.length === 0) return;
+    event.preventDefault();
+    const current = keyRows.findIndex((row) => row.key === activeKey);
+    const next = Math.max(
+      0,
+      Math.min(keyRows.length - 1, current + (event.key === "ArrowDown" ? 1 : -1)),
+    );
+    const target = keyRows[next];
+    if (target?.key) onNavigate(target.key);
+  };
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-1">
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line bg-surface-2/60 px-2 text-10 font-medium text-fg-subtle">
@@ -242,6 +263,7 @@ export function RedisKeyGrid({
         ref={viewportRef}
         className="min-h-0 flex-1 overflow-auto outline-none"
         onScroll={onScroll}
+        onKeyDown={onViewportKeyDown}
         role="grid"
         tabIndex={0}
         aria-rowcount={rows.length}
@@ -339,6 +361,19 @@ export function RedisKeyGrid({
           <p className="px-3 py-2 text-11 text-warning">
             {t("已加载 20 万键（界面上限）。缩小匹配模式可继续精确查找。")}
           </p>
+        )}
+        {/* 有下一页就给一个明确的按钮：内容不足一屏时也能点，不必先滚动 */}
+        {hasMore && (
+          <div className="sticky bottom-0 flex items-center justify-center border-t border-line bg-surface-1 py-1">
+            <button
+              type="button"
+              disabled={scanning}
+              className="rounded px-2 py-0.5 text-11 text-accent hover:bg-surface-hover disabled:opacity-60"
+              onClick={onLoadMore}
+            >
+              {scanning ? t("加载中…") : t("加载更多（还有未扫描的键）")}
+            </button>
+          </div>
         )}
       </div>
     </div>

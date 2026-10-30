@@ -97,7 +97,14 @@ export function RedisToolbar({
         ))}
       </select>
 
-      <span className="shrink-0 text-10 text-fg-subtle">{t("键包含")}</span>
+      <span className="shrink-0 text-10 text-fg-subtle">
+        {t("键包含")}
+        {typeFilter !== "all" && (
+          <span className="ml-1 rounded bg-warning/15 px-1 text-warning" title={t("类型过滤只作用于已加载的行，不是全库过滤")}>
+            {t("仅已加载")}
+          </span>
+        )}
+      </span>
       <input
         ref={patternRef}
         className="h-[26px] min-w-[120px] flex-1 rounded-[6px] border border-line bg-surface-1 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
@@ -106,7 +113,7 @@ export function RedisToolbar({
         onKeyDown={(event) => {
           if (event.key === "Enter") onScan();
         }}
-        placeholder={t("例如 user:*（Ctrl+F）")}
+        placeholder={t("输入片段按包含匹配；支持 * 与 ?（Ctrl+F）")}
         aria-label={t("键名模式")}
       />
       <Button variant="secondary" size="xs" disabled={scanning || !connected} onClick={onScan}>

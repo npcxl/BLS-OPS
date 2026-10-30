@@ -1,7 +1,7 @@
 import { Suspense, lazy } from "react";
 import { Loader2 } from "@/components/icons";
 import type { WorkspaceTab } from "@/workbench/types";
-import { WorkbenchHome } from "@/workbench/views/WorkbenchHome";
+import { WorkbenchHome } from "@/workbench/views/home/WorkbenchHome";
 import { ModulePage } from "@/workbench/ModulePage";
 import { PlaceholderView } from "@/workbench/views/PlaceholderView";
 

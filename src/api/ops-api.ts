@@ -35,7 +35,9 @@ import type {
   QueryHistoryEntry,
   QueryStarted,
   RedisKeyInfo,
+  RedisListPage,
   RedisListWrite,
+  RedisZSetPage,
   RedisPubSubEvent,
   RedisHashPage,
   RedisScanPage,
@@ -1575,6 +1577,23 @@ export const databaseApi = {
       cursor,
       count,
     }),
+  /** list 按索引分页：超大 list 也能一页页看完（以前只能看前 5000 条）。 */
+  redisListPage: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    start: number,
+    count = 500,
+  ) =>
+    invoke<RedisListPage>("db_redis_list_page", { profileId, dbIndex, key, start, count }),
+  redisZsetPage: (
+    profileId: string,
+    dbIndex: number,
+    key: string,
+    start: number,
+    count = 500,
+  ) =>
+    invoke<RedisZSetPage>("db_redis_zset_page", { profileId, dbIndex, key, start, count }),
   redisKeyInfo: (profileId: string, dbIndex: number, key: string) =>
     invoke<RedisKeyInfo>("db_redis_key_info", { profileId, dbIndex, key }),
   /** `full = false` 只取预览（大 string 会被截断并带 truncated 标记）。 */

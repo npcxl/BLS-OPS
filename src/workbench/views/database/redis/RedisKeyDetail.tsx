@@ -1,59 +1,41 @@
 /**
  * 键详情面板与按类型的值编辑器（string / hash / list / set / zset / stream）。
  */
-/**
- * Redis 键浏览器 —— 引擎为 redis 的连接标签的完整工作区。
- *
- * 与 SQL 工作台的关系：完全平行。这里不用 WorkItem/查询任务体系，
- * 操作都是短命令（SCAN/GET/SET/DEL/…），状态保留在组件内。
- *
- * 布局：
- * - 顶部：连接状态 + db index 切换 + SCAN 模式搜索 + dbsize；
- * - 左：键列表（类型徽标 + TTL）；
- * - 右：键详情（元信息 + 按类型渲染的值 + 编辑入口）+ 发布订阅面板。
- * 只读连接（profile.read_only）隐藏一切写入口。
- */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Loader2,
   Pencil,
-  PlugZap,
-  Plus,
-  RefreshCw,
+
   Trash2,
-  TriangleAlert,
-  X,
+
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { FormDialog } from "@/components/ui/form-dialog";
-import { Field, fieldClass } from "@/components/ui/modal";
-import { Select } from "@/components/ui/select";
-import { pushErrorToast } from "@/components/ui/toast";
+
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { databaseApi } from "@/api/ops-api";
 import type {
   DatabaseProfile,
   RedisFieldEntry,
-  RedisKeyBrief,
+
   RedisKeyInfo,
-  RedisPubSubEvent,
+
   RedisValuePayload,
   RedisZEntry,
 } from "@/api/types/database";
-import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import { toDbError, } from "@/stores/database-store";
 
 /** 前端累计键数上限：持续翻页不设限会一直涨内存（10 万行 ≈ 30 MB）。 */
 import {
   formatTtl,
   kindBadgeClass,
   alertRedisFailure,
-  KIND_BADGE,
   SET_PAGE_SIZE,
   TTL_PRESETS,
 } from "./redis-shared";
+import type { RedisMutate } from "./redis-shared";
 
 export function ValuePanel({
   profile,
@@ -652,15 +634,59 @@ function ListEditor({
   const { t } = useTranslation();
   const writable = !profile.read_only && !payload.truncated;
   const [pushValue, setPushValue] = useState("");
+  // 续读：payload 只给前 5000 条，剩下的靠 LRANGE 索引一页页补。
+  const [extra, setExtra] = useState<string[]>([]);
+  const [nextStart, setNextStart] = useState(payload.items.length);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    setExtra([]);
+    setNextStart(payload.items.length);
+  }, [payload]);
+
+  const items = extra.length > 0 ? [...payload.items, ...extra] : payload.items;
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const page = await databaseApi.redisListPage(
+        profile.id,
+        dbIndex,
+        selectedKey,
+        nextStart,
+        500,
+      );
+      setExtra((current) => [...current, ...page.items]);
+      setNextStart(page.next_start);
+    } catch (failure) {
+      alertRedisFailure(failure, t("加载更多失败"));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="text-11 text-fg-subtle">
         {payload.length} 项
-        {payload.truncated && `（${t("仅显示前 {{count}} 项，长列表暂不支持编辑", { count: payload.items.length })}）`}
+        {payload.truncated && `（${t("显示前 {{count}} 项", { count: items.length })}）`}
       </div>
+      {nextStart < payload.length && (
+        <button
+          type="button"
+          disabled={loadingMore}
+          className="self-start rounded-[6px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover disabled:opacity-60"
+          onClick={() => void loadMore()}
+        >
+          {loadingMore
+            ? t("加载中…")
+            : t("加载更多（已加载 {{loaded}}/{{total}}）", {
+                loaded: items.length,
+                total: payload.length,
+              })}
+        </button>
+      )}
       <div className="overflow-hidden rounded-[8px] border border-line">
-        {payload.items.map((item, index) => (
+        {items.map((item, index) => (
           <ListRow
             key={`${index}-${item}`}
             index={index}
@@ -941,6 +967,35 @@ function ZsetEditor({
   const writable = !profile.read_only;
   const [newMember, setNewMember] = useState("");
   const [newScore, setNewScore] = useState("");
+  // 续读：ZRANGE 索引分页，超过首批 5000 个成员也能一页页看完。
+  const [extra, setExtra] = useState<RedisZEntry[]>([]);
+  const [nextStart, setNextStart] = useState(payload.entries.length);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    setExtra([]);
+    setNextStart(payload.entries.length);
+  }, [payload]);
+
+  const entries = extra.length > 0 ? [...payload.entries, ...extra] : payload.entries;
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const page = await databaseApi.redisZsetPage(
+        profile.id,
+        dbIndex,
+        selectedKey,
+        nextStart,
+        500,
+      );
+      setExtra((current) => [...current, ...page.entries]);
+      setNextStart(page.next_start);
+    } catch (failure) {
+      alertRedisFailure(failure, t("加载更多失败"));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const updateScore = (entry: RedisZEntry, score: number) => {
     void mutate(
@@ -953,10 +1008,25 @@ function ZsetEditor({
     <div className="flex flex-col gap-1.5">
       <div className="text-11 text-fg-subtle">
         {payload.length} 成员
-        {payload.truncated && `（${t("显示前 {{count}} 个", { count: payload.entries.length })}）`}
+        {payload.truncated && `（${t("显示前 {{count}} 个", { count: entries.length })}）`}
       </div>
+      {nextStart < payload.length && (
+        <button
+          type="button"
+          disabled={loadingMore}
+          className="self-start rounded-[6px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover disabled:opacity-60"
+          onClick={() => void loadMore()}
+        >
+          {loadingMore
+            ? t("加载中…")
+            : t("加载更多（已加载 {{loaded}}/{{total}}）", {
+                loaded: entries.length,
+                total: payload.length,
+              })}
+        </button>
+      )}
       <div className="overflow-hidden rounded-[8px] border border-line">
-        {payload.entries.map((entry) => (
+        {entries.map((entry) => (
           <ZsetRow
             key={entry.member}
             entry={entry}

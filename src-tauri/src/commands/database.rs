@@ -838,8 +838,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 use crate::database::redis_driver::{
-    ListWrite, RedisHashPage, RedisKeyInfo, RedisScanPage, RedisSession, RedisSetPage,
-    RedisValuePayload,
+    ListWrite, RedisHashPage, RedisKeyInfo, RedisListPage, RedisScanPage, RedisSession,
+    RedisSetPage, RedisValuePayload, RedisZSetPage,
 };
 
 async fn redis_session_for(
@@ -955,6 +955,34 @@ pub async fn db_redis_set_scan(
 ) -> Result<RedisSetPage, DbErrorInfo> {
     let session = redis_session_for(&state, &profile_id).await?;
     session.set_scan(db_index, &key, cursor, count).await
+}
+
+/// list 按索引分页：翻到第 5000 条以后的部分（LRANGE 的 start/stop 是稳定索引）。
+#[tauri::command]
+pub async fn db_redis_list_page(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    start: i64,
+    count: usize,
+) -> Result<RedisListPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.list_page(db_index, &key, start, count).await
+}
+
+/// zset 按索引分页（ZRANGE start/stop WITHSCORES）。
+#[tauri::command]
+pub async fn db_redis_zset_page(
+    state: State<'_, AppState>,
+    profile_id: String,
+    db_index: i64,
+    key: String,
+    start: i64,
+    count: usize,
+) -> Result<RedisZSetPage, DbErrorInfo> {
+    let session = redis_session_for(&state, &profile_id).await?;
+    session.zset_page(db_index, &key, start, count).await
 }
 
 /// HSCAN 续扫一页：hash 一律分页读取，绝不 HGETALL。

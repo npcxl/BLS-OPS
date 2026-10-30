@@ -148,6 +148,13 @@ interface DatabaseAssetState {
   statuses: Record<string, ProfileRuntimeStatus>;
   /** Redis 建连进行中：侧栏与键浏览器共用，用于显示"连接中"而不是空列表。 */
   redisConnecting: Record<string, boolean>;
+  /**
+   * 每个 Redis 连接当前选中的 db 编号。
+   *
+   * 侧栏的库节点与工作区的库选择器必须**同一份状态**：在侧栏点 db 3，
+   * 工作区就得扫 db 3，反过来亦然。用 null 表示"还没选过"，回落到配置默认值。
+   */
+  redisDbIndex: Record<string, number>;
 
   /** 左侧树点击表 → 通知已打开的数据库标签切换到这个表。 */
   openTableRequest: OpenTableRequest | null;
@@ -176,6 +183,8 @@ interface DatabaseAssetState {
   ensureSession: (profileId: string) => Promise<DbSessionInfo | null>;
   /** 清掉某连接的连接错误（标签里的错误条点了 ×）。 */
   clearSessionError: (profileId: string) => void;
+  /** 切换 Redis 连接的当前 db（侧栏库节点与工作区选择器共用）。 */
+  selectRedisDb: (profileId: string, dbIndex: number) => void;
   /** Redis：建连（db_redis_connect），不产生 SQL 会话。 */
   redisConnect: (profileId: string) => Promise<void>;
   /** Redis：关掉运行时再建连（改过配置 / 用户点"重新连接"时用）。 */
@@ -279,6 +288,7 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   sessionErrors: {},
   statuses: {},
   redisConnecting: {},
+  redisDbIndex: {},
   openTableRequest: null,
 
   requestTable: (profileId, database, table, view = "data") =>
@@ -654,6 +664,12 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   clearSessionError: (profileId) => {
     set((state) => ({
       sessionErrors: { ...state.sessionErrors, [profileId]: null },
+    }));
+  },
+
+  selectRedisDb: (profileId, dbIndex) => {
+    set((state) => ({
+      redisDbIndex: { ...state.redisDbIndex, [profileId]: dbIndex },
     }));
   },
 

@@ -7,11 +7,15 @@
  * - **未连接不发 SCAN**：后端只会回"连接尚未建立"，白白刷一条错误。
  * - **上限要可见**：到 MAX_SCAN_KEYS 后 `capped = true`，由 UI 明确提示，
  *   而不是像以前那样静默把后面的键丢掉。
+ *
+ * 当前 db 编号存在 store（`redisDbIndex`）：侧栏的库节点和工作区的库选择器
+ * 必须操作同一份状态，否则会出现"侧栏点了 db 3，列表还是 db 0"。
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { databaseApi } from "@/api/ops-api";
 import type { DatabaseProfile, RedisKeyBrief } from "@/api/types/database";
+import { useDatabaseStore } from "@/stores/database-store";
 import { alertRedisFailure, MAX_SCAN_KEYS } from "./redis-shared";
 
 const SCAN_PAGE_SIZE = 500;
@@ -37,7 +41,10 @@ export function useRedisKeyScan(
   defaultDb: number,
 ): RedisKeyScanState {
   const { t } = useTranslation();
-  const [dbIndex, setDbIndexState] = useState(defaultDb);
+  const dbIndex = useDatabaseStore(
+    (state) => state.redisDbIndex[profile.id] ?? defaultDb,
+  );
+  const selectRedisDb = useDatabaseStore((state) => state.selectRedisDb);
   const [pattern, setPatternState] = useState("*");
   const [keys, setKeys] = useState<RedisKeyBrief[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -45,6 +52,14 @@ export function useRedisKeyScan(
   const [scanning, setScanning] = useState(false);
   const [capped, setCapped] = useState(false);
   const seqRef = useRef(0);
+
+  // 切库（侧栏点节点 / 工作区下拉）：列表与游标整体作废，旧响应靠序号丢弃。
+  useEffect(() => {
+    seqRef.current += 1;
+    setKeys([]);
+    setCursor(0);
+    setCapped(false);
+  }, [dbIndex]);
 
   const runScan = useCallback(
     async (reset: boolean) => {
@@ -86,12 +101,10 @@ export function useRedisKeyScan(
     [connected, profile.id, dbIndex, pattern, cursor, t],
   );
 
-  const setDbIndex = useCallback((value: number) => {
-    setDbIndexState(value);
-    setKeys([]);
-    setCursor(0);
-    setCapped(false);
-  }, []);
+  const setDbIndex = useCallback(
+    (value: number) => selectRedisDb(profile.id, value),
+    [profile.id, selectRedisDb],
+  );
 
   const setPattern = useCallback((value: string) => {
     setPatternState(value);

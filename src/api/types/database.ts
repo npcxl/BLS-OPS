@@ -552,6 +552,24 @@ export interface RedisScanPage {
   dbsize: number | null;
 }
 
+/** list 的一页：按索引续读（next_start 等于 length 表示到底）。 */
+export interface RedisListPage {
+  start: number;
+  items: string[];
+  length: number;
+  next_start: number;
+  truncated: boolean;
+}
+
+/** zset 的一页：按索引续读。 */
+export interface RedisZSetPage {
+  start: number;
+  entries: RedisZEntry[];
+  length: number;
+  next_start: number;
+  truncated: boolean;
+}
+
 /** 键元信息。memory_bytes：None = 服务器不支持或键已不存在。 */
 export interface RedisKeyInfo {
   key: string;

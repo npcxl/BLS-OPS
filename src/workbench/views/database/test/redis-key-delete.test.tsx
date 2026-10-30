@@ -142,12 +142,13 @@ describe("Redis 键浏览器 · 删除键", () => {
     act(() => root.render(<RedisBrowser profile={profile} />));
     await flush();
 
-    const row = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes(KEY),
+    // 网格行：单击只选中，双击才在详情面板打开（Navicat 式交互）。
+    const row = Array.from(container.querySelectorAll('[role="row"]')).find((node) =>
+      node.textContent?.includes(KEY),
     );
     expect(row).toBeDefined();
     await act(async () => {
-      row?.click();
+      row?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
     await flush();
     await act(async () => {

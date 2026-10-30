@@ -39,6 +39,7 @@ import { pushToast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
+import { redisDbIndexes, redisDefaultDb } from "./redis/redis-shared";
 import {
   categoryKey,
   detailKey,
@@ -443,6 +444,8 @@ export function DatabaseAssetSidebar() {
   const redisConnect = useDatabaseStore((state) => state.redisConnect);
   const redisConnecting = useDatabaseStore((state) => state.redisConnecting);
   const redisReconnect = useDatabaseStore((state) => state.redisReconnect);
+  const redisDbIndex = useDatabaseStore((state) => state.redisDbIndex);
+  const selectRedisDb = useDatabaseStore((state) => state.selectRedisDb);
   const clearSessionError = useDatabaseStore((state) => state.clearSessionError);
   const toggleDatabase = useDatabaseStore((state) => state.toggleDatabase);
   const toggleTable = useDatabaseStore((state) => state.toggleTable);
@@ -1082,6 +1085,62 @@ export function DatabaseAssetSidebar() {
                   level={1}
                 />
               )}
+              {/* Redis 的库节点：standalone/sentinel 16 个，cluster 只有 db 0。
+                  双击 = 打开连接标签并切到这个库（与工作区的库选择器同一份状态）。 */}
+              {profileOpen &&
+                isRedis &&
+                redisDbIndexes(profile)
+                  .filter((index) => {
+                    const needle = filter.trim().toLowerCase();
+                    return !needle || `db ${index}`.includes(needle);
+                  })
+                  .map((index) => {
+                    const selectionKey = `redis-db:${profile.id}:${index}`;
+                    const active =
+                      (redisDbIndex[profile.id] ?? redisDefaultDb(profile)) === index;
+                    const openDb = () => {
+                      open(profile);
+                      if (!profileConnected) void redisConnect(profile.id);
+                      selectRedisDb(profile.id, index);
+                    };
+                    return (
+                      <div
+                        key={selectionKey}
+                        className={cn(
+                          "flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pl-6 pr-2.5 text-12 hover:bg-surface-hover",
+                          selectedKey === selectionKey && "bg-accent/10",
+                          active ? "text-fg" : "text-fg-muted",
+                        )}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedKey(selectionKey);
+                          selectRedisDb(profile.id, index);
+                        }}
+                        onDoubleClick={openDb}
+                        onContextMenu={menu.onContextMenu(() => [
+                          {
+                            id: "open",
+                            label: t("打开 db {{index}}", { index }),
+                            onSelect: openDb,
+                          },
+                          {
+                            id: "copy",
+                            label: t("复制库名"),
+                            onSelect: () => void copyText(`db ${index}`),
+                          },
+                        ])}
+                      >
+                        <DatabaseIcon size={12} className="shrink-0 text-fg-subtle" />
+                        <span className="min-w-0 flex-1 truncate">db {index}</span>
+                        {active && (
+                          <span className="shrink-0 text-9 text-accent" aria-label={t("当前库")}>
+                            ●
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+
               {/* Redis 建连失败：展开连接时把原话贴出来，而不是只留一个红三角。 */}
               {profileOpen && profileSessionError && (
                 <ErrorRow

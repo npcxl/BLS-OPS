@@ -61,10 +61,48 @@ pub const STRING_FULL_MAX: i64 = 8 * 1024 * 1024;
 pub const SET_PAGE_MAX: usize = 500;
 /// 单次读值的**字节**预算（与条目数预算并行）：5000 个 1 MB 成员同样会打满内存。
 pub const READ_BYTES_MAX: usize = 4 * 1024 * 1024;
+/// 集合/列表里**单个成员**的预览上限。
+///
+/// 超过就只回前 64 KiB 并标记 `truncated`（前端据此禁止回写）。为什么不整页
+/// 截断？SSCAN 的游标是服务端给的，砍掉尾部成员后游标已经推进 —— 被砍的成员
+/// 永久看不到，这是数据丢失而不是"分页"。
+pub const MEMBER_PREVIEW_MAX: usize = 64 * 1024;
+
+/// 逐条把超长成员压成预览；只要有任何一条被压，整页标记 truncated。
+fn preview_members(members: Vec<String>) -> (Vec<String>, bool) {
+    let mut truncated = false;
+    let out = members
+        .into_iter()
+        .map(|member| {
+            if member.len() <= MEMBER_PREVIEW_MAX {
+                return member;
+            }
+            truncated = true;
+            let mut cut = MEMBER_PREVIEW_MAX;
+            while cut > 0 && !member.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            member[..cut].to_string()
+        })
+        .collect();
+    (out, truncated)
+}
 
 // ---------------------------------------------------------------------------
 // 连接表示
 // ---------------------------------------------------------------------------
+
+/// 删除类命令返回 0 表示"没命中"：键/字段/成员不存在，或已被别的客户端删掉。
+/// 静默成功会让界面显示"已删除"，而服务器上什么都没发生。
+fn ensure_hit(affected: i64, what: &str, target: &str) -> Result<(), DbErrorInfo> {
+    if affected > 0 {
+        return Ok(());
+    }
+    Err(DbErrorInfo::new(
+        "write",
+        format!("{what} 未命中：{target} 不存在、已过期或内容已被改动"),
+    ))
+}
 
 /// 统一的连接句柄：`ConnectionManager` 与 `ClusterConnection` 都是可克隆的
 /// 共享句柄（内部自带自动重连），克隆出去用，不需要长时间持有锁。
@@ -165,6 +203,27 @@ pub struct RedisSetPage {
     pub members: Vec<String>,
     pub length: i64,
     /// 触发字节预算被截断（这页可能不完整，下一页仍然有效）。
+    pub truncated: bool,
+}
+
+/// list 的一页（按索引续读）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisListPage {
+    pub start: i64,
+    pub items: Vec<String>,
+    pub length: i64,
+    /// 下一页的起始索引；等于 length 表示已经到底。
+    pub next_start: i64,
+    pub truncated: bool,
+}
+
+/// zset 的一页（按索引续读）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedisZSetPage {
+    pub start: i64,
+    pub entries: Vec<RedisZEntry>,
+    pub length: i64,
+    pub next_start: i64,
     pub truncated: bool,
 }
 
@@ -719,7 +778,7 @@ impl RedisSession {
                     .query(Cmd::new().arg("LLEN").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
-                let mut items: Vec<String> = conn
+                let raw: RedisValue = conn
                     .query(
                         Cmd::new()
                             .arg("LRANGE")
@@ -729,8 +788,8 @@ impl RedisSession {
                     )
                     .await
                     .map_err(stage_err("read"))?;
-                // 条目数与字节数双重预算：5000 个 1 MB 成员同样会打满内存。
-                let trimmed = trim_strings_by_bytes(&mut items);
+                // 成员一条不丢，超长的压预览（与 set 同一策略）。
+                let (items, trimmed) = preview_members(parse_string_array(&raw)?);
                 let truncated = length as usize > READ_ITEMS_MAX || trimmed;
                 Ok(RedisValuePayload::List {
                     items,
@@ -750,14 +809,14 @@ impl RedisSession {
                     .await
                     .map_err(stage_err("read"))?;
                 let (cursor, members) = parse_scan_reply(&raw)?;
-                // 绝不按字节截断：SCAN 的 COUNT 只是提示，砍掉尾部成员后游标
-                // 已经推进，被砍的成员永久不可见（等于丢数据）。单页体积由
-                // SSCAN COUNT 控制，前端仍然一页一页续扫。
+                // 不整页截断（会丢成员），改成逐条压预览：成员一条不少，
+                // 超长的只回前 64 KiB 并标记，前端禁止把预览写回。
+                let (members, capped) = preview_members(members);
                 Ok(RedisValuePayload::Set {
                     members,
                     length,
-                    // truncated 的语义是"这不是全部"：还有下一页。
-                    truncated: cursor != 0,
+                    // truncated 的语义是"这不是完整数据"：还有下一页或有成员被压。
+                    truncated: cursor != 0 || capped,
                     cursor,
                 })
             }
@@ -766,7 +825,7 @@ impl RedisSession {
                     .query(Cmd::new().arg("ZCARD").arg(key))
                     .await
                     .map_err(stage_err("read"))?;
-                let raw: Vec<(String, f64)> = conn
+                let raw: RedisValue = conn
                     .query(
                         Cmd::new()
                             .arg("ZRANGE")
@@ -777,11 +836,9 @@ impl RedisSession {
                     )
                     .await
                     .map_err(stage_err("read"))?;
-                let mut entries: Vec<RedisZEntry> = raw
-                    .into_iter()
-                    .map(|(member, score)| RedisZEntry { member, score })
-                    .collect();
-                let trimmed = trim_zset_by_bytes(&mut entries);
+                let entries = parse_zset_reply(&raw)?;
+                let trimmed = entries.iter().map(|entry| entry.member.len()).sum::<usize>()
+                    > READ_BYTES_MAX;
                 let truncated = length as usize > READ_ITEMS_MAX || trimmed;
                 Ok(RedisValuePayload::Zset {
                     entries,
@@ -863,12 +920,105 @@ impl RedisSession {
             .await
             .map_err(stage_err("read"))?;
         let (next, members) = parse_scan_reply(&raw)?;
-        // 同样不截断：游标已经推进，砍掉的成员再也看不到。
+        // 与首屏同一策略：成员一条不丢，超长的压成预览并标记。
+        let (members, capped) = preview_members(members);
         Ok(RedisSetPage {
             cursor: next,
             members,
             length,
-            truncated: false,
+            truncated: capped,
+        })
+    }
+
+    /// list 按索引分页：`LRANGE start .. start+count-1`。
+    ///
+    /// 为什么按索引而不是游标：list 没有 SCAN 语义，但索引是稳定可续读的，
+    /// 5000 条以后的部分终于能看到了（以前只返回前 READ_ITEMS_MAX 条）。
+    pub async fn list_page(
+        &self,
+        db: i64,
+        key: &str,
+        start: i64,
+        count: usize,
+    ) -> Result<RedisListPage, DbErrorInfo> {
+        let count = count.clamp(1, READ_ITEMS_MAX);
+        let start = start.max(0);
+        let mut conn = self.acquire(db).await?;
+        let length: i64 = conn
+            .query(Cmd::new().arg("LLEN").arg(key))
+            .await
+            .map_err(stage_err("read"))?;
+        let raw: RedisValue = conn
+            .query(
+                Cmd::new()
+                    .arg("LRANGE")
+                    .arg(key)
+                    .arg(start)
+                    .arg(start + count as i64 - 1),
+            )
+            .await
+            .map_err(stage_err("read"))?;
+        let (items, capped) = preview_members(parse_string_array(&raw)?);
+        let next_start = start + items.len() as i64;
+        Ok(RedisListPage {
+            start,
+            items,
+            next_start,
+            length,
+            truncated: capped || next_start < length,
+        })
+    }
+
+    /// zset 按索引分页：`ZRANGE start .. start+count-1 WITHSCORES`。
+    pub async fn zset_page(
+        &self,
+        db: i64,
+        key: &str,
+        start: i64,
+        count: usize,
+    ) -> Result<RedisZSetPage, DbErrorInfo> {
+        let count = count.clamp(1, READ_ITEMS_MAX);
+        let start = start.max(0);
+        let mut conn = self.acquire(db).await?;
+        let length: i64 = conn
+            .query(Cmd::new().arg("ZCARD").arg(key))
+            .await
+            .map_err(stage_err("read"))?;
+        let raw: RedisValue = conn
+            .query(
+                Cmd::new()
+                    .arg("ZRANGE")
+                    .arg(key)
+                    .arg(start)
+                    .arg(start + count as i64 - 1)
+                    .arg("WITHSCORES"),
+            )
+            .await
+            .map_err(stage_err("read"))?;
+        let mut entries = parse_zset_reply(&raw)?;
+        let capped = {
+            let used: usize = entries.iter().map(|entry| entry.member.len()).sum();
+            used > READ_BYTES_MAX
+        };
+        if capped {
+            // 同一策略：不丢成员，超长的压预览。
+            let members = preview_members(entries.iter().map(|e| e.member.clone()).collect());
+            entries = entries
+                .into_iter()
+                .zip(members.0)
+                .map(|(entry, member)| RedisZEntry {
+                    member,
+                    score: entry.score,
+                })
+                .collect();
+        }
+        let next_start = start + entries.len() as i64;
+        Ok(RedisZSetPage {
+            start,
+            entries,
+            next_start,
+            length,
+            truncated: capped || next_start < length,
         })
     }
 
@@ -917,7 +1067,8 @@ impl RedisSession {
                     .map_err(stage_err("write"))?;
             }
             None => {
-                let _: i64 = conn.hdel(key, field).await.map_err(stage_err("write"))?;
+                let removed: i64 = conn.hdel(key, field).await.map_err(stage_err("write"))?;
+                ensure_hit(removed, "HDEL", field)?;
             }
         }
         Ok(())
@@ -953,7 +1104,8 @@ impl RedisSession {
                     .map_err(stage_err("write"))?;
             }
             ListWrite::Remove { value } => {
-                let _: i64 = conn.lrem(key, 1, value).await.map_err(stage_err("write"))?;
+                let removed: i64 = conn.lrem(key, 1, &value).await.map_err(stage_err("write"))?;
+                ensure_hit(removed, "LREM", &value)?;
             }
         }
         Ok(())
@@ -969,12 +1121,16 @@ impl RedisSession {
     ) -> Result<(), DbErrorInfo> {
         self.ensure_writable(if add { "SADD" } else { "SREM" })?;
         let mut conn = self.acquire(db).await?;
-        let _: i64 = if add {
+        let affected: i64 = if add {
             conn.sadd(key, member).await
         } else {
             conn.srem(key, member).await
         }
         .map_err(stage_err("write"))?;
+        // SREM 返回 0 = 成员不存在（必须报）；SADD 返回 0 = 已存在，属幂等成功。
+        if !add {
+            ensure_hit(affected, "SREM", member)?;
+        }
         Ok(())
     }
 
@@ -996,7 +1152,8 @@ impl RedisSession {
                     .map_err(stage_err("write"))?;
             }
             None => {
-                let _: i64 = conn.zrem(key, member).await.map_err(stage_err("write"))?;
+                let removed: i64 = conn.zrem(key, member).await.map_err(stage_err("write"))?;
+                ensure_hit(removed, "ZREM", member)?;
             }
         }
         Ok(())
@@ -1038,7 +1195,9 @@ impl RedisSession {
     pub async fn delete_key(&self, db: i64, key: &str) -> Result<(), DbErrorInfo> {
         self.ensure_writable("DEL")?;
         let mut conn = self.acquire(db).await?;
-        let _: i64 = conn.del(key).await.map_err(stage_err("write"))?;
+        let removed: i64 = conn.del(key).await.map_err(stage_err("write"))?;
+        // 0 = 键已经不在了（别人删了/过期了）：不能假装删成功。
+        ensure_hit(removed, "DEL", key)?;
         Ok(())
     }
 
@@ -1065,7 +1224,13 @@ impl RedisSession {
                 }
             }
             None => {
-                let _: bool = conn.persist(key).await.map_err(stage_err("write"))?;
+                let changed: bool = conn.persist(key).await.map_err(stage_err("write"))?;
+                if !changed {
+                    return Err(DbErrorInfo::new(
+                        "write",
+                        format!("PERSIST 未命中：{key} 不存在或本来就没有 TTL"),
+                    ));
+                }
             }
         }
         Ok(())
@@ -1551,6 +1716,49 @@ fn trim_zset_by_bytes(entries: &mut Vec<RedisZEntry>) -> bool {
     false
 }
 
+/// 纯字符串数组（LRANGE 等）：逐条按字节取，二进制元素编码成 `b64:`。
+///
+/// 不能用 `Vec<String>`：redis-rs 关了 `bytes` feature，一个非 UTF-8 元素
+/// 会让整条键读失败。
+fn parse_string_array(raw: &RedisValue) -> Result<Vec<String>, DbErrorInfo> {
+    match raw {
+        RedisValue::Array(values) => Ok(values
+            .iter()
+            .map(|value| match value {
+                RedisValue::BulkString(bytes) => encode_name(bytes),
+                RedisValue::SimpleString(text) => text.clone(),
+                RedisValue::Nil => String::new(),
+                _ => String::new(),
+            })
+            .collect()),
+        RedisValue::Nil => Ok(Vec::new()),
+        _ => Err(DbErrorInfo::new("read", "返回值不是数组")),
+    }
+}
+
+/// ZRANGE ... WITHSCORES 的回复：member, score, member, score, ...
+fn parse_zset_reply(raw: &RedisValue) -> Result<Vec<RedisZEntry>, DbErrorInfo> {
+    let values = match raw {
+        RedisValue::Array(values) => values,
+        RedisValue::Nil => return Ok(Vec::new()),
+        _ => return Err(DbErrorInfo::new("read", "ZRANGE 返回了意外形状")),
+    };
+    let mut entries = Vec::with_capacity(values.len() / 2);
+    for chunk in values.chunks(2) {
+        if chunk.len() < 2 {
+            break;
+        }
+        let member = match &chunk[0] {
+            RedisValue::BulkString(bytes) => encode_name(bytes),
+            RedisValue::SimpleString(text) => text.clone(),
+            _ => String::new(),
+        };
+        let score = f64::from_redis_value(&chunk[1]).unwrap_or(0.0);
+        entries.push(RedisZEntry { member, score });
+    }
+    Ok(entries)
+}
+
 /// HSCAN 回复：[bulk(cursor), [field, value, field, value, ...]]。
 /// 超出 HASH_PAGE_MAX 的部分截断（COUNT 只是提示，不强制上限）。
 fn parse_hash_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<RedisFieldEntry>), DbErrorInfo> {
@@ -1799,4 +2007,37 @@ async fn redis_version(conn: &mut RedisConn) -> Option<String> {
             .find_map(|line| line.strip_prefix("redis_version:"))
             .map(|version| version.trim().to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 二进制键名必须能原样往返：SCAN 不再因为一个非 UTF-8 键整页失败。
+    #[test]
+    fn binary_key_names_roundtrip() {
+        let raw = vec![0xff, 0x00, 0x41];
+        let encoded = encode_name(&raw);
+        assert!(encoded.starts_with(BINARY_PREFIX));
+        assert_eq!(decode_name(&encoded).expect("decode"), raw);
+        // 普通 UTF-8 键名保持原样，不加前缀。
+        assert_eq!(encode_name(b"user:1"), "user:1");
+        assert_eq!(decode_name("user:1").expect("decode"), b"user:1".to_vec());
+    }
+
+    /// SCAN 回复里混入二进制键：整页仍要解析成功，二进制键带 `b64:` 标记。
+    #[test]
+    fn scan_reply_keeps_binary_keys() {
+        let raw = RedisValue::Array(vec![
+            RedisValue::BulkString(b"0".to_vec()),
+            RedisValue::Array(vec![
+                RedisValue::BulkString(b"plain".to_vec()),
+                RedisValue::BulkString(vec![0xff, 0xfe]),
+            ]),
+        ]);
+        let (cursor, keys) = parse_scan_reply(&raw).expect("parse");
+        assert_eq!(cursor, 0);
+        assert_eq!(keys[0], "plain");
+        assert!(keys[1].starts_with(BINARY_PREFIX));
+    }
 }

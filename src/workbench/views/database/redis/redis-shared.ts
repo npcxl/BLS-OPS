@@ -2,6 +2,7 @@
  * Redis 工作区共用的常量与错误处理（从 RedisBrowser 拆出）。
  */
 import { pushErrorToast } from "@/components/ui/toast";
+import type { DatabaseProfile } from "@/api/types/database";
 
 /**
  * 前端累计键上限。
@@ -34,6 +35,28 @@ export type RedisMutate = (
   /** 给了就**不弹**全局提示，由调用方在弹窗里就地显示（避免同一错误出现两次）。 */
   onError?: (failure: unknown) => void,
 ) => Promise<boolean>;
+
+/**
+ * Redis 的 db 空间：standalone / sentinel 是 16 个逻辑库，cluster 只有 db 0。
+ *
+ * 侧栏的库节点和工作区的库选择器共用这一份，避免两处各写一遍还写不一致。
+ */
+export function redisDbIndexes(profile: {
+  redis_mode: DatabaseProfile["redis_mode"];
+}): number[] {
+  if (profile.redis_mode === "cluster") return [0];
+  return Array.from({ length: 16 }, (_, index) => index);
+}
+
+/** 默认 db：cluster 恒为 0；其余以配置里的 default_database 为准。 */
+export function redisDefaultDb(profile: {
+  redis_mode: DatabaseProfile["redis_mode"];
+  default_database: string | null;
+}): number {
+  const available = redisDbIndexes(profile);
+  const parsed = Number(profile.default_database ?? "0");
+  return available.includes(parsed) ? parsed : available[0];
+}
 
 /** 与后端 `SET_PAGE_MAX` 对齐：SSCAN 单页最多 500 个成员。 */
 export const SET_PAGE_SIZE = 500;

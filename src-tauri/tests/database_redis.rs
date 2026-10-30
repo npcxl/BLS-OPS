@@ -96,10 +96,39 @@ async fn redis_connect_ping_and_info() {
     let Some(session) = open_session().await else {
         return;
     };
-    assert!(session.server_version.is_some() || true);
+    assert!(session.server_version.is_some());
     // PING 在 open() 内部已经验证过；这里再读一次键信息路径确认命令可用。
     let page = session.scan(0, "*", 0, 100).await.expect("scan");
-    assert!(page.dbsize >= 0);
+    // 首屏必须带 DBSIZE（翻页时才允许为 None）。
+    assert!(page.dbsize.unwrap_or(-1) >= 0);
+}
+
+/// DBSIZE 只在首屏取一次：翻页时不再重复执行（cluster 下它还是全集群总和）。
+#[tokio::test]
+async fn redis_scan_dbsize_only_on_first_page() {
+    let Some(session) = open_session().await else {
+        return;
+    };
+    for index in 0..40 {
+        session
+            .write_string(0, &format!("bls:test:page:{index}"), "x", false)
+            .await
+            .expect("seed");
+    }
+    let first = session.scan(0, "bls:test:page:*", 0, 5).await.expect("scan");
+    assert!(first.dbsize.is_some(), "首屏必须返回 DBSIZE");
+    if first.cursor != 0 {
+        let second = session
+            .scan(0, "bls:test:page:*", first.cursor, 5)
+            .await
+            .expect("scan page 2");
+        assert!(second.dbsize.is_none(), "翻页不该再执行 DBSIZE");
+    }
+    for index in 0..40 {
+        let _ = session
+            .delete_key(0, &format!("bls:test:page:{index}"))
+            .await;
+    }
 }
 
 #[tokio::test]
@@ -342,7 +371,9 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_set(0, set_key, "member-1", false)
         .await
         .expect("srem");
-    session.delete_key(0, set_key).await.expect("cleanup set");
+    // SET 删掉最后一个成员后键就不存在了：DEL 现在会如实报"未命中"，
+    // 所以清理用 ok()（这正是写结果校验要暴露的语义）。
+    session.delete_key(0, set_key).await.ok();
 
     // zset：加 → 改分数 → 删。
     let zset_key = "bls:test:zset";
@@ -369,7 +400,8 @@ async fn redis_hash_list_set_zset_roundtrip() {
         .write_zset(0, zset_key, "alpha", None)
         .await
         .expect("zrem");
-    session.delete_key(0, zset_key).await.expect("cleanup zset");
+    // 同 set：最后一个成员被移除后键已不存在，清理不再断言。
+    session.delete_key(0, zset_key).await.ok();
 }
 
 #[tokio::test]
@@ -558,7 +590,10 @@ async fn redis_set_uses_sscan_pages() {
     session.delete_key(0, key).await.expect("cleanup");
 }
 
-/// 字节预算：5000 个 1 MB 成员同样危险，超过 4 MiB 就该截断。
+/// 字节预算：5000 个 1 MB 成员同样危险。
+///
+/// 策略是**逐条压预览**而不是整页截断：成员一条都不能少（SSCAN 游标已经
+/// 推进，砍掉尾部就永久看不到），但每个成员只回前 64 KiB 并标记 truncated。
 #[tokio::test]
 async fn redis_collection_reads_are_byte_budgeted() {
     let Some(session) = open_session().await else {
@@ -581,11 +616,11 @@ async fn redis_collection_reads_are_byte_budgeted() {
             truncated,
             ..
         } => {
-            assert!(truncated, "超过字节预算必须标记 truncated");
+            assert!(truncated, "有成员被压成预览就必须标记 truncated");
+            assert_eq!(members.len(), 10, "成员条数一条都不能少（截断会丢数据）");
             assert!(
-                members.len() < 10,
-                "5 MiB 的集合不能整段返回，实际 {} 条",
-                members.len()
+                members.iter().all(|member| member.len() <= 64 * 1024),
+                "单个成员必须压到 MEMBER_PREVIEW_MAX 以内"
             );
         }
         other => panic!("unexpected payload: {other:?}"),

@@ -475,6 +475,8 @@ pub fn run() {
             commands::db_redis_read_value,
             commands::db_redis_hash_scan,
             commands::db_redis_set_scan,
+            commands::db_redis_list_page,
+            commands::db_redis_zset_page,
             commands::db_redis_write_string,
             commands::db_redis_write_hash_field,
             commands::db_redis_write_list,

@@ -15,21 +15,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Copy,
+
   Loader2,
-  PlugZap,
-  Plus,
   RefreshCw,
-  Trash2,
+
   TriangleAlert,
-  X,
+
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { pushToast } from "@/components/ui/toast";
-import { Tooltip } from "@/components/ui/tooltip";
-import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 import { databaseApi } from "@/api/ops-api";
 import type {
@@ -38,11 +34,18 @@ import type {
   RedisValuePayload,
 } from "@/api/types/database";
 import { NewKeyDialog } from "./RedisNewKeyDialog";
-import { RedisKeyDetail } from "./RedisKeyDetail";
+import { ValuePanel } from "./RedisKeyDetail";
 import { RedisKeyGrid } from "./RedisKeyGrid";
-import { RedisPubSubPanel } from "./RedisPubSubPanel";
+import { PubSubPanel } from "./RedisPubSubPanel";
 import { RedisStatusBar } from "./RedisStatusBar";
-import { alertRedisFailure, formatTtl, type RedisMutate } from "./redis-shared";
+import { RedisToolbar } from "./RedisToolbar";
+import {
+  alertRedisFailure,
+  formatTtl,
+  redisDbIndexes,
+  redisDefaultDb,
+  type RedisMutate,
+} from "./redis-shared";
 import { useRedisConnection } from "./useRedisConnection";
 import { useRedisKeyScan } from "./useRedisKeyScan";
 import { useRedisKeySelection } from "./useRedisKeySelection";
@@ -62,17 +65,15 @@ function readDetailWidth(): number {
   return DEFAULT_DETAIL_WIDTH;
 }
 
-function defaultDbIndex(profile: DatabaseProfile): number {
-  // cluster 只有 db 0，配置里的默认 db 对它没有意义。
-  if (profile.redis_mode === "cluster") return 0;
-  const parsed = Number(profile.default_database ?? "0");
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 15 ? parsed : 0;
-}
+/** 窄窗口阈值：低于它就自动收起详情栏，保证键列表不被挤没。 */
+const NARROW_WIDTH = 880;
+/** 键列表至少保留的宽度（详情栏最多占剩余空间）。 */
+const GRID_MIN_WIDTH = 320;
 
 export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const { t } = useTranslation();
   const connection = useRedisConnection(profile.id);
-  const scan = useRedisKeyScan(profile, connection.connected, defaultDbIndex(profile));
+  const scan = useRedisKeyScan(profile, connection.connected, redisDefaultDb(profile));
   const selection = useRedisKeySelection();
   const menu = useContextMenu();
 
@@ -86,12 +87,14 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [detailWidth, setDetailWidth] = useState(readDetailWidth);
+  const [detailVisible, setDetailVisible] = useState(true);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const detailSeqRef = useRef(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const draggingRef = useRef(false);
 
   const writable = !profile.read_only;
-  const cluster = profile.redis_mode === "cluster";
 
   /** 读取一个键的元信息 + 值。晚到的旧响应直接丢弃（快速连点两个键）。 */
   const loadKey = useCallback(
@@ -191,7 +194,10 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           ? `${entry.key}\t${entry.kind}\t${formatTtl(entry.ttl_ms)}`
           : key;
       });
-      const text = withHeader ? `Key\tType\tTTL\n${rows.join("\n")}` : rows.join("\n");
+      // Ctrl+C 只复制键名（粘到 CLI 里直接能用）；Ctrl+Shift+C 才是带表头的 TSV。
+      const text = withHeader
+        ? `Key\tType\tTTL\n${rows.join("\n")}`
+        : targets.join("\n");
       const ok = await copyText(text);
       pushToast(
         ok ? t("已复制 {{count}} 个键", { count: targets.length }) : t("复制失败"),
@@ -385,132 +391,104 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     };
   }, [detailWidth]);
 
-  const dbOptions = useMemo(
-    () => (cluster ? [0] : Array.from({ length: 16 }, (_, index) => index)),
-    [cluster],
+  // 容器宽度决定布局形态：窄窗口把详情改成浮层，键列表保持最小可用宽度。
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setContainerWidth(node.clientWidth));
+    observer.observe(node);
+    setContainerWidth(node.clientWidth);
+    return () => observer.disconnect();
+  }, []);
+
+  const dbOptions = useMemo(() => redisDbIndexes(profile), [profile]);
+  const narrow = containerWidth > 0 && containerWidth < NARROW_WIDTH;
+  // 详情栏最多占"总宽 - 键列表最小宽"，窗口缩小时自动收窄而不是把网格挤没。
+  const effectiveDetailWidth = Math.max(
+    260,
+    Math.min(detailWidth, Math.max(260, containerWidth - GRID_MIN_WIDTH)),
+  );
+
+  /** 详情内容只写一次：宽窗口是第三栏，窄窗口是右侧浮层。 */
+  const detailPane = detailKey ? (
+    loadingValue && !payload ? (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 size={16} className="animate-spin text-fg-subtle" />
+      </div>
+    ) : (
+      <ValuePanel
+        profile={profile}
+        dbIndex={scan.dbIndex}
+        selectedKey={detailKey}
+        keyInfo={keyInfo}
+        payload={payload}
+        mutate={mutate}
+        onReadFull={() => void loadKey(detailKey, true)}
+        onDeleted={() => {
+          setDetailKey(null);
+          setKeyInfo(null);
+          setPayload(null);
+          scan.rescan();
+        }}
+      />
+    )
+  ) : (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-6">
+      <p className="text-center text-12 leading-relaxed text-fg-subtle">
+        {selection.selected.size > 1
+          ? t("已选中 {{count}} 个键。双击其中一个查看详情。", {
+              count: selection.selected.size,
+            })
+          : t("选中一个键查看详情；双击打开编辑。")}
+      </p>
+      <p className="text-center text-11 leading-relaxed text-fg-subtle">
+        {t("支持 String / Hash / List / Set / ZSet / Stream；Ctrl+C 复制键名，Ctrl+Shift+C 复制 TSV。")}
+      </p>
+    </div>
   );
 
   return (
     <div
+      ref={rootRef}
       className="relative flex h-full min-h-0 flex-col bg-surface-1 outline-none"
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
-      {/* 工具栏 */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="min-w-0 truncate text-12 font-medium text-fg-muted">{profile.name}</span>
-        <span
-          className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            connection.connected
-              ? "bg-success"
-              : connection.error
-                ? "bg-danger"
-                : connection.connecting
-                  ? "bg-warning"
-                  : "bg-fg-subtle/40",
-          )}
-        />
-        {connection.connected && connection.serverVersion && (
-          <span className="shrink-0 text-11 text-fg-subtle">Redis {connection.serverVersion}</span>
-        )}
-        <div className="flex-1" />
-        {!connection.connected && (
-          <Button
-            variant="secondary"
-            size="xs"
-            disabled={connection.connecting}
-            onClick={() => connection.reconnect()}
-          >
-            {connection.connecting ? (
-              <Loader2 size={11} className="animate-spin" />
-            ) : (
-              <RefreshCw size={11} />
-            )}
-            {t("重新连接")}
-          </Button>
-        )}
-        {writable && connection.connected && (
-          <Tooltip label={t("新建 string 键")} side="bottom">
-            <Button
-              variant="ghost"
-              size="xs"
-              className="h-5 w-5 px-0"
-              aria-label={t("新建 string 键")}
-              onClick={() => setNewKeyOpen(true)}
-            >
-              <Plus size={13} />
-            </Button>
-          </Tooltip>
-        )}
-        <Tooltip label={t("发布 / 订阅")} side="bottom">
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-5 w-5 px-0"
-            aria-label={t("发布 / 订阅")}
-            onClick={() => setPubsubOpen((open) => !open)}
-          >
-            <PlugZap size={13} />
-          </Button>
-        </Tooltip>
-        <Tooltip label={t("刷新")} side="bottom">
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-5 w-5 px-0"
-            aria-label={t("刷新")}
-            disabled={scan.scanning || connection.connecting}
-            onClick={() => scan.rescan()}
-          >
-            <RefreshCw size={11} className={cn(scan.scanning && "animate-spin")} />
-          </Button>
-        </Tooltip>
-      </div>
+      <RedisToolbar
+        profileName={profile.name}
+        host={profile.host}
+        port={profile.port}
+        dbIndex={scan.dbIndex}
+        dbOptions={dbOptions}
+        serverVersion={connection.serverVersion}
+        connected={connection.connected}
+        connecting={connection.connecting}
+        sessionError={connection.error}
+        onReconnect={() => connection.reconnect()}
+        onDbChange={changeDb}
+        writable={writable}
+        pattern={scan.pattern}
+        scanning={scan.scanning}
+        onPatternChange={scan.setPattern}
+        onScan={() => scan.rescan()}
+        onNewKey={() => setNewKeyOpen(true)}
+        onTogglePubsub={() => setPubsubOpen((open) => !open)}
+        pubsubOpen={pubsubOpen}
+        detailVisible={detailVisible}
+        onToggleDetail={() => setDetailVisible((visible) => !visible)}
+        patternRef={searchRef}
+      />
 
-      {/* 搜索条 */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
-        <select
-          value={String(scan.dbIndex)}
-          aria-label={t("db index")}
-          onChange={(event) => changeDb(Number(event.target.value))}
-          className="h-[26px] w-20 rounded-[6px] border border-line bg-surface-1 px-1 text-12 text-fg outline-none focus:border-accent"
-        >
-          {dbOptions.map((index) => (
-            <option key={index} value={String(index)}>
-              db {index}
-            </option>
-          ))}
-        </select>
-        <input
-          ref={searchRef}
-          className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          value={scan.pattern}
-          onChange={(event) => scan.setPattern(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") scan.rescan();
-          }}
-          placeholder={t("键名模式，例如 user:* 或 session:*（Ctrl+F）")}
-          aria-label={t("键名模式")}
-        />
-        <Button
-          variant="secondary"
-          size="xs"
-          disabled={scan.scanning || !connection.connected}
-          onClick={() => scan.rescan()}
-        >
-          {scan.scanning ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-          {t("扫描")}
-        </Button>
-      </div>
-
+      {/* 连接错误：只留一条，位置固定在网格上方，不弹第二个 toast */}
       {connection.error && !connection.connected && (
         <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
           <TriangleAlert size={12} className="mt-0.5 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="break-words leading-relaxed">{connection.error.message}</p>
             {connection.error.detail && (
-              <p className="mt-0.5 break-words text-10 text-fg-subtle">{connection.error.detail}</p>
+              <p className="mt-0.5 break-words text-10 text-fg-subtle">
+                {connection.error.detail}
+              </p>
             )}
           </div>
           <Button
@@ -523,6 +501,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           </Button>
         </div>
       )}
+
 
       {/* 主体：网格 + 可拖拽分栏 + 详情 */}
       <div className="flex min-h-0 flex-1">
@@ -573,7 +552,8 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           </div>
         )}
 
-        {connection.connected && (
+        {/* 宽窗口：详情作为第三栏，可拖拽调宽 */}
+        {connection.connected && detailVisible && !narrow && (
           <>
             <div
               role="separator"
@@ -584,48 +564,25 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
                 draggingRef.current = true;
               }}
             />
-            <div className="min-h-0 shrink-0 overflow-hidden" style={{ width: detailWidth }}>
-              {detailKey ? (
-                loadingValue && !payload ? (
-                  <div className="flex h-full items-center justify-center">
-                    <Loader2 size={16} className="animate-spin text-fg-subtle" />
-                  </div>
-                ) : (
-                  <RedisKeyDetail
-                    profile={profile}
-                    dbIndex={scan.dbIndex}
-                    selectedKey={detailKey}
-                    keyInfo={keyInfo}
-                    payload={payload}
-                    mutate={mutate}
-                    onReadFull={() => void loadKey(detailKey, true)}
-                    onDeleted={() => {
-                      setDetailKey(null);
-                      setKeyInfo(null);
-                      setPayload(null);
-                      scan.rescan();
-                    }}
-                  />
-                )
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-2 px-6">
-                  <p className="text-center text-12 leading-relaxed text-fg-subtle">
-                    {t("选中一个键查看详情；双击在详情面板中打开编辑。")}
-                  </p>
-                  {selection.selected.size > 1 && (
-                    <p className="text-11 text-fg-muted">
-                      {t("已选中 {{count}} 个键", { count: selection.selected.size })}
-                    </p>
-                  )}
-                </div>
-              )}
+            <div
+              className="min-h-0 shrink-0 overflow-hidden border-l border-line"
+              style={{ width: effectiveDetailWidth }}
+            >
+              {detailPane}
             </div>
           </>
         )}
       </div>
 
+      {/* 窄窗口：详情改成右侧浮层，键列表保持可用宽度 */}
+      {connection.connected && detailVisible && narrow && (
+        <div className="absolute inset-y-0 right-0 z-20 w-[min(440px,88%)] border-l border-line bg-surface-1 shadow-2xl">
+          {detailPane}
+        </div>
+      )}
+
       {pubsubOpen && connection.connected && (
-        <RedisPubSubPanel
+        <PubSubPanel
           profile={profile}
           dbIndex={scan.dbIndex}
           onClose={() => setPubsubOpen(false)}

@@ -62,7 +62,9 @@ function newProfile(): DatabaseProfile {
     tls_mode: "disabled",
     tls_ca_path: null,
     tls_server_name: null,
-    read_only: true,
+    // 默认**可写**：只读是显式的安全开关，不该是每个新连接的默认状态，
+    // 否则用户建完连接发现"应用"永远是灰的，还找不到原因。
+    read_only: false,
     redis_mode: null,
     sentinel_master: null,
     nodes_json: null,

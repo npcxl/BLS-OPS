@@ -293,6 +293,26 @@
     box-shadow: 0 24px 64px rgb(15 23 42 / 0.18);
   }
 
+  /* liquid-glass-react 是照"绝对居中的胶囊"设计的：它的外壳 div 自带
+     `translate(-50%, -50%)`，还会在**同一个父节点**里再插 7 个只有宽高、没有内容的
+     装饰 div（阴影/高光，opacity 0）。直接当包裹层放进正常文档流时，这 7 层会实打实
+     占掉几百像素高度，卡片就被挤到屏幕中间、看着"没在最上面"。
+     这里统一收掉：装饰层不参与布局，外壳不再自我位移。
+     （用于 toast 提醒条、右键菜单面板这类"LiquidGlass 直接包内容"的地方。） */
+  .glass-host > *:not(:has(> .glass)) {
+    display: none;
+  }
+
+  .glass-host > * {
+    transform: none !important;
+  }
+
+  /* LiquidGlass 的内层写死 `font: 500 20px/1 system-ui`，会把项目字体顶掉
+     （Inter / 思源黑体 → 系统默认）。字号各元素自己声明，这里只把字体拉回来。 */
+  .glass-host .glass > div {
+    font-family: var(--font-ui);
+  }
+
   .mac-window {
     width: calc(100% - 20px);
     height: calc(100% - 20px);

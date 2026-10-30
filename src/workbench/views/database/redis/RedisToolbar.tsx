@@ -10,6 +10,7 @@ import { Loader2, PlugZap, Plus, RefreshCw } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
+import type { RedisGridView } from "./RedisKeyGrid";
 
 /** 类型过滤：只对**已加载**的行生效，不触发全库扫描。 */
 export const KEY_TYPE_FILTERS = [
@@ -27,8 +28,6 @@ export type KeyTypeFilter = (typeof KEY_TYPE_FILTERS)[number];
 
 export function RedisToolbar({
   dbIndex,
-  dbOptions,
-  onDbChange,
   typeFilter,
   onTypeFilterChange,
   pattern,
@@ -45,10 +44,10 @@ export function RedisToolbar({
   editorVisible,
   onToggleEditor,
   patternRef,
+  view,
+  onViewChange,
 }: {
   dbIndex: number;
-  dbOptions: number[];
-  onDbChange: (value: number) => void;
   typeFilter: KeyTypeFilter;
   onTypeFilterChange: (value: KeyTypeFilter) => void;
   pattern: string;
@@ -65,24 +64,51 @@ export function RedisToolbar({
   editorVisible: boolean;
   onToggleEditor: () => void;
   patternRef: React.RefObject<HTMLInputElement | null>;
+  view: RedisGridView;
+  onViewChange: (view: RedisGridView) => void;
 }) {
   const { t } = useTranslation();
 
   return (
     <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-line px-2">
-      <select
-        value={String(dbIndex)}
-        aria-label={t("db index")}
-        disabled={dbOptions.length <= 1 || !connected}
-        onChange={(event) => onDbChange(Number(event.target.value))}
-        className="h-[26px] w-[76px] shrink-0 rounded-[6px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent disabled:opacity-60"
+      {/*
+        这里**不再放 db 下拉**：切库是左侧资产树的职责（连接 → db 节点）。
+        重复一个下拉只会让"当前库"出现两个真相源；这里只显示上下文。
+      */}
+      <span
+        className="h-[26px] shrink-0 rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 leading-[24px] text-fg-muted"
+        title={t("切换数据库请用左侧连接树")}
       >
-        {dbOptions.map((index) => (
-          <option key={index} value={String(index)}>
-            db {index}
-          </option>
-        ))}
-      </select>
+        db {dbIndex}
+      </span>
+
+      {/* 列表 / 树：参考图放在工具栏第一行，默认树视图 */}
+      <div className="flex shrink-0 items-center rounded-[6px] border border-line p-px">
+        <button
+          type="button"
+          aria-label={t("列表视图")}
+          aria-pressed={view === "list"}
+          className={cn(
+            "rounded-[4px] px-1.5 text-10 leading-[20px]",
+            view === "list" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
+          )}
+          onClick={() => onViewChange("list")}
+        >
+          {t("列表")}
+        </button>
+        <button
+          type="button"
+          aria-label={t("树视图")}
+          aria-pressed={view === "tree"}
+          className={cn(
+            "rounded-[4px] px-1.5 text-10 leading-[20px]",
+            view === "tree" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
+          )}
+          onClick={() => onViewChange("tree")}
+        >
+          {t("树")}
+        </button>
+      </div>
 
       <select
         value={typeFilter}

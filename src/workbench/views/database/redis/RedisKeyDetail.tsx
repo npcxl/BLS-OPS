@@ -5,17 +5,18 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Loader2,
+  Minus,
   Pencil,
-
+  Plus,
+  RefreshCw,
   Trash2,
-
+  TriangleAlert,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-
-import { Tooltip } from "@/components/ui/tooltip";
-import { cn } from "@/lib/cn";
 import { databaseApi } from "@/api/ops-api";
+import { pushToast } from "@/components/ui/toast";
+import { toDbError } from "@/stores/database-store";
 import type {
   DatabaseProfile,
   RedisFieldEntry,
@@ -25,17 +26,48 @@ import type {
   RedisValuePayload,
   RedisZEntry,
 } from "@/api/types/database";
-import { toDbError, } from "@/stores/database-store";
 
 /** 前端累计键数上限：持续翻页不设限会一直涨内存（10 万行 ≈ 30 MB）。 */
 import {
   formatTtl,
-  kindBadgeClass,
   alertRedisFailure,
   SET_PAGE_SIZE,
-  TTL_PRESETS,
 } from "./redis-shared";
 import type { RedisMutate } from "./redis-shared";
+
+/** 参考图的表单行：左侧固定 78px 标签列（左对齐），右侧内容。 */
+function FormRow({
+  label,
+  children,
+  align = "center",
+  grow = false,
+}: {
+  label: string;
+  children: React.ReactNode;
+  align?: "center" | "start";
+  grow?: boolean;
+}) {
+  return (
+    <div
+      className={`flex min-w-0 gap-2 ${align === "start" ? "items-start" : "items-center"} ${
+        grow ? "min-h-0 flex-1" : ""
+      }`}
+    >
+      <span className="w-[78px] shrink-0 text-left text-11 leading-[24px] text-fg-muted">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+/** "上次刷新时间"：只显示粗粒度，不为了一个标签每秒重渲染。 */
+function formatAgo(at: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
 
 export function ValuePanel({
   profile,
@@ -46,6 +78,8 @@ export function ValuePanel({
   mutate,
   onReadFull,
   onDeleted,
+  onCreateKey,
+  onReload,
 }: {
   profile: DatabaseProfile;
   dbIndex: number;
@@ -56,17 +90,41 @@ export function ValuePanel({
   /** 大 string 只回了预览：显式请求全量（后端有 8 MiB 硬上限）。 */
   onReadFull: () => void;
   onDeleted: () => void;
+  /** 顶部工具条的 +：新建键（交给工作区，那里有对话框与刷新逻辑）。 */
+  onCreateKey: () => void;
+  /** 顶部工具条的刷新：重新读取本键（含 TTL/大小）。 */
+  onReload: () => void;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only;
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
-  // 默认不覆盖：RENAMENX 目标存在即报错，勾选后才退回 RENAME。
-  const [renameOverwrite, setRenameOverwrite] = useState(false);
   /** 删除是不可撤销的：必须先过危险确认，且在服务端确认成功后才收起面板。 */
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteFailure, setDeleteFailure] = useState<unknown>(null);
+  // 参考图是"表单式"编辑器：键名、值、TTL 都是本地草稿，点应用才落库。
+  const [nameDraft, setNameDraft] = useState(selectedKey);
+  const [valueDraft, setValueDraft] = useState("");
+  const [ttlMode, setTtlMode] = useState<"seconds" | "hours" | "days">("seconds");
+  const [ttlAmount, setTtlAmount] = useState("");
+  const [loadedAt, setLoadedAt] = useState(() => Date.now());
+  /** 键名默认只读，双击才进入编辑（参考图里也是双击改键名）。 */
+  const [nameEditing, setNameEditing] = useState(false);
+  /** 待转换的目标类型；非 null 时弹确认框。 */
+  const [pendingType, setPendingType] = useState<string | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNameDraft(selectedKey);
+  }, [selectedKey]);
+
+  useEffect(() => {
+    setValueDraft(payload && payload.kind === "string" ? payload.value : "");
+    setLoadedAt(Date.now());
+    setTtlAmount(
+      keyInfo && keyInfo.ttl_ms > 0 ? String(Math.round(keyInfo.ttl_ms / 1000)) : "",
+    );
+  }, [selectedKey, payload, keyInfo]);
 
   if (!payload) {
     return (
@@ -75,6 +133,127 @@ export function ValuePanel({
       </div>
     );
   }
+
+  /** TTL 应用：留空 = PERSIST（永久）。 */
+  const applyTtl = () => {
+    const amount = Number(ttlAmount);
+    const unit = ttlMode === "seconds" ? 1000 : ttlMode === "hours" ? 3_600_000 : 86_400_000;
+    const ms = ttlAmount.trim() === "" ? null : Math.max(1, amount) * unit;
+    void mutate(
+      () => databaseApi.redisKeyExpire(profile.id, dbIndex, selectedKey, ms),
+      ms === null ? t("已设为永久") : t("TTL 已更新"),
+    );
+  };
+
+  const ttlUnit = ttlMode === "seconds" ? 1000 : ttlMode === "hours" ? 3_600_000 : 86_400_000;
+  const draftTtlMs =
+    ttlAmount.trim() === "" ? null : Math.max(1, Number(ttlAmount)) * ttlUnit;
+  /** 与服务器现值比较：null 表示永久，-1 表示无 TTL。 */
+  const ttlDirty = (draftTtlMs ?? -1) !== (keyInfo ? keyInfo.ttl_ms : -1);
+  const valueDirty = payload?.kind === "string" && valueDraft !== payload.value;
+  const dirty = valueDirty || ttlDirty;
+
+  /**
+   * 底部只有一个「应用」：值 + TTL 一起提交。
+   * （此前 TTL 行里还有一个独立的「应用」，两个同名按钮非常容易点错。）
+   */
+  const applyAll = () => {
+    if (valueDirty && payload?.kind === "string") {
+      void mutate(
+        () =>
+          databaseApi.redisWriteString(profile.id, dbIndex, selectedKey, valueDraft, false),
+        t("已保存"),
+      );
+    }
+    if (ttlDirty) {
+      void mutate(
+        () => databaseApi.redisKeyExpire(profile.id, dbIndex, selectedKey, draftTtlMs),
+        draftTtlMs === null ? t("已设为永久") : t("TTL 已更新"),
+      );
+    }
+  };
+  const resetAll = () => {
+    if (payload?.kind === "string") setValueDraft(payload.value);
+    setTtlAmount(
+      keyInfo && keyInfo.ttl_ms > 0 ? String(Math.round(keyInfo.ttl_ms / 1000)) : "",
+    );
+    setTtlMode("seconds");
+  };
+
+  /** 当前值 → 可写文本（转换时作为原始数据）。 */
+  const renderText = (): string => {
+    if (!payload) return "";
+    switch (payload.kind) {
+      case "string":
+        return valueDraft;
+      case "list":
+        return payload.items.join("\n");
+      case "set":
+        return payload.members.join("\n");
+      case "hash":
+        return payload.fields.map((entry) => `${entry.field}=${entry.value}`).join("\n");
+      case "zset":
+        return payload.entries.map((entry) => `${entry.member}\t${entry.score}`).join("\n");
+      default:
+        return "";
+    }
+  };
+
+  /**
+   * 转换键类型：Redis 没有"改类型"命令，只能读出现值 → 删键 → 按新类型写回。
+   * 因此必须走不可撤销确认，且 TTL 不会保留。
+   */
+  const convertKey = async () => {
+    const target = pendingType;
+    if (!target || !payload) return;
+    const text = renderText();
+    setConverting(true);
+    setConvertError(null);
+    try {
+      await databaseApi.redisKeyDelete(profile.id, dbIndex, selectedKey);
+      if (target === "string") {
+        await databaseApi.redisCreateString(profile.id, dbIndex, selectedKey, text);
+      } else if (target === "list") {
+        for (const line of text.split("\n")) {
+          if (!line) continue;
+          await databaseApi.redisWriteList(profile.id, dbIndex, selectedKey, {
+            push: { front: false, value: line },
+          });
+        }
+      } else if (target === "set") {
+        for (const line of text.split("\n")) {
+          if (!line) continue;
+          await databaseApi.redisWriteSet(profile.id, dbIndex, selectedKey, line, true);
+        }
+      } else if (target === "hash") {
+        for (const line of text.split("\n")) {
+          const at = line.indexOf("=");
+          if (at <= 0) continue;
+          await databaseApi.redisWriteHashField(
+            profile.id,
+            dbIndex,
+            selectedKey,
+            line.slice(0, at),
+            line.slice(at + 1),
+          );
+        }
+      } else if (target === "zset") {
+        for (const line of text.split("\n")) {
+          const [member, score] = line.split("\t");
+          const value = Number(score);
+          if (!member || !Number.isFinite(value)) continue;
+          await databaseApi.redisWriteZset(profile.id, dbIndex, selectedKey, member, value);
+        }
+      }
+      setPendingType(null);
+      pushToast(t("已转换为 {{type}}", { type: target }), "success");
+      onReload();
+    } catch (failure) {
+      setConvertError(toDbError(failure).message);
+    } finally {
+      setConverting(false);
+    }
+  };
 
   const runDelete = async () => {
     setDeleting(true);
@@ -92,134 +271,151 @@ export function ValuePanel({
   };
 
   return (
-    <div className="flex flex-col gap-2 p-3">
-      {/* 元信息条 */}
-      <div className="flex flex-wrap items-center gap-2 rounded-[8px] border border-line bg-surface-2/60 px-2.5 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-12 font-medium text-fg">
-          {selectedKey}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {/* 顶部工具条：+ / − 在左，刷新与获取在右（参考图顺序） */}
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-10 text-fg-subtle">
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-5 w-5 px-0"
+          aria-label={t("新建键")}
+          onClick={onCreateKey}
+        >
+          <Plus size={12} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-5 w-5 px-0 text-danger"
+          aria-label={t("删除键")}
+          disabled={!writable}
+          onClick={() => {
+            setDeleteFailure(null);
+            setConfirmOpen(true);
+          }}
+        >
+          <Minus size={12} />
+        </Button>
+        <div className="flex-1" />
+        <span className="shrink-0">
+          {t("上次刷新时间: {{when}}", { when: formatAgo(loadedAt) })}
         </span>
-        {keyInfo && (
-          <>
-            <span className={cn("rounded px-1 py-px text-9 font-medium", kindBadgeClass(keyInfo.kind))}>
-              {keyInfo.kind}
-            </span>
-            <span className="text-10 text-fg-subtle">TTL {formatTtl(keyInfo.ttl_ms)}</span>
-            {keyInfo.memory_bytes !== null && (
-              <span className="text-10 text-fg-subtle">
-                {t("内存 {{bytes}} B", { bytes: keyInfo.memory_bytes })}
-              </span>
-            )}
-          </>
-        )}
-        {writable && (
-          <>
-            <Tooltip label={t("重命名键")} side="top">
-              <Button
-                variant="ghost"
-                size="xs"
-                className="h-5 w-5 px-0"
-                aria-label={t("重命名键")}
-                onClick={() => {
-                  setRenameValue(selectedKey);
-                  setRenameOverwrite(false);
-                  setRenaming(true);
-                }}
-              >
-                <Pencil size={12} />
-              </Button>
-            </Tooltip>
-            <Tooltip label={t("删除键")} side="top">
-              <Button
-                variant="ghost"
-                size="xs"
-                className="h-5 w-5 px-0 text-danger"
-                aria-label={t("删除键")}
-                onClick={() => {
-                  setDeleteFailure(null);
-                  setConfirmOpen(true);
-                }}
-              >
-                <Trash2 size={12} />
-              </Button>
-            </Tooltip>
-          </>
-        )}
+        <Button variant="ghost" size="xs" className="h-5 px-1.5" onClick={onReload}>
+          <RefreshCw size={11} />
+          {t("刷新")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-5 px-1.5"
+          disabled={payload.kind !== "string" || !payload.truncated}
+          onClick={onReadFull}
+        >
+          {t("获取更多")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          className="h-5 px-1.5"
+          disabled={payload.kind !== "string" || !payload.truncated}
+          onClick={onReadFull}
+        >
+          {t("获取全部")}
+        </Button>
       </div>
 
-      {/* TTL 快捷操作 */}
-      {writable && keyInfo && (
-        <div className="flex items-center gap-1.5 text-11 text-fg-muted">
-          <span className="text-fg-subtle">TTL:</span>
-          {TTL_PRESETS.map((preset) => (
-            <Button
-              key={preset.label}
-              variant="ghost"
-              size="xs"
-              className="h-5 px-1.5"
-              onClick={() =>
+      {/* 只读连接必须一眼看出来，否则"应用永远是灰的"会被当成 bug */}
+      {!writable && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-warning/30 bg-warning/10 px-3 py-1 text-11 text-warning">
+          <TriangleAlert size={11} className="shrink-0" />
+          {t("只读连接：编辑已禁用，可在连接设置里取消「只读」后重连。")}
+        </div>
+      )}
+
+      {/* 名称/类型固定，值区自己滚；整块不再整体滚动，避免把 TTL 顶出去 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-hidden px-3 py-2.5">
+        <FormRow label={t("键名称:")}>
+          <input
+            className="h-[24px] min-w-0 flex-1 rounded-[3px] border border-line bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none focus:border-accent"
+            value={nameDraft}
+            readOnly={!writable || !nameEditing}
+            onDoubleClick={() => {
+              if (!writable) return;
+              setNameEditing(true);
+            }}
+            onChange={(event) => setNameDraft(event.target.value)}
+            onBlur={() => {
+              setNameEditing(false);
+              setNameDraft(selectedKey);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && nameDraft.trim() && nameDraft !== selectedKey) {
                 void mutate(
                   () =>
-                    databaseApi.redisKeyExpire(profile.id, dbIndex, selectedKey, preset.ms),
-                  preset.ms === null ? t("已设为永久") : t("TTL 已更新"),
-                )
+                    databaseApi.redisKeyRename(
+                      profile.id,
+                      dbIndex,
+                      selectedKey,
+                      nameDraft.trim(),
+                      false,
+                    ),
+                  t("已重命名"),
+                );
+                setNameEditing(false);
               }
-            >
-              {preset.label}
-            </Button>
-          ))}
-        </div>
-      )}
-
-      {renaming && writable && (
-        <div className="flex items-center gap-2 rounded-[8px] border border-accent/40 bg-accent/5 px-2 py-1.5">
-          <input
-            className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-12 text-fg outline-none focus:border-accent"
-            value={renameValue}
-            onChange={(event) => setRenameValue(event.target.value)}
-            autoFocus
+              if (event.key === "Escape") {
+                setNameDraft(selectedKey);
+                setNameEditing(false);
+              }
+            }}
+            title={writable ? t("双击编辑键名") : t("只读连接")}
           />
-          <label className="flex shrink-0 items-center gap-1 text-10 text-warning">
-            <input
-              type="checkbox"
-              checked={renameOverwrite}
-              onChange={(event) => setRenameOverwrite(event.target.checked)}
-            />
-            {t("覆盖同名键")}
-          </label>
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={() =>
-              void mutate(
-                () =>
-                  databaseApi.redisKeyRename(
-                    profile.id,
-                    dbIndex,
-                    selectedKey,
-                    renameValue,
-                    // 默认 RENAMENX：目标已存在就报错，勾选后才允许覆盖。
-                    renameOverwrite,
-                  ),
-                t("已重命名"),
-              ).then(() => setRenaming(false))
-            }
-          >
-            {t("确认")}
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setRenaming(false)}>
-            {t("取消")}
-          </Button>
-        </div>
-      )}
+        </FormRow>
 
+        <FormRow label={t("键类型:")}>
+          {/* 类型可改：选中别的类型会走"读值→删键→按新类型写回"的转换确认 */}
+          <select
+            value={payload.kind}
+            aria-label={t("键类型")}
+            disabled={payload.kind === "stream" || payload.kind === "other"}
+            onChange={(event) => {
+              // 下拉本身不 disabled（否则只读用户点不动也看不到原因）。
+              if (!writable) {
+                pushToast(t("只读连接，不能修改键类型"), "error");
+                return;
+              }
+              setConvertError(null);
+              setPendingType(event.target.value);
+            }}
+            className="h-[24px] w-[205px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent disabled:opacity-60"
+          >
+            {["string", "hash", "list", "set", "zset"].map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+            {payload.kind === "stream" && <option value="stream">stream</option>}
+            {payload.kind === "other" && <option value="other">{payload.type_name}</option>}
+          </select>
+          {keyInfo && (
+            <span className="min-w-0 truncate text-10 text-fg-subtle">
+              {keyInfo.memory_bytes !== null && `${keyInfo.memory_bytes} B`}
+            </span>
+          )}
+        </FormRow>
+
+        <FormRow label={t("值:")} align="start" grow>
+          {/* self-stretch：FormRow 是 items-start 的横向 flex，子元素默认按内容高度，
+              不加它值框只会有一行高，下面留一大块空白。 */}
+          <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-1.5 self-stretch overflow-y-auto">
       {payload.kind === "string" && (
-        <StringEditor
-          profile={profile}
-          dbIndex={dbIndex}
-          selectedKey={selectedKey}
-          payload={payload}
-          mutate={mutate}
-          onReadFull={onReadFull}
+        <textarea
+          data-redis-editor
+          className="h-full min-h-[80px] w-full flex-1 resize-none rounded-[3px] border border-line bg-surface-1 px-1.5 py-1 font-mono text-11 leading-[18px] text-fg outline-none focus:border-accent"
+          value={valueDraft}
+          readOnly={!writable || payload.truncated}
+          onChange={(event) => setValueDraft(event.target.value)}
+          spellCheck={false}
         />
       )}
       {payload.kind === "hash" && (
@@ -264,6 +460,47 @@ export function ValuePanel({
           {t("类型 {{type}} 的键暂不支持查看。", { type: payload.type_name })}
         </p>
       )}
+          </div>
+        </FormRow>
+      </div>
+
+      {/* TTL 与保存按钮固定在编辑区**底部**：值区再长也压不到它们，
+          编辑区高度变化时也不会把这两行滚出去。 */}
+      <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-2">
+        <span className="w-[78px] shrink-0 text-left text-11 text-fg-muted">TTL:</span>
+        <select
+          value={ttlMode}
+          aria-label={t("TTL 单位")}
+          onChange={(event) => setTtlMode(event.target.value as "seconds" | "hours" | "days")}
+          className="h-[24px] w-[205px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent"
+        >
+          <option value="seconds">{t("过期时间（秒）")}</option>
+          <option value="hours">{t("过期时间（小时）")}</option>
+          <option value="days">{t("过期时间（天）")}</option>
+        </select>
+        <input
+          className="h-[24px] w-[200px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1.5 text-11 text-fg outline-none focus:border-accent"
+          value={ttlAmount}
+          placeholder={t("留空 = 永久")}
+          inputMode="numeric"
+          onChange={(event) => setTtlAmount(event.target.value.replace(/[^0-9]/g, ""))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") applyTtl();
+          }}
+        />
+        <div className="flex-1" />
+        <Button
+          variant="secondary"
+          size="xs"
+          disabled={!writable || !dirty}
+          onClick={applyAll}
+        >
+          {t("应用")}
+        </Button>
+        <Button variant="ghost" size="xs" disabled={!dirty} onClick={resetAll}>
+          {t("放弃")}
+        </Button>
+      </div>
 
       <ConfirmDialog
         open={confirmOpen}
@@ -288,120 +525,29 @@ export function ValuePanel({
         onConfirm={() => void runDelete()}
         onCancel={() => setConfirmOpen(false)}
       />
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// string
-// ---------------------------------------------------------------------------
-
-function StringEditor({
-  profile,
-  dbIndex,
-  selectedKey,
-  payload,
-  mutate,
-  onReadFull,
-}: {
-  profile: DatabaseProfile;
-  dbIndex: number;
-  selectedKey: string;
-  payload: Extract<RedisValuePayload, { kind: "string" }>;
-  mutate: RedisMutate;
-  onReadFull: () => void;
-}) {
-  const { t } = useTranslation();
-  // 二进制值以 Base64 显示，仍可编辑 —— 保存时后端先 Base64 解码再写入，
-  // 字节本体无损往返。
-  // 截断的预览**不能**编辑：把前 256 KiB 写回去等于毁掉原值。
-  const writable = !profile.read_only && !payload.truncated;
-  const [value, setValue] = useState(payload.value);
-  useEffect(() => setValue(payload.value), [payload.value]);
-
-  const isJson = useMemo(() => {
-    if (payload.binary) return false;
-    try {
-      JSON.parse(payload.value);
-      return true;
-    } catch {
-      return false;
-    }
-  }, [payload.value, payload.binary]);
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      {payload.truncated && (
-        <div className="flex flex-wrap items-center gap-2 rounded-[6px] border border-warning/40 bg-warning/10 px-2 py-1 text-11 text-warning">
-          <span className="min-w-0 flex-1">
-            {t("值有 {{bytes}} 字节，这里只显示前 256 KiB（不可编辑）", {
-              bytes: payload.bytes.toLocaleString(),
-            })}
-          </span>
-          <Button variant="secondary" size="xs" onClick={onReadFull}>
-            {t("读取完整值")}
-          </Button>
-        </div>
-      )}
-      <div className="flex items-center gap-2 text-11 text-fg-subtle">
-        {payload.binary ? (
-          <>
-            <span className="rounded bg-warning/15 px-1 py-px text-10 font-medium text-warning">
-              {t("二进制")}
-            </span>
-            <span>{t("以 Base64 编码显示，保存时自动解码，数据无损")}</span>
-          </>
-        ) : (
-          <span>{t("{{bytes}} 字节", { bytes: payload.bytes.toLocaleString() })}</span>
-        )}
-        {isJson && (
-          <button
-            className="text-accent"
-            onClick={() => {
-              try {
-                setValue(JSON.stringify(JSON.parse(value), null, 2));
-              } catch {
-                // 不是合法 JSON 时保持原样。
-              }
-            }}
-          >
-            {t("格式化 JSON")}
-          </button>
-        )}
-      </div>
-      <textarea
-        className="min-h-[220px] resize-y rounded-[8px] border border-line bg-surface-1 p-2 font-mono text-12 leading-relaxed text-fg outline-none focus:border-accent disabled:bg-surface-2 disabled:text-fg-subtle"
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        readOnly={payload.truncated}
-        spellCheck={false}
+      {/* 类型转换：本质是"删键重建"，必须说清楚并给二次确认 */}
+      <ConfirmDialog
+        open={pendingType !== null}
+        risk="irreversible"
+        title={t("转换为 {{type}}", { type: pendingType ?? "" })}
+        description={
+          <span className="font-mono break-all text-fg">{selectedKey}</span>
+        }
+        consequences={[
+          t("Redis 没有改类型命令：会读取当前值、删除原键、再按新类型写回。"),
+          t("原 TTL 不会保留；结构信息（如 hash 字段名、zset 分数）按文本重新解析。"),
+          t("转换失败时原键已被删除，且无法回滚。"),
+        ]}
+        confirmLabel={t("转换")}
+        pending={converting}
+        error={convertError}
+        onConfirm={() => void convertKey()}
+        onCancel={() => {
+          setPendingType(null);
+          setConvertError(null);
+        }}
       />
-      {writable && value !== payload.value && (
-        <div className="flex items-center gap-2">
-          <Button
-            variant="primary"
-            size="xs"
-            onClick={() =>
-              void mutate(
-                () =>
-                  databaseApi.redisWriteString(
-                    profile.id,
-                    dbIndex,
-                    selectedKey,
-                    value,
-                    payload.binary,
-                  ),
-                t("已保存"),
-              )
-            }
-          >
-            {t("保存修改")}
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setValue(payload.value)}>
-            {t("还原")}
-          </Button>
-        </div>
-      )}
     </div>
   );
 }
@@ -466,7 +612,7 @@ function HashEditor({
   };
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex w-full min-w-0 flex-col gap-1.5">
       <div className="text-11 text-fg-subtle">
         {t("{{shown}} / {{total}} 字段", { shown: rows.length, total: payload.length })}
       </div>
@@ -845,6 +991,9 @@ function SetEditor({
   const { t } = useTranslation();
   const writable = !profile.read_only;
   const [newMember, setNewMember] = useState("");
+  /** 正在编辑的成员（双击进入）；成员不能原地改，保存时 SREM + SADD。 */
+  const [editingMember, setEditingMember] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   // SSCAN 续扫：首屏只给一页，剩下的按游标追加（顺序稳定、不重复）。
   const [extra, setExtra] = useState<string[]>([]);
   const [cursor, setCursor] = useState(payload.cursor);
@@ -860,6 +1009,23 @@ function SetEditor({
       seen.has(member) ? false : (seen.add(member), true),
     );
   }, [payload.members, extra]);
+
+  /**
+   * 成员"改名"= 删旧 + 加新。
+   * 这不是原子操作：两步之间失败会只剩删除结果，所以调用方必须看到错误原文。
+   */
+  const saveMember = async (old: string) => {
+    const next = editDraft.trim();
+    if (!next || next === old) {
+      setEditingMember(null);
+      return;
+    }
+    await mutate(async () => {
+      await databaseApi.redisWriteSet(profile.id, dbIndex, selectedKey, old, false);
+      await databaseApi.redisWriteSet(profile.id, dbIndex, selectedKey, next, true);
+    }, t("成员已更新"));
+    setEditingMember(null);
+  };
 
   const loadMore = async () => {
     if (cursor === 0 || loadingMore) return;
@@ -880,7 +1046,7 @@ function SetEditor({
   };
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex w-full min-w-0 flex-col gap-1.5">
       <div className="text-11 text-fg-subtle">
         {payload.length} 成员
         {payload.truncated && `（${t("显示前 {{count}} 个", { count: members.length })}）`}
@@ -888,8 +1054,44 @@ function SetEditor({
       <div className="overflow-hidden rounded-[8px] border border-line">
         {members.map((member) => (
           <div key={member} className="flex items-center gap-2 border-b border-line/60 px-2 py-1 last:border-b-0">
-            <span className="min-w-0 flex-1 truncate font-mono text-11 text-fg">{member}</span>
-            {writable && (
+            {editingMember === member ? (
+              <input
+                autoFocus
+                className="h-[22px] min-w-0 flex-1 rounded-[3px] border border-accent bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none"
+                value={editDraft}
+                onChange={(event) => setEditDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveMember(member);
+                  if (event.key === "Escape") setEditingMember(null);
+                }}
+              />
+            ) : (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-11 text-fg"
+                title={writable ? t("双击编辑成员") : member}
+                onDoubleClick={() => {
+                  if (!writable) {
+                    pushToast(t("只读连接，不能修改成员"), "error");
+                    return;
+                  }
+                  setEditingMember(member);
+                  setEditDraft(member);
+                }}
+              >
+                {member}
+              </span>
+            )}
+            {writable && editingMember === member && (
+              <>
+                <Button variant="secondary" size="xs" onClick={() => void saveMember(member)}>
+                  {t("保存")}
+                </Button>
+                <Button variant="ghost" size="xs" onClick={() => setEditingMember(null)}>
+                  {t("取消")}
+                </Button>
+              </>
+            )}
+            {writable && editingMember !== member && (
               <Button
                 variant="ghost"
                 size="xs"

@@ -43,13 +43,13 @@ import type { RedisGridView } from "./RedisKeyGrid";
 import {
   alertRedisFailure,
   formatTtl,
-  redisDbIndexes,
   redisDefaultDb,
   type RedisMutate,
 } from "./redis-shared";
 import { useRedisConnection } from "./useRedisConnection";
 import { useRedisKeyScan } from "./useRedisKeyScan";
 import { useRedisKeySelection } from "./useRedisKeySelection";
+import { useRedisValuePreview } from "./useRedisValuePreview";
 
 const EDITOR_HEIGHT_KEY = "bls-ops.redis.editor-height";
 const EDITOR_MIN = 180;
@@ -90,7 +90,8 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   /** 键网格至少保留的高度：编辑器再高也不能把列表挤没。 */
   const GRID_MIN_HEIGHT = 180;
   const [containerHeight, setContainerHeight] = useState(0);
-  const [view, setView] = useState<RedisGridView>("list");
+  // 默认树视图（参考图）：键命名空间一眼能看出层级。
+  const [view, setView] = useState<RedisGridView>("tree");
   const [typeFilter, setTypeFilter] = useState<KeyTypeFilter>("all");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const detailSeqRef = useRef(0);
@@ -100,6 +101,18 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const writable = !profile.read_only;
 
   // 类型过滤只筛已加载的行：不触发全库扫描，也不改 SCAN 语义。
+  // 值/大小两列：只给当前列表前 40 个键取预览（有缓存与并发上限）。
+  const previewKeys = useMemo(
+    () => scan.keys.slice(0, 40).map((entry) => entry.key),
+    [scan.keys],
+  );
+  const previews = useRedisValuePreview(
+    profile.id,
+    scan.dbIndex,
+    previewKeys,
+    connection.connected && !scan.scanning,
+  );
+
   const visibleKeys = useMemo(
     () =>
       typeFilter === "all"
@@ -117,6 +130,9 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     async (key: string, full = false) => {
       const seq = ++detailSeqRef.current;
       setDetailKey(key);
+      // 换键立即进入加载态：旧值绝不能挂在新键名下（哪怕只是一帧）。
+      setKeyInfo(null);
+      setPayload(null);
       setLoadingValue(true);
       try {
         const [info, value] = await Promise.all([
@@ -167,14 +183,20 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     [loadKey, selection],
   );
 
-  /** 键空间变化时清空选择/详情，避免旧库的键值留在新画面里。 */
+  /**
+   * 键空间变化时清空选择/详情，避免旧库的键值留在新画面里。
+   *
+   * 依赖只能是**稳定的** clear 函数：`selection` 对象每次渲染都是新的，
+   * 直接依赖它会让调用它的 effect 每帧执行 → 清空 → 重渲染 → 无限循环。
+   */
+  const clearSelection = selection.clear;
   const resetKeyState = useCallback(() => {
-    selection.clear();
+    clearSelection();
     setDetailKey(null);
     setKeyInfo(null);
     setPayload(null);
     detailSeqRef.current += 1;
-  }, [selection]);
+  }, [clearSelection]);
 
   /** 搜索 / 刷新：先清旧状态再重扫（旧响应由序号守卫丢弃）。 */
   const refreshKeys = useCallback(() => {
@@ -187,26 +209,15 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     resetKeyState();
   }, [profile.id, resetKeyState]);
 
-  /** 切库：清空列表与详情，旧响应靠各自的序号守卫丢弃。 */
-  const changeDb = useCallback(
-    (value: number) => {
-      scan.setDbIndex(value);
-      resetKeyState();
-      detailSeqRef.current += 1;
-    },
-    [scan, selection],
-  );
-
-  // 连上之后才扫；断开时把详情收起（键已经不可读了）。
+  /*
+   * 连接或库变化：
+   * - 断连 → 收掉详情（值已经读不到了）；
+   * - 连上/切库（侧栏树或工具栏触发）→ **先清空旧选择与详情再重扫**，
+   *   否则上一个库的键值会残留在新库画面里。
+   */
   useEffect(() => {
-    if (connection.connected) {
-      scan.rescan();
-      return;
-    }
-    selection.clear();
-    setDetailKey(null);
-    setKeyInfo(null);
-    setPayload(null);
+    resetKeyState();
+    if (connection.connected) scan.rescan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection.connected, scan.dbIndex]);
 
@@ -421,7 +432,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
     return () => observer.disconnect();
   }, []);
 
-  const dbOptions = useMemo(() => redisDbIndexes(profile), [profile]);
+
   const effectiveEditorHeight =
     containerHeight > 0
       ? Math.max(
@@ -447,6 +458,8 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         payload={payload}
         mutate={mutate}
         onReadFull={() => void loadKey(detailKey, true)}
+        onCreateKey={() => setNewKeyOpen(true)}
+        onReload={() => void loadKey(detailKey)}
         onDeleted={() => {
           setDetailKey(null);
           setKeyInfo(null);
@@ -473,14 +486,12 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   return (
     <div
       ref={rootRef}
-      className="relative flex h-full min-h-0 flex-col bg-surface-1 outline-none"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-surface-1 outline-none"
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
       <RedisToolbar
         dbIndex={scan.dbIndex}
-        dbOptions={dbOptions}
-        onDbChange={changeDb}
         typeFilter={typeFilter}
         onTypeFilterChange={setTypeFilter}
         pattern={scan.pattern}
@@ -497,6 +508,8 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         editorVisible={editorVisible}
         onToggleEditor={() => setEditorVisible((visible) => !visible)}
         patternRef={searchRef}
+        view={view}
+        onViewChange={setView}
       />
 
       {/* 连接错误：只留一条，位置固定在网格上方，不弹第二个 toast */}
@@ -534,11 +547,15 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
             hasMore={scan.hasMore}
             capped={scan.capped}
             view={view}
-            onViewChange={setView}
+            previews={previews}
             onRowClick={(key, index, mods) => {
               selection.click(key, index, mods, visibleKeys);
               // 单击 = 选中并加载详情（对齐参考图）；Ctrl/Shift 只做多选。
-              if (!mods.ctrl && !mods.shift) void loadKey(key);
+              // 编辑区若被收起，选中键时自动展开，避免"选中了却看不到值"。
+              if (!mods.ctrl && !mods.shift) {
+                setEditorVisible(true);
+                void loadKey(key);
+              }
             }}
             onRowOpen={(key) => {
               openKey(key);
@@ -633,6 +650,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         hasMore={scan.hasMore}
         capped={scan.capped}
         serverVersion={connection.serverVersion}
+        selectedCount={selection.selected.size}
       />
 
       <NewKeyDialog

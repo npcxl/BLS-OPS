@@ -66,9 +66,10 @@ export function useRedisKeySelection(): RedisKeySelection {
     setSelected(new Set(keys.map((entry) => entry.key)));
   }, []);
 
+  // 幂等：已经空的时候返回同一个引用，避免"清空 → 重渲染 → 再清空"的自激循环。
   const clear = useCallback(() => {
-    setSelected(new Set());
-    setActiveKey(null);
+    setSelected((current) => (current.size === 0 ? current : new Set()));
+    setActiveKey((current) => (current === null ? current : null));
     anchorRef.current = null;
   }, []);
 

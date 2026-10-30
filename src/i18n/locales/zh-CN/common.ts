@@ -98,6 +98,7 @@ export default {
   "A component crashed at runtime. You can retry, or copy the error details to report it.":
     "某个组件在运行时崩溃。你可以重试，或复制错误信息反馈给开发者。",
   "Copy error details": "复制错误信息",
+  "Copy failed": "复制失败",
   "Copy failed. Please check clipboard permission": "复制失败，请检查剪贴板权限",
   "No results": "无结果",
   "No content": "暂无内容",

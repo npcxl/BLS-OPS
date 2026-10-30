@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import LiquidGlass from "liquid-glass-react";
 import { ChevronRight } from "@/components/icons";
 import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
@@ -327,7 +328,7 @@ export const ContextMenu = memo(function ContextMenu({
       ref={ref}
       role="menu"
       aria-label={title ?? t("Context menu")}
-      className="glass-panel-strong fixed rounded-[12px] p-1"
+      className="glass-host fixed"
       style={{
         left: pos?.x ?? x,
         top: pos?.y ?? y,
@@ -337,6 +338,15 @@ export const ContextMenu = memo(function ContextMenu({
       }}
       onContextMenu={(event) => event.preventDefault()}
     >
+      <LiquidGlass
+        cornerRadius={12}
+        padding="4px"
+        displacementScale={70}
+        blurAmount={0.08}
+        saturation={130}
+        aberrationIntensity={2}
+        elasticity={0.15}
+      >
       {title && (
         <div
           className="truncate px-2 pb-1 pt-0.5 text-10 font-semibold tracking-[0.06em] text-fg-subtle uppercase"
@@ -424,7 +434,7 @@ export const ContextMenu = memo(function ContextMenu({
           ref={submenuRef}
           role="menu"
           aria-label={items[submenu!]?.label ?? t("Submenu")}
-          className="glass-panel-strong fixed rounded-[12px] p-1"
+          className="glass-host fixed"
           style={{
             left: subPos?.x ?? 0,
             top: subPos?.y ?? 0,
@@ -434,6 +444,15 @@ export const ContextMenu = memo(function ContextMenu({
           }}
           onContextMenu={(event) => event.preventDefault()}
         >
+          <LiquidGlass
+            cornerRadius={12}
+            padding="4px"
+            displacementScale={70}
+            blurAmount={0.08}
+            saturation={130}
+            aberrationIntensity={2}
+            elasticity={0.15}
+          >
           {submenuItems.map((item, index) => {
             if (item.separator) {
               return <div key={item.id ?? `sub-sep-${index}`} className="my-1 h-px bg-line" role="separator" />;
@@ -478,8 +497,10 @@ export const ContextMenu = memo(function ContextMenu({
               </button>
             );
           })}
+          </LiquidGlass>
         </div>
       )}
+      </LiquidGlass>
     </div>,
     document.body,
   );

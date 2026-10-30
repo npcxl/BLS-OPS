@@ -86,6 +86,20 @@ describe("Redis 键网格", () => {
       keys: KEYS,
       dbsize: 3,
     });
+    // 单击即加载详情（参考图行为）：这两个调用必须被 mock，否则会打真实 IPC。
+    vi.spyOn(databaseApi, "redisKeyInfo").mockResolvedValue({
+      key: "user:1",
+      kind: "string",
+      ttl_ms: -1,
+      memory_bytes: 64,
+    });
+    vi.spyOn(databaseApi, "redisReadValue").mockResolvedValue({
+      kind: "string",
+      value: "v",
+      binary: false,
+      bytes: 1,
+      truncated: false,
+    });
     vi.spyOn(databaseApi, "profileStatus").mockResolvedValue({
       profile_id: PROFILE.id,
       generation: 1,
@@ -110,9 +124,22 @@ describe("Redis 键网格", () => {
 
   const rows = () => Array.from(container.querySelectorAll('[role="row"]'));
 
-  it("渲染 Key / 类型 / TTL 三列并支持 Ctrl 多选", async () => {
+  /** 默认是树视图（参考图）；这里切到列表，按平铺行做断言。 */
+  const renderList = async () => {
     act(() => root.render(<RedisBrowser profile={PROFILE} />));
     await flush();
+    const listButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="列表视图"]',
+    );
+    expect(listButton).not.toBeNull();
+    await act(async () => {
+      listButton?.click();
+    });
+    await flush();
+  };
+
+  it("渲染 Key / 类型 / TTL 三列并支持 Ctrl 多选", async () => {
+    await renderList();
 
     const all = rows();
     expect(all.length).toBe(3);
@@ -134,8 +161,7 @@ describe("Redis 键网格", () => {
   });
 
   it("Ctrl+A 全选、Ctrl+C 复制键名、Ctrl+Shift+C 复制 TSV", async () => {
-    act(() => root.render(<RedisBrowser profile={PROFILE} />));
-    await flush();
+    await renderList();
 
     const grid = container.querySelector('[role="grid"]');
     expect(grid).not.toBeNull();

@@ -65,7 +65,8 @@ describe("toast / alert", () => {
     expect(text).toContain("127.0.0.1:6379");
 
     // 位置：顶部居中（不是右下角那种容易被忽略的地方）。
-    const stack = alert?.parentElement;
+    // 卡片外面还裹着 LiquidGlass 的两层 div，所以向上找固定定位的那一层。
+    const stack = alert?.closest(".fixed");
     expect(stack?.className).toContain("top-3");
     expect(stack?.className).toContain("left-1/2");
 

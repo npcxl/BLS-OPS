@@ -11,10 +11,26 @@
  * 不需要往组件树里层层传 props。结构化错误用 `pushErrorToast(cause, …)`，
  * 它负责把 `{ stage, message, detail, retryable }` 摊平成可读的三层信息。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, Copy, Info, Loader2, RotateCcw, TriangleAlert, X } from "@/components/icons";
+import LiquidGlass from "liquid-glass-react";
+import type { AnimatedIconHandle } from "@/components/icons";
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Copy,
+  Info,
+  Loader2,
+  RotateCcw,
+  X,
+} from "@/components/icons";
+// 直接取 itshover 原件而非 `@/components/icons` 里的别名：只有原件才恰好暴露
+// `AnimatedIconHandle`，弹出时才能主动触发一次动画（别名被收敛成 ComponentType，
+// ref 拿不到 startAnimation）。
+import TriangleAlertIcon from "@/components/its-hover/triangle-alert-icon";
+import { Button } from "@/components/ui/button";
 import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
@@ -206,7 +222,7 @@ export function ToastHost() {
     <>
       {alerts.length > 0 && (
         <div
-          className="pointer-events-none fixed left-1/2 top-3 flex w-[min(560px,calc(100vw-2rem))] -translate-x-1/2 flex-col gap-1.5"
+          className="glass-host pointer-events-none fixed left-1/2 top-3 flex w-[min(600px,calc(100vw-2rem))] -translate-x-1/2 flex-col items-center gap-2"
           style={{ zIndex: OVERLAY_Z.toast }}
         >
           {alerts.map((item) => (
@@ -229,66 +245,96 @@ export function ToastHost() {
   );
 }
 
-/** 顶部提醒条：错误 / 警告共用，靠色调和图标区分。 */
+/**
+ * 顶部提醒条：错误 / 警告共用。
+ *
+ * 层级是刻意的：上下文（stage/标题）→ 结论（message，唯一加粗行）→ 原始详情
+ * （内嵌浅底块）→ 操作（右对齐）。左侧图标只与「上下文 + 结论」这两行做垂直
+ * 居中，详情和操作落到下面整行，避免图标被拉到卡片正中。
+ */
 function AlertCard({ item }: { item: ToastItem }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const iconRef = useRef<AnimatedIconHandle>(null);
   const warning = item.tone === "warning";
   const longDetail = (item.detail?.length ?? 0) > DETAIL_COLLAPSE_AT;
   const showDetail = !!item.detail && (!longDetail || expanded);
+  const hasContext = !!(item.label || item.title || item.outcomeUnknown);
+  const hasFooter = longDetail || !!item.actions?.length || item.tone === "error";
+
+  // 每弹出一条就动一下：组件随 toast 挂载，挂载即触发一次，之后仍由 hover 驱动。
+  useEffect(() => {
+    void iconRef.current?.startAnimation();
+  }, []);
 
   return (
-    <div
-      role={warning ? "status" : "alert"}
-      aria-live={warning ? "polite" : "assertive"}
-      className={cn(
-        "pointer-events-auto flex items-start gap-2 rounded-[10px] border px-3 py-2 text-12 shadow-lg shadow-black/25",
-        warning
-          ? "border-warning/40 bg-surface-1"
-          : "border-danger/40 bg-surface-1",
-      )}
+    <LiquidGlass
+      className="pointer-events-auto mx-auto w-full max-w-full [&>.glass]:w-full [&>.glass>div]:w-full"
+      cornerRadius={10}
+      padding="0"
+      elasticity={0.06}
+      style={{ width: "100%" }}
     >
-      {warning ? (
-        <TriangleAlert size={14} className="mt-0.5 shrink-0 text-warning" />
-      ) : (
-        <TriangleAlert size={14} className="mt-0.5 shrink-0 text-danger" />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {item.label && (
-            <span
-              className={cn(
-                "shrink-0 rounded px-1 py-px text-10 font-medium",
-                warning ? "bg-warning/12 text-warning" : "bg-danger/12 text-danger",
-              )}
-            >
-              {item.label}
-            </span>
-          )}
-          {item.title && (
-            <span className="min-w-0 truncate text-11 text-fg-muted">{item.title}</span>
-          )}
-          {item.outcomeUnknown && (
-            <span className="shrink-0 rounded bg-warning/15 px-1 py-px text-10 font-medium text-warning">
-              {t("Outcome unknown")}
-            </span>
-          )}
+      <div
+        role={warning ? "status" : "alert"}
+        aria-live={warning ? "polite" : "assertive"}
+        className="overlay-enter relative w-full overflow-hidden rounded-[10px] border border-line/70 bg-surface-1/78 py-2.5 pl-3 pr-2"
+      >
+        <div className="flex items-center gap-2.5">
+          <TriangleAlertIcon
+            ref={iconRef}
+            size={16}
+            className={cn("shrink-0", warning ? "text-warning" : "text-danger")}
+          />
+          <div className="min-w-0 flex-1">
+            {hasContext && (
+              <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
+                {item.label && (
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-[4px] px-1.5 py-px text-10 font-semibold tracking-wide uppercase",
+                      warning ? "bg-warning/12 text-warning" : "bg-danger/12 text-danger",
+                    )}
+                  >
+                    {item.label}
+                  </span>
+                )}
+                {item.title && (
+                  <span className="min-w-0 truncate text-11 text-fg-muted">{item.title}</span>
+                )}
+                {item.outcomeUnknown && (
+                  <span className="shrink-0 rounded-[4px] bg-warning/12 px-1.5 py-px text-10 font-semibold text-warning">
+                    {t("Outcome unknown")}
+                  </span>
+                )}
+              </div>
+            )}
+            <p className="break-words text-13 font-semibold leading-snug text-fg">{item.message}</p>
+          </div>
+          <button
+            type="button"
+            aria-label="dismiss"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+            onClick={() => dismissToast(item.id)}
+          >
+            <X size={11} />
+          </button>
         </div>
-        <p className="mt-0.5 break-words leading-snug text-fg">{item.message}</p>
         {item.detail && showDetail && (
-          <p className="mt-1 max-h-28 overflow-y-auto break-words whitespace-pre-wrap text-11 leading-relaxed text-fg-subtle">
+          <p className="ml-[26px] mt-1.5 max-h-28 overflow-y-auto break-words whitespace-pre-wrap rounded-[6px] border border-line/50 bg-surface-2/70 px-2 py-1.5 text-11 leading-relaxed text-fg-muted">
             {item.detail}
           </p>
         )}
-        {(longDetail || item.actions?.length || item.tone === "error") && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        {hasFooter && (
+          <div className="ml-[26px] mt-2 flex flex-wrap items-center gap-1.5">
             {longDetail && (
               <button
                 type="button"
-                className="rounded px-1 py-0.5 text-10 text-fg-muted hover:bg-surface-hover hover:text-fg"
+                className="inline-flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-11 font-medium text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
                 onClick={() => setExpanded((value) => !value)}
                 aria-expanded={expanded}
               >
+                <ChevronDown size={11} className={cn("transition-transform", expanded && "rotate-180")} />
                 {expanded ? t("Hide details") : t("Show details")}
               </button>
             )}
@@ -299,29 +345,16 @@ function AlertCard({ item }: { item: ToastItem }) {
           </div>
         )}
       </div>
-      <button
-        type="button"
-        aria-label="dismiss"
-        className="shrink-0 rounded p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
-        onClick={() => dismissToast(item.id)}
-      >
-        <X size={12} />
-      </button>
-    </div>
+    </LiquidGlass>
   );
 }
 
 function ToastActionButton({ action }: { action: ToastAction }) {
   return (
-    <button
-      type="button"
-      disabled={action.busy}
-      className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-10 text-fg hover:bg-surface-hover disabled:pointer-events-none disabled:opacity-50"
-      onClick={action.onClick}
-    >
-      {action.busy ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
+    <Button variant="secondary" size="xs" disabled={action.busy} onClick={action.onClick}>
+      {action.busy ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
       {action.label}
-    </button>
+    </Button>
   );
 }
 
@@ -341,20 +374,20 @@ function CopyErrorButton({ item }: { item: ToastItem }) {
     setState((await copyText(text)) ? "done" : "failed");
   };
 
+  // 失败原因（剪贴板权限）放在 title 里，按钮本身只留短文案 ——
+  // 一句十来个字的告警塞进按钮会把整条通知的排版撑歪。
   return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-10 text-fg hover:bg-surface-hover"
+    <Button
+      variant="ghost"
+      size="xs"
+      className={cn("ml-auto", state === "failed" && "text-danger hover:bg-danger/12 hover:text-danger")}
       aria-label={t("Copy error details")}
+      title={state === "failed" ? t("Copy failed. Please check clipboard permission") : undefined}
       onClick={() => void copy()}
     >
-      <Copy size={10} />
-      {state === "done"
-        ? t("Copied")
-        : state === "failed"
-          ? t("Copy failed. Please check clipboard permission")
-          : t("Copy error details")}
-    </button>
+      {state === "done" ? <Check size={11} /> : <Copy size={12} />}
+      {state === "done" ? t("Copied") : state === "failed" ? t("Copy failed") : t("Copy error details")}
+    </Button>
   );
 }
 

@@ -19,6 +19,7 @@ export function RedisStatusBar({
   hasMore,
   capped,
   serverVersion,
+  selectedCount,
 }: {
   connected: boolean;
   connecting: boolean;
@@ -31,10 +32,15 @@ export function RedisStatusBar({
   hasMore: boolean;
   capped: boolean;
   serverVersion: string | null;
+  /** 参考图底栏的「已选择 N 个键」。 */
+  selectedCount: number;
 }) {
   const { t } = useTranslation();
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-2 px-3 text-10 text-fg-subtle">
+      <span className="shrink-0 text-fg-muted">
+        {t("已选择 {{count}} 个键", { count: selectedCount })}
+      </span>
       <span className="flex items-center gap-1">
         <span
           className={cn(

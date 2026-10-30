@@ -16,10 +16,18 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight, Loader2 } from "@/components/icons";
 import type { RedisKeyBrief } from "@/api/types/database";
 import { cn } from "@/lib/cn";
+import { formatBytes } from "@/lib/format";
 import { formatTtl, kindBadgeClass } from "./redis-shared";
+import type { RedisValuePreview } from "./useRedisValuePreview";
 
-const ROW_HEIGHT = 20;
+const ROW_HEIGHT = 22;
 const OVERSCAN = 12;
+
+/**
+ * 列模板：表头与每一行共用同一个字符串，杜绝"表头和内容各写一套宽度"。
+ * 顺序与参考图一致：键 / 类型 / 值 / 大小 / TTL。
+ */
+const GRID_COLS = "minmax(180px, 340px) 110px minmax(140px, 1.6fr) 84px 64px";
 
 export type RedisGridView = "list" | "tree";
 
@@ -89,10 +97,13 @@ function buildRows(
   const rows: GridRow[] = [];
   const walk = (node: Node, depth: number, pathPrefix: string) => {
     for (const entry of node.keys) {
+      const parts = entry.key.split(separator);
       rows.push({
         id: entry.key,
         depth,
-        label: entry.key,
+        // 树视图叶子只显示当前层名（`bls:auth:token` → `token`），
+        // 完整键名在 tooltip 与详情面板里看，避免每行重复长前缀。
+        label: parts.length > 1 ? parts[parts.length - 1] : entry.key,
         kind: entry.kind,
         ttlMs: entry.ttl_ms,
         key: entry.key,
@@ -138,7 +149,7 @@ export function RedisKeyGrid({
   hasMore,
   capped,
   view,
-  onViewChange,
+  previews,
   onRowClick,
   onRowOpen,
   onRowContextMenu,
@@ -152,7 +163,8 @@ export function RedisKeyGrid({
   hasMore: boolean;
   capped: boolean;
   view: RedisGridView;
-  onViewChange: (view: RedisGridView) => void;
+  /** 值 / 大小两列的按需预览（只覆盖可见批次，未取到就留空）。 */
+  previews: Record<string, RedisValuePreview>;
   onRowClick: (key: string, index: number, mods: { ctrl: boolean; shift: boolean }) => void;
   onRowOpen: (key: string) => void;
   onRowContextMenu: (event: React.MouseEvent, key: string) => void;
@@ -227,37 +239,27 @@ export function RedisKeyGrid({
   };
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-1">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line bg-surface-2/60 px-2 text-10 font-medium text-fg-subtle">
-        <span className="min-w-0 flex-1">{t("键")}</span>
-        <span className="w-16 shrink-0">{t("类型")}</span>
-        <span className="w-14 shrink-0 text-right">{t("TTL")}</span>
-        <div className="ml-1 flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            aria-label={t("列表视图")}
-            aria-pressed={view === "list"}
-            className={cn(
-              "rounded px-1 text-10",
-              view === "list" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
-            )}
-            onClick={() => onViewChange("list")}
-          >
-            {t("列表")}
-          </button>
-          <button
-            type="button"
-            aria-label={t("树视图")}
-            aria-pressed={view === "tree"}
-            className={cn(
-              "rounded px-1 text-10",
-              view === "tree" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
-            )}
-            onClick={() => onViewChange("tree")}
-          >
-            {t("树")}
-          </button>
-        </div>
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-surface-1">
+      {/* 表头与数据行共用同一套 grid 模板，逐列对齐 */}
+      <div
+        className="grid h-7 shrink-0 items-center border-b border-line text-10 font-medium text-fg-muted"
+        style={{ gridTemplateColumns: GRID_COLS }}
+      >
+        <span className="flex items-center px-2">
+          {t("键")} <span className="ml-1 text-fg-subtle">▲</span>
+        </span>
+        <span className="flex h-full items-center border-l border-line bg-surface-2/70 px-2">
+          {t("类型")}
+        </span>
+        <span className="flex h-full items-center border-l border-line bg-surface-2/70 px-2">
+          {t("值")}
+        </span>
+        <span className="flex h-full items-center justify-end border-l border-line bg-surface-2/70 px-2">
+          {t("大小")}
+        </span>
+        <span className="flex h-full items-center justify-end border-l border-line bg-surface-2/70 px-2">
+          {t("TTL")}
+        </span>
       </div>
       <div
         ref={viewportRef}
@@ -286,22 +288,26 @@ export function RedisKeyGrid({
                 aria-selected={isSelected}
                 aria-expanded={isGroup ? row.expanded : undefined}
                 className={cn(
-                  "absolute left-0 right-0 flex cursor-default items-center gap-2 pr-2 text-11",
-                  isSelected
-                    ? "bg-accent/20 text-fg"
-                    : "text-fg hover:bg-surface-hover",
+                  "absolute left-0 right-0 grid cursor-default items-center text-11",
+                  isSelected ? "bg-accent/20 text-fg" : "text-fg hover:bg-surface-hover",
                   row.key !== undefined && row.key === activeKey && "ring-1 ring-inset ring-accent/40",
                 )}
-                style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT, paddingLeft: 8 + row.depth * 14 }}
+                style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT, gridTemplateColumns: GRID_COLS }}
                 onClick={(event) => {
                   if (isGroup) {
                     toggleGroup(row.id.slice("group:".length));
                     return;
                   }
-                  onRowClick(row.key!, index, {
-                    ctrl: event.ctrlKey || event.metaKey,
-                    shift: event.shiftKey,
-                  });
+                  // 回传**键列表里的真实索引**：树视图的行号含分组行，
+                  // 直接给行号会让 Shift 连选取错范围。
+                  onRowClick(
+                    row.key!,
+                    Math.max(0, keys.findIndex((entry) => entry.key === row.key)),
+                    {
+                      ctrl: event.ctrlKey || event.metaKey,
+                      shift: event.shiftKey,
+                    },
+                  );
                 }}
                 onDoubleClick={() => {
                   if (row.key) onRowOpen(row.key);
@@ -312,37 +318,56 @@ export function RedisKeyGrid({
               >
                 {isGroup ? (
                   <>
-                    <ChevronRight
-                      size={11}
-                      className={cn(
-                        "shrink-0 text-fg-subtle transition-transform",
-                        row.expanded && "rotate-90",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate font-mono" title={row.label}>
-                      {row.label}
+                    <span
+                      className="flex min-w-0 items-center gap-1 pr-2"
+                      style={{ paddingLeft: 8 + row.depth * 14 }}
+                    >
+                      <ChevronRight
+                        size={11}
+                        className={cn(
+                          "shrink-0 text-fg-subtle transition-transform",
+                          row.expanded && "rotate-90",
+                        )}
+                      />
+                      <span className="min-w-0 truncate font-mono" title={row.label}>
+                        {row.label}
+                        <span className="ml-1 text-10 text-fg-subtle">({row.childCount})</span>
+                      </span>
                     </span>
-                    <span className="w-16 shrink-0 text-10 text-fg-subtle">
-                      {t("({{count}})", { count: row.childCount })}
-                    </span>
-                    <span className="w-14 shrink-0 text-right text-10 text-fg-subtle">—</span>
+                    <span className="border-l border-line" />
+                    <span className="border-l border-line" />
+                    <span className="border-l border-line" />
+                    <span className="border-l border-line" />
                   </>
                 ) : (
                   <>
-                    <span className="min-w-0 flex-1 truncate font-mono" title={row.label}>
+                    <span
+                      className="flex min-w-0 items-center truncate pr-2 font-mono"
+                      style={{ paddingLeft: 8 + row.depth * 14 }}
+                      title={row.key ?? row.label}
+                    >
                       {row.label}
                     </span>
-                    <span className="w-16 shrink-0">
+                    <span className="flex items-center border-l border-line px-2">
                       <span
                         className={cn(
-                          "rounded px-1 py-px text-9 font-medium",
+                          "rounded px-1 text-9 font-medium",
                           kindBadgeClass(row.kind),
                         )}
                       >
                         {row.kind}
                       </span>
                     </span>
-                    <span className="w-14 shrink-0 text-right text-10 text-fg-subtle">
+                    <span className="flex min-w-0 items-center truncate border-l border-line px-2 text-10 text-fg-muted">
+                      {previews[row.key!]?.text ?? ""}
+                    </span>
+                    <span className="flex items-center justify-end border-l border-line px-2 text-10 text-fg-subtle">
+                      {previews[row.key!]?.bytes !== null &&
+                      previews[row.key!]?.bytes !== undefined
+                        ? formatBytes(previews[row.key!].bytes as number)
+                        : ""}
+                    </span>
+                    <span className="flex items-center justify-end border-l border-line px-2 text-10 text-fg-subtle">
                       {formatTtl(row.ttlMs)}
                     </span>
                   </>

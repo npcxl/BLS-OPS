@@ -124,7 +124,8 @@ describe("toast 的错误通知", () => {
 
     const status = document.querySelector('[role="status"]');
     expect(status).not.toBeNull();
-    expect(status?.parentElement?.className).toContain("top-3");
+    // 卡片外面还有 LiquidGlass 的两层 div，向上找固定定位的那一层。
+    expect(status?.closest(".fixed")?.className).toContain("top-3");
 
     act(() => {
       vi.advanceTimersByTime(9_000);
@@ -141,7 +142,7 @@ describe("toast 的错误通知", () => {
       toast.pushToast("保存失败", "error", { persist: true });
     });
 
-    const stack = document.querySelector('[role="alert"]')?.parentElement as HTMLElement;
+    const stack = document.querySelector('[role="alert"]')?.closest(".fixed") as HTMLElement;
     expect(Number(stack.style.zIndex)).toBe(OVERLAY_Z.toast);
     expect(OVERLAY_Z.toast).toBeGreaterThan(OVERLAY_Z.modal);
     expect(OVERLAY_Z.toast).toBeGreaterThan(OVERLAY_Z.select);

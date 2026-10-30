@@ -17,7 +17,8 @@ const variantClasses: Record<Variant, string> = {
     "bg-surface-2 text-fg border border-line shadow-[0_1px_0_rgb(255_255_255/0.45)_inset] hover:bg-surface-hover hover:border-line-strong",
   ghost: "text-fg-muted hover:text-fg hover:bg-surface-hover",
   outline: "text-fg border border-line-strong hover:bg-surface-hover hover:border-fg-subtle",
-  danger: "bg-danger !text-white shadow-[0_1px_0_rgb(255_255_255/0.24)_inset,0_1px_2px_rgb(15_23_42/0.12)] hover:bg-danger/90 active:bg-danger/80",
+  danger:
+    "bg-danger !text-white shadow-[0_1px_0_rgb(255_255_255/0.24)_inset,0_1px_2px_rgb(15_23_42/0.12)] hover:bg-danger/90 active:bg-danger/80",
 };
 
 const sizeClasses: Record<Size, string> = {

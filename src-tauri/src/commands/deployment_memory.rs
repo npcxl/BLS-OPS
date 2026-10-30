@@ -15,6 +15,7 @@ use crate::deployment::session::memory::{
     explicit_preference, record_failure, record_success, validate_value, DeploymentMemory,
     MemoryKey, MemoryKind, MemoryScope, MemorySourceType, MemoryStatus,
 };
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 use super::{open_db, record_audit};
@@ -34,10 +35,10 @@ fn validated(mut memory: DeploymentMemory, now: i64) -> Result<DeploymentMemory,
 pub async fn deployment_memory_list(
     state: State<'_, AppState>,
     include_inactive: Option<bool>,
-) -> Result<Vec<DeploymentMemory>, String> {
+) -> OpsResult<Vec<DeploymentMemory>> {
     let conn = open_db(&state)?;
     db::deployment_session::list_memory(&conn, include_inactive.unwrap_or(false))
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 新建 / 更新一条 Memory。
@@ -54,7 +55,7 @@ pub async fn deployment_memory_upsert(
     key: MemoryKey,
     value_json: serde_json::Value,
     explicit: Option<bool>,
-) -> Result<DeploymentMemory, String> {
+) -> OpsResult<DeploymentMemory> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let existing = match id.as_deref().filter(|value| !value.trim().is_empty()) {
@@ -117,12 +118,12 @@ pub async fn deployment_memory_set_status(
     state: State<'_, AppState>,
     id: String,
     status: MemoryStatus,
-) -> Result<DeploymentMemory, String> {
+) -> OpsResult<DeploymentMemory> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let mut memory = db::deployment_session::get_memory(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Memory 不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("Memory 不存在"))?;
     memory.status = status;
     memory.updated_at = now;
     db::deployment_session::upsert_memory(&conn, &memory).map_err(|error| error.to_string())?;
@@ -141,7 +142,7 @@ pub async fn deployment_memory_set_status(
 pub async fn deployment_memory_delete(
     state: State<'_, AppState>,
     id: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::deployment_session::delete_memory(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -159,7 +160,7 @@ pub async fn deployment_memory_delete(
 pub async fn deployment_memory_clear(
     state: State<'_, AppState>,
     include_active: Option<bool>,
-) -> Result<usize, String> {
+) -> OpsResult<usize> {
     let conn = open_db(&state)?;
     let removed = db::deployment_session::clear_memory(&conn, include_active.unwrap_or(false))
         .map_err(|error| error.to_string())?;
@@ -179,7 +180,7 @@ pub async fn deployment_memory_record_result(
     state: State<'_, AppState>,
     memory_ids: Vec<String>,
     succeeded: bool,
-) -> Result<Vec<DeploymentMemory>, String> {
+) -> OpsResult<Vec<DeploymentMemory>> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let mut updated = Vec::new();

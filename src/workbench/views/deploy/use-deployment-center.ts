@@ -45,7 +45,8 @@ export interface DeploymentCenter {
   planGraph: DeploymentPlanGraph | null;
   loadingPlanId: string | null;
   status: DeploymentCenterStatus;
-  error: string | null;
+  /** 原始异常，交给 `ErrorState` 渲染（阶段 / 建议 / 详情）。 */
+  error: unknown | null;
   clearError: () => void;
   reload: () => Promise<void>;
   openPlan: (planId: string) => Promise<void>;
@@ -75,7 +76,7 @@ export function useDeploymentCenter(): DeploymentCenter {
   const [planGraph, setPlanGraph] = useState<DeploymentPlanGraph | null>(null);
   const [loadingPlanId, setLoadingPlanId] = useState<string | null>(null);
   const [status, setStatus] = useState<DeploymentCenterStatus>({ state: "idle" });
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown | null>(null);
 
   const serverOptions = useMemo(
     () => servers.map((server) => ({ id: server.id, name: server.name, host: server.host })),
@@ -174,7 +175,7 @@ export function useDeploymentCenter(): DeploymentCenter {
         const list = await opsApi.deploymentReleaseList(environmentId);
         if (!cancelled) setReleases(list);
       } catch (cause) {
-        if (!cancelled) setError(toErrorMessage(cause));
+        if (!cancelled) setError(cause);
       }
     })();
     return () => {
@@ -194,7 +195,9 @@ export function useDeploymentCenter(): DeploymentCenter {
         if (after) await after();
         return true;
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        // 保留原始异常：部署中心的失败大多是「缺环境变量 / 权限不足 / 连接断了」，
+        // 用户需要看到阶段与恢复建议，而不是一行压平的字符串。
+        setError(cause);
         return false;
       }
     },
@@ -348,7 +351,7 @@ export function useDeploymentCenter(): DeploymentCenter {
       const graph = await opsApi.deploymentPlanGet(planId);
       setPlanGraph(graph);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      setError(cause);
     } finally {
       setLoadingPlanId(null);
     }

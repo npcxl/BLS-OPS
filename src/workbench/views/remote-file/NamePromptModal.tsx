@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { useSubmit } from "@/hooks/use-submit";
 import type { NameDialog } from "./utils";
@@ -70,7 +71,7 @@ export function NamePromptModal({
           />
         </Field>
         {validationError && <ErrorText>{validationError}</ErrorText>}
-        <ErrorText>{submit.error}</ErrorText>
+        {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
     </Modal>
   );

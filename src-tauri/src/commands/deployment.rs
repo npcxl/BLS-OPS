@@ -18,6 +18,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, State};
 
 use super::{open_db, record_audit};
+use crate::ops_error::{OpsError, OpsResult};
 use crate::{db, state::AppState};
 
 // ---------------------------------------------------------------------------
@@ -26,25 +27,25 @@ use crate::{db, state::AppState};
 
 /// 列出旧项目记录（legacy，不在部署中心新模型里使用）。
 #[tauri::command]
-pub async fn project_list(state: State<'_, AppState>) -> Result<Vec<db::ProjectRecord>, String> {
+pub async fn project_list(state: State<'_, AppState>) -> OpsResult<Vec<db::ProjectRecord>> {
     let conn = open_db(&state)?;
-    db::list_projects(&conn).map_err(|error| error.to_string())
+    db::list_projects(&conn).map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn project_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<db::ProjectRecord>, String> {
+) -> OpsResult<Option<db::ProjectRecord>> {
     let conn = open_db(&state)?;
-    db::get_project(&conn, &id).map_err(|error| error.to_string())
+    db::get_project(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn project_save(
     state: State<'_, AppState>,
     project: db::ProjectRecord,
-) -> Result<db::ProjectRecord, String> {
+) -> OpsResult<db::ProjectRecord> {
     let conn = open_db(&state)?;
     validate_project(&conn, &project)?;
     db::insert_or_replace_project(&conn, &project).map_err(|error| error.to_string())?;
@@ -62,7 +63,7 @@ pub async fn project_save(
 }
 
 #[tauri::command]
-pub async fn project_delete(state: State<'_, AppState>, id: String) -> Result<i64, String> {
+pub async fn project_delete(state: State<'_, AppState>, id: String) -> OpsResult<i64> {
     let conn = open_db(&state)?;
     let removed = db::delete_project_cascade(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -80,23 +81,23 @@ pub async fn deployment_list(
     state: State<'_, AppState>,
     project_id: Option<String>,
     limit: Option<u32>,
-) -> Result<Vec<db::DeploymentRecord>, String> {
+) -> OpsResult<Vec<db::DeploymentRecord>> {
     let conn = open_db(&state)?;
     db::list_deployments(
         &conn,
         project_id.as_deref(),
         limit.unwrap_or(50).min(500) as i64,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn deployment_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<db::DeploymentRecord>, String> {
+) -> OpsResult<Option<db::DeploymentRecord>> {
     let conn = open_db(&state)?;
-    db::get_deployment(&conn, &id).map_err(|error| error.to_string())
+    db::get_deployment(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// Runs a project's deployment steps on a live session.
@@ -113,15 +114,15 @@ pub async fn deployment_execute(
     // *before* the run starts, so nothing emitted early is missed.
     // (A doc comment is not allowed on a command parameter.)
     deployment_id: Option<String>,
-) -> Result<db::DeploymentRecord, String> {
+) -> OpsResult<db::DeploymentRecord> {
     let conn = open_db(&state)?;
 
     let project = db::get_project(&conn, &project_id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "项目不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("项目不存在"))?;
 
     if !state.ssh.is_connected(&session_id).await {
-        return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
+        return Err(OpsError::from("SSH 会话不存在或已断开，请先连接服务器"));
     }
 
     let steps: Vec<String> = serde_json::from_str(&project.commands_json)
@@ -248,20 +249,20 @@ pub async fn deployment_execute(
 pub(crate) fn validate_project(
     conn: &Connection,
     project: &db::ProjectRecord,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     if project.name.trim().is_empty() {
-        return Err("项目名称不能为空".to_string());
+        return Err(OpsError::from("项目名称不能为空"));
     }
     if project.server_id.trim().is_empty() {
-        return Err("请选择部署服务器".to_string());
+        return Err(OpsError::from("请选择部署服务器"));
     }
     db::get_server(conn, &project.server_id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "所选服务器不存在，请重新选择".to_string())?;
+        .ok_or_else(|| OpsError::from("所选服务器不存在，请重新选择"))?;
 
     let path = project.deploy_path.trim();
     if !path.starts_with('/') {
-        return Err("部署路径必须是绝对路径".to_string());
+        return Err(OpsError::from("部署路径必须是绝对路径"));
     }
     crate::safe::validate_abs_path(path, "部署路径").map_err(|error| error.to_string())?;
 
@@ -278,7 +279,7 @@ pub(crate) fn validate_project(
     let steps: Vec<String> = serde_json::from_str(&project.commands_json)
         .map_err(|error| format!("部署步骤不是合法的 JSON 数组：{error}"))?;
     if steps.is_empty() {
-        return Err("至少需要一个部署步骤".to_string());
+        return Err(OpsError::from("至少需要一个部署步骤"));
     }
     for step in &steps {
         crate::safe::validate_deploy_step(step, path).map_err(|error| error.to_string())?;

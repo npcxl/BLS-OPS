@@ -19,10 +19,11 @@ import {
   comboKeys,
   resetShortcuts,
   setShortcut,
+  setShortcutEnabled,
   useShortcutBindings,
   type ShortcutActionId,
 } from "@/stores/shortcut-store";
-import { Group, ListGroup } from "./settings-parts";
+import { Group, ListGroup, Switch } from "./settings-parts";
 
 /** `Ctrl` 在 macOS 上显示成 ⌘；`mod` 是占位符，渲染时替换。 */
 const MOD = "mod";
@@ -67,8 +68,24 @@ const EDITOR_BINDABLE: { action: ShortcutActionId; label: string }[] = [
   { action: "editor_find", label: "Find in the editor or preview" },
 ];
 
+/** 数据库表格：命令型按键读同一张绑定表。 */
+const GRID_BINDABLE: { action: ShortcutActionId; label: string }[] = [
+  { action: "grid_copy", label: "Copy the selected cells" },
+  { action: "grid_paste", label: "Paste into the grid" },
+  { action: "grid_select_all", label: "Select all cells" },
+  { action: "grid_undo", label: "Undo a cell edit" },
+  { action: "grid_redo", label: "Redo a cell edit" },
+  { action: "grid_first", label: "Jump to the first row" },
+  { action: "grid_last", label: "Jump to the last row" },
+  { action: "grid_edit", label: "Edit the selected cell" },
+  { action: "grid_edit_down", label: "Edit the cell, then move down" },
+];
+
 const ACTION_LABEL = Object.fromEntries(
-  [...BINDABLE, ...FILE_BINDABLE, ...EDITOR_BINDABLE].map((item) => [item.action, item.label]),
+  [...BINDABLE, ...FILE_BINDABLE, ...EDITOR_BINDABLE, ...GRID_BINDABLE].map((item) => [
+    item.action,
+    item.label,
+  ]),
 ) as Record<ShortcutActionId, string>;
 
 const TABS: ShortcutTab[] = [
@@ -119,15 +136,7 @@ const TABS: ShortcutTab[] = [
       { keys: [MOD, "Shift", "Enter"], label: "Run the whole script" },
       { keys: [MOD, "Shift", "F"], label: "Format SQL" },
       { keys: [MOD, "S"], label: "Submit pending row changes" },
-      { keys: [MOD, "C"], label: "Copy the selected cells" },
-      { keys: [MOD, "V"], label: "Paste into the grid" },
-      { keys: [MOD, "A"], label: "Select all cells" },
-      { keys: [MOD, "Z"], label: "Undo a cell edit" },
-      { keys: [MOD, "Y"], label: "Redo a cell edit" },
-      { keys: [MOD, "Home"], label: "Jump to the first row" },
-      { keys: [MOD, "End"], label: "Jump to the last row" },
-      { keys: ["F2"], label: "Edit the selected cell" },
-      { keys: ["Enter"], label: "Edit the cell, then move down" },
+      ...GRID_BINDABLE.map((item) => ({ action: item.action, label: item.label })),
       { keys: ["Tab"], label: "Commit and move right" },
       { keys: ["Shift", "Tab"], label: "Commit and move left" },
       { keys: ["Esc"], label: "Cancel the cell edit" },
@@ -248,36 +257,42 @@ export function ShortcutSettingsGroup() {
         </div>
 
         {/* 固定高度 + 滚动：30 多条平铺会把整页拉长，也找不到重点。 */}
-        <div className="h-[286px] overflow-y-auto px-3 py-2">
+        <div className="h-[286px] overflow-auto px-2 py-2">
           {error && <p className="mb-1.5 text-11 text-danger">{error}</p>}
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             {tab.items.map((item) => {
               const keys = keysOf(item);
+              const bound = item.action ? bindings[item.action] : undefined;
               const isRecording = item.action !== undefined && recording === item.action;
               return (
                 <div
                   key={`${tab.id}-${item.label}`}
-                  className="group flex min-h-[22px] items-center justify-between gap-3 text-11"
+                  className="group flex min-h-[24px] min-w-[250px] items-center gap-2 rounded-[4px] px-1 text-11 hover:bg-surface-hover/40"
                 >
-                  <span className="min-w-0 truncate text-fg-muted">{t(item.label)}</span>
-                  <span className="flex shrink-0 items-center gap-1">
+                  {/* 命令名 */}
+                  <span className="min-w-0 flex-1 truncate text-fg-muted">{t(item.label)}</span>
+
+                  {/* 当前快捷键 */}
+                  <span className="flex shrink-0 items-center gap-0.5">
                     {isRecording ? (
-                      <span className="text-11 text-accent">
-                        {t("Press the new combination… (Esc cancels, Backspace clears)")}
-                      </span>
+                      <span className="text-10 text-accent">{t("Press a combination…")}</span>
                     ) : keys.length > 0 ? (
                       keys.map((key) => (
                         <kbd
                           key={key}
-                          className="rounded-[4px] border border-line bg-surface-2 px-1.5 py-0.5 font-mono text-10 text-fg-muted"
+                          className="rounded-[3px] border border-line bg-surface-2 px-1 py-px font-mono text-[10px] leading-[14px] text-fg-muted"
                         >
                           {renderKey(key)}
                         </kbd>
                       ))
                     ) : (
-                      <span className="text-10 text-fg-subtle">{t("Not set")}</span>
+                      <span className="text-10 text-fg-subtle">{t("Off")}</span>
                     )}
-                    {item.action && !isRecording && (
+                  </span>
+
+                  {/* 编辑：悬停才出现，且在开关之前；不显示时不占位 */}
+                  {item.action ? (
+                    <span className="hidden w-4 shrink-0 items-center justify-center group-hover:flex">
                       <button
                         type="button"
                         aria-label={t("Change shortcut")}
@@ -286,12 +301,29 @@ export function ShortcutSettingsGroup() {
                           setRecording(item.action ?? null);
                           setError(null);
                         }}
-                        className="rounded-[4px] p-0.5 text-fg-subtle opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:bg-surface-hover hover:text-fg"
+                        className="rounded-[3px] p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
                       >
                         <Pencil size={11} />
                       </button>
-                    )}
-                  </span>
+                    </span>
+                  ) : (
+                    <span className="hidden w-4 shrink-0 group-hover:block" aria-hidden="true" />
+                  )}
+
+                  {/* 是否启用：只对真正接入绑定表的动作给开关 */}
+                  {item.action ? (
+                    <Switch
+                      checked={bound !== null && bound !== undefined}
+                      onChange={(next) => {
+                        setShortcutEnabled(item.action!, next);
+                        setRecording(null);
+                        setError(null);
+                      }}
+                      label={t(item.label)}
+                    />
+                  ) : (
+                    <span className="w-[28px] shrink-0" aria-hidden="true" />
+                  )}
                 </div>
               );
             })}

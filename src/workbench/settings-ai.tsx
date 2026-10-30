@@ -17,10 +17,12 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, Check, ChevronRight, PlugZap, Plus, Trash2 } from "@/components/icons";
 
-import { opsApi, toErrorMessage, type AiProviderTestResult, type AiProviderView } from "@/api/ops-api";
+import { opsApi, type AiProviderTestResult, type AiProviderView } from "@/api/ops-api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { Field, Modal, fieldClass } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 
@@ -79,7 +81,8 @@ export function AiProviderSettings() {
   const [deleteTarget, setDeleteTarget] = useState<AiProviderView | null>(null);
   const [deleteSecret, setDeleteSecret] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：模型连通性失败要能看清是网络、鉴权还是地址写错。
+  const { error, fail, clear, retry } = useActionError();
   const [results, setResults] = useState<Record<string, AiProviderTestResult>>({});
 
   const load = useCallback(async () => {
@@ -89,17 +92,17 @@ export function AiProviderSettings() {
   }, []);
 
   useEffect(() => {
-    void load().catch((cause) => setError(toErrorMessage(cause)));
-  }, [load]);
+    void load().catch((cause) => fail(cause, () => void load()));
+  }, [load, fail]);
 
   const test = async (provider: AiProviderView) => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const result = await opsApi.aiProviderTest(provider.id);
       setResults((current) => ({ ...current, [provider.id]: result }));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void test(provider));
     } finally {
       setBusy(false);
     }
@@ -107,12 +110,12 @@ export function AiProviderSettings() {
 
   const makeDefault = async (provider: AiProviderView) => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.aiProviderSetDefault(provider.id);
       await load();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void makeDefault(provider));
     } finally {
       setBusy(false);
     }
@@ -121,14 +124,14 @@ export function AiProviderSettings() {
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.aiProviderDelete(deleteTarget.id, deleteSecret);
       setDeleteTarget(null);
       setDeleteSecret(false);
       await load();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void confirmDelete());
     } finally {
       setBusy(false);
     }
@@ -152,7 +155,7 @@ export function AiProviderSettings() {
         </Tooltip>
       }
     >
-      {error ? <p className="px-3 pb-1 text-11 text-danger">{error}</p> : null}
+      {error ? <ErrorState error={error} compact onRetry={retry} className="px-3 pb-1" /> : null}
       <ListGroup>
         {providers === null ? (
           <EmptyRow>{t("Loading")}</EmptyRow>
@@ -314,12 +317,13 @@ function AiProviderForm({
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 保存失败留在弹窗里（表单数据不丢），错误带阶段与恢复建议。
+  const { error, fail, clear } = useActionError();
   const editing = draft.id !== null;
 
   const submit = async () => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.aiProviderSave({
         id: draft.id,
@@ -337,7 +341,7 @@ function AiProviderForm({
       });
       await onSaved();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void submit());
     } finally {
       setBusy(false);
     }
@@ -353,7 +357,7 @@ function AiProviderForm({
       {/* 滚动交给 Modal 自己的内容区（`max-h-[60vh] overflow-y-auto`）——
           这里再套一层 overflow 会同时出现内外两个滚动条。 */}
       <div className="flex flex-col gap-3">
-        {error ? <ErrorText>{error}</ErrorText> : null}
+        {error ? <ErrorState error={error} compact /> : null}
 
         <Field label={t("Name")}>
           <input

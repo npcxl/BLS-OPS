@@ -14,6 +14,7 @@
  * 全局的管壳（标签/面板），这里的管当前工作项的数据操作。
  */
 import { useEffect, useRef } from "react";
+import { hasOpenOverlay } from "@/components/ui/overlay";
 
 export interface ScopedShortcut {
   /** 与 `KeyboardEvent.key` 对应，大小写不敏感（"s" / "Escape" / "Enter"）。 */
@@ -52,6 +53,9 @@ export function useScopedShortcut({
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // 弹窗 / 右键菜单打开时，键属于浮层：在「编辑行」弹窗里按 Ctrl+S
+      // 不该把背后工作项的待提交修改写进数据库。
+      if (hasOpenOverlay()) return;
       const mod = event.ctrlKey || event.metaKey;
       if (mod !== ctrl) return;
       if (event.shiftKey !== shift) return;

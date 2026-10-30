@@ -28,6 +28,7 @@ import { RedisBrowser } from "../RedisBrowser";
 // 错误提示走全局 alert（ToastHost），这里只关心"推了什么"，不渲染宿主。
 vi.mock("@/components/ui/toast", () => ({
   pushToast: vi.fn(),
+  pushErrorToast: vi.fn(),
   dismissToast: vi.fn(),
   ToastHost: () => null,
 }));

@@ -6,13 +6,13 @@
  * 失败时把 `stage`（ssh_tunnel / tcp / tls / auth / database）原样展示，
  * 而不是一句"连接失败"。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, FolderOpen, Loader2, ShieldCheck, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { pushToast } from "@/components/ui/toast";
+import { stageLabel, toAppError } from "@/lib/app-error";
 import { DbEngineIcon } from "./DbEngineIcon";
 import {
   DB_ENGINES,
@@ -25,6 +25,7 @@ import {
 import type {
   ConnectionTestResult,
   DatabaseProfile,
+  DbErrorInfo,
   TlsMode,
 } from "@/api/types/database";
 import { useDomainStore } from "@/stores/domain-store";
@@ -100,7 +101,10 @@ export function ConnectionDialog({
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 保存失败的结构化错误：只在这里显示一次，不再另弹全局提示。 */
+  const [saveFailure, setSaveFailure] = useState<DbErrorInfo | null>(null);
   const [test, setTest] = useState<ConnectionTestResult | null>(null);
+  const testResultRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -157,6 +161,7 @@ export function ConnectionDialog({
 
   const save = async () => {
     setError(null);
+    setSaveFailure(null);
     if (!draft.name.trim()) {
       setError(t("连接名称不能为空"));
       return;
@@ -189,14 +194,9 @@ export function ConnectionDialog({
       onSaved(saved);
       onClose();
     } catch (failure) {
-      const info = toDbError(failure);
-      setError(info.message);
-      pushToast(info.message, "error", {
-        title: t("保存连接失败"),
-        label: info.stage,
-        detail: info.detail ?? undefined,
-        persist: true,
-      });
+      // 表单里就地显示（含阶段与恢复建议）。**不再**同时推一条全局提示：
+      // 同一个错误说两遍，用户会以为是两次失败，也会挡住表单。
+      setSaveFailure(toDbError(failure));
     } finally {
       setBusy(false);
     }
@@ -204,6 +204,7 @@ export function ConnectionDialog({
 
   const runTest = async () => {
     setError(null);
+    setSaveFailure(null);
     setTest(null);
     setTesting(true);
     try {
@@ -223,17 +224,22 @@ export function ConnectionDialog({
         tunnel_local_port: null,
         read_only: draft.read_only,
       });
-      // 结果面板在表单下方，屏幕小的时候看不见 —— 同样弹到顶部。
-      pushToast(info.message, "error", {
-        title: t("测试连接失败"),
-        label: info.stage,
-        detail: info.detail ?? undefined,
-        persist: false,
-      });
     } finally {
       setTesting(false);
     }
   };
+
+  /**
+   * 测试结果在表单末尾，屏幕小时看不见 —— 出结果后滚过去，而不是再弹一条
+   * 重复的错误通知。用户看到的永远是**一处**结果。
+   */
+  useEffect(() => {
+    if (!test) return;
+    const frame = window.requestAnimationFrame(() =>
+      testResultRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [test]);
 
   const browseCa = async () => {
     try {
@@ -606,8 +612,22 @@ export function ConnectionDialog({
 
         {error && <ErrorText>{error}</ErrorText>}
 
+        {saveFailure &&
+          (() => {
+            const info = toAppError(saveFailure);
+            return (
+              <ErrorText detail={info.detail ?? info.hint ?? undefined}>
+                {info.stage && (
+                  <span className="mr-1 font-medium">{stageLabel(info.stage)}</span>
+                )}
+                {info.message}
+              </ErrorText>
+            );
+          })()}
+
         {test && (
           <div
+            ref={testResultRef}
             className={
               test.ok
                 ? "rounded-[8px] border border-success/30 bg-success/10 px-2 py-1.5 text-11 text-success"

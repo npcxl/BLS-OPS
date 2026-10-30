@@ -25,6 +25,7 @@ use crate::deployment::run::{
     RunExecutor, RunSetup, StartOptions,
 };
 use crate::deployment::validate as plan_validate;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 use super::{open_db, record_audit};
@@ -44,10 +45,10 @@ fn load_setup(
     conn: &Connection,
     plan: &DeploymentPlanGraph,
     version_label: &str,
-) -> Result<RunSetup, String> {
+) -> OpsResult<RunSetup> {
     let environment = db::get_environment(&conn, &plan.plan.environment_id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "计划所属的环境不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("计划所属的环境不存在"))?;
     let application_id = plan.plan.application_id.clone();
     let services = db::list_service_units(&conn, Some(&application_id), Some(&environment.id))
         .map_err(|error| error.to_string())?;
@@ -65,7 +66,7 @@ fn load_setup(
         .map_err(|error| error.to_string())?;
     let application = db::get_application(&conn, &application_id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "计划所属的应用不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("计划所属的应用不存在"))?;
 
     // 服务事实：与 P5.2 方案用的是**同一条**连接键（制品 fingerprint → 导入任务）。
     let facts = crate::deployment::run::facts_from_tasks(
@@ -157,7 +158,7 @@ pub async fn deployment_run_preflight(
     state: State<'_, AppState>,
     plan_id: String,
     session_id: Option<String>,
-) -> Result<PreflightOutcome, String> {
+) -> OpsResult<PreflightOutcome> {
     preflight_plan(&state, &plan_id, session_id.as_deref()).await
 }
 
@@ -167,7 +168,7 @@ pub(crate) async fn preflight_plan(
     state: &AppState,
     plan_id: &str,
     session_id: Option<&str>,
-) -> Result<PreflightOutcome, String> {
+) -> OpsResult<PreflightOutcome> {
     let (plan, setup, compiled, connected, locked) = {
         let conn = open_db(state)?;
         let plan = load_plan(&conn, plan_id)?;
@@ -219,7 +220,7 @@ pub async fn deployment_run_start(
     session_id: String,
     // 是否预先批准本次运行里所有需要确认的节点（"这个计划我已经审过"）。
     approve_high_risk: bool,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     start_run(app, &state, &plan_id, &session_id, approve_high_risk).await
 }
 
@@ -230,9 +231,9 @@ pub(crate) async fn start_run(
     plan_id: &str,
     session_id: &str,
     approve_high_risk: bool,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     if !state.ssh.is_connected(session_id).await {
-        return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
+        return Err(OpsError::from("SSH 会话不存在或已断开，请先连接服务器"));
     }
     let (plan, setup, server_id, environment_id) = {
         let conn = open_db(state)?;
@@ -241,7 +242,7 @@ pub(crate) async fn start_run(
         let setup = load_setup(&conn, &plan, &version)?;
         let environment = db::get_environment(&conn, &plan.plan.environment_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "计划所属的环境不存在".to_string())?;
+            .ok_or_else(|| OpsError::from("计划所属的环境不存在"))?;
         (
             plan,
             setup,
@@ -316,13 +317,13 @@ pub async fn deployment_run_approve_node(
     run_id: String,
     node_key: String,
     session_id: Option<String>,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     state.runs.approve(&run_id, &node_key);
     let (run, server_id) = {
         let conn = open_db(&state)?;
         let run = db::get_run(&conn, &run_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "运行不存在".to_string())?;
+            .ok_or_else(|| OpsError::from("运行不存在"))?;
         // 批准要**落库**：重启之后这次批准仍然有效，且可审计。
         let mut updated = run.clone();
         let mut meta = read_meta(&updated);
@@ -346,7 +347,7 @@ pub async fn deployment_run_approve_node(
     if run.status == RunStatus::Paused {
         let session_id = session_id
             .filter(|id| !id.trim().is_empty())
-            .ok_or_else(|| "继续执行需要已连接的 SSH 会话".to_string())?;
+            .ok_or_else(|| OpsError::from("继续执行需要已连接的 SSH 会话"))?;
         return resume_inner(app, &state, &run, &session_id, Some(node_key)).await;
     }
     let nodes = {
@@ -364,15 +365,15 @@ pub async fn deployment_run_resume(
     run_id: String,
     session_id: String,
     from_node_key: Option<String>,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     if !state.ssh.is_connected(&session_id).await {
-        return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
+        return Err(OpsError::from("SSH 会话不存在或已断开，请先连接服务器"));
     }
     let run = {
         let conn = open_db(&state)?;
         db::get_run(&conn, &run_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "运行不存在".to_string())?
+            .ok_or_else(|| OpsError::from("运行不存在"))?
     };
     let node_key = match from_node_key {
         Some(key) if !key.trim().is_empty() => Some(key),
@@ -402,7 +403,7 @@ async fn resume_inner(
     run: &DeploymentRun,
     session_id: &str,
     from_node_key: Option<String>,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     let (plan, setup) = {
         let conn = open_db(&state)?;
         let plan = load_plan(&conn, &run.plan_id)?;
@@ -461,7 +462,7 @@ async fn resume_inner(
 pub async fn deployment_run_cancel(
     state: State<'_, AppState>,
     run_id: String,
-) -> Result<bool, String> {
+) -> OpsResult<bool> {
     let cancelled = state.runs.cancel(&run_id);
     if cancelled {
         // 取消是协作式的：正在跑的动作跑完当前这一步才停，因此这里只记状态过渡。
@@ -469,7 +470,7 @@ pub async fn deployment_run_cancel(
             let conn = open_db(&state)?;
             db::get_run(&conn, &run_id)
                 .map_err(|error| error.to_string())?
-                .ok_or_else(|| "运行不存在".to_string())?
+                .ok_or_else(|| OpsError::from("运行不存在"))?
         };
         let environment_id = run.environment_id.clone();
         let now = AppDb::now();
@@ -498,15 +499,15 @@ pub async fn deployment_run_rollback(
     state: State<'_, AppState>,
     run_id: String,
     session_id: String,
-) -> Result<DeploymentRunDetail, String> {
+) -> OpsResult<DeploymentRunDetail> {
     if !state.ssh.is_connected(&session_id).await {
-        return Err("SSH 会话不存在或已断开，请先连接服务器".to_string());
+        return Err(OpsError::from("SSH 会话不存在或已断开，请先连接服务器"));
     }
     let run = {
         let conn = open_db(&state)?;
         db::get_run(&conn, &run_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "运行不存在".to_string())?
+            .ok_or_else(|| OpsError::from("运行不存在"))?
     };
     let (plan, setup) = {
         let conn = open_db(&state)?;
@@ -577,7 +578,7 @@ pub struct RegisteredProvider {
 pub async fn deployment_dns_guidance(
     state: State<'_, AppState>,
     binding_id: String,
-) -> Result<DnsGuidance, String> {
+) -> OpsResult<DnsGuidance> {
     let binding = {
         let conn = open_db(&state)?;
         load_binding(&conn, &binding_id)?
@@ -613,7 +614,7 @@ pub async fn deployment_ssl_plan(
     state: State<'_, AppState>,
     binding_id: String,
     session_id: Option<String>,
-) -> Result<CertificatePlan, String> {
+) -> OpsResult<CertificatePlan> {
     let binding = {
         let conn = open_db(&state)?;
         load_binding(&conn, &binding_id)?

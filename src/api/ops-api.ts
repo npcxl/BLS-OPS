@@ -323,13 +323,19 @@ export {
   type ServiceGroup,
   type WorkloadRole,
 } from "@/api/types/project";
+import { toAppError } from "@/lib/app-error";
 import { type VscodeOpenResult } from "@/api/types/vscode";
 import { type EditorInfo, type SyncSessionInfo } from "@/api/types/editor-sync";
 
+/**
+ * 历史 API：把任意异常压成一行字符串。
+ *
+ * 内部走 `toAppError`：Rust 的 `OpsError` / `DbErrorInfo` 是**对象**，
+ * 以前这里 `String(cause)` 会输出 `[object Object]`。新代码请直接用
+ * `error` + `<ErrorState>` / `pushErrorToast`，别再把错误压成字符串。
+ */
 function message(cause: unknown): string {
-  if (cause instanceof Error) return cause.message;
-  if (typeof cause === "string") return cause;
-  return String(cause);
+  return toAppError(cause).message;
 }
 
 export {

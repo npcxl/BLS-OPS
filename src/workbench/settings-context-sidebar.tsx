@@ -2,13 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, KeyRound, Monitor, Moon, Plus, ShieldCheck, Sun, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Tooltip } from "@/components/ui/tooltip";
-import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { Field, Modal, fieldClass } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { Select } from "@/components/ui/select";
 import {
   CREDENTIAL_TYPES,
   opsApi,
-  toErrorMessage,
   type AuditLogRecord,
   type CommandHistoryRecord,
   type CredentialRecord,
@@ -108,40 +110,40 @@ export function SettingsContextSidebar() {
 
   const [themeMode, setThemeMode] = useThemeMode();
   const inspection = useInspectionMode();
+  const servers = useDomainStore((s) => s.servers);
   const [editing, setEditing] = useState<CredentialRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** 原始异常：读凭据失败要能看清是钥匙串权限还是存储损坏。 */
+  const { error, fail, clear, retry } = useActionError();
+  /** 删除凭据：不可撤销（钥匙串里的密钥一并删除），必须过确认弹窗。 */
+  const [pendingDelete, setPendingDelete] = useState<CredentialRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
 
   const load = useCallback(async () => {
     try {
       await refreshCredentials();
-      setError(null);
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void load());
     }
-  }, [refreshCredentials]);
+  }, [refreshCredentials, clear, fail]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const remove = async (credential: CredentialRecord) => {
-    const store = useDomainStore.getState();
-    const references = store.servers.filter((item) => item.credential_id === credential.id).length;
-    const message =
-      references > 0
-        ? t(
-            "{{count}} servers are using credential “{{name}}”.\nAfter deletion they become “no credential” and must be re-selected before connecting.\n\nDelete anyway?",
-            { count: references, name: credential.name },
-          )
-        : t("Delete credential “{{name}}”? The key in the system credential manager is removed too.", {
-            name: credential.name,
-          });
-    if (!window.confirm(message)) return;
+    setDeleting(true);
+    setDeleteError(null);
     try {
-      await store.deleteCredential(credential.id, true);
-      setError(null);
+      await useDomainStore.getState().deleteCredential(credential.id, true);
+      clear();
+      setPendingDelete(null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      // 就地显示在弹窗里：同一件事不在背景页再报一遍。
+      setDeleteError(cause);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -265,7 +267,7 @@ export function SettingsContextSidebar() {
                     type="button"
                     aria-label={t("Delete credential {{name}}", { name: credential.name })}
                     className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-                    onClick={() => void remove(credential)}
+                    onClick={() => setPendingDelete(credential)}
                   >
                     <Trash2 size={12} />
                   </button>
@@ -352,9 +354,43 @@ export function SettingsContextSidebar() {
         </Group>
       )}
 
-      {error && <ErrorText>{error}</ErrorText>}
+      {error ? <ErrorState error={error} compact onRetry={retry} className="px-3" /> : null}
 
       {editing && <CredentialForm credential={editing} onClose={() => setEditing(null)} />}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        risk="irreversible"
+        title={t("Delete credential")}
+        description={
+          pendingDelete ? (
+            <span className="break-all text-fg">{pendingDelete.name}</span>
+          ) : null
+        }
+        consequences={(() => {
+          const references = pendingDelete
+            ? servers.filter((item) => item.credential_id === pendingDelete.id).length
+            : 0;
+          return [
+            t("The key in the system credential manager is removed too."),
+            ...(references > 0
+              ? [
+                  t(
+                    "{{count}} servers use this credential; they become “no credential” and must be re-selected before connecting.",
+                    { count: references },
+                  ),
+                ]
+              : []),
+          ];
+        })()}
+        confirmLabel={t("Delete")}
+        pending={deleting}
+        error={deleteError ?? undefined}
+        onConfirm={() => {
+          if (pendingDelete) void remove(pendingDelete);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }
@@ -375,7 +411,12 @@ export function CredentialForm({
   const [passphrase, setPassphrase] = useState("");
   const [importing, setImporting] = useState(false);
   const [importedFrom, setImportedFrom] = useState<string | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
+  // 导入私钥失败：多半是文件不是 UTF-8 / 不是私钥 / 权限不足 —— 要能看清原因。
+  const {
+    error: importError,
+    fail: failImport,
+    clear: clearImport,
+  } = useActionError();
   const submit = useSubmit();
 
   const existing = credentials.find((item) => item.id === form.id);
@@ -393,7 +434,7 @@ export function CredentialForm({
    * 按扩展名过滤会把最常见的场景挡在外面；内容是主防线。
    */
   const importKeyFile = async () => {
-    setImportError(null);
+    clearImport();
     setImporting(true);
     try {
       const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
@@ -412,7 +453,7 @@ export function CredentialForm({
           : t("Loaded {{name}}", { name: imported.file_name }),
       );
     } catch (cause) {
-      setImportError(toErrorMessage(cause));
+      failImport(cause, () => void importKeyFile());
     } finally {
       setImporting(false);
     }
@@ -537,7 +578,7 @@ export function CredentialForm({
               ) : null}
             </div>
           )}
-          {importError ? <ErrorText>{importError}</ErrorText> : null}
+          {importError ? <ErrorState error={importError} compact /> : null}
         </Field>
 
         {isPrivateKey && (
@@ -575,7 +616,7 @@ export function CredentialForm({
           </p>
         )}
 
-        <ErrorText>{submit.error}</ErrorText>
+        {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
     </Modal>
   );

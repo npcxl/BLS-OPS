@@ -21,9 +21,11 @@ import {
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useTranslation } from "react-i18next";
+import { useDatabaseStore } from "@/stores/database-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
 import type { NavModule, WorkbenchPane, WorkspaceTab, WorkspaceTabType } from "@/workbench/types";
+import { DbEngineIcon } from "@/workbench/views/database/DbEngineIcon";
 
 /** 页签图标 = 左侧菜单同一套（its-hover），保证"页签和菜单图标一致"。 */
 type TabIcon = IconComponent | typeof TerminalIcon;
@@ -61,6 +63,7 @@ const TAB_ICONS: Record<WorkspaceTabType, TabIcon> = {
   command_center: CommandCenterIcon,
   workflow: UnorderedListIcon,
   deployment: RocketIcon,
+  // 真实渲染按引擎取品牌图标（见下方 DbEngineIcon）；这里只作拿不到引擎时的兜底。
   database: Table2,
 };
 
@@ -82,6 +85,9 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
   const closeAllTabs = useWorkbenchStore((s) => s.closeAllTabs);
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const openTab = useWorkbenchStore((s) => s.openTab);
+  // 数据库标签的图标/标题按连接配置实时取值，而不是在开标签时存快照 —— 改名或
+  // 换引擎后标签不用重开也会跟着变。
+  const dbProfiles = useDatabaseStore((s) => s.profiles);
 
   const menu = useContextMenu();
   const tabStripRef = useRef<HTMLDivElement>(null);
@@ -179,6 +185,14 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeTabId;
           const Icon = tabIcon(tab);
+          const dbProfile =
+            tab.type === "database" && tab.profileId
+              ? dbProfiles.find((item) => item.id === tab.profileId)
+              : undefined;
+          // tab.title 可能是 i18n key（store 的 "Home"/"New Terminal"/模块名），
+          // 也可能是动态文案（服务器名）——t() 未命中时原样返回，两边都安全。
+          // 数据库标签用户填的是什么名字就显示什么，改名后这里也会跟着变。
+          const label = dbProfile ? dbProfile.name : t(tab.title);
           return (
             <div
               key={tab.id}
@@ -196,13 +210,15 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               }}
               onContextMenu={tabMenu(tab)}
             >
-              <Icon size={11} className="shrink-0 opacity-80" />
-              {/* tab.title 可能是 i18n key（store 的 "Home"/"New Terminal"/模块名），
-                  也可能是动态文案（服务器名）——t() 未命中时原样返回，两边都安全。 */}
-              <span className="truncate">{t(tab.title)}</span>
+              {dbProfile ? (
+                <DbEngineIcon engine={dbProfile.engine} connected size={13} />
+              ) : (
+                <Icon size={11} className="shrink-0 opacity-80" />
+              )}
+              <span className="truncate">{label}</span>
               <button
                 type="button"
-                aria-label={t("Close {{title}}", { title: tab.title })}
+                aria-label={t("Close {{title}}", { title: label })}
                 className={cn(
                   "ml-0.5 shrink-0 rounded-[4px] p-0.5 text-fg-subtle hover:bg-fg/10 hover:text-fg",
                   active ? "opacity-70 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100",

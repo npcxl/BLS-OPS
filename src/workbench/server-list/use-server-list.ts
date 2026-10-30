@@ -8,7 +8,7 @@
  * applies everywhere at once.
  */
 import { useCallback, useMemo, useState } from "react";
-import { toErrorMessage, type ServerGroupRecord, type ServerRecord } from "@/api/ops-api";
+import type { ServerGroupRecord, ServerRecord } from "@/api/ops-api";
 import { emptyGroup, useDomainStore } from "@/stores/domain-store";
 import { buildServerSections, type ServerSections } from "./sections";
 
@@ -23,10 +23,11 @@ export function useServerSections(): ServerSections {
 }
 
 export interface ServerListActions {
-  error: string | null;
+  /** 原始异常：交给 `ErrorState` 渲染阶段 / 恢复建议 / 详情，别在这里压成字符串。 */
+  error: unknown | null;
   clearError: () => void;
   /** For failures raised outside this hook (e.g. deleting a server). */
-  setError: (message: string) => void;
+  setError: (cause: unknown) => void;
   /** Refreshes servers *and* groups — the two must never drift apart. */
   refresh: () => Promise<void>;
   toggleFavorite: (server: ServerRecord) => Promise<void>;
@@ -43,7 +44,7 @@ function patchServers(update: (servers: ServerRecord[]) => ServerRecord[]) {
 }
 
 export function useServerListActions(): ServerListActions {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown | null>(null);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -53,7 +54,7 @@ export function useServerListActions(): ServerListActions {
       await Promise.all([refreshServers(), refreshGroups()]);
       setError(null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      setError(cause);
     }
   }, []);
 
@@ -70,7 +71,7 @@ export function useServerListActions(): ServerListActions {
       // Put the old snapshot back: a star that lies about the stored value is
       // worse than one that lags a frame.
       useDomainStore.setState({ servers: rollback });
-      setError(toErrorMessage(cause));
+      setError(cause);
     }
   }, []);
 
@@ -84,7 +85,7 @@ export function useServerListActions(): ServerListActions {
       setError(null);
     } catch (cause) {
       useDomainStore.setState({ servers: rollback });
-      setError(toErrorMessage(cause));
+      setError(cause);
     }
   }, []);
 
@@ -98,7 +99,7 @@ export function useServerListActions(): ServerListActions {
     } catch (cause) {
       // Duplicate names and storage failures must be readable — never a silent
       // "nothing happened" that looks like the button is broken.
-      setError(toErrorMessage(cause));
+      setError(cause);
       return null;
     }
   }, []);
@@ -110,7 +111,7 @@ export function useServerListActions(): ServerListActions {
       await useDomainStore.getState().saveGroup({ ...group, name: trimmed, updated_at: Date.now() });
       setError(null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      setError(cause);
     }
   }, []);
 
@@ -120,7 +121,7 @@ export function useServerListActions(): ServerListActions {
       await useDomainStore.getState().deleteGroup(group.id);
       setError(null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      setError(cause);
     }
   }, []);
 

@@ -7,6 +7,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::{dirsize::DirectorySizeResult, state::AppState};
 
 /// One directory listing: the canonical path actually read, plus its entries.
@@ -17,12 +18,12 @@ pub struct SftpListResult {
 }
 
 #[tauri::command]
-pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> Result<String, String> {
+pub async fn sftp_open(state: State<'_, AppState>, session_id: String) -> OpsResult<String> {
     state
         .ssh
         .sftp_open(&session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("sftp", error))
 }
 
 #[tauri::command]
@@ -30,12 +31,12 @@ pub async fn sftp_list_dir(
     state: State<'_, AppState>,
     session_id: String,
     path: Option<String>,
-) -> Result<SftpListResult, String> {
+) -> OpsResult<SftpListResult> {
     let (path, entries) = state
         .ssh
         .sftp_list_dir(&session_id, path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     Ok(SftpListResult { path, entries })
 }
 
@@ -53,7 +54,7 @@ pub async fn directory_size_start(
     path: String,
     timeout_ms: Option<u64>,
     force: Option<bool>,
-) -> Result<DirectorySizeResult, String> {
+) -> OpsResult<DirectorySizeResult> {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(5 * 60_000).max(1_000));
     let initial = state.dir_sizes.start(
         Some(Arc::new(move |result| {
@@ -75,7 +76,7 @@ pub async fn directory_size_cancel(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state.dir_sizes.cancel(&session_id, &path);
     Ok(())
 }
@@ -87,7 +88,7 @@ pub async fn directory_size_status(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<Option<DirectorySizeResult>, String> {
+) -> OpsResult<Option<DirectorySizeResult>> {
     Ok(state.dir_sizes.status(&session_id, &path))
 }
 
@@ -100,8 +101,11 @@ pub async fn directory_size_status_many(
     state: State<'_, AppState>,
     session_id: String,
     paths: Vec<String>,
-) -> Result<Vec<DirectorySizeResult>, String> {
-    state.dir_sizes.status_many(&session_id, &paths)
+) -> OpsResult<Vec<DirectorySizeResult>> {
+    state
+        .dir_sizes
+        .status_many(&session_id, &paths)
+        .map_err(|error| OpsError::from_stage("sftp", error).retryable())
 }
 
 #[tauri::command]
@@ -109,12 +113,12 @@ pub async fn sftp_realpath(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     state
         .ssh
         .sftp_realpath(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("sftp", error))
 }
 
 #[tauri::command]
@@ -122,21 +126,21 @@ pub async fn sftp_stat(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<crate::ssh::RemoteFileEntry, String> {
+) -> OpsResult<crate::ssh::RemoteFileEntry> {
     state
         .ssh
         .sftp_stat(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("sftp", error))
 }
 
 #[tauri::command]
-pub async fn sftp_close(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+pub async fn sftp_close(state: State<'_, AppState>, session_id: String) -> OpsResult<()> {
     state
         .ssh
         .sftp_close(&session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("sftp", error))
 }
 
 /// Reads any remote file as base64 bytes for the in-app preview (images, PDFs,
@@ -147,7 +151,7 @@ pub async fn sftp_read_binary(
     session_id: String,
     path: String,
     max_len: Option<u64>,
-) -> Result<crate::ssh::RemoteBinaryContent, String> {
+) -> OpsResult<crate::ssh::RemoteBinaryContent> {
     // 20 MB covers a spreadsheet or a photo with room to spare; bigger files
     // are still downloadable, they just are not rendered in the window.
     const DEFAULT_MAX: u64 = 20 * 1024 * 1024;
@@ -155,7 +159,7 @@ pub async fn sftp_read_binary(
         .ssh
         .sftp_read_binary(&session_id, &path, max_len.unwrap_or(DEFAULT_MAX))
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_read_binary", None, None, &path);
     Ok(content)
 }
@@ -168,12 +172,12 @@ pub async fn sftp_download_file(
     session_id: String,
     path: String,
     local_path: String,
-) -> Result<u64, String> {
+) -> OpsResult<u64> {
     let written = state
         .ssh
         .sftp_download_file(&session_id, &path, &local_path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(
         &state,
         "sftp_download_file",
@@ -194,7 +198,7 @@ pub async fn sftp_upload(
     session_id: String,
     local_paths: Vec<String>,
     remote_dir: String,
-) -> Result<Vec<crate::ssh::RemoteFileEntry>, String> {
+) -> OpsResult<Vec<crate::ssh::RemoteFileEntry>> {
     let session_id_for_cb = session_id.clone();
     let uploaded = state
         .ssh
@@ -205,7 +209,7 @@ pub async fn sftp_upload(
             );
         })
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(
         &state,
         "sftp_upload",
@@ -221,12 +225,12 @@ pub async fn sftp_remove(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state
         .ssh
         .sftp_remove(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_remove", None, None, &path);
     Ok(())
 }
@@ -238,12 +242,12 @@ pub async fn sftp_rename(
     session_id: String,
     path: String,
     new_name: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let new_path = state
         .ssh
         .sftp_rename(&session_id, &path, &new_name)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(
         &state,
         "sftp_rename",
@@ -261,12 +265,12 @@ pub async fn sftp_copy(
     session_id: String,
     path: String,
     new_name: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let new_path = state
         .ssh
         .sftp_copy(&session_id, &path, &new_name)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(
         &state,
         "sftp_copy",
@@ -282,12 +286,12 @@ pub async fn sftp_mkdir(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let created = state
         .ssh
         .sftp_mkdir(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_mkdir", None, None, &created);
     Ok(created)
 }
@@ -298,12 +302,12 @@ pub async fn sftp_touch(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let created = state
         .ssh
         .sftp_touch(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_touch", None, None, &created);
     Ok(created)
 }
@@ -314,13 +318,13 @@ pub async fn sftp_read_file(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<crate::ssh::RemoteFileContent, String> {
+) -> OpsResult<crate::ssh::RemoteFileContent> {
     const MAX_EDIT_SIZE: u64 = 2 * 1024 * 1024;
     let content = state
         .ssh
         .sftp_read_file(&session_id, &path, MAX_EDIT_SIZE)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_read_file", None, None, &path);
     Ok(content)
 }
@@ -332,12 +336,12 @@ pub async fn sftp_write_file(
     session_id: String,
     path: String,
     content: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state
         .ssh
         .sftp_write_file(&session_id, &path, &content)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     record_audit(&state, "sftp_write_file", None, None, &path);
     Ok(())
 }
@@ -353,7 +357,7 @@ pub async fn sftp_save_editor_file(
     path: String,
     content: String,
     expected: Option<crate::ssh::RemoteFileVersion>,
-) -> Result<crate::ssh::SaveFileOutcome, String> {
+) -> OpsResult<crate::ssh::SaveFileOutcome> {
     const MAX_EDIT_SIZE: u64 = 2 * 1024 * 1024;
     // 覆盖之前先把**旧内容**存到本机：保存错了还能捞回来。
     // 读不到（二进制 / 没权限）就跳过历史，不能因此阻止保存。
@@ -372,7 +376,7 @@ pub async fn sftp_save_editor_file(
         .ssh
         .save_text_file(&session_id, &path, &content, expected.as_ref())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("sftp", error))?;
     // 冲突时并没有写入，但审计里记一条"尝试保存"没有意义 —— 只在真正落盘后记录。
     if matches!(outcome, crate::ssh::SaveFileOutcome::Saved { .. }) {
         record_audit(&state, "sftp_write_file", None, None, &path);
@@ -385,13 +389,13 @@ pub async fn sftp_save_editor_file(
 pub async fn editor_history_list(
     state: State<'_, AppState>,
     path: String,
-) -> Result<Vec<crate::editor_history::EditorHistoryEntry>, String> {
+) -> OpsResult<Vec<crate::editor_history::EditorHistoryEntry>> {
     let root = state
         .db
         .path()
         .parent()
         .ok_or_else(|| "找不到应用数据目录".to_string())?;
-    crate::editor_history::list(root, &path).map_err(|error| error.to_string())
+    crate::editor_history::list(root, &path).map_err(|error| OpsError::from_stage("sftp", error))
 }
 
 /// 读取一份历史版本的内容（供编辑器预览 / 回填）。
@@ -400,11 +404,11 @@ pub async fn editor_history_read(
     state: State<'_, AppState>,
     path: String,
     id: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let root = state
         .db
         .path()
         .parent()
         .ok_or_else(|| "找不到应用数据目录".to_string())?;
-    crate::editor_history::read(root, &path, &id).map_err(|error| error.to_string())
+    crate::editor_history::read(root, &path, &id).map_err(|error| OpsError::from_stage("sftp", error))
 }

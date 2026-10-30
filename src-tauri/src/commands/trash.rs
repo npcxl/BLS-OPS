@@ -3,8 +3,14 @@
 use tauri::{AppHandle, Emitter, State};
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 use crate::trash::TrashEntry;
+
+/// 回收站操作走 `sftp` 阶段：失败原因通常是路径已被占用或权限不足。
+fn trash_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("sftp", error)
+}
 
 /// 删除 = 移入回收区（`~/.bls-ops-trash/<时间戳>/`）。
 ///
@@ -15,12 +21,12 @@ pub async fn trash_move(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<TrashEntry, String> {
+) -> OpsResult<TrashEntry> {
     let entry = state
         .ssh
         .trash_move(&session_id, &path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(trash_error)?;
     record_audit(
         &state,
         "trash_move",
@@ -39,12 +45,12 @@ pub async fn trash_move(
 pub async fn trash_list(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<TrashEntry>, String> {
+) -> OpsResult<Vec<TrashEntry>> {
     state
         .ssh
         .trash_list(&session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| trash_error(error).retryable())
 }
 
 #[tauri::command]
@@ -53,12 +59,12 @@ pub async fn trash_restore(
     state: State<'_, AppState>,
     session_id: String,
     id: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let restored = state
         .ssh
         .trash_restore(&session_id, &id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(trash_error)?;
     record_audit(
         &state,
         "trash_restore",
@@ -76,12 +82,12 @@ pub async fn trash_purge(
     state: State<'_, AppState>,
     session_id: String,
     id: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state
         .ssh
         .trash_purge(&session_id, &id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(trash_error)?;
     record_audit(
         &state,
         "trash_purge",
@@ -94,12 +100,12 @@ pub async fn trash_purge(
 
 /// 清空回收站，返回清理条数。
 #[tauri::command]
-pub async fn trash_empty(state: State<'_, AppState>, session_id: String) -> Result<usize, String> {
+pub async fn trash_empty(state: State<'_, AppState>, session_id: String) -> OpsResult<usize> {
     let removed = state
         .ssh
         .trash_empty(&session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(trash_error)?;
     record_audit(
         &state,
         "trash_empty",

@@ -198,6 +198,10 @@ export default {
   "Transferring": "传输中",
   "Skipped (already exists)": "已跳过（同名文件已存在）",
   "Clear finished": "清理已结束",
+  "Clear finished transfers?": "清理已结束的传输记录？",
+  "Finished records are removed from this list. Files already transferred stay where they are.":
+    "只从列表里移除已结束的记录，已经传输完的文件不会被动。",
+  "{{count}} records will be cleared": "将清理 {{count}} 条记录",
   "{{count}} files queued for upload": "已排队 {{count}} 个上传任务",
   "{{count}} queued, {{skipped}} skipped (already exist)":
     "已排队 {{count}} 个，跳过 {{skipped}} 个（同名文件已存在）",

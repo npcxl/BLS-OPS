@@ -13,10 +13,12 @@ import { python as pythonLang } from "@codemirror/lang-python";
 import { markdown as markdownLang } from "@codemirror/lang-markdown";
 import { Button } from "@/components/ui/button";
 import { CodeSearchBox } from "@/components/ui/code-search-box";
-import { ErrorText, Modal } from "@/components/ui/modal";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorState } from "@/components/ui/error-state";
+import { Modal } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import {
   opsApi,
-  toErrorMessage,
   type EditorHistoryEntry,
   type RemoteFileVersion,
 } from "@/api/ops-api";
@@ -25,7 +27,7 @@ import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
 import { useInspectionMode } from "@/stores/inspection-store";
-import { comboFromEvent, useShortcutBindings } from "@/stores/shortcut-store";
+import { comboFromKey, useShortcutBindings } from "@/stores/shortcut-store";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -53,7 +55,8 @@ export default function FileEditorModal({
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [size, setSize] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常：读/存失败要带阶段、详情与重试；本地提示（二进制、巡检）也走同一条通道。
+  const { error, fail, clear, retry } = useActionError();
   const [dirty, setDirty] = useState(false);
   // Unsaved remote edits: an update restart would lose them, so they are
   // registered with the restart guard (P5.1).
@@ -69,8 +72,15 @@ export default function FileEditorModal({
   /** 本机历史版本（保存前自动留存）。 */
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<EditorHistoryEntry[] | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  const {
+    error: historyError,
+    fail: failHistoryError,
+    clear: clearHistoryError,
+    retry: retryHistory,
+  } = useActionError();
   const [historyBusy, setHistoryBusy] = useState(false);
+  /** 有未保存修改时关闭：先确认，绝不静默丢掉编辑器里的内容。 */
+  const [discardOpen, setDiscardOpen] = useState(false);
   const { t } = useTranslation();
   const theme = useEditorTheme();
   const viewRef = useRef<EditorView | null>(null);
@@ -85,7 +95,7 @@ export default function FileEditorModal({
         const result = await opsApi.sftpReadFile(sessionId, path);
         if (cancelled) return;
         if (result.binary) {
-          setError(t("This is a binary file and cannot be opened as text."));
+          fail(t("This is a binary file and cannot be opened as text."));
           return;
         }
         setContent(result.content ?? "");
@@ -93,7 +103,7 @@ export default function FileEditorModal({
         // 版本基线：保存时原样带回，服务器据此判断文件是否被改过。
         setVersion(result.version);
       } catch (cause) {
-        if (!cancelled) setError(toErrorMessage(cause));
+        if (!cancelled) fail(cause, () => void reload());
       }
     })();
     return () => {
@@ -110,11 +120,11 @@ export default function FileEditorModal({
   const save = async (expected?: RemoteFileVersion | null) => {
     if (content === null || saving) return;
     if (inspection) {
-      setError(t("Inspection mode: saving is disabled."));
+      fail(t("Inspection mode: saving is disabled."));
       return;
     }
     setSaving(true);
-    setError(null);
+    clear();
     setNotice(null);
     try {
       const outcome = await opsApi.sftpSaveEditorFile(
@@ -133,7 +143,7 @@ export default function FileEditorModal({
       }
       setConflict({ current: outcome.current ?? null });
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void save(expected));
     } finally {
       setSaving(false);
     }
@@ -142,11 +152,11 @@ export default function FileEditorModal({
   /** 重新加载：丢掉本地改动，换成服务器上的当前版本。 */
   const reload = async () => {
     setSaving(true);
-    setError(null);
+    clear();
     try {
       const result = await opsApi.sftpReadFile(sessionId, path);
       if (result.binary) {
-        setError(t("This is a binary file and cannot be opened as text."));
+        fail(t("This is a binary file and cannot be opened as text."));
         return;
       }
       setContent(result.content ?? "");
@@ -156,7 +166,7 @@ export default function FileEditorModal({
       setConflict(null);
       setNotice(t("Reloaded the current version from the server."));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void reload());
     } finally {
       setSaving(false);
     }
@@ -166,7 +176,7 @@ export default function FileEditorModal({
   const saveAsCopy = async () => {
     if (content === null || saving) return;
     setSaving(true);
-    setError(null);
+    clear();
     try {
       const stamp = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
       const target = `${path}.bls-conflict-${stamp}`;
@@ -176,10 +186,10 @@ export default function FileEditorModal({
         setNotice(t("Saved as {{path}}. The original file was left untouched.", { path: target }));
         onSaved();
       } else {
-        setError(t("The copy target changed too. Try again."));
+        fail(t("The copy target changed too. Try again."));
       }
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void saveAsCopy());
     } finally {
       setSaving(false);
     }
@@ -187,13 +197,13 @@ export default function FileEditorModal({
 
   const openHistory = async () => {
     setHistoryOpen(true);
-    setHistoryError(null);
+    clearHistoryError();
     if (history !== null) return;
     setHistoryBusy(true);
     try {
       setHistory(await opsApi.editorHistoryList(path));
     } catch (cause) {
-      setHistoryError(toErrorMessage(cause));
+      failHistoryError(cause, () => void openHistory());
     } finally {
       setHistoryBusy(false);
     }
@@ -202,7 +212,7 @@ export default function FileEditorModal({
   /** 把历史版本载入编辑器；是否写回由用户再点保存决定。 */
   const loadHistory = async (id: string) => {
     setHistoryBusy(true);
-    setHistoryError(null);
+    clearHistoryError();
     try {
       const text = await opsApi.editorHistoryRead(path, id);
       setContent(text);
@@ -210,7 +220,7 @@ export default function FileEditorModal({
       setHistoryOpen(false);
       setNotice(t("Loaded a historical version into the editor. Save to write it back."));
     } catch (cause) {
-      setHistoryError(toErrorMessage(cause));
+      failHistoryError(cause, () => void loadHistory(id));
     } finally {
       setHistoryBusy(false);
     }
@@ -223,7 +233,9 @@ export default function FileEditorModal({
       title={name}
       description={path}
       onClose={() => {
-        if (!dirty || window.confirm(t("There are unsaved changes. Close anyway?"))) onClose();
+        if (saving) return;
+        if (dirty) setDiscardOpen(true);
+        else onClose();
       }}
       footer={
         <>
@@ -235,7 +247,12 @@ export default function FileEditorModal({
             <History size={13} />
             {t("History")}
           </Button>
-          <Button variant="ghost" size="sm" disabled={saving} onClick={onClose}>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={saving}
+            onClick={() => (dirty ? setDiscardOpen(true) : onClose())}
+          >
             {dirty ? t("Cancel") : t("Close")}
           </Button>
           <Button
@@ -257,7 +274,7 @@ export default function FileEditorModal({
             {t("Reading file…")}
           </div>
         )}
-        {error && <ErrorText>{error}</ErrorText>}
+        {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
         {inspection && (
           <p className="text-11 leading-relaxed text-warning">
             {t("Inspection mode: editing is view-only. Turn it off in Settings to save changes.")}
@@ -268,7 +285,7 @@ export default function FileEditorModal({
           <div
             className="relative overflow-hidden rounded-[6px] border border-line"
             onKeyDown={(event) => {
-              if (comboFromEvent(event.nativeEvent) === shortcutKeys.editor_save) {
+              if (comboFromKey(event) === shortcutKeys.editor_save) {
                 event.preventDefault();
                 void save();
               }
@@ -276,7 +293,7 @@ export default function FileEditorModal({
             // Ctrl+F 必须在捕获阶段拦下：searchKeymap 挂在编辑器 DOM 上，
             // 冒泡阶段拦截时它已经把默认面板打开了。
             onKeyDownCapture={(event) => {
-              if (comboFromEvent(event.nativeEvent) === shortcutKeys.editor_find) {
+              if (comboFromKey(event) === shortcutKeys.editor_find) {
                 event.preventDefault();
                 event.stopPropagation();
                 setSearchOpen(true);
@@ -357,7 +374,7 @@ export default function FileEditorModal({
         onClose={() => setHistoryOpen(false)}
       >
         <div className="flex flex-col gap-2">
-          {historyError && <ErrorText>{historyError}</ErrorText>}
+          {historyError ? <ErrorState error={historyError} compact onRetry={retryHistory} /> : null}
           {historyBusy && history === null && (
             <div className="flex items-center gap-2 py-6 text-11 text-fg-subtle">
               <Loader2 size={13} className="animate-spin" />
@@ -390,6 +407,20 @@ export default function FileEditorModal({
           ))}
         </div>
       </Modal>
+
+      {/* 未保存就关闭：和"文件被别人改过"一样，都是会丢内容的操作。 */}
+      <ConfirmDialog
+        open={discardOpen}
+        risk="danger"
+        title={t("Discard unsaved changes?")}
+        description={t("{{name}} has unsaved changes. Closing now discards them.", { name })}
+        confirmLabel={t("Discard and close")}
+        onConfirm={() => {
+          setDiscardOpen(false);
+          onClose();
+        }}
+        onCancel={() => setDiscardOpen(false)}
+      />
     </Modal>
   );
 }

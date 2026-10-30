@@ -17,6 +17,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "@/components/icons";
+import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 export interface ComboOption {
@@ -166,13 +167,14 @@ export function ComboInput({
       ref={listRef}
       role="listbox"
       aria-label={ariaLabel}
-      className="select-menu fixed z-[120] min-w-[168px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      className="select-menu fixed min-w-[168px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
       style={{
         left: position.left,
         width: position.width,
         maxHeight: position.maxHeight,
         top: position.top,
         bottom: position.bottom,
+        zIndex: OVERLAY_Z.popover,
       }}
       // 面板内的按键交给输入框处理：焦点始终留在输入框，用户接着打字不会丢。
       onMouseDown={(event) => event.preventDefault()}

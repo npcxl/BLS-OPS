@@ -10,6 +10,7 @@ use crate::{
     db,
     db::CredentialRecord,
     keyring,
+    ops_error::{OpsError, OpsResult},
     ssh::{ConnectTarget, CredentialSecrets, OutputDecoder, SessionEncoding},
     state::AppState,
 };
@@ -203,7 +204,7 @@ pub async fn ssh_connect(
     password: Option<String>,
     cols: Option<u32>,
     rows: Option<u32>,
-) -> Result<SshConnectResult, String> {
+) -> OpsResult<SshConnectResult> {
     let cols = cols.unwrap_or(120).clamp(20, 500);
     let rows = rows.unwrap_or(32).clamp(5, 200);
 
@@ -218,7 +219,8 @@ pub async fn ssh_connect(
         rows,
         true,
     )
-    .await?;
+    .await
+    .map_err(|error| error.ensure_stage("ssh").retryable())?;
 
     if let Some(mut reader) = reader {
         let app_handle = app.clone();
@@ -297,12 +299,12 @@ pub async fn ssh_input(
     state: State<'_, AppState>,
     session_id: String,
     data: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state
         .ssh
         .input(&session_id, data.into_bytes())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("ssh", error))
 }
 
 /// 把某个已连接的交互终端切到指定目录（项目卡片右键「在命令面板中打开」）。
@@ -320,14 +322,15 @@ pub async fn ssh_cd(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<String, String> {
-    let path = crate::safe::validate_abs_path(&path, "目录").map_err(|error| error.to_string())?;
+) -> OpsResult<String> {
+    let path = crate::safe::validate_abs_path(&path, "目录")
+        .map_err(|error| OpsError::new("sftp", error.to_string()))?;
     let line = format!("cd {}", crate::safe::shell_quote(path));
     state
         .ssh
         .input(&session_id, format!("{line}\r").into_bytes())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("ssh", error))?;
     Ok(line)
 }
 
@@ -341,17 +344,18 @@ pub async fn ssh_set_encoding(
     state: State<'_, AppState>,
     session_id: String,
     encoding: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let Some(parsed) = SessionEncoding::parse(&encoding) else {
-        return Err(format!(
-            "不支持的编码：{encoding}（可选 auto / utf8 / gb18030 / big5）"
+        return Err(OpsError::new(
+            "ssh",
+            format!("不支持的编码：{encoding}（可选 auto / utf8 / gb18030 / big5）"),
         ));
     };
     let applied = state
         .ssh
         .set_encoding(&session_id, parsed)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("ssh", error))?;
     Ok(applied.as_str().to_string())
 }
 
@@ -360,7 +364,7 @@ pub async fn ssh_set_encoding(
 pub async fn ssh_get_encoding(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Option<String>, String> {
+) -> OpsResult<Option<String>> {
     Ok(state
         .ssh
         .encoding(&session_id)
@@ -374,25 +378,25 @@ pub async fn ssh_resize(
     session_id: String,
     cols: u32,
     rows: u32,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     state
         .ssh
         .resize(&session_id, cols, rows)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("ssh", error))
 }
 
 #[tauri::command]
-pub async fn ssh_keepalive(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+pub async fn ssh_keepalive(state: State<'_, AppState>, session_id: String) -> OpsResult<()> {
     state
         .ssh
         .keepalive(&session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("ssh", error))
 }
 
 #[tauri::command]
-pub async fn ssh_status(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+pub async fn ssh_status(state: State<'_, AppState>, session_id: String) -> OpsResult<bool> {
     Ok(state.ssh.is_connected(&session_id).await)
 }
 
@@ -401,7 +405,7 @@ pub async fn ssh_disconnect(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     // Monitoring must not resume mid-measurement on a reconnect: the rates
     // would be diffed across the outage. Drop the baseline first.
     state.monitor.forget(&session_id).await;
@@ -428,7 +432,7 @@ pub async fn ssh_connect_monitor(
     target: Option<String>,
     credential_id: Option<String>,
     password: Option<String>,
-) -> Result<SshConnectResult, String> {
+) -> OpsResult<SshConnectResult> {
     // A reconnect with the same id must not inherit the dead connection's
     // rate baselines: CPU/network diffs read across two different TCP
     // sessions are garbage. Drop them before the new handshake starts.
@@ -446,7 +450,8 @@ pub async fn ssh_connect_monitor(
         0,
         false,
     )
-    .await?;
+    .await
+    .map_err(|error| error.ensure_stage("ssh").retryable())?;
 
     // A non-interactive session never has a shell channel, so there is no
     // output pump to start and nothing to read.
@@ -461,7 +466,7 @@ pub async fn ssh_connect_monitor(
 pub async fn server_test_connection(
     state: State<'_, AppState>,
     server_id: String,
-) -> Result<SshConnectResult, String> {
+) -> OpsResult<SshConnectResult> {
     let probe_session = format!("probe-{}", uuid::Uuid::new_v4());
     let (result, _) = ssh_connect_internal(
         &state,
@@ -475,7 +480,8 @@ pub async fn server_test_connection(
         24,
         true,
     )
-    .await?;
+    .await
+    .map_err(|error| error.ensure_stage("ssh").retryable())?;
     state.ssh.disconnect(&probe_session).await;
     if let Ok(conn) = state.db.open() {
         let _ = db::update_session_status(&conn, &probe_session, "disconnected", None);
@@ -488,6 +494,9 @@ type ConnectAttempt = (SshConnectResult, Option<russh::ChannelReadHalf>);
 
 /// Shared by `ssh_connect` (starts an output pump) and `server_test_connection`
 /// (closes immediately). Returns the channel reader so the caller can pump it.
+///
+/// 返回 `OpsResult`：内层若已经知道更细的阶段（auth / 主机密钥），调用方用
+/// `ensure_stage("ssh")` 补默认阶段即可，不会把它盖掉。
 async fn ssh_connect_internal(
     state: &AppState,
     session_id: String,
@@ -500,7 +509,7 @@ async fn ssh_connect_internal(
     rows: u32,
     // `pty: false` opens the session without a PTY or shell (monitoring).
     pty: bool,
-) -> Result<ConnectAttempt, String> {
+) -> OpsResult<ConnectAttempt> {
     let (resolved_server_id, server_name, target) = {
         let conn = open_db(state)?;
         match server_id {
@@ -688,7 +697,8 @@ async fn ssh_connect_internal(
                 Some(&server_name),
                 &message,
             );
-            Err(message)
+            // 握手/认证失败：连接类错误原样重试有意义（网络抖动、临时拒连）。
+            Err(OpsError::from_stage("ssh", error).retryable())
         }
     }
 }

@@ -242,7 +242,21 @@ export default {
   // -- 远程文件编辑器 --
   "This is a binary file and cannot be opened as text.": "这是二进制文件，无法以文本方式打开。",
   "There are unsaved changes. Close anyway?": "有未保存的修改，确定关闭吗？",
+  "{{name}} has unsaved changes. Closing now discards them.":
+    "{{name}} 还有未保存的修改，现在关闭会丢弃它们。",
   Unsaved: "未保存",
   "Save (Ctrl+S)": "保存 (Ctrl+S)",
   "Reading file…": "正在读取…",
+
+  // -- 文件 / 服务操作的失败标题（统一错误通知的抬头） --
+  "Refresh failed": "刷新失败",
+  "Operation failed": "操作失败",
+  "Download failed": "下载失败",
+  "Upload failed": "上传失败",
+  "Could not open in VSCode": "无法在 VSCode 中打开",
+  "Could not read this folder": "无法读取该目录",
+  "Cannot open {{path}}": "无法打开 {{path}}",
+  "Could not read services": "无法读取服务列表",
+  "Could not run the action on {{unit}}": "无法对 {{unit}} 执行操作",
+  "Could not read the status of {{unit}}": "无法读取 {{unit}} 的状态",
 } as const;

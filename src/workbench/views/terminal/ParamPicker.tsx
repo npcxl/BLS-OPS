@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader2 } from "@/components/icons";
 import { useTranslation } from "react-i18next";
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
+import { toAppError } from "@/lib/app-error";
 import { cn } from "@/lib/cn";
 import { placeholdersIn, type ParamKind } from "@/workbench/views/command-center/complete";
 import type { SuggestAnchor } from "./terminal-suggest";
@@ -45,7 +46,9 @@ export function ParamPicker({
   const kind = next?.kind ?? null;
   const [values, setValues] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 存原始异常：弹层太窄放不下卡片，只取 message + 恢复建议，并且要能重试。
+  const [error, setError] = useState<unknown | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [filter, setFilter] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -65,7 +68,7 @@ export function ParamPicker({
         setValues(list);
       })
       .catch((cause) => {
-        if (alive) setError(toErrorMessage(cause));
+        if (alive) setError(cause);
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -73,7 +76,7 @@ export function ParamPicker({
     return () => {
       alive = false;
     };
-  }, [sessionId, kind]);
+  }, [sessionId, kind, reloadKey]);
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -106,6 +109,8 @@ export function ParamPicker({
 
   if (!kind || !anchor) return null;
 
+  const errorInfo = error ? toAppError(error) : null;
+
   return (
     <div
       className="absolute z-30 w-[320px] overflow-hidden rounded-[8px] border border-line bg-surface-1 shadow-[0_6px_20px_rgb(15_23_42/0.2)]"
@@ -136,7 +141,22 @@ export function ParamPicker({
           {t(PARAM_LOADING_HINTS[kind])}
         </div>
       )}
-      {error && <div className="px-2.5 py-2 text-11 text-danger">{error}</div>}
+      {errorInfo ? (
+        <div className="px-2.5 py-2 text-11 text-danger">
+          <p className="break-words">{errorInfo.message}</p>
+          {errorInfo.hint && <p className="mt-0.5 text-10 text-fg-subtle">{errorInfo.hint}</p>}
+          <button
+            type="button"
+            className="mt-1 text-10 text-accent underline-offset-2 hover:underline"
+            onClick={() => {
+              setError(null);
+              setReloadKey((key) => key + 1);
+            }}
+          >
+            {t("Retry")}
+          </button>
+        </div>
+      ) : null}
       {!loading && !error && visible.length === 0 && (
         <div className="px-2.5 py-2 text-11 text-fg-subtle">{t("No values available")}</div>
       )}

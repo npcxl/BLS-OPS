@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { hasOpenOverlay } from "@/components/ui/overlay";
 import { useDomainStore } from "@/stores/domain-store";
 import {
   comboFromEvent,
@@ -44,6 +45,9 @@ export function useGlobalShortcuts() {
         target instanceof HTMLTextAreaElement ||
         (target instanceof HTMLElement && target.isContentEditable);
       if (inEditable && id !== "command_palette" && id !== "action_palette") return;
+      // 弹窗 / 浮层打开时，快捷键只属于它：Ctrl+W 不该关掉背后那个标签页的
+      // 工作项，Ctrl+B 也不该在对话框里把侧栏收起来。
+      if (hasOpenOverlay() && id !== "command_palette" && id !== "action_palette") return;
 
       event.preventDefault();
       runShortcut(id);

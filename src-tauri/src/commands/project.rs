@@ -3,6 +3,7 @@
 
 use tauri::{Emitter, State};
 
+use crate::ops_error::OpsResult;
 use crate::state::AppState;
 
 /// 从部署实例输出解析 `path\tfile` 行，累积到 path → 标志名集合。
@@ -140,7 +141,7 @@ pub async fn project_scan_start(
     session_id: String,
     server_id: String,
     incremental: Option<bool>,
-) -> Result<crate::project_discovery::ProjectScanStatus, String> {
+) -> OpsResult<crate::project_discovery::ProjectScanStatus> {
     if !state.ssh.is_connected(&session_id).await {
         return Err("SSH 会话不存在或已断开，请先连接服务器".into());
     }
@@ -485,7 +486,7 @@ pub async fn project_scan_start(
 pub async fn project_scan_cancel(
     state: State<'_, AppState>,
     scan_id: String,
-) -> Result<bool, String> {
+) -> OpsResult<bool> {
     Ok(state.project_scans.cancel(&scan_id).await)
 }
 
@@ -493,7 +494,7 @@ pub async fn project_scan_cancel(
 pub async fn project_scan_status(
     state: State<'_, AppState>,
     scan_id: String,
-) -> Result<Option<crate::project_discovery::ProjectScanStatus>, String> {
+) -> OpsResult<Option<crate::project_discovery::ProjectScanStatus>> {
     Ok(state
         .project_scans
         .tasks
@@ -523,13 +524,13 @@ pub async fn project_scan_result(
 pub async fn capability_profile(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<crate::capability_probe::ServerCapabilityProfile, String> {
+) -> OpsResult<crate::capability_probe::ServerCapabilityProfile> {
     if !state.ssh.is_connected(&session_id).await {
         return Err("SSH 会话不存在或已断开，请先连接服务器".into());
     }
     crate::capability_probe::probe_capabilities(&session_id, &state.ssh)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string().into())
 }
 
 /// 写入一条人工复核结论（"确认项目"或"忽略目录"）。结论按 `(server_id, path)`
@@ -548,7 +549,7 @@ pub async fn project_review_set(
     project_type: Option<String>,
     note: Option<String>,
     candidate_payload: Option<String>,
-) -> Result<crate::db::ProjectReviewRecord, String> {
+) -> OpsResult<crate::db::ProjectReviewRecord> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     let now = crate::db::AppDb::now();
     let canonical = crate::project_discovery::canonicalize_project_path(&path);
@@ -609,7 +610,7 @@ pub async fn project_merge_set(
     server_id: String,
     child_path: String,
     parent_path: Option<String>,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     let now = crate::db::AppDb::now();
     let child = crate::project_discovery::canonicalize_project_path(&child_path);
@@ -617,7 +618,7 @@ pub async fn project_merge_set(
         Some(parent) => {
             let parent = crate::project_discovery::canonicalize_project_path(&parent);
             if child == parent {
-                return Err("不能把项目并入它自己".to_string());
+                return Err("不能把项目并入它自己".into());
             }
             crate::db::upsert_project_merge(&conn, &server_id, &child, &parent, now)
                 .map_err(|e| e.to_string())?;
@@ -670,13 +671,13 @@ pub async fn confirmed_projects_list(
 pub async fn project_inventory_load(
     state: State<'_, AppState>,
     server_id: String,
-) -> Result<Option<crate::project_discovery::ProjectScanResult>, String> {
+) -> OpsResult<Option<crate::project_discovery::ProjectScanResult>> {
     let conn = state.db.open().map_err(|e| e.to_string())?;
     let cached = crate::db::get_project_inventory(&conn, &server_id).map_err(|e| e.to_string())?;
     match cached {
         Some(cache) => serde_json::from_str(&cache.payload)
             .map(Some)
-            .map_err(|e| format!("快照解析失败：{e}")),
+            .map_err(|e| format!("快照解析失败：{e}").into()),
         None => Ok(None),
     }
 }
@@ -693,13 +694,13 @@ pub async fn project_readiness_check(
     server_id: String,
     scan_id: String,
     candidate_path: String,
-) -> Result<crate::project_readiness::ProjectReadinessReport, String> {
+) -> OpsResult<crate::project_readiness::ProjectReadinessReport> {
     let results = state.project_scans.results.lock().await;
     let scan = results
         .get(&scan_id)
         .ok_or_else(|| "找不到对应的扫描结果，请先重新扫描".to_string())?;
     if scan.server_id != server_id {
-        return Err("扫描结果不属于该服务器".to_string());
+        return Err("扫描结果不属于该服务器".into());
     }
     let profile = scan
         .capability

@@ -25,8 +25,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CircleCheck, CircleDashed, LoaderCircle, TriangleAlert } from "@/components/icons";
 
-import { toErrorMessage, opsApi } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
 import type { DeploymentSession, SessionStatus } from "@/api/types/deployment";
+import { ErrorState } from "@/components/ui/error-state";
+import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
 // -- 步骤 ------------------------------------------------------------------
@@ -219,7 +221,8 @@ export function DeploymentWizard({
   const [description, setDescription] = useState("");
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：向导的每一步都能原地再点一次，不用从头再来。
+  const { error, fail, clear, retry } = useActionError();
   const [notice, setNotice] = useState<string | null>(null);
 
   // 挂载时接上"未完成的那条会话"：刷新页面 / 切标签回来都不会丢进度。
@@ -235,7 +238,7 @@ export function DeploymentWizard({
           if (first.server_id) setServerId(first.server_id);
         }
       } catch (cause) {
-        if (!cancelled) setError(toErrorMessage(cause));
+        if (!cancelled) fail(cause);
       }
     })();
     return () => {
@@ -258,17 +261,21 @@ export function DeploymentWizard({
     [session, localStep],
   );
 
-  const guard = useCallback(async (run: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await run();
-    } catch (cause) {
-      setError(toErrorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const guard = useCallback(
+    // 具名函数表达式：重试要能引用自己，又不触发"自我推断"的类型错误。
+    async function runGuarded(run: () => Promise<void>): Promise<void> {
+      setBusy(true);
+      clear();
+      try {
+        await run();
+      } catch (cause) {
+        fail(cause, () => void runGuarded(run));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [clear, fail],
+  );
 
   const startSession = () =>
     guard(async () => {
@@ -310,7 +317,7 @@ export function DeploymentWizard({
         <Stepper current={step} reached={step} />
       </header>
 
-      {error ? <Notice tone="warn">{error}</Notice> : null}
+      {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
       {notice ? <Notice tone="info">{notice}</Notice> : null}
 
       {step === "source" ? (

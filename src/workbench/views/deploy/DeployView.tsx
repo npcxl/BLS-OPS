@@ -26,7 +26,8 @@ import type {
 } from "@/api/types/deployment";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadingState } from "@/components/ui/loading";
-import { ErrorText, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { selectClass } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import type { WorkspaceTab } from "@/workbench/types";
 
@@ -242,11 +243,11 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
         )}
       </div>
 
-      {center.error && (
-        <div className="shrink-0 px-3 pt-2" onClick={center.clearError} role="presentation">
-          <ErrorText>{center.error}</ErrorText>
+      {center.error ? (
+        <div className="shrink-0 px-3 pt-2">
+          <ErrorState error={center.error} compact className="rounded-[8px] border border-line/70" />
         </div>
-      )}
+      ) : null}
 
       {center.status.state === "loading" && center.applications.length === 0 ? (
         <LoadingState />

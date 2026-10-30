@@ -15,14 +15,12 @@ import {
   RotateCcw,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorState } from "@/components/ui/error-state";
 import { Modal } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
-import {
-  opsApi,
-  toErrorMessage,
-  TRANSFER_EVENT,
-  type TransferTask,
-} from "@/api/ops-api";
+import { opsApi, TRANSFER_EVENT, type TransferTask } from "@/api/ops-api";
 
 function stateTone(state: TransferTask["state"]): string {
   switch (state) {
@@ -48,7 +46,7 @@ export function TransferCenterDialog({
 }) {
   const { t } = useTranslation();
   const [tasks, setTasks] = useState<TransferTask[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, fail, clear, retry: retryAction } = useActionError();
   const [busy, setBusy] = useState<string | null>(null);
 
   const upsert = useCallback((task: TransferTask) => {
@@ -65,13 +63,18 @@ export function TransferCenterDialog({
 
   useEffect(() => {
     if (!open) return;
-    void opsApi
-      .transferList()
-      .then(setTasks)
-      .catch((cause) => {
-        setTasks([]);
-        setError(toErrorMessage(cause));
-      });
+    const load = () =>
+      opsApi
+        .transferList()
+        .then((list) => {
+          setTasks(list);
+          clear();
+        })
+        .catch((cause) => {
+          setTasks([]);
+          fail(cause, load);
+        });
+    void load();
     // 事件里带的是完整任务，直接覆盖同 id 的那一行。
     const unlisten = listen<TransferTask>(TRANSFER_EVENT, (event) => upsert(event.payload));
     return () => {
@@ -83,8 +86,9 @@ export function TransferCenterDialog({
     setBusy(task.id);
     try {
       upsert(await opsApi.transferCancel(task.id));
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void cancel(task));
     } finally {
       setBusy(null);
     }
@@ -94,20 +98,28 @@ export function TransferCenterDialog({
     setBusy(task.id);
     try {
       upsert(await opsApi.transferRetry(task.id));
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void retry(task));
     } finally {
       setBusy(null);
     }
   };
+
+  /** 清掉已结束的任务记录：只删记录不碰文件，但仍然是一次删除，先确认。 */
+  const [confirmClear, setConfirmClear] = useState(false);
+  const finishedCount = tasks?.filter((task) => task.state !== "running" && task.state !== "queued").length ?? 0;
 
   const clearFinished = async () => {
     setBusy("clear");
     try {
       await opsApi.transferClearFinished();
       setTasks(await opsApi.transferList());
+      clear();
+      setConfirmClear(false);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void clearFinished());
+      setConfirmClear(false);
     } finally {
       setBusy(null);
     }
@@ -131,8 +143,8 @@ export function TransferCenterDialog({
           <Button
             variant="ghost"
             size="sm"
-            disabled={busy !== null || !tasks?.length}
-            onClick={() => void clearFinished()}
+            disabled={busy !== null || finishedCount === 0}
+            onClick={() => setConfirmClear(true)}
           >
             {t("Clear finished")}
           </Button>
@@ -143,7 +155,7 @@ export function TransferCenterDialog({
       }
     >
       <div className="flex flex-col gap-2">
-        {error && <p className="text-11 text-danger">{error}</p>}
+        {error ? <ErrorState error={error} compact onRetry={retryAction} /> : null}
         {tasks === null && (
           <div className="flex items-center gap-2 py-6 text-11 text-fg-subtle">
             <Loader2 size={13} className="animate-spin" />
@@ -235,6 +247,19 @@ export function TransferCenterDialog({
           );
         })}
       </div>
+
+      <ConfirmDialog
+        open={confirmClear}
+        title={t("Clear finished transfers?")}
+        description={t(
+          "Finished records are removed from this list. Files already transferred stay where they are.",
+        )}
+        consequences={[t("{{count}} records will be cleared", { count: finishedCount })]}
+        confirmLabel={t("Clear finished")}
+        pending={busy === "clear"}
+        onConfirm={() => void clearFinished()}
+        onCancel={() => setConfirmClear(false)}
+      />
     </Modal>
   );
 }

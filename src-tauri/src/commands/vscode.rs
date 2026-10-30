@@ -29,8 +29,19 @@ use serde::Serialize;
 use tauri::State;
 
 use super::{open_db, record_audit, require_existing_credential};
+use crate::ops_error::{OpsError, OpsResult};
 use crate::safe::validate_abs_path;
 use crate::{db, keyring, state::AppState};
+
+/// 参数 / 主机值不合法：`config` 阶段。
+fn invalid(message: impl Into<String>) -> OpsError {
+    OpsError::new("config", message)
+}
+
+/// 本地文件（`~/.ssh/config`、导出的私钥）读写失败：`io` 阶段。
+fn store_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("io", error)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -277,20 +288,21 @@ pub fn vscode_open_remote_folder(
     state: State<'_, AppState>,
     server_id: String,
     path: String,
-) -> Result<VscodeOpenResult, String> {
-    let remote_path = validate_abs_path(&path, "远程路径").map_err(|error| error.to_string())?;
+) -> OpsResult<VscodeOpenResult> {
+    let remote_path = validate_abs_path(&path, "远程路径")
+        .map_err(|error| OpsError::new("config", error.to_string()))?;
 
     let conn = open_db(&state)?;
     let server = db::get_server(&conn, &server_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "服务器不存在".to_string())?;
+        .map_err(store_error)?
+        .ok_or_else(|| invalid("服务器不存在"))?;
     if server.proxy_jump_id.is_some() {
-        return Err("经由跳板机的服务器暂不支持在 VSCode 中打开".to_string());
+        return Err(invalid("经由跳板机的服务器暂不支持在 VSCode 中打开"));
     }
-    validate_host_value(&server.host, "主机地址")?;
-    validate_host_value(&server.username, "用户名")?;
+    validate_host_value(&server.host, "主机地址").map_err(invalid)?;
+    validate_host_value(&server.username, "用户名").map_err(invalid)?;
     if !(1..=65535).contains(&server.port) {
-        return Err("端口超出范围".to_string());
+        return Err(invalid("端口超出范围"));
     }
 
     // Key credentials get an IdentityFile so the connection is passwordless;
@@ -302,13 +314,13 @@ pub fn vscode_open_remote_folder(
         .as_deref()
         .filter(|id| !id.trim().is_empty())
     {
-        let credential = require_existing_credential(&conn, credential_id)?;
+        let credential = require_existing_credential(&conn, credential_id).map_err(invalid)?;
         if credential.credential_type == "private_key" {
             let secret_ref = credential
                 .secret_ref
                 .filter(|reference| !reference.trim().is_empty())
-                .ok_or_else(|| "私钥凭据缺少密钥内容，请重新保存凭据".to_string())?;
-            key_exported = export_identity(credential_id, &secret_ref)?;
+                .ok_or_else(|| invalid("私钥凭据缺少密钥内容，请重新保存凭据"))?;
+            key_exported = export_identity(credential_id, &secret_ref).map_err(store_error)?;
             identity = Some(format!(
                 "~/.ssh/bls-ops/{}.pem",
                 credential_id
@@ -327,7 +339,7 @@ pub fn vscode_open_remote_folder(
 
     // Pick an alias: reuse the existing block when it already points at this
     // host:port/user, otherwise find the first free `<slug>`, `<slug>-2`, …
-    let config = fs::read_to_string(config_path()?).unwrap_or_default();
+    let config = fs::read_to_string(config_path().map_err(store_error)?).unwrap_or_default();
     let base = sanitize_alias(&server.name);
     let mut alias = base.clone();
     let mut suffix = 2;
@@ -352,11 +364,12 @@ pub fn vscode_open_remote_folder(
         identity.as_deref(),
     );
     let updated = upsert_block(&config, &alias, &block);
-    let config_file = config_path()?;
-    fs::write(&config_file, &updated)
-        .map_err(|error| format!("写入 {} 失败：{error}", config_file.display()))?;
+    let config_file = config_path().map_err(store_error)?;
+    fs::write(&config_file, &updated).map_err(|error| {
+        store_error(format!("写入 {} 失败：{error}", config_file.display()))
+    })?;
 
-    launch(&alias, remote_path)?;
+    launch(&alias, remote_path).map_err(|error| OpsError::new("local", error))?;
     record_audit(
         &state,
         "vscode_open_folder",

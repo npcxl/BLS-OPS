@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Plug } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { MacButton } from "@/components/ui/mac-button";
-import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { toErrorMessage, type ServerRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -236,7 +237,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           )}
         </div>
 
-        <ErrorText>{submit.error}</ErrorText>
+        {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
     </Modal>
   );

@@ -7,7 +7,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { readText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { opsApi, RISK_META, toErrorMessage } from "@/api/ops-api";
+import { opsApi, RISK_META } from "@/api/ops-api";
+import { formatErrorForCopy, toAppError } from "@/lib/app-error";
 import { useDomainStore } from "@/stores/domain-store";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -89,7 +90,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const connectingRef = useRef(false);
 
   const [phase, setPhase] = useState<Phase>("idle");
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常：横幅统一解析成 阶段 / 摘要 / 详情（终端里只写摘要一行）。
+  const [error, setError] = useState<unknown | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(true);
   // 稳定引用：`RemoteFilePanel` 是 memo 的，内联箭头函数会让它每次父渲染都失效
@@ -412,7 +414,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       void opsApi
         .sshCd(sessionId, target.path)
         .then((line) => cwdTrackerRef.current?.noteCd(sessionId, line))
-        .catch((cause) => setError(toErrorMessage(cause)));
+        .catch((cause) => setError(cause));
     }, 600);
     return () => window.clearTimeout(timer);
   }, [phase, sessionId, tab.initialPath]);
@@ -1041,11 +1043,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         },
       });
     } catch (cause) {
-      const message = toErrorMessage(cause);
+      // 横幅拿原始异常（阶段 / 详情 / 复制齐全）；终端里只写一行摘要，
+      // 状态栏也只要一句 —— 同一个错误在三个位置说的都是"同一件事"，措辞一致。
+      const summary = toAppError(cause).message;
       setPhase("error");
-      setError(message);
-      setStatus(sessionId, "error", { error: message });
-      instance?.writeln(`\r\n\x1b[31m${t("Connection failed: {{message}}", { message })}\x1b[0m`);
+      setError(cause);
+      setStatus(sessionId, "error", { error: summary });
+      instance?.writeln(`\r\n\x1b[31m${t("Connection failed: {{message}}", { message: summary })}\x1b[0m`);
     } finally {
       connectingRef.current = false;
     }
@@ -1177,13 +1181,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         </div>
       )}
 
-      {error && (
+      {error ? (
         <TerminalErrorBanner
-          message={error}
-          onCopy={() => void copyToClipboard(error)}
+          error={error}
+          onCopy={() => void copyToClipboard(formatErrorForCopy(toAppError(error)))}
           onRetry={() => void connect()}
         />
-      )}
+      ) : null}
 
       {/* padding 放在包装层：FitAddon 读的是测量元素（containerRef）的
           border-box 高度且不扣它的 padding —— 若 padding 和 xterm 在同一个

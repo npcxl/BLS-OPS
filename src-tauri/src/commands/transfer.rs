@@ -2,8 +2,14 @@
 
 use tauri::{AppHandle, State};
 
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 use crate::transfer::{ConflictPolicy, TransferTask};
+
+/// 传输失败按 `sftp` 阶段展示（同一套"路径 / 权限 / 磁盘"恢复建议）。
+fn transfer_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("sftp", error)
+}
 
 /// 上传本地文件 / 目录（目录递归展开为多个任务）。
 #[tauri::command]
@@ -14,7 +20,7 @@ pub async fn transfer_upload(
     local_paths: Vec<String>,
     remote_dir: String,
     conflict: Option<ConflictPolicy>,
-) -> Result<Vec<TransferTask>, String> {
+) -> OpsResult<Vec<TransferTask>> {
     crate::transfer::enqueue_upload(
         state.inner(),
         &app,
@@ -24,7 +30,7 @@ pub async fn transfer_upload(
         conflict.unwrap_or(ConflictPolicy::Rename),
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(transfer_error)
 }
 
 /// 下载远程文件到本地路径。
@@ -36,7 +42,7 @@ pub async fn transfer_download(
     path: String,
     local_path: String,
     conflict: Option<ConflictPolicy>,
-) -> Result<TransferTask, String> {
+) -> OpsResult<TransferTask> {
     crate::transfer::enqueue_download(
         state.inner(),
         &app,
@@ -46,11 +52,11 @@ pub async fn transfer_download(
         conflict.unwrap_or(ConflictPolicy::Rename),
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(transfer_error)
 }
 
 #[tauri::command]
-pub async fn transfer_list(state: State<'_, AppState>) -> Result<Vec<TransferTask>, String> {
+pub async fn transfer_list(state: State<'_, AppState>) -> OpsResult<Vec<TransferTask>> {
     Ok(state.transfers.list())
 }
 
@@ -58,8 +64,8 @@ pub async fn transfer_list(state: State<'_, AppState>) -> Result<Vec<TransferTas
 pub async fn transfer_cancel(
     state: State<'_, AppState>,
     id: String,
-) -> Result<TransferTask, String> {
-    crate::transfer::cancel(state.inner(), &id).map_err(|error| error.to_string())
+) -> OpsResult<TransferTask> {
+    crate::transfer::cancel(state.inner(), &id).map_err(transfer_error)
 }
 
 /// 重试一个已结束的任务（沿用原路径与同名策略）。
@@ -68,12 +74,12 @@ pub async fn transfer_retry(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
-) -> Result<TransferTask, String> {
-    crate::transfer::retry(state.inner(), &app, &id).map_err(|error| error.to_string())
+) -> OpsResult<TransferTask> {
+    crate::transfer::retry(state.inner(), &app, &id).map_err(transfer_error)
 }
 
 /// 清掉已结束的任务（排队中 / 运行中的保留）。
 #[tauri::command]
-pub async fn transfer_clear_finished(state: State<'_, AppState>) -> Result<usize, String> {
+pub async fn transfer_clear_finished(state: State<'_, AppState>) -> OpsResult<usize> {
     Ok(crate::transfer::clear_finished(state.inner()))
 }

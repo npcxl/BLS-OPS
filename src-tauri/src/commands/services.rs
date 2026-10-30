@@ -3,6 +3,7 @@
 use tauri::{AppHandle, Emitter, State};
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -13,10 +14,10 @@ use crate::state::AppState;
 pub async fn service_list(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<crate::systemd::ServiceUnit>, String> {
+) -> OpsResult<Vec<crate::systemd::ServiceUnit>> {
     crate::systemd::collect_services(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("systemd", error).retryable())
 }
 
 /// Start / stop / restart / reload / enable / disable a unit.
@@ -30,11 +31,11 @@ pub async fn service_action(
     session_id: String,
     action: String,
     unit: String,
-) -> Result<String, String> {
-    let action = parse_service_action(&action)?;
+) -> OpsResult<String> {
+    let action = parse_service_action(&action).map_err(|error| OpsError::new("systemd", error))?;
     let outcome = crate::systemd::service_action(&state.ssh, &session_id, action, &unit)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("systemd", error))?;
 
     record_audit(
         &state,
@@ -70,10 +71,10 @@ pub async fn service_status(
     state: State<'_, AppState>,
     session_id: String,
     unit: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     crate::systemd::service_status(&state.ssh, &session_id, &unit)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("systemd", error).retryable())
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ pub async fn journal_query(
     unit: Option<String>,
     lines: u32,
     priority: Option<u8>,
-) -> Result<Vec<crate::journal::JournalEntry>, String> {
+) -> OpsResult<Vec<crate::journal::JournalEntry>> {
     let query = crate::journal::JournalQuery {
         unit: unit.filter(|value| !value.trim().is_empty()),
         lines,
@@ -95,15 +96,15 @@ pub async fn journal_query(
     };
     crate::journal::collect_journal(&state.ssh, &session_id, &query)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("journal", error).retryable())
 }
 
 #[tauri::command]
 pub async fn journal_disk_usage(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<crate::journal::JournalDiskUsage, String> {
+) -> OpsResult<crate::journal::JournalDiskUsage> {
     crate::journal::collect_disk_usage(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("journal", error).retryable())
 }

@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
 import type {
   ArtifactImportSource,
   ArtifactImportTask,
@@ -24,7 +24,9 @@ import type {
   ArtifactRecord,
   DeploymentEnvironment,
 } from "@/api/ops-api";
-import { ErrorText, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { selectClass } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 import { artifactImportEvent } from "@/lib/events";
 
@@ -104,7 +106,8 @@ export function ArtifactImportPanel({
   const [versionLabel, setVersionLabel] = useState("");
   const [uploadDir, setUploadDir] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：制品导入失败往往是路径 / 权限，用户自己能修好再点一次。
+  const { error, fail, clear, retry } = useActionError();
   const [notice, setNotice] = useState<string | null>(null);
   const [targetEnvironmentId, setTargetEnvironmentId] = useState(environmentId);
 
@@ -126,10 +129,11 @@ export function ArtifactImportPanel({
       ]);
       setTasks(nextTasks);
       setArtifacts(nextArtifacts);
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void reload());
     }
-  }, [applicationId]);
+  }, [applicationId, clear, fail]);
 
   useEffect(() => {
     void reload();
@@ -197,7 +201,7 @@ export function ArtifactImportPanel({
       const picked = await open({ directory, multiple: false });
       if (typeof picked === "string") setPath(picked);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause);
     }
   };
 
@@ -215,7 +219,7 @@ export function ArtifactImportPanel({
 
   const startImport = async () => {
     if (applicationId === "") return;
-    setError(null);
+    clear();
     setNotice(null);
     setBusy(true);
     try {
@@ -250,7 +254,7 @@ export function ArtifactImportPanel({
       setSelected({});
       setVersionLabel("");
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void startImport());
     } finally {
       setBusy(false);
     }
@@ -259,8 +263,9 @@ export function ArtifactImportPanel({
   const cancelTask = async (task: ArtifactImportTask) => {
     try {
       await opsApi.deploymentArtifactImportCancel(task.id);
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void cancelTask(task));
     }
   };
 
@@ -268,14 +273,15 @@ export function ArtifactImportPanel({
     try {
       const next = await opsApi.deploymentArtifactImportRetry(task.id);
       setTasks((previous) => previous.map((item) => (item.id === next.id ? next : item)));
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void retryTask(task));
     }
   };
 
   const confirmImport = async () => {
     if (!pending || !pending.inspection) return;
-    setError(null);
+    clear();
     const chosen = pending.inspection.services
       .filter((candidate) => selected[candidate.id])
       .map((candidate) => candidate.id);
@@ -297,14 +303,14 @@ export function ArtifactImportPanel({
       setArtifacts((previous) => [...outcome.artifacts, ...previous]);
       onChanged();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void confirmImport());
     } finally {
       setBusy(false);
     }
   };
 
   const uploadArtifact = async (artifact: ArtifactRecord) => {
-    setError(null);
+    clear();
     if (uploadDir.trim() === "") return;
     setBusy(true);
     try {
@@ -316,7 +322,7 @@ export function ArtifactImportPanel({
       );
       onChanged();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void uploadArtifact(artifact));
     } finally {
       setBusy(false);
     }
@@ -423,7 +429,7 @@ export function ArtifactImportPanel({
         ) : null}
       </section>
 
-      {error ? <ErrorText>{error}</ErrorText> : null}
+      {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
       {notice ? <p className="text-11 text-fg-muted">{notice}</p> : null}
 
       {/* ---- 任务 ---- */}

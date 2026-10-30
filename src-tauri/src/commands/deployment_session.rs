@@ -14,6 +14,7 @@ use crate::deployment::session::confirm::{gate, ConfirmGate, ConfirmGateInput};
 use crate::deployment::session::model::{
     DeploymentSession, DeploymentSessionEvent, SessionEventKind, SessionQuestion, SessionStatus,
 };
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 use super::deployment_run;
@@ -30,10 +31,10 @@ fn record(
     kind: SessionEventKind,
     detail: &str,
     now: i64,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     // 事件 detail 只允许脱敏摘要。
     if crate::deployment::session::model::looks_like_secret(detail) {
-        return Err("事件内容疑似包含密钥，已拒绝写入".to_string());
+        return Err(OpsError::from("事件内容疑似包含密钥，已拒绝写入"));
     }
     db::deployment_session::append_event(
         conn,
@@ -45,7 +46,7 @@ fn record(
             now,
         ),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 新建一个部署会话（**什么都不部署**，只是记录意图与目标）。
@@ -56,7 +57,7 @@ pub async fn deployment_session_create(
     environment_id: Option<String>,
     server_id: Option<String>,
     user_description: String,
-) -> Result<DeploymentSession, String> {
+) -> OpsResult<DeploymentSession> {
     let now = AppDb::now();
     let mut session = DeploymentSession::new(uuid::Uuid::new_v4().to_string(), now);
     session.application_id = application_id.filter(|value| !value.trim().is_empty());
@@ -87,9 +88,9 @@ pub async fn deployment_session_create(
 pub async fn deployment_session_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<DeploymentSession>, String> {
+) -> OpsResult<Option<DeploymentSession>> {
     let conn = open_db(&state)?;
-    db::deployment_session::get_session(&conn, &id).map_err(|error| error.to_string())
+    db::deployment_session::get_session(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 会话列表（最近优先）。
@@ -97,10 +98,10 @@ pub async fn deployment_session_get(
 pub async fn deployment_session_list(
     state: State<'_, AppState>,
     limit: Option<usize>,
-) -> Result<Vec<DeploymentSession>, String> {
+) -> OpsResult<Vec<DeploymentSession>> {
     let conn = open_db(&state)?;
     db::deployment_session::list_sessions(&conn, limit.unwrap_or(20).min(100))
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 会话事件（审计轨迹）。
@@ -108,9 +109,9 @@ pub async fn deployment_session_list(
 pub async fn deployment_session_events(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Vec<DeploymentSessionEvent>, String> {
+) -> OpsResult<Vec<DeploymentSessionEvent>> {
     let conn = open_db(&state)?;
-    db::deployment_session::list_events(&conn, &id).map_err(|error| error.to_string())
+    db::deployment_session::list_events(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 迁移会话状态（**只走状态机**；非法迁移直接报错）。
@@ -120,16 +121,17 @@ fn transition(
     next: SessionStatus,
     now: i64,
     detail: &str,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     if crate::deployment::session::model::looks_like_secret(detail) {
-        return Err("事件内容疑似包含密钥，已拒绝写入".to_string());
+        return Err(OpsError::from("事件内容疑似包含密钥，已拒绝写入"));
     }
     if !session.status.can_transition_to(next) {
         return Err(format!(
             "会话状态不能从「{}」变成「{}」",
             session.status.label(),
             next.label()
-        ));
+        )
+        .into());
     }
     let from = session.status;
     session.status = next;
@@ -143,7 +145,7 @@ fn transition(
         now,
     )
     .with_status(from, next);
-    db::deployment_session::append_event(conn, &event).map_err(|error| error.to_string())
+    db::deployment_session::append_event(conn, &event).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 记录一条问题（进入 `needs_input`）。
@@ -152,12 +154,12 @@ pub async fn deployment_session_ask(
     state: State<'_, AppState>,
     id: String,
     question: SessionQuestion,
-) -> Result<DeploymentSession, String> {
+) -> OpsResult<DeploymentSession> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let mut session = db::deployment_session::get_session(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "部署会话不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("部署会话不存在"))?;
     session.current_question = Some(question.clone());
     session.updated_at = now;
     db::deployment_session::upsert_session(&conn, &session).map_err(|error| error.to_string())?;
@@ -178,12 +180,12 @@ pub async fn deployment_session_answer(
     id: String,
     question_id: String,
     answer: String,
-) -> Result<DeploymentSession, String> {
+) -> OpsResult<DeploymentSession> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let mut session = db::deployment_session::get_session(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "部署会话不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("部署会话不存在"))?;
     record(
         &conn,
         &session.id,
@@ -231,12 +233,12 @@ pub async fn deployment_session_confirm_and_start(
     session_id: String,
     idempotency_key: String,
     approve_high_risk: bool,
-) -> Result<ConfirmOutcome, String> {
+) -> OpsResult<ConfirmOutcome> {
     let now = AppDb::now();
     let conn = open_db(&state)?;
     let mut session = db::deployment_session::get_session(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "部署会话不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("部署会话不存在"))?;
 
     // ---- 1) 幂等：同一个键确认过就直接回放，绝不产生第二次部署 ----
     if let Some(previous) =
@@ -260,12 +262,13 @@ pub async fn deployment_session_confirm_and_start(
         return Err(format!(
             "当前状态「{}」不能确认部署（需要：草案就绪）",
             session.status.label()
-        ));
+        )
+        .into());
     }
     if session.input_fingerprint.trim().is_empty()
         || session.input_fingerprint != current_fingerprint
     {
-        return Err("项目、服务器或需求已经变化，旧草案作废：请重新分析后再确认".to_string());
+        return Err(OpsError::from("项目、服务器或需求已经变化，旧草案作废：请重新分析后再确认"));
     }
     session.plan_id = Some(plan_id.clone());
 
@@ -292,9 +295,9 @@ pub async fn deployment_session_confirm_and_start(
     let outcome = match decision {
         ConfirmGate::Replay { .. } => unreachable!("幂等已在前面处理"),
         ConfirmGate::NotDraftReady { .. } | ConfirmGate::NoPlan => {
-            return Err("会话状态不允许确认部署".to_string())
+            return Err(OpsError::from("会话状态不允许确认部署"))
         }
-        ConfirmGate::InputsChanged => return Err("输入已变化，请重新分析".to_string()),
+        ConfirmGate::InputsChanged => return Err(OpsError::from("输入已变化，请重新分析")),
         ConfirmGate::PreflightBlocked { checks } => {
             record(
                 &conn,
@@ -432,7 +435,7 @@ fn describe_rejections(rejections: &[crate::deployment::planner::DraftRejection]
 pub async fn deployment_session_analyze(
     state: State<'_, AppState>,
     id: String,
-) -> Result<DeploymentSession, String> {
+) -> OpsResult<DeploymentSession> {
     use crate::deployment::ai::{AiAdvisor, OpenAiCompatibleAdvisor};
     use crate::deployment::planner::{
         as_inputs, build_draft_prompt, to_workflow_plan, validate_draft, DraftContext,
@@ -447,7 +450,7 @@ pub async fn deployment_session_analyze(
         let conn = open_db(&state)?;
         let mut session = db::deployment_session::get_session(&conn, &id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "部署会话不存在".to_string())?;
+            .ok_or_else(|| OpsError::from("部署会话不存在"))?;
         match session.status {
             // 重试路径：失败 / 回滚 / 已回答问题后都能再来一次。
             SessionStatus::Created
@@ -460,16 +463,17 @@ pub async fn deployment_session_analyze(
                 return Err(format!(
                     "当前状态「{}」不能分析（方案已就绪或正在部署）",
                     other.label()
-                ))
+                )
+                .into())
             }
         }
         let environment_id = session
             .environment_id
             .clone()
-            .ok_or_else(|| "会话还没有关联环境，请先在向导里选择环境".to_string())?;
+            .ok_or_else(|| OpsError::from("会话还没有关联环境，请先在向导里选择环境"))?;
         let environment = db::get_environment(&conn, &environment_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "环境不存在".to_string())?;
+            .ok_or_else(|| OpsError::from("环境不存在"))?;
 
         if session.status == SessionStatus::Created {
             transition(
@@ -497,7 +501,7 @@ pub async fn deployment_session_analyze(
         let conn = open_db(&state)?;
         db::default_provider(&conn)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "还没有可用的 AI 提供方，请先在设置里配置".to_string())?
+            .ok_or_else(|| OpsError::from("还没有可用的 AI 提供方，请先在设置里配置"))?
     };
     let api_key = crate::keyring::read_secret(&config.keyring_account())
         .map_err(|error| format!("读不到 API Key（可能已被系统凭据管理器清理）：{error}"))?;
@@ -534,7 +538,7 @@ pub async fn deployment_session_analyze(
                 AppDb::now(),
                 "模型请求失败",
             )?;
-            return Err(error.user_message());
+            return Err(error.user_message().into());
         }
     };
     let rejections = validate_draft(
@@ -583,7 +587,7 @@ pub async fn deployment_session_analyze(
             AppDb::now(),
             &detail,
         )?;
-        return Err(detail);
+        return Err(detail.into());
     }
 
     // ---- 5) 确定性建图（AI 到此为止，后面没有模型参与）----
@@ -599,7 +603,7 @@ pub async fn deployment_session_analyze(
             AppDb::now(),
             "草案没有产出任何可执行步骤",
         )?;
-        return Err("草案没有产出任何可执行步骤".to_string());
+        return Err(OpsError::from("草案没有产出任何可执行步骤"));
     }
     let plan_id = format!("plan-{}", session.id);
     let graph = crate::deployment::model::DeploymentPlanGraph {
@@ -608,11 +612,11 @@ pub async fn deployment_session_analyze(
             application_id: session
                 .application_id
                 .clone()
-                .ok_or_else(|| "会话还没有关联应用，无法生成计划图".to_string())?,
+                .ok_or_else(|| OpsError::from("会话还没有关联应用，无法生成计划图"))?,
             environment_id: session
                 .environment_id
                 .clone()
-                .ok_or_else(|| "会话还没有关联环境，无法生成计划图".to_string())?,
+                .ok_or_else(|| OpsError::from("会话还没有关联环境，无法生成计划图"))?,
             name: draft.summary.clone(),
             version: 1,
             status: crate::deployment::model::PlanStatus::Draft,

@@ -131,4 +131,92 @@ export default {
   "Context menu": "上下文菜单",
   Submenu: "子菜单",
   "No records matching \"{{query}}\"": "没有匹配「{{query}}」的记录",
+
+  // -- 错误阶段（lib/app-error.ts）--
+  Configuration: "配置",
+  "SSH tunnel": "SSH 隧道",
+  Network: "网络连接",
+  Authentication: "身份认证",
+  Database: "数据库",
+  Query: "查询",
+  Permission: "权限",
+  Cancelled: "已取消",
+  Timeout: "超时",
+  "Outcome unknown": "结果未知",
+  Unsupported: "不支持",
+  Budget: "预算限制",
+  "SSH session": "SSH 会话",
+  "File transfer": "文件传输",
+  Service: "服务",
+  Logs: "日志",
+  Containers: "容器",
+  Gateway: "网关",
+  Discovery: "项目发现",
+  Deployment: "部署",
+  "Local files": "本地文件",
+  Monitoring: "监控采集",
+  Server: "服务器",
+  "Local action": "本地操作",
+
+  // -- 恢复建议（lib/app-error.ts）--
+  "Fill in the required fields: check the host, port range and database path.":
+    "补全必填字段：检查主机、端口范围与数据库路径。",
+  "Check that the SSH server is reachable and that the account is allowed to open a tunnel.":
+    "确认 SSH 服务器可达，且该账号允许建立隧道。",
+  "Check the host and port, the firewall, and that the service is listening.":
+    "检查主机与端口、防火墙规则，以及服务是否在监听。",
+  "Check the CA file, the TLS mode, and whether the host name matches the certificate.":
+    "检查 CA 证书文件、TLS 模式，以及主机名是否与证书匹配。",
+  "Check the username and password (or ACL), and whether this host is allowed to connect.":
+    "检查用户名与密码（或 ACL），以及该主机是否被允许连接。",
+  "Check that the database exists and that the account can see it.":
+    "确认数据库存在，且该账号有权限看到它。",
+  "Check the SQL syntax, blocking locks, and the statement timeout.":
+    "检查 SQL 语法、锁等待与语句超时设置。",
+  "This account lacks the privilege. Use an account with the required grants.":
+    "该账号权限不足，请换用具备相应授权的账号。",
+  "Raise the timeout, or check the network path between here and the server.":
+    "适当放宽超时，或检查本机到服务器之间的网络。",
+  "Do not retry blindly: verify the actual state (rows, file, service) before running it again.":
+    "不要盲目重试：先核对实际状态（数据、文件、服务），再决定是否重新执行。",
+  "This engine or feature is not supported yet.": "该引擎或功能尚未适配。",
+  "The operation was cancelled before it changed anything.": "操作已取消，未做任何改动。",
+  "Check that the session is still connected; reconnect if the server restarted or the network dropped.":
+    "确认会话仍在连接中；服务器重启或网络中断后需要重新连接。",
+  "Check the path and the account's permissions on it, then retry — nothing was half-written.":
+    "检查路径与该账号的权限后重试：没有只写一半的文件。",
+  "Check that the unit name is right and that the account may manage services (polkit / sudo).":
+    "确认单元名正确，且该账号有权管理服务（polkit / sudo）。",
+  "Check that the journal is readable: the account may need the adm or systemd-journal group.":
+    "确认日志可读：该账号可能需要加入 adm 或 systemd-journal 组。",
+  "Check that Docker is running and that the account is in the docker group.":
+    "确认 Docker 正在运行，且该账号在 docker 组中。",
+  "Run a syntax test first; a config that fails `nginx -t` is never reloaded.":
+    "先做语法检查：未通过 `nginx -t` 的配置不会被重载。",
+  "Check that the project directory is readable and on a local disk, not a network mount.":
+    "确认项目目录可读，且位于本地磁盘而非网络挂载。",
+  "Check the target environment, the artifact, and whether the previous run is still in progress.":
+    "检查目标环境、制品，以及上一次执行是否仍在进行中。",
+  "Check whether the file exists and whether this app may read or write it.":
+    "确认文件是否存在，以及本应用是否有读写权限。",
+  "Metrics are read over the SSH session: check that the session is still connected, then refresh.":
+    "指标是通过 SSH 会话读取的：确认会话仍在连接中，然后刷新。",
+  "Check the host, port and credential, and whether the same name already exists.":
+    "检查主机、端口与凭据，以及是否已有同名条目。",
+  "This is a local action: check that the program exists and that no other copy of the app is holding the file.":
+    "这是本地操作：确认相关程序存在，且没有被另一个本应用实例占用。",
+
+  // -- 错误通知与页面级错误（components/ui）--
+  "Show details": "查看详情",
+  "Hide details": "收起详情",
+
+  // -- 确认与表单关闭保护（components/ui）--
+  "This action cannot be undone.": "该操作不可撤销。",
+  "This action changes data. Please check the target before continuing.":
+    "该操作会修改数据，请先确认目标是否正确。",
+  "Type {{phrase}} to confirm": "输入 {{phrase}} 以确认",
+  "Discard unsaved changes?": "放弃未保存的修改？",
+  "Your input has not been saved. Closing now discards it.":
+    "你填写的内容还没有保存，关闭后将会丢失。",
+  "Discard and close": "放弃并关闭",
 } as const;

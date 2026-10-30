@@ -181,4 +181,6 @@ export default {
   "Press the new combination… (Esc cancels, Backspace clears)":
     "按下新的組合鍵…（Esc 取消，Backspace 清除）",
   "Not set": "未設定",
+  Off: "已關閉",
+  "Press a combination…": "按下組合鍵…",
 } as const;

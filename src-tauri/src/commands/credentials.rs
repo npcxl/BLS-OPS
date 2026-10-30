@@ -7,12 +7,23 @@ use serde::Serialize;
 use tauri::State;
 
 use super::{open_db, record_audit};
+use crate::ops_error::{OpsError, OpsResult};
 use crate::{db, db::CredentialRecord, keyring, state::AppState};
 
+/// 字段校验：`config` 阶段（前端提示"补全必填字段"）。
+fn invalid(message: impl Into<String>) -> OpsError {
+    OpsError::new("config", message)
+}
+
+/// 凭据本体读写（数据库 / 系统钥匙串）：`io` 阶段。
+fn store_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("io", error)
+}
+
 #[tauri::command]
-pub fn credential_list(state: State<'_, AppState>) -> Result<Vec<CredentialRecord>, String> {
+pub fn credential_list(state: State<'_, AppState>) -> OpsResult<Vec<CredentialRecord>> {
     let conn = open_db(&state)?;
-    db::list_credentials(&conn).map_err(|error| error.to_string())
+    db::list_credentials(&conn).map_err(|error| store_error(error).retryable())
 }
 
 #[tauri::command]
@@ -21,10 +32,10 @@ pub fn credential_save(
     credential: CredentialRecord,
     secret: Option<String>,
     passphrase: Option<String>,
-) -> Result<CredentialRecord, String> {
+) -> OpsResult<CredentialRecord> {
     let conn = open_db(&state)?;
     if credential.name.trim().is_empty() || credential.username.trim().is_empty() {
-        return Err("凭据名称和用户名不能为空".to_string());
+        return Err(invalid("凭据名称和用户名不能为空"));
     }
 
     // `private_key_passphrase` was a legacy type; passphrase + key is now one
@@ -32,10 +43,10 @@ pub fn credential_save(
     let credential_type = match credential.credential_type.as_str() {
         "password" | "private_key" => credential.credential_type.clone(),
         "private_key_passphrase" => "private_key".to_string(),
-        other => return Err(format!("不支持的凭据类型：{other}")),
+        other => return Err(invalid(format!("不支持的凭据类型：{other}"))),
     };
 
-    let existing = db::get_credential(&conn, &credential.id).map_err(|error| error.to_string())?;
+    let existing = db::get_credential(&conn, &credential.id).map_err(store_error)?;
     let mut credential = credential;
     credential.credential_type = credential_type;
     credential.name = credential.name.trim().to_string();
@@ -53,15 +64,15 @@ pub fn credential_save(
     let is_new_secret = provided_secret.is_some();
 
     if existing.is_none() && provided_secret.is_none() {
-        return Err(match credential.credential_type.as_str() {
-            "private_key" => "请粘贴私钥内容".to_string(),
-            _ => "请填写密码".to_string(),
-        });
+        return Err(invalid(match credential.credential_type.as_str() {
+            "private_key" => "请粘贴私钥内容",
+            _ => "请填写密码",
+        }));
     }
     if (provided_passphrase.is_some() || clear_passphrase)
         && credential.credential_type != "private_key"
     {
-        return Err("只有私钥凭据可以设置私钥口令".to_string());
+        return Err(invalid("只有私钥凭据可以设置私钥口令"));
     }
 
     // **新值一律写进新引用**，数据库提交成功后才删旧的。
@@ -74,13 +85,13 @@ pub fn credential_save(
     let mut written: Vec<String> = Vec::new();
     if let Some(value) = provided_secret {
         let reference = format!("cred-{}", uuid::Uuid::new_v4());
-        keyring::save_secret(&reference, value).map_err(|error| error.to_string())?;
+        keyring::save_secret(&reference, value).map_err(store_error)?;
         written.push(reference.clone());
         credential.secret_ref = Some(reference);
     }
     if let Some(value) = provided_passphrase {
         let reference = format!("cred-{}-pass", uuid::Uuid::new_v4());
-        keyring::save_secret(&reference, value).map_err(|error| error.to_string())?;
+        keyring::save_secret(&reference, value).map_err(store_error)?;
         written.push(reference.clone());
         credential.passphrase_ref = Some(reference);
     }
@@ -116,14 +127,14 @@ pub fn credential_save(
                 &format!("{} (secret={})", credential.name, is_new_secret),
             );
             db::get_credential(&conn, &credential.id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "保存凭据后无法读取记录".to_string())
+                .map_err(store_error)?
+                .ok_or_else(|| OpsError::new("io", "保存凭据后无法读取记录"))
         }
         Err(error) => {
             for reference in written {
                 let _ = keyring::delete_secret(&reference);
             }
-            Err(error.to_string())
+            Err(store_error(error))
         }
     }
 }
@@ -140,13 +151,12 @@ pub fn credential_delete(
     state: State<'_, AppState>,
     id: String,
     force: Option<bool>,
-) -> Result<CredentialDeleteResult, String> {
+) -> OpsResult<CredentialDeleteResult> {
     let conn = open_db(&state)?;
     let credential = db::get_credential(&conn, &id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "凭据不存在".to_string())?;
-    let references =
-        db::count_servers_by_credential(&conn, &id).map_err(|error| error.to_string())?;
+        .map_err(store_error)?
+        .ok_or_else(|| invalid("凭据不存在"))?;
+    let references = db::count_servers_by_credential(&conn, &id).map_err(store_error)?;
 
     if references > 0 && force != Some(true) {
         return Ok(CredentialDeleteResult {
@@ -155,7 +165,7 @@ pub fn credential_delete(
         });
     }
 
-    db::delete_credential(&conn, &id).map_err(|error| error.to_string())?;
+    db::delete_credential(&conn, &id).map_err(store_error)?;
     for reference in [credential.secret_ref, credential.passphrase_ref]
         .into_iter()
         .flatten()
@@ -221,8 +231,9 @@ pub struct ImportedPrivateKey {
 
 /// 读取一个本地私钥文件，交给前端填入凭据表单（用户确认后才保存）。
 #[tauri::command]
-pub async fn credential_read_private_key_file(path: String) -> Result<ImportedPrivateKey, String> {
-    read_private_key_file(&path)
+pub async fn credential_read_private_key_file(path: String) -> OpsResult<ImportedPrivateKey> {
+    // 内层仍返回字符串（单测直接断言），到命令边界再补阶段。
+    read_private_key_file(&path).map_err(|error| OpsError::new("io", error))
 }
 
 /// 受限地读一个私钥文件（纯逻辑，便于单测）。

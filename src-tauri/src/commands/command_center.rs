@@ -16,6 +16,7 @@ use crate::command_center::{
     build_exec, builtin_catalog, search, CommandKnowledge, CommandParams, CommandSearchHit,
 };
 use crate::docker;
+use crate::ops_error::OpsResult;
 use crate::remote::run_capability;
 use crate::safe::{Capability, ProbeTool};
 use crate::state::AppState;
@@ -48,7 +49,7 @@ pub async fn command_search(
     state: State<'_, AppState>,
     query: String,
     limit: Option<u32>,
-) -> Result<Vec<CommandSearchHit>, String> {
+) -> OpsResult<Vec<CommandSearchHit>> {
     // 收藏与使用统计是**低频变化**的数据，却出现在每次按键的热路径上。
     // 缓存命中时连数据库连接都不打开 —— 只有第一次（或失效后）才读库。
     let ctx = state.command_search.get_or_try_load(|| {
@@ -217,13 +218,13 @@ pub async fn command_execute(
     session_id: String,
     knowledge_id: String,
     params: Option<CommandParams>,
-) -> Result<CommandExecutionResult, String> {
+) -> OpsResult<CommandExecutionResult> {
     let params = params.unwrap_or_default();
     let Some(entry) = builtin_catalog().iter().find(|e| e.id == knowledge_id) else {
-        return Err(format!("知识库中不存在命令 {knowledge_id}"));
+        return Err(format!("知识库中不存在命令 {knowledge_id}").into());
     };
     if !entry.executable_now() {
-        return Err("该命令当前不提供执行（见知识库说明）".to_string());
+        return Err("该命令当前不提供执行（见知识库说明）".into());
     }
     let exec = build_exec(entry.exec, &params, entry.requires).map_err(|e| e.to_string())?;
     let capability = exec.capability();
@@ -239,7 +240,8 @@ pub async fn command_execute(
                 "服务器未安装 {}，无法执行「{}」",
                 required.name(),
                 entry.title
-            ));
+            )
+            .into());
         }
     }
 
@@ -249,7 +251,7 @@ pub async fn command_execute(
             .await
             .map_err(|error| format!("nginx -t 校验失败，已取消 reload：{error}"))?;
         if !test.to_lowercase().contains("successful") {
-            return Err(format!("nginx -t 未通过，已取消 reload：{}", test.trim()));
+            return Err(format!("nginx -t 未通过，已取消 reload：{}", test.trim()).into());
         }
     }
 
@@ -377,7 +379,7 @@ fn normalize_command(text: &str) -> String {
 pub async fn command_toggle_favorite(
     state: State<'_, AppState>,
     knowledge_id: String,
-) -> Result<bool, String> {
+) -> OpsResult<bool> {
     let conn = open_db(&state)?;
     let favorite = crate::db::command_favorite_toggle(&conn, &knowledge_id)
         .map_err(|error| error.to_string())?;
@@ -388,9 +390,9 @@ pub async fn command_toggle_favorite(
 
 /// 收藏列表。
 #[tauri::command]
-pub async fn command_favorites(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub async fn command_favorites(state: State<'_, AppState>) -> OpsResult<Vec<String>> {
     let conn = open_db(&state)?;
-    crate::db::command_favorites(&conn).map_err(|error| error.to_string())
+    crate::db::command_favorites(&conn).map_err(|error| error.to_string().into())
 }
 
 /// 知识库元信息：分类统计（前端分组头） + 总数。
@@ -402,7 +404,7 @@ pub struct CommandCatalogMeta {
 }
 
 #[tauri::command]
-pub async fn command_catalog_meta() -> Result<CommandCatalogMeta, String> {
+pub async fn command_catalog_meta() -> OpsResult<CommandCatalogMeta> {
     let catalog = builtin_catalog();
     let mut categories: Vec<(String, String, u32)> =
         crate::command_center::CommandCategory::ORDERED

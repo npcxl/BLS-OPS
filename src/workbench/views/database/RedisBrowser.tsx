@@ -23,8 +23,11 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { FormDialog } from "@/components/ui/form-dialog";
+import { Field, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { pushToast } from "@/components/ui/toast";
+import { pushErrorToast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { databaseApi } from "@/api/ops-api";
@@ -43,20 +46,27 @@ import { toDbError, useDatabaseStore } from "@/stores/database-store";
 const MAX_SCAN_KEYS = 5_000;
 
 /**
- * 键浏览器里的操作失败：弹到顶部 alert（带阶段 + 后端原文）。
+ * 键浏览器里的操作失败：弹到顶部 alert（带阶段 + 后端原文 + 复制）。
  *
  * 以前是顶栏下方一条 11px 红字，滚一下就看不见了。这类错误用户能自己重试，
  * 所以不常驻（8s 自动消失，仍然可以手动关）。
  */
 function alertRedisFailure(failure: unknown, title: string): void {
-  const info = toDbError(failure);
-  pushToast(info.message, "error", {
-    title,
-    label: info.stage,
-    detail: info.detail ?? undefined,
-    persist: false,
-  });
+  pushErrorToast(failure, { title, persist: false });
 }
+
+/**
+ * 写操作的统一包装：成功回读当前键并刷新列表，失败交给调用方或顶部提示。
+ *
+ * 返回值必须看：删除/重命名这类操作"失败了也以为成功"是事故 —— 面板关掉了、
+ * 列表刷新了，服务器上的数据其实没动。
+ */
+type RedisMutate = (
+  action: () => Promise<void>,
+  successNotice?: string,
+  /** 给了就**不弹**全局提示，由调用方在弹窗里就地显示（避免同一错误出现两次）。 */
+  onError?: (failure: unknown) => void,
+) => Promise<boolean>;
 
 /** 与后端 `SET_PAGE_MAX` 对齐：SSCAN 单页最多 500 个成员。 */
 const SET_PAGE_SIZE = 500;
@@ -135,6 +145,8 @@ export function RedisBrowser({
 
   const [pubsubOpen, setPubsubOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 新建键：走标准表单弹窗（以前是两次 window.prompt，值里的换行会丢）。 */
+  const [newKeyOpen, setNewKeyOpen] = useState(false);
 
   const writable = !profile.read_only;
 
@@ -233,15 +245,20 @@ export function RedisBrowser({
   );
 
   /** 写操作统一包装：成功后重读当前键 + 刷新列表 TTL/存在性。 */
-  const mutate = useCallback(
-    async (action: () => Promise<void>, successNotice?: string) => {
+  const mutate = useCallback<RedisMutate>(
+    async (action, successNotice, onError) => {
       try {
         await action();
         if (successNotice) setNotice(successNotice);
         if (selectedKey) await loadKey(selectedKey);
         void runScan(true);
+        return true;
       } catch (failure) {
-        alertRedisFailure(failure, t("操作失败"));
+        // 弹窗里正在显示这条错误时不能再推一条全局提示：同一件事说两遍，
+        // 用户会以为是两次不同的失败。
+        if (onError) onError(failure);
+        else alertRedisFailure(failure, t("操作失败"));
+        return false;
       }
     },
     [selectedKey, loadKey, runScan, t],
@@ -355,17 +372,7 @@ export function RedisBrowser({
               size="xs"
               className="h-5 w-5 px-0"
               aria-label={t("新建 string 键")}
-              onClick={() => {
-                const key = window.prompt(t("新键名"));
-                if (!key?.trim()) return;
-                const value = window.prompt(t("初始值"), "") ?? "";
-                // 新建走 SET NX：键已存在时报错，绝不静默覆盖旧键。
-                void mutate(
-                  () =>
-                    databaseApi.redisCreateString(profile.id, dbIndex, key.trim(), value),
-                  t("键已创建"),
-                );
-              }}
+              onClick={() => setNewKeyOpen(true)}
             >
               <Plus size={13} />
             </Button>
@@ -505,7 +512,118 @@ export function RedisBrowser({
           onClose={() => setPubsubOpen(false)}
         />
       )}
+
+      <NewKeyDialog
+        open={newKeyOpen}
+        profileId={profile.id}
+        dbIndex={dbIndex}
+        onClose={() => setNewKeyOpen(false)}
+        onCreated={(key) => {
+          setNewKeyOpen(false);
+          setNotice(t("键已创建"));
+          void runScan(true).then(() => void loadKey(key));
+        }}
+      />
     </div>
+  );
+}
+
+/**
+ * 新建 string 键。
+ *
+ * 后端是 `SET NX`：键已存在会报错而不是静默覆盖 —— 这个错误**留在弹窗里**
+ * （不弹全局提示），用户改个名字就能继续，输入的初始值也不会被弹窗关掉。
+ */
+function NewKeyDialog({
+  open,
+  profileId,
+  dbIndex,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  profileId: string;
+  dbIndex: number;
+  onClose: () => void;
+  onCreated: (key: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<unknown>(null);
+  const [saving, setSaving] = useState(false);
+
+  // 每次重新打开都是干净的表单：上一轮的键名/报错不该跟着进来。
+  useEffect(() => {
+    if (!open) return;
+    setKey("");
+    setValue("");
+    setKeyError(null);
+    setFailure(null);
+    setSaving(false);
+  }, [open]);
+
+  const submit = async () => {
+    const trimmed = key.trim();
+    if (!trimmed) {
+      setKeyError(t("键名不能为空"));
+      return;
+    }
+    // Redis 键允许空格，但前后空白几乎总是误粘贴 —— 明确提示，不静默裁剪。
+    if (trimmed !== key) {
+      setKeyError(t("键名首尾不能有空白字符"));
+      return;
+    }
+    setKeyError(null);
+    setFailure(null);
+    setSaving(true);
+    try {
+      await databaseApi.redisCreateString(profileId, dbIndex, trimmed, value);
+      onCreated(trimmed);
+    } catch (cause) {
+      setFailure(cause);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const errorInfo = failure ? toDbError(failure) : null;
+
+  return (
+    <FormDialog
+      open={open}
+      title={t("新建 string 键")}
+      description={t("键不存在时才会创建（SET NX），不会覆盖已有键。")}
+      size="md"
+      submitLabel={t("创建")}
+      submitting={saving}
+      error={errorInfo ?? undefined}
+      onSubmit={() => void submit()}
+      onCancel={onClose}
+      dirty={key.length > 0 || value.length > 0}
+      footerExtra={`db ${dbIndex}`}
+    >
+      <Field label={t("键名")} required error={keyError}>
+        <input
+          className={fieldClass}
+          value={key}
+          spellCheck={false}
+          autoComplete="off"
+          data-autofocus
+          onChange={(event) => setKey(event.target.value)}
+          placeholder="user:1001"
+        />
+      </Field>
+      <Field label={t("初始值")} hint={t("可留空：先建一个空字符串键。")}>
+        <textarea
+          className={cn(fieldClass, "h-24 resize-y py-1.5 font-mono")}
+          value={value}
+          spellCheck={false}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </Field>
+    </FormDialog>
   );
 }
 
@@ -528,7 +646,7 @@ function ValuePanel({
   selectedKey: string;
   keyInfo: RedisKeyInfo | null;
   payload: RedisValuePayload | null;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
   /** 大 string 只回了预览：显式请求全量（后端有 8 MiB 硬上限）。 */
   onReadFull: () => void;
   onDeleted: () => void;
@@ -539,6 +657,10 @@ function ValuePanel({
   const [renameValue, setRenameValue] = useState("");
   // 默认不覆盖：RENAMENX 目标存在即报错，勾选后才退回 RENAME。
   const [renameOverwrite, setRenameOverwrite] = useState(false);
+  /** 删除是不可撤销的：必须先过危险确认，且在服务端确认成功后才收起面板。 */
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteFailure, setDeleteFailure] = useState<unknown>(null);
 
   if (!payload) {
     return (
@@ -548,9 +670,18 @@ function ValuePanel({
     );
   }
 
-  const confirmDelete = () => {
-    if (!window.confirm(t("删除键 {{key}}？该操作不可撤销。", { key: selectedKey }))) return;
-    void mutate(() => databaseApi.redisKeyDelete(profile.id, dbIndex, selectedKey));
+  const runDelete = async () => {
+    setDeleting(true);
+    setDeleteFailure(null);
+    const ok = await mutate(
+      () => databaseApi.redisKeyDelete(profile.id, dbIndex, selectedKey),
+      t("键已删除"),
+      // 错误就地显示在弹窗里：不再往顶部推一条一模一样的提示。
+      (failure) => setDeleteFailure(failure),
+    );
+    setDeleting(false);
+    if (!ok) return;
+    setConfirmOpen(false);
     onDeleted();
   };
 
@@ -597,7 +728,10 @@ function ValuePanel({
                 size="xs"
                 className="h-5 w-5 px-0 text-danger"
                 aria-label={t("删除键")}
-                onClick={confirmDelete}
+                onClick={() => {
+                  setDeleteFailure(null);
+                  setConfirmOpen(true);
+                }}
               >
                 <Trash2 size={12} />
               </Button>
@@ -724,6 +858,30 @@ function ValuePanel({
           {t("类型 {{type}} 的键暂不支持查看。", { type: payload.type_name })}
         </p>
       )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        risk="irreversible"
+        title={t("删除键")}
+        description={
+          <span className="font-mono break-all text-fg">{selectedKey}</span>
+        }
+        consequences={[
+          t("键与其全部数据会被立即删除，事务日志之外无法恢复。"),
+          keyInfo
+            ? t("类型 {{kind}} · {{count}} 字节 · TTL {{ttl}}", {
+                kind: keyInfo.kind,
+                count: keyInfo.memory_bytes ?? 0,
+                ttl: formatTtl(keyInfo.ttl_ms),
+              })
+            : t("该键的内容会一并消失。"),
+        ]}
+        confirmLabel={t("删除")}
+        pending={deleting}
+        error={deleteFailure ?? undefined}
+        onConfirm={() => void runDelete()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }
@@ -744,7 +902,7 @@ function StringEditor({
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "string" }>;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
   onReadFull: () => void;
 }) {
   const { t } = useTranslation();
@@ -857,7 +1015,7 @@ function HashEditor({
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "hash" }>;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only;
@@ -1065,7 +1223,7 @@ function ListEditor({
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "list" }>;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only && !payload.truncated;
@@ -1232,7 +1390,7 @@ function SetEditor({
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "set" }>;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only;
@@ -1353,7 +1511,7 @@ function ZsetEditor({
   dbIndex: number;
   selectedKey: string;
   payload: Extract<RedisValuePayload, { kind: "zset" }>;
-  mutate: (action: () => Promise<void>, successNotice?: string) => Promise<void>;
+  mutate: RedisMutate;
 }) {
   const { t } = useTranslation();
   const writable = !profile.read_only;

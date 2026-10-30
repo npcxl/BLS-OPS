@@ -18,6 +18,7 @@ import {
   WifiOff,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/cn";
 import { useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -284,7 +285,12 @@ export function RefreshButton({
   );
 }
 
-/** A "no data yet" / "nothing matches" placeholder for module tables. */
+/**
+ * A "no data yet" / "nothing matches" placeholder for module tables.
+ *
+ * 视觉统一到 `<EmptyState>`：图标底块、字号、间距只有一处定义。历史调用点
+ * 保持原签名（`icon` 传组件类型），不需要逐个改。
+ */
 export function ModuleEmpty({
   icon: Icon = PlugZap,
   title,
@@ -297,11 +303,12 @@ export function ModuleEmpty({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
-      <Icon size={20} className="text-fg-subtle" />
-      <p className="text-13 text-fg-muted">{title}</p>
-      {hint && <p className="max-w-md text-12 text-fg-subtle">{hint}</p>}
-      {action && <div className="mt-2">{action}</div>}
-    </div>
+    <EmptyState
+      icon={<Icon size={18} strokeWidth={1.5} />}
+      title={title}
+      description={hint}
+      action={action}
+      className="min-h-40"
+    />
   );
 }

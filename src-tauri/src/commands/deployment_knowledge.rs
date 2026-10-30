@@ -24,6 +24,7 @@ use crate::deployment::knowledge::model::{
     KnowledgeQueryInput, KnowledgeSourceType, KnowledgeUsageRecord, KnowledgeVersion,
     MARKDOWN_EXTENSIONS, MAX_MARKDOWN_BYTES,
 };
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 use super::record_audit;
@@ -39,7 +40,7 @@ pub async fn deployment_knowledge_list(
     application_id: Option<String>,
     environment_id: Option<String>,
     include_archived: Option<bool>,
-) -> Result<Vec<KnowledgeDocument>, String> {
+) -> OpsResult<Vec<KnowledgeDocument>> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
     db::list_documents(
         &conn,
@@ -47,16 +48,16 @@ pub async fn deployment_knowledge_list(
         environment_id.as_deref(),
         include_archived.unwrap_or(false),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn deployment_knowledge_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<KnowledgeDocument>, String> {
+) -> OpsResult<Option<KnowledgeDocument>> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
-    db::get_document(&conn, &id).map_err(|error| error.to_string())
+    db::get_document(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 保存（产生**新版本**）。
@@ -65,27 +66,27 @@ pub async fn deployment_knowledge_save(
     state: State<'_, AppState>,
     document: KnowledgeDocument,
     note: Option<String>,
-) -> Result<KnowledgeDocument, String> {
+) -> OpsResult<KnowledgeDocument> {
     let now = AppDb::now();
     let conn = state.db.open().map_err(|error| error.to_string())?;
 
     let id = document.id.trim().to_string();
     if id.is_empty() {
-        return Err("知识 id 不能为空".to_string());
+        return Err(OpsError::from("知识 id 不能为空"));
     }
     if document.title.trim().is_empty() {
-        return Err("标题不能为空".to_string());
+        return Err(OpsError::from("标题不能为空"));
     }
     if document.content.trim().is_empty() {
-        return Err("内容不能为空".to_string());
+        return Err(OpsError::from("内容不能为空"));
     }
     // 作用域与目标的对应关系：环境级必须给环境 id，应用级必须给应用 id。
     match document.scope {
         knowledge::model::KnowledgeScope::Environment if document.environment_id.is_none() => {
-            return Err("环境级知识必须指定环境".to_string())
+            return Err(OpsError::from("环境级知识必须指定环境"))
         }
         knowledge::model::KnowledgeScope::Application if document.application_id.is_none() => {
-            return Err("应用级知识必须指定应用".to_string())
+            return Err(OpsError::from("应用级知识必须指定应用"))
         }
         _ => {}
     }
@@ -173,9 +174,9 @@ pub async fn deployment_knowledge_save(
 pub async fn deployment_knowledge_versions(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Vec<KnowledgeVersion>, String> {
+) -> OpsResult<Vec<KnowledgeVersion>> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
-    db::list_versions(&conn, &id).map_err(|error| error.to_string())
+    db::list_versions(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 恢复某个历史版本 —— **作为新版本写入**，历史不被改写。
@@ -184,11 +185,11 @@ pub async fn deployment_knowledge_restore(
     state: State<'_, AppState>,
     id: String,
     version: i64,
-) -> Result<KnowledgeDocument, String> {
+) -> OpsResult<KnowledgeDocument> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
     let current = db::get_document(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "知识文档不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("知识文档不存在"))?;
     let target = db::get_version(&conn, &id, version)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("没有第 {version} 版"))?;
@@ -207,7 +208,7 @@ pub async fn deployment_knowledge_restore(
 pub async fn deployment_knowledge_archive(
     state: State<'_, AppState>,
     id: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     let now = AppDb::now();
     let conn = state.db.open().map_err(|error| error.to_string())?;
     db::archive_document(&conn, &id, now).map_err(|error| error.to_string())?;
@@ -242,12 +243,12 @@ pub async fn deployment_knowledge_update_meta(
     state: State<'_, AppState>,
     id: String,
     update: KnowledgeMetaUpdate,
-) -> Result<KnowledgeDocument, String> {
+) -> OpsResult<KnowledgeDocument> {
     let now = AppDb::now();
     let conn = state.db.open().map_err(|error| error.to_string())?;
     let mut document = db::get_document(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "知识文档不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("知识文档不存在"))?;
 
     document.enabled = update.enabled;
     document.status = update.status;
@@ -294,8 +295,9 @@ pub async fn deployment_knowledge_update_meta(
 #[tauri::command]
 pub async fn deployment_knowledge_import_markdown(
     path: String,
-) -> Result<ImportedMarkdown, String> {
-    read_markdown_file(&path)
+) -> OpsResult<ImportedMarkdown> {
+    // 内层仍是字符串错误（单测直接断言消息），到命令边界补阶段。
+    read_markdown_file(&path).map_err(|error| OpsError::new("io", error))
 }
 
 /// 受限地读一个 Markdown 文件（纯逻辑，便于单测）。
@@ -368,9 +370,9 @@ fn read_markdown_file(path: &str) -> Result<ImportedMarkdown, String> {
 pub async fn deployment_knowledge_usage(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Vec<KnowledgeUsageRecord>, String> {
+) -> OpsResult<Vec<KnowledgeUsageRecord>> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
-    db::usage_by_document(&conn, &id).map_err(|error| error.to_string())
+    db::usage_by_document(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 检索测试：与 AI 复核用的是同一个函数、同一套预算。
@@ -378,7 +380,7 @@ pub async fn deployment_knowledge_usage(
 pub async fn deployment_knowledge_search_test(
     state: State<'_, AppState>,
     query: KnowledgeQueryInput,
-) -> Result<Vec<KnowledgeHit>, String> {
+) -> OpsResult<Vec<KnowledgeHit>> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
     let documents = db::list_documents(
         &conn,

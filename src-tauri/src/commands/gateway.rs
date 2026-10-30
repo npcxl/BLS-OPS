@@ -4,16 +4,17 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 #[tauri::command]
 pub async fn nginx_sites(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<crate::nginx::NginxSite>, String> {
+) -> OpsResult<Vec<crate::nginx::NginxSite>> {
     crate::nginx::collect_sites_with_summary(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("nginx", error).retryable())
 }
 
 #[tauri::command]
@@ -21,10 +22,10 @@ pub async fn nginx_config(
     state: State<'_, AppState>,
     session_id: String,
     path: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     crate::nginx::read_config(&state.ssh, &session_id, &path)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("nginx", error).retryable())
 }
 
 /// Writes a config file, validates it, and only then reloads.
@@ -48,7 +49,7 @@ pub async fn nginx_save_config(
     session_id: String,
     path: String,
     content: String,
-) -> Result<NginxSaveResult, String> {
+) -> OpsResult<NginxSaveResult> {
     // Back up first: an edit that fails validation still leaves the original
     // recoverable, and the operator is told where it is.
     let backup_path = crate::nginx::backup_config(&state.ssh, &session_id, &path)
@@ -59,11 +60,11 @@ pub async fn nginx_save_config(
         .ssh
         .sftp_write_file(&session_id, &path, &content)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("nginx", error))?;
 
     let test = crate::nginx::test_config(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("nginx", error))?;
 
     let reloaded = if test.success {
         crate::nginx::reload(&state.ssh, &session_id).await.is_ok()
@@ -95,10 +96,10 @@ pub async fn nginx_save_config(
 pub async fn nginx_test(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<crate::nginx::NginxTestResult, String> {
+) -> OpsResult<crate::nginx::NginxTestResult> {
     crate::nginx::test_config(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("nginx", error))
 }
 
 #[tauri::command]
@@ -106,10 +107,10 @@ pub async fn nginx_reload(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let outcome = crate::nginx::reload(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("nginx", error))?;
     record_audit(
         &state,
         "nginx_reload",
@@ -128,10 +129,10 @@ pub async fn nginx_set_site_enabled(
     session_id: String,
     site: String,
     enable: bool,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let outcome = crate::nginx::set_site_enabled(&state.ssh, &session_id, &site, enable)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("nginx", error))?;
     record_audit(
         &state,
         "nginx_set_site_enabled",

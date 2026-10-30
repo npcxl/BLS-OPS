@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as toastApi from "@/components/ui/toast";
 
 /**
  * 错误提示必须**在屏幕上沿**、常驻到用户关掉。
@@ -13,16 +14,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
+/**
+ * 挂一个 ToastHost。
+ *
+ * items 是模块级状态：改用 `clearToasts()` 清场，而不是 `vi.resetModules()`
+ * 重载模块 —— 共享 worker 里动态 import 可能拿到与已渲染组件不同的实例，
+ * 表现为"推了消息但屏幕是空的"（只在满载并行时才复现）。
+ */
 async function mountHost() {
-  // items 是模块级状态：每次重新加载模块，保证用例之间互不污染。
-  vi.resetModules();
-  const toast = await import("@/components/ui/toast");
+  toastApi.clearToasts();
   const root = createRoot(document.createElement("div"));
   await act(async () => {
-    root.render(<toast.ToastHost />);
+    root.render(<toastApi.ToastHost />);
   });
   return {
-    toast,
+    toast: toastApi,
     unmount: () => act(() => root.unmount()),
   };
 }

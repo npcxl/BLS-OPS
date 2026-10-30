@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Boxes, Loader2, RefreshCw } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
 import { cn } from "@/lib/cn";
@@ -69,7 +70,7 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     [panel],
   );
   // Start/poll/cancel/cleanup of a discovery run lives in the hook.
-  const { scan, result, loading, error, discover, cancel, loadSnapshot } = useScanTask(
+  const { scan, result, loading, error, retry, discover, cancel, loadSnapshot } = useScanTask(
     tab.serverId,
     session.sessionId,
     session.ready,
@@ -255,11 +256,11 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
       <div className="flex h-full min-h-0">
         <div className="ops-scroll flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* 扫描状态横幅：异常 / 断开由 ModuleFrame 统一处理，这里只留进度条 */}
-          {error && (
-            <div className="mx-5 mt-4 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-              {error}
+          {error ? (
+            <div className="mx-5 mt-4">
+              <ErrorState error={error} compact onRetry={retry} />
             </div>
-          )}
+          ) : null}
           {loading && scan && (
             <div className="mx-5 mt-4">
               <ScanProgress scan={scan} onCancel={() => void cancel()} />

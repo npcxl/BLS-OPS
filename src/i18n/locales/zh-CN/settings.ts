@@ -50,10 +50,11 @@ export default {
     "已读取 {{name}} — 该私钥已加密，请在下方填写口令",
   "Clear the saved passphrase": "清除已保存的口令",
   "Fill in the password when creating a password credential.": "创建密码凭据时必须填写密码。",
-  "Delete credential “{{name}}”? The key in the system credential manager is removed too.":
-    "确定删除凭据“{{name}}”吗？此操作会同时清除系统凭据管理器中的密钥。",
-  "{{count}} servers are using credential “{{name}}”.\nAfter deletion they become “no credential” and must be re-selected before connecting.\n\nDelete anyway?":
-    "有 {{count}} 台服务器正在使用凭据“{{name}}”。\n删除后这些服务器会变为“未绑定凭据”，需要重新选择才能连接。\n\n确定继续删除吗？",
+  "Delete credential": "删除凭据",
+  "The key in the system credential manager is removed too.":
+    "系统凭据管理器中的密钥也会一并删除。",
+  "{{count}} servers use this credential; they become “no credential” and must be re-selected before connecting.":
+    "有 {{count}} 台服务器正在使用该凭据：删除后它们会变成「未绑定凭据」，连接前需要重新选择。",
 
   // -- 已知主机 / 数据 --
   "Known hosts": "已知主机",
@@ -180,4 +181,6 @@ export default {
   "Press the new combination… (Esc cancels, Backspace clears)":
     "按下新的组合键…（Esc 取消，Backspace 清除）",
   "Not set": "未设置",
+  Off: "已关闭",
+  "Press a combination…": "按下组合键…",
 } as const;

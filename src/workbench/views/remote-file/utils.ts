@@ -94,7 +94,8 @@ export type PanelStatus =
   | { state: "loading" }
   | { state: "ready" }
   | { state: "empty" }
-  | { state: "error"; message: string }
+  /** 保留原始异常：界面按 stage/detail 渲染，而不是一行压平的字符串。 */
+  | { state: "error"; error: unknown }
   | { state: "disconnected" };
 
 export interface FilePanelFollow {

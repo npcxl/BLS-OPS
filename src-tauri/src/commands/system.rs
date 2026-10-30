@@ -12,10 +12,12 @@
 /// **只接受 http(s)**：拒绝 `file:` / `shell:` / 自定义协议，避免把任意
 /// 字符串交给系统命令执行。
 #[tauri::command]
-pub fn open_external_url(url: String) -> Result<(), String> {
+pub fn open_external_url(url: String) -> crate::ops_error::OpsResult<()> {
+    use crate::ops_error::OpsError;
+
     let url = url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err("only http(s) URLs can be opened".to_string());
+        return Err(OpsError::new("config", "only http(s) URLs can be opened"));
     }
 
     #[cfg(target_os = "windows")]
@@ -30,5 +32,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = std::process::Command::new("xdg-open").arg(url).spawn();
 
-    result.map(|_| ()).map_err(|error| error.to_string())
+    result
+        .map(|_| ())
+        .map_err(|error| OpsError::from_stage("local", error).retryable())
 }

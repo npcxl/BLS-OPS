@@ -31,10 +31,13 @@ import {
 } from "@/components/icons";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorState } from "@/components/ui/error-state";
+import { modalZIndex } from "@/components/ui/overlay";
+import { pushErrorToast } from "@/components/ui/toast";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { useInspectionMode } from "@/stores/inspection-store";
-import { comboFromEvent, useShortcutBindings } from "@/stores/shortcut-store";
-import { opsApi, toErrorMessage, type RemoteFileEntry } from "@/api/ops-api";
+import { comboFromKey, useShortcutBindings } from "@/stores/shortcut-store";
+import { opsApi, type RemoteFileEntry } from "@/api/ops-api";
 import type { EditorSyncEventPayload } from "@/api/types/editor-sync";
 import { editorSyncEvent } from "@/lib/events";
 import { useDomainStore } from "@/stores/domain-store";
@@ -230,14 +233,14 @@ function RemoteFilePanelImpl({
         if (seq !== loadSeqRef.current) return;
         if (silent) {
           // 刷新失败时保留已有列表：把列表换成错误页等于把用户正在看的东西
-          // 抹掉，比报错本身更糟。
-          showNotice(toErrorMessage(cause), "danger");
+          // 抹掉，比报错本身更糟。错误走统一通知，带阶段与复制。
+          pushErrorToast(cause, { title: t("Refresh failed"), persist: false });
         } else {
-          setStatus({ state: "error", message: toErrorMessage(cause) });
+          setStatus({ state: "error", error: cause });
         }
       }
     },
-    [sessionId, showNotice],
+    [sessionId, t],
   );
 
   /**
@@ -296,7 +299,7 @@ function RemoteFilePanelImpl({
         setEntries(result.entries);
         setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
       } catch (cause) {
-        if (!cancelled) setStatus({ state: "error", message: toErrorMessage(cause) });
+        if (!cancelled) setStatus({ state: "error", error: cause });
       }
     })();
     return () => {
@@ -386,16 +389,12 @@ function RemoteFilePanelImpl({
         if (parent !== cwd) await load(parent);
         setSelected(target);
       } catch (cause) {
-        showNotice(
-          t("Cannot open {{path}} — {{reason}}", {
-            path: target,
-            reason: toErrorMessage(cause),
-          }),
-          "danger",
-        );
+        // 打不开文件多半是权限或路径不存在：走顶部错误通知，带阶段、详情与复制，
+        // 而不是挤在面板底部那一行灰字里（滚一下就没了）。
+        pushErrorToast(cause, { title: t("Cannot open {{path}}", { path: target }) });
       }
     },
-    [cwd, load, navigate, sessionId, showNotice, t],
+    [cwd, load, navigate, sessionId, t],
   );
 
   const openEntry = useCallback(
@@ -426,9 +425,9 @@ function RemoteFilePanelImpl({
           if (cwd) return load(cwd, { silent: true });
           return undefined;
         })
-        .catch((cause) => showNotice(toErrorMessage(cause), "danger"));
+        .catch((cause) => pushErrorToast(cause, { title: t("Operation failed"), persist: false }));
     },
-    [cwd, load, showNotice],
+    [cwd, load, t],
   );
 
   /** 操作后原地刷新列表（不切 loading、不清选中）。 */
@@ -460,7 +459,7 @@ function RemoteFilePanelImpl({
       await opsApi.transferDownload(sessionId, entry.path, destination, "rename");
       setNotice(t("Download queued: {{name}}", { name: entry.name }));
     } catch (cause) {
-      showNotice(toErrorMessage(cause), "danger");
+      pushErrorToast(cause, { title: t("Download failed"), persist: false });
     }
   };
 
@@ -486,7 +485,7 @@ function RemoteFilePanelImpl({
     try {
       await opsApi.vscodeOpenRemoteFolder(savedServerId, path);
     } catch (cause) {
-      setNotice(toErrorMessage(cause));
+      pushErrorToast(cause, { title: t("Could not open in VSCode"), persist: false });
     }
   };
 
@@ -532,7 +531,7 @@ function RemoteFilePanelImpl({
         t("Opened {{name}} in VSCode — saving syncs back to the server", { name: entry.name }),
       );
     } catch (cause) {
-      setNotice(toErrorMessage(cause));
+      pushErrorToast(cause, { title: t("Could not open in VSCode"), persist: false });
     }
   };
 
@@ -670,10 +669,10 @@ function RemoteFilePanelImpl({
         );
         setTransferOpen(true);
       } catch (cause) {
-        showNotice(toErrorMessage(cause), "danger");
+        pushErrorToast(cause, { title: t("Upload failed"), persist: false });
       }
     },
-    [cwd, sessionId, t, showNotice, blockedByInspection],
+    [cwd, sessionId, t, blockedByInspection],
   );
 
   // The drag listener is registered once, so it calls through this ref rather
@@ -687,7 +686,7 @@ function RemoteFilePanelImpl({
   // Directory-size queue (max 2 concurrent) — logic lives in the hook.
   // 错误回调必须引用稳定：useDirSizeQueue 的监听器注册 effect 依赖它。
   const handleDirSizeError = useCallback((message: string) => {
-    setStatus({ state: "error", message });
+    setStatus({ state: "error", error: message });
   }, []);
 
   const { computeDirSize, dropQueued, releaseStale, requireDirSize, listenerReady } =
@@ -790,11 +789,11 @@ function RemoteFilePanelImpl({
       if (paths.length === 0) return;
       await uploadFiles(paths);
     } catch (cause) {
-      showNotice(toErrorMessage(cause), "danger");
+      pushErrorToast(cause, { title: t("Upload failed") });
     } finally {
       setPicking(false);
     }
-  }, [cwd, picking, uploadFiles, t, showNotice]);
+  }, [cwd, picking, uploadFiles, t]);
 
   // Drag & drop from the local machine. Tauri intercepts the OS drop and hands
   // over absolute paths; DOM drop events would only give opaque File objects.
@@ -868,7 +867,7 @@ function RemoteFilePanelImpl({
     // 焦点在编辑框 / 代码编辑器里：按键归它们。不放行的话 Backspace 删不了字，
     // 还会把面板退回上一级 —— 看起来就是"编辑时按退格在回退"。
     if (isEditableTarget(event.target)) return;
-    const combo = comboFromEvent(event.nativeEvent);
+    const combo = comboFromKey(event);
     if (!combo) return;
     if (combo === shortcutKeys.file_up) {
       event.preventDefault();
@@ -1246,18 +1245,13 @@ function RemoteFilePanelImpl({
         )}
 
         {status.state === "error" && (
-          <div className="flex flex-col gap-1.5 px-3 py-3">
-            <p className="text-11 leading-relaxed text-danger">{status.message}</p>
-            {cwd && (
-              <button
-                type="button"
-                className="self-start rounded px-1.5 py-0.5 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
-                onClick={refresh}
-              >
-                {t("Retry")}
-              </button>
-            )}
-          </div>
+          <ErrorState
+            error={status.error}
+            compact
+            title={t("Could not read this folder")}
+            onRetry={refresh}
+            className="px-3 py-2"
+          />
         )}
 
         {status.state === "disconnected" && (
@@ -1366,7 +1360,11 @@ function RemoteFilePanelImpl({
       {editor && (
         <Suspense
           fallback={
-            <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50">
+            // 占位就站在"弹窗那一层"：不能比弹窗高，否则会盖住确认框。
+            <div
+              className="fixed inset-0 flex items-center justify-center bg-black/50"
+              style={{ zIndex: modalZIndex(1) }}
+            >
               <Loader2 size={18} className="animate-spin text-fg-subtle" />
             </div>
           }
@@ -1388,7 +1386,10 @@ function RemoteFilePanelImpl({
       {preview && (
         <Suspense
           fallback={
-            <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50">
+            <div
+              className="fixed inset-0 flex items-center justify-center bg-black/50"
+              style={{ zIndex: modalZIndex(1) }}
+            >
               <Loader2 size={18} className="animate-spin text-fg-subtle" />
             </div>
           }

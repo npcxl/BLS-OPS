@@ -18,6 +18,7 @@ use crate::db;
 use crate::deployment::model::{PlanStatus, ProposalSource};
 use crate::deployment::proposal::{engine, model::*, ProposalInputs, SecurityPolicy};
 use crate::deployment::validate;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 use super::{open_db, record_audit};
@@ -29,7 +30,7 @@ pub async fn deployment_proposal_generate(
     application_id: String,
     environment_id: Option<String>,
     session_id: Option<String>,
-) -> Result<ProposalOutcome, String> {
+) -> OpsResult<ProposalOutcome> {
     // ---- 读输入（连接不跨 await）----
     let (
         application,
@@ -46,7 +47,7 @@ pub async fn deployment_proposal_generate(
         let conn = open_db(&state)?;
         let application = db::get_application(&conn, &application_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "应用不存在".to_string())?;
+            .ok_or_else(|| OpsError::from("应用不存在"))?;
         let environment = match environment_id.as_deref() {
             Some(id) if !id.trim().is_empty() => {
                 db::get_environment(&conn, id).map_err(|error| error.to_string())?
@@ -180,23 +181,23 @@ pub async fn deployment_proposal_list(
     state: State<'_, AppState>,
     application_id: Option<String>,
     limit: Option<u32>,
-) -> Result<Vec<DeploymentProposal>, String> {
+) -> OpsResult<Vec<DeploymentProposal>> {
     let conn = open_db(&state)?;
     db::list_proposals(
         &conn,
         application_id.as_deref().filter(|id| !id.trim().is_empty()),
         limit.unwrap_or(20).min(200) as i64,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
 pub async fn deployment_proposal_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<DeploymentProposal>, String> {
+) -> OpsResult<Option<DeploymentProposal>> {
     let conn = open_db(&state)?;
-    db::get_proposal(&conn, &id).map_err(|error| error.to_string())
+    db::get_proposal(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 用户确认方案 → 落成一份**草案计划**（不是批准，也不执行）。
@@ -204,19 +205,19 @@ pub async fn deployment_proposal_get(
 pub async fn deployment_proposal_confirm(
     state: State<'_, AppState>,
     id: String,
-) -> Result<crate::deployment::model::DeploymentPlanGraph, String> {
+) -> OpsResult<crate::deployment::model::DeploymentPlanGraph> {
     let mut conn = open_db(&state)?;
     let proposal = db::get_proposal(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "方案不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("方案不存在"))?;
     if proposal.status != ProposalStatus::Draft {
-        return Err("该方案已经处理过了（已确认或已拒绝）".to_string());
+        return Err(OpsError::from("该方案已经处理过了（已确认或已拒绝）"));
     }
     if !proposal.is_ready() {
-        return Err("方案尚未就绪（存在阻塞项或缺少关键信息），不能确认".to_string());
+        return Err(OpsError::from("方案尚未就绪（存在阻塞项或缺少关键信息），不能确认"));
     }
     let Some(environment_id) = proposal.environment_id.clone() else {
-        return Err("方案没有目标环境".to_string());
+        return Err(OpsError::from("方案没有目标环境"));
     };
 
     // 节点 id 在这里才生成（方案本身是确定性的，落库才需要唯一 id）。
@@ -238,11 +239,11 @@ pub async fn deployment_proposal_confirm(
         let from = id_map
             .get(&edge.from_node_id)
             .cloned()
-            .ok_or_else(|| "方案里的连线引用了不存在的节点".to_string())?;
+            .ok_or_else(|| OpsError::from("方案里的连线引用了不存在的节点"))?;
         let to = id_map
             .get(&edge.to_node_id)
             .cloned()
-            .ok_or_else(|| "方案里的连线引用了不存在的节点".to_string())?;
+            .ok_or_else(|| OpsError::from("方案里的连线引用了不存在的节点"))?;
         edge.id = uuid::Uuid::new_v4().to_string();
         edge.plan_id = plan_id.clone();
         edge.from_node_id = from;
@@ -293,20 +294,20 @@ pub async fn deployment_proposal_confirm(
     let conn = open_db(&state)?;
     db::get_plan_graph(&conn, &plan_id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "计划保存后读取失败".to_string())
+        .ok_or_else(|| OpsError::from("计划保存后读取失败"))
 }
 
 #[tauri::command]
 pub async fn deployment_proposal_reject(
     state: State<'_, AppState>,
     id: String,
-) -> Result<DeploymentProposal, String> {
+) -> OpsResult<DeploymentProposal> {
     let conn = open_db(&state)?;
     db::mark_proposal_status(&conn, &id, ProposalStatus::Rejected, db::AppDb::now())
         .map_err(|error| error.to_string())?;
     let proposal = db::get_proposal(&conn, &id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "方案不存在".to_string())?;
+        .ok_or_else(|| OpsError::from("方案不存在"))?;
     record_audit(
         &state,
         "deployment_proposal_reject",
@@ -321,7 +322,7 @@ pub async fn deployment_proposal_reject(
 pub async fn deployment_proposal_delete(
     state: State<'_, AppState>,
     id: String,
-) -> Result<(), String> {
+) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_proposal(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -339,9 +340,9 @@ pub async fn deployment_proposal_delete(
 pub async fn deployment_policy_get(
     state: State<'_, AppState>,
     application_id: String,
-) -> Result<SecurityPolicy, String> {
+) -> OpsResult<SecurityPolicy> {
     let conn = open_db(&state)?;
-    db::get_security_policy(&conn, &application_id).map_err(|error| error.to_string())
+    db::get_security_policy(&conn, &application_id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 保存安全策略。**返回的是被钉硬之后的策略**（界面据此显示"哪些被恢复"）。
@@ -350,7 +351,7 @@ pub async fn deployment_policy_save(
     state: State<'_, AppState>,
     application_id: String,
     policy: SecurityPolicy,
-) -> Result<SecurityPolicy, String> {
+) -> OpsResult<SecurityPolicy> {
     let (hardened, downgraded) = policy.hardened();
     let now = db::AppDb::now();
     {
@@ -417,7 +418,7 @@ pub async fn deployment_proposal_ai_review(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     proposal_id: String,
-) -> Result<crate::deployment::ai::model::AiReviewTask, String> {
+) -> OpsResult<crate::deployment::ai::model::AiReviewTask> {
     use crate::deployment::ai::model::{AiReviewTask, AiTaskStatus};
 
     let now = db::AppDb::now();
@@ -427,15 +428,14 @@ pub async fn deployment_proposal_ai_review(
     };
     let Some(config) = config else {
         return Err(
-            "还没有配置可用的 AI 提供方：请在设置 → AI 模型里添加一个，并设为默认后重试"
-                .to_string(),
+            "还没有配置可用的 AI 提供方：请在设置 → AI 模型里添加一个，并设为默认后重试".into(),
         );
     };
     let proposal = {
         let conn = open_db(&state)?;
         db::get_proposal(&conn, &proposal_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "方案不存在".to_string())?
+            .ok_or_else(|| OpsError::from("方案不存在"))?
     };
 
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -508,9 +508,9 @@ pub async fn deployment_proposal_ai_review(
 pub async fn deployment_proposal_ai_review_status(
     state: State<'_, AppState>,
     proposal_id: String,
-) -> Result<Option<crate::deployment::ai::model::AiReviewTask>, String> {
+) -> OpsResult<Option<crate::deployment::ai::model::AiReviewTask>> {
     let conn = open_db(&state)?;
-    db::latest_review_task(&conn, &proposal_id).map_err(|error| error.to_string())
+    db::latest_review_task(&conn, &proposal_id).map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 取消一次正在进行（或还在重试）的复核。
@@ -518,7 +518,7 @@ pub async fn deployment_proposal_ai_review_status(
 pub async fn deployment_proposal_ai_review_cancel(
     state: State<'_, AppState>,
     proposal_id: String,
-) -> Result<bool, String> {
+) -> OpsResult<bool> {
     let task = {
         let conn = open_db(&state)?;
         db::latest_review_task(&conn, &proposal_id).map_err(|error| error.to_string())?

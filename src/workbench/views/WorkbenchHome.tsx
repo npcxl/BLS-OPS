@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
-import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
 import { copyText } from "@/lib/clipboard";
 import { type CredentialRecord, type ServerRecord } from "@/api/ops-api";
 import { emptyServer, useDomainStore } from "@/stores/domain-store";
@@ -484,7 +485,7 @@ function QuickConnectDialog({
           </p>
         )}
 
-        <ErrorText>{submit.error}</ErrorText>
+        {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
     </Modal>
   );

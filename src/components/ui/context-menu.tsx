@@ -10,6 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ChevronRight } from "@/components/icons";
+import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 /**
@@ -99,6 +100,8 @@ export const ContextMenu = memo(function ContextMenu({
   minWidth = DEFAULT_MIN_WIDTH,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  /** 浮层身份：菜单开着时，Esc 属于菜单而不是它下面的弹窗。 */
+  useOverlayLayer(open, "menu");
   const { t } = useTranslation();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [active, setActive] = useState(-1);
@@ -324,11 +327,12 @@ export const ContextMenu = memo(function ContextMenu({
       ref={ref}
       role="menu"
       aria-label={title ?? t("Context menu")}
-      className="glass-panel-strong fixed z-[200] rounded-[12px] p-1"
+      className="glass-panel-strong fixed rounded-[12px] p-1"
       style={{
         left: pos?.x ?? x,
         top: pos?.y ?? y,
         minWidth,
+        zIndex: OVERLAY_Z.menu,
         visibility: pos ? "visible" : "hidden",
       }}
       onContextMenu={(event) => event.preventDefault()}
@@ -420,10 +424,11 @@ export const ContextMenu = memo(function ContextMenu({
           ref={submenuRef}
           role="menu"
           aria-label={items[submenu!]?.label ?? t("Submenu")}
-          className="glass-panel-strong fixed z-[210] rounded-[12px] p-1"
+          className="glass-panel-strong fixed rounded-[12px] p-1"
           style={{
             left: subPos?.x ?? 0,
             top: subPos?.y ?? 0,
+            zIndex: OVERLAY_Z.submenu,
             minWidth,
             visibility: subPos ? "visible" : "hidden",
           }}

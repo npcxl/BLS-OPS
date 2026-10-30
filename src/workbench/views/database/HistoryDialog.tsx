@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { History, Loader2, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Modal } from "@/components/ui/modal";
 import { databaseApi } from "@/api/ops-api";
 import type { QueryHistoryEntry } from "@/api/types/database";
@@ -51,12 +52,21 @@ export function HistoryDialog({
     if (open) void load();
   }, [open, load]);
 
+  /** 清空是不可恢复的删除：先确认，再说清楚删了多少条。 */
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
   const clear = async () => {
+    setClearing(true);
     try {
       await databaseApi.historyClear(profileId);
       setEntries([]);
+      setConfirmOpen(false);
     } catch (failure) {
       setError(toDbError(failure).message);
+      setConfirmOpen(false);
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -81,7 +91,12 @@ export function HistoryDialog({
             {loading ? <Loader2 size={12} className="animate-spin" /> : <History size={12} />}
             {t("刷新")}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => void clear()} disabled={entries.length === 0}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmOpen(true)}
+            disabled={entries.length === 0}
+          >
             <Trash2 size={12} />
             {t("清空")}
           </Button>
@@ -129,6 +144,18 @@ export function HistoryDialog({
           ))}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        risk="danger"
+        title={t("清空全部历史记录？")}
+        description={t("这条连接上记录过的 SQL 会被全部删除，无法恢复。")}
+        consequences={[t("共 {{count}} 条记录", { count: entries.length })]}
+        confirmLabel={t("清空")}
+        pending={clearing}
+        onConfirm={() => void clear()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </Modal>
   );
 }

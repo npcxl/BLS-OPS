@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { opsApi, toErrorMessage, type CommandSearchHit } from "@/api/ops-api";
+import { opsApi, type CommandSearchHit } from "@/api/ops-api";
 
 /**
  * 命令检索提示 —— `CommandCenterView`（独立输入框）与 `TerminalView`
@@ -24,7 +24,8 @@ export interface CommandSuggestions {
   activeIndex: number;
   setActiveIndex: (index: number) => void;
   searching: boolean;
-  error: string | null;
+  /** 原始异常，交给 `ErrorState` 渲染（别直接拼进 `<p>`）。 */
+  error: unknown | null;
   /** 清空提示（Enter 提交 / Ctrl+C / 失焦时调用）。 */
   clear: () => void;
   /** 收藏切换（乐观更新，失败回滚并报错）。 */
@@ -38,7 +39,7 @@ export function useCommandSuggestions(
   const [hits, setHits] = useState<CommandSearchHit[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown | null>(null);
   const seqRef = useRef(0);
 
   useEffect(() => {
@@ -62,7 +63,7 @@ export function useCommandSuggestions(
           setError(null);
         })
         .catch((cause) => {
-          if (seqRef.current === seq) setError(toErrorMessage(cause));
+          if (seqRef.current === seq) setError(cause);
         })
         .finally(() => {
           if (seqRef.current === seq) setSearching(false);
@@ -88,7 +89,7 @@ export function useCommandSuggestions(
       setHits((current) =>
         current.map((item) => (item.id === hit.id ? { ...item, favorite: previous } : item)),
       );
-      setError(toErrorMessage(cause));
+      setError(cause);
     });
   }, []);
 

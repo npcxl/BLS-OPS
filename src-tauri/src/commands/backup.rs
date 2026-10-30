@@ -8,15 +8,22 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tauri::State;
 
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
-fn absolute(path: &str) -> Result<PathBuf, String> {
+/// 备份文件读写失败：本机文件问题，用 `io` 阶段（"检查文件是否存在、是否有
+/// 读写权限"）。写库失败也归这一层 —— 用户能做的动作是一样的。
+fn backup_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("io", error)
+}
+
+fn absolute(path: &str) -> OpsResult<PathBuf> {
     let target = PathBuf::from(path.trim());
     if target.as_os_str().is_empty() {
-        return Err("请选择备份文件路径".to_string());
+        return Err(OpsError::new("config", "请选择备份文件路径"));
     }
     if !target.is_absolute() {
-        return Err("备份路径必须是绝对路径".to_string());
+        return Err(OpsError::new("config", "备份路径必须是绝对路径"));
     }
     Ok(target)
 }
@@ -29,11 +36,11 @@ pub async fn backup_export(
     state: State<'_, AppState>,
     path: String,
     settings: Option<Value>,
-) -> Result<crate::backup::BackupSummary, String> {
+) -> OpsResult<crate::backup::BackupSummary> {
     let target = absolute(&path)?;
-    let conn = state.db.open().map_err(|error| error.to_string())?;
-    let file = crate::backup::collect(&conn, env!("CARGO_PKG_VERSION"), settings)
-        .map_err(|error| error.to_string())?;
+    let conn = state.db.open().map_err(backup_error)?;
+    let file =
+        crate::backup::collect(&conn, env!("CARGO_PKG_VERSION"), settings).map_err(backup_error)?;
     let summary = crate::backup::BackupSummary {
         path: target.to_string_lossy().to_string(),
         bytes: 0,
@@ -45,7 +52,7 @@ pub async fn backup_export(
         projects: file.projects.len(),
         settings_included: file.settings.is_some(),
     };
-    let bytes = crate::backup::write_file(&target, &file).map_err(|error| error.to_string())?;
+    let bytes = crate::backup::write_file(&target, &file).map_err(backup_error)?;
     Ok(crate::backup::BackupSummary { bytes, ..summary })
 }
 
@@ -54,11 +61,11 @@ pub async fn backup_export(
 pub async fn backup_preview(
     state: State<'_, AppState>,
     path: String,
-) -> Result<crate::backup::BackupPreview, String> {
+) -> OpsResult<crate::backup::BackupPreview> {
     let target = absolute(&path)?;
-    let file = crate::backup::read_file(&target).map_err(|error| error.to_string())?;
-    let conn = state.db.open().map_err(|error| error.to_string())?;
-    crate::backup::preview(&conn, &file).map_err(|error| error.to_string())
+    let file = crate::backup::read_file(&target).map_err(backup_error)?;
+    let conn = state.db.open().map_err(backup_error)?;
+    crate::backup::preview(&conn, &file).map_err(backup_error)
 }
 
 /// 导入：在**一个事务**里合并；失败整批回滚。
@@ -69,9 +76,9 @@ pub async fn backup_import(
     state: State<'_, AppState>,
     path: String,
     overwrite: bool,
-) -> Result<crate::backup::BackupImportResult, String> {
+) -> OpsResult<crate::backup::BackupImportResult> {
     let target = absolute(&path)?;
-    let file = crate::backup::read_file(&target).map_err(|error| error.to_string())?;
-    let mut conn = state.db.open().map_err(|error| error.to_string())?;
-    crate::backup::apply(&mut conn, &file, overwrite).map_err(|error| error.to_string())
+    let file = crate::backup::read_file(&target).map_err(backup_error)?;
+    let mut conn = state.db.open().map_err(backup_error)?;
+    crate::backup::apply(&mut conn, &file, overwrite).map_err(backup_error)
 }

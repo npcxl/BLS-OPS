@@ -9,8 +9,10 @@ import { useTranslation } from "react-i18next";
 import { Loader2, RotateCcw, Trash2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorText, Modal } from "@/components/ui/modal";
-import { opsApi, toErrorMessage, type TrashEntry } from "@/api/ops-api";
+import { Modal } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { useActionError } from "@/hooks/use-action-error";
+import { opsApi, type TrashEntry } from "@/api/ops-api";
 import { useInspectionMode } from "@/stores/inspection-store";
 
 export function TrashDialog({
@@ -29,20 +31,21 @@ export function TrashDialog({
   // 巡检模式：恢复会写回原路径、永久删除不可撤销 —— 都算"改动"。
   const inspection = useInspectionMode();
   const [entries, setEntries] = useState<TrashEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // 保留原始异常：恢复冲突 / 权限不足要能说清是哪一步、怎么恢复。
+  const { error, fail, clear, retry } = useActionError();
   const [busy, setBusy] = useState(false);
   const [purgeTarget, setPurgeTarget] = useState<TrashEntry | null>(null);
   const [emptyOpen, setEmptyOpen] = useState(false);
 
   const load = useCallback(async () => {
-    setError(null);
+    clear();
     try {
       setEntries(await opsApi.trashList(sessionId));
     } catch (cause) {
       setEntries([]);
-      setError(toErrorMessage(cause));
+      fail(cause, () => void load());
     }
-  }, [sessionId]);
+  }, [sessionId, clear, fail]);
 
   useEffect(() => {
     if (open) void load();
@@ -50,14 +53,14 @@ export function TrashDialog({
 
   const restore = async (entry: TrashEntry) => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.trashRestore(sessionId, entry.id);
       onChanged();
       await load();
     } catch (cause) {
       // 原路径已存在等情况：如实说明，不替用户覆盖。
-      setError(toErrorMessage(cause));
+      fail(cause, () => void restore(entry));
     } finally {
       setBusy(false);
     }
@@ -65,12 +68,12 @@ export function TrashDialog({
 
   const purge = async (entry: TrashEntry) => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.trashPurge(sessionId, entry.id);
       await load();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void purge(entry));
     } finally {
       setBusy(false);
       setPurgeTarget(null);
@@ -79,12 +82,12 @@ export function TrashDialog({
 
   const empty = async () => {
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.trashEmpty(sessionId);
       await load();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void empty());
     } finally {
       setBusy(false);
       setEmptyOpen(false);
@@ -118,7 +121,7 @@ export function TrashDialog({
       }
     >
       <div className="flex flex-col gap-2">
-        {error && <ErrorText>{error}</ErrorText>}
+        {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
         {entries === null && (
           <div className="flex items-center gap-2 py-6 text-11 text-fg-subtle">
             <Loader2 size={13} className="animate-spin" />

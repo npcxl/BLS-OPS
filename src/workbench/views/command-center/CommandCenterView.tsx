@@ -5,12 +5,13 @@ import { cn } from "@/lib/cn";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import {
   opsApi,
-  toErrorMessage,
   RISK_META,
   type CommandExecutionResult,
   type CommandSearchHit,
 } from "@/api/ops-api";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorState } from "@/components/ui/error-state";
+import { useActionError } from "@/hooks/use-action-error";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
 import { useActivityTicket } from "@/stores/activity-store";
@@ -44,7 +45,8 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [executing, setExecuting] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：执行失败要能看清是工具缺失、权限还是连不上。
+  const { error, fail, clear, retry } = useActionError();
   const [result, setResult] = useState<CommandExecutionResult | null>(null);
   // A command running on a server: the restart guard must see it (P5.1).
   useActivityTicket("command", executing !== null);
@@ -111,12 +113,12 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   const runExecution = useCallback(
     async (hit: CommandSearchHit, params = buildArgs(hit)) => {
       setExecuting(hit.id);
-      setError(null);
+      clear();
       try {
         const execution = await opsApi.commandExecute(session.sessionId, hit.id, params);
         setResult(execution);
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        fail(cause, () => void runExecution(hit, params));
       } finally {
         setExecuting(null);
       }
@@ -134,7 +136,9 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
         installedTools,
       );
       if (!state.ok) {
-        setError(state.reason);
+        // 前置条件不满足（未连接 / 工具缺失）：这是一句"为什么现在不能跑"，
+        // 不是后端异常，直接作为消息展示，不给假重试。
+        fail(state.reason);
         return;
       }
       if (needsParams(hit)) {
@@ -322,8 +326,12 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
               })}
         </p>
       )}
-      {error && <p className="shrink-0 text-11 text-danger">{error}</p>}
-      {suggestions.error && <p className="shrink-0 text-11 text-danger">{suggestions.error}</p>}
+      {error ? (
+        <ErrorState error={error} compact onRetry={retry} className="shrink-0" />
+      ) : null}
+      {suggestions.error ? (
+        <ErrorState error={suggestions.error} compact className="shrink-0" />
+      ) : null}
 
       {/* 结果：结构化 | 原始输出 */}
       <div className="min-h-0 flex-1">

@@ -27,6 +27,7 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import { useEditorTheme } from "@/lib/cm-theme";
@@ -41,6 +42,12 @@ import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
 import { SaveQueryDialog } from "./SaveQueryDialog";
 import { splitSqlStatements, statementAtCursor } from "./sql-split";
+import {
+  DESTRUCTIVE_LABEL,
+  detectDestructive,
+  shortSql,
+  type DestructiveStatement,
+} from "./sql-risk";
 import { formatSql } from "./sql-format";
 import { openDetachedSqlWindow } from "./detached-sql";
 
@@ -76,6 +83,11 @@ export function SqlWorkspace({
   const [saveQueryOpen, setSaveQueryOpen] = useState(false);
   /** 首次运行后才显示结果区；未查询时编辑器占满高度。 */
   const [hasRun, setHasRun] = useState(false);
+  /** 待确认的危险语句（DROP / TRUNCATE / 无 WHERE 的 DELETE）。 */
+  const [riskyRun, setRiskyRun] = useState<{
+    statements: string[];
+    risky: DestructiveStatement[];
+  } | null>(null);
   /**
    * 当前查询页使用的数据库。新建查询时从表/库/连接上下文带过来；
    * 用户切换下拉框只改变这个值，不会反过来被 item.database 覆盖。
@@ -191,6 +203,34 @@ export function SqlWorkspace({
     [profile.id, session],
   );
 
+  /** 真正执行：切库 + 提交语句。危险语句的确认在 `execute` 里先过一遍。 */
+  const runParsed = useCallback(
+    async (statements: string[]) => {
+      if (!session) return;
+      // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
+      if (contextDatabase && session.current_database !== contextDatabase) {
+        const switched = await switchDatabase(contextDatabase);
+        if (!switched) return;
+      }
+
+      setNotice(null);
+      setHasRun(true);
+      await runStatements({
+        tabId,
+        profileId: profile.id,
+        sessionId: session.session_id,
+        statements,
+      });
+    },
+    [contextDatabase, profile.id, runStatements, session, switchDatabase, tabId],
+  );
+
+  /**
+   * 执行入口。
+   *
+   * 会删数据的语句（DROP / TRUNCATE / 无 WHERE 的 DELETE）先弹确认 ——
+   * 不管是 Ctrl+Enter 单条、还是"运行脚本"整段，都走这一道。
+   */
   const execute = useCallback(
     async (scope: "auto" | "all" = "auto") => {
       if (!session) return;
@@ -216,31 +256,15 @@ export function SqlWorkspace({
         return;
       }
 
-      // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
-      if (contextDatabase && session.current_database !== contextDatabase) {
-        const switched = await switchDatabase(contextDatabase);
-        if (!switched) return;
+      const risky = detectDestructive(parsed.statements);
+      if (risky.length > 0) {
+        setRiskyRun({ statements: parsed.statements, risky });
+        return;
       }
 
-      setNotice(null);
-      setHasRun(true);
-      await runStatements({
-        tabId,
-        profileId: profile.id,
-        sessionId: session.session_id,
-        statements: parsed.statements,
-      });
+      await runParsed(parsed.statements);
     },
-    [
-      contextDatabase,
-      profile.id,
-      runStatements,
-      session,
-      sqlText,
-      switchDatabase,
-      tabId,
-      t,
-    ],
+    [runParsed, session, sqlText, t],
   );
 
   const handleClearResults = () => {
@@ -664,6 +688,32 @@ export function SqlWorkspace({
           setSql(tabId, statement);
           setHistoryOpen(false);
         }}
+      />
+
+      <ConfirmDialog
+        open={riskyRun !== null}
+        risk="irreversible"
+        title={t("确定执行这些删除语句？")}
+        description={t("语句会直接删除数据库里的数据，执行后无法撤销。")}
+        consequences={[
+          ...(riskyRun?.risky ?? [])
+            .slice(0, 3)
+            .map((entry) => `${DESTRUCTIVE_LABEL[entry.kind]} · ${shortSql(entry.statement)}`),
+          ...((riskyRun?.risky.length ?? 0) > 3
+            ? [
+                t("还有 {{count}} 条语句未展开", {
+                  count: (riskyRun?.risky.length ?? 0) - 3,
+                }),
+              ]
+            : []),
+        ]}
+        confirmLabel={t("执行")}
+        onConfirm={() => {
+          const pending = riskyRun;
+          setRiskyRun(null);
+          if (pending) void runParsed(pending.statements);
+        }}
+        onCancel={() => setRiskyRun(null)}
       />
     </div>
   );

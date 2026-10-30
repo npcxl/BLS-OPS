@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { gsap } from "gsap";
 import StrokeText from "@/components/ui/StrokeText";
+import { OVERLAY_Z } from "@/components/ui/overlay";
 
 /**
  * 软件开屏动画 —— 应用启动时的全屏过渡层（盖在 Workbench 上，数据加载与
@@ -107,7 +108,8 @@ export function SplashScreen({ onFinished }: { onFinished: () => void }) {
       role="status"
       aria-label={BRAND}
       data-testid="splash-screen"
-      className="fixed inset-0 z-[200] flex cursor-default flex-col items-center justify-center bg-white"
+      className="fixed inset-0 flex cursor-default flex-col items-center justify-center bg-white"
+      style={{ zIndex: OVERLAY_Z.splash }}
     >
       {/* LOGO 揭幕层：初始 0 高（第一帧起就不占位，文字正中），进场时长到
           LOGO_SIZE 把文字挤下去 —— overflow-hidden 让图片从裁切边缘"升出"。 */}

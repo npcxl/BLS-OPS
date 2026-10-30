@@ -19,6 +19,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "@/components/icons";
+import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 export interface SelectOption {
@@ -178,15 +179,16 @@ export function Select({
       role="listbox"
       tabIndex={-1}
       aria-label={ariaLabel}
-      // `z-[150]`：必须高于 Modal（130），否则弹窗里的下拉会被遮罩盖住 ——
-      // 点上去既看不到选项、也点不中（遮罩吃掉了指针事件）。
-      className="select-menu fixed z-[150] min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      // 层级来自 OVERLAY_Z.select：必须高于 Modal，否则弹窗里的下拉会被
+      // 遮罩盖住 —— 点上去既看不到选项、也点不中（遮罩吃掉了指针事件）。
+      className="select-menu fixed min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
       style={{
         left: position.left,
         width: position.width,
         maxHeight: position.maxHeight,
         top: position.top,
         bottom: position.bottom,
+        zIndex: OVERLAY_Z.select,
       }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown") {

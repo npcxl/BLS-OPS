@@ -26,7 +26,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Archive, FileUp, Eye } from "@/components/icons";
 
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
 import type {
   KnowledgeCategory,
   KnowledgeDocStatus,
@@ -40,7 +40,9 @@ import type {
 } from "@/api/types/deployment";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorText, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { selectClass } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
 type Props = {
@@ -137,7 +139,8 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   const [pendingArchive, setPendingArchive] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<KnowledgeVersion | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 保留原始异常：面板里显示阶段 / 恢复建议 / 详情，并能重试刚才那次动作。
+  const { error, fail, clear, retry } = useActionError();
 
   const load = useCallback(async () => {
     const list = await opsApi.deploymentKnowledgeList(
@@ -150,14 +153,16 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   }, [applicationId, environmentId, showArchived]);
 
   useEffect(() => {
-    void (async () => {
+    const run = async () => {
       try {
         await load();
+        clear();
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        fail(cause, () => void run());
       }
-    })();
-  }, [load]);
+    };
+    void run();
+  }, [load, fail, clear]);
 
   const visible = useMemo(() => {
     return documents.filter((document) => {
@@ -184,21 +189,21 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       setVersions(history);
       setUsage(used);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void open(document));
     }
   };
 
   const save = async () => {
     if (!selected) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const saved = await opsApi.deploymentKnowledgeSave(selected);
       setSelected(saved);
       await load();
       setVersions(await opsApi.deploymentKnowledgeVersions(saved.id));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void save());
     } finally {
       setBusy(false);
     }
@@ -208,7 +213,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   const saveMeta = async () => {
     if (!selected?.id) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const update: KnowledgeMetaUpdate = {
         enabled: selected.enabled,
@@ -220,7 +225,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       setSelected(saved);
       await load();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void saveMeta());
     } finally {
       setBusy(false);
     }
@@ -229,14 +234,14 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   const confirmArchive = async () => {
     if (!selected?.id) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.deploymentKnowledgeArchive(selected.id);
       setPendingArchive(false);
       const list = await load();
       setSelected(list.find((document) => document.id === selected.id) ?? null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void confirmArchive());
     } finally {
       setBusy(false);
     }
@@ -246,7 +251,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   const confirmRestore = async (version: number) => {
     if (!selected?.id) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const restored = await opsApi.deploymentKnowledgeRestore(selected.id, version);
       setPendingRestore(null);
@@ -254,7 +259,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       await load();
       setVersions(await opsApi.deploymentKnowledgeVersions(restored.id));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void confirmRestore(version));
     } finally {
       setBusy(false);
     }
@@ -263,7 +268,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
   const searchTest = async () => {
     if (!selected) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const result = await opsApi.deploymentKnowledgeSearchTest({
         application_id: applicationId || null,
@@ -273,7 +278,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       });
       setHits(result);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void searchTest());
     } finally {
       setBusy(false);
     }
@@ -297,7 +302,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       });
       if (typeof path !== "string" || !path) return;
       setBusy(true);
-      setError(null);
+      clear();
       const imported = await opsApi.deploymentKnowledgeImportMarkdown(path);
       setSelected({
         ...newDocument(applicationId, environmentId),
@@ -311,7 +316,7 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
       setHits(null);
       setPreview(null);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void importMarkdown());
     } finally {
       setBusy(false);
     }
@@ -416,7 +421,9 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
 
       {/* ---------- 中：编辑 ---------- */}
       <section className="flex min-h-0 flex-col rounded-md border border-line bg-surface">
-        {error ? <ErrorText>{error}</ErrorText> : null}
+        {error ? (
+          <ErrorState error={error} compact onRetry={retry} className="border-b border-line/60" />
+        ) : null}
         {!selected ? (
           <div className="p-3 text-11 text-fg-subtle">
             {t("No user knowledge: the system still generates proposals from its built-in rules.")}

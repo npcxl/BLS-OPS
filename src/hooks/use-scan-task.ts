@@ -3,7 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { projectScanResultEvent } from "@/lib/events";
 import { i18n } from "@/i18n";
 import { useActivityTicket } from "@/stores/activity-store";
-import { opsApi, toErrorMessage, type ProjectScanResult, type ProjectScanStatus } from "@/api/ops-api";
+import { opsApi, type ProjectScanResult, type ProjectScanStatus } from "@/api/ops-api";
+import { useActionError } from "@/hooks/use-action-error";
 
 /**
  * One project-discovery run: start it, poll its status, subscribe to its
@@ -27,7 +28,13 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
   const [scan, setScan] = useState<ProjectScanStatus | null>(null);
   const [result, setResult] = useState<ProjectScanResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * 失败信息统一走 `useActionError`：保存原始异常（阶段 / 详情 / 复制），
+   * 并记住"上次是怎么扫的"，让重试按钮能原样再跑一次。
+   */
+  const { error, fail, clear, retry } = useActionError();
+  /** 上次 discover 的增量标记 —— 重试要复现同一条件。 */
+  const lastIncrementalRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
   /** 本次视图"拥有"的扫描 ID；只有 `discover` 会写它。 */
@@ -79,7 +86,7 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
           sessionId,
           serverId,
         });
-        setError(i18n.t("SSH session not connected. Connect to a server first"));
+        fail(i18n.t("SSH session not connected. Connect to a server first"));
         return;
       }
       // 新一轮开始前，先收掉上一轮留下来的轮询/监听（不取消：下面由
@@ -88,7 +95,8 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
       detach();
       cancelActive();
       setLoading(true);
-      setError(null);
+      clear();
+      lastIncrementalRef.current = incremental;
       // 注意：不再 setResult(null)。扫描过程中保留旧项目列表，显示"正在复核"，
       // 新结果返回后按 canonical_path 原位合并，避免旧项目在扫描期间整体消失。
       try {
@@ -147,7 +155,7 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
               });
               if (status.error) {
                 console.error("[ProjectView] 后端扫描错误", status.error);
-                setError(status.error);
+                fail(status.error, () => void discover(lastIncrementalRef.current));
               }
               settle();
               const found = await opsApi.projectScanResult(started.id);
@@ -157,13 +165,13 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
           } catch (cause) {
             console.error("[ProjectView] 查询扫描状态失败", cause);
             settle();
-            setError(toErrorMessage(cause));
+            fail(cause, () => void discover(lastIncrementalRef.current));
           }
         }, 700);
         timerRef.current = poll;
       } catch (cause) {
         console.error("[ProjectView] 启动项目发现失败", cause);
-        setError(toErrorMessage(cause));
+        fail(cause, () => void discover(lastIncrementalRef.current));
         setLoading(false);
       }
     },
@@ -214,7 +222,7 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
         targetKeyRef.current = key;
         setScan(null);
         setResult(null);
-        setError(null);
+        clear();
         setLoading(false);
         // 新服务器允许重新触发一次后台自动复核。
         autoRanRef.current = false;
@@ -228,5 +236,6 @@ export function useScanTask(serverId: string | undefined, sessionId: string, rea
     [serverId, sessionId, stopPolling, detach, cancelActive],
   );
 
-  return { scan, result, loading, error, discover, cancel, loadSnapshot };
+  // `retry` 复现上次的 discover（增量标记一致），交给 `ErrorState` 的重试按钮。
+  return { scan, result, loading, error, retry, discover, cancel, loadSnapshot };
 }

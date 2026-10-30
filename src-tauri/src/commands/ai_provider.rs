@@ -25,15 +25,26 @@ use crate::deployment::ai::OpenAiCompatibleAdvisor;
 use crate::state::AppState;
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
+
+/// 表单校验 / 配置不合法：`config` 阶段。
+fn invalid(message: impl Into<String>) -> OpsError {
+    OpsError::new("config", message)
+}
+
+/// 配置读写（SQLite + 系统钥匙串）：`io` 阶段。
+fn store_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("io", error)
+}
 
 fn view(config: &AiProviderConfig) -> AiProviderView {
     AiProviderView::from_config(config, db::has_api_key(config))
 }
 
 #[tauri::command]
-pub async fn ai_provider_list(state: State<'_, AppState>) -> Result<Vec<AiProviderView>, String> {
-    let conn = state.db.open().map_err(|error| error.to_string())?;
-    let providers = db::list_providers(&conn).map_err(|error| error.to_string())?;
+pub async fn ai_provider_list(state: State<'_, AppState>) -> OpsResult<Vec<AiProviderView>> {
+    let conn = state.db.open().map_err(store_error)?;
+    let providers = db::list_providers(&conn).map_err(store_error)?;
     Ok(providers.iter().map(view).collect())
 }
 
@@ -41,10 +52,10 @@ pub async fn ai_provider_list(state: State<'_, AppState>) -> Result<Vec<AiProvid
 pub async fn ai_provider_get(
     state: State<'_, AppState>,
     id: String,
-) -> Result<Option<AiProviderView>, String> {
-    let conn = state.db.open().map_err(|error| error.to_string())?;
+) -> OpsResult<Option<AiProviderView>> {
+    let conn = state.db.open().map_err(store_error)?;
     Ok(db::get_provider(&conn, &id)
-        .map_err(|error| error.to_string())?
+        .map_err(store_error)?
         .as_ref()
         .map(view))
 }
@@ -57,16 +68,16 @@ pub async fn ai_provider_get(
 pub async fn ai_provider_save(
     state: State<'_, AppState>,
     request: AiProviderSaveRequest,
-) -> Result<AiProviderView, String> {
+) -> OpsResult<AiProviderView> {
     let now = AppDb::now();
-    let conn = state.db.open().map_err(|error| error.to_string())?;
+    let conn = state.db.open().map_err(store_error)?;
 
     let id = request
         .id
         .clone()
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let existing = db::get_provider(&conn, &id).map_err(|error| error.to_string())?;
+    let existing = db::get_provider(&conn, &id).map_err(store_error)?;
 
     // Base URL 是**唯一能让请求跑到别处去**的配置，先过一遍严格校验。
     let base_url = url::validate_base_url(
@@ -75,12 +86,12 @@ pub async fn ai_provider_save(
             allow_insecure_http: request.allow_insecure_http,
         },
     )
-    .map_err(|error| error.user_message())?;
+    .map_err(|error| invalid(error.user_message()))?;
     if request.name.trim().is_empty() {
-        return Err("提供方名称不能为空".to_string());
+        return Err(invalid("提供方名称不能为空"));
     }
     if request.model.trim().is_empty() {
-        return Err("模型名不能为空".to_string());
+        return Err(invalid("模型名不能为空"));
     }
 
     let mut config = match existing {
@@ -122,22 +133,23 @@ pub async fn ai_provider_save(
         .filter(|key| !key.is_empty())
     {
         let account = config.keyring_account();
-        crate::keyring::save_secret(&account, api_key)
-            .map_err(|error| format!("保存 API Key 到系统凭据管理器失败：{error}"))?;
+        crate::keyring::save_secret(&account, api_key).map_err(|error| {
+            store_error(format!("保存 API Key 到系统凭据管理器失败：{error}"))
+        })?;
         config.api_key_ref = Some(account);
     } else if config.api_key_ref.is_none() {
-        return Err(
-            "新建提供方必须填 API Key（它只写进系统凭据管理器，不会存进数据库）".to_string(),
-        );
+        return Err(invalid(
+            "新建提供方必须填 API Key（它只写进系统凭据管理器，不会存进数据库）",
+        ));
     }
 
     // 停用的提供方不能是默认：显式校正，绝不写入"disabled 且 default"的组合。
     if !config.enabled {
         config.is_default = false;
     }
-    db::upsert_provider(&conn, &config).map_err(|error| error.to_string())?;
+    db::upsert_provider(&conn, &config).map_err(store_error)?;
     if config.is_default {
-        db::set_default_provider(&conn, &config.id).map_err(|error| error.to_string())?;
+        db::set_default_provider(&conn, &config.id).map_err(store_error)?;
     }
     record_audit(
         &state,
@@ -159,20 +171,20 @@ pub async fn ai_provider_delete(
     state: State<'_, AppState>,
     id: String,
     delete_secret: bool,
-) -> Result<(), String> {
-    let conn = state.db.open().map_err(|error| error.to_string())?;
-    let existing = db::get_provider(&conn, &id).map_err(|error| error.to_string())?;
+) -> OpsResult<()> {
+    let conn = state.db.open().map_err(store_error)?;
+    let existing = db::get_provider(&conn, &id).map_err(store_error)?;
     let account = existing
         .as_ref()
         .map(|config| config.keyring_account())
         .unwrap_or_else(|| format!("ai-provider:{id}"));
-    db::delete_provider(&conn, &id).map_err(|error| error.to_string())?;
+    db::delete_provider(&conn, &id).map_err(store_error)?;
     if delete_secret {
         // 删不掉也要说清楚：钥匙串条目没清理等于凭据还在本机。
         if let Err(error) = crate::keyring::delete_secret(&account) {
-            return Err(format!(
+            return Err(store_error(format!(
                 "配置已删除，但系统凭据管理器里的条目没删掉：{error}"
-            ));
+            )));
         }
     }
     record_audit(
@@ -186,9 +198,9 @@ pub async fn ai_provider_delete(
 }
 
 #[tauri::command]
-pub async fn ai_provider_set_default(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let conn = state.db.open().map_err(|error| error.to_string())?;
-    db::set_default_provider(&conn, &id).map_err(|error| error.to_string())?;
+pub async fn ai_provider_set_default(state: State<'_, AppState>, id: String) -> OpsResult<()> {
+    let conn = state.db.open().map_err(store_error)?;
+    db::set_default_provider(&conn, &id).map_err(store_error)?;
     record_audit(
         &state,
         "ai_provider_set_default",
@@ -206,11 +218,11 @@ pub async fn ai_provider_set_default(state: State<'_, AppState>, id: String) -> 
 pub async fn ai_provider_test(
     state: State<'_, AppState>,
     id: String,
-) -> Result<AiProviderTestResult, String> {
+) -> OpsResult<AiProviderTestResult> {
     let config = {
-        let conn = state.db.open().map_err(|error| error.to_string())?;
+        let conn = state.db.open().map_err(store_error)?;
         db::get_provider(&conn, &id)
-            .map_err(|error| error.to_string())?
+            .map_err(store_error)?
             .ok_or_else(|| "提供方不存在".to_string())?
     };
     let api_key = crate::keyring::read_secret(&config.keyring_account())

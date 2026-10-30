@@ -104,6 +104,13 @@ export default {
   "No trusted host keys yet. You will be asked on first connection.":
     "还没有信任任何主机密钥，首次连接时会自动询问。",
   "Delete fingerprint for {{name}}": "删除 {{name}} 的指纹",
+  "Forget this host key?": "忘记这条主机密钥？",
+  "{{host}}:{{port}} will be asked to prove its identity again on the next connection.":
+    "下次连接 {{host}}:{{port}} 时会重新询问并校验它的身份指纹。",
+  "The fingerprint is removed from this machine only; the server is not changed.":
+    "只删除本机记录的指纹，不会改动服务器。",
+  "You will have to accept the fingerprint again before connecting.":
+    "删除后必须重新接受该指纹才能连接。",
   "No entries under \"Servers\" on the left yet — add a server first.":
     "左侧「服务器」下还没有任何条目 —— 请先添加一台服务器。",
   "Select \"one-time password\" to connect without any saved credentials":

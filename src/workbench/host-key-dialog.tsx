@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ShieldAlert, ShieldCheck } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Modal } from "@/components/ui/modal";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -111,6 +112,29 @@ export function KnownHostsPanel() {
   const knownHosts = useDomainStore((s) => s.knownHosts);
   const remove = useDomainStore((s) => s.deleteKnownHost);
   const { t } = useTranslation();
+  /**
+   * 撤销信任是删除操作：删掉之后下次连接会重新弹指纹确认。
+   * 万一原来的指纹变化是有人在中间人，这一下就把"变更警告"抹掉了 ——
+   * 所以必须确认，而且要说清楚删完之后会发生什么。
+   */
+  const [target, setTarget] = useState<{ id: string; host: string; port: number } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<unknown>(null);
+
+  const confirmRemove = async () => {
+    if (!target) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await remove(target.id);
+      setTarget(null);
+    } catch (cause) {
+      // 失败留在弹窗里：用户不用猜"到底删没删"。
+      setDeleteError(cause);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (knownHosts.length === 0) {
     return (
@@ -133,7 +157,10 @@ export function KnownHostsPanel() {
               type="button"
               aria-label={t("Delete fingerprint for {{name}}", { name: host.host })}
               className="rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
-              onClick={() => void remove(host.id)}
+              onClick={() => {
+                setDeleteError(null);
+                setTarget({ id: host.id, host: host.host, port: host.port });
+              }}
             >
               {t("Delete")}
             </button>
@@ -143,6 +170,25 @@ export function KnownHostsPanel() {
           </code>
         </div>
       ))}
+
+      <ConfirmDialog
+        open={target !== null}
+        risk="danger"
+        title={t("Forget this host key?")}
+        description={t(
+          "{{host}}:{{port}} will be asked to prove its identity again on the next connection.",
+          { host: target?.host ?? "", port: target?.port ?? 0 },
+        )}
+        consequences={[
+          t("The fingerprint is removed from this machine only; the server is not changed."),
+          t("You will have to accept the fingerprint again before connecting."),
+        ]}
+        confirmLabel={t("Delete")}
+        pending={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmRemove()}
+        onCancel={() => setTarget(null)}
+      />
     </div>
   );
 }

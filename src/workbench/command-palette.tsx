@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, Search } from "@/components/icons";
+import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 export interface PaletteAction {
@@ -114,7 +115,8 @@ export function CommandPalette({ open, actions, onClose }: CommandPaletteProps) 
     // 顶距 12vh + 面板 ≤ calc(88vh-1rem) + 底距 1rem = 100vh，永远装得下。
     // 列表 flex-1 内部滚动，高度跟随窗口自适应（固定 420px 会在矮窗口被裁）。
     <div
-      className="overlay-scrim fixed inset-0 z-[120] flex items-start justify-center bg-black/20 px-4 pt-[12vh]"
+      className="overlay-scrim fixed inset-0 flex items-start justify-center bg-black/20 px-4 pt-[12vh]"
+      style={{ zIndex: OVERLAY_Z.commandPalette }}
       onMouseDown={onClose}
     >
       <div

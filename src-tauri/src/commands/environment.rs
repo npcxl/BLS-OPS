@@ -7,6 +7,7 @@
 use tauri::State;
 
 use crate::env_probe;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 /// 探测当前 SSH 会话所在服务器的 Nginx 运行环境。
@@ -17,8 +18,8 @@ use crate::state::AppState;
 pub async fn probe_nginx_environment(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<env_probe::NginxEnvironment, String> {
+) -> OpsResult<env_probe::NginxEnvironment> {
     env_probe::probe_nginx_environment(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("nginx", error).retryable())
 }

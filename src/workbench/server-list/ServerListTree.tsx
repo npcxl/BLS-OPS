@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronsLeft, FolderPlus, Plus, RefreshCw, Star } from "@/components/icons";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/mac-button";
+import { ErrorState } from "@/components/ui/error-state";
 import { ErrorText } from "@/components/ui/modal";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
@@ -78,7 +79,7 @@ export function ServerListTree({
       setDeleteTarget(null);
       clearError();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(cause);
     }
   };
 
@@ -252,11 +253,11 @@ export function ServerListTree({
         />
       )}
 
-      {error && (
-        <p role="alert" data-testid="server-list-error" className="px-2.5 py-1 text-11 text-danger">
-          {error}
-        </p>
-      )}
+      {error ? (
+        <div data-testid="server-list-error" className="px-1.5 py-1">
+          <ErrorState error={error} compact onRetry={refresh} />
+        </div>
+      ) : null}
 
       {sections.warnings.map((warning) => (
         <ErrorText key={warning}>{warning}</ErrorText>

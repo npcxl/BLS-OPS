@@ -3,7 +3,13 @@
 use serde::Serialize;
 use tauri::State;
 
+use crate::ops_error::{OpsError, OpsResult};
 use crate::{db, state::AppState};
+
+/// 应用级操作（开窗、托盘文案）失败都在本机：阶段 `local`。
+fn local_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("local", error)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
@@ -17,7 +23,7 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
-pub async fn app_info(state: State<'_, AppState>) -> Result<AppInfo, String> {
+pub async fn app_info(state: State<'_, AppState>) -> OpsResult<AppInfo> {
     Ok(AppInfo {
         app_name: "Ops Workbench".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -51,7 +57,7 @@ async fn open_view_window(
     title: &'static str,
     size: (f64, f64),
     min_size: (f64, f64),
-) -> Result<(), String> {
+) -> OpsResult<()> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     if let Some(window) = app.get_webview_window(label) {
@@ -66,12 +72,12 @@ async fn open_view_window(
         .initialization_script(&view_script(view))
         .build()
         .map(|_| ())
-        .map_err(|error| format!("无法打开窗口：{error}"))
+        .map_err(|error| OpsError::new("local", format!("无法打开窗口：{error}")))
 }
 
 /// 在独立窗口里打开快捷键一览（对照操作时不用来回切设置）。
 #[tauri::command]
-pub async fn open_shortcuts_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_shortcuts_window(app: tauri::AppHandle) -> OpsResult<()> {
     open_view_window(
         app,
         "shortcuts",
@@ -86,6 +92,6 @@ pub async fn open_shortcuts_window(app: tauri::AppHandle) -> Result<(), String> 
 /// 托盘菜单文案随前端语言（i18n 只在前端做，见 `crate::tray`）。
 /// 纯展示文本，无安全面；托盘未创建时静默成功。
 #[tauri::command]
-pub fn tray_set_labels(app: tauri::AppHandle, show: String, quit: String) -> Result<(), String> {
-    crate::tray::set_labels(&app, &show, &quit).map_err(|e| e.to_string())
+pub fn tray_set_labels(app: tauri::AppHandle, show: String, quit: String) -> OpsResult<()> {
+    crate::tray::set_labels(&app, &show, &quit).map_err(local_error)
 }

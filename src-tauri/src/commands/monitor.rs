@@ -10,66 +10,72 @@ use crate::monitor::{
     CpuMetrics, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetworkMetrics, ProcessInfo,
     SystemInfo,
 };
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
+
+/// 监控读取全是只读采集：失败重试有意义，阶段统一 `monitor`。
+fn metrics_error(error: impl ToString) -> OpsError {
+    OpsError::from_stage("monitor", error).retryable()
+}
 
 #[tauri::command]
 pub async fn monitor_system_info(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<SystemInfo, String> {
+) -> OpsResult<SystemInfo> {
     crate::monitor::collect_system_info(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 #[tauri::command]
 pub async fn monitor_cpu(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<CpuMetrics, String> {
+) -> OpsResult<CpuMetrics> {
     crate::monitor::collect_cpu(&state.ssh, &state.monitor, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 #[tauri::command]
 pub async fn monitor_memory(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<MemoryMetrics, String> {
+) -> OpsResult<MemoryMetrics> {
     crate::monitor::collect_memory(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 #[tauri::command]
 pub async fn monitor_disks(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<DiskMetrics>, String> {
+) -> OpsResult<Vec<DiskMetrics>> {
     crate::monitor::collect_disks(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 #[tauri::command]
 pub async fn monitor_network(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<NetworkMetrics>, String> {
+) -> OpsResult<Vec<NetworkMetrics>> {
     crate::monitor::collect_network(&state.ssh, &state.monitor, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 #[tauri::command]
 pub async fn monitor_processes(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<ProcessInfo>, String> {
+) -> OpsResult<Vec<ProcessInfo>> {
     crate::monitor::collect_processes(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }
 
 /// The one call the monitoring page is built around: every headline metric in
@@ -78,8 +84,8 @@ pub async fn monitor_processes(
 pub async fn monitor_snapshot(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<MonitorSnapshot, String> {
+) -> OpsResult<MonitorSnapshot> {
     crate::monitor::collect_snapshot(&state.ssh, &state.monitor, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(metrics_error)
 }

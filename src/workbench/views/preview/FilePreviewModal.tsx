@@ -10,8 +10,11 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { ErrorState } from "@/components/ui/error-state";
+import { isTopOverlayLayer, useOverlayLayer } from "@/components/ui/overlay";
+import { opsApi } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
+import { toAppError } from "@/lib/app-error";
 import { formatSize } from "@/lib/format";
 import { FILE_ICONS } from "@/lib/icons/vscode-file-icons";
 import { base64ToBytes } from "@/lib/preview/base64";
@@ -45,7 +48,8 @@ export interface PreviewTarget {
 
 type State =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  /** 保留原始异常：交给 ErrorState 统一转成"阶段 + 摘要 + 详情"。 */
+  | { status: "error"; cause: unknown }
   | { status: "ready"; result: PreviewResult };
 
 export interface FilePreviewModalProps {
@@ -70,6 +74,11 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
   const [state, setState] = useState<State>({ status: "loading" });
   const [downloading, setDownloading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  /** 重试计数：失败后点「重试」重新拉一次文件。 */
+  const [attempt, setAttempt] = useState(0);
+
+  // 预览是一个全屏浮层：登记到浮层栈，Esc 只关最上层（上面的确认框先关）。
+  const layer = useOverlayLayer(true, "preview");
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +103,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
         dispose = result.dispose;
         setState({ status: "ready", result });
       } catch (cause) {
-        if (!cancelled) setState({ status: "error", message: toErrorMessage(cause) });
+        if (!cancelled) setState({ status: "error", cause });
       }
     })();
 
@@ -102,18 +111,20 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
       cancelled = true;
       dispose?.();
     };
-  }, [sessionId, target.path, target.name]);
+  }, [sessionId, target.path, target.name, attempt]);
 
   useEffect(() => {
+    const layerId = layer.id;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
+      // 只关最上层：预览上面还压着确认框时，Esc 先关确认框。
+      if (!isTopOverlayLayer(layerId)) return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, layer.id]);
 
   useEffect(() => {
     if (!toast) return;
@@ -135,7 +146,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
       const written = await opsApi.sftpDownloadFile(sessionId, target.path, destination);
       setToast(t("Saved {{size}} → {{path}}", { size: formatSize(written), path: destination }));
     } catch (cause) {
-      setToast(t("Download failed: {{message}}", { message: toErrorMessage(cause) }));
+      setToast(t("Download failed: {{message}}", { message: toAppError(cause).message }));
     } finally {
       setDownloading(false);
     }
@@ -148,9 +159,10 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
   return createPortal(
     <div
       className={cn(
-        "fixed inset-0 z-[135] flex items-center justify-center bg-black/40 px-4 py-6",
+        "fixed inset-0 flex items-center justify-center bg-black/40 px-4 py-6",
         exiting ? "opacity-0 transition-opacity duration-150" : "overlay-scrim",
       )}
+      style={{ zIndex: layer.zIndex }}
       onMouseDown={onClose}
     >
       <div
@@ -206,11 +218,12 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
 
         {state.status === "error" && (
           <div className="flex flex-1 items-center justify-center p-6">
-            <div className="flex max-w-[460px] flex-col items-center gap-2 text-center">
-              <AlertCircle size={20} className="text-danger" />
-              <p className="text-12 leading-relaxed text-danger">{state.message}</p>
-              <p className="text-11 text-fg-subtle">{t("You can download it to view locally.")}</p>
-            </div>
+            <ErrorState
+              error={state.cause}
+              title={t("Preview failed")}
+              description={t("You can download it to view locally.")}
+              onRetry={() => setAttempt((value) => value + 1)}
+            />
           </div>
         )}
 

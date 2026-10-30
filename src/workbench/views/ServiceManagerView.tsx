@@ -10,13 +10,15 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { Copy, Play, RotateCw, Square, SquareCheck, SquareMinus } from "@/components/icons";
+import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { copyText } from "@/lib/clipboard";
+import { ErrorState } from "@/components/ui/error-state";
 import { cn } from "@/lib/cn";
 import { servicesChangedEvent } from "@/lib/events";
-import { opsApi, toErrorMessage, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
+import { opsApi, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
+import { useActionError } from "@/hooks/use-action-error";
 import { useCommandSession } from "@/hooks/use-command-session";
 import {
   ModuleEmpty,
@@ -70,7 +72,8 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
 
   const [units, setUnits] = useState<ServiceUnit[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 保留原始异常：服务操作失败要能看清是哪一步（读列表 / 执行动作 / 取状态）。
+  const { error, title: errorTitle, fail, clear, retry } = useActionError();
   const [filter, setFilter] = useState<StateFilter>("all");
   const [search, setSearch] = useState("");
   const [busyUnit, setBusyUnit] = useState<string | null>(null);
@@ -83,15 +86,15 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
   const load = useCallback(async () => {
     if (!session.ready) return;
     setLoading(true);
-    setError(null);
+    clear();
     try {
       setUnits(await opsApi.serviceList(session.sessionId));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void load(), t("Could not read services"));
     } finally {
       setLoading(false);
     }
-  }, [session.ready, session.sessionId]);
+  }, [session.ready, session.sessionId, clear, fail, t]);
 
   // Load whenever the session becomes usable.
   useEffect(() => {
@@ -109,17 +112,21 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
   const runAction = useCallback(
     async (unit: ServiceUnit, action: ServiceActionName) => {
       setBusyUnit(unit.unit);
-      setError(null);
+      clear();
       try {
         await opsApi.serviceAction(session.sessionId, action, unit.unit);
         await load();
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        fail(
+          cause,
+          () => void runAction(unit, action),
+          t("Could not run the action on {{unit}}", { unit: unit.unit }),
+        );
       } finally {
         setBusyUnit(null);
       }
     },
-    [load, session.sessionId],
+    [load, session.sessionId, clear, fail, t],
   );
 
   const showDetail = useCallback(
@@ -129,12 +136,16 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         const text = await opsApi.serviceStatus(session.sessionId, unit.unit);
         setDetail({ unit: unit.unit, text });
       } catch (cause) {
-        setError(toErrorMessage(cause));
+        fail(
+          cause,
+          () => void showDetail(unit),
+          t("Could not read the status of {{unit}}", { unit: unit.unit }),
+        );
       } finally {
         setBusyUnit(null);
       }
     },
-    [session.sessionId],
+    [session.sessionId, fail, t],
   );
 
   const visible = useMemo(() => {
@@ -255,21 +266,15 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         </>
       }
     >
-      {error && (
-        <div className="mx-3 mt-3 flex items-start gap-2 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          <span className="min-w-0 flex-1 break-words">{error}</span>
-          <button
-            type="button"
-            aria-label={t("Copy error message")}
-            title={t("Copy error message")}
-            className="flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-11 text-danger/80 hover:bg-danger/10 hover:text-danger"
-            onClick={() => void copyText(error)}
-          >
-            <Copy size={12} />
-            {t("Copy")}
-          </button>
-        </div>
-      )}
+      {error ? (
+        <ErrorState
+          error={error}
+          title={errorTitle}
+          compact
+          onRetry={retry}
+          className="mx-3 mt-3 rounded-[8px] border border-line/70 bg-surface-2/40"
+        />
+      ) : null}
 
       {!loading && !error && units.length === 0 ? (
         <ModuleEmpty

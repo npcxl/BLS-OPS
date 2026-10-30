@@ -28,7 +28,17 @@ export type ShortcutActionId =
   | "file_up"
   // 编辑器
   | "editor_save"
-  | "editor_find";
+  | "editor_find"
+  // 数据库表格
+  | "grid_copy"
+  | "grid_paste"
+  | "grid_select_all"
+  | "grid_undo"
+  | "grid_redo"
+  | "grid_first"
+  | "grid_last"
+  | "grid_edit"
+  | "grid_edit_down";
 
 export type ShortcutBindings = Record<ShortcutActionId, string | null>;
 
@@ -48,6 +58,15 @@ export const DEFAULT_BINDINGS: ShortcutBindings = {
   file_up: "backspace",
   editor_save: "ctrl+s",
   editor_find: "ctrl+f",
+  grid_copy: "ctrl+c",
+  grid_paste: "ctrl+v",
+  grid_select_all: "ctrl+a",
+  grid_undo: "ctrl+z",
+  grid_redo: "ctrl+y",
+  grid_first: "ctrl+home",
+  grid_last: "ctrl+end",
+  grid_edit: "f2",
+  grid_edit_down: "enter",
 };
 
 /** 没有修饰键也允许的编辑键：它们是"就地操作"，不会抢文字输入。 */
@@ -139,6 +158,11 @@ export function setShortcut(id: ShortcutActionId, combo: string | null): SetShor
   return { ok: true };
 }
 
+/** 打开 / 关闭一条快捷键。关闭 = 解除绑定；再打开时恢复默认组合。 */
+export function setShortcutEnabled(id: ShortcutActionId, enabled: boolean): SetShortcutResult {
+  return enabled ? setShortcut(id, DEFAULT_BINDINGS[id]) : setShortcut(id, null);
+}
+
 export function resetShortcuts(): void {
   bindings = { ...DEFAULT_BINDINGS };
   persist();
@@ -152,7 +176,16 @@ export function resetShortcuts(): void {
  * - 没有修饰键时只接受功能键（F1–F24）—— 单字母做全局快捷键会在用户打字时抢键；
  * - 修饰键顺序固定为 ctrl → alt → shift → meta，保证比较稳定。
  */
-export function comboFromEvent(event: KeyboardEvent): string | null {
+export interface KeyLike {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+}
+
+/** 从任意"按键形状"的对象取组合（React 合成事件、原生事件都满足）。 */
+export function comboFromKey(event: KeyLike): string | null {
   const key = event.key;
   if (["Control", "Shift", "Alt", "Meta", "CapsLock"].includes(key)) return null;
 
@@ -169,6 +202,11 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
   if (parts.length === 0 && !isFunctionKey && !NAMED_KEYS.has(normalized)) return null;
   parts.push(normalized);
   return parts.join("+");
+}
+
+/** 原生 `KeyboardEvent` 的便捷包装。 */
+export function comboFromEvent(event: KeyboardEvent): string | null {
+  return comboFromKey(event);
 }
 
 /** 绑定字符串 → 展示用的按键标签（macOS 上 Ctrl 显示成 ⌘ 由调用方决定）。 */

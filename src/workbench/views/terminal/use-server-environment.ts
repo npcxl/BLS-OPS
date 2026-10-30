@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { opsApi, toErrorMessage, type NginxEnvironment } from "@/api/ops-api";
+import { opsApi, type NginxEnvironment } from "@/api/ops-api";
+import { toAppError } from "@/lib/app-error";
 import { clearNginxSelections } from "./completion/providers/environment";
 
 /**
@@ -56,7 +57,9 @@ function probe(sessionId: string): Promise<NginxEnvironment> {
       return env;
     })
     .catch((cause) => {
-      failures.set(sessionId, toErrorMessage(cause));
+      // 探测失败是**静默降级**（终端照用，只是少几条环境相关补全），所以这里
+      // 只留一行摘要给后续提示用：不铺后端原文，也不弹全局错误。
+      failures.set(sessionId, toAppError(cause).message);
       throw cause;
     })
     .finally(() => inFlight.delete(sessionId));
@@ -130,7 +133,7 @@ export function useServerEnvironment(
       })
       .catch((cause) => {
         if (!alive) return;
-        setError(toErrorMessage(cause));
+        setError(toAppError(cause).message);
       })
       .finally(() => {
         if (alive) setLoading(false);

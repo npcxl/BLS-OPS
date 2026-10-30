@@ -36,6 +36,7 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 
@@ -918,6 +919,17 @@ export function TableBrowser({
     setShowEditBar(true);
   };
 
+  /** 删除行先确认：数据库里的行删掉就回不来了，不能一步到位。 */
+  const [deleteConfirm, setDeleteConfirm] = useState<{ index: number; label: string } | null>(null);
+
+  const requestDeleteRow = (rowIndex: number) => {
+    if (!canEdit) return;
+    const row = pageRows[rowIndex];
+    const located = row ? keyOfRow(row) : null;
+    if (!row || !located) return;
+    setDeleteConfirm({ index: rowIndex, label: located.label });
+  };
+
   const deleteRowAt = (rowIndex: number) => {
     if (!canEdit) return;
     const row = pageRows[rowIndex];
@@ -1153,7 +1165,7 @@ export function TableBrowser({
       {
         id: "delete-row",
         label: t("删除选中行"),
-        onSelect: () => deleteRowAt(rowIndex),
+        onSelect: () => requestDeleteRow(rowIndex),
       },
       { separator: true },
       ...copyMenu((gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null),
@@ -1290,9 +1302,10 @@ export function TableBrowser({
         );
       }
     } catch (failure) {
-      const message = toDbError(failure).message;
-      setMutationError(message);
-      pushToast(message, "error");
+      // 错误只留在"待提交修改"的弹窗与工具栏里（那里本来就有完整展示），
+      // 不再往顶部推一条同样的提示 —— 一处失败只说一遍。
+      const info = toDbError(failure);
+      setMutationError(info.detail ? `${info.message} · ${info.detail}` : info.message);
     } finally {
       setSubmitting(false);
     }
@@ -1901,7 +1914,7 @@ export function TableBrowser({
                     id: "delete-row",
                     label: t("删除选中行"),
                     disabled: !canEdit,
-                    onSelect: () => deleteRowAt(cell.row),
+                    onSelect: () => requestDeleteRow(cell.row),
                   },
                 ])(event);
               }}
@@ -2307,6 +2320,24 @@ export function TableBrowser({
           {t("大字段预览已截断")}
         </span>
       )}
+
+      <ConfirmDialog
+        open={deleteConfirm !== null}
+        risk="danger"
+        title={t("删除这一行？")}
+        description={t("行 {{label}} 会被标记为删除，点「应用修改」后才会真正写入数据库。", {
+          label: deleteConfirm?.label ?? "",
+        })}
+        consequences={[
+          t("提交后无法撤销；提交前可以在待提交列表里撤回。"),
+        ]}
+        confirmLabel={t("删除")}
+        onConfirm={() => {
+          if (deleteConfirm) deleteRowAt(deleteConfirm.index);
+          setDeleteConfirm(null);
+        }}
+        onCancel={() => setDeleteConfirm(null)}
+      />
 
       <CopyNotice status={copyStatus} />
       <ContextMenu {...cellMenu.props} />

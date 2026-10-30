@@ -3,16 +3,18 @@
 use tauri::{AppHandle, Emitter, State};
 
 use super::record_audit;
+use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
 
 #[tauri::command]
 pub async fn docker_snapshot(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<crate::docker::DockerSnapshot, String> {
+) -> OpsResult<crate::docker::DockerSnapshot> {
+    // 只读：docker 不可用 / 权限不足是常见失败，重试有意义。
     crate::docker::collect_snapshot(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("docker", error).retryable())
 }
 
 #[tauri::command]
@@ -21,10 +23,10 @@ pub async fn docker_logs(
     session_id: String,
     container: String,
     lines: u32,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     crate::docker::collect_logs(&state.ssh, &session_id, &container, lines)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("docker", error).retryable())
 }
 
 #[tauri::command]
@@ -34,18 +36,23 @@ pub async fn docker_container_action(
     session_id: String,
     action: String,
     container: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let action = match action.as_str() {
         "start" => crate::safe::ContainerAction::Start,
         "stop" => crate::safe::ContainerAction::Stop,
         "restart" => crate::safe::ContainerAction::Restart,
         "remove" => crate::safe::ContainerAction::Remove,
-        other => return Err(format!("不支持的容器操作：{other}")),
+        other => {
+            return Err(OpsError::new(
+                "docker",
+                format!("不支持的容器操作：{other}"),
+            ))
+        }
     };
 
     let outcome = crate::docker::container_action(&state.ssh, &session_id, action, &container)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("docker", error))?;
 
     record_audit(
         &state,
@@ -71,10 +78,10 @@ pub async fn docker_inspect_container(
     state: State<'_, AppState>,
     session_id: String,
     container: String,
-) -> Result<crate::docker::ContainerConfig, String> {
+) -> OpsResult<crate::docker::ContainerConfig> {
     crate::docker::inspect_container(&state.ssh, &session_id, &container)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| OpsError::from_stage("docker", error).retryable())
 }
 
 #[tauri::command]
@@ -83,10 +90,10 @@ pub async fn docker_image_remove(
     state: State<'_, AppState>,
     session_id: String,
     image: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let outcome = crate::docker::image_remove(&state.ssh, &session_id, &image)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("docker", error))?;
     record_audit(
         &state,
         "docker_image_remove",
@@ -105,10 +112,10 @@ pub async fn docker_prune(
     app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<String, String> {
+) -> OpsResult<String> {
     let outcome = crate::docker::system_prune(&state.ssh, &session_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OpsError::from_stage("docker", error))?;
     record_audit(
         &state,
         "docker_prune",

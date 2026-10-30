@@ -14,6 +14,7 @@ import {
   type Ref,
 } from "react";
 import { createPortal } from "react-dom";
+import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 export type TooltipSide = "top" | "bottom" | "left" | "right";
@@ -329,7 +330,7 @@ export function Tooltip({
             role="tooltip"
             data-side={position?.side ?? side}
             className={cn(
-              "ops-tooltip fixed z-[220]",
+              "ops-tooltip fixed",
               "pointer-events-none select-none",
               "max-w-[min(280px,calc(100vw-16px))]",
               "whitespace-normal break-words",
@@ -343,6 +344,7 @@ export function Tooltip({
             style={{
               left: position?.left ?? 0,
               top: position?.top ?? 0,
+              zIndex: OVERLAY_Z.tooltip,
               visibility: position ? "visible" : "hidden",
             }}
           >

@@ -27,6 +27,7 @@ import { useTranslation } from "react-i18next";
 import type { DbColumn, DbValue } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { readText } from "@/lib/clipboard";
+import { comboFromKey, useShortcutBindings } from "@/stores/shortcut-store";
 import {
   EMPTY_SELECTION,
   extendSelection,
@@ -368,6 +369,8 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     [columns.length, rows.length],
   );
   const store = useMemo(() => createSelectionStore(bounds), []);
+  /** 表格的键位与设置页共用一张绑定表：改了立刻生效。 */
+  const shortcuts = useShortcutBindings();
   const width = useMemo(
     () => columns.reduce((sum, _column, index) => sum + (widths[index] ?? MIN_COL_WIDTH), GUTTER_WIDTH),
     [columns, widths],
@@ -714,25 +717,26 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (isTextEntryTarget(event.target)) return;
-    const mod = event.ctrlKey || event.metaKey;
+    const combo = comboFromKey(event);
     const key = event.key;
     const state = stateOf();
     const gridBounds = store.getBounds();
     const hasSelection = state.mode !== null;
-    const lower = key.toLowerCase();
 
     const consume = () => {
       event.preventDefault();
       event.stopPropagation();
     };
 
-    if (mod && lower === "c") {
+    // 复制 / 撤销的 Shift 变体（含表头、重做）共用同一条绑定。
+    const withShift = (value: string | null) => (value ? value.replace("ctrl+", "ctrl+shift+") : null);
+    if (combo === shortcuts.grid_copy || combo === withShift(shortcuts.grid_copy)) {
       if (!hasSelection) return;
       consume();
       onCopy?.({ format: event.shiftKey ? "tsv-headers" : "tsv", selection: state });
       return;
     }
-    if (mod && lower === "v") {
+    if (combo === shortcuts.grid_paste) {
       if (!editable || !onPaste) return;
       consume();
       const target = hasSelection ? state.focus : { row: 0, col: 0 };
@@ -741,12 +745,12 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       });
       return;
     }
-    if (mod && lower === "a") {
+    if (combo === shortcuts.grid_select_all) {
       consume();
       store.update((current) => selectAll(current, gridBounds));
       return;
     }
-    if (mod && lower === "z") {
+    if (combo === shortcuts.grid_undo || combo === withShift(shortcuts.grid_undo)) {
       if (!editable) return;
       consume();
       if (event.shiftKey) {
@@ -756,16 +760,16 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       }
       return;
     }
-    if (mod && lower === "y") {
+    if (combo === shortcuts.grid_redo) {
       if (!editable || !canRedo) return;
       consume();
       onRedo?.();
       return;
     }
-    if (mod && (key === "Home" || key === "End")) {
+    if (combo === shortcuts.grid_first || combo === shortcuts.grid_last) {
       consume();
       const target =
-        key === "Home"
+        combo === shortcuts.grid_first
           ? { row: 0, col: 0 }
           : { row: gridBounds.rows - 1, col: gridBounds.cols - 1 };
       const next = focusAt(hasSelection ? state : EMPTY_SELECTION, target, gridBounds, event.shiftKey);
@@ -786,7 +790,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       onClear(state);
       return;
     }
-    if (key === "F2" || (key === "Enter" && !mod)) {
+    if (combo === shortcuts.grid_edit || combo === shortcuts.grid_edit_down) {
       if (!hasSelection) return;
       consume();
       startEdit(state.focus);
@@ -820,7 +824,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       ensureVisible(next.focus);
       return;
     }
-    const delta = mod
+    const delta = event.ctrlKey || event.metaKey
       ? {
           row: step.row === 0 ? 0 : Math.sign(step.row) * gridBounds.rows,
           col: step.col === 0 ? 0 : Math.sign(step.col) * gridBounds.cols,

@@ -17,10 +17,11 @@ import {
   JOURNAL_PRIORITIES,
   opsApi,
   priorityLabel,
-  toErrorMessage,
   type JournalDiskUsage,
   type JournalEntry,
 } from "@/api/ops-api";
+import { ErrorState } from "@/components/ui/error-state";
+import { useActionError } from "@/hooks/use-action-error";
 import { useCommandSession } from "@/hooks/use-command-session";
 import {
   ModuleEmpty,
@@ -53,7 +54,8 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [usage, setUsage] = useState<JournalDiskUsage | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：journalctl 失败常常是权限（adm/systemd-journal 组）或机器不可达。
+  const { error, fail, clear, retry } = useActionError();
 
   const [unit, setUnit] = useState("");
   const [lines, setLines] = useState(500);
@@ -67,7 +69,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
   const load = useCallback(async () => {
     if (!session.ready) return;
     setLoading(true);
-    setError(null);
+    clear();
     try {
       const [records, disk] = await Promise.all([
         opsApi.journalQuery({
@@ -82,11 +84,11 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
       setEntries(records);
       setUsage(disk);
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void load());
     } finally {
       setLoading(false);
     }
-  }, [lines, priority, session.ready, session.sessionId, unit]);
+  }, [lines, priority, session.ready, session.sessionId, unit, clear, fail]);
 
   useEffect(() => {
     void load();
@@ -251,11 +253,11 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
         </>
       }
     >
-      {error && (
-        <div className="mx-3 mt-3 rounded-[8px] border border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          {error}
+      {error ? (
+        <div className="mx-3 mt-3">
+          <ErrorState error={error} compact onRetry={retry} />
         </div>
-      )}
+      ) : null}
 
       {!loading && !error && entries.length === 0 ? (
         <ModuleEmpty

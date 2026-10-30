@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { opsApi, toErrorMessage } from "@/api/ops-api";
+import { opsApi } from "@/api/ops-api";
 import type {
   CapacityProfile,
   DeploymentProposal,
@@ -26,7 +26,9 @@ import type {
   ProposalStatement,
   ProposalTopologyOption,
 } from "@/api/ops-api";
-import { ErrorText, selectClass } from "@/components/ui/modal";
+import { ErrorState } from "@/components/ui/error-state";
+import { selectClass } from "@/components/ui/modal";
+import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
 import {
@@ -90,7 +92,8 @@ export function ProposalPanel({
   const [outcome, setOutcome] = useState<ProposalOutcome | null>(null);
   const [history, setHistory] = useState<DeploymentProposal[]>([]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 原始异常 + 可重试：方案生成失败通常是缺容量 / 缺策略，用户补完能直接再来一次。
+  const { error, fail, clear, retry } = useActionError();
   const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -112,10 +115,11 @@ export function ProposalPanel({
       } else {
         setProfile(null);
       }
+      clear();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void reload());
     }
-  }, [applicationId, environmentId]);
+  }, [applicationId, environmentId, clear, fail]);
 
   useEffect(() => {
     void reload();
@@ -124,7 +128,7 @@ export function ProposalPanel({
   const saveCapacity = async () => {
     if (!profile) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const saved = await opsApi.deploymentCapacitySave({
         ...profile,
@@ -133,7 +137,7 @@ export function ProposalPanel({
       setProfile(saved);
       setNotice(t("Requirements saved"));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void saveCapacity());
     } finally {
       setBusy(false);
     }
@@ -142,13 +146,13 @@ export function ProposalPanel({
   const savePolicy = async () => {
     if (!policy) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       const saved = await opsApi.deploymentPolicySave(applicationId, policy);
       setPolicy(saved);
       setNotice(t("Security policy saved (hard limits restored)"));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void savePolicy());
     } finally {
       setBusy(false);
     }
@@ -157,7 +161,7 @@ export function ProposalPanel({
   const generate = async () => {
     if (applicationId === "") return;
     setBusy(true);
-    setError(null);
+    clear();
     setNotice(null);
     try {
       const result = await opsApi.deploymentProposalGenerate(
@@ -168,7 +172,7 @@ export function ProposalPanel({
       setOutcome(result);
       setHistory(await opsApi.deploymentProposalList(applicationId, 10));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void generate());
     } finally {
       setBusy(false);
     }
@@ -177,14 +181,14 @@ export function ProposalPanel({
   const confirm = async () => {
     if (!outcome) return;
     setBusy(true);
-    setError(null);
+    clear();
     try {
       await opsApi.deploymentProposalConfirm(outcome.proposal.id);
       setNotice(t("Proposal confirmed — a draft plan was created (still not approved)"));
       setHistory(await opsApi.deploymentProposalList(applicationId, 10));
       onConfirmed();
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void confirm());
     } finally {
       setBusy(false);
     }
@@ -193,12 +197,13 @@ export function ProposalPanel({
   const reject = async () => {
     if (!outcome) return;
     setBusy(true);
+    clear();
     try {
       const updated = await opsApi.deploymentProposalReject(outcome.proposal.id);
       setOutcome({ ...outcome, proposal: updated });
       setHistory(await opsApi.deploymentProposalList(applicationId, 10));
     } catch (cause) {
-      setError(toErrorMessage(cause));
+      fail(cause, () => void reject());
     } finally {
       setBusy(false);
     }
@@ -213,7 +218,7 @@ export function ProposalPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pb-4">
-      {error ? <ErrorText>{error}</ErrorText> : null}
+      {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
       {notice ? <p className="text-11 text-fg-muted">{notice}</p> : null}
 
       {/* ---- 1. 需求填写 ---- */}

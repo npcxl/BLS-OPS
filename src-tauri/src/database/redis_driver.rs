@@ -247,7 +247,8 @@ pub struct RedisScanPage {
     /// 下一页 cursor；0 表示已扫完。
     pub cursor: u64,
     pub keys: Vec<RedisKeyBrief>,
-    pub dbsize: i64,
+    /// 库里键总数：**只有首屏（cursor=0）才取**，翻页时为 None，前端沿用旧值。
+    pub dbsize: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +513,13 @@ impl RedisSession {
         let raw: RedisValue = conn.query(&mut cmd).await.map_err(stage_err("scan"))?;
         let (next, keys) = parse_scan_reply(&raw)?;
         let keys = self.fill_briefs(db, keys).await?;
-        let dbsize: i64 = conn.query(Cmd::new().arg("DBSIZE")).await.unwrap_or(0);
+        // DBSIZE 只在首屏取一次。每页都打一遍纯属浪费往返；cluster 下 DBSIZE
+        // 返回的是全集群总和，翻页时也不会变，重复取反而误导。
+        let dbsize: Option<i64> = if cursor == 0 {
+            conn.query(Cmd::new().arg("DBSIZE")).await.ok()
+        } else {
+            None
+        };
         Ok(RedisScanPage {
             cursor: next,
             keys,
@@ -521,26 +528,75 @@ impl RedisSession {
     }
 
     /// 为键名批量补 type / pttl（pipeline：N 个键 2N 条命令一次性发）。
+    ///
+    /// 两条硬约束：
+    /// - **回复条数必须等于 2N**，否则直接报错：以前是 `replies[index*2]`
+    ///   裸索引，服务端少回一条就 panic 掉整个命令线程。
+    /// - Cluster 下跨 slot 的 pipeline 必然被服务器拒（CROSSSLOT），退回
+    ///   逐键查询；单机/Sentinel 仍走 pipeline。
     async fn fill_briefs(
         &self,
         db: i64,
         keys: Vec<String>,
     ) -> Result<Vec<RedisKeyBrief>, DbErrorInfo> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut conn = self.acquire(db).await?;
+        let cluster = matches!(conn, RedisConn::Cluster(_));
         let mut pipe = redis::pipe();
         for key in &keys {
-            pipe.cmd("TYPE").arg(key).cmd("PTTL").arg(key);
+            let bytes = decode_name(key)?;
+            pipe.cmd("TYPE").arg(&bytes).cmd("PTTL").arg(&bytes);
         }
-        let replies: Vec<RedisValue> = match &mut conn {
+        let pipelined = match &mut conn {
             RedisConn::Single(single) => pipe.query_async(single).await,
-            RedisConn::Cluster(cluster) => pipe.query_async(cluster.as_mut()).await,
+            RedisConn::Cluster(cluster_conn) => pipe.query_async(cluster_conn.as_mut()).await,
+        };
+        let replies: Vec<RedisValue> = match pipelined {
+            Ok(values) => values,
+            // Cluster：一页键散落在不同 slot，pipeline 会被 CROSSSLOT 拒掉。
+            Err(_) if cluster => return self.fill_briefs_key_by_key(db, keys).await,
+            Err(error) => return Err(stage_err("scan")(error)),
+        };
+        if replies.len() != keys.len() * 2 {
+            return Err(DbErrorInfo::new(
+                "scan",
+                format!(
+                    "TYPE/PTTL 流水线回复条数不匹配：期望 {} 条，实际 {} 条",
+                    keys.len() * 2,
+                    replies.len()
+                ),
+            ));
         }
-        .map_err(stage_err("scan"))?;
         let mut briefs = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
             let kind =
                 String::from_redis_value(&replies[index * 2]).unwrap_or_else(|_| "none".into());
             let ttl_ms = i64::from_redis_value(&replies[index * 2 + 1]).unwrap_or(-2);
+            briefs.push(RedisKeyBrief { key, kind, ttl_ms });
+        }
+        Ok(briefs)
+    }
+
+    /// Cluster 兜底：逐键 TYPE/PTTL。键数受 SCAN 单页上限约束（≤500）。
+    async fn fill_briefs_key_by_key(
+        &self,
+        db: i64,
+        keys: Vec<String>,
+    ) -> Result<Vec<RedisKeyBrief>, DbErrorInfo> {
+        let mut conn = self.acquire(db).await?;
+        let mut briefs = Vec::with_capacity(keys.len());
+        for key in keys {
+            let bytes = decode_name(&key)?;
+            let kind: String = conn
+                .query(Cmd::new().arg("TYPE").arg(&bytes))
+                .await
+                .map_err(stage_err("scan"))?;
+            let ttl_ms: i64 = conn
+                .query(Cmd::new().arg("PTTL").arg(&bytes))
+                .await
+                .unwrap_or(-2);
             briefs.push(RedisKeyBrief { key, kind, ttl_ms });
         }
         Ok(briefs)
@@ -693,16 +749,15 @@ impl RedisSession {
                     .query(&mut sscan_cmd(key, 0, SET_PAGE_MAX))
                     .await
                     .map_err(stage_err("read"))?;
-                let (cursor, mut members) = parse_scan_reply(&raw)?;
-                // 注意：**不能**在这里 truncate。SCAN 的 COUNT 只是提示，服务端
-                // 可能一次返回更多；砍掉尾部成员会让游标跳过它们，永久看不到。
-                let trimmed = trim_strings_by_bytes(&mut members);
+                let (cursor, members) = parse_scan_reply(&raw)?;
+                // 绝不按字节截断：SCAN 的 COUNT 只是提示，砍掉尾部成员后游标
+                // 已经推进，被砍的成员永久不可见（等于丢数据）。单页体积由
+                // SSCAN COUNT 控制，前端仍然一页一页续扫。
                 Ok(RedisValuePayload::Set {
                     members,
                     length,
-                    // truncated 的语义是"这不是全部"：还有下一页或被字节预算截断。
-                    // 小集合（intset/listpack）一次就回全，长度等于 length 时不算截断。
-                    truncated: trimmed || cursor != 0,
+                    // truncated 的语义是"这不是全部"：还有下一页。
+                    truncated: cursor != 0,
                     cursor,
                 })
             }
@@ -807,14 +862,13 @@ impl RedisSession {
             .query(&mut sscan_cmd(key, cursor, count))
             .await
             .map_err(stage_err("read"))?;
-        let (next, mut members) = parse_scan_reply(&raw)?;
-        // 同样不 truncate：截断会让游标越过被砍掉的成员。
-        let trimmed = trim_strings_by_bytes(&mut members);
+        let (next, members) = parse_scan_reply(&raw)?;
+        // 同样不截断：游标已经推进，砍掉的成员再也看不到。
         Ok(RedisSetPage {
             cursor: next,
             members,
             length,
-            truncated: trimmed,
+            truncated: false,
         })
     }
 
@@ -1100,6 +1154,13 @@ pub struct RedisManager {
     /// 每个 profile 一把建连锁：并发首连只允许一次 `RedisSession::open`，
     /// 其余调用等锁后直接命中缓存，杜绝重复建连。
     open_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// 每个 profile 的"关闭代数"：`close_profile` 自增。
+    ///
+    /// 建连前记下代数，建连后若已变化，说明这次建连期间用户点了断开/改了配置
+    /// —— 刚建好的会话必须丢弃，否则会出现"用户已经断开，后台又挂上一条连接"
+    /// 的复活。这把锁只增不减，保证同一 profile 的锁身份稳定（不会被
+    /// close 期间重建，导致 singleflight 失效）。
+    epochs: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl RedisManager {
@@ -1119,7 +1180,22 @@ impl RedisManager {
         if let Some(existing) = self.runtimes.lock().await.get(&profile_id).cloned() {
             return Ok(existing);
         }
+        // 记下建连前的代数：建连期间发生 close_profile 就作废这次结果。
+        let epoch = self.epochs.lock().await.get(&profile_id).copied().unwrap_or(0);
         let session = RedisSession::open(tunnels, plan).await?;
+        {
+            let epochs = self.epochs.lock().await;
+            let current = epochs.get(&profile_id).copied().unwrap_or(0);
+            if current != epoch {
+                drop(epochs);
+                // 用户已经断开：丢掉刚建好的会话（Drop 会关闭连接与隧道）。
+                drop(session);
+                return Err(DbErrorInfo::new(
+                    "cancelled",
+                    "连接在建连过程中被关闭，请重新连接",
+                ));
+            }
+        }
         self.runtimes
             .lock()
             .await
@@ -1171,9 +1247,17 @@ impl RedisManager {
     }
 
     /// 关闭 profile：会话 + 该 profile 的全部订阅。
+    ///
+    /// 注意**不删** `open_locks`：锁身份一旦重建，正在建连的那次请求就会和
+    /// 后面的请求各用一把锁，singleflight 直接失效。代数自增足以让 in-flight
+    /// 的建连作废（见 `runtime`）。
     pub async fn close_profile(&self, profile_id: &str) {
+        {
+            let mut epochs = self.epochs.lock().await;
+            let next = epochs.get(profile_id).copied().unwrap_or(0) + 1;
+            epochs.insert(profile_id.to_string(), next);
+        }
         self.runtimes.lock().await.remove(profile_id);
-        self.open_locks.lock().await.remove(profile_id);
         let mut pubsubs = self.pubsubs.lock().await;
         let ids: Vec<String> = pubsubs
             .iter()
@@ -1364,6 +1448,29 @@ fn stage_err(stage: &str) -> impl Fn(RedisError) -> DbErrorInfo + '_ {
     move |error| DbErrorInfo::new(stage, format!("{error}"))
 }
 
+/// 二进制名字前缀：非 UTF-8 的键名/字段名以 `b64:` + Base64 传输，字节无损。
+pub const BINARY_PREFIX: &str = "b64:";
+
+/// 原始字节 → 可传输字符串（非 UTF-8 才加 `b64:` 前缀，普通键保持原样）。
+fn encode_name(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => format!("{BINARY_PREFIX}{}", BASE64_STANDARD.encode(bytes)),
+    }
+}
+
+/// 前端传来的键名/字段名 → 原始字节（`b64:` 前缀先解 Base64）。
+///
+/// 所有按名字操作的命令都必须过这一层，否则二进制键读得到、写不回。
+fn decode_name(name: &str) -> Result<Vec<u8>, DbErrorInfo> {
+    match name.strip_prefix(BINARY_PREFIX) {
+        Some(encoded) => BASE64_STANDARD.decode(encoded).map_err(|error| {
+            DbErrorInfo::new("query", format!("二进制名字解码失败：{error}"))
+        }),
+        None => Ok(name.as_bytes().to_vec()),
+    }
+}
+
 /// SCAN 回复：[bulk(cursor), array(keys)]。
 fn parse_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<String>), DbErrorInfo> {
     let items = match raw {
@@ -1377,8 +1484,21 @@ fn parse_scan_reply(raw: &RedisValue) -> Result<(u64, Vec<String>), DbErrorInfo>
     let cursor = String::from_utf8_lossy(&cursor_bytes)
         .parse::<u64>()
         .map_err(|error| DbErrorInfo::new("scan", format!("cursor 解析失败：{error}")))?;
-    let keys = Vec::<String>::from_redis_value(&items[1])
-        .map_err(|error| DbErrorInfo::new("scan", format!("键列表解析失败：{error}")))?;
+    // 逐条按字节取，**不能**用 Vec<String>：redis-rs 关掉了 `bytes` feature，
+    // 遇到非 UTF-8 键名会整页报错（一个二进制键就让 SCAN 完全不可用）。
+    let raw_keys = match &items[1] {
+        RedisValue::Array(values) => values,
+        _ => return Err(DbErrorInfo::new("scan", "键列表形状异常")),
+    };
+    let keys = raw_keys
+        .iter()
+        .map(|value| match value {
+            RedisValue::BulkString(bytes) => encode_name(bytes),
+            RedisValue::SimpleString(text) => text.clone(),
+            RedisValue::Nil => String::new(),
+            _ => String::new(),
+        })
+        .collect::<Vec<_>>();
     Ok((cursor, keys))
 }
 

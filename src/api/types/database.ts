@@ -548,7 +548,8 @@ export interface RedisKeyBrief {
 export interface RedisScanPage {
   cursor: number;
   keys: RedisKeyBrief[];
-  dbsize: number;
+  /** 仅首屏（cursor=0）返回；翻页为 null，前端沿用上一次的值。 */
+  dbsize: number | null;
 }
 
 /** 键元信息。memory_bytes：None = 服务器不支持或键已不存在。 */

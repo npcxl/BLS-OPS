@@ -127,7 +127,7 @@ function CategoryRow({
     <div
       role="button"
       aria-expanded={open}
-      className="mt-1 flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-12 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
+      className="page-tree-row mt-1 cursor-default text-12 font-medium text-fg-subtle hover:bg-surface-hover hover:text-fg"
       style={indent(level)}
       {...rowKeyboardProps({
         expanded: open,
@@ -310,7 +310,7 @@ const ProfileRow = memo(function ProfileRow({
   return (
     <div
       className={cn(
-        "group flex cursor-default items-center gap-1.5 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
+        "page-tree-row group cursor-default hover:bg-surface-hover",
         selected && "bg-accent/10 ring-1 ring-inset ring-accent/20",
       )}
       style={indent(0)}
@@ -1295,7 +1295,7 @@ export function DatabaseAssetSidebar() {
                       <div key={key}>
                         <div
                           className={cn(
-                            "group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
+                            "page-tree-row group cursor-default hover:bg-surface-hover",
                             selectedKey === selectionKey &&
                               "bg-accent/10 ring-1 ring-inset ring-accent/20",
                           )}
@@ -1438,7 +1438,7 @@ export function DatabaseAssetSidebar() {
                                 <div key={tableKey}>
                                   <div
                                     className={cn(
-                                      "group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 hover:bg-surface-hover",
+                                      "page-tree-row group cursor-default hover:bg-surface-hover",
                                       selectedKey === tableKey &&
                                         "bg-accent/10 ring-1 ring-inset ring-accent/20",
                                     )}
@@ -1548,7 +1548,7 @@ export function DatabaseAssetSidebar() {
                                       {detail.columns.slice(0, 80).map((column) => (
                                         <div
                                           key={column.name}
-                                          className="flex items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-12 text-fg-muted hover:bg-surface-hover"
+                                          className="page-tree-row text-12 text-fg-muted hover:bg-surface-hover"
                                           style={indent(4)}
                                           title={`${column.column_type}${column.nullable ? "" : " NOT NULL"}`}
                                           onContextMenu={(event) => {
@@ -1609,7 +1609,7 @@ export function DatabaseAssetSidebar() {
                                 databaseQueries.map((query) => (
                                 <div
                                   key={query.id}
-                                  className="flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pr-2.5 text-13 text-fg hover:bg-surface-hover"
+                                  className="page-tree-row cursor-default text-12 text-fg hover:bg-surface-hover"
                                   style={indent(4)}
                                   onDoubleClick={() => openSavedQuery(query)}
                                   onContextMenu={(event) => {
@@ -1654,7 +1654,7 @@ export function DatabaseAssetSidebar() {
               .map((query) => (
                 <div
                   key={query.id}
-                  className="group flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pl-2.5 pr-2.5 hover:bg-surface-hover"
+                  className="page-tree-row group cursor-default hover:bg-surface-hover"
                   tabIndex={0}
                   onDoubleClick={() => openSavedQuery(query)}
                   onKeyDown={(event) => {

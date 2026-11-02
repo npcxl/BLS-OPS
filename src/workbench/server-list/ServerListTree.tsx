@@ -3,7 +3,9 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight, ChevronsLeft, FolderPlus, Plus, RefreshCw, Star } from "@/components/icons";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { IconButton } from "@/components/ui/mac-button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
 import { ErrorText } from "@/components/ui/modal";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
@@ -115,6 +117,7 @@ export function ServerListTree({
     <div
       className="flex min-h-full flex-col gap-1 pb-3"
       data-testid="server-list-tree"
+      data-server-list
       onContextMenu={backgroundMenu.onContextMenu(() => headerActions)}
     >
       <div className="mt-1">
@@ -160,11 +163,15 @@ export function ServerListTree({
         </SectionTitle>
 
         {loading ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("Loading")}</p>
+          <LoadingState className="px-2.5 py-4" />
         ) : (
           <>
             {servers.length === 0 && groups.length === 0 && (
-              <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("No servers yet — click + to add one")}</p>
+              <EmptyState
+                className="px-2.5 py-6"
+                title={t("No servers yet")}
+                description={t("Click + to add one.")}
+              />
             )}
 
             {/* Shortcut area only: these servers stay in their own group below. */}

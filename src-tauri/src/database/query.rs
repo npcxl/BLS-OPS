@@ -103,6 +103,10 @@ impl QueryRegistry {
         if request.session.kind == SessionKind::Sqlite {
             return self.start_sqlite(request).await;
         }
+        // PostgreSQL：simple query 文本协议。
+        if request.session.kind == SessionKind::Postgres {
+            return self.start_postgres(request).await;
+        }
 
         let StartQueryRequest {
             session,
@@ -205,6 +209,231 @@ impl QueryRegistry {
             task_finished.store(true, Ordering::Release);
             // notify_one 会保存一个 permit，release 在检查 finished 与
             // 创建 notified() 之间发生的完成通知不会丢失。
+            task_done.notify_one();
+        });
+
+        Ok(QueryStarted {
+            query_id,
+            state: STATE_QUEUED.to_string(),
+            generation,
+            connection: identity,
+        })
+    }
+
+    /// PostgreSQL 查询：`simple_query` 一次读完，按 `CommandComplete` 分组发送。
+    ///
+    /// **没有流式背压**：文本协议一次返回整个结果集，预算只能在发送阶段截断。
+    async fn start_postgres(
+        &self,
+        request: StartQueryRequest,
+    ) -> Result<QueryStarted, DbErrorInfo> {
+        let StartQueryRequest {
+            session,
+            runtime,
+            sql,
+            budget,
+        } = request;
+        let conn = session.acquire_postgres().await?;
+        let identity = session.identity.clone();
+        let cancel_handle = session.cancel.clone();
+
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let generation = session.generation;
+        let state = Arc::new(RwLock::new(STATE_QUEUED.to_string()));
+        let (tx, rx) = mpsc::channel::<DbBatch>(2);
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let in_flight_bytes = Arc::new(AtomicUsize::new(0));
+        let cancel_failed = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(Notify::new());
+
+        let handle = Arc::new(QueryHandle {
+            query_id: query_id.clone(),
+            session_id: session.session_id.clone(),
+            profile_id: session.profile_id.clone(),
+            generation,
+            cancel_token: cancel_handle,
+            state: state.clone(),
+            cancel: cancel_tx,
+            cancel_failed: cancel_failed.clone(),
+            in_flight: in_flight.clone(),
+            in_flight_bytes: in_flight_bytes.clone(),
+            started_at: crate::db::AppDb::now(),
+        });
+
+        self.entries.lock().await.insert(
+            query_id.clone(),
+            Arc::new(QueryEntry {
+                handle: handle.clone(),
+                runtime: runtime.clone(),
+                session: session.clone(),
+                finished: finished.clone(),
+                done: done.clone(),
+                receiver: Mutex::new(rx),
+            }),
+        );
+
+        runtime.begin_query();
+
+        let task_runtime = runtime.clone();
+        let task_session = session.clone();
+        let task_query_id = query_id.clone();
+        let panic_session = task_session.clone();
+        let panic_tx = tx.clone();
+        let panic_state = state.clone();
+        let task_finished = finished.clone();
+        let task_done = done.clone();
+        tokio::spawn(async move {
+            let outcome = AssertUnwindSafe(async {
+                let started = std::time::Instant::now();
+                *state.write().await = STATE_RUNNING.to_string();
+
+                let mut rows_total = 0u64;
+                let mut bytes_total = 0usize;
+                let mut truncated = false;
+                let mut cancelled = false;
+                let mut error_seen = false;
+
+                let sets = match conn.simple_query(&sql, budget.max_rows).await {
+                    Ok(sets) => sets,
+                    Err(error) => {
+                        if error.stage == "cancelled" {
+                            cancelled = true;
+                        } else {
+                            let _ = tx.try_send(DbBatch::Error { error });
+                            error_seen = true;
+                        }
+                        Vec::new()
+                    }
+                };
+
+                let mut set_index = 0u32;
+                for set in &sets {
+                    if *cancel_rx.borrow() {
+                        cancelled = true;
+                        break;
+                    }
+                    let result_set_id = format!("{task_query_id}:{set_index}");
+                    if tx
+                        .send(DbBatch::ResultSet {
+                            result_set_id: result_set_id.clone(),
+                            index: set_index,
+                            columns: set.columns.clone(),
+                            statement: truncate_sql(&sql),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                    let mut sequence = 0u64;
+                    for chunk in set.rows.chunks(budget.batch_rows.max(1)) {
+                        let bytes: usize = chunk.iter().flatten().map(approximate_bytes).sum();
+                        in_flight.fetch_add(1, Ordering::AcqRel);
+                        in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
+                        if tx
+                            .send(DbBatch::Rows {
+                                result_set_id: result_set_id.clone(),
+                                sequence,
+                                rows: chunk.to_vec(),
+                                bytes,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            cancelled = true;
+                            break;
+                        }
+                        sequence += 1;
+                        rows_total += chunk.len() as u64;
+                        bytes_total += bytes;
+                    }
+                    if cancelled {
+                        break;
+                    }
+                    if tx
+                        .send(DbBatch::ResultSetEnd {
+                            result_set_id,
+                            affected_rows: set.affected_rows,
+                            last_insert_id: None,
+                            warnings: 0,
+                            info: String::new(),
+                            rows: set.rows.len() as u64,
+                            bytes: 0,
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                    if set.truncated {
+                        truncated = true;
+                        break;
+                    }
+                    set_index += 1;
+                }
+
+                if !truncated && *cancel_rx.borrow() {
+                    cancelled = true;
+                }
+                let final_state = if cancel_failed.load(Ordering::Acquire) {
+                    STATE_OUTCOME_UNKNOWN
+                } else if cancelled {
+                    STATE_CANCELLED
+                } else if error_seen {
+                    STATE_FAILED
+                } else {
+                    STATE_COMPLETED
+                };
+                *state.write().await = final_state.to_string();
+
+                finalize(
+                    &tx,
+                    final_state,
+                    started,
+                    rows_total,
+                    bytes_total,
+                    truncated,
+                    truncated.then(|| format!("已达展示行数上限（{} 行）", budget.max_rows)),
+                )
+                .await;
+
+                let transaction = if cancelled || error_seen {
+                    TransactionState::Unknown
+                } else {
+                    conn.transaction_state().await
+                };
+                task_session
+                    .release_postgres(conn, !cancelled && !error_seen, transaction)
+                    .await;
+            })
+            .catch_unwind()
+            .await;
+
+            if outcome.is_err() {
+                panic_session.mark_lost().await;
+                *panic_state.write().await = STATE_FAILED.to_string();
+                let _ = panic_tx.try_send(DbBatch::Error {
+                    error: DbErrorInfo::new(
+                        "query",
+                        "PostgreSQL 查询任务异常终止，会话已丢失，请重新连接",
+                    ),
+                });
+                let _ = panic_tx.try_send(DbBatch::Finished {
+                    state: STATE_FAILED.to_string(),
+                    elapsed_ms: 0,
+                    rows: 0,
+                    bytes: 0,
+                    truncated: false,
+                    truncation_reason: None,
+                });
+            }
+            task_runtime.end_query();
+            task_finished.store(true, Ordering::Release);
             task_done.notify_one();
         });
 

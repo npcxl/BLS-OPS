@@ -289,4 +289,21 @@ export default {
   Unsaved: "未儲存",
   "Save (Ctrl+S)": "儲存 (Ctrl+S)",
   "Reading file…": "正在讀取…",
+
+  // -- 頁面骨架 / 狀態回饋 --
+  "Inspection mode: commands that modify the server are blocked.": "巡檢模式：會修改伺服器的命令已被攔截。",
+  "Collecting the first sample…": "正在採集第一份資料…",
+  "No data collected yet": "還沒有採集到資料",
+  "Collect now": "立即採集",
+  "The first collection starts right after connecting.": "連線成功後會自動開始第一次採集。",
+  "Discovering projects…": "正在掃描專案…",
+  "Compact mode": "緊湊模式",
+  "Tighter rows, toolbars and section spacing.": "更緊湊的列表列、工具列與分組間距。",
+  Comfortable: "舒適",
+  Compact: "緊湊",
+  Density: "密度",
+  "Resize sidebar": "調整側欄寬度",
+  "This view is not implemented yet.": "這個檢視尚未實作。",
+  "Double-click a table on the left, or create a query.": "雙擊左側表，或新建查詢。",
+  "Click + to add one.": "點擊 + 新增一個。",
 } as const;

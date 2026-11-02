@@ -6,7 +6,15 @@
 use std::time::Duration;
 
 use ops_workbench_lib::database::{
-    driver, manager::DatabaseManager, metadata, model::*, query, session::SessionKind, table,
+    adapter::AdapterSet,
+    driver, export,
+    manager::DatabaseManager,
+    metadata,
+    model::*,
+    mutate, query,
+    schema_ops::{self, SchemaChange},
+    session::SessionKind,
+    table,
 };
 
 fn temp_app_db() -> (std::path::PathBuf, rusqlite::Connection) {
@@ -259,6 +267,251 @@ async fn sqlite_metadata_and_table_browse_are_real() {
     assert_ne!(first.rows[0], second.rows[0], "keyset 第二页不能重复第一页");
 
     manager.close_session("meta-session").await;
+    manager.close_profile("sqlite-test").await;
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn sqlite_mutation_commits_and_detects_conflict() {
+    let (app_path, app_conn) = temp_app_db();
+    let db_path = sqlite_db("mutate");
+    let plan = driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan");
+    let manager = DatabaseManager::default();
+    manager
+        .open_session(plan, "mutate-session")
+        .await
+        .expect("open");
+    let runtime = manager
+        .runtime(driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan"))
+        .await
+        .expect("runtime");
+    let session = manager.session("mutate-session").await.expect("session");
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "main", "items")
+        .await
+        .expect("detail");
+
+    let request = |expected_name: &str| MutationRequest {
+        session_id: "mutate-session".to_string(),
+        database: "main".to_string(),
+        table: "items".to_string(),
+        rows: vec![RowMutation {
+            kind: "update".to_string(),
+            key: Some(vec![AssignValue::Value {
+                value: "1".to_string(),
+            }]),
+            values: vec![ColumnAssignment {
+                column: "name".to_string(),
+                value: AssignValue::Value {
+                    value: "A".to_string(),
+                },
+            }],
+            expected: Some(vec![ColumnAssignment {
+                column: "name".to_string(),
+                value: AssignValue::Value {
+                    value: expected_name.to_string(),
+                },
+            }]),
+        }],
+        allow_non_transactional: None,
+    };
+
+    let (result, _info) = mutate::apply(&runtime, &session, &detail, &request("a"))
+        .await
+        .expect("mutate");
+    assert_eq!(result.state, "committed");
+    assert_eq!(result.committed_rows, 1);
+
+    // 期望值仍是 "a"，但库里已经是 "A"：0 行 → 冲突并回滚。
+    let (conflict, _info) = mutate::apply(&runtime, &session, &detail, &request("a"))
+        .await
+        .expect("conflict");
+    assert_eq!(conflict.state, "rolled_back");
+    assert_eq!(conflict.committed_rows, 0);
+    assert_eq!(conflict.outcomes[0].status, "conflict");
+
+    // 第一次的提交必须还在（回滚只影响第二次）。
+    let conn = rusqlite::Connection::open(&db_path).expect("open rw");
+    let name: String = conn
+        .query_row("SELECT name FROM items WHERE id = 1", [], |row| row.get(0))
+        .expect("read back");
+    assert_eq!(name, "A");
+    drop(conn);
+
+    manager.close_session("mutate-session").await;
+    manager.close_profile("sqlite-test").await;
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn sqlite_export_writes_complete_csv() {
+    let (app_path, app_conn) = temp_app_db();
+    let db_path = sqlite_db("export");
+    let out_path =
+        std::env::temp_dir().join(format!("bls-sqlite-export-{}.csv", uuid::Uuid::new_v4()));
+    let plan = driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan");
+    let manager = DatabaseManager::default();
+    manager
+        .open_session(plan, "export-session")
+        .await
+        .expect("open");
+    let runtime = manager
+        .runtime(driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan"))
+        .await
+        .expect("runtime");
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "main", "items")
+        .await
+        .expect("detail");
+
+    let registry = export::ExportRegistry::default();
+    let started = registry
+        .start(
+            runtime.clone(),
+            ExportRequest {
+                profile_id: "sqlite-test".to_string(),
+                sql: String::new(),
+                database: Some("main".to_string()),
+                target_path: out_path.to_string_lossy().to_string(),
+                pagination: Some("auto".to_string()),
+                page_size: None,
+                sorts: None,
+                filters: None,
+                table: Some(ExportTableTarget {
+                    database: "main".to_string(),
+                    table: "items".to_string(),
+                }),
+                bom: Some(true),
+                max_rows: None,
+            },
+            Some(detail),
+        )
+        .await
+        .expect("start export");
+
+    let mut state = String::new();
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let progress = registry.status(&started.export_id).await.expect("status");
+        state = progress.state.clone();
+        if matches!(state.as_str(), "completed" | "failed" | "cancelled") {
+            break;
+        }
+    }
+    assert_eq!(state, "completed");
+
+    let csv = std::fs::read_to_string(&out_path).expect("read csv");
+    let body = csv.trim_start_matches('\u{feff}');
+    let lines: Vec<&str> = body.lines().collect();
+    assert_eq!(lines.len(), 3, "表头 + 2 行数据：{body}");
+    assert_eq!(lines[0], "id,name,payload");
+    assert!(body.contains('a') && body.contains('b'));
+
+    manager.close_session("export-session").await;
+    manager.close_profile("sqlite-test").await;
+    let _ = std::fs::remove_file(out_path);
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn sqlite_ddl_creates_table_and_view_and_rejects_database() {
+    let (app_path, app_conn) = temp_app_db();
+    let db_path = sqlite_db("ddl");
+    let plan = driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan");
+    let manager = DatabaseManager::default();
+    manager
+        .open_session(plan, "ddl-session")
+        .await
+        .expect("open");
+    let runtime = manager
+        .runtime(driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan"))
+        .await
+        .expect("runtime");
+    let session = manager.session("ddl-session").await.expect("session");
+    let adapter = AdapterSet::of("sqlite").expect("sqlite adapter");
+    let cache = metadata::MetadataCache::default();
+
+    let create = SchemaChange::CreateTable {
+        database: "main".to_string(),
+        table: "notes".to_string(),
+        columns: vec![
+            schema_ops::NewColumn {
+                name: "id".to_string(),
+                column_type: "INTEGER".to_string(),
+                nullable: false,
+                auto_increment: true,
+                default_value: None,
+                comment: String::new(),
+            },
+            schema_ops::NewColumn {
+                name: "body".to_string(),
+                column_type: "TEXT".to_string(),
+                nullable: true,
+                auto_increment: false,
+                default_value: None,
+                comment: String::new(),
+            },
+        ],
+        primary_key: vec!["id".to_string()],
+        engine: Some("InnoDB".to_string()),
+        charset: None,
+        collation: None,
+    };
+    let preview = schema_ops::preview(&adapter, &create).expect("preview");
+    assert!(
+        preview.sql.contains("PRIMARY KEY AUTOINCREMENT"),
+        "自增必须落在列定义上：{}",
+        preview.sql
+    );
+    assert!(preview.warning.is_some(), "忽略 ENGINE 必须提示");
+    schema_ops::apply(&adapter, &session, &create)
+        .await
+        .expect("create table");
+
+    let detail = metadata::table_detail(&runtime, &cache, "main", "notes")
+        .await
+        .expect("detail");
+    assert_eq!(detail.primary_key, vec!["id".to_string()]);
+    assert_eq!(detail.columns.len(), 2);
+
+    let view = SchemaChange::SaveView {
+        database: "main".to_string(),
+        view: "notes_v".to_string(),
+        select_sql: "SELECT id, body FROM notes".to_string(),
+        or_replace: true,
+    };
+    schema_ops::apply(&adapter, &session, &view)
+        .await
+        .expect("create view");
+    // SQLite 没有 CREATE OR REPLACE：第二次必须走 DROP IF EXISTS + CREATE。
+    schema_ops::apply(&adapter, &session, &view)
+        .await
+        .expect("replace view");
+
+    let count = runtime
+        .sqlite()
+        .expect("sqlite runtime")
+        .query("SELECT COUNT(*) FROM notes_v", 1, 64)
+        .await
+        .expect("query view");
+    assert!(matches!(count.rows[0][0], DbValue::Int { .. }));
+
+    // SQLite 没有"库"：建库必须明确拒绝。
+    let error = schema_ops::preview(
+        &adapter,
+        &SchemaChange::CreateDatabase {
+            name: "x".to_string(),
+            charset: None,
+            collation: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.stage, "unsupported");
+
+    manager.close_session("ddl-session").await;
     manager.close_profile("sqlite-test").await;
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(app_path);

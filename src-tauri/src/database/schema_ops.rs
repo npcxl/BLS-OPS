@@ -12,7 +12,8 @@ use super::adapter::AdapterSet;
 use super::capability::DriverFamily;
 use super::driver::map_error;
 use super::model::DbErrorInfo;
-use super::session::SessionEntry;
+use super::protocol::TransactionState;
+use super::session::{SessionEntry, SessionKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewColumn {
@@ -145,10 +146,10 @@ fn valid_column_type(value: &str) -> bool {
 
 /// DDL 生成的方言入口。
 ///
-/// 目前只有 MySQL 完整实现：MySQL 的 DDL 与其它引擎差异太大
-/// （`AUTO_INCREMENT`、内联 `COMMENT`、`CHANGE COLUMN`、建库字符集、`USE db`），
-/// 半套实现会生成"看起来能跑"的错语句。非 MySQL 引擎在这里**明确拒绝**，
-/// 让用户去 SQL 编辑器执行，而不是拿到一条执行到一半的 DDL。
+/// MySQL 与 SQLite 已有实现；两者差异是结构性的（`AUTO_INCREMENT` vs
+/// `INTEGER PRIMARY KEY AUTOINCREMENT`、内联 `COMMENT`、`CHANGE COLUMN`、
+/// 建库字符集、`USE db`、`CREATE OR REPLACE VIEW`）。PostgreSQL 仍未接入，
+/// 会明确拒绝而不是生成"看起来能跑"的错语句。
 struct Ddl<'a> {
     adapter: &'a AdapterSet,
 }
@@ -166,6 +167,14 @@ impl<'a> Ddl<'a> {
         self.adapter.dialect().string_literal(value)
     }
 
+    fn qualified(&self, schema: &str, name: &str) -> Result<String, DbErrorInfo> {
+        self.adapter.dialect().qualified(Some(schema), name)
+    }
+
+    fn is_sqlite(&self) -> bool {
+        self.adapter.family() == DriverFamily::Sqlite
+    }
+
     fn require_mysql(&self, feature: &str) -> Result<(), DbErrorInfo> {
         if self.adapter.family() == DriverFamily::MySql {
             return Ok(());
@@ -175,7 +184,7 @@ impl<'a> Ddl<'a> {
             format!("{feature} 目前只支持 MySQL/MariaDB"),
         )
         .with_detail(
-            "PostgreSQL/SQLite 的 DDL 生成会在对应驱动接入后提供；当前请用 SQL 编辑器直接执行。",
+            "SQLite 没有这个对象（库/改表），PostgreSQL 的 DDL 生成会在驱动接入后提供；当前请用 SQL 编辑器直接执行。",
         ))
     }
 }
@@ -212,6 +221,10 @@ fn create_table_sql(
         if !columns.iter().any(|column| column.name == *key) {
             return Err(DbErrorInfo::new("config", format!("主键字段不存在：{key}")));
         }
+    }
+
+    if ddl.is_sqlite() {
+        return sqlite_create_table_sql(ddl, database, table, columns, primary_key);
     }
 
     let defs = columns
@@ -267,6 +280,76 @@ fn create_table_sql(
         sql.push_str(&format!(" COLLATE={}", ddl.quote(collation)?));
     }
     Ok(sql)
+}
+
+/// SQLite 建表：没有 ENGINE / CHARSET / COLLATE / 内联 COMMENT；
+/// 自增只能是 `INTEGER PRIMARY KEY AUTOINCREMENT`（单列）。
+fn sqlite_create_table_sql(
+    ddl: &Ddl<'_>,
+    database: &str,
+    table: &str,
+    columns: &[NewColumn],
+    primary_key: &[String],
+) -> Result<String, DbErrorInfo> {
+    let mut defs: Vec<String> = Vec::new();
+    for column in columns {
+        let mut sql = format!("{} {}", ddl.quote(&column.name)?, column.column_type.trim());
+        if !column.nullable {
+            sql.push_str(" NOT NULL");
+        }
+        if let Some(default) = column
+            .default_value
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
+                sql.push_str(" DEFAULT CURRENT_TIMESTAMP");
+            } else {
+                sql.push_str(&format!(" DEFAULT {}", ddl.literal(default)));
+            }
+        }
+        defs.push(sql);
+    }
+
+    let auto_columns: Vec<&NewColumn> = columns.iter().filter(|item| item.auto_increment).collect();
+    if auto_columns.len() > 1 {
+        return Err(DbErrorInfo::new("config", "SQLite 只允许一个自增主键列"));
+    }
+    if let Some(column) = auto_columns.first() {
+        // SQLite 的自增只存在于"单列 INTEGER 主键"上，别的位置直接拒绝。
+        if primary_key.len() != 1 || primary_key[0] != column.name {
+            return Err(
+                DbErrorInfo::new("config", "SQLite 的自增只支持单列 INTEGER 主键")
+                    .with_detail("请把自增列设为唯一主键，或取消自增。"),
+            );
+        }
+        let type_name = column.column_type.trim().to_ascii_uppercase();
+        if type_name != "INTEGER" && type_name != "INT" {
+            return Err(
+                DbErrorInfo::new("config", "SQLite 的 AUTOINCREMENT 要求列类型是 INTEGER")
+                    .with_detail(
+                        "把该列类型改成 INTEGER（SQLite 的 INTEGER PRIMARY KEY 即 rowid）。",
+                    ),
+            );
+        }
+        let index = columns
+            .iter()
+            .position(|item| item.name == column.name)
+            .unwrap_or(0);
+        defs[index].push_str(" PRIMARY KEY AUTOINCREMENT");
+    } else if !primary_key.is_empty() {
+        let keys = primary_key
+            .iter()
+            .map(|name| ddl.quote(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        defs.push(format!("PRIMARY KEY ({})", keys.join(", ")));
+    }
+
+    Ok(format!(
+        "CREATE TABLE {} (\n  {}\n)",
+        ddl.qualified(database, table)?,
+        defs.join(",\n  ")
+    ))
 }
 
 fn column_sql(ddl: &Ddl<'_>, column: &NewColumn) -> Result<String, DbErrorInfo> {
@@ -702,13 +785,14 @@ fn build(
     ddl: &Ddl<'_>,
     change: &SchemaChange,
 ) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
-    ddl.require_mysql("schema 变更")?;
     match change {
         SchemaChange::CreateDatabase {
             name,
             charset,
             collation,
         } => {
+            // SQLite 没有"库"：`main` 就是文件本身。
+            ddl.require_mysql("建库")?;
             let db = ddl.quote(name)?;
             let mut sql = format!("CREATE DATABASE {db}");
             if let Some(charset) = charset.as_deref().filter(|value| !value.trim().is_empty()) {
@@ -732,8 +816,8 @@ fn build(
             engine,
             charset,
             collation,
-        } => Ok((
-            vec![create_table_sql(
+        } => {
+            let sql = create_table_sql(
                 ddl,
                 database,
                 table,
@@ -742,15 +826,23 @@ fn build(
                 engine.as_deref(),
                 charset.as_deref(),
                 collation.as_deref(),
-            )?],
-            None,
-            false,
-        )),
-        SchemaChange::DropDatabase { name } => Ok((
-            vec![format!("DROP DATABASE {}", ddl.quote(name)?)],
-            Some("删除数据库会永久删除其中的全部表和数据，无法撤销".to_string()),
-            true,
-        )),
+            )?;
+            // SQLite 忽略表选项时必须说出来，不能静默丢掉用户填的值。
+            let has_table_options = [engine.as_deref(), charset.as_deref(), collation.as_deref()]
+                .iter()
+                .any(|value| value.map(|text| !text.trim().is_empty()).unwrap_or(false));
+            let warning = (ddl.is_sqlite() && has_table_options)
+                .then(|| "SQLite 没有 ENGINE / CHARSET / COLLATE：这些表选项已被忽略".to_string());
+            Ok((vec![sql], warning, false))
+        }
+        SchemaChange::DropDatabase { name } => {
+            ddl.require_mysql("删库")?;
+            Ok((
+                vec![format!("DROP DATABASE {}", ddl.quote(name)?)],
+                Some("删除数据库会永久删除其中的全部表和数据，无法撤销".to_string()),
+                true,
+            ))
+        }
         SchemaChange::SaveView {
             database,
             view,
@@ -758,6 +850,16 @@ fn build(
             or_replace,
         } => {
             let select = validate_select(select_sql)?;
+            if ddl.is_sqlite() {
+                // SQLite 没有 CREATE OR REPLACE VIEW，也没有 USE。
+                let qualified = ddl.qualified(database, view)?;
+                let mut sql = Vec::new();
+                if *or_replace {
+                    sql.push(format!("DROP VIEW IF EXISTS {qualified}"));
+                }
+                sql.push(format!("CREATE VIEW {qualified} AS {select}"));
+                return Ok((sql, None, false));
+            }
             let verb = if *or_replace {
                 "CREATE OR REPLACE VIEW"
             } else {
@@ -776,11 +878,7 @@ fn build(
             ))
         }
         SchemaChange::DropView { database, view } => Ok((
-            vec![format!(
-                "DROP VIEW {}.{}",
-                ddl.quote(database)?,
-                ddl.quote(view)?
-            )],
+            vec![format!("DROP VIEW {}", ddl.qualified(database, view)?)],
             Some("删除视图会永久移除视图定义，但不会删除基表数据".to_string()),
             true,
         )),
@@ -826,6 +924,9 @@ async fn execute_statements(
     session: &SessionEntry,
     statements: &[String],
 ) -> Result<SchemaOutcome, DbErrorInfo> {
+    if session.kind == SessionKind::Sqlite {
+        return execute_sqlite_statements(session, statements).await;
+    }
     if session.read_only {
         return Err(DbErrorInfo::new(
             "permission",
@@ -878,6 +979,66 @@ async fn execute_statements(
     })
 }
 
+/// SQLite 的 DDL 在事务里可以回滚（这一点比 MySQL 强），所以整批用
+/// `BEGIN`/`COMMIT` 包住：失败就 `ROLLBACK`，不会留下"执行了一半"的结构。
+async fn execute_sqlite_statements(
+    session: &SessionEntry,
+    statements: &[String],
+) -> Result<SchemaOutcome, DbErrorInfo> {
+    if session.read_only {
+        return Err(DbErrorInfo::new(
+            "permission",
+            "该会话是只读连接：不能执行 schema 修改",
+        ));
+    }
+    let transaction = session.transaction().await;
+    if matches!(
+        transaction.as_str(),
+        "in_transaction" | "in_transaction_read_only"
+    ) {
+        return Err(DbErrorInfo::new(
+            "query",
+            "当前会话有未提交事务：请先 COMMIT/ROLLBACK，schema 修改不会替你隐式提交",
+        ));
+    }
+
+    let worker = session.acquire_sqlite().await?;
+    if let Err(error) = worker.execute("BEGIN").await {
+        session
+            .release_sqlite(worker, true, TransactionState::None)
+            .await;
+        return Err(error);
+    }
+    for (index, statement) in statements.iter().enumerate() {
+        if let Err(error) = worker.execute(statement).await {
+            let _ = worker.execute("ROLLBACK").await;
+            session
+                .release_sqlite(worker, true, TransactionState::None)
+                .await;
+            return Err(ddl_error(index, false, error));
+        }
+    }
+    if let Err(error) = worker.execute("COMMIT").await {
+        session
+            .release_sqlite(worker, false, TransactionState::Unknown)
+            .await;
+        return Err(
+            DbErrorInfo::new("outcome_unknown", format!("DDL 提交结果未知：{error}"))
+                .with_detail("不要自动重试；请重新打开结构浏览器确认对象状态。"),
+        );
+    }
+    session
+        .release_sqlite(worker, true, TransactionState::None)
+        .await;
+    Ok(SchemaOutcome {
+        sql: statements
+            .iter()
+            .map(|statement| format!("{statement};"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
+}
+
 pub async fn apply(
     adapter: &AdapterSet,
     session: &SessionEntry,
@@ -912,11 +1073,13 @@ mod tests {
     #[test]
     fn non_mysql_engines_are_rejected_with_a_reason() {
         let pg = AdapterSet::of("postgres").expect("pg registered");
+        // `DROP VIEW` 是标准 SQL，PostgreSQL 也能用；用"建库"验证拒绝路径。
         let error = preview_with_adapter(
             &pg,
-            &SchemaChange::DropView {
-                database: "public".to_string(),
-                view: "v".to_string(),
+            &SchemaChange::CreateDatabase {
+                name: "x".to_string(),
+                charset: None,
+                collation: None,
             },
         )
         .unwrap_err();

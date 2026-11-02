@@ -617,7 +617,7 @@
     align-items: center;
     gap: 6px;
     min-height: var(--page-tree-height);
-    padding: 0 8px;
+    padding: 0 10px;
     border-radius: 5px;
     outline: none;
   }
@@ -630,6 +630,23 @@
   .page-tree-row:focus-visible {
     outline: 2px solid rgb(var(--focus-ring) / 0.7);
     outline-offset: -2px;
+  }
+
+  /* Management rows that are richer than a table cell but still one list. */
+  .page-list-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 8px var(--page-inline);
+    border-bottom: 1px solid rgb(var(--divider) / 0.6);
+  }
+
+  .page-list-row:last-child {
+    border-bottom: 0;
+  }
+
+  .page-list-row:hover {
+    background: rgb(var(--surface-hover) / 0.6);
   }
 
   /* ── Overlay shell (drawers, large previews, independent windows) ────── */

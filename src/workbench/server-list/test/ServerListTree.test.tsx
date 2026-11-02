@@ -281,6 +281,32 @@ describe("ServerListTree — 收藏", () => {
   });
 });
 
+describe("ServerListTree — 键盘", () => {
+  it("moves focus between servers with arrow keys", async () => {
+    servers = [server("s1"), server("s2"), server("s3")];
+    await render(<ServerListTree title="Server list" onOpenServer={() => undefined} />);
+
+    const rows = () =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>("[data-server-row-open]"));
+    expect(rows()).toHaveLength(3);
+
+    rows()[0].focus();
+    await act(async () => {
+      rows()[0].dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.activeElement).toBe(rows()[1]);
+
+    await act(async () => {
+      rows()[1].dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+});
+
 describe("ServerListTree — 分组", () => {
   it("renders an empty group with its 暂无服务器 placeholder", async () => {
     servers = [server("s1")];

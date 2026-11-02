@@ -207,6 +207,8 @@ export default {
   Metadata: "元数据",
   "Last verified": "最近核对",
   "Knowledge note": "备注",
+  "Content": "正文",
+  Enabled: "启用",
   "Save metadata": "保存元数据",
   "Archived or disabled knowledge does not participate in AI retrieval.":
     "已归档或未启用的知识不会参与 AI 检索。",

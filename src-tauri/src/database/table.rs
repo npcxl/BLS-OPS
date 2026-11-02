@@ -768,6 +768,17 @@ pub async fn read_cell(
     column: &str,
     max_bytes: usize,
 ) -> Result<(DbValue, usize), DbErrorInfo> {
+    if let Some(worker) = profile.sqlite() {
+        return super::sqlite_table::read_cell(
+            worker,
+            profile.adapter()?,
+            detail,
+            key_values,
+            column,
+            max_bytes,
+        )
+        .await;
+    }
     let adapter = profile.adapter()?;
     let dialect = adapter.dialect();
     let key_columns = detail

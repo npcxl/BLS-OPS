@@ -41,13 +41,53 @@ fn normalize_theme(theme: &str) -> &'static str {
     }
 }
 
+/// 系统当前的浅色 / 深色设置。
+///
+/// **不能用 WebView 的 `prefers-color-scheme` 代替**：选过一次浅色/深色后，前端会
+/// 通过 `set_theme` 固定窗口主题，wry 在 `ThemeChanged` 时会把 WebView2 的
+/// `PreferredColorScheme` 一并设成这个固定值。此后媒体查询反映的是"上一次的
+/// 选择"，而不是系统 —— 再点"跟随系统"就只能读到自己留下的旧值，表现为点了没反应。
+#[cfg(target_os = "windows")]
+fn system_theme(_window: &WebviewWindow) -> &'static str {
+    use windows_registry::CURRENT_USER;
+    const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    match CURRENT_USER
+        .open(PERSONALIZE)
+        .ok()
+        .and_then(|key| key.get_u32("AppsUseLightTheme").ok())
+    {
+        // 0 = 深色。读不到时按亮色，和 normalize_theme 的默认一致。
+        Some(0) => "dark",
+        _ => "light",
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_theme(window: &WebviewWindow) -> &'static str {
+    match window.theme() {
+        Ok(Theme::Dark) => "dark",
+        _ => "light",
+    }
+}
+
 /// 应用窗口材质。幂等：重复调用只是重设一次属性。
 pub fn apply(window: &WebviewWindow, theme: &str, transparency: bool) -> WindowMaterial {
-    let theme = normalize_theme(theme);
+    // "system" 不是一种外观：先清掉强制主题（标题栏、菜单回到跟随系统），
+    // 再用系统的真实深浅决定材质与网页主题。
+    let theme = if theme == "system" {
+        let _ = window.set_theme(None);
+        system_theme(window)
+    } else {
+        let resolved = normalize_theme(theme);
+        // 先同步原生主题：标题栏、滚动条、右键菜单、以及 Win11 的材质底色都看它。
+        let _ = window.set_theme(Some(if resolved == "dark" {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }));
+        resolved
+    };
     let dark = theme == "dark";
-
-    // 先同步原生主题：标题栏、滚动条、右键菜单、以及 Win11 的材质底色都看它。
-    let _ = window.set_theme(Some(if dark { Theme::Dark } else { Theme::Light }));
 
     #[cfg(target_os = "windows")]
     {

@@ -1,5 +1,6 @@
 import { Suspense, lazy } from "react";
-import { Loader2 } from "@/components/icons";
+import { LoadingState } from "@/components/ui/loading";
+import { PageSurface } from "@/workbench/page-layout";
 import type { WorkspaceTab } from "@/workbench/types";
 import { WorkbenchHome } from "@/workbench/views/home/WorkbenchHome";
 import { ModulePage } from "@/workbench/ModulePage";
@@ -64,9 +65,9 @@ const DatabaseView = lazy(() =>
 
 function TerminalFallback() {
   return (
-    <div className="flex h-full items-center justify-center bg-surface-1">
-      <Loader2 size={16} className="animate-spin text-fg-subtle" />
-    </div>
+    <PageSurface>
+      <LoadingState className="h-full" />
+    </PageSurface>
   );
 }
 

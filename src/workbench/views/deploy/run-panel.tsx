@@ -35,6 +35,7 @@ import {
 } from "@/api/ops-api";
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/input";
 import { ErrorText } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { LoadingState } from "@/components/ui/loading";
@@ -366,24 +367,25 @@ export function RunPanel({ applicationId, environmentId, sessionId, onChanged }:
     <div className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
       {/* ---------- 左：应用 / 环境 / 计划 ---------- */}
       <aside className="min-h-0 space-y-3 overflow-auto ops-scroll">
-        <div className="rounded-md border border-line bg-surface-2 p-3">
-          <div className="text-xs font-medium text-fg-muted">{t("Applications")}</div>
-          <div className="mt-1 truncate text-sm">
+        <div className="rounded-[8px] border border-line bg-surface-2 p-3">
+          <div className="text-11 font-medium text-fg-muted">{t("Applications")}</div>
+          <div className="mt-1 truncate text-12 text-fg">
             {center.applications.find((item) => item.id === applicationId)?.name ?? "—"}
           </div>
-          <div className="mt-3 text-xs font-medium text-fg-muted">{t("Environments")}</div>
+          <div className="mt-3 text-11 font-medium text-fg-muted">{t("Environments")}</div>
           <div className="mt-1 flex items-center gap-2">
-            <span className="truncate text-sm">
+            <span className="truncate text-12 text-fg">
               {center.environments.find((item) => item.id === environmentId)?.name ?? "—"}
             </span>
             <StatusBadge tone={preflight?.environment_kind === "production" ? "danger" : "neutral"}>
               {preflight?.environment_kind ?? "—"}
             </StatusBadge>
           </div>
-          <div className="mt-3 text-xs font-medium text-fg-muted">{t("Plans")}</div>
+          <div className="mt-3 text-11 font-medium text-fg-muted">{t("Plans")}</div>
           <Select
             className="mt-1 w-full"
             value={planId}
+            ariaLabel={t("Plans")}
             placeholder={t("No plans yet")}
             onChange={(value) => setPlanId(value)}
             options={
@@ -450,14 +452,12 @@ export function RunPanel({ applicationId, environmentId, sessionId, onChanged }:
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1 text-xs text-fg-muted">
-              <input
-                type="checkbox"
-                checked={approveAll}
-                onChange={(event) => setApproveAll(event.target.checked)}
-              />
-              {t("Approve high-risk steps up front")}
-            </label>
+            <Checkbox
+              size="sm"
+              label={t("Approve high-risk steps up front")}
+              checked={approveAll}
+              onChange={(event) => setApproveAll(event.target.checked)}
+            />
             <Button
               size="sm"
               disabled={busy || !planId || !effectiveSession || !preflight?.report.can_run}

@@ -16,7 +16,7 @@ use std::time::Instant;
 use mysql_async::Conn;
 use tokio::sync::Mutex;
 
-use super::driver::{self, SqliteWorker};
+use super::driver::{self, PostgresConn, SqliteWorker};
 use super::model::{DbErrorInfo, DbSessionInfo};
 use super::protocol::{CancelHandle, ConnectionIdentity, TransactionState};
 
@@ -29,11 +29,13 @@ pub const SESSION_LOST: &str = "lost";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
     MySql,
+    Postgres,
     Sqlite,
 }
 
 enum SessionConn {
     MySql(Conn),
+    Postgres(Arc<PostgresConn>),
     Sqlite(Arc<SqliteWorker>),
 }
 
@@ -140,6 +142,102 @@ impl SessionEntry {
         }
     }
 
+    /// PostgreSQL 会话：身份是 backend pid。
+    pub fn new_postgres(
+        session_id: String,
+        profile_id: String,
+        generation: u64,
+        conn: Arc<PostgresConn>,
+        server_version: Option<String>,
+        read_only: bool,
+        backend_pid: Option<u32>,
+    ) -> Self {
+        let identity = match backend_pid {
+            Some(pid) => ConnectionIdentity::labeled(format!("pid {pid}"), Some(pid)),
+            None => ConnectionIdentity::named("postgres"),
+        };
+        Self {
+            session_id,
+            profile_id,
+            generation,
+            kind: SessionKind::Postgres,
+            identity,
+            cancel: CancelHandle::Postgres,
+            server_version,
+            tls_active: false,
+            tls_cipher: None,
+            tls_version: None,
+            read_only,
+            // 只读由 runtime 在连接时执行 `SET default_transaction_read_only = on`。
+            read_only_enforced: read_only,
+            opened_at: crate::db::AppDb::now(),
+            last_used: Mutex::new(Instant::now()),
+            inner: Mutex::new(SessionInner {
+                conn: Some(SessionConn::Postgres(conn)),
+                state: SESSION_READY.to_string(),
+                current_database: None,
+                transaction: TransactionState::None,
+            }),
+        }
+    }
+
+    /// 取走 PostgreSQL 连接（同一物理连接，事务绑定在这里）。
+    pub async fn acquire_postgres(&self) -> Result<Arc<PostgresConn>, DbErrorInfo> {
+        let mut inner = self.inner.lock().await;
+        match inner.state.as_str() {
+            SESSION_LOST => {
+                return Err(DbErrorInfo::new(
+                    "outcome_unknown",
+                    "会话连接已失效：原事务状态未知，请重新连接",
+                ))
+            }
+            SESSION_BUSY | SESSION_CANCELLING => {
+                return Err(DbErrorInfo::new(
+                    "query",
+                    "该会话正在执行另一条语句：请等待完成或先取消",
+                ))
+            }
+            _ => {}
+        }
+        match inner.conn.take() {
+            Some(SessionConn::Postgres(conn)) => {
+                inner.state = SESSION_BUSY.to_string();
+                Ok(conn)
+            }
+            Some(other) => {
+                inner.conn = Some(other);
+                Err(DbErrorInfo::new("unsupported", "该会话不是 PostgreSQL 连接"))
+            }
+            None => Err(DbErrorInfo::new("query", "会话连接不可用")),
+        }
+    }
+
+    /// 归还 PostgreSQL 连接。`clean = false` 表示连接状态不可信。
+    pub async fn release_postgres(
+        &self,
+        conn: Arc<PostgresConn>,
+        clean: bool,
+        transaction: TransactionState,
+    ) {
+        let mut inner = self.inner.lock().await;
+        if !clean {
+            inner.state = SESSION_LOST.to_string();
+            inner.conn = None;
+            inner.transaction = TransactionState::Unknown;
+            drop(inner);
+            conn.close().await;
+            return;
+        }
+        if inner.state == SESSION_LOST {
+            drop(inner);
+            conn.close().await;
+            return;
+        }
+        inner.transaction = transaction;
+        inner.state = SESSION_READY.to_string();
+        inner.conn = Some(SessionConn::Postgres(conn));
+    }
+
     pub async fn info(&self) -> DbSessionInfo {
         let inner = self.inner.lock().await;
         DbSessionInfo {
@@ -198,6 +296,13 @@ impl SessionEntry {
                         "SQLite 会话不支持该操作：结构浏览/表编辑尚未接入，SQL 执行可用",
                     ))
                 }
+                Some(SessionConn::Postgres(conn)) => {
+                    inner.conn = Some(SessionConn::Postgres(conn));
+                    Err(DbErrorInfo::new(
+                        "unsupported",
+                        "PostgreSQL 会话走独立执行路径，不接受 MySQL 连接句柄",
+                    ))
+                }
                 None => Err(DbErrorInfo::new("query", "会话连接不可用")),
             },
         }
@@ -228,6 +333,10 @@ impl SessionEntry {
             }
             Some(SessionConn::MySql(conn)) => {
                 inner.conn = Some(SessionConn::MySql(conn));
+                Err(DbErrorInfo::new("unsupported", "该会话不是 SQLite 连接"))
+            }
+            Some(SessionConn::Postgres(conn)) => {
+                inner.conn = Some(SessionConn::Postgres(conn));
                 Err(DbErrorInfo::new("unsupported", "该会话不是 SQLite 连接"))
             }
             None => Err(DbErrorInfo::new("query", "会话连接不可用")),
@@ -311,6 +420,7 @@ impl SessionEntry {
                         tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect())
                             .await;
                 }
+                SessionConn::Postgres(conn) => conn.close().await,
                 SessionConn::Sqlite(worker) => worker.close().await,
             }
         }

@@ -26,8 +26,9 @@ import type {
   ProposalStatement,
   ProposalTopologyOption,
 } from "@/api/ops-api";
+import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
-import { Input } from "@/components/ui/input";
+import { Checkbox, Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
@@ -306,44 +307,42 @@ export function ProposalPanel({
               )}
             </p>
             <div className="mt-2 flex items-center gap-2">
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                size="xs"
                 disabled={busy || !profile}
                 onClick={() => void saveCapacity()}
-                className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg disabled:opacity-50"
               >
                 {t("Save requirements")}
-              </button>
+              </Button>
               {policy ? (
-                <label className="flex items-center gap-3 text-11 text-fg-muted">
-                  <span className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={policy.require_https}
-                      onChange={(event) =>
-                        setPolicy({ ...policy, require_https: event.target.checked })
-                      }
-                    />
-                    {t("Require HTTPS")}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      disabled
-                      checked={policy.production_requires_approval}
-                      onChange={() => undefined}
-                    />
-                    {t("Production requires approval (cannot be disabled)")}
-                  </span>
-                  <button
+                <div className="flex flex-wrap items-center gap-3 text-11 text-fg-muted">
+                  <Checkbox
+                    size="sm"
+                    label={t("Require HTTPS")}
+                    checked={policy.require_https}
+                    onChange={(event) =>
+                      setPolicy({ ...policy, require_https: event.target.checked })
+                    }
+                  />
+                  <Checkbox
+                    size="sm"
+                    disabled
+                    label={t("Production requires approval (cannot be disabled)")}
+                    checked={policy.production_requires_approval}
+                    onChange={() => undefined}
+                  />
+                  <Button
                     type="button"
+                    variant="secondary"
+                    size="xs"
                     disabled={busy}
                     onClick={() => void savePolicy()}
-                    className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg disabled:opacity-50"
                   >
                     {t("Save policy")}
-                  </button>
-                </label>
+                  </Button>
+                </div>
               ) : null}
             </div>
           </>
@@ -353,14 +352,15 @@ export function ProposalPanel({
       {/* ---- 2. 分析 ---- */}
       <Section step="2" title={t("Analysis")}>
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          <Button
             type="button"
+            variant="primary"
+            size="sm"
             disabled={busy || applicationId === ""}
             onClick={() => void generate()}
-            className="rounded-[7px] bg-accent px-3 py-1 text-11 font-medium text-white disabled:opacity-50"
           >
             {busy ? t("Generating…") : t("Generate proposal")}
-          </button>
+          </Button>
           <span className="text-10 text-fg-subtle">
             {t("Deterministic rule engine — the same inputs always produce the same proposal.")}
           </span>
@@ -534,22 +534,24 @@ export function ProposalPanel({
           {/* ---- 6. 确认方案 ---- */}
           <Section step="6" title={t("Confirm the proposal")}>
             <div className="flex flex-wrap items-center gap-2">
-              <button
+              <Button
                 type="button"
+                variant="primary"
+                size="sm"
                 disabled={busy || !canConfirm}
                 onClick={() => void confirm()}
-                className="rounded-[7px] bg-accent px-3 py-1 text-11 font-medium text-white disabled:opacity-50"
               >
                 {t("Confirm proposal")}
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 disabled={busy || proposal.status !== "draft"}
                 onClick={() => void reject()}
-                className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg disabled:opacity-50"
               >
                 {t("Reject")}
-              </button>
+              </Button>
               <span className="text-10 text-fg-subtle">
                 {outcome?.ready
                   ? t("Confirming creates a draft plan. Approval and execution come later — nothing is deployed.")

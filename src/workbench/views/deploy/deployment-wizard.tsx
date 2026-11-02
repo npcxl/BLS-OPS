@@ -27,7 +27,10 @@ import { CircleCheck, CircleDashed, LoaderCircle, TriangleAlert } from "@/compon
 
 import { opsApi } from "@/api/ops-api";
 import type { DeploymentSession, SessionStatus } from "@/api/types/deployment";
+import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
+import { Input, Textarea } from "@/components/ui/input";
+import { Field } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
@@ -97,28 +100,7 @@ export function stepForStatus(
   }
 }
 
-// -- 小组件（自包含，避免依赖不确定的内部组件） ---------------------------
-
-const fieldClass =
-  "w-full rounded-[7px] border border-line bg-surface-1 px-2 py-1.5 text-12 text-fg outline-none focus:border-fg-subtle";
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-11 text-fg-muted">{label}</span>
-      {children}
-      {hint ? <span className="mt-1 block text-10 text-fg-subtle">{hint}</span> : null}
-    </label>
-  );
-}
+// -- 小组件 ----------------------------------------------------------------
 
 function Stepper({
   current,
@@ -347,8 +329,7 @@ export function DeploymentWizard({
             label={t("Repository or path")}
             hint={t("For Git repositories the URL must not contain any username or token.")}
           >
-            <input
-              className={fieldClass}
+            <Input
               data-testid="wizard-source-value"
               value={sourceValue}
               placeholder={
@@ -357,14 +338,16 @@ export function DeploymentWizard({
               onChange={(event) => setSourceValue(event.target.value)}
             />
           </Field>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
+            className="justify-self-start"
             data-testid="wizard-next"
-            className="justify-self-start rounded-[7px] border border-line px-3 py-1 text-12 text-fg"
             onClick={() => setLocalStep("target")}
           >
             {t("Next step")}
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -387,14 +370,16 @@ export function DeploymentWizard({
               ]}
             />
           </Field>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
+            className="justify-self-start"
             data-testid="wizard-next"
-            className="justify-self-start rounded-[7px] border border-line px-3 py-1 text-12 text-fg"
             onClick={() => setLocalStep("describe")}
           >
             {t("Next step")}
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -403,8 +388,9 @@ export function DeploymentWizard({
           label={t("What do you want to deploy?")}
           hint={t("For example: a front-end and back-end split project, 100 QPS at peak, Docker + Nginx + HTTPS.")}
         >
-          <textarea
-            className={cn(fieldClass, "min-h-24")}
+          <Textarea
+            className="min-h-24"
+            resizable={false}
             data-testid="wizard-description"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -414,9 +400,10 @@ export function DeploymentWizard({
 
       {session && step !== "describe" ? (
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          <Button
             type="button"
-            className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted"
+            variant="ghost"
+            size="xs"
             data-testid="wizard-reset"
             onClick={() => {
               setSession(null);
@@ -426,7 +413,7 @@ export function DeploymentWizard({
             }}
           >
             {t("Start over")}
-          </button>
+          </Button>
           <span className="text-10 text-fg-subtle">
             {t("Session")}: {session.id.slice(0, 8)} · {session.status}
           </span>
@@ -435,15 +422,16 @@ export function DeploymentWizard({
 
       {step === "describe" ? (
         <div className="flex items-center gap-2">
-          <button
+          <Button
             type="button"
+            variant="primary"
+            size="sm"
             disabled={busy || description.trim().length === 0}
             data-testid="wizard-start"
-            className="rounded-[7px] border border-line bg-surface-2 px-3 py-1.5 text-12 text-fg disabled:opacity-50"
             onClick={startSession}
           >
             {busy ? t("Working") : t("Start analysis")}
-          </button>
+          </Button>
           <span className="text-10 text-fg-subtle">
             {t("Creating a session never touches the server.")}
           </span>
@@ -481,21 +469,21 @@ export function DeploymentWizard({
             </div>
           ) : null}
           <div className="flex items-center gap-2">
-            <input
-              className={fieldClass}
+            <Input
               data-testid="wizard-answer"
               value={answer}
               onChange={(event) => setAnswer(event.target.value)}
             />
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="sm"
               disabled={busy || answer.trim().length === 0}
               data-testid="wizard-answer-submit"
-              className="rounded-[7px] border border-line bg-surface-2 px-3 py-1.5 text-12 text-fg disabled:opacity-50"
               onClick={submitAnswer}
             >
               {t("Answer")}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}

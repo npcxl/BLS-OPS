@@ -48,7 +48,9 @@ export function setWindowTransparency(enabled: boolean): void {
   } catch {
     // 存不下不影响本次生效，只是下次启动回到默认。
   }
-  void applyWindowMaterial(currentResolvedTheme(), enabled);
+  // 用"上一次请求的主题"重放：当前若在"跟随系统"，这里必须继续传 system，
+  // 不能拿解析后的 light/dark 顶替，否则会把窗口主题固定成具体值。
+  void applyWindowMaterial(lastRequestedTheme, enabled);
   emit();
 }
 
@@ -67,8 +69,20 @@ export function useWindowTransparency(): [boolean, (enabled: boolean) => void] {
   return [enabled, setWindowTransparency];
 }
 
-function currentResolvedTheme(): "light" | "dark" {
-  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+/** 请求的主题："system" 由原生侧读系统设置解析，不能被前端猜。 */
+export type ThemeRequest = "light" | "dark" | "system";
+
+/** 最近一次请求的主题，切透明度时据此重放（见 `setWindowTransparency`）。 */
+let lastRequestedTheme: ThemeRequest = "system";
+
+/**
+ * 浏览器媒体查询里的系统深浅。
+ *
+ * 只能在"窗口主题没有被自己固定过"时代表系统 —— Tauri 里真正的系统值由 Rust
+ * 读注册表，见 `applyWindowMaterial("system")`。
+ */
+export function systemMediaTheme(): "light" | "dark" {
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function writeState(state: WindowMaterialState): void {
@@ -99,13 +113,16 @@ export function useWindowMaterial(): WindowMaterialState | null {
  * 出错时按实色处理，界面仍然可读。
  */
 export async function applyWindowMaterial(
-  theme: "light" | "dark",
+  theme: ThemeRequest,
   transparency = getWindowTransparency(),
 ): Promise<WindowMaterialState> {
+  lastRequestedTheme = theme;
+  // 浏览器预览没有原生窗口可问，只能按媒体查询落地（Tauri 里由 Rust 读系统设置）。
+  const resolved = theme === "system" ? systemMediaTheme() : theme;
   if (!isTauri()) {
     const fallback: WindowMaterialState = {
       material: "solid",
-      theme,
+      theme: resolved,
       reason: "platform_unsupported",
       osBuild: 0,
       transparency: false,
@@ -123,7 +140,7 @@ export async function applyWindowMaterial(
   } catch {
     const fallback: WindowMaterialState = {
       material: "solid",
-      theme,
+      theme: resolved,
       reason: "apply_failed",
       osBuild: 0,
       transparency: false,

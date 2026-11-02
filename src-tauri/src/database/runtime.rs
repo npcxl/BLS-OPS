@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use super::adapter::AdapterSet;
 use super::capability::{CancelMode, MySqlProductProfile, MYSQL_STANDARD_PROFILE};
-use super::driver::{self, EndpointPlan, ResolvedEndpoint, SqliteWorker};
+use super::driver::{self, EndpointPlan, PostgresConn, ResolvedEndpoint, SqliteWorker};
 use super::engine_registry;
 use super::model::DbErrorInfo;
 use super::protocol::CancelHandle;
@@ -33,6 +33,8 @@ pub struct ProfileRuntime {
     export: Option<Pool>,
     /// SQLite：独占连接跑在专用阻塞线程上，取消走 `interrupt()`。
     sqlite: Option<std::sync::Arc<SqliteWorker>>,
+    /// PostgreSQL：simple query 文本协议 + CancelToken。
+    postgres: Option<std::sync::Arc<PostgresConn>>,
     active_queries: AtomicUsize,
 }
 
@@ -44,8 +46,16 @@ impl ProfileRuntime {
         let endpoint = driver::resolve_plan(tunnels, plan).await?;
 
         // SQLite 是本地文件：既没有隧道，也没有连接池。
-        if endpoint.profile.engine.eq_ignore_ascii_case("sqlite") {
+        if endpoint.profile.engine.eq_ignore_ascii_case("sqlite")         {
             return Self::connect_sqlite(endpoint);
+        }
+
+        // PostgreSQL 家族：simple query 文本协议。
+        if matches!(
+            endpoint.profile.engine.as_str(),
+            "postgres" | "cockroach" | "aurora_pg"
+        ) {
+            return Self::connect_postgres(endpoint).await;
         }
 
         let timeout = Duration::from_millis(endpoint.profile.connect_timeout_ms);
@@ -74,6 +84,7 @@ impl ProfileRuntime {
             interactive: Some(interactive),
             export: Some(export),
             sqlite: None,
+            postgres: None,
             active_queries: AtomicUsize::new(0),
         })
     }
@@ -101,6 +112,7 @@ impl ProfileRuntime {
             interactive: None,
             export: None,
             sqlite: Some(std::sync::Arc::new(worker)),
+            postgres: None,
             active_queries: AtomicUsize::new(0),
         })
     }
@@ -108,6 +120,63 @@ impl ProfileRuntime {
     /// SQLite 运行时（非 SQLite 返回 `None`）。
     pub fn sqlite(&self) -> Option<&std::sync::Arc<SqliteWorker>> {
         self.sqlite.as_ref()
+    }
+
+    /// PostgreSQL 运行时（非 PostgreSQL 返回 `None`）。
+    pub fn postgres(&self) -> Option<&std::sync::Arc<PostgresConn>> {
+        self.postgres.as_ref()
+    }
+
+    /// PostgreSQL 家族：simple query 文本协议，TLS 未接入。
+    async fn connect_postgres(endpoint: ResolvedEndpoint) -> Result<Self, DbErrorInfo> {
+        // 不做"尝试 TLS、失败降级明文"：没接入就是没接入。
+        if endpoint.profile.tls_mode != crate::database::model::TLS_DISABLED {
+            return Err(DbErrorInfo::new(
+                "unsupported",
+                "PostgreSQL 的 TLS 尚未接入：请先用 tls_mode = disabled（或改用 SSH 隧道）",
+            )
+            .with_detail("TLS 会在驱动接入 tokio-postgres-rustls 后提供，不做静默降级。"));
+        }
+        let password = endpoint.password.clone();
+        let database = endpoint
+            .profile
+            .default_database
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                DbErrorInfo::new("config", "PostgreSQL 必须填写数据库名")
+                    .with_detail("PostgreSQL 的 database 与 schema 是两层，这里填 database。")
+            })?;
+        let timeout = Duration::from_millis(endpoint.profile.connect_timeout_ms);
+        let conn = PostgresConn::connect(
+            &super::driver::postgres::PostgresEndpoint {
+                host: endpoint.connect_host.clone(),
+                port: endpoint.connect_port,
+                user: endpoint.profile.username.clone(),
+                password,
+                database,
+            },
+            timeout,
+        )
+        .await?;
+
+        if endpoint.read_only {
+            conn.simple_query("SET default_transaction_read_only = on", 0)
+                .await?;
+        }
+
+        Ok(Self {
+            profile_id: endpoint.profile.id.clone(),
+            generation: endpoint.generation,
+            endpoint,
+            control: Mutex::new(None),
+            opts: None,
+            interactive: None,
+            export: None,
+            sqlite: None,
+            postgres: Some(std::sync::Arc::new(conn)),
+            active_queries: AtomicUsize::new(0),
+        })
     }
 
     /// 这条运行时对应的引擎适配器（方言 + SQL 模板）。
@@ -162,6 +231,10 @@ impl ProfileRuntime {
         if let Some(worker) = &self.sqlite {
             worker.interrupt();
             return Ok(());
+        }
+        // PostgreSQL：CancelToken 走独立的 cancel 请求连接。
+        if let Some(conn) = &self.postgres {
+            return conn.cancel().await;
         }
         // 产品级取消能力优先：Doris/StarRocks 按 query id 取消，
         // 拿连接 id 发 KILL QUERY 是没有意义的（甚至报错），如实拒绝。
@@ -218,6 +291,10 @@ impl ProfileRuntime {
             worker.query("SELECT 1", 1, 64).await?;
             return Ok(());
         }
+        if let Some(conn) = &self.postgres {
+            conn.simple_query("SELECT 1", 1).await?;
+            return Ok(());
+        }
         let mut guard = self.control.lock().await;
         let conn = guard
             .as_mut()
@@ -230,6 +307,10 @@ impl ProfileRuntime {
     pub async fn close(&self) {
         if let Some(worker) = &self.sqlite {
             worker.close().await;
+            return;
+        }
+        if let Some(conn) = &self.postgres {
+            conn.close().await;
             return;
         }
         if let Some(interactive) = &self.interactive {

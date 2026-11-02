@@ -26,7 +26,7 @@ use tokio::sync::{watch, Mutex, RwLock};
 
 use super::adapter::{AdapterSet, ParamBinder};
 use super::codec;
-use super::driver::{is_read_only_sql, map_error};
+use super::driver::{is_read_only_sql, map_error, SqliteWorker};
 use super::model::{
     DbErrorInfo, DbTableDetail, ExportOutcome, ExportProgress, ExportRequest, ExportStarted,
 };
@@ -289,6 +289,22 @@ async fn run_export(
     let part_path =
         std::path::PathBuf::from(format!("{}.part-{}", request.target_path, task.export_id));
     let target_path = std::path::PathBuf::from(&request.target_path);
+
+    // SQLite：本地文件、分页读取、同一套原子发布；自定义 SQL 暂不支持。
+    if let Some(worker) = profile.sqlite() {
+        run_sqlite_export(
+            worker.clone(),
+            profile.clone(),
+            request,
+            detail,
+            task,
+            cancel_rx,
+            part_path,
+        )
+        .await;
+        let _ = target_path;
+        return;
+    }
 
     let export_pool = match profile.export_pool() {
         Ok(pool) => pool,
@@ -573,6 +589,314 @@ async fn run_export(
     }
     drop(file);
     let _ = conn.query_drop("ROLLBACK").await;
+
+    // 原子发布：先把旧文件挪到 .bak，再改名；失败则恢复旧文件。
+    let backup = target_path.with_extension("bak-ops");
+    let had_old = tokio::fs::try_exists(&target_path).await.unwrap_or(false);
+    if had_old {
+        if let Err(error) = tokio::fs::rename(&target_path, &backup).await {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("无法替换已有导出文件：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
+    }
+    if let Err(error) = tokio::fs::rename(&part_path, &target_path).await {
+        if had_old {
+            let _ = tokio::fs::rename(&backup, &target_path).await;
+        }
+        fail(
+            &task,
+            DbErrorInfo::new("config", format!("发布导出文件失败：{error}")),
+            &part_path,
+        )
+        .await;
+        return;
+    }
+    if had_old {
+        let _ = tokio::fs::remove_file(&backup).await;
+    }
+
+    task.bytes.store(written, Ordering::Release);
+    *task.path.write().await = Some(target_path.to_string_lossy().to_string());
+    *task.state.write().await = "completed".to_string();
+    *task.message.write().await = Some(format!(
+        "导出完成：{rows} 行，{written} 字节，耗时 {} ms（重新查询导出，数据可能与页面显示不同）",
+        started.elapsed().as_millis()
+    ));
+}
+
+/// SQLite 导出的基础查询（表模式）。值按方言字面量内联；标识符来自元数据。
+fn sqlite_export_base(
+    adapter: &AdapterSet,
+    request: &ExportRequest,
+    detail: &DbTableDetail,
+) -> Result<String, DbErrorInfo> {
+    let table = request
+        .table
+        .as_ref()
+        .ok_or_else(|| DbErrorInfo::new("unsupported", "SQLite 的自定义 SQL 导出尚未接入"))?;
+    let dialect = adapter.dialect();
+    let qualified = dialect.qualified(Some(&table.database), &table.table)?;
+    let mut where_parts = Vec::new();
+    if let Some(filters) = &request.filters {
+        for filter in filters {
+            if detail
+                .columns
+                .iter()
+                .all(|column| column.name != filter.column)
+            {
+                return Err(DbErrorInfo::new(
+                    "query",
+                    format!("过滤列不存在：{}", filter.column),
+                ));
+            }
+            if let Some(clause) = super::sqlite_table::filter_clause(adapter, filter)? {
+                where_parts.push(clause);
+            }
+        }
+    }
+    let mut order_parts = Vec::new();
+    if let Some(sorts) = &request.sorts {
+        for sort in sorts {
+            if detail
+                .columns
+                .iter()
+                .all(|column| column.name != sort.column)
+            {
+                return Err(DbErrorInfo::new(
+                    "query",
+                    format!("排序列不存在：{}", sort.column),
+                ));
+            }
+            if !matches!(sort.direction.as_str(), "asc" | "desc") {
+                return Err(DbErrorInfo::new("query", "排序方向必须是 asc 或 desc"));
+            }
+            order_parts.push(format!(
+                "{} {}",
+                dialect.quote(&sort.column)?,
+                sort.direction.to_uppercase()
+            ));
+        }
+    } else if let Some(keys) = &detail.reliable_key {
+        for key in keys {
+            order_parts.push(format!("{} ASC", dialect.quote(key)?));
+        }
+    }
+
+    let mut sql = format!("SELECT * FROM {qualified}");
+    if !where_parts.is_empty() {
+        sql.push_str(&format!(" WHERE {}", where_parts.join(" AND ")));
+    }
+    if !order_parts.is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", order_parts.join(", ")));
+    }
+    Ok(sql)
+}
+
+/// SQLite 导出：按批分页读，逐行写 CSV，最后原子发布。
+///
+/// 不复用 MySQL 的流式循环（那是协议流），但**发布语义完全一致**：
+/// 先写 `.part-`，`flush + sync_all` 成功后 rename；失败/取消都删临时文件。
+#[allow(clippy::too_many_arguments)]
+async fn run_sqlite_export(
+    worker: Arc<SqliteWorker>,
+    profile: Arc<ProfileRuntime>,
+    request: ExportRequest,
+    detail: Option<DbTableDetail>,
+    task: Arc<ExportTask>,
+    mut cancel_rx: watch::Receiver<bool>,
+    part_path: std::path::PathBuf,
+) {
+    const BATCH_ROWS: u64 = 500;
+    const BATCH_BYTES: usize = 32 * 1024 * 1024;
+    const MAX_ROWS: u64 = 10_000_000;
+
+    let started = Instant::now();
+    let target_path = std::path::PathBuf::from(&request.target_path);
+
+    let adapter = match profile.adapter() {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+    let detail = match detail.as_ref() {
+        Some(detail) => detail,
+        None => {
+            fail(&task, DbErrorInfo::new("config", "表结构缺失"), &part_path).await;
+            return;
+        }
+    };
+    let base = match sqlite_export_base(&adapter, &request, detail) {
+        Ok(sql) => sql,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+
+    let file = match tokio::fs::File::create(&part_path).await {
+        Ok(file) => file,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("无法创建导出文件：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
+    };
+    let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
+    let mut written: u64 = 0;
+
+    if request.bom.unwrap_or(true) {
+        match write_text(&mut writer, "\u{feff}").await {
+            Ok(bytes) => written += bytes,
+            Err(error) => {
+                fail(
+                    &task,
+                    DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                    &part_path,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
+    let header = detail
+        .columns
+        .iter()
+        .map(|column| codec::csv_field(&column.name))
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Err(error) = write_text(&mut writer, &format!("{header}\r\n")).await {
+        fail(
+            &task,
+            DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+            &part_path,
+        )
+        .await;
+        return;
+    }
+
+    let mut rows: u64 = 0;
+    let mut offset: u64 = 0;
+    let mut cancelled = false;
+    let mut error_seen: Option<DbErrorInfo> = None;
+    let mut limit_message: Option<String> = None;
+
+    'outer: loop {
+        if *cancel_rx.borrow() {
+            cancelled = true;
+            break;
+        }
+        let sql = format!("{base} LIMIT {BATCH_ROWS} OFFSET {offset}");
+        let answer = match worker.query(&sql, BATCH_ROWS, BATCH_BYTES).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                error_seen = Some(error);
+                break;
+            }
+        };
+        // 预算截断会丢行：宁可报错，也不发布一个缺行的 CSV。
+        if answer.truncated {
+            error_seen = Some(DbErrorInfo::new(
+                "budget",
+                "导出批次超出内存预算：请增加过滤条件后重试（不会写入不完整的批次）",
+            ));
+            break;
+        }
+        if answer.rows.is_empty() {
+            break;
+        }
+        for row in &answer.rows {
+            if *cancel_rx.borrow() {
+                cancelled = true;
+                break 'outer;
+            }
+            let mut line = String::with_capacity(256);
+            for (index, value) in row.iter().enumerate() {
+                if index > 0 {
+                    line.push(',');
+                }
+                line.push_str(&codec::csv_cell(value));
+            }
+            line.push_str("\r\n");
+            match write_text(&mut writer, &line).await {
+                Ok(bytes) => written += bytes,
+                Err(error) => {
+                    error_seen = Some(DbErrorInfo::new(
+                        "config",
+                        format!("写导出文件失败：{error}"),
+                    ));
+                    break 'outer;
+                }
+            }
+            rows += 1;
+            task.rows.store(rows, Ordering::Release);
+            task.bytes.store(written, Ordering::Release);
+            if let Some(limit) = request.max_rows.filter(|limit| *limit > 0) {
+                if rows >= limit {
+                    limit_message = Some(format!("已达行数上限 {limit}，导出提前结束"));
+                    break 'outer;
+                }
+            }
+        }
+        if (answer.rows.len() as u64) < BATCH_ROWS {
+            break;
+        }
+        offset += BATCH_ROWS;
+        if offset >= MAX_ROWS {
+            limit_message = Some(format!("导出超过 {MAX_ROWS} 行上限，已停止"));
+            break;
+        }
+        let _ = writer.flush().await;
+        tokio::task::yield_now().await;
+    }
+
+    if let Some(message) = limit_message {
+        *task.message.write().await = Some(message);
+    }
+    if cancelled {
+        let _ = writer.flush().await;
+        let _ = tokio::fs::remove_file(&part_path).await;
+        *task.state.write().await = "cancelled".to_string();
+        *task.message.write().await = Some("导出已取消，临时文件已删除".to_string());
+        return;
+    }
+    if let Some(error) = error_seen {
+        let _ = writer.flush().await;
+        fail(&task, error, &part_path).await;
+        return;
+    }
+
+    if let Err(error) = writer.flush().await {
+        fail(
+            &task,
+            DbErrorInfo::new("config", format!("刷新导出文件失败：{error}")),
+            &part_path,
+        )
+        .await;
+        return;
+    }
+    let file = writer.into_inner();
+    if let Err(error) = file.sync_all().await {
+        fail(
+            &task,
+            DbErrorInfo::new("config", format!("同步导出文件到磁盘失败：{error}")),
+            &part_path,
+        )
+        .await;
+        return;
+    }
+    drop(file);
 
     // 原子发布：先把旧文件挪到 .bak，再改名；失败则恢复旧文件。
     let backup = target_path.with_extension("bak-ops");

@@ -119,8 +119,11 @@ function CollapsibleList<T>({
 const loadHistory = () => opsApi.listHistory(200);
 const loadAuditLogs = () => opsApi.listAuditLogs(200);
 
-/** Settings module sidebar: credentials, known hosts and runtime diagnostics. */
-export function SettingsContextSidebar() {
+export type SettingsCategory = "general" | "terminal" | "security" | "data" | "ai" | "updates" | "about";
+
+/** Existing settings sections, filtered by the settings page navigation. */
+export function SettingsContextSidebar({ category }: { category?: SettingsCategory }) {
+  const visible = (id: SettingsCategory) => !category || category === id;
   const { t } = useTranslation();
   const { locale, locales, setLocale } = useLocale();
   const credentials = useDomainStore((s) => s.credentials);
@@ -158,8 +161,8 @@ export function SettingsContextSidebar() {
   }, [refreshCredentials, clear, fail]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!category || category === "security") void load();
+  }, [load, category]);
 
   const remove = async (credential: CredentialRecord) => {
     setDeleting(true);
@@ -178,7 +181,7 @@ export function SettingsContextSidebar() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Group title={t("Appearance")}>
+      {visible("general") && (<Group title={t("Appearance")}>
         <ListGroup>
           <div className="page-form-row">
             <span className="shrink-0 text-12 text-fg">{t("Theme")}</span>
@@ -248,11 +251,11 @@ export function SettingsContextSidebar() {
             />
           </div>
         </ListGroup>
-      </Group>
+      </Group>)}
 
-      <TerminalSettingsGroup />
+      {visible("terminal") && <TerminalSettingsGroup />}
 
-      <Group
+      {visible("security") && (<Group
         title={t("Safety")}
         hint={t("Read-only inside the app.")}
       >
@@ -271,13 +274,13 @@ export function SettingsContextSidebar() {
             />
           </div>
         </ListGroup>
-      </Group>
+      </Group>)}
 
-      <BackupSettingsGroup />
+      {visible("data") && <BackupSettingsGroup />}
 
-      <ShortcutSettingsGroup />
+      {visible("terminal") && <ShortcutSettingsGroup />}
 
-      <Group
+      {visible("security") && (<Group
         title={t("Credentials")}
         hint={t("Keys are only written to the system credential manager; the database keeps a reference only.")}
         action={
@@ -335,18 +338,18 @@ export function SettingsContextSidebar() {
             ))
           )}
         </ListGroup>
-      </Group>
+      </Group>)}
 
       {/* P5.5.1：AI 模型提供方（密钥只进钥匙串；没有"读取 API Key"的入口）。 */}
-      <AiProviderSettings />
+      {visible("ai") && <AiProviderSettings />}
 
-      <Group title={t("Known hosts")} hint={t("Fingerprints you confirmed on first connect are listed here.")}>
+      {visible("security") && (<Group title={t("Known hosts")} hint={t("Fingerprints you confirmed on first connect are listed here.")}>
         <ListGroup>
           <KnownHostsPanel />
         </ListGroup>
-      </Group>
+      </Group>)}
 
-      <Group title={t("Data")}>
+      {visible("data") && (<Group title={t("Data")}>
         <div className="flex flex-col gap-1.5">
           <CollapsibleList
             title={t("Command history")}
@@ -388,11 +391,11 @@ export function SettingsContextSidebar() {
             )}
           </CollapsibleList>
         </div>
-      </Group>
+      </Group>)}
 
-      <UpdateSection />
+      {visible("updates") && <UpdateSection />}
 
-      {appInfo && (
+      {visible("about") && appInfo && (
         <Group title={t("Runtime")}>
           <ListGroup>
             {(
@@ -413,8 +416,9 @@ export function SettingsContextSidebar() {
         </Group>
       )}
 
-      {error ? <ErrorState error={error} compact onRetry={retry} className="px-3" /> : null}
+      {visible("security") && error ? <ErrorState error={error} compact onRetry={retry} className="px-3" /> : null}
 
+      {visible("about") && !appInfo && <EmptyRow>{t("Loading")}</EmptyRow>}
       {editing && <CredentialForm credential={editing} onClose={() => setEditing(null)} />}
 
       <ConfirmDialog

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-import { applyWindowMaterial } from "@/lib/window-material";
+import { applyWindowMaterial, systemMediaTheme } from "@/lib/window-material";
 
 /**
  * Theme manager — follows the OS by default ("system"), with an optional
@@ -17,11 +17,6 @@ function emit() {
   for (const listener of listeners) listener();
 }
 
-function resolve(mode: ThemeMode): "light" | "dark" {
-  if (mode === "light" || mode === "dark") return mode;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
 export function getThemeMode(): ThemeMode {
   const stored = localStorage.getItem(STORAGE_KEY);
   return stored === "light" || stored === "dark" ? stored : "system";
@@ -35,9 +30,21 @@ export function getThemeMode(): ThemeMode {
  * 于是别处只能靠加白底去压 —— 那正是要避免的做法。
  */
 export function applyTheme() {
-  const resolved = resolve(getThemeMode());
-  document.documentElement.dataset.theme = resolved;
-  void applyWindowMaterial(resolved);
+  const mode = getThemeMode();
+  if (mode !== "system") {
+    document.documentElement.dataset.theme = mode;
+    void applyWindowMaterial(mode);
+    return;
+  }
+  // 跟随系统：真实深浅只能由原生侧读系统设置给出。选过一次浅色/深色后，
+  // 窗口主题会把 WebView 的 prefers-color-scheme 固定成那个值，媒体查询
+  // 不再等于系统 —— 先按它落一帧只是兜底，随后用原生的解析结果纠正。
+  document.documentElement.dataset.theme = systemMediaTheme();
+  void applyWindowMaterial("system").then((state) => {
+    // 期间用户又切走了，别拿旧结果覆盖。
+    if (getThemeMode() !== "system") return;
+    document.documentElement.dataset.theme = state.theme;
+  });
 }
 
 export function setThemeMode(mode: ThemeMode) {

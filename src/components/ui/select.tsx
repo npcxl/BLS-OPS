@@ -54,12 +54,15 @@ export function Select({
   title,
   id,
   testId,
+  invalid = false,
 }: {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  /** Field-level validation: red border + aria-invalid (message rendered by Field). */
+  invalid?: boolean;
   /**
    * 与 Button / Input 共用一套档位（24 / 28 / 30 / 34）。
    *
@@ -274,6 +277,7 @@ export function Select({
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
         title={title ?? selected?.label}
         className={cn(
           // 触发器与 Input 同一份基类：高度、边框、圆角、焦点、禁用完全一致。
@@ -281,7 +285,11 @@ export function Select({
           CONTROL_HEIGHT[size],
           CONTROL_TEXT[size],
           "flex w-full items-center justify-between gap-1 px-2 text-left",
-          open ? "border-accent/70 ring-1 ring-accent/20" : "border-line",
+          open
+            ? "border-accent/70 ring-1 ring-accent/20"
+            : invalid
+              ? "border-danger/70"
+              : "border-line",
           disabled && "cursor-not-allowed",
         )}
         onClick={() => (open ? close() : openMenu())}

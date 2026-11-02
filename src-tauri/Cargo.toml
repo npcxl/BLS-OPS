@@ -33,6 +33,15 @@ notify = "7"
 mysql_async = { version = "0.37", default-features = false, features = [
     "default-rustls-ring",
 ] }
+# PostgreSQL：走 **simple query（文本协议）**。
+#
+# * 选文本协议而不是二进制：`bigint` / `numeric` 拿到的是服务器原始字符串，
+#   不需要额外类型 feature 就能保持精度（避免 f64/整数溢出）。
+# * 代价：一次 `simple_query` 会把整个结果集读进内存；预算只能在发送阶段截断。
+#   这一点在 `postgres` 引擎的 `VerifiedScope` 与能力矩阵里写明。
+# * TLS 尚未接入（需要 tokio-postgres-rustls）：当前只支持 `tls_mode = disabled`，
+#   其它模式明确拒绝，不做"静默降级到明文"。
+tokio-postgres = "0.7"
 # Redis 引擎：与 MySQL 管线平行的键值驱动。
 # * `tokio-comp` / `connection-manager`：async 连接管理（自动重连）。
 # * `tokio-rustls-comp`：async TLS 走 rustls —— 与项目其余部分一致，

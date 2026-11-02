@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
+import { PageToolbar } from "@/workbench/page-layout";
 
 import type { DeploymentCenter } from "./use-deployment-center";
 import {
@@ -45,13 +46,13 @@ function ListHeader({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
-      <div className="flex items-center gap-2">
+    <PageToolbar variant="secondary">
+      <div className="flex min-w-0 items-center gap-2">
         <span className="text-12 font-medium text-fg">{title}</span>
         <span className="rounded-full bg-surface-2 px-1.5 text-10 text-fg-subtle">{count}</span>
       </div>
-      {action}
-    </div>
+      {action && <div className="ml-auto flex shrink-0 items-center gap-1">{action}</div>}
+    </PageToolbar>
   );
 }
 
@@ -67,7 +68,7 @@ function Row({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-3 border-b border-line/60 px-3 py-2 last:border-b-0 hover:bg-surface-hover/60">
+    <div className="page-list-row">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="truncate text-12 text-fg">{title}</span>

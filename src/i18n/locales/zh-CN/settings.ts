@@ -183,4 +183,11 @@ export default {
   "Not set": "未设置",
   Off: "已关闭",
   "Press a combination…": "按下组合键…",
+  "General settings": "外观与语言",
+  "Terminal & shortcuts": "终端与快捷键",
+  "Security & credentials": "安全与凭据",
+  "Data & backups": "数据与备份",
+  "AI providers": "AI 模型",
+  "About BLS-OPS": "关于 BLS-OPS",
+  "Only the latest release is shown.": "仅展示最新版本的更新说明。",
 } as const;

@@ -274,13 +274,11 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         <div className="page-content">
           <ErrorState error={error} title={errorTitle} compact onRetry={retry} />
         </div>
-      ) : null}
-
-      {loading && units.length === 0 ? (
+      ) : loading && units.length === 0 ? (
         <div className="page-content">
           <LoadingState label={t("Reading…")} />
         </div>
-      ) : !loading && !error && units.length === 0 ? (
+      ) : units.length === 0 ? (
         <div className="page-content page-content--reading">
           <ModuleEmpty
             title={t("No services found")}

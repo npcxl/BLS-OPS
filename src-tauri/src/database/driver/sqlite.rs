@@ -23,6 +23,7 @@ use super::super::model::{DbColumn, DbErrorInfo, DbValue};
 
 /// 一次写入的结果。`in_transaction` 来自 SQLite 自己的 autocommit 状态，
 /// 不是靠 SQL 前缀猜的。
+#[derive(Debug, Clone, Copy)]
 pub struct ExecuteAnswer {
     pub affected_rows: i64,
     pub in_transaction: bool,

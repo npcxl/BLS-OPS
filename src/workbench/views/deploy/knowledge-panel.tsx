@@ -41,7 +41,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
-import { Input } from "@/components/ui/input";
+import { Checkbox, Input, Textarea } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
@@ -327,13 +327,15 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
     <div className="grid h-full min-h-0 grid-cols-1 gap-3 lg:grid-cols-[200px_minmax(0,1fr)_300px]">
       {/* ---------- 左：筛选 ---------- */}
       <aside className="min-h-0 space-y-2 overflow-auto ops-scroll">
-        <button
+        <Button
           type="button"
+          variant="primary"
+          size="sm"
+          className="w-full"
           onClick={() => void create()}
-          className="w-full rounded-[7px] bg-accent px-2 py-1 text-11 font-medium text-white"
         >
           {t("New knowledge")}
-        </button>
+        </Button>
         <Button
           size="sm"
           variant="secondary"
@@ -379,14 +381,12 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
             ...CATEGORIES.map((item) => ({ value: item, label: t(item) })),
           ]}
         />
-        <label className="flex items-center gap-1.5 text-11 text-fg-subtle">
-          <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(event) => setShowArchived(event.target.checked)}
-          />
-          {t("Show archived")}
-        </label>
+        <Checkbox
+          size="sm"
+          label={t("Show archived")}
+          checked={showArchived}
+          onChange={(event) => setShowArchived(event.target.checked)}
+        />
         <ul className="space-y-1 text-11">
           {visible.length === 0 ? (
             <li className="text-fg-subtle">{t("No knowledge yet")}</li>
@@ -504,17 +504,15 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
             <div className="rounded-[7px] border border-line bg-surface-2 p-2">
               <div className="mb-1 text-10 text-fg-subtle">{t("Metadata")}</div>
               <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1.5 text-11 text-fg-muted">
-                  <input
-                    type="checkbox"
-                    data-testid="knowledge-enabled"
-                    checked={selected.enabled}
-                    onChange={(event) =>
-                      setSelected({ ...selected, enabled: event.target.checked })
-                    }
-                  />
-                  {t("Enabled")}
-                </label>
+                <Checkbox
+                  size="sm"
+                  data-testid="knowledge-enabled"
+                  label={t("Enabled")}
+                  checked={selected.enabled}
+                  onChange={(event) =>
+                    setSelected({ ...selected, enabled: event.target.checked })
+                  }
+                />
                 <Select
                   size="sm"
                   testId="knowledge-status"
@@ -569,8 +567,10 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
               </p>
             </div>
 
-            <textarea
-              className="min-h-[200px] flex-1 rounded-[7px] border border-line bg-surface-2 p-2 text-11"
+            <Textarea
+              className="min-h-[200px] flex-1"
+              resizable={false}
+              aria-label={t("Content")}
               placeholder="# Markdown"
               value={selected.content}
               onChange={(event) => setSelected({ ...selected, content: event.target.value })}

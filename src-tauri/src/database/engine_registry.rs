@@ -269,6 +269,23 @@ fn olap_caps() -> CapabilitySet {
     }
 }
 
+/// PostgreSQL：SQL 执行链路已接通（文本协议）；结构浏览与编辑还没接。
+fn postgres_caps() -> CapabilitySet {
+    CapabilitySet {
+        query: Capability::Supported,
+        multiple_result_sets: Capability::Supported,
+        cancel: Capability::Supported,
+        transaction: Capability::Supported,
+        read_only_enforcement: Capability::Supported,
+        table_browse: Capability::unsupported("PostgreSQL 表数据浏览尚未接入"),
+        keyset_pagination: Capability::unsupported("随表数据浏览一起接入"),
+        table_edit: Capability::unsupported("PostgreSQL 单行编辑尚未接入"),
+        schema_edit: Capability::unsupported("PostgreSQL DDL 生成尚未接入"),
+        view_edit: Capability::unsupported("PostgreSQL 视图编辑尚未接入"),
+        export: Capability::unsupported("PostgreSQL 导出尚未接入"),
+    }
+}
+
 /// SQLite：本地文件，SQL 执行链路已接通；结构浏览与编辑还没接。
 fn sqlite_caps() -> CapabilitySet {
     CapabilitySet {
@@ -281,10 +298,10 @@ fn sqlite_caps() -> CapabilitySet {
         read_only_enforcement: Capability::Supported,
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
-        table_edit: Capability::unsupported("SQLite 单行编辑尚未接入"),
-        schema_edit: Capability::unsupported("SQLite DDL 生成尚未接入"),
-        view_edit: Capability::unsupported("SQLite 视图编辑尚未接入"),
-        export: Capability::unsupported("SQLite 导出尚未接入"),
+        table_edit: Capability::limited("单行增删改已接入（事务 + 乐观并发）；二进制列仍只读"),
+        schema_edit: Capability::limited("支持建表；改表/改索引不支持（SQLite 需要重建表）"),
+        view_edit: Capability::limited("支持创建/替换/删除视图；OR REPLACE 用先删后建实现"),
+        export: Capability::limited("按表导出已接入；自定义 SQL 导出尚未接入"),
     }
 }
 
@@ -522,11 +539,22 @@ fn build() -> Vec<EngineDescriptor> {
     }
 
     // ---- 批次 3：PostgreSQL 家族 + SQLite ---------------------------------
-    engines.push(config_only(postgres_family(
+    let mut postgres = postgres_family(
         "postgres",
         "PostgreSQL",
-        "批次 3：tokio-postgres；simple query 与参数化查询分两条路径",
-    )));
+        "simple query 文本协议（bigint/numeric 保持字符串精度）；TLS 尚未接入",
+    );
+    postgres.implementation = Implementation::Implemented;
+    postgres.default_username = Some("postgres");
+    postgres.capabilities = postgres_caps();
+    postgres.verified = vec![VerifiedScope {
+        versions: "PostgreSQL 17.11".to_string(),
+        level: VerifiedLevel::Query,
+        notes: "本地容器验证：连接/认证/simple query/多语句/类型（int8、numeric、bytea、jsonb）\
+                /取消/事务状态/关闭重连；结构浏览、表编辑、TLS 与 SSH 隧道未验证"
+            .to_string(),
+    }];
+    engines.push(postgres);
     engines.push(config_only(postgres_family(
         "cockroach",
         "CockroachDB",
@@ -790,6 +818,7 @@ mod tests {
             "mariadb",
             "redis",
             "sqlite",
+            "postgres",
             "tidb",
             "oceanbase_mysql",
             "aurora_mysql",
@@ -799,7 +828,6 @@ mod tests {
             assert!(is_supported(id), "{id} 应有真实驱动");
         }
         for id in [
-            "postgres",
             "cockroach",
             "aurora_pg",
             "sqlserver",

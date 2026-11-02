@@ -702,7 +702,9 @@ async fn apply_sqlite(
                     committed_rows: 0,
                     elapsed_ms: started.elapsed().as_millis() as u64,
                     transactional,
-                    warning: Some(format!("COMMIT 失败（{error}）：事务结果未知，不要自动重试")),
+                    warning: Some(format!(
+                        "COMMIT 失败（{error}）：事务结果未知，不要自动重试"
+                    )),
                     verify_hint: Some(verify_hint(dialect, detail, request)),
                 },
                 session.info().await,

@@ -18,8 +18,10 @@
 //! 上层按 `engine_registry` 的驱动系列选择实现。
 
 pub mod mysql;
+pub mod postgres;
 pub mod sqlite;
 
 pub use mysql::codec;
 pub use mysql::*;
+pub use postgres::PostgresConn;
 pub use sqlite::SqliteWorker;

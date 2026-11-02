@@ -21,7 +21,7 @@ export default {
   "Update failed": "更新失敗",
   "New version": "新版本",
   Published: "釋出時間",
-  "Release notes": "釋出說明",
+  "Release notes": "更新日誌",
   "Download and install": "下載並安裝",
   "Restart now": "立即重啟",
   "Remind me later": "稍後提醒",

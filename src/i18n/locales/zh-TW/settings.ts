@@ -183,4 +183,11 @@ export default {
   "Not set": "未設定",
   Off: "已關閉",
   "Press a combination…": "按下組合鍵…",
+  "General settings": "外觀與語言",
+  "Terminal & shortcuts": "終端與快捷鍵",
+  "Security & credentials": "安全與憑證",
+  "Data & backups": "資料與備份",
+  "AI providers": "AI 模型",
+  "About BLS-OPS": "關於 BLS-OPS",
+  "Only the latest release is shown.": "僅顯示最新版本的更新說明。",
 } as const;

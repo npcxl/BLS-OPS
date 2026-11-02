@@ -34,7 +34,7 @@ fn text_of(value: &DbValue) -> Option<String> {
     }
 }
 
-fn filter_clause(
+pub(crate) fn filter_clause(
     adapter: &AdapterSet,
     filter: &BrowseFilter,
 ) -> Result<Option<String>, DbErrorInfo> {
@@ -116,6 +116,83 @@ fn browse_column(index: usize, column: &DbTableColumn, table: &str) -> DbColumn 
         decimals: 0,
         charset: 0,
     }
+}
+
+/// 读取一个完整字段。SQLite 没有"驱动侧投影"，所以整行会被读进来，
+/// 再按 `max_bytes` 在字符边界上截断。
+pub async fn read_cell(
+    worker: &Arc<SqliteWorker>,
+    profile_adapter: AdapterSet,
+    detail: &DbTableDetail,
+    key_values: &[Option<String>],
+    column: &str,
+    max_bytes: usize,
+) -> Result<(DbValue, usize), DbErrorInfo> {
+    let key_columns = detail
+        .reliable_key
+        .clone()
+        .ok_or_else(|| DbErrorInfo::new("query", "该表没有可靠唯一键，无法重新读取完整字段"))?;
+    if key_columns.len() != key_values.len() || key_values.iter().any(|value| value.is_none()) {
+        return Err(DbErrorInfo::new("query", "行定位信息不完整，无法重新读取"));
+    }
+    if detail.columns.iter().all(|item| item.name != column) {
+        return Err(DbErrorInfo::new("query", format!("列不存在：{column}")));
+    }
+
+    let dialect = profile_adapter.dialect();
+    let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
+    let mut where_parts = Vec::new();
+    for (index, key) in key_columns.iter().enumerate() {
+        where_parts.push(format!(
+            "{} = {}",
+            dialect.quote(key)?,
+            dialect.string_literal(key_values[index].as_deref().unwrap_or(""))
+        ));
+    }
+    let sql = format!(
+        "SELECT {} FROM {qualified} WHERE {} LIMIT 2",
+        dialect.quote(column)?,
+        where_parts.join(" AND ")
+    );
+    // 单行必须完整读入才能截断；预算是给"行本身"的，不是给最终展示的。
+    let answer = worker
+        .query(&sql, 2, max_bytes.saturating_mul(2).max(64 * 1024))
+        .await?;
+    if answer.rows.len() > 1 {
+        return Err(DbErrorInfo::new(
+            "query",
+            "定位到多行：该唯一键不再唯一，已停止读取",
+        ));
+    }
+    let row = answer
+        .rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| DbErrorInfo::new("query", "该行已不存在（可能被其他会话删除）"))?;
+    let total = match row.first() {
+        Some(DbValue::Text { bytes, .. }) | Some(DbValue::Binary { bytes, .. }) => *bytes,
+        _ => 0,
+    };
+    let value = row.into_iter().next().unwrap_or(DbValue::Null);
+    let value = match value {
+        DbValue::Text {
+            value,
+            bytes,
+            truncated,
+        } if !truncated && bytes > max_bytes => {
+            let mut end = max_bytes.min(value.len());
+            while end > 0 && !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            DbValue::Text {
+                value: value[..end].to_string(),
+                bytes,
+                truncated: true,
+            }
+        }
+        other => other,
+    };
+    Ok((value, total))
 }
 
 pub async fn browse(

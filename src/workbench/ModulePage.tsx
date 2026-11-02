@@ -14,7 +14,7 @@ import type { NavModule } from "@/workbench/types";
 import { AiPlaceholder } from "@/workbench/views/ai/AiPlaceholder";
 import { PageHeader, PageScroll, PageSection, PageSurface } from "./page-layout";
 import { SshContextSidebar } from "./ssh-context-sidebar";
-import { SettingsContextSidebar } from "./settings-context-sidebar";
+import { SettingsPage } from "./SettingsPage";
 
 interface ModuleSpec {
   title: string;
@@ -44,7 +44,7 @@ const MODULES: Record<NavModule, ModuleSpec> = {
   database: {
     title: "Module: Database",
     icon: SquareTerminal,
-    description: "MySQL workbench: browse, query, edit, export",
+    description: "Database workbench: browse, query, edit, export",
     sections: ["Connections", "SQL editor", "Table data"],
   },
   deploy: {
@@ -100,6 +100,8 @@ export function ModulePage({ module }: { module: NavModule }) {
   const { t } = useTranslation();
   const spec = MODULES[module];
 
+  if (module === "settings") return <SettingsPage />;
+
   return (
     <PageSurface data-selectable>
       <PageHeader
@@ -109,8 +111,7 @@ export function ModulePage({ module }: { module: NavModule }) {
       <PageScroll width="reading">
         {module === "ssh" || module === "servers" ? (
           <SshContextSidebar />
-        ) : module === "settings" ? (
-          <SettingsContextSidebar />
+
         ) : module === "ai" ? (
           // P4 不开发 AI：只保留菜单入口 + feature flag + 接口类型占位。
           <AiPlaceholder />

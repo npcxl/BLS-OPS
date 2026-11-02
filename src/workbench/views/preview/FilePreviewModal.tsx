@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { LoadingState } from "@/components/ui/loading";
-import { isTopOverlayLayer, useOverlayLayer } from "@/components/ui/overlay";
+import { useOverlayLayer } from "@/components/ui/overlay";
+import { useOverlayFocusTrap } from "@/hooks/use-overlay-focus-trap";
 import { PageNotice, PageStatusBar } from "@/workbench/page-layout";
 import { opsApi } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
@@ -82,6 +83,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
 
   // 预览是一个全屏浮层：登记到浮层栈，Esc 只关最上层（上面的确认框先关）。
   const layer = useOverlayLayer(true, "preview");
+  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,18 +118,15 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
     };
   }, [sessionId, target.path, target.name, attempt]);
 
-  useEffect(() => {
-    const layerId = layer.id;
-    const onKeyDown = (event: KeyboardEvent) => {
-      // 只关最上层：预览上面还压着确认框时，Esc 先关确认框。
-      if (!isTopOverlayLayer(layerId)) return;
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      event.preventDefault();
-      onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, layer.id]);
+  // Same focus, Tab and Esc contract as `Modal`; the preview only keeps its
+  // full-bleed body layout.
+  useOverlayFocusTrap({
+    open: true,
+    panelRef,
+    layerId: layer.id,
+    onRequestClose: onClose,
+    initialFocus: "panel",
+  });
 
   useEffect(() => {
     if (!toast) return;
@@ -169,11 +168,13 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
       onMouseDown={onClose}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={target.name}
+        tabIndex={-1}
         className={cn(
-          "page-overlay-surface h-[88vh] max-h-[88vh] w-[min(1100px,94vw)]",
+          "page-overlay-surface h-[88vh] max-h-[88vh] w-[min(1100px,94vw)] outline-none",
           exiting
             ? "opacity-0 translate-y-2 scale-[0.985] transition-[opacity,transform] duration-150 ease-out"
             : "overlay-enter",

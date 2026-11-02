@@ -137,14 +137,37 @@ export const ServerRow = memo(function ServerRow({
   return (
     <div
       data-testid={`server-row-${server.id}`}
-      className="group/row flex w-full items-center rounded-[6px] px-2.5 py-1.5 hover:bg-surface-hover"
+      className="page-tree-row group/row w-full hover:bg-surface-hover"
       onContextMenu={menu.onContextMenu(() => items)}
     >
       <button
         type="button"
         data-testid={`server-open-${server.id}`}
-        className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
+        data-server-row-open
+        className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-[5px] text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50"
         onClick={() => onOpen(server)}
+        onKeyDown={(event) => {
+          // Same arrow-key traversal as the database tree: rows are one list,
+          // even when they are split across favorite/group sections.
+          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+          const root =
+            event.currentTarget.closest<HTMLElement>("[data-server-list]") ?? document;
+          const rows = Array.from(
+            root.querySelectorAll<HTMLButtonElement>("[data-server-row-open]"),
+          );
+          if (rows.length === 0) return;
+          event.preventDefault();
+          const index = rows.indexOf(event.currentTarget);
+          const nextIndex =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? rows.length - 1
+                : event.key === "ArrowDown"
+                  ? Math.min(rows.length - 1, index + 1)
+                  : Math.max(0, index - 1);
+          rows[nextIndex]?.focus();
+        }}
       >
         <span className="flex items-center gap-1.5">
           <span className="truncate text-12 text-fg">{server.name}</span>

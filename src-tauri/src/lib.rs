@@ -10,6 +10,8 @@ pub mod database;
 /// 本地 SQLite 持久化。`pub` 是为了让 `tests/` 里的真实集成测试能用与
 /// 生产完全相同的 schema/迁移，而不是在测试里手抄一份建表 SQL。
 pub mod db;
+/// 桌面级右键菜单：独立透明窗口、屏幕定位与动作路由。
+pub mod desktop_menu;
 /// P5.0 智能部署中心领域模型（应用/环境/服务/方案图/运行/版本）。
 ///
 /// 只建模与校验，**不执行任何部署**：模型里没有任何自由文本命令字段，
@@ -132,6 +134,10 @@ pub fn run() {
         // 点 X = 隐藏到托盘（SSH 会话保持），**绝不退出**；真正的退出只走
         // 托盘菜单 Quit（tray.rs → app.exit）。这是用户裁决的交互，勿回退。
         .on_window_event(|window, event| {
+            // 来源窗口关闭 / 销毁 → 收起菜单，避免留下没有主人的浮窗。
+            if window.label() != desktop_menu::MENU_LABEL {
+                desktop_menu::on_source_event(window.app_handle(), window.label(), event);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
@@ -143,6 +149,13 @@ pub fn run() {
             commands::latest_release_notes,
             // 窗口材质：light/dark 切换时同步 Acrylic 与原生主题
             window_material::app_window_material,
+            // 桌面级右键菜单（独立透明窗口）
+            desktop_menu::desktop_menu_prepare,
+            desktop_menu::desktop_menu_show,
+            desktop_menu::desktop_menu_pending,
+            desktop_menu::desktop_menu_layout,
+            desktop_menu::desktop_menu_select,
+            desktop_menu::desktop_menu_close,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）

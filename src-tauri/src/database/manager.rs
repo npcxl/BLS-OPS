@@ -239,6 +239,62 @@ impl DatabaseManager {
             return Ok(entry.info().await);
         }
 
+        // PostgreSQL：独占连接，身份是 backend pid。
+        if let Some(conn) = runtime.postgres() {
+            let conn = conn.clone();
+            let version = conn.server_version().await;
+            let backend_pid = conn
+                .simple_query("SELECT pg_backend_pid()", 1)
+                .await
+                .ok()
+                .and_then(|sets| sets.into_iter().next())
+                .and_then(|set| set.rows.into_iter().next())
+                .and_then(|row| row.into_iter().next())
+                .and_then(|value| match value {
+                    // simple query 是文本协议：pid 也会以字符串返回。
+                    super::model::DbValue::Int { value, .. }
+                    | super::model::DbValue::Text { value, .. } => value.parse::<u32>().ok(),
+                    _ => None,
+                });
+            let entry = Arc::new(SessionEntry::new_postgres(
+                session_id.to_string(),
+                profile_id.clone(),
+                runtime.generation,
+                conn,
+                version,
+                runtime.endpoint.read_only,
+                backend_pid,
+            ));
+            if self.current_epoch(&profile_id).await != epoch
+                || self.session_epoch(session_id).await != session_epoch
+                || !self.is_current_runtime(&runtime).await
+            {
+                entry.close().await;
+                return Err(DbErrorInfo::new(
+                    "config",
+                    "建立会话期间连接已关闭或配置已变更，请重试",
+                ));
+            }
+            if let Some(old) = self.sessions.remove(session_id).await {
+                self.queries.release_session(session_id).await;
+                old.close().await;
+            }
+            self.sessions.insert(entry.clone()).await;
+            if self.current_epoch(&profile_id).await != epoch
+                || self.session_epoch(session_id).await != session_epoch
+                || !self.is_current_runtime(&runtime).await
+            {
+                if self.sessions.remove_if_same(&entry).await.is_some() {
+                    entry.close().await;
+                }
+                return Err(DbErrorInfo::new(
+                    "config",
+                    "会话关闭期间创建完成，已拒绝重新注册；请重试",
+                ));
+            }
+            return Ok(entry.info().await);
+        }
+
         let timeout = Duration::from_millis(runtime.endpoint.profile.connect_timeout_ms);
         let opts = driver::build_opts(&runtime.endpoint, false)?;
 
@@ -421,6 +477,80 @@ impl DatabaseManager {
                 }
             }
         };
+
+        // PostgreSQL：连接后读版本与 backend pid；TLS 未接入时明确拒绝。
+        if matches!(
+            endpoint.profile.engine.as_str(),
+            "postgres" | "cockroach" | "aurora_pg"
+        ) {
+            if endpoint.profile.tls_mode != super::model::TLS_DISABLED {
+                return ConnectionTestResult {
+                    ok: false,
+                    stage: "unsupported".to_string(),
+                    error: Some(DbErrorInfo::new(
+                        "unsupported",
+                        "PostgreSQL 的 TLS 尚未接入：请先用 tls_mode = disabled",
+                    )),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    server_version: None,
+                    connection: None,
+                    tls: None,
+                    tunnel_local_port: endpoint.tunnel_local_port(),
+                    read_only,
+                };
+            }
+            let target = super::driver::postgres::PostgresEndpoint {
+                host: endpoint.connect_host.clone(),
+                port: endpoint.connect_port,
+                user: endpoint.profile.username.clone(),
+                password: endpoint.password.clone(),
+                database: endpoint
+                    .profile
+                    .default_database
+                    .clone()
+                    .unwrap_or_default(),
+            };
+            let timeout = Duration::from_millis(endpoint.profile.connect_timeout_ms);
+            return match super::driver::PostgresConn::connect(&target, timeout).await {
+                Ok(conn) => {
+                    let version = conn.server_version().await;
+                    let pid = conn
+                        .simple_query("SELECT pg_backend_pid()", 1)
+                        .await
+                        .ok()
+                        .and_then(|sets| sets.into_iter().next())
+                        .and_then(|set| set.rows.into_iter().next())
+                        .and_then(|row| row.into_iter().next())
+                        .and_then(|value| match value {
+                            super::model::DbValue::Int { value, .. } => value.parse::<u32>().ok(),
+                            _ => None,
+                        });
+                    conn.close().await;
+                    ConnectionTestResult {
+                        ok: true,
+                        stage: "ready".to_string(),
+                        error: None,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        server_version: version,
+                        connection: pid.map(super::protocol::ConnectionIdentity::numbered),
+                        tls: None,
+                        tunnel_local_port: endpoint.tunnel_local_port(),
+                        read_only,
+                    }
+                }
+                Err(error) => ConnectionTestResult {
+                    ok: false,
+                    stage: error.stage.clone(),
+                    error: Some(error),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    server_version: None,
+                    connection: None,
+                    tls: None,
+                    tunnel_local_port: endpoint.tunnel_local_port(),
+                    read_only,
+                },
+            };
+        }
 
         let opts = match driver::build_opts(&endpoint, false) {
             Ok(opts) => opts,

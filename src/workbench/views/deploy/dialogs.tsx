@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { ErrorText, Field, Modal } from "@/components/ui/modal";
 import { Input, Textarea } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import type {
@@ -69,10 +69,12 @@ export function ApplicationDialog({
   const { t } = useTranslation();
   const [form, setForm] = useState<DeploymentApplication | null>(draft);
   const [problem, setProblem] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setForm(draft);
     setProblem(null);
+    setErrors({});
   }, [draft]);
 
   const sourceHint = useMemo(() => {
@@ -92,26 +94,42 @@ export function ApplicationDialog({
   const update = (patch: Partial<DeploymentApplication>) =>
     setForm((current) => (current ? { ...current, ...patch } : current));
 
+  const clearError = (field: string) =>
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+
   const submit = () => {
-    const failure =
-      textError(form.name) ??
-      (form.server_id.trim() === "" ? "Select a server first" : null) ??
-      (form.source_kind === "existing_remote_dir"
+    const nextErrors: Record<string, string> = {};
+    const nameError = textError(form.name);
+    if (nameError) nextErrors.name = nameError;
+
+    const sourceError =
+      form.source_kind === "existing_remote_dir"
         ? isAbsolutePath(form.source_ref)
           ? textError(form.source_ref)
           : "Must be an absolute path, e.g. /opt/web"
-        : textError(form.source_ref, form.source_kind === "git"));
-    if (failure) {
-      setProblem(failure);
+        : textError(form.source_ref, form.source_kind === "git");
+    if (sourceError) nextErrors.source_ref = sourceError;
+
+    setErrors(nextErrors);
+    if (form.server_id.trim() === "") {
+      setProblem("Select a server first");
       return;
     }
+    setProblem(null);
+    if (Object.keys(nextErrors).length > 0) return;
+
     onSubmit({ ...form, name: form.name.trim(), source_ref: form.source_ref.trim() });
   };
 
   return (
     <Modal
       open
-      width={420}
+      size="md"
       title={open ? t("Edit application") : t("New application")}
       onClose={onCancel}
       footer={
@@ -126,12 +144,15 @@ export function ApplicationDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <Field label={t("Application name")}>
-          <input
-            className={fieldClass}
+        <Field label={t("Application name")} required error={errors.name ? t(errors.name) : null}>
+          <Input
             value={form.name}
             autoFocus
-            onChange={(event) => update({ name: event.target.value })}
+            invalid={!!errors.name}
+            onChange={(event) => {
+              update({ name: event.target.value });
+              clearError("name");
+            }}
           />
         </Field>
 
@@ -164,19 +185,25 @@ export function ApplicationDialog({
           />
         </Field>
 
-        <Field label={sourceHint ?? t("Source reference")}>
-          <input
-            className={fieldClass}
+        <Field
+          label={sourceHint ?? t("Source reference")}
+          required={form.source_kind !== "local_upload"}
+          error={errors.source_ref ? t(errors.source_ref) : null}
+        >
+          <Input
             value={form.source_ref}
+            invalid={!!errors.source_ref}
             placeholder={form.source_kind === "existing_remote_dir" ? "/opt/web" : ""}
-            onChange={(event) => update({ source_ref: event.target.value })}
+            onChange={(event) => {
+              update({ source_ref: event.target.value });
+              clearError("source_ref");
+            }}
           />
         </Field>
 
         {form.source_kind === "git" && (
           <Field label={t("Branch")}>
-            <input
-              className={fieldClass}
+            <Input
               value={form.default_branch}
               onChange={(event) => update({ default_branch: event.target.value })}
             />
@@ -215,11 +242,11 @@ export function EnvironmentDialog({
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<DeploymentEnvironment | null>(draft);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setForm(draft);
-    setProblem(null);
+    setErrors({});
   }, [draft]);
 
   if (!form) return null;
@@ -227,23 +254,32 @@ export function EnvironmentDialog({
   const update = (patch: Partial<DeploymentEnvironment>) =>
     setForm((current) => (current ? { ...current, ...patch } : current));
 
+  const clearError = (field: string) =>
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+
   const submit = () => {
-    const failure =
-      textError(form.name) ??
-      (isAbsolutePath(form.deploy_root)
-        ? textError(form.deploy_root)
-        : "Must be an absolute path, e.g. /opt/web");
-    if (failure) {
-      setProblem(failure);
-      return;
-    }
+    const nextErrors: Record<string, string> = {};
+    const nameError = textError(form.name);
+    if (nameError) nextErrors.name = nameError;
+    const rootError = isAbsolutePath(form.deploy_root)
+      ? textError(form.deploy_root)
+      : "Must be an absolute path, e.g. /opt/web";
+    if (rootError) nextErrors.deploy_root = rootError;
+
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
     onSubmit({ ...form, name: form.name.trim(), deploy_root: form.deploy_root.trim() });
   };
 
   return (
     <Modal
       open
-      width={420}
+      size="md"
       title={open ? t("Edit environment") : t("New environment")}
       description={application ? application.name : undefined}
       onClose={onCancel}
@@ -259,13 +295,16 @@ export function EnvironmentDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <Field label={t("Environment name")}>
-          <input
-            className={fieldClass}
+        <Field label={t("Environment name")} required error={errors.name ? t(errors.name) : null}>
+          <Input
             value={form.name}
             autoFocus
+            invalid={!!errors.name}
             placeholder="production"
-            onChange={(event) => update({ name: event.target.value })}
+            onChange={(event) => {
+              update({ name: event.target.value });
+              clearError("name");
+            }}
           />
         </Field>
 
@@ -282,13 +321,18 @@ export function EnvironmentDialog({
 
         <Field
           label={t("Deploy root")}
+          required
           hint={t("The service directory must be inside the environment deploy root")}
+          error={errors.deploy_root ? t(errors.deploy_root) : null}
         >
-          <input
-            className={fieldClass}
+          <Input
             value={form.deploy_root}
+            invalid={!!errors.deploy_root}
             placeholder="/opt/web"
-            onChange={(event) => update({ deploy_root: event.target.value })}
+            onChange={(event) => {
+              update({ deploy_root: event.target.value });
+              clearError("deploy_root");
+            }}
           />
         </Field>
 
@@ -301,7 +345,6 @@ export function EnvironmentDialog({
           />
         </Field>
 
-        <ErrorText>{problem ? t(problem) : null}</ErrorText>
       </div>
     </Modal>
   );
@@ -326,11 +369,13 @@ export function ServiceDialog({
   const [form, setForm] = useState<DeploymentServiceUnit | null>(draft);
   const [runtime, setRuntime] = useState<RuntimeFormState | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setForm(draft);
     setRuntime(draft ? runtimeFormFrom(draft.runtime) : null);
     setProblem(null);
+    setErrors({});
   }, [draft]);
 
   if (!form || !runtime) return null;
@@ -341,16 +386,31 @@ export function ServiceDialog({
   const updateRuntime = (patch: Partial<RuntimeFormState>) =>
     setRuntime((current) => (current ? { ...current, ...patch } : current));
 
+  const clearError = (field: string) =>
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+
   const submit = () => {
-    const failure =
-      textError(form.name) ??
-      (form.environment_id.trim() === "" ? "Select an environment" : null) ??
-      runtimeFormError(runtime) ??
-      servicePathError(form.deploy_path, environment?.deploy_root ?? "/");
-    if (failure) {
-      setProblem(failure);
+    const nextErrors: Record<string, string> = {};
+    const nameError = textError(form.name);
+    if (nameError) nextErrors.name = nameError;
+    if (form.environment_id.trim() === "") nextErrors.environment_id = "Select an environment";
+    const pathError = servicePathError(form.deploy_path, environment?.deploy_root ?? "/");
+    if (pathError) nextErrors.deploy_path = pathError;
+
+    setErrors(nextErrors);
+    const runtimeFailure = runtimeFormError(runtime);
+    if (runtimeFailure) {
+      setProblem(runtimeFailure);
       return;
     }
+    setProblem(null);
+    if (Object.keys(nextErrors).length > 0) return;
+
     onSubmit({
       ...form,
       name: form.name.trim(),
@@ -365,7 +425,7 @@ export function ServiceDialog({
   return (
     <Modal
       open
-      width={520}
+      size="lg"
       title={open ? t("Edit service") : t("New service")}
       onClose={onCancel}
       footer={
@@ -381,12 +441,15 @@ export function ServiceDialog({
     >
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-3">
-          <Field label={t("Service name")}>
-            <input
-              className={fieldClass}
+          <Field label={t("Service name")} required error={errors.name ? t(errors.name) : null}>
+            <Input
               value={form.name}
               autoFocus
-              onChange={(event) => update({ name: event.target.value })}
+              invalid={!!errors.name}
+              onChange={(event) => {
+                update({ name: event.target.value });
+                clearError("name");
+              }}
             />
           </Field>
           <Field label={t("Service role")}>
@@ -402,11 +465,19 @@ export function ServiceDialog({
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label={t("Environment")}>
+          <Field
+            label={t("Environment")}
+            required
+            error={errors.environment_id ? t(errors.environment_id) : null}
+          >
             <Select
               value={form.environment_id}
+              invalid={!!errors.environment_id}
               placeholder={t("Select an environment")}
-              onChange={(value) => update({ environment_id: value })}
+              onChange={(value) => {
+                update({ environment_id: value });
+                clearError("environment_id");
+              }}
               options={[
                 { value: "", label: t("Select an environment") },
                 ...environments.map((item) => ({ value: item.id, label: item.name })),
@@ -433,15 +504,13 @@ export function ServiceDialog({
         {runtime.kind === "static_nginx" && (
           <div className="grid grid-cols-2 gap-3">
             <Field label={t("Nginx site name")}>
-              <input
-                className={fieldClass}
+              <Input
                 value={runtime.site_name}
                 onChange={(event) => updateRuntime({ site_name: event.target.value })}
               />
             </Field>
             <Field label={t("Site root")}>
-              <input
-                className={fieldClass}
+              <Input
                 value={runtime.root}
                 placeholder="/opt/web/current"
                 onChange={(event) => updateRuntime({ root: event.target.value })}
@@ -452,8 +521,7 @@ export function ServiceDialog({
 
         {runtime.kind === "systemd_unit" && (
           <Field label={t("systemd unit name")}>
-            <input
-              className={fieldClass}
+            <Input
               value={runtime.unit}
               placeholder="api.service"
               onChange={(event) => updateRuntime({ unit: event.target.value })}
@@ -465,24 +533,21 @@ export function ServiceDialog({
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label={t("Image")}>
-                <input
-                  className={fieldClass}
+                <Input
                   value={runtime.image}
                   placeholder="registry.example.com/acme/web"
                   onChange={(event) => updateRuntime({ image: event.target.value })}
                 />
               </Field>
               <Field label={t("Image tag")}>
-                <input
-                  className={fieldClass}
+                <Input
                   value={runtime.tag}
                   onChange={(event) => updateRuntime({ tag: event.target.value })}
                 />
               </Field>
             </div>
             <Field label={t("Container name")}>
-              <input
-                className={fieldClass}
+              <Input
                 value={runtime.container_name}
                 onChange={(event) => updateRuntime({ container_name: event.target.value })}
               />
@@ -575,8 +640,7 @@ export function ServiceDialog({
         {runtime.kind === "docker_compose" && (
           <div className="flex flex-col gap-3">
             <Field label={t("Compose file path")}>
-              <input
-                className={fieldClass}
+              <Input
                 value={runtime.compose_path}
                 placeholder="/opt/web/docker-compose.yml"
                 onChange={(event) => updateRuntime({ compose_path: event.target.value })}
@@ -584,15 +648,13 @@ export function ServiceDialog({
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label={t("Compose project name")}>
-                <input
-                  className={fieldClass}
+                <Input
                   value={runtime.project_name}
                   onChange={(event) => updateRuntime({ project_name: event.target.value })}
                 />
               </Field>
               <Field label={t("Compose service name")}>
-                <input
-                  className={fieldClass}
+                <Input
                   value={runtime.service}
                   onChange={(event) => updateRuntime({ service: event.target.value })}
                 />
@@ -607,8 +669,7 @@ export function ServiceDialog({
               label={t("Executable")}
               hint={t("Runtime fields depend on the deployment shape")}
             >
-              <input
-                className={fieldClass}
+              <Input
                 value={runtime.entry}
                 placeholder="java / node / /opt/web/run.sh"
                 onChange={(event) => updateRuntime({ entry: event.target.value })}
@@ -639,8 +700,7 @@ export function ServiceDialog({
 
         {runtime.kind === "external" && (
           <Field label={t("Source reference")} hint={t("External managed")}>
-            <input
-              className={fieldClass}
+            <Input
               value={runtime.endpoint}
               placeholder="db-prod-01:5432"
               onChange={(event) => updateRuntime({ endpoint: event.target.value })}
@@ -651,12 +711,16 @@ export function ServiceDialog({
         <Field
           label={t("Deploy path")}
           hint={environment ? `${t("Deploy root")}: ${environment.deploy_root}` : undefined}
+          error={errors.deploy_path ? t(errors.deploy_path) : null}
         >
-          <input
-            className={fieldClass}
+          <Input
             value={form.deploy_path ?? ""}
+            invalid={!!errors.deploy_path}
             placeholder={environment ? `${environment.deploy_root}/current` : ""}
-            onChange={(event) => update({ deploy_path: event.target.value })}
+            onChange={(event) => {
+              update({ deploy_path: event.target.value });
+              clearError("deploy_path");
+            }}
           />
         </Field>
 
@@ -688,19 +752,19 @@ export function PlanDialog({
 }) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
-  const [problem, setProblem] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setName("");
-      setProblem(null);
+      setError(null);
     }
   }, [open]);
 
   return (
     <Modal
       open={open}
-      width={380}
+      size="sm"
       title={t("New plan")}
       onClose={onCancel}
       footer={
@@ -714,7 +778,7 @@ export function PlanDialog({
             onClick={() => {
               const failure = textError(name);
               if (failure) {
-                setProblem(failure);
+                setError(failure);
                 return;
               }
               onSubmit(name.trim());
@@ -726,15 +790,17 @@ export function PlanDialog({
       }
     >
       <div className="flex flex-col gap-3">
-        <Field label={t("Plan name")}>
-          <input
-            className={fieldClass}
+        <Field label={t("Plan name")} required error={error ? t(error) : null}>
+          <Input
             value={name}
             autoFocus
-            onChange={(event) => setName(event.target.value)}
+            invalid={!!error}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
           />
         </Field>
-        <ErrorText>{problem ? t(problem) : null}</ErrorText>
       </div>
     </Modal>
   );

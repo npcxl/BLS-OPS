@@ -1,14 +1,11 @@
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useCallback, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useExiting } from "@/hooks/use-exiting";
-import {
-  isTopOverlayLayer,
-  OverlayDepthContext,
-  useOverlayLayer,
-} from "@/components/ui/overlay";
+import { useOverlayFocusTrap } from "@/hooks/use-overlay-focus-trap";
+import { OverlayDepthContext, useOverlayLayer } from "@/components/ui/overlay";
 
 /**
  * 模态框尺寸档位（统一视觉，别再各写各的 width）。
@@ -30,13 +27,6 @@ const SIZE_WIDTH: Record<ModalSize, number | string> = {
   xl: 860,
   full: "min(1100px, 96vw)",
 };
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-/** 打开时优先聚焦的输入控件（表单弹窗不该从右上角的 × 开始）。 */
-const FIELD_SELECTOR =
-  'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])';
 
 interface ModalProps {
   open: boolean;
@@ -99,77 +89,12 @@ export function Modal({
     onClose();
   }, [busy, onClose]);
 
-  /** 打开：记住并迁移焦点；关闭：归还焦点（浮层出栈由 useOverlayLayer 负责）。 */
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    // 等面板真正挂载后再入焦点：优先 [data-autofocus]，其次第一个输入框
-    // （表单弹窗直接开始填写），再次第一个可聚焦元素，最后聚焦面板本身
-    // （读屏器会朗读标题）。焦点永远不会掉在背后的页面上。
-    const frame = window.requestAnimationFrame(() => {
-      const panel = panelRef.current;
-      if (!panel) return;
-      const preferred =
-        panel.querySelector<HTMLElement>("[data-autofocus]") ??
-        panel.querySelector<HTMLElement>(FIELD_SELECTOR) ??
-        panel.querySelector<HTMLElement>(FOCUSABLE);
-      (preferred ?? panel).focus({ preventScroll: true });
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      // 焦点还回去：只还原仍然挂在文档里的元素（触发它的按钮可能已卸载）。
-      if (previous && previous.isConnected) previous.focus({ preventScroll: true });
-    };
-  }, [open]);
-
-  /** Esc：只处理最上层；Tab：在面板内循环；两者都不抢内部已消费的事件。 */
-  useEffect(() => {
-    if (!open) return;
-    const layerId = layer.id;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!isTopOverlayLayer(layerId)) return;
-      // 内部控件（编辑器查找框、下拉、右键菜单）已经处理过：让位。
-      if (event.defaultPrevented) return;
-
-      if (event.key === "Escape") {
-        event.preventDefault();
-        requestClose();
-        return;
-      }
-
-      if (event.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-        (node) => !node.hasAttribute("hidden") && node.getAttribute("aria-hidden") !== "true",
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        panel.focus({ preventScroll: true });
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey) {
-        if (active === first || !panel.contains(active)) {
-          event.preventDefault();
-          last.focus();
-        }
-        return;
-      }
-      if (active === last || !panel.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, requestClose]);
+  useOverlayFocusTrap({
+    open,
+    panelRef,
+    layerId: layer.id,
+    onRequestClose: requestClose,
+  });
 
   if (!render) return null;
 

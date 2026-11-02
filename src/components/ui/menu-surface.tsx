@@ -36,9 +36,43 @@ interface MenuSurfaceProps {
   children: ReactNode;
   className?: string;
   radius?: number;
+  /**
+   * 独立菜单窗口用 `flat`：那里没有主窗口的 DOM 可以采样，liquid-glass 的
+   * 位移/折射层只会把桌面背景撕成色带。玻璃改由「原生 Acrylic + 染色层」
+   * 组成（见 `.menu-surface--flat`），视觉令牌与页面内菜单同源。
+   */
+  flat?: boolean;
 }
 
-export function MenuSurface({ children, className, radius = MENU_SURFACE_RADIUS }: MenuSurfaceProps) {
+export function MenuSurface({
+  children,
+  className,
+  radius = MENU_SURFACE_RADIUS,
+  flat = false,
+}: MenuSurfaceProps) {
+  const body = (
+    <div className="menu-surface__body">
+      <span
+        aria-hidden="true"
+        data-menu-tint=""
+        className="menu-surface__tint"
+        style={{ borderRadius: radius }}
+      />
+      <div className={cn("menu-surface__content", MENU_SURFACE_PADDING)}>{children}</div>
+    </div>
+  );
+
+  if (flat) {
+    return (
+      <div
+        className={cn("menu-surface menu-surface--flat", className)}
+        style={{ borderRadius: radius }}
+      >
+        {body}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("glass-host menu-surface", className)}>
       <LiquidGlass
@@ -51,15 +85,7 @@ export function MenuSurface({ children, className, radius = MENU_SURFACE_RADIUS 
         elasticity={0.15}
         className="menu-surface__glass"
       >
-        <div className="menu-surface__body">
-          <span
-            aria-hidden="true"
-            data-menu-tint=""
-            className="menu-surface__tint"
-            style={{ borderRadius: radius }}
-          />
-          <div className={cn("menu-surface__content", MENU_SURFACE_PADDING)}>{children}</div>
-        </div>
+        {body}
       </LiquidGlass>
     </div>
   );

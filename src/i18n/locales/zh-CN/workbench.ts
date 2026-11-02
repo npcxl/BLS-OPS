@@ -307,4 +307,21 @@ export default {
   "Could not read services": "无法读取服务列表",
   "Could not run the action on {{unit}}": "无法对 {{unit}} 执行操作",
   "Could not read the status of {{unit}}": "无法读取 {{unit}} 的状态",
+
+  // -- 页面骨架 / 状态反馈 --
+  "Inspection mode: commands that modify the server are blocked.": "巡检模式：会修改服务器的命令已被拦截。",
+  "Collecting the first sample…": "正在采集第一份数据…",
+  "No data collected yet": "还没有采集到数据",
+  "Collect now": "立即采集",
+  "The first collection starts right after connecting.": "连接成功后会自动开始第一次采集。",
+  "Discovering projects…": "正在扫描项目…",
+  "Compact mode": "紧凑模式",
+  "Tighter rows, toolbars and section spacing.": "更紧凑的列表行、工具栏与分组间距。",
+  Comfortable: "舒适",
+  Compact: "紧凑",
+  Density: "密度",
+  "Resize sidebar": "调整侧栏宽度",
+  "This view is not implemented yet.": "这个视图尚未实现。",
+  "Double-click a table on the left, or create a query.": "双击左侧表，或新建查询。",
+  "Click + to add one.": "点击 + 添加一个。",
 } as const;

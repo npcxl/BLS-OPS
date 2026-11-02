@@ -205,6 +205,8 @@ export default {
   Metadata: "中繼資料",
   "Last verified": "最近核對",
   "Knowledge note": "備註",
+  "Content": "正文",
+  Enabled: "啟用",
   "Save metadata": "儲存中繼資料",
   "Archived or disabled knowledge does not participate in AI retrieval.":
     "已封存或未啟用的知識不會參與 AI 檢索。",

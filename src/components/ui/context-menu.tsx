@@ -9,6 +9,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import * as tauriCore from "@tauri-apps/api/core";
+import { openDesktopMenu } from "@/desktop-menu/bridge";
 import { MenuItemRow, MenuSeparator, MenuSurface } from "@/components/ui/menu-surface";
 import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 
@@ -60,6 +62,21 @@ export interface ContextMenuState {
 const GAP = 4;
 const DEFAULT_MIN_WIDTH = 184;
 const NO_ITEMS: ContextMenuItem[] = [];
+
+/**
+ * Desktop-menu capability probe. Partial mocks of `@tauri-apps/api/core`
+ * (tests, browser previews) do not expose `isTauri`; that must fall back to the
+ * in-page menu instead of throwing inside the contextmenu handler.
+ */
+function isTauri(): boolean {
+  try {
+    const probe = (tauriCore as { isTauri?: () => boolean }).isTauri;
+    return typeof probe === "function" ? probe() : false;
+  } catch {
+    // Vitest module mocks throw on missing exports; treat that as "browser".
+    return false;
+  }
+}
 
 /**
  * Global slot for "the context menu that is open right now". Every menu
@@ -459,19 +476,34 @@ export function useContextMenu() {
         event.stopPropagation();
         // 同一时刻只保留一个右键菜单：新位置/新实例打开前，先关掉已经
         // 打开的那个（例：行菜单开着，再去空白处右键不能让两个并存）。
-        // 同一实例时 close+open 被 React 批处理成一次"移动"，不闪跳。
         closeActiveContextMenu();
-        setState({ x: event.clientX, y: event.clientY, items: build(event) });
+        const items = build(event);
+        if (isTauri()) {
+          // 桌面窗口才能画出主窗口边界；失败时退回页面内菜单，别丢功能。
+          void openDesktopMenu(items, { x: event.clientX, y: event.clientY }).catch((error) => {
+            console.error("[context-menu] desktop menu failed", error);
+            setState({ x: event.clientX, y: event.clientY, items });
+          });
+          return;
+        }
+        setState({ x: event.clientX, y: event.clientY, items });
       },
     [],
   );
 
   /**
    * 命令式打开菜单（用于工具栏「⋯」这类点击触发、而不是右键的入口）。
-   * 坐标就是菜单左上角，超出视口时由菜单自身翻转。
+   * 坐标是来源窗口客户区里的 CSS 像素；屏幕定位由桌面菜单窗口负责。
    */
   const openAt = useCallback((x: number, y: number, items: ContextMenuItem[]) => {
     closeActiveContextMenu();
+    if (isTauri()) {
+      void openDesktopMenu(items, { x, y }).catch((error) => {
+        console.error("[context-menu] desktop menu failed", error);
+        setState({ x, y, items });
+      });
+      return;
+    }
     setState({ x, y, items });
   }, []);
 

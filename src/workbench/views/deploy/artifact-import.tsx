@@ -24,8 +24,9 @@ import type {
   ArtifactRecord,
   DeploymentEnvironment,
 } from "@/api/ops-api";
+import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
-import { Input } from "@/components/ui/input";
+import { Checkbox, Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
@@ -390,13 +391,14 @@ export function ArtifactImportPanel({
           )}
 
           {sourceKind === "local_folder" || sourceKind === "local_file" ? (
-            <button
+            <Button
               type="button"
-              className="rounded-[7px] border border-line px-2 py-1 text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
+              variant="secondary"
+              size="sm"
               onClick={() => void browse(sourceKind === "local_folder")}
             >
               {t("Browse")}
-            </button>
+            </Button>
           ) : null}
 
           {sourceKind === "local_file" ? (
@@ -492,8 +494,8 @@ export function ArtifactImportPanel({
                 key={candidate.id}
                 className="flex items-start gap-2 rounded-[7px] border border-line px-2 py-1.5"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
+                  size="sm"
                   className="mt-0.5"
                   aria-label={candidate.name}
                   checked={selected[candidate.id] ?? candidate.selected_by_default}

@@ -1453,8 +1453,8 @@ export const databaseApi = {
       request,
       expectedSql,
     }),
-  previewSchemaChange: (request: SchemaChange) =>
-    invoke<SchemaPreview>("db_schema_change_preview", { request }),
+  previewSchemaChange: (sessionId: string, request: SchemaChange) =>
+    invoke<SchemaPreview>("db_schema_change_preview", { sessionId, request }),
   applySchemaChange: (
     sessionId: string,
     request: SchemaChange,

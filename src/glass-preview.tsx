@@ -195,6 +195,38 @@ function Preview() {
       const rootHost = menus[0];
       const rootContent = rootHost.querySelector<HTMLElement>(".menu-surface__content");
       const rootGlass = rootHost.querySelector<HTMLElement>(".glass");
+      const matchRules = (el: HTMLElement | null) => {
+        const found: string[] = [];
+        if (!el) return found;
+        const walk = (rules: CSSRuleList) => {
+          for (const rule of Array.from(rules)) {
+            const nested = (rule as CSSGroupingRule).cssRules;
+            if (nested) {
+              walk(nested);
+              continue;
+            }
+            const styleRule = rule as CSSStyleRule;
+            if (!styleRule.selectorText || !styleRule.style) continue;
+            const vis = styleRule.style.getPropertyValue("visibility");
+            if (!vis) continue;
+            try {
+              if (el.matches(styleRule.selectorText)) {
+                found.push(`${styleRule.selectorText} => ${vis}`);
+              }
+            } catch {
+              /* 忽略不支持的伪类 */
+            }
+          }
+        };
+        for (const sheet of Array.from(document.styleSheets)) {
+          try {
+            walk(sheet.cssRules);
+          } catch {
+            /* 跨域表跳过 */
+          }
+        }
+        return found;
+      };
       const debug = {
         rect: rect.toJSON(),
         menuCount: document.querySelectorAll('[role="menu"]').length,
@@ -205,7 +237,61 @@ function Preview() {
         stack,
         chain,
         itemInfo,
+        subItem: (() => {
+          const item = submenu.querySelector<HTMLElement>('[role="menuitem"]');
+          if (!item) return null;
+          const r = item.getBoundingClientRect();
+          const style = getComputedStyle(item);
+          const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return {
+            rect: r.toJSON(),
+            color: style.color,
+            fontSize: style.fontSize,
+            vis: style.visibility,
+            opacity: style.opacity,
+            at: at ? `${at.tagName}.${String((at as HTMLElement).className).slice(0, 50)}` : "none",
+          };
+        })(),
         parentOfSubmenu: submenu.parentElement?.className,
+        parentIsRootContent: submenu.parentElement === rootContent,
+        parentFullVis: submenu.parentElement
+          ? getComputedStyle(submenu.parentElement).visibility
+          : "none",
+        hostChildren: Array.from(submenu.children).map((child) => {
+          const style = getComputedStyle(child);
+          return `${child.tagName}.${String((child as HTMLElement).className).slice(0, 40)} vis=${style.visibility} disp=${style.display}`;
+        }),
+        down: (() => {
+          const rows: string[] = [];
+          const walk = (el: Element, depth: number) => {
+            const style = getComputedStyle(el);
+            const anims = el.getAnimations().map((anim) => {
+              const transition = anim as CSSTransition;
+              return `${transition.transitionProperty ?? "?"}:${anim.playState}:${anim.currentTime}`;
+            });
+            rows.push(
+              `${"..".repeat(depth)}${el.tagName}.${String((el as HTMLElement).className).slice(0, 28)} vis=${style.visibility} op=${style.opacity} anim=[${anims.join(",")}]`,
+            );
+            if (depth < 9) {
+              for (const child of Array.from(el.children)) walk(child, depth + 1);
+            }
+          };
+          walk(submenu, 0);
+          return rows;
+        })(),
+        glassDetail: glass
+          ? {
+              parentVis: getComputedStyle(glass.parentElement as Element).visibility,
+              grandVis: getComputedStyle(glass.parentElement?.parentElement as Element).visibility,
+              check: glass.checkVisibility?.() ?? "n/a",
+              hiddenAttr: glass.hasAttribute("hidden"),
+              transition: getComputedStyle(glass).transitionProperty,
+              rect: glass.getBoundingClientRect().toJSON(),
+            }
+          : null,
+        rootContentRules: matchRules(rootContent),
+        submenuGlassRules: matchRules(glass),
+        rootContentHiddenAttr: rootContent?.hasAttribute("hidden") ?? null,
         root: {
           rect: rootHost.getBoundingClientRect().toJSON(),
           vis: getComputedStyle(rootHost).visibility,
@@ -220,7 +306,7 @@ function Preview() {
       pre.id = "debug";
       pre.textContent = JSON.stringify(debug, null, 2);
       document.body.appendChild(pre);
-    }, 1200);
+    }, 4000);
     return () => {
       window.clearTimeout(timer);
       window.clearTimeout(debugTimer);

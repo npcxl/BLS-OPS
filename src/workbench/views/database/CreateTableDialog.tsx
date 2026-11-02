@@ -105,10 +105,14 @@ export function CreateTableDialog({
       setError(t("请输入表名"));
       return;
     }
+    if (!sessionId) {
+      setError(t("连接尚未建立，无法预览 DDL"));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      setPreview(await databaseApi.previewSchemaChange(change));
+      setPreview(await databaseApi.previewSchemaChange(sessionId, change));
     } catch (failure) {
       setError(toDbError(failure).message);
     } finally {

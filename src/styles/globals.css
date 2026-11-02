@@ -347,6 +347,17 @@
     box-shadow: var(--glass-menu-shadow) !important;
   }
 
+  /* 库的外壳（内联 `transition: all`）与内容层（Tailwind `transition-all`）都在
+     过渡 `all`，而 visibility 是**可继承**属性：子菜单第一帧以 `visibility: hidden`
+     渲染（等着测量位置）再改成 visible 时，这几层会各自启动一条 visibility 过渡；
+     实测它会停在 0ms（`getAnimations()` 里一直 running:0），整块内容就永远不可见。
+     菜单的位置与显隐完全由 JS 控制，表面不需要任何过渡。 */
+  .menu-surface .glass,
+  .menu-surface .menu-surface__glass,
+  .menu-surface .glass > div {
+    transition: none !important;
+  }
+
   .menu-surface__body {
     position: relative;
   }

@@ -217,11 +217,7 @@ fn create_table_sql(
     let defs = columns
         .iter()
         .map(|column| {
-            let mut sql = format!(
-                "{} {}",
-                ddl.quote(&column.name)?,
-                column.column_type.trim()
-            );
+            let mut sql = format!("{} {}", ddl.quote(&column.name)?, column.column_type.trim());
             if !column.nullable {
                 sql.push_str(" NOT NULL");
             } else {
@@ -280,11 +276,7 @@ fn column_sql(ddl: &Ddl<'_>, column: &NewColumn) -> Result<String, DbErrorInfo> 
             format!("字段 {} 的类型不合法或过于复杂", column.name),
         ));
     }
-    let mut sql = format!(
-        "{} {}",
-        ddl.quote(&column.name)?,
-        column.column_type.trim()
-    );
+    let mut sql = format!("{} {}", ddl.quote(&column.name)?, column.column_type.trim());
     sql.push_str(if column.nullable {
         " NULL"
     } else {
@@ -915,6 +907,24 @@ mod tests {
     /// 这些测试锁的是 MySQL 生成的 DDL 文本。
     fn preview(change: &SchemaChange) -> Result<super::SchemaPreview, super::DbErrorInfo> {
         preview_with_adapter(&AdapterSet::mysql(), change)
+    }
+
+    #[test]
+    fn non_mysql_engines_are_rejected_with_a_reason() {
+        let pg = AdapterSet::of("postgres").expect("pg registered");
+        let error = preview_with_adapter(
+            &pg,
+            &SchemaChange::DropView {
+                database: "public".to_string(),
+                view: "v".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.stage, "unsupported");
+        assert!(
+            error.detail.is_some(),
+            "拒绝必须带后续动作说明，不能只给一句话"
+        );
     }
 
     #[test]

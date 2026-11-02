@@ -1114,6 +1114,7 @@ async fn mysql_schema_operations_are_real() {
 
     let (runtime, session) = runtime_for(&conn).await;
     schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::CreateDatabase {
             name: db_name.to_string(),
@@ -1125,6 +1126,7 @@ async fn mysql_schema_operations_are_real() {
     .expect("create database");
 
     schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::CreateTable {
             database: db_name.to_string(),
@@ -1191,7 +1193,7 @@ async fn mysql_schema_operations_are_real() {
         }],
         primary_key: None,
     };
-    schema_ops::apply_alter_table(&session, &detail, &alter)
+    schema_ops::apply_alter_table(&AdapterSet::mysql(), &session, &detail, &alter)
         .await
         .expect("alter table");
     let type_len: Option<u64> = admin
@@ -1220,6 +1222,7 @@ async fn mysql_schema_operations_are_real() {
     assert_eq!(index, Some(1));
 
     schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::SaveView {
             database: db_name.to_string(),
@@ -1238,6 +1241,7 @@ async fn mysql_schema_operations_are_real() {
 
     // USE 成功、CREATE VIEW 失败：必须返回部分执行详情，不能报告成功。
     let partial = schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::SaveView {
             database: db_name.to_string(),
@@ -1257,6 +1261,7 @@ async fn mysql_schema_operations_are_real() {
     );
 
     schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::DropView {
             database: db_name.to_string(),
@@ -1266,6 +1271,7 @@ async fn mysql_schema_operations_are_real() {
     .await
     .expect("drop view");
     schema_ops::apply(
+        &AdapterSet::mysql(),
         &session,
         &schema_ops::SchemaChange::DropDatabase {
             name: db_name.to_string(),
@@ -1402,6 +1408,7 @@ async fn mysql_ddl_disconnect_is_reported_unknown() {
     let session_for_ddl = session.clone();
     let task = tokio::spawn(async move {
         schema_ops::apply(
+            &AdapterSet::mysql(),
             &session_for_ddl,
             &schema_ops::SchemaChange::DropDatabase {
                 name: "ops_ddl_kill".to_string(),

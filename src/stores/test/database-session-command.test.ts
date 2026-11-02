@@ -16,7 +16,7 @@ const SESSION = {
   session_id: "s1",
   profile_id: PROFILE,
   generation: 1,
-  connection_id: 1,
+  connection: { label: "#1", numeric: 1 },
   server_version: "8.0",
   current_database: "db",
   tls_active: false,

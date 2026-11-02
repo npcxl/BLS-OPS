@@ -410,5 +410,6 @@ pub async fn editor_history_read(
         .path()
         .parent()
         .ok_or_else(|| "找不到应用数据目录".to_string())?;
-    crate::editor_history::read(root, &path, &id).map_err(|error| OpsError::from_stage("sftp", error))
+    crate::editor_history::read(root, &path, &id)
+        .map_err(|error| OpsError::from_stage("sftp", error))
 }

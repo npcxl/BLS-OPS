@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 use super::driver::{self, EndpointPlan, ResolvedEndpoint};
 use super::model::DbErrorInfo;
+use super::protocol::CancelHandle;
 use super::tunnel::TunnelRegistry;
 
 pub struct ProfileRuntime {
@@ -79,9 +80,22 @@ impl ProfileRuntime {
         self.active_queries.load(Ordering::Acquire)
     }
 
-    /// 发一条 `KILL QUERY`。只接受来自本模块的 thread id（u32），
-    /// 没有字符串拼接注入面。
-    pub async fn kill_query(&self, thread_id: u32) -> Result<(), DbErrorInfo> {
+    /// 按取消令牌中止正在执行的语句。
+    ///
+    /// MySQL 协议：在**独立控制连接**上发 `KILL QUERY <thread_id>`，参数是
+    /// 驱动给的数值 id（不是字符串拼接）。不支持的驱动返回带原因的失败，
+    /// 绝不假装取消成功。
+    pub async fn cancel(&self, handle: &CancelHandle) -> Result<(), DbErrorInfo> {
+        let CancelHandle::MySqlThread { thread_id } = handle else {
+            return Err(DbErrorInfo::new(
+                "cancelled",
+                handle
+                    .reason()
+                    .unwrap_or("该驱动不支持服务端取消")
+                    .to_string(),
+            ));
+        };
+        let thread_id = *thread_id;
         let mut guard = self.control.lock().await;
 
         // 控制连接可能被服务器关掉（wait_timeout / 网络中断）：

@@ -27,7 +27,17 @@ import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
 import { useInspectionMode } from "@/stores/inspection-store";
-import { comboFromKey, useShortcutBindings } from "@/stores/shortcut-store";
+import { comboFromKey } from "@/stores/shortcut-store";
+
+/**
+ * 编辑器里的保存 / 查找是**固定键位**，不进可自定义的绑定表。
+ *
+ * 保存：服务器表单、表数据、表设计三处都用写死的 Ctrl+S，只让文件编辑器可改
+ * 会出现"设置里关掉了，别处照样保存"；查找：CodeMirror 的 `searchKeymap`
+ * 兜着 Mod-F，关掉绑定也拦不住原生面板。
+ */
+const SAVE_COMBO = "ctrl+s";
+const FIND_COMBO = "ctrl+f";
 
 /**
  * Read/edit modal for remote text files (phase 2 of the file panel).
@@ -86,7 +96,6 @@ export default function FileEditorModal({
   const viewRef = useRef<EditorView | null>(null);
   // 巡检模式：可以看、可以搜，但不能写回。
   const inspection = useInspectionMode();
-  const shortcutKeys = useShortcutBindings();
 
   useEffect(() => {
     let cancelled = false;
@@ -285,7 +294,7 @@ export default function FileEditorModal({
           <div
             className="relative overflow-hidden rounded-[6px] border border-line"
             onKeyDown={(event) => {
-              if (comboFromKey(event) === shortcutKeys.editor_save) {
+              if (comboFromKey(event) === SAVE_COMBO) {
                 event.preventDefault();
                 void save();
               }
@@ -293,7 +302,7 @@ export default function FileEditorModal({
             // Ctrl+F 必须在捕获阶段拦下：searchKeymap 挂在编辑器 DOM 上，
             // 冒泡阶段拦截时它已经把默认面板打开了。
             onKeyDownCapture={(event) => {
-              if (comboFromKey(event) === shortcutKeys.editor_find) {
+              if (comboFromKey(event) === FIND_COMBO) {
                 event.preventDefault();
                 event.stopPropagation();
                 setSearchOpen(true);
@@ -370,7 +379,6 @@ export default function FileEditorModal({
         open={historyOpen}
         width={480}
         title={t("Version history")}
-        description={t("Kept on this machine before each overwrite. Older copies roll off automatically.")}
         onClose={() => setHistoryOpen(false)}
       >
         <div className="flex flex-col gap-2">

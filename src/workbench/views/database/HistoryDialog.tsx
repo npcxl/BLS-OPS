@@ -74,7 +74,6 @@ export function HistoryDialog({
     <Modal
       open={open}
       title={t("SQL 历史")}
-      description={t("只保存在本机；可以通过开关停止记录，或随时清空。")}
       width={620}
       onClose={onClose}
       footer={

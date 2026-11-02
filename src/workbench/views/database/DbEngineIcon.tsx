@@ -9,7 +9,7 @@ import { Database } from "@/components/icons";
 import { useThemeMode } from "@/hooks/use-theme";
 import { cn } from "@/lib/cn";
 import type { DbEngine } from "@/api/types/database";
-import { DB_ENGINE_ICONS } from "./db-engine-icons";
+import { DB_ENGINE_ICONS, DB_ENGINE_REMOTE_ICONS } from "./db-engine-icons";
 
 export function DbEngineIcon({
   engine,
@@ -33,6 +33,24 @@ export function DbEngineIcon({
   const stateClass = connected
     ? "opacity-100 saturate-100"
     : "opacity-60 grayscale";
+
+  // 本地没有内联数据的引擎（tidb / mongodb / clickhouse / cockroach…）走 Iconify
+  // 官方集合名；`Icon` 会顺手缓存，第二次渲染不再请求。
+  const remotePair = DB_ENGINE_REMOTE_ICONS[engine];
+  const remote = remotePair ? (dark ? remotePair.dark : remotePair.light) : undefined;
+
+  if (!data && remote) {
+    return (
+      <Icon
+        icon={remote}
+        width={size}
+        height={size}
+        aria-hidden="true"
+        className={cn("shrink-0 transition-[filter,opacity]", stateClass, className)}
+      />
+    );
+  }
+
 
   if (!data) {
     return (

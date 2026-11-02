@@ -57,6 +57,7 @@ fn profile() -> DatabaseProfile {
         redis_mode: Some("standalone".to_string()),
         sentinel_master: None,
         nodes_json: None,
+        engine_options: Default::default(),
         connect_timeout_ms: 10_000,
         query_timeout_ms: 30_000,
         created_at: now,
@@ -115,7 +116,10 @@ async fn redis_scan_dbsize_only_on_first_page() {
             .await
             .expect("seed");
     }
-    let first = session.scan(0, "bls:test:page:*", 0, 5).await.expect("scan");
+    let first = session
+        .scan(0, "bls:test:page:*", 0, 5)
+        .await
+        .expect("scan");
     assert!(first.dbsize.is_some(), "首屏必须返回 DBSIZE");
     if first.cursor != 0 {
         let second = session

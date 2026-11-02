@@ -34,6 +34,8 @@ export interface CopyRequest {
   table?: CopyTableRef | null;
   /** 字符预算（默认见 `DEFAULT_COPY_CHAR_BUDGET`）。 */
   maxChars?: number;
+  /** 复制为 INSERT 时使用的引用/转义规则；不传 = MySQL。 */
+  dialect?: SqlQuoteRules;
 }
 
 export type CopyIssueCode = "truncated" | "binary" | "unsupported";
@@ -157,8 +159,49 @@ export function uniqueColumnNames(columns: readonly DbColumn[]): string[] {
   });
 }
 
-function quoteIdentifier(name: string): string {
-  return `\`${name.replace(/`/g, "``")}\``;
+/**
+ * 引用规则（来自后端注册表的 `dialect_rules`）。不传 = MySQL，
+ * 与改造前行为一致；只有生成 INSERT 时才真正用到。
+ */
+export interface SqlQuoteRules {
+  identifier_quote: "backtick" | "double_quote" | "bracket";
+  backslash_escapes: boolean;
+}
+
+const MYSQL_QUOTE_RULES: SqlQuoteRules = {
+  identifier_quote: "backtick",
+  backslash_escapes: true,
+};
+
+/**
+ * 按方言引用标识符。导出给"复制为 SQL / DML 预览"共用，避免两处各写一份。
+ */
+export function quoteIdentifierWith(
+  name: string,
+  rules: SqlQuoteRules = MYSQL_QUOTE_RULES,
+): string {
+  return quoteIdentifier(name, rules);
+}
+
+/** 按方言生成字符串字面量（只用于文本生成，值绑定仍走参数）。 */
+export function quoteStringLiteral(
+  text: string,
+  rules: SqlQuoteRules = MYSQL_QUOTE_RULES,
+): string {
+  const escaped = rules.backslash_escapes
+    ? text.replace(/\\/g, "\\\\").replace(/'/g, "''")
+    : text.replace(/'/g, "''");
+  return `'${escaped}'`;
+}
+
+function quoteIdentifier(name: string, rules: SqlQuoteRules = MYSQL_QUOTE_RULES): string {
+  const [open, close] =
+    rules.identifier_quote === "backtick"
+      ? ["`", "`"]
+      : rules.identifier_quote === "bracket"
+        ? ["[", "]"]
+        : ['"', '"'];
+  return `${open}${name.split(close).join(close + close)}${close}`;
 }
 
 function isNumericType(dataType: string): boolean {
@@ -169,12 +212,15 @@ function isNumericType(dataType: string): boolean {
 
 const NUMERIC_LITERAL = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 
-function sqlLiteral(field: CopyField, dataType: string): string | null {
+function sqlLiteral(
+  field: CopyField,
+  dataType: string,
+  rules: SqlQuoteRules = MYSQL_QUOTE_RULES,
+): string | null {
   if (field.isNull) return "NULL";
   if (field.binary || field.unsupported || field.truncated) return null;
   if (isNumericType(dataType) && NUMERIC_LITERAL.test(field.text)) return field.text;
-  // MySQL/MariaDB 方言（当前唯一适配器）：反斜杠是转义符，必须先转义。
-  return `'${field.text.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
+  return quoteStringLiteral(field.text, rules);
 }
 
 function collectIssues(field: CopyField, issues: Map<CopyIssueCode, number>): void {
@@ -221,6 +267,7 @@ const nextTick = () =>
  */
 export async function buildCopyText(request: CopyRequest): Promise<CopyResult> {
   const { columns, rows, selection, format } = request;
+  const rules = request.dialect ?? MYSQL_QUOTE_RULES;
   const limit = request.maxChars ?? DEFAULT_COPY_CHAR_BUDGET;
   const ranges = selection.mode === null ? [] : selection.ranges;
   if (ranges.length === 0) return { ok: false, reason: "empty", chars: 0 };
@@ -293,7 +340,7 @@ export async function buildCopyText(request: CopyRequest): Promise<CopyResult> {
           builder.chars += line.length;
         } else {
           const literals = fields.map((field, index) =>
-            sqlLiteral(field, columns[range.left + index]?.type_name ?? ""),
+            sqlLiteral(field, columns[range.left + index]?.type_name ?? "", rules),
           );
           if (literals.some((literal) => literal === null)) {
             return { ok: false, reason: "unsafe_values", chars: builder.chars };
@@ -325,11 +372,12 @@ export async function buildCopyText(request: CopyRequest): Promise<CopyResult> {
     }
 
     if (format === "insert") {
-      const columnList = insertColumnList(columns, ranges);
+      const columnList = insertColumnList(columns, ranges, rules);
       if (!columnList) return { ok: false, reason: "no_target", chars: 0 };
-      const head = `INSERT INTO ${quoteIdentifier(insertTable!.database)}.${quoteIdentifier(
-        insertTable!.table,
-      )} (${columnList}) VALUES\n`;
+      const head = `INSERT INTO ${quoteIdentifier(
+        insertTable!.database,
+        rules,
+      )}.${quoteIdentifier(insertTable!.table, rules)} (${columnList}) VALUES\n`;
       return {
         ok: true,
         text: `${head}${insertRows.join(",\n")};\n`,
@@ -365,6 +413,7 @@ export async function buildCopyText(request: CopyRequest): Promise<CopyResult> {
 function insertColumnList(
   columns: readonly DbColumn[],
   ranges: readonly SelectionRange[],
+  rules: SqlQuoteRules,
 ): string | null {
   const first = ranges[0];
   const sameShape = ranges.every(
@@ -375,7 +424,7 @@ function insertColumnList(
   for (let col = first.left; col <= first.right; col += 1) {
     const column = columns[col];
     if (!column) return null;
-    names.push(quoteIdentifier(column.org_name || column.name));
+    names.push(quoteIdentifier(column.org_name || column.name, rules));
   }
   return names.join(", ");
 }

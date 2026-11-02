@@ -57,7 +57,7 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -866,6 +866,9 @@ CREATE TABLE IF NOT EXISTS database_profiles (
     redis_mode TEXT,
     sentinel_master TEXT,
     nodes_json TEXT,
+    -- 引擎专属配置（v18）：SQLite 路径 / PG schema / Oracle service-SID /
+    -- MongoDB URI。按引擎校验，不再为每种数据库加列。
+    engine_options TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -1164,5 +1167,214 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
         conn.pragma_update(None, "user_version", 17u32)?;
     }
+    if version < 18 {
+        // 引擎专属配置：只加一列 JSON，不再为每种数据库加列。
+        //
+        // 回填规则（只回填能被明确推导的，绝不覆盖已有新值）：
+        // * SQLite：`default_database` 曾被当成文件路径 → `engine_options.path`；
+        // * PostgreSQL 系：写默认 schema `public`；
+        // * Oracle：写默认 `identifier=service`（旧字段是服务名）。
+        //
+        // `default_database` 原值**不删除**，迁移出错时仍然可以据此恢复；
+        // 整个回填在一个事务里完成。
+        let has_profiles: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'database_profiles'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_profiles > 0 {
+            add_column(
+                &conn,
+                "database_profiles",
+                "engine_options",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )?;
+            backfill_engine_options(&conn)?;
+        }
+        conn.pragma_update(None, "user_version", 18u32)?;
+    }
     Ok(())
+}
+
+/// v18 回填：把旧列里"其实属于引擎专属配置"的值搬进 `engine_options`。
+///
+/// * 已经是非空对象（用户在新版本里存过）→ 跳过，不覆盖；
+/// * 旧值不删除，迁移失败可以人工恢复；
+/// * 全程一个事务，失败则整批回滚。
+fn backfill_engine_options(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let mut updates: Vec<(String, String)> = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, engine, default_database, engine_options FROM database_profiles",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, engine, default_database, existing) = row?;
+            let existing = existing.unwrap_or_default();
+            let existing = existing.trim();
+            if !existing.is_empty() && existing != "{}" {
+                // 已有新配置：新值优先。
+                continue;
+            }
+            let database = default_database
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let json = match engine.as_str() {
+                "sqlite" => database.map(|path| serde_json::json!({ "path": path }).to_string()),
+                "postgres" | "cockroach" | "aurora_pg" => {
+                    Some(serde_json::json!({ "schema": "public" }).to_string())
+                }
+                "oracle" => Some(serde_json::json!({ "identifier": "service" }).to_string()),
+                _ => None,
+            };
+            if let Some(json) = json {
+                updates.push((id, json));
+            }
+        }
+    }
+    for (id, json) in updates {
+        tx.execute(
+            "UPDATE database_profiles SET engine_options = ?1 WHERE id = ?2",
+            rusqlite::params![json, id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v17 形态的 `database_profiles`：还没有 `engine_options` 列。
+    fn v17_database() -> Connection {
+        let conn = Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE database_profiles (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                engine TEXT NOT NULL DEFAULT 'mysql',
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                default_database TEXT,
+                secret_ref TEXT,
+                ssh_server_id TEXT,
+                tls_mode TEXT NOT NULL DEFAULT 'disabled',
+                tls_ca_path TEXT,
+                tls_server_name TEXT,
+                read_only INTEGER NOT NULL DEFAULT 1,
+                connect_timeout_ms INTEGER NOT NULL DEFAULT 10000,
+                query_timeout_ms INTEGER NOT NULL DEFAULT 60000,
+                redis_mode TEXT,
+                sentinel_master TEXT,
+                nodes_json TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("create v17 table");
+        conn.pragma_update(None, "user_version", 17u32)
+            .expect("set version");
+        conn
+    }
+
+    fn insert_profile(conn: &Connection, id: &str, engine: &str, database: Option<&str>) {
+        conn.execute(
+            "INSERT INTO database_profiles
+                (id, name, engine, host, port, username, default_database, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '127.0.0.1', 3306, 'root', ?4, 1, 1)",
+            rusqlite::params![id, id, engine, database],
+        )
+        .expect("insert");
+    }
+
+    fn engine_options(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT engine_options FROM database_profiles WHERE id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read options")
+    }
+
+    #[test]
+    fn v18_backfills_sqlite_path_and_keeps_old_column() {
+        let conn = v17_database();
+        insert_profile(&conn, "sqlite-1", "sqlite", Some("/data/app.db"));
+
+        migrate(&conn).expect("migrate");
+
+        let options = engine_options(&conn, "sqlite-1");
+        assert!(options.contains("\"path\""), "应回填文件路径：{options}");
+        assert!(options.contains("/data/app.db"));
+
+        // 旧值不删除：迁移出错时还能据此恢复。
+        let legacy: Option<String> = conn
+            .query_row(
+                "SELECT default_database FROM database_profiles WHERE id = 'sqlite-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read legacy");
+        assert_eq!(legacy.as_deref(), Some("/data/app.db"));
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 18);
+    }
+
+    #[test]
+    fn v18_backfills_postgres_schema_and_leaves_mysql_empty() {
+        let conn = v17_database();
+        insert_profile(&conn, "pg-1", "postgres", Some("app"));
+        insert_profile(&conn, "my-1", "mysql", Some("shop"));
+
+        migrate(&conn).expect("migrate");
+
+        assert!(engine_options(&conn, "pg-1").contains("\"public\""));
+        assert_eq!(engine_options(&conn, "my-1"), "{}");
+    }
+
+    #[test]
+    fn v18_never_overwrites_existing_options() {
+        let conn = v17_database();
+        insert_profile(&conn, "sqlite-2", "sqlite", Some("/old.db"));
+        conn.execute(
+            "ALTER TABLE database_profiles ADD COLUMN engine_options TEXT NOT NULL DEFAULT '{}'",
+            [],
+        )
+        .expect("add column early");
+        conn.execute(
+            "UPDATE database_profiles SET engine_options = '{\"path\":\"/new.db\"}' WHERE id = 'sqlite-2'",
+            [],
+        )
+        .expect("seed options");
+
+        migrate(&conn).expect("migrate");
+
+        assert!(engine_options(&conn, "sqlite-2").contains("/new.db"));
+        assert!(!engine_options(&conn, "sqlite-2").contains("/old.db"));
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        let conn = v17_database();
+        insert_profile(&conn, "oracle-1", "oracle", Some("ORCLPDB1"));
+        migrate(&conn).expect("first");
+        migrate(&conn).expect("second");
+        assert!(engine_options(&conn, "oracle-1").contains("\"service\""));
+    }
 }

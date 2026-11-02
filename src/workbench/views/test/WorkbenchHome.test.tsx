@@ -73,6 +73,7 @@ function profile(id: string, overrides: Partial<DatabaseProfile> = {}): Database
     redis_mode: null,
     sentinel_master: null,
     nodes_json: null,
+    engine_options: {},
     connect_timeout_ms: 10_000,
     query_timeout_ms: 60_000,
     created_at: 0,

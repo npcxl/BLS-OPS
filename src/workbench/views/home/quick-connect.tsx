@@ -66,7 +66,6 @@ export function QuickConnectDialog({
       open
       width={440}
       title={t("Quick connect")}
-      description={t("Connect once without saving a server, or save it for next time.")}
       onClose={onClose}
       footer={
         <>

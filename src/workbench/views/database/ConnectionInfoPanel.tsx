@@ -18,20 +18,11 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
-import type { DbEngine, ProfileRuntimeStatus } from "@/api/types/database";
+import type { ProfileRuntimeStatus } from "@/api/types/database";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { DbEngineIcon } from "./DbEngineIcon";
-
-const ENGINE_LABEL: Record<DbEngine, string> = {
-  mysql: "MySQL",
-  redis: "Redis",
-  mariadb: "MariaDB",
-  postgres: "PostgreSQL",
-  sqlite: "SQLite",
-  sqlserver: "SQL Server",
-  oracle: "Oracle",
-};
+import { engineMeta } from "./db-engines";
 
 function InfoRow({
   icon: Icon,
@@ -160,7 +151,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
         <InfoRow
           icon={EngineIcon}
           label={t("类型")}
-          value={ENGINE_LABEL[profile.engine]}
+          value={engineMeta(profile.engine).label}
         />
         <InfoRow
           icon={Info}
@@ -192,7 +183,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
         <InfoRow
           icon={Info}
           label={t("连接 ID")}
-          value={session ? `#${session.connection_id}` : "—"}
+          value={session ? session.connection.label : "—"}
         />
       </div>
     </aside>

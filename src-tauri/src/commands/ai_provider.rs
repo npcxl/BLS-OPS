@@ -133,9 +133,8 @@ pub async fn ai_provider_save(
         .filter(|key| !key.is_empty())
     {
         let account = config.keyring_account();
-        crate::keyring::save_secret(&account, api_key).map_err(|error| {
-            store_error(format!("保存 API Key 到系统凭据管理器失败：{error}"))
-        })?;
+        crate::keyring::save_secret(&account, api_key)
+            .map_err(|error| store_error(format!("保存 API Key 到系统凭据管理器失败：{error}")))?;
         config.api_key_ref = Some(account);
     } else if config.api_key_ref.is_none() {
         return Err(invalid(

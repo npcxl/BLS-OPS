@@ -3,9 +3,10 @@
  *
  * 分 tab + 固定高度滚动：全局组合 30 多条，平铺会把设置页拉得很长。
  *
- * **应用级动作可以改键**（`shortcut-store`）：点行尾的铅笔进入录制，按下新组合
- * 即生效；Esc 取消，Backspace/Delete 关掉这一条。上下文快捷键（编辑器 Ctrl+S、
- * 文件面板 F2 等）只展示 —— 它们和编辑器内置键位绑定，改了会互相打架。
+ * **能改键的只有真正接入绑定表的动作**（`shortcut-store`）：点行尾的铅笔
+ * 进入录制，按下新组合即生效；Esc 取消，Backspace/Delete 关掉这一条。编辑器
+ * 的 Ctrl+S / Ctrl+F 这类固定键位只展示 —— 保存键在服务器表单、表数据、表
+ * 设计里是写死的，查找键还被 CodeMirror 内置键位兜着，给编辑入口只会骗人。
  */
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -62,10 +63,16 @@ const FILE_BINDABLE: { action: ShortcutActionId; label: string }[] = [
   { action: "file_up", label: "Go up one directory" },
 ];
 
-/** 编辑器：保存与查找读同一张绑定表。 */
-const EDITOR_BINDABLE: { action: ShortcutActionId; label: string }[] = [
-  { action: "editor_save", label: "Save (editor, server form, database edits)" },
-  { action: "editor_find", label: "Find in the editor or preview" },
+/**
+ * 编辑器：保存与查找是**固定键位**，只展示不给编辑。
+ *
+ * 保存的 Ctrl+S 在服务器表单、表数据、表设计里都是写死的；查找的 Ctrl+F 还被
+ * CodeMirror 的 `searchKeymap` 兜着 —— 关掉绑定也拦不住原生面板。这类改不动
+ * 的键位不该显示铅笔和开关，否则用户改了/关了却看不到任何变化。
+ */
+const EDITOR_FIXED: ShortcutItem[] = [
+  { keys: ["Ctrl", "S"], label: "Save (editor, server form, database edits)" },
+  { keys: ["Ctrl", "F"], label: "Find in the editor or preview" },
 ];
 
 /** 数据库表格：命令型按键读同一张绑定表。 */
@@ -82,7 +89,7 @@ const GRID_BINDABLE: { action: ShortcutActionId; label: string }[] = [
 ];
 
 const ACTION_LABEL = Object.fromEntries(
-  [...BINDABLE, ...FILE_BINDABLE, ...EDITOR_BINDABLE, ...GRID_BINDABLE].map((item) => [
+  [...BINDABLE, ...FILE_BINDABLE, ...GRID_BINDABLE].map((item) => [
     item.action,
     item.label,
   ]),
@@ -121,7 +128,7 @@ const TABS: ShortcutTab[] = [
     id: "editor",
     label: "Editors",
     items: [
-      ...EDITOR_BINDABLE.map((item) => ({ action: item.action, label: item.label })),
+      ...EDITOR_FIXED,
       { keys: [MOD, "H"], label: "Toggle replace in the search box" },
       { keys: ["Enter"], label: "Next match in the search box" },
       { keys: ["Shift", "Enter"], label: "Previous match in the search box" },
@@ -267,7 +274,12 @@ export function ShortcutSettingsGroup() {
               return (
                 <div
                   key={`${tab.id}-${item.label}`}
-                  className="group flex min-h-[24px] min-w-[250px] items-center gap-2 rounded-[4px] px-1 text-11 hover:bg-surface-hover/40"
+                  className={cn(
+                    "group flex min-h-[24px] min-w-[250px] items-center gap-2 rounded-[4px] px-1 text-11",
+                    // hover 高亮只给可编辑的行：固定键位没有任何可操作的东西，
+                    // 悬停变色会让人以为能点。
+                    item.action && "hover:bg-surface-hover/40",
+                  )}
                 >
                   {/* 命令名 */}
                   <span className="min-w-0 flex-1 truncate text-fg-muted">{t(item.label)}</span>
@@ -306,9 +318,7 @@ export function ShortcutSettingsGroup() {
                         <Pencil size={11} />
                       </button>
                     </span>
-                  ) : (
-                    <span className="hidden w-4 shrink-0 group-hover:block" aria-hidden="true" />
-                  )}
+                  ) : null}
 
                   {/* 是否启用：只对真正接入绑定表的动作给开关 */}
                   {item.action ? (

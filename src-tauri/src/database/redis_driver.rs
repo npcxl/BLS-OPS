@@ -837,7 +837,10 @@ impl RedisSession {
                     .await
                     .map_err(stage_err("read"))?;
                 let entries = parse_zset_reply(&raw)?;
-                let trimmed = entries.iter().map(|entry| entry.member.len()).sum::<usize>()
+                let trimmed = entries
+                    .iter()
+                    .map(|entry| entry.member.len())
+                    .sum::<usize>()
                     > READ_BYTES_MAX;
                 let truncated = length as usize > READ_ITEMS_MAX || trimmed;
                 Ok(RedisValuePayload::Zset {
@@ -1104,7 +1107,10 @@ impl RedisSession {
                     .map_err(stage_err("write"))?;
             }
             ListWrite::Remove { value } => {
-                let removed: i64 = conn.lrem(key, 1, &value).await.map_err(stage_err("write"))?;
+                let removed: i64 = conn
+                    .lrem(key, 1, &value)
+                    .await
+                    .map_err(stage_err("write"))?;
                 ensure_hit(removed, "LREM", &value)?;
             }
         }
@@ -1346,7 +1352,13 @@ impl RedisManager {
             return Ok(existing);
         }
         // 记下建连前的代数：建连期间发生 close_profile 就作废这次结果。
-        let epoch = self.epochs.lock().await.get(&profile_id).copied().unwrap_or(0);
+        let epoch = self
+            .epochs
+            .lock()
+            .await
+            .get(&profile_id)
+            .copied()
+            .unwrap_or(0);
         let session = RedisSession::open(tunnels, plan).await?;
         {
             let epochs = self.epochs.lock().await;
@@ -1392,7 +1404,7 @@ impl RedisManager {
                 error: None,
                 latency_ms: started.elapsed().as_millis() as u64,
                 server_version: session.server_version.clone(),
-                connection_id: None,
+                connection: None,
                 tls: None,
                 tunnel_local_port: session.tunnel.as_ref().map(|lease| lease.local_port()),
                 read_only,
@@ -1403,7 +1415,7 @@ impl RedisManager {
                 error: Some(error),
                 latency_ms: started.elapsed().as_millis() as u64,
                 server_version: None,
-                connection_id: None,
+                connection: None,
                 tls: None,
                 tunnel_local_port: None,
                 read_only,
@@ -1629,9 +1641,9 @@ fn encode_name(bytes: &[u8]) -> String {
 /// 所有按名字操作的命令都必须过这一层，否则二进制键读得到、写不回。
 fn decode_name(name: &str) -> Result<Vec<u8>, DbErrorInfo> {
     match name.strip_prefix(BINARY_PREFIX) {
-        Some(encoded) => BASE64_STANDARD.decode(encoded).map_err(|error| {
-            DbErrorInfo::new("query", format!("二进制名字解码失败：{error}"))
-        }),
+        Some(encoded) => BASE64_STANDARD
+            .decode(encoded)
+            .map_err(|error| DbErrorInfo::new("query", format!("二进制名字解码失败：{error}"))),
         None => Ok(name.as_bytes().to_vec()),
     }
 }

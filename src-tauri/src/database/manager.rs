@@ -313,7 +313,7 @@ impl DatabaseManager {
                     error: Some(error),
                     latency_ms: started.elapsed().as_millis() as u64,
                     server_version: None,
-                    connection_id: None,
+                    connection: None,
                     tls: None,
                     tunnel_local_port: None,
                     read_only,
@@ -330,7 +330,7 @@ impl DatabaseManager {
                     error: Some(error),
                     latency_ms: started.elapsed().as_millis() as u64,
                     server_version: None,
-                    connection_id: None,
+                    connection: None,
                     tls: None,
                     tunnel_local_port: endpoint.tunnel_local_port(),
                     read_only,
@@ -347,7 +347,7 @@ impl DatabaseManager {
                     error: Some(error),
                     latency_ms: started.elapsed().as_millis() as u64,
                     server_version: None,
-                    connection_id: None,
+                    connection: None,
                     tls: None,
                     tunnel_local_port: endpoint.tunnel_local_port(),
                     read_only,
@@ -364,7 +364,7 @@ impl DatabaseManager {
                 error: Some(error),
                 latency_ms: started.elapsed().as_millis() as u64,
                 server_version: None,
-                connection_id: None,
+                connection: None,
                 tls: None,
                 tunnel_local_port,
                 read_only,
@@ -373,7 +373,7 @@ impl DatabaseManager {
 
         let version = driver::server_version(&mut conn).await;
         let tls = driver::read_tls_status(&mut conn).await;
-        let connection_id = Some(conn.id());
+        let connection = Some(driver::connection_identity(&conn));
         let tunnel_local_port = endpoint.tunnel_local_port();
         let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
 
@@ -383,7 +383,7 @@ impl DatabaseManager {
             error: None,
             latency_ms: started.elapsed().as_millis() as u64,
             server_version: version,
-            connection_id,
+            connection,
             tls: Some(tls),
             tunnel_local_port,
             read_only: endpoint.read_only,

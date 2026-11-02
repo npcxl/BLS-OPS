@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { splitSqlStatements, statementAtCursor } from "../sql-split";
+import { MYSQL_SPLIT_RULES, splitSqlStatements, statementAtCursor } from "../sql-split";
+
+const POSTGRES = {
+  ...MYSQL_SPLIT_RULES,
+  hash_line_comment: false,
+  backslash_escapes: false,
+  dollar_quoting: true,
+};
+
+const SQLSERVER = {
+  ...MYSQL_SPLIT_RULES,
+  hash_line_comment: false,
+  backslash_escapes: false,
+  batch_terminator: "GO",
+};
 
 describe("SQL 语句拆分", () => {
   it("按顶层分号拆分，并丢掉空语句", () => {
@@ -51,5 +65,45 @@ describe("SQL 语句拆分", () => {
     expect(statementAtCursor(sql, 0)).toBe("SELECT 1");
     expect(statementAtCursor(sql, sql.indexOf("SELECT 2") + 2)).toBe("SELECT 2");
     expect(statementAtCursor(sql, sql.length)).toBe("SELECT 3");
+  });
+
+  describe("方言语义", () => {
+    it("PostgreSQL：`$$ … $$` 里的分号不拆分", () => {
+      const { statements } = splitSqlStatements(
+        "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql; SELECT 1;",
+        POSTGRES,
+      );
+      expect(statements).toHaveLength(2);
+      expect(statements[0]).toContain("RETURN 1; END;");
+      expect(statements[1]).toBe("SELECT 1");
+    });
+
+    it("PostgreSQL：`#` 不是注释，反斜杠也不是转义", () => {
+      // `#` 只是普通字符：整行都是一条语句。
+      const hash = splitSqlStatements("# select 1; SELECT 2;", POSTGRES);
+      expect(hash.statements).toEqual(["# select 1", "SELECT 2"]);
+
+      // 标准 SQL 里 `'a\'` 在第二个引号处就结束，因此后续分号是分隔符。
+      const quoted = splitSqlStatements("SELECT 'a\\'; SELECT 2;", POSTGRES);
+      expect(quoted.statements).toEqual(["SELECT 'a\\'", "SELECT 2"]);
+    });
+
+    it("SQL Server：独占一行的 GO 是批分隔符", () => {
+      const { statements } = splitSqlStatements(
+        "SELECT 1\nGO\nSELECT 2\n  go  \nSELECT 3",
+        SQLSERVER,
+      );
+      expect(statements).toEqual(["SELECT 1", "SELECT 2", "SELECT 3"]);
+      // 不与标识符混淆：`GOTO` 不是批分隔符。
+      const notBatch = splitSqlStatements("SELECT GOTO FROM t\nGO", SQLSERVER);
+      expect(notBatch.statements[0]).toContain("GOTO");
+    });
+
+    it("MySQL 默认仍然把 `#` 当注释、反斜杠当转义", () => {
+      const hash = splitSqlStatements("# 注释; 不分隔\nSELECT 1;");
+      expect(hash.statements).toEqual(["# 注释; 不分隔\nSELECT 1"]);
+      const escaped = splitSqlStatements("SELECT 'it\\'s; ok'; SELECT 2;");
+      expect(escaped.statements).toEqual(["SELECT 'it\\'s; ok'", "SELECT 2"]);
+    });
   });
 });

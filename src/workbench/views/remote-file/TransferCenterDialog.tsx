@@ -132,7 +132,6 @@ export function TransferCenterDialog({
       open={open}
       width={600}
       title={t("Transfers")}
-      description={t("Closing this panel won't stop transfers.")}
       onClose={onClose}
       footer={
         <>

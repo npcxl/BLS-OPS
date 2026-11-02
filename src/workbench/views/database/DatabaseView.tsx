@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Database as DatabaseIcon,
+  Loader2,
   TriangleAlert,
   X,
 } from "@/components/icons";
@@ -42,8 +43,10 @@ import { ConnectionInfoPanel } from "./ConnectionInfoPanel";
 import { DdlPanel } from "./DdlPanel";
 import { listenDetachedSqlEvents } from "./detached-sql";
 import { FieldCard } from "./FieldCard";
+import { engineMeta, familyOf } from "./db-engines";
 import { OpenItemsPanel } from "./OpenItemsPanel";
 import { RedisBrowser } from "./RedisBrowser";
+import { useEngineCatalog } from "./useEngineCatalog";
 import { WorkItemHost } from "./WorkItemHost";
 
 const FIELD_CARD_WIDTH = 260;
@@ -139,6 +142,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const [closingScope, setClosingScope] = useState<"others" | "right">("others");
   /** 足够宽时字段卡片浮在列表左侧，不再挤压中央数据区。 */
   const [wide, setWide] = useState(() => window.innerWidth >= 1500);
+  // 引擎目录决定"这是不是 Redis / 是不是文档型"：加载完成前不要建立会话，
+  // 否则会拿 Redis 配置去走 SQL 的 db_connect。
+  const catalog = useEngineCatalog();
 
   useEffect(() => {
     const onResize = () => setWide(window.innerWidth >= 1500);
@@ -164,14 +170,15 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   useEffect(() => {
     if (!profileId) return;
     // Redis 连接不走 SQL 会话：键浏览器自己负责建连（db_redis_connect）。
-    if (profiles.find((entry) => entry.id === profileId)?.engine === "redis") {
+    if (!catalog.ready) return;
+    if (familyOf(profiles.find((entry) => entry.id === profileId)?.engine ?? "") === "redis") {
       void refreshStatus(profileId);
       return;
     }
     if (!session) void ensureSession(profileId);
     void refreshStatus(profileId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId]);
+  }, [profileId, catalog.ready]);
 
   useEffect(() => {
     if (!draggingRight) return;
@@ -451,7 +458,52 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
 
   // Redis 引擎：整块替换为键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），
   // 不进入 SQL 工作台的工作项体系。
-  if (profile.engine === "redis") {
+  if (!catalog.ready) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface-1 px-6">
+        {catalog.error ? (
+          <TriangleAlert size={20} className="text-danger" />
+        ) : (
+          <Loader2 size={20} className="animate-spin text-fg-subtle" />
+        )}
+        <p className="text-12 text-fg">
+          {catalog.error ? t("无法读取数据库引擎目录") : t("正在读取数据库引擎目录…")}
+        </p>
+        {catalog.error && (
+          <>
+            <p className="max-w-sm text-center text-11 leading-relaxed text-fg-subtle">
+              {catalog.error}
+            </p>
+            <Button variant="ghost" size="sm" onClick={catalog.reload}>
+              {t("重试")}
+            </Button>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  const meta = engineMeta(profile.engine);
+  // 未适配：明确说明，不进入 SQL 工作区让用户撞一条 "unsupported" 报错。
+  if (!meta.known || !meta.supported) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface-1 px-6">
+        <TriangleAlert size={20} className="text-warning" />
+        <p className="text-12 text-fg">
+          {t("{{engine}} 尚未适配，配置已保存", { engine: meta.label })}
+        </p>
+        <p className="max-w-md text-center text-11 leading-relaxed text-fg-subtle">
+          {meta.unavailableReason ?? meta.descriptor?.note ?? ""}
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
+          {t("关闭标签")}
+        </Button>
+      </div>
+    );
+  }
+
+  const family = familyOf(profile.engine);
+  if (family === "redis") {
     return <RedisBrowser profile={profile} />;
   }
 
@@ -529,7 +581,7 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         </Button>
       </Tooltip>
       <span className="ml-1 shrink-0 whitespace-nowrap">
-        {session ? `#${session.connection_id}` : t("未连接")}
+        {session ? session.connection.label : t("未连接")}
         {status?.tunnel_local_port ? ` · 127.0.0.1:${status.tunnel_local_port}` : ""}
       </span>
     </div>

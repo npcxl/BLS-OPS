@@ -41,7 +41,8 @@ import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
 import { SaveQueryDialog } from "./SaveQueryDialog";
-import { splitSqlStatements, statementAtCursor } from "./sql-split";
+import { engineMeta } from "./db-engines";
+import { splitSqlStatements, statementAtCursor, type SplitRules } from "./sql-split";
 import {
   DESTRUCTIVE_LABEL,
   detectDestructive,
@@ -73,6 +74,11 @@ export function SqlWorkspace({
 }) {
   const { t } = useTranslation();
   const theme = useEditorTheme();
+  // 语句拆分必须按方言：`#` 注释、反斜杠转义、`$$`、`GO` 各引擎不同。
+  const splitRules = useMemo<SplitRules | undefined>(
+    () => engineMeta(profile.engine).descriptor?.dialect_rules,
+    [profile.engine],
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [editorHeight, setEditorHeight] = useState(236);
@@ -248,8 +254,8 @@ export function SqlWorkspace({
       const source =
         scope === "all"
           ? sqlText
-          : selection || statementAtCursor(sqlText, view?.state.selection.main.head ?? 0);
-      const parsed = splitSqlStatements(source);
+          : selection || statementAtCursor(sqlText, view?.state.selection.main.head ?? 0, splitRules);
+      const parsed = splitSqlStatements(source, splitRules);
       if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
       if (parsed.statements.length === 0) {
         setNotice(t("没有可执行的语句"));

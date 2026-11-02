@@ -205,10 +205,7 @@ pub async fn deployment_knowledge_restore(
 
 /// 归档（软删除）：不参与检索，历史引用仍可追溯。
 #[tauri::command]
-pub async fn deployment_knowledge_archive(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_knowledge_archive(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let now = AppDb::now();
     let conn = state.db.open().map_err(|error| error.to_string())?;
     db::archive_document(&conn, &id, now).map_err(|error| error.to_string())?;
@@ -293,9 +290,7 @@ pub async fn deployment_knowledge_update_meta(
 /// 之所以做成 Rust IPC 而不是前端任意读文件：前端拿不到"任意读文件"的能力，
 /// 路径只能来自系统文件选择器，读取范围被上面三条规则限死。
 #[tauri::command]
-pub async fn deployment_knowledge_import_markdown(
-    path: String,
-) -> OpsResult<ImportedMarkdown> {
+pub async fn deployment_knowledge_import_markdown(path: String) -> OpsResult<ImportedMarkdown> {
     // 内层仍是字符串错误（单测直接断言消息），到命令边界补阶段。
     read_markdown_file(&path).map_err(|error| OpsError::new("io", error))
 }

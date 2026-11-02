@@ -45,6 +45,7 @@ fn profile() -> DatabaseProfile {
         redis_mode: None,
         sentinel_master: None,
         nodes_json: None,
+        engine_options: Default::default(),
     }
 }
 
@@ -61,6 +62,9 @@ fn temp_app_db() -> (std::path::PathBuf, rusqlite::Connection) {
     (path, conn)
 }
 
+/// 这套测试共用 `ops_test` 库里的同一批表，**必须串行执行**：
+/// CI 用 `cargo test --all-targets -- --test-threads=1`，本地并行跑会互相
+/// TRUNCATE/删除而随机失败。这里不做进程内加锁——那只会掩盖"夹具共享"的事实。
 async fn setup_schema(endpoint_opts: mysql_async::Opts) -> bool {
     let mut conn = match driver::connect_once(endpoint_opts, Duration::from_secs(10)).await {
         Ok(conn) => conn,
@@ -1391,7 +1395,10 @@ async fn mysql_ddl_disconnect_is_reported_unknown() {
         .expect("lock");
 
     let (runtime, session) = runtime_for(&conn).await;
-    let thread_id = session.thread_id;
+    let thread_id = session
+        .cancel
+        .mysql_thread_id()
+        .expect("MySQL 会话必须有 thread id");
     let session_for_ddl = session.clone();
     let task = tokio::spawn(async move {
         schema_ops::apply(

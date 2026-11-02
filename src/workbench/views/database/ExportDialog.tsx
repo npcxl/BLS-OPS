@@ -181,11 +181,6 @@ export function ExportDialog({
     <Modal
       open={open}
       title={title ?? t("导出 CSV")}
-      description={
-        table
-          ? t("按当前过滤与排序重新查询整张表并流式写盘。")
-          : t("导出会重新执行这条只读 SQL：数据可能已与页面显示不同。")
-      }
       width={520}
       onClose={busy && !terminal ? undefined : onClose}
       footer={

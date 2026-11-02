@@ -15,17 +15,21 @@ import { Select } from "@/components/ui/select";
 import { stageLabel, toAppError } from "@/lib/app-error";
 import { DbEngineIcon } from "./DbEngineIcon";
 import {
-  DB_ENGINES,
+  capabilityReason,
+  engineCatalog,
   engineMeta,
+  engineOptionsFor,
   isDefaultPort,
   isEngineSupported,
-  isFileEngine,
   usernameForEngine,
 } from "./db-engines";
+import { useEngineCatalog } from "./useEngineCatalog";
 import type {
   ConnectionTestResult,
   DatabaseProfile,
   DbErrorInfo,
+  EngineOptions,
+  OptionField,
   TlsMode,
 } from "@/api/types/database";
 import { useDomainStore } from "@/stores/domain-store";
@@ -68,6 +72,7 @@ function newProfile(): DatabaseProfile {
     redis_mode: null,
     sentinel_master: null,
     nodes_json: null,
+    engine_options: {},
     connect_timeout_ms: 10_000,
     query_timeout_ms: 60_000,
     created_at: now,
@@ -125,40 +130,71 @@ export function ConnectionDialog({
   const patch = (value: Partial<DatabaseProfile>) =>
     setDraft((current) => ({ ...current, ...value }));
 
+  const catalog = useEngineCatalog();
   /** 有真实驱动的引擎才给"测试连接"；其余允许先存配置。 */
   const engineSupported = isEngineSupported(draft.engine);
-  const fileEngine = isFileEngine(draft.engine);
   const meta = engineMeta(draft.engine);
+  const descriptor = meta.descriptor;
+  const fields = descriptor?.fields;
 
   /**
-   * 切引擎时联动默认值：
+   * 切引擎时联动默认值，全部由注册表声明驱动：
    * - 端口只在"当前值还是某个默认端口"时才跟着换，不覆盖用户手填的端口；
-   * - 文件型（SQLite）没有主机/端口/用户名，清掉以免留下误导性配置。
+   * - 目标引擎没有的字段一律清空（host/username/TLS/SSH），不留误导性配置；
+   * - `engine_options` 只保留目标引擎声明过的键。
    */
   const changeEngine = (engine: DatabaseProfile["engine"]) => {
     const next = engineMeta(engine);
-    if (next.transport === "file") {
-      patch({
-        engine,
-        host: "",
-        port: 0,
-        username: "",
-        ssh_server_id: null,
-        tls_mode: "disabled",
-        tls_ca_path: null,
-        tls_server_name: null,
-        redis_mode: null,
-      });
-      return;
-    }
+    const nextFields = next.descriptor?.fields;
     patch({
       engine,
-      port: isDefaultPort(draft.port) ? next.defaultPort : draft.port,
-      // 用户名只有 MySQL/MariaDB 有默认值：切到 Redis 时清掉自动填的 root，
-      // 否则会拿 root 去 AUTH 一个空密码，默认配置永远连不上。
-      username: usernameForEngine(next.id, draft.username),
-      redis_mode: next.id === "redis" ? (draft.redis_mode ?? "standalone") : null,
+      host: nextFields?.host ? draft.host || "127.0.0.1" : "",
+      port: nextFields?.port
+        ? isDefaultPort(draft.port)
+          ? next.defaultPort
+          : draft.port
+        : 0,
+      username: nextFields?.username ? usernameForEngine(engine, draft.username) : "",
+      engine_options: engineOptionsFor(engine, draft.engine_options),
+      ssh_server_id: nextFields?.ssh_tunnel ? draft.ssh_server_id : null,
+      tls_mode: nextFields?.tls ? draft.tls_mode : "disabled",
+      tls_ca_path: nextFields?.tls ? draft.tls_ca_path : null,
+      tls_server_name: nextFields?.tls ? draft.tls_server_name : null,
+      redis_mode: engine === "redis" ? (draft.redis_mode ?? "standalone") : null,
     });
+  };
+
+  /** `engine_options` 的单字段读写；未知键不会在这里产生。 */
+  const optionValue = (field: OptionField): string | boolean | undefined => {
+    const options = draft.engine_options as Record<string, unknown>;
+    const value = options[field.key];
+    return typeof value === "string" || typeof value === "boolean" ? value : undefined;
+  };
+
+  const setOption = (field: OptionField, value: string | boolean | undefined) => {
+    const next: EngineOptions = { ...draft.engine_options };
+    const target = next as Record<string, unknown>;
+    if (value === undefined || value === "") delete target[field.key];
+    else target[field.key] = value;
+    patch({ engine_options: next });
+  };
+
+  const browseSqlitePath = async () => {
+    try {
+      const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
+      const selected = await openFileDialog({
+        multiple: false,
+        filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
+      });
+      if (typeof selected === "string") {
+        setOption(
+          { key: "path", label: "", placeholder: "", kind: { kind: "path" }, required: true },
+          selected,
+        );
+      }
+    } catch {
+      // 用户取消或对话框不可用：保留手填路径。
+    }
   };
 
   const save = async () => {
@@ -168,23 +204,41 @@ export function ConnectionDialog({
       setError(t("连接名称不能为空"));
       return;
     }
-    if (fileEngine) {
-      // 文件型数据库：库就是文件路径，没有主机/端口/用户名。
-      if (!(draft.default_database ?? "").trim()) {
+    // 必填项由注册表声明：文件型要路径，MongoDB 允许 URI 替代主机，
+    // Oracle 要服务名，Redis 不强制用户名。
+    const required = descriptor?.requirements;
+    if (required?.endpoint === "file_path") {
+      if (!(draft.engine_options.path ?? "").trim()) {
         setError(t("请填写数据库文件路径"));
         return;
       }
+    } else if (required?.endpoint === "uri_or_host") {
+      const hasUri = Boolean((draft.engine_options.uri ?? "").trim());
+      if (!hasUri && !draft.host.trim()) {
+        setError(t("请填写主机，或提供连接 URI"));
+        return;
+      }
+      if (!hasUri && (draft.port < 1 || draft.port > 65535)) {
+        setError(t("端口必须在 1 到 65535 之间"));
+        return;
+      }
     } else {
-      // Redis 6+ 的 ACL 才有用户名：Redis 不强制用户名。
-      const usernameRequired = draft.engine !== "redis";
-      if (!draft.host.trim() || (usernameRequired && !draft.username.trim())) {
-        setError(t("主机和用户名不能为空"));
+      if (!draft.host.trim()) {
+        setError(t("数据库主机不能为空"));
         return;
       }
       if (draft.port < 1 || draft.port > 65535) {
         setError(t("端口必须在 1 到 65535 之间"));
         return;
       }
+    }
+    if (required?.username && !draft.username.trim()) {
+      setError(t("用户名不能为空"));
+      return;
+    }
+    if (required?.database && !(draft.default_database ?? "").trim()) {
+      setError(t(draft.engine === "oracle" ? "请填写服务名 / SID" : "请填写数据库名"));
+      return;
     }
     setBusy(true);
     try {
@@ -221,7 +275,7 @@ export function ConnectionDialog({
         error: info,
         latency_ms: 0,
         server_version: null,
-        connection_id: null,
+        connection: null,
         tls: null,
         tunnel_local_port: null,
         read_only: draft.read_only,
@@ -259,9 +313,6 @@ export function ConnectionDialog({
   };
 
   const title = profile ? t("编辑数据库连接") : t("新建数据库连接");
-  const description = t(
-    "密码保存在系统钥匙串，不会写入本地数据库，也不会回传到界面。",
-  );
 
   const footer = (
     <>
@@ -284,44 +335,59 @@ export function ConnectionDialog({
     </>
   );
 
-  const body = (
+  const body = !catalog.ready ? (
+    <div className="rounded-[8px] border border-line bg-surface-2/50 p-3 text-11 leading-relaxed text-fg-muted">
+      {catalog.error ? (
+        <div className="flex flex-col items-start gap-2">
+          <span className="text-danger">
+            {t("无法读取数据库引擎目录")}：{catalog.error}
+          </span>
+          <Button variant="secondary" size="sm" onClick={catalog.reload}>
+            {t("重试")}
+          </Button>
+        </div>
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <Loader2 size={12} className="animate-spin" />
+          {t("正在读取数据库引擎目录…")}
+        </span>
+      )}
+    </div>
+  ) : (
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-[220px_1fr] items-end gap-2 rounded-[8px] border border-line bg-surface-2/60 p-2">
           <Field label={t("数据库类型")}>
             <Select
               value={draft.engine}
               ariaLabel={t("数据库类型")}
+              // 引擎选项带品牌图标与版本号：高度按需自定义，不再受预设档位限制
+              size="lg"
+              height={42}
+              itemHeight={38}
               onChange={(value) => changeEngine(value as DatabaseProfile["engine"])}
-              options={DB_ENGINES.map((engine) => ({
-                // 未适配的引擎也可以选：先把连接配置存下来，等适配完直接能用。
-                value: engine.id,
-                label: engine.supported
-                  ? engine.label
-                  : `${engine.label}（${t("尚未适配")}）`,
-                icon: <DbEngineIcon engine={engine.id} connected size={13} />,
-                hint:
-                  engine.id === "mysql"
-                    ? "MySQL 8.x"
-                    : engine.id === "redis"
-                      ? "Redis 6+"
-                      : engine.id === "mariadb"
-                        ? t("按 MySQL 协议")
-                        : engine.transport === "file"
-                          ? t("文件型")
-                          : undefined,
-              }))}
+              
+              options={engineCatalog().map((engine) => {
+                const implemented = engine.implementation === "implemented";
+                const versions = engine.verified[0]?.versions;
+                return {
+                  // 未适配的引擎也可以选：先把连接配置存下来，等适配完直接能用。
+                  value: engine.id,
+                  label: implemented
+                    ? engine.product
+                    : `${engine.product}（${t("尚未适配")}）`,
+                  icon: <DbEngineIcon engine={engine.id} connected size={13} />,
+                  hint:
+                    implemented && versions && versions !== "—"
+                      ? versions
+                      : undefined,
+                };
+              })}
             />
           </Field>
-          <p className="pb-0.5 text-11 leading-relaxed text-fg-subtle">
-            {draft.engine === "redis"
-              ? t(
-                  "Redis 走独立的键浏览器（SCAN / 类型化读写 / TTL / 发布订阅），不提供 SQL 工作台。",
-                )
-              : draft.engine === "mariadb"
-                ? t("MariaDB 与 MySQL 同协议，直接按 MySQL 连接；个别认证插件可能需在服务端调整。")
-                : engineSupported
-                  ? t("连接使用原生协议驱动，不区分小版本。")
-                  : t("该类型尚未适配：可以先保存连接配置，连接时会明确提示暂不支持。")}
+          {/* 介绍文字对齐下拉框中线：高度 = 控件高（30px），容器贴底对齐。 */}
+          <p className="flex h-[30px] items-center text-11 leading-relaxed text-fg-subtle">
+            {descriptor ? t(descriptor.note) : (meta.unavailableReason ?? "")}
+            {!engineSupported && t("（尚未适配）")}
           </p>
         </div>
 
@@ -334,8 +400,8 @@ export function ConnectionDialog({
           />
         </Field>
 
-        {/* 文件型数据库没有主机/端口/账号：显示这些字段只会让人以为要填。 */}
-        {!fileEngine && (
+        {/* 字段可见性由注册表声明：文件型没有主机/端口/账号，MongoDB 允许 URI。 */}
+        {fields?.host && (
           <>
             <div className="grid grid-cols-[1fr_100px] gap-2">
               <Field label={t("主机")}>
@@ -410,16 +476,72 @@ export function ConnectionDialog({
           </>
         )}
 
-        <Field label={t(meta.databaseLabel)}>
-          <input
-            className={fieldClass}
-            value={draft.default_database ?? ""}
-            onChange={(event) =>
-              patch({ default_database: event.target.value.trim() || null })
-            }
-            placeholder={t(meta.databasePlaceholder)}
-          />
-        </Field>
+        {fields?.database && (
+          <Field label={t(meta.databaseLabel)}>
+            <input
+              className={fieldClass}
+              value={draft.default_database ?? ""}
+              onChange={(event) =>
+                patch({ default_database: event.target.value.trim() || null })
+              }
+              placeholder={t(meta.databasePlaceholder)}
+            />
+          </Field>
+        )}
+
+        {/* 引擎专属配置：字段由注册表声明，界面不写任何 engine 分支。 */}
+        {descriptor?.options.map((field) => {
+          const label = t(field.label);
+          const value = optionValue(field);
+          if (field.kind.kind === "bool") {
+            return (
+              <label
+                key={field.key}
+                className="flex items-center gap-1.5 text-11 text-fg-muted"
+              >
+                <input
+                  type="checkbox"
+                  checked={value === true}
+                  onChange={(event) => setOption(field, event.target.checked)}
+                />
+                {label}
+              </label>
+            );
+          }
+          if (field.kind.kind === "enum") {
+            return (
+              <Field key={field.key} label={label}>
+                <Select
+                  value={typeof value === "string" ? value : field.kind.values[0]}
+                  ariaLabel={label}
+                  onChange={(next) => setOption(field, next)}
+                  options={field.kind.values.map((option) => ({
+                    value: option,
+                    label: option,
+                  }))}
+                />
+              </Field>
+            );
+          }
+          return (
+            <Field key={field.key} label={label}>
+              <div className="flex items-center gap-2">
+                <input
+                  className={fieldClass}
+                  value={typeof value === "string" ? value : ""}
+                  onChange={(event) => setOption(field, event.target.value)}
+                  placeholder={field.placeholder}
+                />
+                {field.kind.kind === "path" && (
+                  <Button variant="ghost" size="sm" onClick={() => void browseSqlitePath()}>
+                    <FolderOpen size={12} />
+                    {t("浏览…")}
+                  </Button>
+                )}
+              </div>
+            </Field>
+          );
+        })}
 
         {draft.engine === "redis" && (
           <div className="rounded-[8px] border border-line bg-surface-2/60 p-2">
@@ -494,42 +616,53 @@ export function ConnectionDialog({
           </div>
         )}
 
+        {(fields?.ssh_tunnel || fields?.tls) && (
         <div className="rounded-[8px] border border-line p-2">
-          <div className="mb-1.5 text-11 font-medium text-fg-muted">{t("SSH 隧道")}</div>
+          <div className="mb-1.5 text-11 font-medium text-fg-muted">
+            {fields?.ssh_tunnel && fields?.tls
+              ? t("SSH 隧道与 TLS")
+              : fields?.ssh_tunnel
+                ? t("SSH 隧道")
+                : t("TLS")}
+          </div>
           <div className="grid grid-cols-2 gap-2">
-            <Field label={t("SSH 服务器")} hint={t("复用已保存的 SSH 凭据与主机指纹") }>
-              <Select
-                value={draft.ssh_server_id ?? ""}
-                ariaLabel={t("SSH 服务器")}
-                onChange={(value) => patch({ ssh_server_id: value || null })}
-                options={[
-                  { value: "", label: t("直连（不使用隧道）") },
-                  ...sshServers.map((server) => ({
-                    value: server.id,
-                    label: server.name,
-                    hint: `${server.username}@${server.host}:${server.port}`,
-                  })),
-                ]}
-              />
-            </Field>
-            <Field label={t("TLS 模式")} hint={t("选择 required 后绝不自动降级为明文") }>
-              <Select
-                value={draft.tls_mode}
-                ariaLabel={t("TLS 模式")}
-                onChange={(value) => patch({ tls_mode: value as TlsMode })}
-                options={[
-                  { value: "disabled", label: t("不加密（明文）") },
-                  {
-                    value: "verify_ca",
-                    label: t("验证证书链（名称按下方验证名称）"),
-                  },
-                  { value: "verify_identity", label: t("验证证书链 + 主机名") },
-                ]}
-              />
-            </Field>
+            {fields?.ssh_tunnel && (
+              <Field label={t("SSH 服务器")} hint={t("复用已保存的 SSH 凭据与主机指纹") }>
+                <Select
+                  value={draft.ssh_server_id ?? ""}
+                  ariaLabel={t("SSH 服务器")}
+                  onChange={(value) => patch({ ssh_server_id: value || null })}
+                  options={[
+                    { value: "", label: t("直连（不使用隧道）") },
+                    ...sshServers.map((server) => ({
+                      value: server.id,
+                      label: server.name,
+                      hint: `${server.username}@${server.host}:${server.port}`,
+                    })),
+                  ]}
+                />
+              </Field>
+            )}
+            {fields?.tls && (
+              <Field label={t("TLS 模式")} hint={t("选择 required 后绝不自动降级为明文") }>
+                <Select
+                  value={draft.tls_mode}
+                  ariaLabel={t("TLS 模式")}
+                  onChange={(value) => patch({ tls_mode: value as TlsMode })}
+                  options={[
+                    { value: "disabled", label: t("不加密（明文）") },
+                    {
+                      value: "verify_ca",
+                      label: t("验证证书链（名称按下方验证名称）"),
+                    },
+                    { value: "verify_identity", label: t("验证证书链 + 主机名") },
+                  ]}
+                />
+              </Field>
+            )}
           </div>
 
-          {draft.tls_mode !== "disabled" && (
+          {fields?.tls && draft.tls_mode !== "disabled" && (
             <>
               <div className="mt-2 grid grid-cols-[1fr_auto] gap-2">
                 <Field label={t("CA 证书路径（可选）")}>
@@ -564,6 +697,7 @@ export function ConnectionDialog({
             </>
           )}
         </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           <Field label={t("连接超时（毫秒）")}>
@@ -602,13 +736,14 @@ export function ConnectionDialog({
             onChange={(event) => patch({ read_only: event.target.checked })}
           />
           <span className="text-11 leading-relaxed text-fg-muted">
-            {draft.engine === "redis"
+            {descriptor?.family === "redis"
               ? t(
                   "只读连接：键的写入、删除、TTL 修改与 PUBLISH 都会被拒绝，只能浏览。要修改数据请显式关闭。",
                 )
-              : t(
+              : (capabilityReason(descriptor, "read_only_enforcement") ??
+                t(
                   "只读连接：连接后执行 SET SESSION TRANSACTION READ ONLY，写语句会被服务器拒绝。要修改数据请显式关闭。",
-                )}
+                ))}
           </span>
         </label>
 
@@ -646,8 +781,12 @@ export function ConnectionDialog({
             </div>
             {test.ok && (
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-10 opacity-90">
-                {test.server_version && <span>MySQL {test.server_version}</span>}
-                {test.connection_id !== null && <span>#{test.connection_id}</span>}
+                {test.server_version && (
+                  <span>
+                    {meta.label} {test.server_version}
+                  </span>
+                )}
+                {test.connection && <span>{test.connection.label}</span>}
                 <span>
                   {t("TLS")}: {test.tls?.active ? `${test.tls.cipher ?? ""} ${test.tls.version ?? ""}` : t("未加密")}
                 </span>
@@ -684,7 +823,6 @@ export function ConnectionDialog({
       <div className="flex h-full min-h-0 flex-col bg-surface-1">
         <div className="flex shrink-0 flex-col gap-0.5 border-b border-line px-4 py-2.5">
           <span className="text-13 font-medium text-fg">{title}</span>
-          <span className="text-11 text-fg-subtle">{description}</span>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">{body}</div>
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-2">
@@ -698,7 +836,6 @@ export function ConnectionDialog({
     <Modal
       open={open}
       title={title}
-      description={description}
       width={680}
       onClose={busy ? undefined : onClose}
       footer={footer}

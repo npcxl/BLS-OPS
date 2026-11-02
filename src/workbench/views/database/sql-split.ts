@@ -1,14 +1,41 @@
 /**
  * SQL 语句拆分。
  *
- * **不是** `split(';')`：分号可能出现在字符串、反引号标识符、`--`/`#`
- * 行注释或 `/* *\/` 块注释里。这里逐字符扫描并维护状态。
+ * **不是** `split(';')`：分号可能出现在字符串、标识符、注释或
+ * PostgreSQL 的 `$$ … $$` 里。这里逐字符扫描并维护状态。
  *
- * 首版边界（明确不支持，而不是假装支持）：
- * - MySQL CLI 的 `DELIMITER $$` 指令不解析：存储过程/触发器定义请单独执行；
- * - `\g` / `\G` 客户端命令不解析；
- * - 语句内的 `;` 只有在状态机认为"代码里"时才算分隔符。
+ * 方言差异由调用方传入 `SplitRules`（来自后端注册表的 `dialect_rules`）：
+ * - `hash_line_comment`：只有 MySQL 把 `#` 当行注释；
+ * - `backslash_escapes`：只有 MySQL 在字符串里用反斜杠转义，标准 SQL 里
+ *   `'a\'` 的 `\` 是普通字符、后面的 `'` 才结束字符串；
+ * - `dollar_quoting`：PostgreSQL 的 `$$ … $$` 里不拆语句；
+ * - `batch_terminator`：SQL Server 的 `GO` 独占一行。
+ *
+ * 不传 rules 时按 MySQL 处理 —— 与改造前行为一致，既有调用点无需改动。
+ *
+ * 明确不支持（而不是假装支持）：
+ * - MySQL CLI 的 `DELIMITER $$` 指令；
+ * - `\g` / `\G` 客户端命令；
+ * - Oracle SQL*Plus 的 `/` 块提交；
+ * - PostgreSQL 的 `$tag$ … $tag$`（只认 `$$`）。
  */
+
+export interface SplitRules {
+  hash_line_comment: boolean;
+  backslash_escapes: boolean;
+  dollar_quoting: boolean;
+  batch_terminator: string | null;
+  statement_terminator: string;
+}
+
+/** 改造前的行为：MySQL 客户端语义。 */
+export const MYSQL_SPLIT_RULES: SplitRules = {
+  hash_line_comment: true,
+  backslash_escapes: true,
+  dollar_quoting: false,
+  batch_terminator: null,
+  statement_terminator: ";",
+};
 
 interface SplitOutcome {
   statements: string[];
@@ -16,14 +43,27 @@ interface SplitOutcome {
   warnings: string[];
 }
 
-export function splitSqlStatements(sql: string): SplitOutcome {
+type ScanState =
+  | "code"
+  | "single"
+  | "double"
+  | "backtick"
+  | "line-comment"
+  | "block-comment"
+  | "dollar";
+
+export function splitSqlStatements(
+  sql: string,
+  rules: SplitRules = MYSQL_SPLIT_RULES,
+): SplitOutcome {
   const statements: string[] = [];
   const warnings: string[] = [];
 
   let current = "";
   let index = 0;
-  let state: "code" | "single" | "double" | "backtick" | "line-comment" | "block-comment" =
-    "code";
+  let state: ScanState = "code";
+  /** 自上一个换行以来只有空白：`GO` 只能出现在行首。 */
+  let atLineStart = true;
 
   const push = () => {
     const trimmed = current.trim();
@@ -36,6 +76,23 @@ export function splitSqlStatements(sql: string): SplitOutcome {
     const next = sql[index + 1] ?? "";
 
     if (state === "code") {
+      // SQL Server 的 `GO`：独占一行，不分大小写。
+      if (atLineStart && rules.batch_terminator) {
+        const rest = sql.slice(index);
+        const go = new RegExp(
+          `^[ \\t]*${rules.batch_terminator}[ \\t]*(?=\\r?\\n|$)`,
+          "i",
+        ).exec(rest);
+        if (go) {
+          push();
+          index += go[0].length;
+          continue;
+        }
+      }
+
+      if (!/\s/.test(char)) atLineStart = false;
+      if (char === "\n") atLineStart = true;
+
       if (char === "'") {
         state = "single";
         current += char;
@@ -48,13 +105,18 @@ export function splitSqlStatements(sql: string): SplitOutcome {
       } else if (char === "-" && next === "-") {
         state = "line-comment";
         current += char;
-      } else if (char === "#") {
+      } else if (char === "#" && rules.hash_line_comment) {
         state = "line-comment";
         current += char;
       } else if (char === "/" && next === "*") {
         state = "block-comment";
         current += char;
-      } else if (char === ";") {
+      } else if (rules.dollar_quoting && char === "$" && next === "$") {
+        state = "dollar";
+        current += char + next;
+        index += 2;
+        continue;
+      } else if (char === rules.statement_terminator) {
         push();
       } else {
         current += char;
@@ -63,9 +125,21 @@ export function splitSqlStatements(sql: string): SplitOutcome {
       continue;
     }
 
+    if (state === "dollar") {
+      if (char === "$" && next === "$") {
+        current += "$$";
+        state = "code";
+        index += 2;
+        continue;
+      }
+      current += char;
+      index += 1;
+      continue;
+    }
+
     if (state === "single" || state === "double") {
       const quote = state === "single" ? "'" : '"';
-      if (char === "\\") {
+      if (char === "\\" && rules.backslash_escapes) {
         // MySQL 默认反斜杠转义：连同下一个字符一起吞掉。
         current += char;
         if (next) current += next;
@@ -97,7 +171,10 @@ export function splitSqlStatements(sql: string): SplitOutcome {
 
     if (state === "line-comment") {
       current += char;
-      if (char === "\n") state = "code";
+      if (char === "\n") {
+        state = "code";
+        atLineStart = true;
+      }
       index += 1;
       continue;
     }
@@ -127,8 +204,12 @@ export function splitSqlStatements(sql: string): SplitOutcome {
 }
 
 /** 当前光标所在的语句（用于"执行当前语句"）。 */
-export function statementAtCursor(sql: string, cursor: number): string {
-  const { statements } = splitSqlStatements(sql);
+export function statementAtCursor(
+  sql: string,
+  cursor: number,
+  rules: SplitRules = MYSQL_SPLIT_RULES,
+): string {
+  const { statements } = splitSqlStatements(sql, rules);
   if (statements.length === 0) return "";
   if (statements.length === 1) return statements[0];
 

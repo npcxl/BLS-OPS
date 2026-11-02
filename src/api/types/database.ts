@@ -9,19 +9,156 @@
  */
 
 /**
- * 支持的数据库引擎。当前 `mysql` 与 `redis` 有真实适配器；其余值出现在
- * 连接表单里是为了让"支持边界"可见，UI 会禁用并标注"尚未实现"——不能在
- * 还没有驱动/类型/取消实现时假装可选。
+ * 数据库引擎标识。**清单、默认端口、必填字段、能力都以
+ * `db_engines_catalog` 返回的后端注册表为准**，这里只固定已知 id，
+ * 让老配置的字符串有类型可落。
+ *
+ * 注意：出现在这个联合类型里**不等于**已支持 —— 是否可连接看
+ * `EngineDescriptor.implementation`，能做什么看 `capabilities`。
  */
 export type DbEngine =
   | "mysql"
   | "mariadb"
+  | "tidb"
+  | "oceanbase_mysql"
+  | "doris"
+  | "starrocks"
+  | "aurora_mysql"
+  | "postgres"
+  | "cockroach"
+  | "aurora_pg"
+  | "sqlite"
+  | "sqlserver"
+  | "oracle"
+  | "mongodb"
+  | "clickhouse"
+  /** Redis：键值引擎，走独立的 db_redis_* 命令族与键浏览器视图。 */
+  | "redis";
+
+/** 驱动系列：复用哪个协议实现（产品身份另见 `product`）。 */
+export type DriverFamily =
+  | "mysql"
   | "postgres"
   | "sqlite"
   | "sqlserver"
   | "oracle"
-  /** Redis：键值引擎，走独立的 db_redis_* 命令族与键浏览器视图。 */
+  | "mongodb"
+  | "clickhouse"
   | "redis";
+
+export type Dialect =
+  | "mysql"
+  | "postgres"
+  | "sqlite"
+  | "tsql"
+  | "oracle"
+  | "clickhouse"
+  | "none";
+
+/** 三态能力：只有 `supported` 才能直接放行；`limited` 必须把原因显示出来。 */
+export type Capability =
+  | { state: "supported" }
+  | { state: "limited"; reason: string }
+  | { state: "unsupported"; reason: string };
+
+export interface CapabilitySet {
+  query: Capability;
+  multiple_result_sets: Capability;
+  cancel: Capability;
+  transaction: Capability;
+  read_only_enforcement: Capability;
+  table_browse: Capability;
+  keyset_pagination: Capability;
+  table_edit: Capability;
+  schema_edit: Capability;
+  view_edit: Capability;
+  export: Capability;
+}
+
+/** 验证等级：没有真实环境就不能往上写。 */
+export type VerifiedLevel = "config_only" | "connect" | "query" | "manage";
+
+export interface VerifiedScope {
+  versions: string;
+  level: VerifiedLevel;
+  notes: string;
+}
+
+export interface EngineFields {
+  host: boolean;
+  port: boolean;
+  username: boolean;
+  password: boolean;
+  database: boolean;
+  path: boolean;
+  uri: boolean;
+  ssh_tunnel: boolean;
+  tls: boolean;
+}
+
+export type EndpointRequirement = "host_port" | "file_path" | "uri_or_host";
+
+export interface EngineRequirements {
+  endpoint: EndpointRequirement;
+  username: boolean;
+  database: boolean;
+}
+
+export type OptionFieldKind =
+  | { kind: "text" }
+  | { kind: "path" }
+  | { kind: "enum"; values: string[] }
+  | { kind: "bool" };
+
+export interface OptionField {
+  key: string;
+  label: string;
+  placeholder: string;
+  kind: OptionFieldKind;
+  required: boolean;
+}
+
+/** 前端拼 SQL 需要的方言事实，与后端生成 SQL 用的是同一份。 */
+export interface DialectRules {
+  identifier_quote: "backtick" | "double_quote" | "bracket";
+  backslash_escapes: boolean;
+  hash_line_comment: boolean;
+  dollar_quoting: boolean;
+  batch_terminator: string | null;
+  statement_terminator: string;
+  qualified_by_schema: boolean;
+  /** 标识符字节上限（MySQL 64 / PG 63 / SQL Server 128 …）。 */
+  max_ident_bytes: number;
+}
+
+export interface EngineDescriptor {
+  id: DbEngine;
+  product: string;
+  family: DriverFamily;
+  dialect: Dialect;
+  transport: "network" | "local_file";
+  implementation: "implemented" | "config_only";
+  default_port: number | null;
+  default_username: string | null;
+  fields: EngineFields;
+  requirements: EngineRequirements;
+  options: OptionField[];
+  capabilities: CapabilitySet;
+  dialect_rules: DialectRules;
+  verified: VerifiedScope[];
+  note: string;
+}
+
+/** 引擎专属配置；键由 `EngineDescriptor.options` 声明，后端按引擎校验。 */
+export interface EngineOptions {
+  path?: string | null;
+  schema?: string | null;
+  identifier?: string | null;
+  uri?: string | null;
+  auth_source?: string | null;
+  protocol?: string | null;
+  secure?: boolean | null;
+}
 
 /** Redis 连接模式。cluster 只有 db 0；sentinel/cluster 直连（不走 SSH 隧道）。 */
 export type RedisMode = "standalone" | "sentinel" | "cluster";
@@ -49,6 +186,11 @@ export interface DatabaseProfile {
   sentinel_master: string | null;
   /** Redis sentinel/cluster 附加节点，JSON 字符串数组。 */
   nodes_json: string | null;
+  /**
+   * 引擎专属配置（SQLite 路径 / PG schema / Oracle service-SID / Mongo URI）。
+   * 缺省为 `{}`；保存后后端会按引擎白名单校验并归一化。
+   */
+  engine_options: EngineOptions;
   connect_timeout_ms: number;
   query_timeout_ms: number;
   created_at: number;
@@ -103,11 +245,20 @@ export interface DbColumn {
   charset: number;
 }
 
+/**
+ * 物理连接身份。`label` 是界面展示用的（`#42` / `pid 1234` / `file:app.db`），
+ * `numeric` 只有 MySQL/PostgreSQL 这类协议才有 —— **不要**假设它一定存在。
+ */
+export interface ConnectionIdentity {
+  label: string;
+  numeric: number | null;
+}
+
 export interface DbSessionInfo {
   session_id: string;
   profile_id: string;
   generation: number;
-  connection_id: number;
+  connection: ConnectionIdentity;
   server_version: string | null;
   current_database: string | null;
   tls_active: boolean;
@@ -186,7 +337,7 @@ export interface QueryStarted {
   query_id: string;
   state: DbQueryState;
   generation: number;
-  connection_id: number;
+  connection: ConnectionIdentity;
 }
 
 export interface DbDatabase {
@@ -488,7 +639,7 @@ export interface ConnectionTestResult {
   error: DbErrorInfo | null;
   latency_ms: number;
   server_version: string | null;
-  connection_id: number | null;
+  connection: ConnectionIdentity | null;
   tls: TlsStatus | null;
   tunnel_local_port: number | null;
   read_only: boolean;

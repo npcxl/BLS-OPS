@@ -139,10 +139,7 @@ pub async fn deployment_memory_set_status(
 
 /// 删除一条 Memory（用户明确要求时才物理删除）。
 #[tauri::command]
-pub async fn deployment_memory_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_memory_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::deployment_session::delete_memory(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(

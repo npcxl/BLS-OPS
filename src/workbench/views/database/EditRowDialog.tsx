@@ -124,9 +124,6 @@ export function EditRowDialog({
     <Modal
       open={open}
       title={mode === "insert" ? t("新增行") : t("编辑行")}
-      description={t(
-        "修改先暂存，点“提交修改”才会在事务中执行；主键用于定位行，不能在这里改。",
-      )}
       width={640}
       onClose={onClose}
       footer={

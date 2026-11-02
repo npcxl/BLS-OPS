@@ -22,6 +22,7 @@ import type {
   DbTable,
   DbTableDetail,
   DbValue,
+  EngineDescriptor,
   ExportOutcome,
   ExportProgress,
   ExportRequest,
@@ -1555,10 +1556,10 @@ export const databaseApi = {
   saveSqlFile: (sql: string, suggestedName: string) =>
     invoke<string | null>("db_save_sql_file", { sql, suggestedName }),
 
-  moduleInfo: () =>
-    invoke<{ engine: string; driver: string; supports: string[]; postgres: string }>(
-      "db_module_info",
-    ),
+  moduleInfo: () => invoke<Record<string, unknown>>("db_module_info"),
+
+  /** 引擎目录：连接表单、能力门与方言规则的唯一事实来源。 */
+  enginesCatalog: () => invoke<EngineDescriptor[]>("db_engines_catalog"),
 
   // -- Redis 引擎（键浏览器，独立于 SQL 管线） -----------------------------
   redisConnect: (profileId: string) =>

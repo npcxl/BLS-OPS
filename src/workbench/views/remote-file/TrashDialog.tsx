@@ -99,7 +99,6 @@ export function TrashDialog({
       open={open}
       width={560}
       title={t("Recycle bin")}
-      description={t("Files land here before deletion.")}
       onClose={onClose}
       footer={
         <>

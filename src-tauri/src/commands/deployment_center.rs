@@ -67,7 +67,8 @@ pub async fn deployment_application_list(
     server_id: Option<String>,
 ) -> OpsResult<Vec<DeploymentApplication>> {
     let conn = open_db(&state)?;
-    db::list_applications(&conn, server_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_applications(&conn, server_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -131,7 +132,8 @@ pub async fn deployment_environment_list(
     application_id: Option<String>,
 ) -> OpsResult<Vec<DeploymentEnvironment>> {
     let conn = open_db(&state)?;
-    db::list_environments(&conn, application_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_environments(&conn, application_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -163,7 +165,9 @@ pub async fn deployment_environment_save(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| OpsError::from("应用不存在，请先创建应用"))?;
     if application.server_id != environment.server_id {
-        return Err(OpsError::from("环境必须与应用在同一台服务器上（P5.0 暂不支持跨服务器环境）"));
+        return Err(OpsError::from(
+            "环境必须与应用在同一台服务器上（P5.0 暂不支持跨服务器环境）",
+        ));
     }
     db::upsert_environment(&conn, &environment).map_err(|error| error.to_string())?;
     record_audit(
@@ -336,7 +340,8 @@ pub async fn deployment_service_units_for_project(
     project_id: String,
 ) -> OpsResult<Vec<String>> {
     let conn = open_db(&state)?;
-    db::service_units_for_confirmed_project(&conn, &project_id).map_err(|error| OpsError::from(error.to_string()))
+    db::service_units_for_confirmed_project(&conn, &project_id)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 // -- 服务关系 ---------------------------------------------------------------
@@ -347,7 +352,8 @@ pub async fn deployment_service_relation_list(
     application_id: Option<String>,
 ) -> OpsResult<Vec<ServiceRelation>> {
     let conn = open_db(&state)?;
-    db::list_service_relations(&conn, application_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_service_relations(&conn, application_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -408,7 +414,8 @@ pub async fn deployment_capacity_get(
     environment_id: String,
 ) -> OpsResult<Option<CapacityProfile>> {
     let conn = open_db(&state)?;
-    db::get_capacity_profile(&conn, &environment_id).map_err(|error| OpsError::from(error.to_string()))
+    db::get_capacity_profile(&conn, &environment_id)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -447,7 +454,8 @@ pub async fn deployment_domain_list(
     environment_id: Option<String>,
 ) -> OpsResult<Vec<DomainBinding>> {
     let conn = open_db(&state)?;
-    db::list_domain_bindings(&conn, environment_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_domain_bindings(&conn, environment_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -489,10 +497,7 @@ pub async fn deployment_domain_save(
 }
 
 #[tauri::command]
-pub async fn deployment_domain_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_domain_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_domain_binding(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -513,7 +518,8 @@ pub async fn deployment_config_list(
     application_id: Option<String>,
 ) -> OpsResult<Vec<ConfigDefinition>> {
     let conn = open_db(&state)?;
-    db::list_config_definitions(&conn, application_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_config_definitions(&conn, application_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 #[tauri::command]
@@ -551,10 +557,7 @@ pub async fn deployment_config_save(
 }
 
 #[tauri::command]
-pub async fn deployment_config_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_config_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_config_definition(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -575,7 +578,8 @@ pub async fn deployment_secret_list(
     application_id: Option<String>,
 ) -> OpsResult<Vec<SecretRef>> {
     let conn = open_db(&state)?;
-    db::list_secret_refs(&conn, application_id.as_deref()).map_err(|error| OpsError::from(error.to_string()))
+    db::list_secret_refs(&conn, application_id.as_deref())
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 保存密钥**引用**。这里从不接收、也不存密钥本体：
@@ -614,10 +618,7 @@ pub async fn deployment_secret_save(
 }
 
 #[tauri::command]
-pub async fn deployment_secret_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_secret_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_secret_ref(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -672,10 +673,7 @@ pub async fn deployment_artifact_save(
 }
 
 #[tauri::command]
-pub async fn deployment_artifact_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_artifact_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_artifact(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -878,10 +876,7 @@ pub async fn deployment_release_save(
 }
 
 #[tauri::command]
-pub async fn deployment_release_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_release_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_release(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -1070,7 +1065,9 @@ pub async fn deployment_artifact_import_retry(
         .snapshot(&task_id)
         .ok_or_else(|| OpsError::from("导入任务不存在（应用可能已重启）"))?;
     if matches!(previous.source, ImportSource::RemoteDirectory { .. }) {
-        return Err(OpsError::from("服务器目录来源需要重新发起导入（重试需要已连接的 SSH 会话）"));
+        return Err(OpsError::from(
+            "服务器目录来源需要重新发起导入（重试需要已连接的 SSH 会话）",
+        ));
     }
     // 先准备来源，再改状态 —— 准备失败时任务不该被留在"运行中"。
     let prepared = tasks::prepare_local(&previous.source)?;
@@ -1186,7 +1183,9 @@ pub async fn deployment_artifact_import_confirm(
     // 复核内容指纹：确认之前用户可能又改了本地文件，那样分析就失效了。
     if let Some(fresh) = tasks::revalidate(&task)? {
         if fingerprint.differs_from(&fresh) {
-            return Err(OpsError::from("制品内容已变化，识别结果已失效，请重新发起导入"));
+            return Err(OpsError::from(
+                "制品内容已变化，识别结果已失效，请重新发起导入",
+            ));
         }
     }
 
@@ -1211,7 +1210,9 @@ pub async fn deployment_artifact_import_confirm(
     if !confirmation.selected_service_ids.is_empty()
         && selected.len() != confirmation.selected_service_ids.len()
     {
-        return Err(OpsError::from("有选中的服务候选在识别结果里找不到（请重新分析）"));
+        return Err(OpsError::from(
+            "有选中的服务候选在识别结果里找不到（请重新分析）",
+        ));
     }
 
     let version_label = confirmation

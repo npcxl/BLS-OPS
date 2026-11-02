@@ -150,7 +150,6 @@ export function CreateTableDialog({
     <Modal
       open
       title={t("新建表")}
-      description={t("字段、主键和基础表选项；执行前先预览后端生成的 DDL。")}
       width={760}
       onClose={onClose}
       footer={

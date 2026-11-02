@@ -86,9 +86,12 @@ pub async fn db_profile_save(
 ) -> Result<DatabaseProfile, DbErrorInfo> {
     let (saved, old) = {
         let conn = open_db(&state).map_err(db_error)?;
-        profiles::validate_profile(&conn, &request.profile)?;
-        let old = profiles::get_profile(&conn, &request.profile.id).map_err(db_error)?;
-        let saved = profiles::save_profile(&conn, &request.profile, request.password.as_deref())
+        // 先归一化再校验：切过引擎的表单可能还带着上一个引擎的 host/port，
+        // 那不该阻塞保存，但也不该被原样写进库。
+        let normalized = profiles::normalize_profile(&request.profile);
+        profiles::validate_profile(&conn, &normalized)?;
+        let old = profiles::get_profile(&conn, &normalized.id).map_err(db_error)?;
+        let saved = profiles::save_profile(&conn, &normalized, request.password.as_deref())
             .map_err(db_error)?;
         (saved, old)
     };
@@ -123,8 +126,10 @@ pub async fn db_test_connection(
 ) -> Result<ConnectionTestResult, DbErrorInfo> {
     let plan = {
         let conn = open_db(&state).map_err(db_error)?;
-        profiles::validate_profile(&conn, &request.profile)?;
-        driver::plan_from_profile(&conn, &request.profile, request.password.as_deref())?
+        // 与保存走同一条归一化路径：否则会出现"能保存、但测试连接说配置非法"。
+        let normalized = profiles::normalize_profile(&request.profile);
+        profiles::validate_profile(&conn, &normalized)?;
+        driver::plan_from_profile(&conn, &normalized, request.password.as_deref())?
     };
     // Redis 与 MySQL 的测试路径完全平行：建连 + PING + 立即关闭，
     // 不留运行时（测试连接不该有副作用）。
@@ -802,12 +807,30 @@ pub async fn db_save_sql_file(
 /// 供前端检查同名命令是否注册（调试用；不参与业务）。
 #[tauri::command]
 pub fn db_module_info() -> serde_json::Value {
+    let engines: Vec<serde_json::Value> = crate::database::engine_registry::all()
+        .iter()
+        .map(|engine| {
+            serde_json::json!({
+                "id": engine.id,
+                "product": engine.product,
+                "family": engine.family,
+                "implementation": engine.implementation,
+            })
+        })
+        .collect();
     serde_json::json!({
-        "engine": "mysql",
-        "driver": "mysql_async 0.37 (rustls, ring)",
-        "supports": ["mysql8"],
-        "postgres": "unimplemented"
+        "engines": engines,
+        "mysql_driver": "mysql_async 0.37 (rustls, ring)",
     })
+}
+
+/// 引擎目录：前端连接表单、图标与能力门的**唯一事实来源**。
+///
+/// 后端注册表是权威的；前端不再维护 `supported` 布尔，避免"界面说支持、
+/// 后端其实没有驱动"这种漂移。
+#[tauri::command]
+pub fn db_engines_catalog() -> Vec<crate::database::capability::EngineDescriptor> {
+    crate::database::engine_registry::all().to_vec()
 }
 
 #[cfg(test)]

@@ -10,8 +10,8 @@ use base64::Engine;
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::{Column, Value};
 
-use super::driver::column_type_name;
-use super::model::DbColumn;
+use super::super::super::model::DbColumn;
+use super::column_type_name;
 
 fn flags(column: &Column) -> ColumnFlags {
     column.flags()
@@ -119,40 +119,44 @@ fn truncate_utf8(text: &str, max: usize) -> (String, bool) {
     (text[..end].to_string(), true)
 }
 
-fn text_value(text: String, preview_bytes: usize) -> super::model::DbValue {
+fn text_value(text: String, preview_bytes: usize) -> super::super::super::model::DbValue {
     let bytes = text.len();
     let truncated = bytes > preview_bytes;
     let (value, _) = truncate_utf8(&text, preview_bytes);
-    super::model::DbValue::Text {
+    super::super::super::model::DbValue::Text {
         value,
         bytes,
         truncated,
     }
 }
 
-fn json_value(text: String, preview_bytes: usize) -> super::model::DbValue {
+fn json_value(text: String, preview_bytes: usize) -> super::super::super::model::DbValue {
     let bytes = text.len();
     let truncated = bytes > preview_bytes;
     let (value, _) = truncate_utf8(&text, preview_bytes);
-    super::model::DbValue::Json {
+    super::super::super::model::DbValue::Json {
         value,
         bytes,
         truncated,
     }
 }
 
-fn binary_value(bytes: &[u8], preview_bytes: usize) -> super::model::DbValue {
+fn binary_value(bytes: &[u8], preview_bytes: usize) -> super::super::super::model::DbValue {
     let total = bytes.len();
     let truncated = total > preview_bytes;
     let slice = &bytes[..total.min(preview_bytes)];
-    super::model::DbValue::Binary {
+    super::super::super::model::DbValue::Binary {
         base64: base64_of(slice),
         bytes: total,
         truncated,
     }
 }
 
-fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::model::DbValue {
+fn bytes_value(
+    column: &Column,
+    bytes: Vec<u8>,
+    preview_bytes: usize,
+) -> super::super::super::model::DbValue {
     let kind = column.column_type();
     // 先按列类型判断，不能用"看起来像文本"来猜。
     if kind == ColumnType::MYSQL_TYPE_JSON {
@@ -163,18 +167,18 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
     }
     if is_decimal_like(kind) {
         return match String::from_utf8(bytes) {
-            Ok(text) => super::model::DbValue::Decimal { value: text },
+            Ok(text) => super::super::super::model::DbValue::Decimal { value: text },
             // DECIMAL 不是 UTF-8 只能是协议损坏：保留原始字节，不伪造数字。
             Err(error) => binary_value(error.as_bytes(), preview_bytes),
         };
     }
     if is_date_like(kind) {
-        return super::model::DbValue::Date {
+        return super::super::super::model::DbValue::Date {
             value: String::from_utf8_lossy(&bytes).to_string(),
         };
     }
     if is_datetime_like(kind) {
-        return super::model::DbValue::DateTime {
+        return super::super::super::model::DbValue::DateTime {
             value: String::from_utf8_lossy(&bytes).to_string(),
             // MySQL 的 TIMESTAMP 会按会话时区转换；这里**不**再换算一次，
             // 只标注"服务器时区"，避免用户以为是本地时间。
@@ -182,7 +186,7 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
         };
     }
     if is_time_like(kind) {
-        return super::model::DbValue::Time {
+        return super::super::super::model::DbValue::Time {
             value: String::from_utf8_lossy(&bytes).to_string(),
         };
     }
@@ -195,13 +199,13 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
         for byte in &bytes {
             value = (value << 8) | u128::from(*byte);
         }
-        return super::model::DbValue::Bit {
+        return super::super::super::model::DbValue::Bit {
             bits,
             value: value.to_string(),
         };
     }
     if kind == ColumnType::MYSQL_TYPE_GEOMETRY {
-        return super::model::DbValue::Unsupported {
+        return super::super::super::model::DbValue::Unsupported {
             type_name: "GEOMETRY".to_string(),
             preview: base64_of(&bytes[..bytes.len().min(preview_bytes)]),
             bytes: bytes.len(),
@@ -215,7 +219,7 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
             .all(|ch| ch.is_ascii_digit() || ch == '-' || ch == '+')
             && !text.is_empty()
         {
-            return super::model::DbValue::Int {
+            return super::super::super::model::DbValue::Int {
                 value: text,
                 unsigned: column.flags().contains(ColumnFlags::UNSIGNED_FLAG),
             };
@@ -225,7 +229,7 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
     if is_float_like(kind) {
         let text = text_of(&bytes).unwrap_or_else(|| String::from_utf8_lossy(&bytes).to_string());
         return match text.parse::<f64>() {
-            Ok(value) => super::model::DbValue::Float { value },
+            Ok(value) => super::super::super::model::DbValue::Float { value },
             Err(_) => text_value(text, preview_bytes),
         };
     }
@@ -244,8 +248,12 @@ fn bytes_value(column: &Column, bytes: Vec<u8>, preview_bytes: usize) -> super::
     }
 }
 
-pub fn to_value(column: &Column, value: Value, preview_bytes: usize) -> super::model::DbValue {
-    use super::model::DbValue;
+pub fn to_value(
+    column: &Column,
+    value: Value,
+    preview_bytes: usize,
+) -> super::super::super::model::DbValue {
+    use super::super::super::model::DbValue;
     match value {
         Value::NULL => DbValue::Null,
         Value::Int(number) => DbValue::Int {
@@ -307,8 +315,8 @@ pub fn is_null_value(value: &Value) -> bool {
     matches!(value, Value::NULL)
 }
 
-pub fn export_cell(value: &super::model::DbValue) -> String {
-    use super::model::DbValue;
+pub fn export_cell(value: &super::super::super::model::DbValue) -> String {
+    use super::super::super::model::DbValue;
     match value {
         DbValue::Null => String::new(),
         DbValue::Int { value, .. } => value.clone(),
@@ -332,8 +340,8 @@ pub fn export_cell(value: &super::model::DbValue) -> String {
 }
 
 /// CSV 单元格：NULL 与空串必须可区分（NULL = 空字段，空串 = `""`）。
-pub fn csv_cell(value: &super::model::DbValue) -> String {
-    use super::model::DbValue;
+pub fn csv_cell(value: &super::super::super::model::DbValue) -> String {
+    use super::super::super::model::DbValue;
     match value {
         DbValue::Null => String::new(),
         other => {

@@ -90,7 +90,8 @@ pub async fn deployment_session_get(
     id: String,
 ) -> OpsResult<Option<DeploymentSession>> {
     let conn = open_db(&state)?;
-    db::deployment_session::get_session(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
+    db::deployment_session::get_session(&conn, &id)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 会话列表（最近优先）。
@@ -111,7 +112,8 @@ pub async fn deployment_session_events(
     id: String,
 ) -> OpsResult<Vec<DeploymentSessionEvent>> {
     let conn = open_db(&state)?;
-    db::deployment_session::list_events(&conn, &id).map_err(|error| OpsError::from(error.to_string()))
+    db::deployment_session::list_events(&conn, &id)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 迁移会话状态（**只走状态机**；非法迁移直接报错）。
@@ -145,7 +147,8 @@ fn transition(
         now,
     )
     .with_status(from, next);
-    db::deployment_session::append_event(conn, &event).map_err(|error| OpsError::from(error.to_string()))
+    db::deployment_session::append_event(conn, &event)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 记录一条问题（进入 `needs_input`）。
@@ -268,7 +271,9 @@ pub async fn deployment_session_confirm_and_start(
     if session.input_fingerprint.trim().is_empty()
         || session.input_fingerprint != current_fingerprint
     {
-        return Err(OpsError::from("项目、服务器或需求已经变化，旧草案作废：请重新分析后再确认"));
+        return Err(OpsError::from(
+            "项目、服务器或需求已经变化，旧草案作废：请重新分析后再确认",
+        ));
     }
     session.plan_id = Some(plan_id.clone());
 

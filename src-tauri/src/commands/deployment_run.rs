@@ -459,10 +459,7 @@ async fn resume_inner(
 }
 
 #[tauri::command]
-pub async fn deployment_run_cancel(
-    state: State<'_, AppState>,
-    run_id: String,
-) -> OpsResult<bool> {
+pub async fn deployment_run_cancel(state: State<'_, AppState>, run_id: String) -> OpsResult<bool> {
     let cancelled = state.runs.cancel(&run_id);
     if cancelled {
         // 取消是协作式的：正在跑的动作跑完当前这一步才停，因此这里只记状态过渡。

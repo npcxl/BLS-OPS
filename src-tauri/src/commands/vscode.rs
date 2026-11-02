@@ -365,9 +365,8 @@ pub fn vscode_open_remote_folder(
     );
     let updated = upsert_block(&config, &alias, &block);
     let config_file = config_path().map_err(store_error)?;
-    fs::write(&config_file, &updated).map_err(|error| {
-        store_error(format!("写入 {} 失败：{error}", config_file.display()))
-    })?;
+    fs::write(&config_file, &updated)
+        .map_err(|error| store_error(format!("写入 {} 失败：{error}", config_file.display())))?;
 
     launch(&alias, remote_path).map_err(|error| OpsError::new("local", error))?;
     record_audit(

@@ -29,10 +29,7 @@ pub async fn monitor_system_info(
 }
 
 #[tauri::command]
-pub async fn monitor_cpu(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> OpsResult<CpuMetrics> {
+pub async fn monitor_cpu(state: State<'_, AppState>, session_id: String) -> OpsResult<CpuMetrics> {
     crate::monitor::collect_cpu(&state.ssh, &state.monitor, &session_id)
         .await
         .map_err(metrics_error)

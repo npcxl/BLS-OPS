@@ -190,7 +190,6 @@ export function SchemaChangeDialog({
     <Modal
       open
       title={title}
-      description={t("DDL 由 Rust 后端生成并执行，执行前必须预览。")}
       width={560}
       onClose={onClose}
       footer={

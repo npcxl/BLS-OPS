@@ -246,10 +246,7 @@ pub async fn deployment_execute(
 }
 
 /// Project validation kept free of Tauri types so it can be unit-tested.
-pub(crate) fn validate_project(
-    conn: &Connection,
-    project: &db::ProjectRecord,
-) -> OpsResult<()> {
+pub(crate) fn validate_project(conn: &Connection, project: &db::ProjectRecord) -> OpsResult<()> {
     if project.name.trim().is_empty() {
         return Err(OpsError::from("项目名称不能为空"));
     }

@@ -69,7 +69,6 @@ export function NewKeyDialog({
     <FormDialog
       open={open}
       title={t("新建 string 键")}
-      description={t("键不存在时才会创建（SET NX），不会覆盖已有键。")}
       size="md"
       submitLabel={t("创建")}
       submitting={saving}

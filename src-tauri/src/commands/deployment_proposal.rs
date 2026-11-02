@@ -214,7 +214,9 @@ pub async fn deployment_proposal_confirm(
         return Err(OpsError::from("该方案已经处理过了（已确认或已拒绝）"));
     }
     if !proposal.is_ready() {
-        return Err(OpsError::from("方案尚未就绪（存在阻塞项或缺少关键信息），不能确认"));
+        return Err(OpsError::from(
+            "方案尚未就绪（存在阻塞项或缺少关键信息），不能确认",
+        ));
     }
     let Some(environment_id) = proposal.environment_id.clone() else {
         return Err(OpsError::from("方案没有目标环境"));
@@ -319,10 +321,7 @@ pub async fn deployment_proposal_reject(
 }
 
 #[tauri::command]
-pub async fn deployment_proposal_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<()> {
+pub async fn deployment_proposal_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
     let conn = open_db(&state)?;
     db::delete_proposal(&conn, &id).map_err(|error| error.to_string())?;
     record_audit(
@@ -342,7 +341,8 @@ pub async fn deployment_policy_get(
     application_id: String,
 ) -> OpsResult<SecurityPolicy> {
     let conn = open_db(&state)?;
-    db::get_security_policy(&conn, &application_id).map_err(|error| OpsError::from(error.to_string()))
+    db::get_security_policy(&conn, &application_id)
+        .map_err(|error| OpsError::from(error.to_string()))
 }
 
 /// 保存安全策略。**返回的是被钉硬之后的策略**（界面据此显示"哪些被恢复"）。

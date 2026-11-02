@@ -483,10 +483,7 @@ pub async fn project_scan_start(
 }
 
 #[tauri::command]
-pub async fn project_scan_cancel(
-    state: State<'_, AppState>,
-    scan_id: String,
-) -> OpsResult<bool> {
+pub async fn project_scan_cancel(state: State<'_, AppState>, scan_id: String) -> OpsResult<bool> {
     Ok(state.project_scans.cancel(&scan_id).await)
 }
 

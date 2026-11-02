@@ -37,6 +37,7 @@ const PROFILE: DatabaseProfile = {
   redis_mode: "standalone",
   sentinel_master: null,
   nodes_json: null,
+    engine_options: {},
   connect_timeout_ms: 10_000,
   query_timeout_ms: 60_000,
   created_at: 0,

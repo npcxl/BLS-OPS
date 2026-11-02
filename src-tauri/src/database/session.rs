@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 
 use super::driver;
 use super::model::{DbErrorInfo, DbSessionInfo};
+use super::protocol::{CancelHandle, ConnectionIdentity, TransactionState};
 
 pub const SESSION_READY: &str = "ready";
 pub const SESSION_BUSY: &str = "busy";
@@ -28,14 +29,17 @@ struct SessionInner {
     conn: Option<Conn>,
     state: String,
     current_database: Option<String>,
-    transaction: String,
+    transaction: TransactionState,
 }
 
 pub struct SessionEntry {
     pub session_id: String,
     pub profile_id: String,
     pub generation: u64,
-    pub thread_id: u32,
+    /// 物理连接身份（展示用），不再强制是 MySQL thread id。
+    pub identity: ConnectionIdentity,
+    /// 取消令牌：由驱动产生，上层只负责原样交回 `runtime.cancel`。
+    pub cancel: CancelHandle,
     pub server_version: Option<String>,
     pub tls_active: bool,
     pub tls_cipher: Option<String>,
@@ -56,13 +60,15 @@ impl SessionEntry {
         tls: super::model::TlsStatus,
         read_only: bool,
     ) -> Self {
-        let thread_id = conn.id();
-        let transaction = driver::transaction_state(&conn).to_string();
+        let identity = driver::connection_identity(&conn);
+        let cancel = CancelHandle::mysql(conn.id());
+        let transaction = driver::transaction_state(&conn);
         Self {
             session_id,
             profile_id,
             generation,
-            thread_id,
+            identity,
+            cancel,
             server_version,
             tls_active: tls.active,
             tls_cipher: tls.cipher,
@@ -85,13 +91,13 @@ impl SessionEntry {
             session_id: self.session_id.clone(),
             profile_id: self.profile_id.clone(),
             generation: self.generation,
-            connection_id: self.thread_id,
+            connection: self.identity.clone(),
             server_version: self.server_version.clone(),
             current_database: inner.current_database.clone(),
             tls_active: self.tls_active,
             tls_cipher: self.tls_cipher.clone(),
             tls_version: self.tls_version.clone(),
-            transaction: inner.transaction.clone(),
+            transaction: inner.transaction,
             read_only: self.read_only,
             opened_at: self.opened_at,
         }
@@ -140,7 +146,7 @@ impl SessionEntry {
             let mut inner = self.inner.lock().await;
             inner.state = SESSION_LOST.to_string();
             inner.conn = None;
-            inner.transaction = "unknown".to_string();
+            inner.transaction = TransactionState::Unknown;
             drop(inner);
             // 关闭 socket：服务器会终止这条连接上的查询。
             let _ =
@@ -148,7 +154,7 @@ impl SessionEntry {
             return;
         }
 
-        let transaction = driver::transaction_state(&conn).to_string();
+        let transaction = driver::transaction_state(&conn);
         let mut inner = self.inner.lock().await;
         // 查询被强制标记 lost 后，后台任务即使晚到也不能把连接放回会话复用。
         if inner.state == SESSION_LOST {
@@ -168,7 +174,7 @@ impl SessionEntry {
         let mut inner = self.inner.lock().await;
         inner.state = SESSION_LOST.to_string();
         inner.conn = None;
-        inner.transaction = "unknown".to_string();
+        inner.transaction = TransactionState::Unknown;
     }
 
     /// 主动关闭（标签页关闭时）：移除连接并尽力发送 COM_QUIT。
@@ -185,8 +191,8 @@ impl SessionEntry {
     }
 
     /// 只读查询显示用：当前是否还有未提交事务（服务器 OK 包为准）。
-    pub async fn transaction(&self) -> String {
-        self.inner.lock().await.transaction.clone()
+    pub async fn transaction(&self) -> TransactionState {
+        self.inner.lock().await.transaction
     }
 }
 

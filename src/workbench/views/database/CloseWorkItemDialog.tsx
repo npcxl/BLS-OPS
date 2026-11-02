@@ -52,7 +52,6 @@ export function CloseWorkItemDialog({
     <Modal
       open={item !== null}
       title={t("关闭「{{name}}」", { name: item?.title ?? "" })}
-      description={t("关闭前会检查未保存的草稿、待提交修改、运行中的查询和未提交事务。")}
       width={460}
       onClose={onCancel}
       footer={

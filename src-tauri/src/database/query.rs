@@ -36,6 +36,7 @@ use super::model::{
     STATE_CANCELLING, STATE_COMPLETED, STATE_FAILED, STATE_OUTCOME_UNKNOWN, STATE_QUEUED,
     STATE_RUNNING, STATE_STREAMING,
 };
+use super::protocol::{CancelHandle, ConnectionIdentity};
 use super::runtime::ProfileRuntime;
 use super::session::SessionEntry;
 
@@ -51,7 +52,9 @@ pub struct QueryHandle {
     pub session_id: String,
     pub profile_id: String,
     pub generation: u64,
-    pub thread_id: u32,
+    /// 取消令牌（由驱动产生）。取消不再假设"线程 id 一定存在"。
+    /// 与下面 `cancel` 的 watch 信号区分：那个只是"通知任务收尾"。
+    pub cancel_token: CancelHandle,
     pub state: Arc<RwLock<String>>,
     cancel: watch::Sender<bool>,
     /// KILL QUERY 发送失败后，任务即使自行结束也不能报告 completed。
@@ -81,7 +84,8 @@ pub struct QueryStarted {
     pub query_id: String,
     pub state: String,
     pub generation: u64,
-    pub connection_id: u32,
+    /// 执行这条查询的物理连接身份（展示用，不再强制是 u32 thread id）。
+    pub connection: ConnectionIdentity,
 }
 
 pub struct StartQueryRequest {
@@ -102,7 +106,9 @@ impl QueryRegistry {
 
         // 独占连接：这条 SQL 期间，该会话不会被别的请求抢走连接。
         let conn = session.acquire_conn().await?;
-        let thread_id = conn.id();
+        // 身份与取消令牌来自会话（建连时由驱动给出），不在这里重新推导。
+        let identity = session.identity.clone();
+        let cancel_handle = session.cancel.clone();
 
         let query_id = uuid::Uuid::new_v4().to_string();
         let generation = session.generation;
@@ -120,7 +126,7 @@ impl QueryRegistry {
             session_id: session.session_id.clone(),
             profile_id: session.profile_id.clone(),
             generation,
-            thread_id,
+            cancel_token: cancel_handle,
             state: state.clone(),
             cancel: cancel_tx,
             cancel_failed: cancel_failed.clone(),
@@ -199,7 +205,7 @@ impl QueryRegistry {
             query_id,
             state: STATE_QUEUED.to_string(),
             generation,
-            connection_id: thread_id,
+            connection: identity,
         })
     }
 
@@ -268,7 +274,7 @@ impl QueryRegistry {
         // 就已经收尾，终态会变成 completed/failed —— 用户会以为取消没生效。
         let _ = entry.handle.cancel.send(true);
 
-        match entry.runtime.kill_query(entry.handle.thread_id).await {
+        match entry.runtime.cancel(&entry.handle.cancel_token).await {
             Ok(()) => Ok(STATE_CANCELLING.to_string()),
             Err(error) => {
                 // KILL 失败时任务可能已经自然完成；只在仍处于 cancelling
@@ -289,7 +295,7 @@ impl QueryRegistry {
         if let Some(entry) = entry {
             let _ = entry.handle.cancel.send(true);
             // 任务可能正卡在 socket 读取上：主动 KILL 一次，避免连接长期挂着。
-            let _ = entry.runtime.kill_query(entry.handle.thread_id).await;
+            let _ = entry.runtime.cancel(&entry.handle.cancel_token).await;
 
             // 不能只把任务从注册表移除就假定资源已经释放：等任务真正退出；
             // 超时说明物理连接仍被占用，标记会话失效，绝不复用状态未知的连接。
@@ -389,7 +395,7 @@ async fn run_script(
     let started = std::time::Instant::now();
     let timeout = Duration::from_millis(runtime.endpoint.profile.query_timeout_ms);
     let deadline = tokio::time::Instant::now() + timeout;
-    let thread_id = session.thread_id;
+    let cancel_handle = session.cancel.clone();
 
     *state.write().await = STATE_RUNNING.to_string();
 
@@ -436,7 +442,7 @@ async fn run_script(
         Err(_) => {
             // 首个响应前超时：连接上的协议状态不可信 → 丢弃，绝不归还池。
             *state.write().await = STATE_CANCELLING.to_string();
-            let killed = runtime.kill_query(thread_id).await.is_ok();
+            let killed = runtime.cancel(&cancel_handle).await.is_ok();
             *state.write().await = STATE_OUTCOME_UNKNOWN.to_string();
             let reason = if killed {
                 "首个响应超时：已发送 KILL QUERY，连接已丢弃（事务/临时表状态未知）".to_string()
@@ -553,7 +559,7 @@ async fn run_script(
                 } else if now >= deadline {
                     timed_out = true;
                     *state.write().await = STATE_CANCELLING.to_string();
-                    if runtime.kill_query(thread_id).await.is_err() {
+                    if runtime.cancel(&cancel_handle).await.is_err() {
                         outcome_unknown = true;
                         clean = false;
                         break 'outer;
@@ -647,7 +653,7 @@ async fn run_script(
                                 )
                             });
                             // 主动停止服务器执行：不把剩余结果读进内存。
-                            let _ = runtime.kill_query(thread_id).await;
+                            let _ = runtime.cancel(&cancel_handle).await;
                             *state.write().await = STATE_CANCELLING.to_string();
                             break 'outer;
                         }

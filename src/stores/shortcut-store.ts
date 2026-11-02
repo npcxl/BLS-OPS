@@ -3,7 +3,9 @@
  *
  * 只覆盖**应用级动作**（命令面板、新终端、关标签、分屏…）。编辑器里的
  * Ctrl+S / Ctrl+F、文件面板的 F2 这类属于上下文快捷键，改了会和编辑器内置
- * 键位打架，因此不放进这张表。
+ * 键位打架，因此不放进这张表 —— 它们也不该在设置里显示成可编辑：
+ * Ctrl+S 在服务器表单、表数据、表设计里是写死的，Ctrl+F 还被 CodeMirror 的
+ * `searchKeymap` 兜着，关掉也照样响应。
  *
  * 绑定用规范化字符串表示：`"ctrl+shift+p"`。`null` 表示用户关掉了这一条。
  * 存在 localStorage：跟着人走，不随服务器同步。
@@ -26,9 +28,6 @@ export type ShortcutActionId =
   | "file_rename"
   | "file_delete"
   | "file_up"
-  // 编辑器
-  | "editor_save"
-  | "editor_find"
   // 数据库表格
   | "grid_copy"
   | "grid_paste"
@@ -56,8 +55,6 @@ export const DEFAULT_BINDINGS: ShortcutBindings = {
   file_rename: "f2",
   file_delete: "delete",
   file_up: "backspace",
-  editor_save: "ctrl+s",
-  editor_find: "ctrl+f",
   grid_copy: "ctrl+c",
   grid_paste: "ctrl+v",
   grid_select_all: "ctrl+a",

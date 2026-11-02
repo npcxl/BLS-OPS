@@ -35,11 +35,6 @@ export function CloseWorkItemsDialog({
     <Modal
       open={batch !== null}
       title={scope === "right" ? t("关闭右侧工作项") : t("关闭其他工作项")}
-      description={
-        scope === "right"
-          ? t("右侧的工作项会逐个检查运行中的查询、待提交修改、未保存草稿和未提交事务。")
-          : t("当前工作项会保留；其余项目在关闭前会检查运行中的查询、待提交修改、未保存草稿和未提交事务。")
-      }
       width={480}
       onClose={onCancel}
       footer={

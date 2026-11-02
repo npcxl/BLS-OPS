@@ -194,7 +194,13 @@ export function OpenItemsPanel({
                       "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
                     )}
                     onClick={() => setActive(item.id)}
-                    onFocus={() => setActive(item.id)}
+                    // 只有键盘（Tab）聚焦才切走当前工作项。鼠标按下同样会给
+                    // 这一行焦点，而右键只想弹菜单，不该顺手把工作项打开。
+                    onFocus={(event) => {
+                      if (event.currentTarget.matches(":focus-visible")) {
+                        setActive(item.id);
+                      }
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                         event.preventDefault();

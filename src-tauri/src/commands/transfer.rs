@@ -61,10 +61,7 @@ pub async fn transfer_list(state: State<'_, AppState>) -> OpsResult<Vec<Transfer
 }
 
 #[tauri::command]
-pub async fn transfer_cancel(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<TransferTask> {
+pub async fn transfer_cancel(state: State<'_, AppState>, id: String) -> OpsResult<TransferTask> {
     crate::transfer::cancel(state.inner(), &id).map_err(transfer_error)
 }
 

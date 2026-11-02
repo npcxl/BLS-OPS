@@ -31,7 +31,6 @@ export function SaveQueryDialog({
     <Modal
       open={open}
       title={t("保存查询")}
-      description={t("给这份 SQL 起一个名字，之后可在左侧「查询」中找到。")}
       onClose={onCancel}
       footer={
         <>

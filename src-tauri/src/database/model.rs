@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::protocol::{ConnectionIdentity, TransactionState};
+
 pub const ENGINE_MYSQL: &str = "mysql";
 /// PostgreSQL 只在模型层留位：连接表单会明确标注"尚未实现"，
 /// 后端拒绝连接，绝不返回假成功。
@@ -41,6 +43,85 @@ pub const DEFAULT_MYSQL_PORT: u16 = 3306;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 60_000;
 
+/// 引擎专属配置。存在 `database_profiles.engine_options`（JSON 文本）。
+///
+/// 为什么不给每个引擎加一组列：SQLite 要文件路径、PostgreSQL 要 schema、
+/// Oracle 要 service/SID、MongoDB 要 URI 与认证库 —— 列会无限膨胀，而且
+/// 每种引擎只用到其中一两列，其余全是 NULL。
+///
+/// `extra` 保留未知键**只用于**把它读出来报错：保存时按引擎白名单校验，
+/// 发现未知键直接拒绝，避免"配置写进去了但没人读"的静默丢失。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EngineOptions {
+    /// SQLite 数据库文件路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// PostgreSQL / Oracle 的 schema。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// Oracle：`service` 或 `sid`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    /// MongoDB 连接 URI（可替代 host/port）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    /// MongoDB 认证库。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_source: Option<String>,
+    /// ClickHouse 接口：`http` | `native`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// ClickHouse / MongoDB：是否启用 TLS。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<bool>,
+    #[serde(flatten, default)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl EngineOptions {
+    pub fn path(&self) -> Option<&str> {
+        trim_opt(&self.path)
+    }
+
+    pub fn schema(&self) -> Option<&str> {
+        trim_opt(&self.schema)
+    }
+
+    pub fn uri(&self) -> Option<&str> {
+        trim_opt(&self.uri)
+    }
+
+    pub fn identifier(&self) -> Option<&str> {
+        trim_opt(&self.identifier)
+    }
+
+    pub fn protocol(&self) -> Option<&str> {
+        trim_opt(&self.protocol)
+    }
+
+    pub fn auth_source(&self) -> Option<&str> {
+        trim_opt(&self.auth_source)
+    }
+
+    pub fn has_any(&self) -> bool {
+        self.path().is_some()
+            || self.schema().is_some()
+            || self.identifier().is_some()
+            || self.uri().is_some()
+            || self.auth_source().is_some()
+            || self.protocol().is_some()
+            || self.secure.is_some()
+            || !self.extra.is_empty()
+    }
+}
+
+fn trim_opt(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
 /// 展示预算（可被设置覆盖，但有硬上限）。
 pub const DEFAULT_MAX_ROWS: u64 = 1_000;
 pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -59,8 +140,9 @@ pub const HARD_FIELD_PREVIEW_BYTES: usize = 1024 * 1024;
 pub struct DatabaseProfile {
     pub id: String,
     pub name: String,
-    /// `mysql`（第一阶段唯一实现）。
+    /// 引擎标识。清单与字段要求见 `engine_registry`。
     pub engine: String,
+    /// 网络端点。**文件型引擎（SQLite）不使用**：保存时会被归一化为空串/0。
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -82,6 +164,9 @@ pub struct DatabaseProfile {
     pub sentinel_master: Option<String>,
     /// Redis sentinel/cluster 的额外节点列表，JSON 数组 `["host:port", …]`。
     pub nodes_json: Option<String>,
+    /// 引擎专属配置（SQLite 路径 / PG schema / Oracle service-SID / Mongo URI …）。
+    #[serde(default)]
+    pub engine_options: EngineOptions,
     pub connect_timeout_ms: u64,
     pub query_timeout_ms: u64,
     pub created_at: i64,
@@ -156,15 +241,15 @@ pub struct DbSessionInfo {
     pub profile_id: String,
     /// 每次 `db_session_open` / 重连自增：旧响应带旧代次，前端必须丢弃。
     pub generation: u64,
-    /// 物理连接的 MySQL thread id —— 取消查询用的就是它。
-    pub connection_id: u32,
+    /// 物理连接身份。**不是** u32 thread id：只有 MySQL 协议才有那个概念。
+    pub connection: ConnectionIdentity,
     pub server_version: Option<String>,
     pub current_database: Option<String>,
     pub tls_active: bool,
     pub tls_cipher: Option<String>,
     pub tls_version: Option<String>,
-    /// `none` | `in_transaction` | `unknown`
-    pub transaction: String,
+    /// 事务状态以驱动读到的真实状态为准（不是 SQL 前缀）。
+    pub transaction: TransactionState,
     pub read_only: bool,
     pub opened_at: i64,
 }
@@ -671,7 +756,8 @@ pub struct ConnectionTestResult {
     pub error: Option<DbErrorInfo>,
     pub latency_ms: u64,
     pub server_version: Option<String>,
-    pub connection_id: Option<u32>,
+    /// 建连后的连接身份（`#42`）；驱动没有数值 id 时为 `None` 或具名标签。
+    pub connection: Option<ConnectionIdentity>,
     pub tls: Option<TlsStatus>,
     /// 隧道本地端口（仅诊断用；不会暴露远程网络）。
     pub tunnel_local_port: Option<u16>,

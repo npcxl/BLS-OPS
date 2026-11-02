@@ -19,7 +19,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "@/components/icons";
-import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
 
 export interface SelectOption {
@@ -48,6 +47,8 @@ export function Select({
   placeholder,
   disabled = false,
   size = "md",
+  height,
+  itemHeight,
   className,
   ariaLabel,
   title,
@@ -58,7 +59,16 @@ export function Select({
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
-  size?: "sm" | "md";
+  /** lg：带图标/副标题的选项（如数据库类型）用更高的行，避免挤在一起。 */
+  size?: "sm" | "md" | "lg";
+  /**
+   * 自定义高度（px），优先于 `size`：
+   * - `height`：触发器高度
+   * - `itemHeight`：每个选项的最小行高
+   * 两处都给行内 style，绕开 Tailwind 固定类，想调多少写多少。
+   */
+  height?: number;
+  itemHeight?: number;
   className?: string;
   ariaLabel?: string;
   title?: string;
@@ -179,16 +189,15 @@ export function Select({
       role="listbox"
       tabIndex={-1}
       aria-label={ariaLabel}
-      // 层级来自 OVERLAY_Z.select：必须高于 Modal，否则弹窗里的下拉会被
-      // 遮罩盖住 —— 点上去既看不到选项、也点不中（遮罩吃掉了指针事件）。
-      className="select-menu fixed min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      // `z-[150]`：必须高于 Modal（130），否则弹窗里的下拉会被遮罩盖住 ——
+      // 点上去既看不到选项、也点不中（遮罩吃掉了指针事件）。
+      className="select-menu fixed z-[150] min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
       style={{
         left: position.left,
         width: position.width,
         maxHeight: position.maxHeight,
         top: position.top,
         bottom: position.bottom,
-        zIndex: OVERLAY_Z.select,
       }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown") {
@@ -219,8 +228,11 @@ export function Select({
             data-index={index}
             aria-selected={active}
             disabled={option.disabled}
+            style={itemHeight ? { minHeight: itemHeight } : undefined}
             className={cn(
-              "flex w-full items-center gap-2 rounded-[5px] px-2 py-[6px] text-left text-12 transition-colors",
+              "flex w-full items-center gap-2 rounded-[5px] px-2 text-left text-12 transition-colors",
+              // lg 的行更高：带引擎图标 + 版本号时 26px 会贴在一起
+              size === "lg" ? "min-h-[34px] py-[9px]" : "py-[6px]",
               active ? "bg-accent/10 text-accent" : "text-fg",
               !option.disabled && "hover:bg-surface-hover",
               option.disabled && "cursor-not-allowed opacity-40",
@@ -255,9 +267,17 @@ export function Select({
         aria-controls={open ? listId : undefined}
         aria-label={ariaLabel}
         title={title ?? selected?.label}
+        style={height ? { height } : undefined}
         className={cn(
           "flex w-full items-center justify-between gap-1 rounded-[6px] border bg-surface-1 px-2 text-left outline-none transition-colors",
-          size === "sm" ? "h-[26px] text-12" : "h-[32px] text-12",
+          // 给了 height 就不再套固定高度类，避免两套高度打架
+          height
+            ? "text-12"
+            : size === "sm"
+              ? "h-[26px] text-12"
+              : size === "lg"
+                ? "h-[38px] text-13"
+                : "h-[32px] text-12",
           open
             ? "border-accent/70 ring-1 ring-accent/20"
             : "border-line hover:border-line-strong",

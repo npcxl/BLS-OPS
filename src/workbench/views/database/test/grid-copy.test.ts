@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DbColumn, DbValue } from "@/api/types/database";
-import { buildCopyText, uniqueColumnNames } from "../grid/copy-format";
+import { buildCopyText, uniqueColumnNames, type SqlQuoteRules } from "../grid/copy-format";
 import {
   EMPTY_SELECTION,
   selectAll,
@@ -43,6 +43,7 @@ const request = (options: {
   includeHeaders?: boolean;
   table?: { database: string; table: string } | null;
   maxChars?: number;
+  dialect?: SqlQuoteRules;
 }) => ({
   columns: options.columns,
   rows: options.rows,
@@ -54,6 +55,7 @@ const request = (options: {
   includeHeaders: options.includeHeaders,
   table: options.table,
   maxChars: options.maxChars,
+  dialect: options.dialect,
 });
 
 describe("复制 — NULL 与空字符串", () => {
@@ -290,5 +292,46 @@ describe("复制 — 预算与空选择", () => {
     const result = await buildCopyText({ columns, rows, selection, format: "tsv" });
     expect(result.ok && result.text).toBe("b1\tc1\nb2\tc2\n");
     expect(result.ok && result.cells).toBe(4);
+  });
+});
+
+describe("复制为 INSERT：方言引用与转义", () => {
+  const columns = [column("name"), column("note")];
+  const rows = [[text("a`b"), text("c\\d'e")]];
+  const table = { database: "shop", table: "users" };
+
+  it("MySQL：反引号 + 反斜杠转义", async () => {
+    const result = await buildCopyText(request({ columns, rows, format: "insert", table }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain("INSERT INTO `shop`.`users`");
+    expect(result.text).toContain("'c\\\\d''e'");
+  });
+
+  it("PostgreSQL：双引号 + 只双写单引号", async () => {
+    const pg: SqlQuoteRules = { identifier_quote: "double_quote", backslash_escapes: false };
+    const result = await buildCopyText(
+      request({ columns, rows, format: "insert", table, dialect: pg }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain('INSERT INTO "shop"."users"');
+    expect(result.text).toContain("'c\\d''e'");
+  });
+
+  it("SQL Server：方括号 + 方括号内转义", async () => {
+    const tsql: SqlQuoteRules = { identifier_quote: "bracket", backslash_escapes: false };
+    const result = await buildCopyText(
+      request({
+        columns: [column("we]ird")],
+        rows: [[text("x")]],
+        format: "insert",
+        table,
+        dialect: tsql,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain("[we]]ird]");
   });
 });

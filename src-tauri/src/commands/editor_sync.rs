@@ -43,9 +43,7 @@ pub async fn editor_sync_open(
         .map_err(|error| OpsError::new("sftp", error.to_string()))?;
     let editor = find_editor(&editor_id)
         .map(|(name, path)| (editor_id.clone(), name, path))
-        .ok_or_else(|| {
-            OpsError::new("local", format!("未检测到编辑器 {editor_id}，无法打开"))
-        })?;
+        .ok_or_else(|| OpsError::new("local", format!("未检测到编辑器 {editor_id}，无法打开")))?;
 
     let info = open_sync_session(
         &app,

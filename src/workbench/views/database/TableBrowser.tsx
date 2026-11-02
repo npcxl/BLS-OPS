@@ -63,6 +63,7 @@ import type {
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { engineMeta } from "./db-engines";
 import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
 import { useScopedShortcut } from "./shortcuts";
 import { TableStructure } from "./TableStructure";
@@ -86,6 +87,7 @@ import {
 import { copyMenuItems } from "./grid/copy-menu";
 import { copySelectionToClipboard } from "./grid/copy-service";
 import type { CopyFormat } from "./grid/copy-format";
+import { quoteIdentifierWith, quoteStringLiteral } from "./grid/copy-format";
 import { parseClipboardMatrix, planPaste, type PastePlan } from "./grid/paste";
 import {
   canRedo,
@@ -963,6 +965,8 @@ export function TableBrowser({
       includeHeaders,
       // 只有确认是表（而不是视图/任意结果）才提供 INSERT。
       table: detail?.kind === "table" ? { database, table } : null,
+      // 引用/转义按当前引擎的方言（未加载目录时回落 MySQL）。
+      dialect: engineMeta(profile.engine).descriptor?.dialect_rules,
     });
     if (!outcome.ok) {
       notifyCopy(false);
@@ -1333,7 +1337,9 @@ export function TableBrowser({
     setPageIndex((index) => Math.max(0, index - 1));
   };
 
-  const quoteIdentifier = (name: string) => `\`${name.replace(/`/g, "``")}\``;
+  // 引用与字面量按引擎方言（未加载目录时回落 MySQL）。
+  const dialect = engineMeta(profile.engine).descriptor?.dialect_rules;
+  const quoteIdentifier = (name: string) => quoteIdentifierWith(name, dialect);
 
   // 提交前的 DML 预览：把待提交队列翻译成即将执行的 SQL（只读，不执行）。
   const dmlPreview = useMemo(() => {
@@ -1343,7 +1349,7 @@ export function TableBrowser({
         ? "NULL"
         : value.kind === "default"
           ? "DEFAULT"
-          : `'${value.value.replace(/'/g, "''")}'`;
+          : quoteStringLiteral(value.value, dialect);
     const whereOf = (entry: Extract<Pending, { kind: "update" | "delete" }>) => {
       if (entry.expected.length > 0) {
         return entry.expected
@@ -1376,7 +1382,7 @@ export function TableBrowser({
         return `UPDATE ${target} SET ${sets} WHERE ${whereOf(entry)};`;
       })
       .join("\n");
-  }, [database, detail?.reliable_key, pending, table]);
+  }, [database, detail?.reliable_key, dialect, pending, table]);
 
   // Ctrl+S 提交暂存修改：只在当前工作项活动时装监听 ——
   // 隐藏的表页（切走但常驻）不能抢这个快捷键，否则会提交到看不见的表上。

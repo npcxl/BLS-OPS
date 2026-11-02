@@ -193,7 +193,6 @@ export function TableOperationDialog({
     <Modal
       open
       title={title}
-      description={t("操作只作用于当前表；执行前会先拿后端生成的 DDL 预览。")}
       width={560}
       onClose={onClose}
       footer={

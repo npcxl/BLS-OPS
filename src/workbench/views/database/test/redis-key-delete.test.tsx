@@ -40,6 +40,7 @@ const profile: DatabaseProfile = {
   redis_mode: "standalone",
   sentinel_master: null,
   nodes_json: null,
+  engine_options: {},
   connect_timeout_ms: 10_000,
   query_timeout_ms: 60_000,
   created_at: 0,
@@ -140,6 +141,17 @@ describe("Redis 键浏览器 · 删除键", () => {
 
   const openKey = async () => {
     act(() => root.render(<RedisBrowser profile={profile} />));
+    await flush();
+
+    // 默认是树视图（参考图）：`user:1001` 会折叠成 `user` 分组 + `1001` 叶子，
+    // 行文本不再是完整键名。这里切到列表，按平铺行拿键。
+    const listButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="列表视图"]',
+    );
+    expect(listButton).not.toBeNull();
+    await act(async () => {
+      listButton?.click();
+    });
     await flush();
 
     // 网格行：单击只选中，双击才在详情面板打开（Navicat 式交互）。

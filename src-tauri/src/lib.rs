@@ -469,6 +469,7 @@ pub fn run() {
             commands::db_open_sql_file,
             commands::db_save_sql_file,
             commands::db_module_info,
+            commands::db_engines_catalog,
             commands::db_redis_connect,
             commands::db_redis_scan,
             commands::db_redis_key_info,

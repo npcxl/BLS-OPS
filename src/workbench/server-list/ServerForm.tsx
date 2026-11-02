@@ -107,7 +107,6 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
       open
       width={360}
       title={isNew ? t("Add server") : t("Edit server — {{name}}", { name: server.name || server.host })}
-      description={t("Credentials are stored in the system keychain; the database only keeps a reference.")}
       onClose={onClose}
       footer={
         <>

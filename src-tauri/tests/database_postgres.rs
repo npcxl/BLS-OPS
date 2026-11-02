@@ -55,7 +55,7 @@ async fn postgres_metadata_and_table_browse_are_real() {
     let (app_path, app_conn) = temp_app_db();
     let plan = driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan");
     let manager = DatabaseManager::default();
-    let info = match manager.open_session(plan.clone(), "pg-meta").await {
+    let info = match manager.open_session(plan, "pg-meta").await {
         Ok(info) => info,
         Err(error) => {
             if std::env::var("BLS_TEST_PG_REQUIRED").as_deref() == Ok("1") {
@@ -68,7 +68,12 @@ async fn postgres_metadata_and_table_browse_are_real() {
     };
     assert!(!info.session_id.is_empty());
 
-    let runtime = manager.runtime(plan).await.expect("runtime");
+    let runtime = manager
+        .runtime(
+            driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan again"),
+        )
+        .await
+        .expect("runtime");
     let conn = runtime.postgres().expect("postgres runtime").clone();
 
     conn.simple_query("DROP TABLE IF EXISTS it_items", 0)

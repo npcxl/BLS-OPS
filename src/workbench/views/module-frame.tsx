@@ -19,6 +19,7 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -249,21 +250,20 @@ export function ToolbarStat({
  * toolbar runs out of room, because a slightly shorter box still works while
  * a clipped button does not.
  */
+/**
+ * 模块工具栏输入框：`Input` 的 xs 档位 + 固定最小宽度。
+ *
+ * 以前这里自己写了一套 24px 的边框/圆角/焦点样式，与表单里的 `Input`
+ * 高 6px、圆角不同 —— 同一个应用两套输入框。现在只保留"宽度"这一层
+ * 页面级决策，其余全部走公共控件。
+ */
 export function ToolbarInput({
   width = "w-44",
   className,
+  size: _unusedSize,
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & { width?: string }) {
-  return (
-    <input
-      {...props}
-      className={cn(
-        "h-[24px] min-w-[72px] shrink rounded-[6px] border border-line bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent",
-        width,
-        className,
-      )}
-    />
-  );
+  return <Input {...props} size="xs" className={cn("min-w-[72px] shrink", width, className)} />;
 }
 
 /** A toolbar refresh button that shows a spinner while work is in flight. */

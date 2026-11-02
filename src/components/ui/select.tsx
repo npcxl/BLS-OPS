@@ -20,6 +20,8 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "@/components/icons";
 import { cn } from "@/lib/cn";
+import { CONTROL_HEIGHT, CONTROL_TEXT, controlBase, type ControlSize } from "./input";
+import { OVERLAY_Z, useOverlayLayer } from "./overlay";
 
 export interface SelectOption {
   value: string;
@@ -47,32 +49,32 @@ export function Select({
   placeholder,
   disabled = false,
   size = "md",
-  height,
-  itemHeight,
   className,
   ariaLabel,
   title,
   id,
+  testId,
 }: {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** lg：带图标/副标题的选项（如数据库类型）用更高的行，避免挤在一起。 */
-  size?: "sm" | "md" | "lg";
   /**
-   * 自定义高度（px），优先于 `size`：
-   * - `height`：触发器高度
-   * - `itemHeight`：每个选项的最小行高
-   * 两处都给行内 style，绕开 Tailwind 固定类，想调多少写多少。
+   * 与 Button / Input 共用一套档位（24 / 28 / 30 / 34）。
+   *
+   * **不再提供 `height` / `itemHeight`**：以前每个页面自己传 42/38，
+   * 结果是同一个弹窗里下拉比输入框高 12px。要更高就调公共档位。
+   * `lg` 的**选项行**仍然是 34px 高（带图标/说明的选项需要），这是选项
+   * 语义，不是触发器尺寸。
    */
-  height?: number;
-  itemHeight?: number;
+  size?: ControlSize;
   className?: string;
   ariaLabel?: string;
   title?: string;
   id?: string;
+  /** 端到端测试用的定位锚点（挂到触发器上）。 */
+  testId?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -82,6 +84,12 @@ export function Select({
   const listRef = useRef<HTMLDivElement | null>(null);
   const generatedId = useId();
   const listId = `select-list-${id ?? generatedId}`;
+  /**
+   * 面板层级来自 OverlayManager，不再写死 `z-[150]`：
+   * 弹窗内的下拉比弹窗高一层，弹窗内的弹窗再高一层，永远压得住遮罩；
+   * 同时面板会登记为浮层，Esc / 全局快捷键按栈顺序让路。
+   */
+  const layer = useOverlayLayer(open, "select");
 
   const selected = options.find((option) => option.value === value) ?? null;
 
@@ -189,15 +197,15 @@ export function Select({
       role="listbox"
       tabIndex={-1}
       aria-label={ariaLabel}
-      // `z-[150]`：必须高于 Modal（130），否则弹窗里的下拉会被遮罩盖住 ——
-      // 点上去既看不到选项、也点不中（遮罩吃掉了指针事件）。
-      className="select-menu fixed z-[150] min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      className="select-menu fixed min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
       style={{
         left: position.left,
         width: position.width,
         maxHeight: position.maxHeight,
         top: position.top,
         bottom: position.bottom,
+        // 高于所在弹窗（含嵌套），低于右键菜单与 tooltip。
+        zIndex: OVERLAY_Z.select + Math.min(layer.depth, 8) * 2,
       }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown") {
@@ -228,7 +236,6 @@ export function Select({
             data-index={index}
             aria-selected={active}
             disabled={option.disabled}
-            style={itemHeight ? { minHeight: itemHeight } : undefined}
             className={cn(
               "flex w-full items-center gap-2 rounded-[5px] px-2 text-left text-12 transition-colors",
               // lg 的行更高：带引擎图标 + 版本号时 26px 会贴在一起
@@ -261,27 +268,21 @@ export function Select({
         ref={buttonRef}
         type="button"
         id={id}
+        data-testid={testId}
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-label={ariaLabel}
         title={title ?? selected?.label}
-        style={height ? { height } : undefined}
         className={cn(
-          "flex w-full items-center justify-between gap-1 rounded-[6px] border bg-surface-1 px-2 text-left outline-none transition-colors",
-          // 给了 height 就不再套固定高度类，避免两套高度打架
-          height
-            ? "text-12"
-            : size === "sm"
-              ? "h-[26px] text-12"
-              : size === "lg"
-                ? "h-[38px] text-13"
-                : "h-[32px] text-12",
-          open
-            ? "border-accent/70 ring-1 ring-accent/20"
-            : "border-line hover:border-line-strong",
-          disabled && "cursor-not-allowed opacity-50",
+          // 触发器与 Input 同一份基类：高度、边框、圆角、焦点、禁用完全一致。
+          controlBase,
+          CONTROL_HEIGHT[size],
+          CONTROL_TEXT[size],
+          "flex w-full items-center justify-between gap-1 px-2 text-left",
+          open ? "border-accent/70 ring-1 ring-accent/20" : "border-line",
+          disabled && "cursor-not-allowed",
         )}
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={(event) => {

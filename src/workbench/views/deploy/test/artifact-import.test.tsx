@@ -234,14 +234,26 @@ function typeInto(input: HTMLInputElement, value: string) {
 describe("制品导入面板", () => {
     it("列出五种来源，且默认是本地文件夹", async () => {
         await render();
-        const select = document.body.querySelector("select") as HTMLSelectElement;
-        const options = Array.from(select.options).map((option) => option.value);
+        // 下拉已统一到公共 Select（button + listbox），选项只在展开时挂载：
+        // 先点触发器，再按 role="option" 读取顺序与可见文案。
+        const trigger = document.body.querySelector('[aria-haspopup="listbox"]') as HTMLButtonElement;
+        expect(trigger).not.toBeNull();
+        expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+        await act(async () => {
+            trigger.click();
+            await Promise.resolve();
+        });
+
+        const options = Array.from(
+            document.body.querySelectorAll('[role="option"]'),
+        ).map((option) => option.textContent?.trim());
         expect(options).toEqual([
-            "local_folder",
-            "local_archive",
-            "local_file",
-            "remote_directory",
-            "docker_image_ref",
+            i18n.t("Local folder"),
+            i18n.t("Archive"),
+            i18n.t("Local file"),
+            i18n.t("Server directory"),
+            i18n.t("Docker image"),
         ]);
     });
 

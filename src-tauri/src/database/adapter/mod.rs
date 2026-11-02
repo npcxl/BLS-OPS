@@ -16,9 +16,12 @@
 //! |---|---|
 //! | `adapter/mod.rs` | `SqlDialect`：标识符、字面量、占位符、分页、只读判定 |
 //! | `adapter/engine.rs` | `AdapterSet`：按引擎族生成表对象 SQL（做不到就明确拒绝） |
+//! | `adapter/catalog.rs` | `CatalogQueries`：系统目录查询（库/表/字段/索引/排序规则/表定义） |
 
+pub mod catalog;
 pub mod engine;
 
+pub use catalog::CatalogQueries;
 pub use engine::{AdapterSet, StatementPlan};
 
 use super::capability::{Dialect, DialectRules, IdentifierQuote};

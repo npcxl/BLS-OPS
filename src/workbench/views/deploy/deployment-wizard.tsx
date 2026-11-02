@@ -28,6 +28,7 @@ import { CircleCheck, CircleDashed, LoaderCircle, TriangleAlert } from "@/compon
 import { opsApi } from "@/api/ops-api";
 import type { DeploymentSession, SessionStatus } from "@/api/types/deployment";
 import { ErrorState } from "@/components/ui/error-state";
+import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
@@ -373,19 +374,18 @@ export function DeploymentWizard({
             label={t("Server")}
             hint={t("The server is probed read-only; nothing is changed here.")}
           >
-            <select
-              className={cn(fieldClass, "ops-select !pr-7")}
-              data-testid="wizard-server"
+            {/* data-testid 挂在触发器本体上：测试用它定位这一步的目标服务器。 */}
+            <Select
+              className="w-full"
               value={serverId}
-              onChange={(event) => setServerId(event.target.value)}
-            >
-              <option value="">{t("Select a server first")}</option>
-              {servers.map((server) => (
-                <option key={server.id} value={server.id}>
-                  {server.name}
-                </option>
-              ))}
-            </select>
+              ariaLabel={t("Server")}
+              placeholder={t("Select a server first")}
+              onChange={(value) => setServerId(value)}
+              options={[
+                { value: "", label: t("Select a server first") },
+                ...servers.map((server) => ({ value: server.id, label: server.name })),
+              ]}
+            />
           </Field>
           <button
             type="button"

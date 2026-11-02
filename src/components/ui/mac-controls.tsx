@@ -2,6 +2,7 @@ import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNo
 import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, Minus, Search, X } from "@/components/icons";
 import { cn } from "@/lib/cn";
+import { CONTROL_HEIGHT, CONTROL_TEXT, controlBase } from "./input";
 
 export interface MacWindowControlsProps extends HTMLAttributes<HTMLDivElement> {
   onClose?: () => void;
@@ -120,7 +121,15 @@ export function MacToolbar({ children, divided = true, className, ...props }: Ma
 export interface MacSegmentedControlProps extends Omit<HTMLAttributes<HTMLDivElement>, "onChange"> {
   value: string;
   onChange: (value: string) => void;
-  options: Array<{ value: string; label: ReactNode; disabled?: boolean }>;
+  options: Array<{
+    value: string;
+    label: ReactNode;
+    disabled?: boolean;
+    /** 读屏器与自动化测试用的名字；不传则沿用可见文字。 */
+    ariaLabel?: string;
+    /** 悬停提示（图标型分段控件常用）。 */
+    title?: string;
+  }>;
 }
 
 export function MacSegmentedControl({ value, onChange, options, className, ...props }: MacSegmentedControlProps) {
@@ -138,6 +147,8 @@ export function MacSegmentedControl({ value, onChange, options, className, ...pr
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-label={option.ariaLabel}
+            title={option.title}
             disabled={option.disabled}
             className={cn(
               "rounded-[5px] px-2.5 text-11 font-medium transition-[background-color,box-shadow,color] duration-150",
@@ -160,24 +171,42 @@ export interface MacSearchFieldProps extends InputHTMLAttributes<HTMLInputElemen
   onClear?: () => void;
 }
 
+/**
+ * 兼容出口：外观与 `SearchField` 完全一致（同一 `controlBase` + 同一档位），
+ * 保留 `onChange` 事件式 API 供历史调用点使用。
+ *
+ * 新代码请用 `<SearchField value onChange />`：它的 `onChange` 直接给字符串，
+ * 少一层 `event.target.value`，也不容易写错受控/非受控。
+ */
 export function MacSearchField({ onClear, className, ...props }: MacSearchFieldProps) {
   const { t } = useTranslation();
   return (
     <div className="relative flex min-w-0 items-center">
-      <Search className="pointer-events-none absolute left-2.5 size-3.5 text-fg-subtle" strokeWidth={2} aria-hidden="true" />
+      <Search
+        size={13}
+        className="pointer-events-none absolute left-2 shrink-0 text-fg-subtle"
+        aria-hidden="true"
+      />
       <input
         type="search"
         className={cn(
-          "h-7 min-w-0 w-full rounded-[7px] border border-line bg-surface-2/80 pl-8 pr-7 text-11 text-fg",
-          "outline-none placeholder:text-fg-subtle shadow-[inset_0_1px_1px_rgb(15_23_42/0.04)] focus:border-accent",
+          controlBase,
+          CONTROL_HEIGHT.sm,
+          CONTROL_TEXT.sm,
+          "border-line pl-7 pr-7",
           "[&::-webkit-search-cancel-button]:hidden",
           className,
         )}
         {...props}
       />
       {onClear && props.value && (
-        <button type="button" aria-label={t("Clear search")} className="absolute right-1.5 rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg" onClick={onClear}>
-          <X className="size-3" />
+        <button
+          type="button"
+          aria-label={t("Clear search")}
+          className="absolute right-1 flex items-center rounded-full p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+          onClick={onClear}
+        >
+          <X size={11} />
         </button>
       )}
     </div>

@@ -481,10 +481,7 @@ mod tests {
 
     #[test]
     fn null_safe_comparison_is_per_family() {
-        assert_eq!(
-            AdapterSet::mysql().null_safe_equal("`a`", "?"),
-            "`a` <=> ?"
-        );
+        assert_eq!(AdapterSet::mysql().null_safe_equal("`a`", "?"), "`a` <=> ?");
         let pg = AdapterSet::of("postgres").unwrap();
         assert_eq!(
             pg.null_safe_equal("\"a\"", "$1"),
@@ -499,10 +496,7 @@ mod tests {
 
     #[test]
     fn transaction_entry_and_capability_follow_the_family() {
-        assert_eq!(
-            AdapterSet::mysql().begin_transaction(),
-            "START TRANSACTION"
-        );
+        assert_eq!(AdapterSet::mysql().begin_transaction(), "START TRANSACTION");
         assert_eq!(
             AdapterSet::of("postgres").unwrap().begin_transaction(),
             "BEGIN"
@@ -550,7 +544,10 @@ mod tests {
         assert_eq!(mysql.like_escape(), "ESCAPE '\\\\'");
 
         let sqlite = AdapterSet::of("sqlite").unwrap();
-        assert_eq!(sqlite.left_bytes("\"body\"", 256), "SUBSTR(\"body\", 1, 256)");
+        assert_eq!(
+            sqlite.left_bytes("\"body\"", 256),
+            "SUBSTR(\"body\", 1, 256)"
+        );
         assert_eq!(
             sqlite.octet_length("\"body\""),
             "LENGTH(CAST(\"body\" AS BLOB))"

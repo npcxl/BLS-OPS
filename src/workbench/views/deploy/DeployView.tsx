@@ -27,7 +27,7 @@ import type {
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadingState } from "@/components/ui/loading";
 import { ErrorState } from "@/components/ui/error-state";
-import { selectClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import type { WorkspaceTab } from "@/workbench/types";
 
@@ -185,22 +185,25 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
             )}
           </p>
         </div>
-        <label className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="text-11 text-fg-muted">{tab.title}</span>
-          <select
-            className={cn(selectClass, "w-52")}
+          <Select
+            className="w-52"
+            size="sm"
             value={center.serverId}
-            aria-label={t("Select a server first")}
-            onChange={(event) => center.setServerId(event.target.value)}
-          >
-            <option value="">{t("Select a server first")}</option>
-            {center.servers.map((server) => (
-              <option key={server.id} value={server.id}>
-                {server.name} · {server.host}
-              </option>
-            ))}
-          </select>
-        </label>
+            ariaLabel={t("目标服务器")}
+            placeholder={t("Select a server first")}
+            onChange={(value) => center.setServerId(value)}
+            options={[
+              { value: "", label: t("Select a server first") },
+              ...center.servers.map((server) => ({
+                value: server.id,
+                label: server.name,
+                hint: server.host,
+              })),
+            ]}
+          />
+        </div>
       </div>
 
       {/* Tab 条 */}

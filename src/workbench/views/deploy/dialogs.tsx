@@ -11,15 +11,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { ErrorText, Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { Input, Textarea } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import type {
   DeploymentApplication,
   DeploymentEnvironment,
   DeploymentServiceUnit,
   PortMapping,
 } from "@/api/types/deployment";
-import { cn } from "@/lib/cn";
-
 import {
   APPLICATION_KINDS,
   ENVIRONMENT_KINDS,
@@ -136,38 +136,32 @@ export function ApplicationDialog({
         </Field>
 
         <Field label={t("Application type")}>
-          <select
-            className={selectClass}
+          <Select
             value={form.application_kind}
-            onChange={(event) =>
-              update({ application_kind: event.target.value as DeploymentApplication["application_kind"] })
+            onChange={(value) =>
+              update({ application_kind: value as DeploymentApplication["application_kind"] })
             }
-          >
-            {APPLICATION_KINDS.map((kind) => (
-              <option key={kind} value={kind}>
-                {t(APPLICATION_KIND_LABELS[kind])}
-              </option>
-            ))}
-          </select>
+            options={APPLICATION_KINDS.map((kind) => ({
+              value: kind,
+              label: t(APPLICATION_KIND_LABELS[kind]),
+            }))}
+          />
         </Field>
 
         <Field
           label={t("Source kind")}
           hint={form.source_kind === "existing_remote_dir" ? t("Must be an absolute path, e.g. /opt/web") : undefined}
         >
-          <select
-            className={selectClass}
+          <Select
             value={form.source_kind}
-            onChange={(event) =>
-              update({ source_kind: event.target.value as DeploymentApplication["source_kind"] })
+            onChange={(value) =>
+              update({ source_kind: value as DeploymentApplication["source_kind"] })
             }
-          >
-            {SOURCE_KINDS.map((kind) => (
-              <option key={kind} value={kind}>
-                {t(SOURCE_KIND_LABELS[kind])}
-              </option>
-            ))}
-          </select>
+            options={SOURCE_KINDS.map((kind) => ({
+              value: kind,
+              label: t(SOURCE_KIND_LABELS[kind]),
+            }))}
+          />
         </Field>
 
         <Field label={sourceHint ?? t("Source reference")}>
@@ -190,8 +184,9 @@ export function ApplicationDialog({
         )}
 
         <Field label={t("Notes")}>
-          <textarea
-            className={cn(fieldClass, "h-[64px] resize-none py-1.5 leading-relaxed")}
+          <Textarea
+            resizable={false}
+            className="h-16"
             value={form.description}
             onChange={(event) => update({ description: event.target.value })}
           />
@@ -275,19 +270,14 @@ export function EnvironmentDialog({
         </Field>
 
         <Field label={t("Environment kind")}>
-          <select
-            className={selectClass}
+          <Select
             value={form.kind}
-            onChange={(event) =>
-              update({ kind: event.target.value as DeploymentEnvironment["kind"] })
-            }
-          >
-            {ENVIRONMENT_KINDS.map((kind) => (
-              <option key={kind} value={kind}>
-                {t(ENVIRONMENT_KIND_LABELS[kind])}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => update({ kind: value as DeploymentEnvironment["kind"] })}
+            options={ENVIRONMENT_KINDS.map((kind) => ({
+              value: kind,
+              label: t(ENVIRONMENT_KIND_LABELS[kind]),
+            }))}
+          />
         </Field>
 
         <Field
@@ -303,8 +293,9 @@ export function EnvironmentDialog({
         </Field>
 
         <Field label={t("Notes")}>
-          <textarea
-            className={cn(fieldClass, "h-[56px] resize-none py-1.5 leading-relaxed")}
+          <Textarea
+            resizable={false}
+            className="h-14"
             value={form.notes}
             onChange={(event) => update({ notes: event.target.value })}
           />
@@ -399,53 +390,42 @@ export function ServiceDialog({
             />
           </Field>
           <Field label={t("Service role")}>
-            <select
-              className={selectClass}
+            <Select
               value={form.role}
-              onChange={(event) =>
-                update({ role: event.target.value as DeploymentServiceUnit["role"] })
-              }
-            >
-              {SERVICE_ROLES.map((role) => (
-                <option key={role} value={role}>
-                  {t(SERVICE_ROLE_LABELS[role])}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => update({ role: value as DeploymentServiceUnit["role"] })}
+              options={SERVICE_ROLES.map((role) => ({
+                value: role,
+                label: t(SERVICE_ROLE_LABELS[role]),
+              }))}
+            />
           </Field>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label={t("Environment")}>
-            <select
-              className={selectClass}
+            <Select
               value={form.environment_id}
-              onChange={(event) => update({ environment_id: event.target.value })}
-            >
-              <option value="">{t("Select an environment")}</option>
-              {environments.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
+              placeholder={t("Select an environment")}
+              onChange={(value) => update({ environment_id: value })}
+              options={[
+                { value: "", label: t("Select an environment") },
+                ...environments.map((item) => ({ value: item.id, label: item.name })),
+              ]}
+            />
           </Field>
           <Field label={t("Runtime")}>
-            <select
-              className={selectClass}
+            <Select
               value={runtime.kind}
-              onChange={(event) => {
-                const kind = event.target.value as RuntimeFormState["kind"];
+              onChange={(value) => {
+                const kind = value as RuntimeFormState["kind"];
                 updateRuntime({ kind });
                 update({ service_kind: serviceKindForRuntime(kind, form.service_kind) });
               }}
-            >
-              {Object.entries(RUNTIME_KIND_LABELS).map(([kind, label]) => (
-                <option key={kind} value={kind}>
-                  {t(label)}
-                </option>
-              ))}
-            </select>
+              options={Object.entries(RUNTIME_KIND_LABELS).map(([kind, label]) => ({
+                value: kind,
+                label: t(label),
+              }))}
+            />
           </Field>
         </div>
 
@@ -528,8 +508,9 @@ export function ServiceDialog({
               <div className="flex flex-col gap-1.5">
                 {ports.map((port, index) => (
                   <div key={index} className="flex items-center gap-1.5">
-                    <input
-                      className={cn(fieldClass, "w-20")}
+                    <Input
+                      size="sm"
+                      className="w-20"
                       value={port.host_port === 0 ? "" : String(port.host_port)}
                       aria-label={t("Host port")}
                       onChange={(event) => {
@@ -542,8 +523,9 @@ export function ServiceDialog({
                       }}
                     />
                     <span className="text-11 text-fg-subtle">→</span>
-                    <input
-                      className={cn(fieldClass, "w-20")}
+                    <Input
+                      size="sm"
+                      className="w-20"
                       value={port.container_port === 0 ? "" : String(port.container_port)}
                       aria-label={t("Container port")}
                       onChange={(event) => {
@@ -555,22 +537,24 @@ export function ServiceDialog({
                         updateRuntime({ ports: next });
                       }}
                     />
-                    <select
-                      className={cn(selectClass, "w-20")}
+                    <Select
+                      className="w-20 shrink-0"
+                      size="sm"
                       value={port.protocol}
-                      aria-label={t("Source kind")}
-                      onChange={(event) => {
+                      ariaLabel={t("协议")}
+                      onChange={(value) => {
                         const next = ports.map((item, itemIndex) =>
                           itemIndex === index
-                            ? { ...item, protocol: event.target.value as PortMapping["protocol"] }
+                            ? { ...item, protocol: value as PortMapping["protocol"] }
                             : item,
                         );
                         updateRuntime({ ports: next });
                       }}
-                    >
-                      <option value="tcp">TCP</option>
-                      <option value="udp">UDP</option>
-                    </select>
+                      options={[
+                        { value: "tcp", label: "TCP" },
+                        { value: "udp", label: "UDP" },
+                      ]}
+                    />
                     <Button
                       size="xs"
                       variant="ghost"
@@ -631,27 +615,24 @@ export function ServiceDialog({
               />
             </Field>
             <Field label={t("Arguments")} hint={t("One argument per line — each line is passed as one argument, never through a shell")}>
-              <textarea
-                className={cn(fieldClass, "h-[72px] resize-none py-1.5 font-mono leading-relaxed")}
+              <Textarea
+                resizable={false}
+                className="h-18 font-mono"
                 value={runtime.args_text}
                 placeholder={"-jar\napp.jar"}
                 onChange={(event) => updateRuntime({ args_text: event.target.value })}
               />
             </Field>
             <Field label={t("Service kind")}>
-              <select
-                className={selectClass}
+              <Select
                 value={form.service_kind}
-                onChange={(event) =>
-                  update({ service_kind: event.target.value as DeploymentServiceUnit["service_kind"] })
+                onChange={(value) =>
+                  update({ service_kind: value as DeploymentServiceUnit["service_kind"] })
                 }
-              >
-                {(["java_jar", "node_process", "python_venv", "native_binary"] as const).map((kind) => (
-                  <option key={kind} value={kind}>
-                    {t(SERVICE_KIND_LABELS[kind])}
-                  </option>
-                ))}
-              </select>
+                options={(
+                  ["java_jar", "node_process", "python_venv", "native_binary"] as const
+                ).map((kind) => ({ value: kind, label: t(SERVICE_KIND_LABELS[kind]) }))}
+              />
             </Field>
           </div>
         )}
@@ -680,8 +661,9 @@ export function ServiceDialog({
         </Field>
 
         <Field label={t("Notes")}>
-          <textarea
-            className={cn(fieldClass, "h-[48px] resize-none py-1.5 leading-relaxed")}
+          <Textarea
+            resizable={false}
+            className="h-12"
             value={form.notes}
             onChange={(event) => update({ notes: event.target.value })}
           />

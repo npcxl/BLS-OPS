@@ -9,10 +9,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import LiquidGlass from "liquid-glass-react";
-import { ChevronRight } from "@/components/icons";
+import { MenuItemRow, MenuSeparator, MenuSurface } from "@/components/ui/menu-surface";
 import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
-import { cn } from "@/lib/cn";
 
 /**
  * Reusable desktop context menu.
@@ -328,7 +326,7 @@ export const ContextMenu = memo(function ContextMenu({
       ref={ref}
       role="menu"
       aria-label={title ?? t("Context menu")}
-      className="glass-host fixed"
+      className="fixed"
       style={{
         left: pos?.x ?? x,
         top: pos?.y ?? y,
@@ -338,174 +336,91 @@ export const ContextMenu = memo(function ContextMenu({
       }}
       onContextMenu={(event) => event.preventDefault()}
     >
-      <LiquidGlass
-        cornerRadius={12}
-        padding="4px"
-        displacementScale={70}
-        blurAmount={0.08}
-        saturation={130}
-        aberrationIntensity={2}
-        elasticity={0.15}
-      >
-      {title && (
-        <div
-          className="truncate px-2 pb-1 pt-0.5 text-10 font-semibold tracking-[0.06em] text-fg-subtle uppercase"
-          title={title}
-        >
-          {title}
-        </div>
-      )}
-      {items.map((item, index) => {
-        if (item.separator) {
-          return <div key={item.id ?? `sep-${index}`} className="my-1 h-px bg-line" role="separator" />;
-        }
-        const Icon = item.icon;
-        const highlighted = active === index;
-        const hasChildren = (item.children?.length ?? 0) > 0;
-        return (
-          <button
-            key={item.id ?? item.label ?? index}
-            ref={(node) => {
-              if (node) itemRefs.current.set(index, node);
-              else itemRefs.current.delete(index);
-            }}
-            type="button"
-            role="menuitem"
-            aria-haspopup={hasChildren || undefined}
-            aria-expanded={hasChildren ? submenu === index : undefined}
-            data-submenu-open={hasChildren && submenu === index ? "true" : undefined}
-            disabled={item.disabled}
-            className={cn(
-              "relative my-0.5 flex h-8 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
-              item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
-              // 选中是"一层薄膜"，不是纯文字变色：亮/暗两套底色见 tokens。
-              highlighted && (item.danger ? "bg-danger/10" : "bg-menu-item-active"),
-              item.disabled && "pointer-events-none opacity-40",
-            )}
-            onPointerEnter={() => {
-              if (item.disabled) return;
-              setActive(index);
-              // Hovering a parent opens its submenu; hovering a leaf closes any
-              // open one so the panel never belongs to a row the cursor left.
-              if (hasChildren) openSubmenu(index);
-              else resetSubmenu();
-            }}
-            onClick={() => {
-              if (item.disabled) return;
-              if (hasChildren) {
-                setSubmenu((current) => (current === index ? null : index));
-                setSubActive(-1);
-                return;
-              }
-              closeRef.current();
-              item.onSelect?.();
-            }}
+      <MenuSurface>
+        {title && (
+          <div
+            className="truncate px-2 pb-1 pt-0.5 text-10 font-semibold tracking-[0.06em] text-fg-subtle uppercase"
+            title={title}
           >
-            {/* 左缘指示条：危险项跟着走 danger 色，别在红色文字旁边挂一条蓝杠 */}
-            <span
-              className={cn(
-                "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
-                item.danger ? "bg-danger" : "bg-accent",
-                highlighted ? "opacity-100" : "opacity-0",
-              )}
+            {title}
+          </div>
+        )}
+        {items.map((item, index) => {
+          if (item.separator) {
+            return <MenuSeparator key={item.id ?? `sep-${index}`} />;
+          }
+          const hasChildren = (item.children?.length ?? 0) > 0;
+          return (
+            <MenuItemRow
+              key={item.id ?? item.label ?? index}
+              item={item}
+              highlighted={active === index}
+              hasChildren={hasChildren}
+              submenuOpen={submenu === index}
+              buttonRef={(node) => {
+                if (node) itemRefs.current.set(index, node);
+                else itemRefs.current.delete(index);
+              }}
+              onPointerEnter={() => {
+                if (item.disabled) return;
+                setActive(index);
+                // Hovering a parent opens its submenu; hovering a leaf closes any
+                // open one so the panel never belongs to a row the cursor left.
+                if (hasChildren) openSubmenu(index);
+                else resetSubmenu();
+              }}
+              onClick={() => {
+                if (item.disabled) return;
+                if (hasChildren) {
+                  setSubmenu((current) => (current === index ? null : index));
+                  setSubActive(-1);
+                  return;
+                }
+                closeRef.current();
+                item.onSelect?.();
+              }}
             />
-            {Icon ? (
-              <Icon
-                size={14}
-                strokeWidth={1.75}
-                className={cn("shrink-0", item.danger ? "text-danger/80" : highlighted ? "text-accent" : "text-fg-subtle")}
-              />
-            ) : (
-              <span className="w-[14px] shrink-0" />
-            )}
-            <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
-            {item.hint && <span className="shrink-0 text-10 text-fg-subtle">{item.hint}</span>}
-            {hasChildren && (
-              <ChevronRight
-                size={12}
-                strokeWidth={1.75}
-                aria-hidden="true"
-                className="shrink-0 text-fg-subtle"
-              />
-            )}
-          </button>
-        );
-      })}
+          );
+        })}
 
-      {submenuItems && (
-        <div
-          ref={submenuRef}
-          role="menu"
-          aria-label={items[submenu!]?.label ?? t("Submenu")}
-          className="glass-host fixed"
-          style={{
-            left: subPos?.x ?? 0,
-            top: subPos?.y ?? 0,
-            zIndex: OVERLAY_Z.submenu,
-            minWidth,
-            visibility: subPos ? "visible" : "hidden",
-          }}
-          onContextMenu={(event) => event.preventDefault()}
-        >
-          <LiquidGlass
-            cornerRadius={12}
-            padding="4px"
-            displacementScale={70}
-            blurAmount={0.08}
-            saturation={130}
-            aberrationIntensity={2}
-            elasticity={0.15}
+        {submenuItems && (
+          <div
+            ref={submenuRef}
+            role="menu"
+            aria-label={items[submenu!]?.label ?? t("Submenu")}
+            className="fixed"
+            style={{
+              left: subPos?.x ?? 0,
+              top: subPos?.y ?? 0,
+              zIndex: OVERLAY_Z.submenu,
+              minWidth,
+              visibility: subPos ? "visible" : "hidden",
+            }}
+            onContextMenu={(event) => event.preventDefault()}
           >
-          {submenuItems.map((item, index) => {
-            if (item.separator) {
-              return <div key={item.id ?? `sub-sep-${index}`} className="my-1 h-px bg-line" role="separator" />;
-            }
-            const Icon = item.icon;
-            const highlighted = subActive === index;
-            return (
-              <button
-                key={item.id ?? item.label ?? index}
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                className={cn(
-                  "relative my-0.5 flex h-8 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
-                  item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
-                  highlighted && (item.danger ? "bg-danger/10" : "bg-menu-item-active"),
-                  item.disabled && "pointer-events-none opacity-40",
-                )}
-                onPointerEnter={() => !item.disabled && setSubActive(index)}
-                onClick={() => {
-                  if (item.disabled) return;
-                  closeRef.current();
-                  item.onSelect?.();
-                }}
-              >
-                <span
-                  className={cn(
-                    "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
-                    item.danger ? "bg-danger" : "bg-accent",
-                    highlighted ? "opacity-100" : "opacity-0",
-                  )}
-                />
-                {Icon ? (
-                  <Icon
-                    size={14}
-                    strokeWidth={1.75}
-                    className={cn("shrink-0", item.danger ? "text-danger/80" : highlighted ? "text-accent" : "text-fg-subtle")}
+            <MenuSurface>
+              {submenuItems.map((item, index) => {
+                if (item.separator) {
+                  return <MenuSeparator key={item.id ?? `sub-sep-${index}`} />;
+                }
+                return (
+                  <MenuItemRow
+                    key={item.id ?? item.label ?? index}
+                    item={item}
+                    highlighted={subActive === index}
+                    onPointerEnter={() => !item.disabled && setSubActive(index)}
+                    onClick={() => {
+                      if (item.disabled) return;
+                      closeRef.current();
+                      item.onSelect?.();
+                    }}
                   />
-                ) : (
-                  <span className="w-[14px] shrink-0" />
-                )}
-                <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
-                {item.hint && <span className="shrink-0 text-10 text-fg-subtle">{item.hint}</span>}
-              </button>
-            );
-          })}
-          </LiquidGlass>
-        </div>
-      )}
-      </LiquidGlass>
+                );
+              })}
+            </MenuSurface>
+          </div>
+        )}
+      </MenuSurface>
     </div>,
     document.body,
   );

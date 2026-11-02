@@ -41,7 +41,8 @@ import type {
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
-import { selectClass } from "@/components/ui/modal";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
@@ -366,18 +367,18 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
             </li>
           ))}
         </ul>
-        <select
-          className={cn(selectClass, "w-full")}
+        <Select
+          className="w-full"
+          size="sm"
           value={category}
-          onChange={(event) => setCategory(event.target.value as KnowledgeCategory | "")}
-        >
-          <option value="">{t("All categories")}</option>
-          {CATEGORIES.map((item) => (
-            <option key={item} value={item}>
-              {t(item)}
-            </option>
-          ))}
-        </select>
+          ariaLabel={t("分类")}
+          placeholder={t("All categories")}
+          onChange={(value) => setCategory(value as KnowledgeCategory | "")}
+          options={[
+            { value: "", label: t("All categories") },
+            ...CATEGORIES.map((item) => ({ value: item, label: t(item) })),
+          ]}
+        />
         <label className="flex items-center gap-1.5 text-11 text-fg-subtle">
           <input
             type="checkbox"
@@ -430,63 +431,61 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto ops-scroll p-3">
-            <input
-              className={cn(selectClass, "w-full")}
+            <Input
+              size="sm"
+              className="w-full"
+              aria-label={t("Title")}
               placeholder={t("Title")}
               value={selected.title}
               onChange={(event) => setSelected({ ...selected, title: event.target.value })}
             />
             <div className="flex flex-wrap gap-2">
-              <select
-                className={selectClass}
+              <Select
+                size="sm"
                 value={selected.scope}
-                onChange={(event) =>
-                  setSelected({ ...selected, scope: event.target.value as KnowledgeScope })
+                ariaLabel={t("适用范围")}
+                onChange={(value) =>
+                  setSelected({ ...selected, scope: value as KnowledgeScope })
                 }
-              >
-                {SCOPES.map((scope) => (
-                  <option key={scope} value={scope}>
-                    {t(scope)}
-                  </option>
-                ))}
-              </select>
-              <select
-                className={selectClass}
+                options={SCOPES.map((scope) => ({ value: scope, label: t(scope) }))}
+              />
+              <Select
+                size="sm"
                 value={selected.category}
-                onChange={(event) =>
-                  setSelected({ ...selected, category: event.target.value as KnowledgeCategory })
+                ariaLabel={t("分类")}
+                onChange={(value) =>
+                  setSelected({ ...selected, category: value as KnowledgeCategory })
                 }
-              >
-                {CATEGORIES.map((item) => (
-                  <option key={item} value={item}>
-                    {t(item)}
-                  </option>
-                ))}
-              </select>
-              <select
-                className={selectClass}
+                options={CATEGORIES.map((item) => ({ value: item, label: t(item) }))}
+              />
+              <Select
+                size="sm"
                 value={selected.source_type}
-                onChange={(event) =>
+                ariaLabel={t("来源类型")}
+                onChange={(value) =>
                   setSelected({
                     ...selected,
-                    source_type: event.target.value as KnowledgeSourceType,
+                    source_type: value as KnowledgeSourceType,
                   })
                 }
-              >
-                <option value="manual">{t("manual")}</option>
-                <option value="markdown_file">{t("markdown_file")}</option>
-                <option value="imported_text">{t("imported_text")}</option>
-              </select>
-              <input
-                className={selectClass}
+                options={[
+                  { value: "manual", label: t("manual") },
+                  { value: "markdown_file", label: t("markdown_file") },
+                  { value: "imported_text", label: t("imported_text") },
+                ]}
+              />
+              <Input
+                size="sm"
+                aria-label={t("Source")}
                 placeholder={t("Source")}
                 value={selected.source_name}
                 onChange={(event) =>
                   setSelected({ ...selected, source_name: event.target.value })
                 }
               />
-              <input
-                className={selectClass}
+              <Input
+                size="sm"
+                aria-label={t("Tags (comma separated)")}
                 placeholder={t("Tags (comma separated)")}
                 value={selected.tags.join(",")}
                 onChange={(event) =>
@@ -516,29 +515,29 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
                   />
                   {t("Enabled")}
                 </label>
-                <select
-                  className={selectClass}
-                  data-testid="knowledge-status"
+                <Select
+                  size="sm"
+                  testId="knowledge-status"
                   value={selected.status}
-                  onChange={(event) =>
+                  ariaLabel={t("状态")}
+                  onChange={(value) =>
                     setSelected({
                       ...selected,
-                      status: event.target.value as KnowledgeDocStatus,
+                      status: value as KnowledgeDocStatus,
                     })
                   }
-                >
-                  {STATUSES.map((status) => (
-                    <option key={status} value={status}>
-                      {t(STATUS_LABELS[status])}
-                    </option>
-                  ))}
-                </select>
+                  options={STATUSES.map((status) => ({
+                    value: status,
+                    label: t(STATUS_LABELS[status]),
+                  }))}
+                />
                 <label className="flex items-center gap-1.5 text-11 text-fg-muted">
                   {t("Last verified")}
-                  <input
+                  <Input
                     type="date"
-                    className={selectClass}
+                    size="sm"
                     data-testid="knowledge-verified"
+                    aria-label={t("Last verified")}
                     value={toDateInput(selected.last_verified_at)}
                     onChange={(event) =>
                       setSelected({
@@ -548,8 +547,10 @@ export function KnowledgePanel({ applicationId, environmentId }: Props) {
                     }
                   />
                 </label>
-                <input
-                  className={cn(selectClass, "min-w-40 flex-1")}
+                <Input
+                  size="sm"
+                  className="min-w-40 flex-1"
+                  aria-label={t("Knowledge note")}
                   placeholder={t("Knowledge note")}
                   value={selected.note}
                   onChange={(event) => setSelected({ ...selected, note: event.target.value })}

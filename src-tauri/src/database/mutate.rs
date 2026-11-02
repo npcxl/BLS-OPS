@@ -523,11 +523,7 @@ async fn execute_row(
 }
 
 /// 结果未知时给用户的核对语句（**不自动执行**）。
-fn verify_hint(
-    dialect: &SqlDialect,
-    detail: &DbTableDetail,
-    request: &MutationRequest,
-) -> String {
+fn verify_hint(dialect: &SqlDialect, detail: &DbTableDetail, request: &MutationRequest) -> String {
     let keys = detail.reliable_key.clone().unwrap_or_default();
     let qualified = dialect
         .qualified(Some(&detail.database), &detail.table)
@@ -547,7 +543,10 @@ fn verify_hint(
                 parts.push(format!("{quoted} = {}", dialect.string_literal(value)));
             }
             if !parts.is_empty() {
-                hints.push(format!("SELECT * FROM {qualified} WHERE {};", parts.join(" AND ")));
+                hints.push(format!(
+                    "SELECT * FROM {qualified} WHERE {};",
+                    parts.join(" AND ")
+                ));
             }
         }
     }

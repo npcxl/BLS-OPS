@@ -18,7 +18,7 @@ import type {
 } from "@/api/types/deployment";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { selectClassSm } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 
 import type { DeploymentCenter } from "./use-deployment-center";
@@ -321,23 +321,25 @@ export function ServicesList({
               {/* 已确认项目关联：改了立刻生效（走专用 IPC，不是普通保存）。 */}
               <div className="flex items-center gap-2 border-b border-line/60 bg-surface-2/40 px-3 py-1.5">
                 <span className="shrink-0 text-10 text-fg-subtle">{t("Linked project")}</span>
-                <select
-                  className={cn(selectClassSm, "min-w-0 flex-1")}
+                <Select
+                  size="xs"
+                  className="min-w-0 flex-1"
                   value={unit.confirmed_project_id ?? ""}
-                  aria-label={t("Link a confirmed project")}
-                  onChange={(event) => {
-                    const project = confirmedProjects.find((item) => item.id === event.target.value);
+                  ariaLabel={t("Link a confirmed project")}
+                  placeholder={t("No confirmed projects on this server")}
+                  onChange={(value) => {
+                    const project = confirmedProjects.find((item) => item.id === value);
                     if (!project) return;
                     void center.linkProject(unit.id, project.canonical_path, project.id);
                   }}
-                >
-                  <option value="">{t("No confirmed projects on this server")}</option>
-                  {confirmedProjects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.canonical_path}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: "", label: t("No confirmed projects on this server") },
+                    ...confirmedProjects.map((project) => ({
+                      value: project.id,
+                      label: project.canonical_path,
+                    })),
+                  ]}
+                />
                 {unit.confirmed_project_id !== null && (
                   <Button size="xs" variant="ghost" onClick={() => void center.unlinkProject(unit.id)}>
                     {t("Unlink")}

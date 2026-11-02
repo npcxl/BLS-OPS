@@ -360,10 +360,9 @@ export function ConnectionDialog({
             <Select
               value={draft.engine}
               ariaLabel={t("数据库类型")}
-              // 引擎选项带品牌图标与版本号：高度按需自定义，不再受预设档位限制
+              // 引擎选项带品牌图标与版本号：用公共的 lg 档位（34px），
+              // 选项行本身在 lg 下是 34px 高，不再逐页传 height/itemHeight。
               size="lg"
-              height={42}
-              itemHeight={38}
               onChange={(value) => changeEngine(value as DatabaseProfile["engine"])}
               
               options={engineCatalog().map((engine) => {

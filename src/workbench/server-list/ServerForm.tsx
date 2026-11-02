@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plug } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { MacButton } from "@/components/ui/mac-button";
 import { ErrorState } from "@/components/ui/error-state";
-import { Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { Field, Modal } from "@/components/ui/modal";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { toErrorMessage, type ServerRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -114,16 +115,20 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
             {t("Close")}
           </Button>
-          <MacButton variant="primary" disabled={submit.pending} onClick={() => void save()}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={submit.pending}
+            onClick={() => void save()}
+          >
             {submit.pending ? t("Saving") : t("Save Ctrl+S")}
-          </MacButton>
+          </Button>
         </>
       }
     >
       <div className="flex flex-col gap-2.5">
         <Field label={t("Name")}>
-          <input
-            className={fieldClass}
+          <Input
             value={form.name}
             placeholder={t("e.g. API-01")}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -132,19 +137,17 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
 
         <div className="grid grid-cols-[1fr_88px] gap-2">
           <Field label={t("Host")}>
-            <input
-              className={fieldClass}
+            <Input
               value={form.host}
               placeholder={t("10.0.0.11 or example.com")}
               onChange={(event) => setForm({ ...form, host: event.target.value })}
             />
           </Field>
           <Field label={t("Port")}>
-            <input
+            <Input
               type="number"
               min={1}
               max={65535}
-              className={fieldClass}
               value={form.port}
               onChange={(event) => setForm({ ...form, port: Number(event.target.value) })}
             />
@@ -152,8 +155,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         </div>
 
         <Field label={t("Username")}>
-          <input
-            className={fieldClass}
+          <Input
             value={form.username}
             onChange={(event) => setForm({ ...form, username: event.target.value })}
           />
@@ -167,39 +169,39 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
               : undefined
           }
         >
-          <select
-            className={selectClass}
+          {/* 空串 = 不选凭据，保持既有 `value || null` 语义（不能用 0/false 顶替）。 */}
+          <Select
             value={form.credential_id ?? ""}
-            onChange={(event) => setForm({ ...form, credential_id: event.target.value || null })}
-          >
-            <option value="">{t("No credential")}</option>
-            {credentials.map((credential) => (
-              <option key={credential.id} value={credential.id}>
-                {credential.name} · {credential.username} ·{" "}
-                {credential.credential_type === "private_key" ? t("Private key") : t("Password")}
-              </option>
-            ))}
-          </select>
+            placeholder={t("No credential")}
+            onChange={(value) => setForm({ ...form, credential_id: value || null })}
+            options={[
+              { value: "", label: t("No credential") },
+              ...credentials.map((credential) => ({
+                value: credential.id,
+                label: `${credential.name} · ${credential.username}`,
+                hint:
+                  credential.credential_type === "private_key"
+                    ? t("Private key")
+                    : t("Password"),
+              })),
+            ]}
+          />
         </Field>
 
         <Field label={t("Group")}>
-          <select
-            className={selectClass}
+          <Select
             value={form.group_id ?? ""}
-            onChange={(event) => setForm({ ...form, group_id: event.target.value || null })}
-          >
-            <option value="">{t(UNGROUPED_LABEL)}</option>
-            {groups.map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.name}
-              </option>
-            ))}
-          </select>
+            placeholder={t(UNGROUPED_LABEL)}
+            onChange={(value) => setForm({ ...form, group_id: value || null })}
+            options={[
+              { value: "", label: t(UNGROUPED_LABEL) },
+              ...groups.map((group) => ({ value: group.id, label: group.name })),
+            ]}
+          />
         </Field>
 
         <Field label={t("Tags")} hint={t("Separate with commas")}>
-          <input
-            className={fieldClass}
+          <Input
             value={tagText}
             placeholder="prod, api"
             onChange={(event) => setTagText(event.target.value)}
@@ -210,20 +212,17 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           label={t("Jump host (ProxyJump)")}
           hint={t("Leave empty for direct connection; the jump host itself also needs a credential")}
         >
-          <select
-            className={selectClass}
+          <Select
             value={form.proxy_jump_id ?? ""}
-            onChange={(event) => setForm({ ...form, proxy_jump_id: event.target.value || null })}
-          >
-            <option value="">{t("Direct connection")}</option>
-            {servers
-              .filter((item) => item.id !== form.id)
-              .map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name} · {item.host}
-                </option>
-              ))}
-          </select>
+            placeholder={t("Direct connection")}
+            onChange={(value) => setForm({ ...form, proxy_jump_id: value || null })}
+            options={[
+              { value: "", label: t("Direct connection") },
+              ...servers
+                .filter((item) => item.id !== form.id)
+                .map((item) => ({ value: item.id, label: item.name, hint: item.host })),
+            ]}
+          />
         </Field>
 
         <div className="flex items-center gap-2 pt-1">

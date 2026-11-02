@@ -9,7 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { selectClassSm } from "@/components/ui/modal";
+import { SearchField } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
@@ -214,41 +215,40 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
             width="w-52"
             className="font-mono placeholder:font-sans"
           />
-          <label className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
+          <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
             <Filter size={11} />
-            <select
+            {/* "" 表示"全部优先级"，不要用 0 顶替 —— syslog 的 0 是 emerg。 */}
+            <Select
+              size="xs"
+              className="w-[112px]"
+              ariaLabel={t("优先级")}
               value={priority === null ? "" : String(priority)}
-              onChange={(event) =>
-                setPriority(event.target.value === "" ? null : Number(event.target.value))
-              }
-              className={selectClassSm}
-            >
-              {JOURNAL_PRIORITIES.map((item) => (
-                <option key={item.label} value={item.value === null ? "" : String(item.value)}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
+              onChange={(value) => setPriority(value === "" ? null : Number(value))}
+              options={JOURNAL_PRIORITIES.map((item) => ({
+                value: item.value === null ? "" : String(item.value),
+                label: item.label,
+              }))}
+            />
+          </span>
+          <span className="flex shrink-0 items-center gap-1 text-11 text-fg-subtle">
             {t("Lines")}
-            <select
-              value={lines}
-              onChange={(event) => setLines(Number(event.target.value))}
-              className={selectClassSm}
-            >
-              {LINE_CHOICES.map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice}
-                </option>
-              ))}
-            </select>
-          </label>
-          <ToolbarInput
+            <Select
+              size="xs"
+              className="w-[84px]"
+              ariaLabel={t("行数")}
+              value={String(lines)}
+              onChange={(value) => setLines(Number(value))}
+              options={LINE_CHOICES.map((choice) => ({
+                value: String(choice),
+                label: String(choice),
+              }))}
+            />
+          </span>
+          <SearchField
+            containerClassName="flex-1"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={setSearch}
             placeholder={t("Search in results…")}
-            className="flex-1"
           />
         </>
       }

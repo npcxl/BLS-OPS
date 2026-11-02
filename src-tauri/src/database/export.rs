@@ -8,8 +8,10 @@
 //! * 导出使用**独立的连接池（最多 1 条）**，不会把交互连接占满。
 //! * 导出永远**重新查询**：界面会明确提示"数据可能已变化"。
 //!   不把前端缓存的行传回来假装完整，也不重执行有副作用的 SQL。
-//! * 连接上先 `START TRANSACTION READ ONLY`：即使检测失手，服务器也会
-//!   拒绝写语句。
+//! * 连接上先按方言开启只读事务（MySQL/PostgreSQL `START TRANSACTION READ ONLY`、
+//!   Oracle `SET TRANSACTION READ ONLY`）：即使检测失手，服务器也会拒绝写语句。
+//!   没有只读事务语义的引擎（SQLite / SQL Server / ClickHouse）**拒绝导出**，
+//!   不给一个看起来只读的假保障。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

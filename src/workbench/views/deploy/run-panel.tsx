@@ -35,7 +35,8 @@ import {
 } from "@/api/ops-api";
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import { Button } from "@/components/ui/button";
-import { ErrorText, selectClass } from "@/components/ui/modal";
+import { ErrorText } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { LoadingState } from "@/components/ui/loading";
 import { EmptyState } from "@/components/ui/empty-state";
 import { deploymentRunEvent } from "@/lib/events";
@@ -380,18 +381,21 @@ export function RunPanel({ applicationId, environmentId, sessionId, onChanged }:
             </StatusBadge>
           </div>
           <div className="mt-3 text-xs font-medium text-fg-muted">{t("Plans")}</div>
-          <select
-            className={cn(selectClass, "mt-1 w-full")}
+          <Select
+            className="mt-1 w-full"
             value={planId}
-            onChange={(event) => setPlanId(event.target.value)}
-          >
-            {plans.length === 0 ? <option value="">{t("No plans yet")}</option> : null}
-            {plans.map((plan) => (
-              <option key={plan.id} value={plan.id}>
-                {plan.name} · v{plan.version}
-              </option>
-            ))}
-          </select>
+            placeholder={t("No plans yet")}
+            onChange={(value) => setPlanId(value)}
+            options={
+              plans.length === 0
+                ? [{ value: "", label: t("No plans yet") }]
+                : plans.map((plan) => ({
+                    value: plan.id,
+                    label: plan.name,
+                    hint: `v${plan.version}`,
+                  }))
+            }
+          />
           <div className="mt-3 text-xs text-fg-muted">
             {effectiveSession
               ? t("SSH session ready")

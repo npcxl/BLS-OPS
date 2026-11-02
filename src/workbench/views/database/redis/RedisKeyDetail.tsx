@@ -14,6 +14,8 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Input, Textarea } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
 import { pushToast } from "@/components/ui/toast";
 import { toDbError } from "@/stores/database-store";
@@ -335,8 +337,9 @@ export function ValuePanel({
       {/* 名称/类型固定，值区自己滚；整块不再整体滚动，避免把 TTL 顶出去 */}
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-hidden px-3 py-2.5">
         <FormRow label={t("键名称:")}>
-          <input
-            className="h-[24px] min-w-0 flex-1 rounded-[3px] border border-line bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 font-mono"
             value={nameDraft}
             readOnly={!writable || !nameEditing}
             onDoubleClick={() => {
@@ -374,29 +377,32 @@ export function ValuePanel({
 
         <FormRow label={t("键类型:")}>
           {/* 类型可改：选中别的类型会走"读值→删键→按新类型写回"的转换确认 */}
-          <select
+          <Select
+            size="xs"
+            className="w-[205px] shrink-0"
+            ariaLabel={t("键类型")}
             value={payload.kind}
-            aria-label={t("键类型")}
             disabled={payload.kind === "stream" || payload.kind === "other"}
-            onChange={(event) => {
+            onChange={(value) => {
               // 下拉本身不 disabled（否则只读用户点不动也看不到原因）。
               if (!writable) {
                 pushToast(t("只读连接，不能修改键类型"), "error");
                 return;
               }
               setConvertError(null);
-              setPendingType(event.target.value);
+              setPendingType(value);
             }}
-            className="h-[24px] w-[205px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent disabled:opacity-60"
-          >
-            {["string", "hash", "list", "set", "zset"].map((kind) => (
-              <option key={kind} value={kind}>
-                {kind}
-              </option>
-            ))}
-            {payload.kind === "stream" && <option value="stream">stream</option>}
-            {payload.kind === "other" && <option value="other">{payload.type_name}</option>}
-          </select>
+            options={[
+              ...["string", "hash", "list", "set", "zset"].map((kind) => ({
+                value: kind,
+                label: kind,
+              })),
+              ...(payload.kind === "stream" ? [{ value: "stream", label: "stream" }] : []),
+              ...(payload.kind === "other"
+                ? [{ value: "other", label: payload.type_name }]
+                : []),
+            ]}
+          />
           {keyInfo && (
             <span className="min-w-0 truncate text-10 text-fg-subtle">
               {keyInfo.memory_bytes !== null && `${keyInfo.memory_bytes} B`}
@@ -409,9 +415,11 @@ export function ValuePanel({
               不加它值框只会有一行高，下面留一大块空白。 */}
           <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-1.5 self-stretch overflow-y-auto">
       {payload.kind === "string" && (
-        <textarea
+        <Textarea
           data-redis-editor
-          className="h-full min-h-[80px] w-full flex-1 resize-none rounded-[3px] border border-line bg-surface-1 px-1.5 py-1 font-mono text-11 leading-[18px] text-fg outline-none focus:border-accent"
+          size="xs"
+          resizable={false}
+          className="h-full min-h-[80px] w-full flex-1 font-mono leading-[18px]"
           value={valueDraft}
           readOnly={!writable || payload.truncated}
           onChange={(event) => setValueDraft(event.target.value)}
@@ -468,21 +476,25 @@ export function ValuePanel({
           编辑区高度变化时也不会把这两行滚出去。 */}
       <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-2">
         <span className="w-[78px] shrink-0 text-left text-11 text-fg-muted">TTL:</span>
-        <select
+        <Select
+          size="xs"
+          className="w-[205px] shrink-0"
+          ariaLabel={t("TTL 单位")}
           value={ttlMode}
-          aria-label={t("TTL 单位")}
-          onChange={(event) => setTtlMode(event.target.value as "seconds" | "hours" | "days")}
-          className="h-[24px] w-[205px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent"
-        >
-          <option value="seconds">{t("过期时间（秒）")}</option>
-          <option value="hours">{t("过期时间（小时）")}</option>
-          <option value="days">{t("过期时间（天）")}</option>
-        </select>
-        <input
-          className="h-[24px] w-[200px] shrink-0 rounded-[3px] border border-line bg-surface-1 px-1.5 text-11 text-fg outline-none focus:border-accent"
+          onChange={(value) => setTtlMode(value as "seconds" | "hours" | "days")}
+          options={[
+            { value: "seconds", label: t("过期时间（秒）") },
+            { value: "hours", label: t("过期时间（小时）") },
+            { value: "days", label: t("过期时间（天）") },
+          ]}
+        />
+        <Input
+          size="xs"
+          className="w-[200px] shrink-0"
           value={ttlAmount}
           placeholder={t("留空 = 永久")}
           inputMode="numeric"
+          aria-label={t("TTL 数值")}
           onChange={(event) => setTtlAmount(event.target.value.replace(/[^0-9]/g, ""))}
           onKeyDown={(event) => {
             if (event.key === "Enter") applyTtl();
@@ -627,8 +639,9 @@ function HashEditor({
             </span>
             {editing?.field === entry.field ? (
               <>
-                <input
-                  className="h-[24px] min-w-0 flex-1 rounded border border-accent/50 bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none"
+                <Input
+                  size="xs"
+                  className="min-w-0 flex-1 border-accent/60 font-mono"
                   value={editing.value}
                   onChange={(event) => setEditing({ ...editing, value: event.target.value })}
                   autoFocus
@@ -720,15 +733,19 @@ function HashEditor({
       )}
       {writable && (
         <div className="flex items-center gap-2">
-          <input
-            className="h-[26px] w-[160px] rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="w-[160px] font-mono"
             placeholder={t("字段名")}
+            aria-label={t("字段名")}
             value={newField}
             onChange={(event) => setNewField(event.target.value)}
           />
-          <input
-            className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 font-mono"
             placeholder={t("值")}
+            aria-label={t("值")}
             value={newValue}
             onChange={(event) => setNewValue(event.target.value)}
           />
@@ -861,9 +878,11 @@ function ListEditor({
       </div>
       {writable && (
         <div className="flex items-center gap-2">
-          <input
-            className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 font-mono"
             placeholder={t("新元素值")}
+            aria-label={t("新元素值")}
             value={pushValue}
             onChange={(event) => setPushValue(event.target.value)}
           />
@@ -927,13 +946,14 @@ function ListRow({
       <span className="w-8 shrink-0 text-right font-mono text-10 text-fg-subtle">{index}</span>
       {editing !== null ? (
         <>
-          <input
-            className="h-[24px] min-w-0 flex-1 rounded border border-accent/50 bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 border-accent/60 font-mono"
             value={editing}
             onChange={(event) => setEditing(event.target.value)}
             autoFocus
           />
-          <Button variant="primary" size="xs" className="h-5" onClick={() => { onSave(editing); setEditing(null); }}>
+          <Button variant="primary" size="xs" onClick={() => { onSave(editing); setEditing(null); }}>
             {t("保存")}
           </Button>
           <Button variant="ghost" size="xs" className="h-5" onClick={() => setEditing(null)}>
@@ -1055,9 +1075,10 @@ function SetEditor({
         {members.map((member) => (
           <div key={member} className="flex items-center gap-2 border-b border-line/60 px-2 py-1 last:border-b-0">
             {editingMember === member ? (
-              <input
+              <Input
                 autoFocus
-                className="h-[22px] min-w-0 flex-1 rounded-[3px] border border-accent bg-surface-1 px-1.5 font-mono text-11 text-fg outline-none"
+                size="xs"
+                className="min-w-0 flex-1 border-accent font-mono"
                 value={editDraft}
                 onChange={(event) => setEditDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -1121,9 +1142,11 @@ function SetEditor({
       )}
       {writable && (
         <div className="flex items-center gap-2">
-          <input
-            className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 font-mono"
             placeholder={t("新成员")}
+            aria-label={t("新成员")}
             value={newMember}
             onChange={(event) => setNewMember(event.target.value)}
           />
@@ -1245,15 +1268,19 @@ function ZsetEditor({
       </div>
       {writable && (
         <div className="flex items-center gap-2">
-          <input
-            className="h-[26px] min-w-0 flex-1 rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="min-w-0 flex-1 font-mono"
             placeholder={t("新成员")}
+            aria-label={t("新成员")}
             value={newMember}
             onChange={(event) => setNewMember(event.target.value)}
           />
-          <input
-            className="h-[26px] w-[120px] rounded-[6px] border border-line bg-surface-1 px-2 font-mono text-11 text-fg outline-none focus:border-accent"
+          <Input
+            size="xs"
+            className="w-[120px] font-mono"
             placeholder={t("分数")}
+            aria-label={t("分数")}
             value={newScore}
             onChange={(event) => setNewScore(event.target.value)}
           />
@@ -1304,9 +1331,11 @@ function ZsetRow({
     <div className="flex items-center gap-2 border-b border-line/60 px-2 py-1 last:border-b-0">
       <span className="min-w-0 flex-1 truncate font-mono text-11 text-fg">{entry.member}</span>
       {writable ? (
-        <input
-          className="h-[22px] w-[90px] shrink-0 rounded border border-line bg-surface-1 px-1.5 text-right font-mono text-11 text-fg outline-none focus:border-accent"
+        <Input
+          size="xs"
+          className="w-[90px] shrink-0 text-right font-mono"
           value={score}
+          aria-label={t("分数")}
           onChange={(event) => setScore(event.target.value)}
         />
       ) : (

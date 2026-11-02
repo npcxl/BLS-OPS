@@ -17,7 +17,7 @@ import {
   WifiOff,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { selectClassSm } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage, type DiskMetrics } from "@/api/ops-api";
 import { i18n } from "@/i18n";
@@ -325,20 +325,20 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           {t("Refresh")}
         </Button>
         <div className="mx-1 h-4 w-px bg-line" />
-        <label className="flex items-center gap-1 text-11 text-fg-subtle">
+        <span className="flex items-center gap-1 text-11 text-fg-subtle">
           {t("Interval")}
-          <select
-            value={intervalMs}
-            onChange={(event) => setIntervalMs(tab.id, Number(event.target.value))}
-            className={selectClassSm}
-          >
-            {MONITOR_INTERVALS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {t("{{count}}s", { count: option.value / 1000 })}
-              </option>
-            ))}
-          </select>
-        </label>
+          <Select
+            size="xs"
+            className="w-[74px]"
+            ariaLabel={t("采集间隔")}
+            value={String(intervalMs)}
+            onChange={(value) => setIntervalMs(tab.id, Number(value))}
+            options={MONITOR_INTERVALS.map((option) => ({
+              value: String(option.value),
+              label: t("{{count}}s", { count: option.value / 1000 }),
+            }))}
+          />
+        </span>
         <div className="mx-1 h-4 w-px bg-line" />
         {phase === "connected" || phase === "connecting" ? (
           <Button

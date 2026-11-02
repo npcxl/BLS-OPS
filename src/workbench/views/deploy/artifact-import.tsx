@@ -25,7 +25,8 @@ import type {
   DeploymentEnvironment,
 } from "@/api/ops-api";
 import { ErrorState } from "@/components/ui/error-state";
-import { selectClass } from "@/components/ui/modal";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 import { artifactImportEvent } from "@/lib/events";
@@ -342,24 +343,26 @@ export function ArtifactImportPanel({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-1.5">
             <span className="text-11 text-fg-muted">{t("Source type")}</span>
-            <select
-              className={cn(selectClass, "w-40")}
+            <Select
+              className="w-40"
+              size="sm"
               value={sourceKind}
-              onChange={(event) => setSourceKind(event.target.value as SourceKind)}
-            >
-              {SOURCE_ORDER.map((kind) => (
-                <option key={kind} value={kind}>
-                  {t(SOURCE_LABEL_KEYS[kind])}
-                </option>
-              ))}
-            </select>
+              ariaLabel={t("Source type")}
+              onChange={(value) => setSourceKind(value as SourceKind)}
+              options={SOURCE_ORDER.map((kind) => ({
+                value: kind,
+                label: t(SOURCE_LABEL_KEYS[kind]),
+              }))}
+            />
           </label>
 
           {sourceKind === "docker_image_ref" ? (
             <label className="flex min-w-56 flex-1 items-center gap-1.5">
               <span className="text-11 text-fg-muted">{t("Image reference")}</span>
-              <input
-                className={cn(selectClass, "flex-1")}
+              <Input
+                size="sm"
+                className="flex-1"
+                aria-label={t("Image reference")}
                 value={reference}
                 placeholder="registry.example.com/shop/api:1.4.0"
                 onChange={(event) => setReference(event.target.value)}
@@ -372,8 +375,9 @@ export function ArtifactImportPanel({
                   ? t("Server directory path")
                   : t("Local path")}
               </span>
-              <input
-                className={cn(selectClass, "flex-1")}
+              <Input
+                size="sm"
+                className="flex-1"
                 value={sourceKind === "remote_directory" ? remotePath : path}
                 placeholder={sourceKind === "remote_directory" ? "/opt/shop" : "/path/to/artifact"}
                 onChange={(event) =>
@@ -398,17 +402,17 @@ export function ArtifactImportPanel({
           {sourceKind === "local_file" ? (
             <label className="flex items-center gap-1.5">
               <span className="text-11 text-fg-muted">{t("Type")}</span>
-              <select
-                className={cn(selectClass, "w-36")}
+              <Select
+                className="w-36"
+                size="sm"
                 value={fileKind}
-                onChange={(event) => setFileKind(event.target.value as ArtifactKind)}
-              >
-                {LOCAL_FILE_KINDS.map((kind) => (
-                  <option key={kind} value={kind}>
-                    {t(ARTIFACT_KIND_LABELS[kind])}
-                  </option>
-                ))}
-              </select>
+                ariaLabel={t("Type")}
+                onChange={(value) => setFileKind(value as ArtifactKind)}
+                options={LOCAL_FILE_KINDS.map((kind) => ({
+                  value: kind,
+                  label: t(ARTIFACT_KIND_LABELS[kind]),
+                }))}
+              />
             </label>
           ) : null}
 
@@ -555,23 +559,28 @@ export function ArtifactImportPanel({
           <div className="mt-3 flex flex-wrap items-end gap-2">
             <label className="flex items-center gap-1.5">
               <span className="text-11 text-fg-muted">{t("Select the environment to deploy into")}</span>
-              <select
-                className={cn(selectClass, "w-44")}
+              <Select
+                className="w-44"
+                size="sm"
                 value={targetEnvironmentId}
-                onChange={(event) => setTargetEnvironmentId(event.target.value)}
-              >
-                <option value="">{t("No environment yet")}</option>
-                {environments.map((environment) => (
-                  <option key={environment.id} value={environment.id}>
-                    {environment.name}
-                  </option>
-                ))}
-              </select>
+                ariaLabel={t("Select the environment to deploy into")}
+                placeholder={t("No environment yet")}
+                onChange={(value) => setTargetEnvironmentId(value)}
+                options={[
+                  { value: "", label: t("No environment yet") },
+                  ...environments.map((environment) => ({
+                    value: environment.id,
+                    label: environment.name,
+                  })),
+                ]}
+              />
             </label>
             <label className="flex items-center gap-1.5">
               <span className="text-11 text-fg-muted">{t("Version label")}</span>
-              <input
-                className={cn(selectClass, "w-36")}
+              <Input
+                size="sm"
+                className="w-36"
+                aria-label={t("Version label")}
                 value={versionLabel}
                 onChange={(event) => setVersionLabel(event.target.value)}
               />
@@ -599,8 +608,10 @@ export function ArtifactImportPanel({
       <section className="rounded-[8px] border border-line bg-surface-1">
         <div className="flex items-center gap-2 border-b border-line px-3 py-1.5">
           <span className="text-11 font-medium text-fg-muted">{t("Artifacts")}</span>
-          <input
-            className={cn(selectClass, "ml-auto w-56")}
+          <Input
+            size="sm"
+            className="ml-auto w-56"
+            aria-label={t("Remote directory")}
             value={uploadDir}
             placeholder={t("Remote directory")}
             onChange={(event) => setUploadDir(event.target.value)}

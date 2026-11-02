@@ -8,6 +8,9 @@
 import { useTranslation } from "react-i18next";
 import { Loader2, PlugZap, Plus, RefreshCw } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { MacSegmentedControl } from "@/components/ui/mac-controls";
+import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { RedisGridView } from "./RedisKeyGrid";
@@ -76,52 +79,34 @@ export function RedisToolbar({
         重复一个下拉只会让"当前库"出现两个真相源；这里只显示上下文。
       */}
       <span
-        className="h-[26px] shrink-0 rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 leading-[24px] text-fg-muted"
+        className="h-6 shrink-0 rounded-[6px] border border-line bg-surface-2 px-1.5 text-11 leading-[22px] text-fg-muted"
         title={t("切换数据库请用左侧连接树")}
       >
         db {dbIndex}
       </span>
 
-      {/* 列表 / 树：参考图放在工具栏第一行，默认树视图 */}
-      <div className="flex shrink-0 items-center rounded-[6px] border border-line p-px">
-        <button
-          type="button"
-          aria-label={t("列表视图")}
-          aria-pressed={view === "list"}
-          className={cn(
-            "rounded-[4px] px-1.5 text-10 leading-[20px]",
-            view === "list" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
-          )}
-          onClick={() => onViewChange("list")}
-        >
-          {t("列表")}
-        </button>
-        <button
-          type="button"
-          aria-label={t("树视图")}
-          aria-pressed={view === "tree"}
-          className={cn(
-            "rounded-[4px] px-1.5 text-10 leading-[20px]",
-            view === "tree" ? "bg-accent/15 text-accent" : "text-fg-subtle hover:bg-surface-hover",
-          )}
-          onClick={() => onViewChange("tree")}
-        >
-          {t("树")}
-        </button>
-      </div>
+      {/* 列表 / 树：参考图放在工具栏第一行，默认树视图。用公共分段控件。 */}
+      <MacSegmentedControl
+        value={view}
+        onChange={(value) => onViewChange(value as RedisGridView)}
+        className="shrink-0"
+        options={[
+          { value: "list", label: t("列表"), ariaLabel: t("列表视图") },
+          { value: "tree", label: t("树"), ariaLabel: t("树视图") },
+        ]}
+      />
 
-      <select
+      <Select
+        size="xs"
+        className="w-[92px] shrink-0"
+        ariaLabel={t("类型过滤")}
         value={typeFilter}
-        aria-label={t("类型过滤")}
-        onChange={(event) => onTypeFilterChange(event.target.value as KeyTypeFilter)}
-        className="h-[26px] w-[92px] shrink-0 rounded-[6px] border border-line bg-surface-1 px-1 text-11 text-fg outline-none focus:border-accent"
-      >
-        {KEY_TYPE_FILTERS.map((value) => (
-          <option key={value} value={value}>
-            {value === "all" ? t("所有类型") : value}
-          </option>
-        ))}
-      </select>
+        onChange={(value) => onTypeFilterChange(value as KeyTypeFilter)}
+        options={KEY_TYPE_FILTERS.map((value) => ({
+          value,
+          label: value === "all" ? t("所有类型") : value,
+        }))}
+      />
 
       <span className="shrink-0 text-10 text-fg-subtle">
         {t("键包含")}
@@ -131,9 +116,10 @@ export function RedisToolbar({
           </span>
         )}
       </span>
-      <input
+      <Input
         ref={patternRef}
-        className="h-[26px] min-w-[120px] flex-1 rounded-[6px] border border-line bg-surface-1 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
+        size="xs"
+        className="min-w-[120px] flex-1"
         value={pattern}
         onChange={(event) => onPatternChange(event.target.value)}
         onKeyDown={(event) => {
@@ -151,7 +137,7 @@ export function RedisToolbar({
           <Button
             variant="ghost"
             size="xs"
-            className="h-[26px] w-6 px-0"
+            className="w-6 px-0"
             aria-label={t("新建 string 键")}
             onClick={onNewKey}
           >
@@ -176,7 +162,7 @@ export function RedisToolbar({
         <Button
           variant="ghost"
           size="xs"
-          className={cn("h-[26px] w-6 px-0", pubsubOpen && "bg-surface-hover")}
+          className={cn("w-6 px-0", pubsubOpen && "bg-surface-hover")}
           aria-label={t("发布 / 订阅")}
           onClick={onTogglePubsub}
         >
@@ -187,7 +173,7 @@ export function RedisToolbar({
         <Button
           variant="ghost"
           size="xs"
-          className={cn("h-[26px] w-6 px-0 text-11", !editorVisible && "text-fg-subtle")}
+          className={cn("w-6 px-0 text-11", !editorVisible && "text-fg-subtle")}
           aria-label={t("切换键编辑器")}
           aria-pressed={editorVisible}
           onClick={onToggleEditor}

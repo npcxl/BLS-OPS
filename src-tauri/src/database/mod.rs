@@ -12,8 +12,8 @@
 //! | `runtime` | 一条配置的运行时：隧道 + 交互池 + 导出池 + 取消通道 |
 //! | `session` | 逻辑会话 = 固定物理连接（事务/临时表/当前库） |
 //! | `query` | 查询任务、分批、拉取式背压、真实取消 |
-//! | `adapter` | 方言原语（`SqlDialect`）+ 引擎执行层模板（`AdapterSet`），无 I/O、可单测 |
-//! | `metadata` | 库/表/字段/索引，按需加载 + 缓存 |
+//! | `adapter` | 方言（`SqlDialect`）+ 执行模板（`AdapterSet`）+ 系统目录查询（`CatalogQueries`），无 I/O、可单测 |
+//! | `metadata` | 库/表/字段/索引：目录 SQL 来自 `CatalogQueries`，结果按列名解析，按需加载 + 缓存 |
 //! | `table` | 表数据浏览（keyset/OFFSET、过滤、大字段投影预算） |
 //! | `mutate` | 单表增删改（事务、影响行数、乐观并发） |
 //! | `export` | CSV 流式导出（独立连接、原子发布、进度） |

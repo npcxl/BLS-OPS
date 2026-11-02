@@ -327,6 +327,56 @@
     font-family: var(--font-ui);
   }
 
+  /*
+   * 右键菜单玻璃表面。
+   *
+   * 分层（下 → 上）：
+   *   .glass__warp       背景模糊 + 边缘折射（库）
+   *   .menu-surface__tint 主题染色 + 描边 + 顶部高光（本项目的表面）
+   *   .menu-surface__content 菜单项与文字
+   *
+   * 染色层必须整块盖住面板，所以它放在库的内容层内部、`inset: 0`：
+   * 放到 `.glass` 外层会被库的 z-index 关系挤到内容下面；只给 `.glass`
+   * 加 background 又会被 `.glass__warp` 的 backdrop-filter 遮住。
+   * 它永远是纯装饰：`pointer-events: none`，不参与命中测试。
+   * 不要给整块菜单设 opacity —— 那会连文字一起变淡。
+   */
+  .menu-surface .glass {
+    /* 库内联了 `0 12px 40px rgb(0 0 0 / 0.25)`：浅色下发灰、深色下过重。
+       内联样式只能用 !important 覆盖。 */
+    box-shadow: var(--glass-menu-shadow) !important;
+  }
+
+  .menu-surface__body {
+    position: relative;
+  }
+
+  .menu-surface__tint {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      180deg,
+      var(--glass-menu-tint-top) 0%,
+      var(--glass-menu-tint-bottom) 100%
+    );
+    border: 1px solid var(--glass-menu-border);
+    box-shadow: var(--glass-menu-sheen);
+  }
+
+  /* 文字在染色层之上：不参与模糊，也不被染色压低对比度。 */
+  .menu-surface__content {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 库给内容层写死了 `0 2px 12px rgb(0 0 0 / 0.4)` 的文字阴影（为压在彩色
+     背景上的胶囊按钮设计）。菜单是 11~13px 的小字，这层阴影只会让字发虚、
+     发脏，在浅色染色层上尤其明显。 */
+  .menu-surface .glass > div {
+    text-shadow: none;
+  }
+
   .mac-window {
     width: calc(100% - 20px);
     height: calc(100% - 20px);

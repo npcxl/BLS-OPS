@@ -8,7 +8,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
-import { Field, Modal, fieldClass, selectClass } from "@/components/ui/modal";
+import { Field, Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { useSubmit } from "@/hooks/use-submit";
 import type { CredentialRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
@@ -115,19 +116,22 @@ export function QuickConnectDialog({
             label={t("Saved credentials")}
             hint={t("Select \"one-time password\" to connect without any saved credentials")}
           >
-            <select
-              className={selectClass}
+            <Select
               value={credentialId}
-              onChange={(event) => setCredentialId(event.target.value)}
-            >
-              <option value="">{t("Use one-time password (not saved)")}</option>
-              {credentials.map((credential: CredentialRecord) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.name} · {credential.username} ·{" "}
-                  {credential.credential_type === "private_key" ? t("Private key") : t("Password")}
-                </option>
-              ))}
-            </select>
+              placeholder={t("Use one-time password (not saved)")}
+              onChange={setCredentialId}
+              options={[
+                { value: "", label: t("Use one-time password (not saved)") },
+                ...credentials.map((credential: CredentialRecord) => ({
+                  value: credential.id,
+                  label: `${credential.name} · ${credential.username}`,
+                  hint:
+                    credential.credential_type === "private_key"
+                      ? t("Private key")
+                      : t("Password"),
+                })),
+              ]}
+            />
           </Field>
         )}
 

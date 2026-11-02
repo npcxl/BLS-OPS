@@ -27,7 +27,8 @@ import type {
   ProposalTopologyOption,
 } from "@/api/ops-api";
 import { ErrorState } from "@/components/ui/error-state";
-import { selectClass } from "@/components/ui/modal";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
 import { cn } from "@/lib/cn";
 
@@ -231,8 +232,9 @@ export function ProposalPanel({
               {CAPACITY_FIELDS.map((field) => (
                 <label key={field.key} className="flex items-center gap-1.5">
                   <span className="w-40 shrink-0 text-11 text-fg-muted">{t(field.label)}</span>
-                  <input
-                    className={cn(selectClass, "w-24")}
+                  <Input
+                    size="sm"
+                    className="w-24"
                     inputMode="decimal"
                     value={
                       profile?.[field.key] === null || profile?.[field.key] === undefined
@@ -257,31 +259,36 @@ export function ProposalPanel({
                 <span className="w-40 shrink-0 text-11 text-fg-muted">
                   {t("Availability target (%)")}
                 </span>
-                <select
-                  className={cn(selectClass, "w-24")}
+                <Select
+                  className="w-24"
+                  size="sm"
                   value={profile?.availability_target ?? ""}
-                  onChange={(event) =>
+                  placeholder={t("Unknown")}
+                  ariaLabel={t("Availability target (%)")}
+                  onChange={(value) =>
                     setProfile((previous) =>
                       previous
-                        ? { ...previous, availability_target: event.target.value || null }
+                        ? { ...previous, availability_target: value || null }
                         : previous,
                     )
                   }
-                >
-                  <option value="">{t("Unknown")}</option>
-                  {AVAILABILITY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: "", label: t("Unknown") },
+                    ...AVAILABILITY_OPTIONS.map((option) => ({
+                      value: option,
+                      label: option,
+                    })),
+                  ]}
+                />
               </label>
               <label className="flex items-center gap-1.5">
                 <span className="w-40 shrink-0 text-11 text-fg-muted">
                   {t("Budget currency")}
                 </span>
-                <input
-                  className={cn(selectClass, "w-24")}
+                <Input
+                  size="sm"
+                  className="w-24"
+                  aria-label={t("Budget currency")}
                   value={profile?.budget_currency ?? ""}
                   onChange={(event) =>
                     setProfile((previous) =>

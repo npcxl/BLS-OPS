@@ -246,18 +246,14 @@ export function Modal({
   );
 }
 
-export const fieldClass =
-  "h-[30px] w-full rounded-[8px] border border-line bg-surface-1/70 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle shadow-[var(--field-shadow)] transition-colors hover:border-line-strong focus:border-accent disabled:opacity-60";
-
 /**
- * 下拉框：与输入框同一套表面，但箭头换成自绘的（见 globals.css 的
- * `.ops-select`）。右侧留 26px 给箭头，文字不会压上去；`!` 是因为
- * `fieldClass` 已经带了 `px-2`，必须显式覆盖右侧内边距。
+ * 历史样式别名。
+ *
+ * 真正的定义在 `input.tsx`（`controlBase` + 尺寸档位），这里只做转出，
+ * 让 30 多个既有调用点继续按原路径引入；新代码请直接用 `<Input>` /
+ * `<Select>` / `<SearchField>`，不要再用这两个字符串。
  */
-export const selectClass = cn(fieldClass, "ops-select cursor-default !pr-7");
-
-/** 工具栏 / 行内的紧凑下拉：与 selectClass 同一套外观，24px 高。 */
-export const selectClassSm = cn(selectClass, "h-[24px] w-auto !pr-6 text-11");
+export { fieldClass, selectClass, selectClassSm } from "./input";
 
 /**
  * 表单字段：标签 + 控件 + 提示 + 字段级校验错误。

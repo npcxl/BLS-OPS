@@ -8,7 +8,9 @@ use std::time::Duration;
 use mysql_async::prelude::Queryable;
 use serde::{Deserialize, Serialize};
 
-use super::driver::{map_error, quote_identifier};
+use super::adapter::AdapterSet;
+use super::capability::DriverFamily;
+use super::driver::map_error;
 use super::model::DbErrorInfo;
 use super::session::SessionEntry;
 
@@ -141,11 +143,45 @@ fn valid_column_type(value: &str) -> bool {
     has_alpha && depth == 0
 }
 
-fn sql_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
+/// DDL 生成的方言入口。
+///
+/// 目前只有 MySQL 完整实现：MySQL 的 DDL 与其它引擎差异太大
+/// （`AUTO_INCREMENT`、内联 `COMMENT`、`CHANGE COLUMN`、建库字符集、`USE db`），
+/// 半套实现会生成"看起来能跑"的错语句。非 MySQL 引擎在这里**明确拒绝**，
+/// 让用户去 SQL 编辑器执行，而不是拿到一条执行到一半的 DDL。
+struct Ddl<'a> {
+    adapter: &'a AdapterSet,
+}
+
+impl<'a> Ddl<'a> {
+    fn new(adapter: &'a AdapterSet) -> Self {
+        Self { adapter }
+    }
+
+    fn quote(&self, name: &str) -> Result<String, DbErrorInfo> {
+        self.adapter.dialect().quote(name)
+    }
+
+    fn literal(&self, value: &str) -> String {
+        self.adapter.dialect().string_literal(value)
+    }
+
+    fn require_mysql(&self, feature: &str) -> Result<(), DbErrorInfo> {
+        if self.adapter.family() == DriverFamily::MySql {
+            return Ok(());
+        }
+        Err(DbErrorInfo::new(
+            "unsupported",
+            format!("{feature} 目前只支持 MySQL/MariaDB"),
+        )
+        .with_detail(
+            "PostgreSQL/SQLite 的 DDL 生成会在对应驱动接入后提供；当前请用 SQL 编辑器直接执行。",
+        ))
+    }
 }
 
 fn create_table_sql(
+    ddl: &Ddl<'_>,
     database: &str,
     table: &str,
     columns: &[NewColumn],
@@ -183,7 +219,7 @@ fn create_table_sql(
         .map(|column| {
             let mut sql = format!(
                 "{} {}",
-                quote_identifier(&column.name)?,
+                ddl.quote(&column.name)?,
                 column.column_type.trim()
             );
             if !column.nullable {
@@ -199,14 +235,14 @@ fn create_table_sql(
                 if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
                     sql.push_str(" DEFAULT CURRENT_TIMESTAMP");
                 } else {
-                    sql.push_str(&format!(" DEFAULT {}", sql_literal(default)));
+                    sql.push_str(&format!(" DEFAULT {}", ddl.literal(default)));
                 }
             }
             if column.auto_increment {
                 sql.push_str(" AUTO_INCREMENT");
             }
             if !column.comment.trim().is_empty() {
-                sql.push_str(&format!(" COMMENT {}", sql_literal(&column.comment)));
+                sql.push_str(&format!(" COMMENT {}", ddl.literal(&column.comment)));
             }
             Ok(sql)
         })
@@ -215,29 +251,29 @@ fn create_table_sql(
     if !primary_key.is_empty() {
         let keys = primary_key
             .iter()
-            .map(|name| quote_identifier(name))
+            .map(|name| ddl.quote(name))
             .collect::<Result<Vec<_>, _>>()?;
         defs.push(format!("PRIMARY KEY ({})", keys.join(", ")));
     }
     let mut sql = format!(
         "CREATE TABLE {}.{} (\n  {}\n)",
-        quote_identifier(database)?,
-        quote_identifier(table)?,
+        ddl.quote(database)?,
+        ddl.quote(table)?,
         defs.join(",\n  ")
     );
     if let Some(engine) = engine.filter(|value| !value.trim().is_empty()) {
-        sql.push_str(&format!(" ENGINE={}", quote_identifier(engine)?));
+        sql.push_str(&format!(" ENGINE={}", ddl.quote(engine)?));
     }
     if let Some(charset) = charset.filter(|value| !value.trim().is_empty()) {
-        sql.push_str(&format!(" DEFAULT CHARSET={}", quote_identifier(charset)?));
+        sql.push_str(&format!(" DEFAULT CHARSET={}", ddl.quote(charset)?));
     }
     if let Some(collation) = collation.filter(|value| !value.trim().is_empty()) {
-        sql.push_str(&format!(" COLLATE={}", quote_identifier(collation)?));
+        sql.push_str(&format!(" COLLATE={}", ddl.quote(collation)?));
     }
     Ok(sql)
 }
 
-fn column_sql(column: &NewColumn) -> Result<String, DbErrorInfo> {
+fn column_sql(ddl: &Ddl<'_>, column: &NewColumn) -> Result<String, DbErrorInfo> {
     if !valid_column_type(&column.column_type) {
         return Err(DbErrorInfo::new(
             "config",
@@ -246,7 +282,7 @@ fn column_sql(column: &NewColumn) -> Result<String, DbErrorInfo> {
     }
     let mut sql = format!(
         "{} {}",
-        quote_identifier(&column.name)?,
+        ddl.quote(&column.name)?,
         column.column_type.trim()
     );
     sql.push_str(if column.nullable {
@@ -262,14 +298,14 @@ fn column_sql(column: &NewColumn) -> Result<String, DbErrorInfo> {
         if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
             sql.push_str(" DEFAULT CURRENT_TIMESTAMP");
         } else {
-            sql.push_str(&format!(" DEFAULT {}", sql_literal(default)));
+            sql.push_str(&format!(" DEFAULT {}", ddl.literal(default)));
         }
     }
     if column.auto_increment {
         sql.push_str(" AUTO_INCREMENT");
     }
     if !column.comment.trim().is_empty() {
-        sql.push_str(&format!(" COMMENT {}", sql_literal(&column.comment)));
+        sql.push_str(&format!(" COMMENT {}", ddl.literal(&column.comment)));
     }
     Ok(sql)
 }
@@ -281,9 +317,11 @@ fn same_default(left: Option<&str>, right: Option<&str>) -> bool {
 }
 
 fn alter_table_sql(
+    ddl: &Ddl<'_>,
     detail: &super::model::DbTableDetail,
     request: &AlterTableRequest,
 ) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+    ddl.require_mysql("修改表结构")?;
     if request.columns.is_empty() {
         return Err(DbErrorInfo::new("config", "表至少需要一个字段"));
     }
@@ -355,7 +393,7 @@ fn alter_table_sql(
                     format!("主键字段 {} 不能删除", original.name),
                 ));
             }
-            clauses.push(format!("DROP COLUMN {}", quote_identifier(&original.name)?));
+            clauses.push(format!("DROP COLUMN {}", ddl.quote(&original.name)?));
             destructive = true;
             continue;
         };
@@ -386,8 +424,8 @@ fn alter_table_sql(
             };
             clauses.push(format!(
                 "CHANGE COLUMN {} {}",
-                quote_identifier(&original.name)?,
-                column_sql(&definition)?
+                ddl.quote(&original.name)?,
+                column_sql(ddl, &definition)?
             ));
         }
     }
@@ -414,7 +452,7 @@ fn alter_table_sql(
     for column in &request.columns {
         let lower = column.name.to_ascii_lowercase();
         let tail = match previous.as_deref() {
-            Some(name) => format!(" AFTER {}", quote_identifier(name)?),
+            Some(name) => format!(" AFTER {}", ddl.quote(name)?),
             None => " FIRST".to_string(),
         };
         if column.original_name.is_some() {
@@ -436,7 +474,7 @@ fn alter_table_sql(
             if !in_place {
                 clauses.push(format!(
                     "MODIFY COLUMN {}{}",
-                    column_sql(&column_from_edit(column))?,
+                    column_sql(ddl, &column_from_edit(column))?,
                     tail
                 ));
                 reordered = true;
@@ -451,7 +489,7 @@ fn alter_table_sql(
         } else {
             clauses.push(format!(
                 "ADD COLUMN {}{}",
-                column_sql(&column_from_edit(column))?,
+                column_sql(ddl, &column_from_edit(column))?,
                 tail
             ));
             let insert_at = previous
@@ -491,7 +529,7 @@ fn alter_table_sql(
                 .is_some_and(|name| name.eq_ignore_ascii_case(&index.name))
         });
         let Some(edit) = edit else {
-            clauses.push(format!("DROP INDEX {}", quote_identifier(&index.name)?));
+            clauses.push(format!("DROP INDEX {}", ddl.quote(&index.name)?));
             destructive = true;
             continue;
         };
@@ -510,20 +548,20 @@ fn alter_table_sql(
         if same_shape && !edit.name.eq_ignore_ascii_case(&index.name) {
             clauses.push(format!(
                 "RENAME INDEX {} TO {}",
-                quote_identifier(&index.name)?,
-                quote_identifier(&edit.name)?
+                ddl.quote(&index.name)?,
+                ddl.quote(&edit.name)?
             ));
         } else if !same_shape || !edit.name.eq_ignore_ascii_case(&index.name) {
-            clauses.push(format!("DROP INDEX {}", quote_identifier(&index.name)?));
+            clauses.push(format!("DROP INDEX {}", ddl.quote(&index.name)?));
             let unique = if edit.unique { "UNIQUE " } else { "" };
             let columns = edit
                 .columns
                 .iter()
-                .map(|column| quote_identifier(column))
+                .map(|column| ddl.quote(column))
                 .collect::<Result<Vec<_>, _>>()?;
             clauses.push(format!(
                 "ADD {unique}INDEX {} ({})",
-                quote_identifier(&edit.name)?,
+                ddl.quote(&edit.name)?,
                 columns.join(", ")
             ));
             destructive = true;
@@ -549,11 +587,11 @@ fn alter_table_sql(
         let columns = index
             .columns
             .iter()
-            .map(|column| quote_identifier(column))
+            .map(|column| ddl.quote(column))
             .collect::<Result<Vec<_>, _>>()?;
         clauses.push(format!(
             "ADD {unique}INDEX {} ({})",
-            quote_identifier(&index.name)?,
+            ddl.quote(&index.name)?,
             columns.join(", ")
         ));
     }
@@ -604,7 +642,7 @@ fn alter_table_sql(
             if !primary_key.is_empty() {
                 let names = primary_key
                     .iter()
-                    .map(|name| quote_identifier(name))
+                    .map(|name| ddl.quote(name))
                     .collect::<Result<Vec<_>, _>>()?;
                 clauses.push(format!("ADD PRIMARY KEY ({})", names.join(", ")));
             }
@@ -616,8 +654,8 @@ fn alter_table_sql(
     }
     let sql = format!(
         "ALTER TABLE {}.{} {}",
-        quote_identifier(&request.database)?,
-        quote_identifier(&request.table)?,
+        ddl.quote(&request.database)?,
+        ddl.quote(&request.table)?,
         clauses.join(",\n  ")
     );
     // MySQL 没有"移动列"的轻量语法，只能 MODIFY 重写整列定义，字符集/排序
@@ -630,10 +668,12 @@ fn alter_table_sql(
 }
 
 pub fn alter_table_preview(
+    adapter: &AdapterSet,
     detail: &super::model::DbTableDetail,
     request: &AlterTableRequest,
 ) -> Result<SchemaPreview, DbErrorInfo> {
-    let (sql, warning, destructive) = alter_table_sql(detail, request)?;
+    let ddl = Ddl::new(adapter);
+    let (sql, warning, destructive) = alter_table_sql(&ddl, detail, request)?;
     Ok(SchemaPreview {
         sql: sql
             .iter()
@@ -666,24 +706,28 @@ fn validate_select(sql: &str) -> Result<String, DbErrorInfo> {
     Ok(trimmed.to_string())
 }
 
-fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+fn build(
+    ddl: &Ddl<'_>,
+    change: &SchemaChange,
+) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+    ddl.require_mysql("schema 变更")?;
     match change {
         SchemaChange::CreateDatabase {
             name,
             charset,
             collation,
         } => {
-            let db = quote_identifier(name)?;
+            let db = ddl.quote(name)?;
             let mut sql = format!("CREATE DATABASE {db}");
             if let Some(charset) = charset.as_deref().filter(|value| !value.trim().is_empty()) {
-                let charset = quote_identifier(charset)?;
+                let charset = ddl.quote(charset)?;
                 sql.push_str(&format!(" CHARACTER SET {charset}"));
             }
             if let Some(collation) = collation
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
             {
-                let collation = quote_identifier(collation)?;
+                let collation = ddl.quote(collation)?;
                 sql.push_str(&format!(" COLLATE {collation}"));
             }
             Ok((vec![sql], None, false))
@@ -698,6 +742,7 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
             collation,
         } => Ok((
             vec![create_table_sql(
+                ddl,
                 database,
                 table,
                 columns,
@@ -710,7 +755,7 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
             false,
         )),
         SchemaChange::DropDatabase { name } => Ok((
-            vec![format!("DROP DATABASE {}", quote_identifier(name)?)],
+            vec![format!("DROP DATABASE {}", ddl.quote(name)?)],
             Some("删除数据库会永久删除其中的全部表和数据，无法撤销".to_string()),
             true,
         )),
@@ -726,13 +771,13 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
             } else {
                 "CREATE VIEW"
             };
-            let database = quote_identifier(database)?;
+            let database = ddl.quote(database)?;
             Ok((
                 vec![
                     // 视图定义里的表往往不写库名；先切到目标库，
                     // 否则共享会话没有 current database 时会报 1046。
                     format!("USE {database}"),
-                    format!("{verb} {database}.{} AS {select}", quote_identifier(view)?),
+                    format!("{verb} {database}.{} AS {select}", ddl.quote(view)?),
                 ],
                 None,
                 false,
@@ -741,8 +786,8 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
         SchemaChange::DropView { database, view } => Ok((
             vec![format!(
                 "DROP VIEW {}.{}",
-                quote_identifier(database)?,
-                quote_identifier(view)?
+                ddl.quote(database)?,
+                ddl.quote(view)?
             )],
             Some("删除视图会永久移除视图定义，但不会删除基表数据".to_string()),
             true,
@@ -750,8 +795,9 @@ fn build(change: &SchemaChange) -> Result<(Vec<String>, Option<String>, bool), D
     }
 }
 
-pub fn preview(change: &SchemaChange) -> Result<SchemaPreview, DbErrorInfo> {
-    let (sql, warning, destructive) = build(change)?;
+pub fn preview(adapter: &AdapterSet, change: &SchemaChange) -> Result<SchemaPreview, DbErrorInfo> {
+    let ddl = Ddl::new(adapter);
+    let (sql, warning, destructive) = build(&ddl, change)?;
     Ok(SchemaPreview {
         sql: sql
             .iter()
@@ -841,25 +887,35 @@ async fn execute_statements(
 }
 
 pub async fn apply(
+    adapter: &AdapterSet,
     session: &SessionEntry,
     change: &SchemaChange,
 ) -> Result<SchemaOutcome, DbErrorInfo> {
-    let (statements, _, _) = build(change)?;
+    let ddl = Ddl::new(adapter);
+    let (statements, _, _) = build(&ddl, change)?;
     execute_statements(session, &statements).await
 }
 
 pub async fn apply_alter_table(
+    adapter: &AdapterSet,
     session: &SessionEntry,
     detail: &super::model::DbTableDetail,
     request: &AlterTableRequest,
 ) -> Result<SchemaOutcome, DbErrorInfo> {
-    let (statements, _, _) = alter_table_sql(detail, request)?;
+    let ddl = Ddl::new(adapter);
+    let (statements, _, _) = alter_table_sql(&ddl, detail, request)?;
     execute_statements(session, &statements).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{preview, NewColumn, SchemaChange};
+    use super::{preview as preview_with_adapter, NewColumn, SchemaChange};
+    use crate::database::adapter::AdapterSet;
+
+    /// 这些测试锁的是 MySQL 生成的 DDL 文本。
+    fn preview(change: &SchemaChange) -> Result<super::SchemaPreview, super::DbErrorInfo> {
+        preview_with_adapter(&AdapterSet::mysql(), change)
+    }
 
     #[test]
     fn view_definition_rejects_second_statement() {
@@ -959,8 +1015,19 @@ mod tests {
 
 #[cfg(test)]
 mod alter_tests {
-    use super::{alter_table_preview, AlterTableRequest, ColumnEdit, IndexEdit};
+    use super::{
+        alter_table_preview as alter_table_preview_with_adapter, AlterTableRequest, ColumnEdit,
+        IndexEdit,
+    };
+    use crate::database::adapter::AdapterSet;
     use crate::database::model::{DbIndex, DbIndexColumn, DbTableColumn, DbTableDetail};
+
+    fn alter_table_preview(
+        detail: &DbTableDetail,
+        request: &AlterTableRequest,
+    ) -> Result<super::SchemaPreview, super::DbErrorInfo> {
+        alter_table_preview_with_adapter(&AdapterSet::mysql(), detail, request)
+    }
 
     fn detail() -> DbTableDetail {
         DbTableDetail {

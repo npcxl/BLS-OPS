@@ -256,10 +256,15 @@ pub async fn db_metadata_table(
 }
 
 #[tauri::command]
-pub fn db_schema_change_preview(
+pub async fn db_schema_change_preview(
+    state: State<'_, AppState>,
+    session_id: String,
     request: schema_ops::SchemaChange,
 ) -> Result<schema_ops::SchemaPreview, DbErrorInfo> {
-    schema_ops::preview(&request)
+    // 预览必须和真正执行时用同一个引擎：否则预览的 SQL 与执行的不是一回事。
+    let (_session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    schema_ops::preview(&adapter, &request)
 }
 
 #[tauri::command]
@@ -276,7 +281,8 @@ pub async fn db_table_schema_preview(
         &request.table,
     )
     .await?;
-    schema_ops::alter_table_preview(&detail, &request)
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    schema_ops::alter_table_preview(&adapter, &detail, &request)
 }
 
 fn ensure_preview_matches(expected_sql: &str, actual_sql: &str) -> Result<(), DbErrorInfo> {
@@ -304,9 +310,10 @@ pub async fn db_table_schema_apply(
         &request.table,
     )
     .await?;
-    let preview = schema_ops::alter_table_preview(&detail, &request)?;
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    let preview = schema_ops::alter_table_preview(&adapter, &detail, &request)?;
     ensure_preview_matches(&expected_sql, &preview.sql)?;
-    let outcome = schema_ops::apply_alter_table(&session, &detail, &request).await;
+    let outcome = schema_ops::apply_alter_table(&adapter, &session, &detail, &request).await;
     // 部分 DDL 可能已经隐式提交；失败也必须刷新元数据缓存。
     state
         .database
@@ -323,10 +330,11 @@ pub async fn db_schema_change_apply(
     request: schema_ops::SchemaChange,
     expected_sql: String,
 ) -> Result<schema_ops::SchemaOutcome, DbErrorInfo> {
-    let (session, _runtime) = session_and_runtime(&state, &session_id).await?;
-    let preview = schema_ops::preview(&request)?;
+    let (session, runtime) = session_and_runtime(&state, &session_id).await?;
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    let preview = schema_ops::preview(&adapter, &request)?;
     ensure_preview_matches(&expected_sql, &preview.sql)?;
-    let outcome = schema_ops::apply(&session, &request).await;
+    let outcome = schema_ops::apply(&adapter, &session, &request).await;
     state
         .database
         .metadata

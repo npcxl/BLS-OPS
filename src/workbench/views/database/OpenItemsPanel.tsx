@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Columns3,
+  Copy,
   Database as DatabaseIcon,
   FileCode2,
   Loader2,
@@ -16,10 +17,14 @@ import {
   Pin,
   PinOff,
   Search,
+  Split,
+  SquareMinus,
   Table2,
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { IconButton } from "@/components/ui/mac-button";
 
 import { copyText } from "@/lib/clipboard";
@@ -127,7 +132,7 @@ export function OpenItemsPanel({
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-line bg-surface-1">
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+      <div className="page-panel-header">
         <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg-muted">
           {t("已打开")}
           <span className="ml-1 text-fg-subtle">{items.length}</span>
@@ -143,18 +148,14 @@ export function OpenItemsPanel({
       </div>
 
       <div className="shrink-0 px-2 py-1.5">
-        <div className="relative">
-          <Search
-            size={11}
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg-subtle"
-          />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={t("搜索表 / 查询 / 连接…")}
-            className="h-[26px] w-full rounded-[6px] border border-line bg-surface-2 pl-6 pr-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          />
-        </div>
+        <Input
+          size="xs"
+          leading={<Search size={11} />}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={t("搜索表 / 查询 / 连接…")}
+          aria-label={t("搜索表 / 查询 / 连接…")}
+        />
       </div>
 
       <div
@@ -164,11 +165,22 @@ export function OpenItemsPanel({
         className="min-h-0 flex-1 overflow-y-auto px-1 pb-2"
       >
         {visible.length === 0 && (
-          <p className="px-2 py-3 text-[11px] leading-relaxed text-fg-subtle">
-            {items.length === 0
-              ? t("还没有打开的工作项。双击左侧表，或新建查询。")
-              : t("没有匹配的工作项")}
-          </p>
+          <EmptyState
+            className="min-h-20 py-4"
+            title={items.length === 0 ? t("还没有打开的工作项") : t("没有匹配的工作项")}
+            description={items.length === 0 ? t("双击左侧表，或新建查询。") : undefined}
+            action={
+              items.length > 0 ? (
+                <button
+                  type="button"
+                  className="text-11 text-fg-subtle hover:text-accent"
+                  onClick={() => setSearch("")}
+                >
+                  {t("Clear search")}
+                </button>
+              ) : undefined
+            }
+          />
         )}
         {groups.map(([connectionName, groupItems]) => (
           <div key={connectionName} className="mb-1">
@@ -243,17 +255,20 @@ export function OpenItemsPanel({
                       {
                         id: "close",
                         label: t("关闭"),
+                        icon: X,
                         danger: true,
                         onSelect: () => onRequestClose(item),
                       },
                       {
                         id: "close-others",
                         label: t("关闭其他"),
+                        icon: SquareMinus,
                         onSelect: () => onRequestCloseOthers(item),
                       },
                       {
                         id: "close-right",
                         label: t("关闭右侧"),
+                        icon: PanelRightClose,
                         disabled: item.id === visible[visible.length - 1]?.id,
                         onSelect: () => onRequestCloseRight(item),
                       },
@@ -261,17 +276,20 @@ export function OpenItemsPanel({
                       {
                         id: "copy",
                         label: t("复制名称"),
+                        icon: Copy,
                         onSelect: () => void copyText(item.title),
                       },
                       {
                         id: "pin",
                         label: item.pinned ? t("取消固定") : t("固定"),
+                        icon: item.pinned ? PinOff : Pin,
                         onSelect: () => togglePin(item.id),
                       },
                       { separator: true },
                       {
                         id: "split",
                         label: t("分屏打开"),
+                        icon: Split,
                         disabled: true,
                         hint: t("即将支持"),
                       },

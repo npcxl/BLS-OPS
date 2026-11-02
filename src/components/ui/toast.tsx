@@ -391,14 +391,31 @@ function CopyErrorButton({ item }: { item: ToastItem }) {
   );
 }
 
+/**
+ * 轻提示的**外观**（尺寸 / 圆角 / 描边 / 阴影 / 色调）。
+ *
+ * 复制反馈（`copy-feedback.tsx` 的 `CopyNotice`）复用这两个常量：它们
+ * 也是"看一眼就消失"的小提示，长成另一套胶囊就会让同一个应用里出现
+ * 两种提示样式。改这里 = 同时改两处。
+ */
+export const NOTE_SHELL =
+  "flex items-start gap-1.5 rounded-[8px] border px-2.5 py-2 text-11 shadow-lg shadow-black/20";
+
+export const NOTE_TONE_CLASS = {
+  info: "border-line bg-surface-3 text-fg",
+  success: "border-success/40 bg-success/12 text-success",
+  danger: "border-danger/40 bg-danger/12 text-danger",
+} as const;
+
 /** 右下角轻提示：信息 / 成功。 */
 function NoteCard({ item }: { item: ToastItem }) {
   const success = item.tone === "success";
   return (
     <div
       className={cn(
-        "pointer-events-auto flex items-start gap-1.5 rounded-[8px] border px-2.5 py-2 text-11 shadow-lg shadow-black/20",
-        success ? "border-success/40 bg-success/12 text-success" : "border-line bg-surface-3 text-fg",
+        "pointer-events-auto",
+        NOTE_SHELL,
+        success ? NOTE_TONE_CLASS.success : NOTE_TONE_CLASS.info,
       )}
     >
       {success ? (

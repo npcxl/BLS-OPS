@@ -2,11 +2,14 @@
  *
  * 点击字段表或「编辑结构」进入内联编辑；Ctrl+S 保存，删除字段/索引会二次确认。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowDown,
+  ArrowUp,
   ClipboardCopy,
   Copy,
+  CopyPlus,
   Eye,
   KeyRound,
   Loader2,
@@ -38,6 +41,7 @@ import { ErrorText } from "@/components/ui/modal";
 import { LoadingState } from "@/components/ui/loading";
 import { databaseApi } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
+import { PageTabs, PageToolbar } from "@/workbench/page-layout";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { findColumnTypePreset, MYSQL_COLUMN_TYPE_OPTIONS } from "./column-types";
 import { parseForeignKeys } from "./foreign-keys";
@@ -149,7 +153,6 @@ export function TableStructure({
   onSelectColumn,
   profileId,
   sessionId,
-  title,
   refreshing = false,
   onRefresh,
   onClose,
@@ -162,13 +165,13 @@ export function TableStructure({
   onSelectColumn?: (column: DbTableColumn) => void;
   profileId?: string;
   sessionId?: string | null;
-  /** 下面四个只给结构工作项：单行头部右侧的表名 / 刷新 / 关闭。 */
-  title?: string;
+  /** 下面三个只给结构工作项：头部右侧的刷新 / 关闭。 */
   refreshing?: boolean;
   onRefresh?: () => void;
   onClose?: () => void;
 }) {
   const { t } = useTranslation();
+  const panelId = useId();
   const [editing, setEditing] = useState(false);
   // `section="all"`（结构工作项）时页签自己管；固定 section（表数据页的
   // 结构/索引/DDL 子视图）由父组件决定显示哪一块，这里不出页签。
@@ -340,12 +343,14 @@ export function TableStructure({
     {
       id: "move-up",
       label: t("上移"),
+      icon: ArrowUp,
       disabled: index === 0,
       onSelect: () => moveColumn(index, -1),
     },
     {
       id: "move-down",
       label: t("下移"),
+      icon: ArrowDown,
       disabled: index === columns.length - 1,
       onSelect: () => moveColumn(index, 1),
     },
@@ -359,6 +364,7 @@ export function TableStructure({
     {
       id: "duplicate",
       label: t("复制字段"),
+      icon: CopyPlus,
       onSelect: () => insertCopies(index, [column]),
     },
     { separator: true },
@@ -366,11 +372,13 @@ export function TableStructure({
       ? {
           id: "drop-primary",
           label: t("从主键中删除"),
+          icon: KeyRound,
           onSelect: () => patchColumn(column.key, { primary: false }),
         }
       : {
           id: "add-primary",
           label: t("添加到主键"),
+          icon: KeyRound,
           hint: column.nullable ? t("会自动设为 NOT NULL") : undefined,
           onSelect: () => patchColumn(column.key, { primary: true, nullable: false }),
         },
@@ -476,8 +484,9 @@ export function TableStructure({
         }
       }}
     >
-      {/* 固定单行头部：操作 / 页签 / 字段数 / 表名 + 刷新 + 关闭。 */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+      {/* Actions stay on the toolbar; categories get their own row instead of
+          being crammed beside the table name (which the work tab already shows). */}
+      <PageToolbar>
         {editing ? (
           <>
             <Button
@@ -520,36 +529,11 @@ export function TableStructure({
           )
         )}
 
-        {section === "all" && (
-          <div
-            role="tablist"
-            aria-label={t("表结构")}
-            className="flex shrink-0 items-center gap-1 border-l border-line pl-2"
-          >
-            {STRUCTURE_TABS.map(([key, label]) => (
-              <Button
-                key={key}
-                role="tab"
-                aria-selected={tab === key}
-                variant={tab === key ? "secondary" : "ghost"}
-                size="xs"
-                onClick={() => setTab(key)}
-              >
-                {t(label)}
-              </Button>
-            ))}
-          </div>
-        )}
-
-        {showColumns && (
-          <span className="shrink-0 text-11 text-fg-subtle">
-            {t("字段（{{count}}）", { count: columns.length || detail.columns.length })}
-          </span>
-        )}
-
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {title && (
-            <span className="max-w-[200px] truncate text-11 text-fg-subtle">{title}</span>
+          {showColumns && (
+            <span className="truncate text-11 text-fg-subtle">
+              {t("字段（{{count}}）", { count: columns.length || detail.columns.length })}
+            </span>
           )}
           {onRefresh && (
             <Button
@@ -577,9 +561,19 @@ export function TableStructure({
             </Button>
           )}
         </div>
-      </div>
+      </PageToolbar>
 
-      <div className="ops-scroll min-h-0 flex-1 overflow-auto p-2">
+      {section === "all" && (
+        <PageTabs
+          value={tab}
+          onChange={setTab}
+          label={t("表结构")}
+          panelId={panelId}
+          items={STRUCTURE_TABS.map(([key, label]) => ({ id: key, label: t(label) }))}
+        />
+      )}
+
+      <div id={panelId} role="tabpanel" className="ops-scroll min-h-0 flex-1 overflow-auto p-2">
       {showColumns && (
         <section>
           <div className="overflow-x-auto rounded-[8px] border border-line">

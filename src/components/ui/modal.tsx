@@ -45,6 +45,9 @@ interface ModalProps {
   /** 历史 API：具体像素宽度，优先于 `size`。 */
   width?: number;
   size?: ModalSize;
+  /** Opt-in viewport layout; existing form dialogs retain their dimensions. */
+  fullscreen?: boolean;
+  className?: string;
   /**
    * 关闭入口。`undefined` = 不可关闭（保存中 / 执行中），此时 Esc 与点遮罩
    * 都不会生效，但会被**吞掉**，不会穿透去关掉下层的弹窗。
@@ -74,6 +77,8 @@ export function Modal({
   description,
   width,
   size = "md",
+  fullscreen = false,
+  className,
   onClose,
   footer,
   busy = false,
@@ -195,11 +200,14 @@ export function Modal({
         tabIndex={-1}
         className={cn(
           "glass-panel-strong flex max-h-[85vh] flex-col overflow-hidden rounded-[14px] outline-none",
+          className,
           exiting
             ? "opacity-0 translate-y-2 scale-[0.985] transition-[opacity,transform] duration-150 ease-out"
             : "overlay-enter",
         )}
-        style={{ width: width ?? SIZE_WIDTH[size] }}
+        style={fullscreen
+          ? { width: "calc(100vw - 32px)", height: "calc(100vh - 32px)", maxHeight: "calc(100vh - 32px)" }
+          : { width: width ?? SIZE_WIDTH[size] }}
       >
         <div className="flex items-start gap-2 border-b border-line px-4 py-3">
           <div className="min-w-0 flex-1">

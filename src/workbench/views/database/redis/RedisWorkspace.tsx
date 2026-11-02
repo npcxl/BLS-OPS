@@ -15,15 +15,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Copy,
+  Eye,
   Loader2,
   Plus,
   RefreshCw,
+  ScrollText,
   Trash2,
   TriangleAlert,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
+import {
+  ContextMenu,
+  useContextMenu,
+  type ContextMenuItem,
+} from "@/components/ui/context-menu";
 import { pushToast } from "@/components/ui/toast";
 import { copyText } from "@/lib/clipboard";
 import { databaseApi } from "@/api/ops-api";
@@ -292,24 +299,27 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   }, [deleteTargets, detailKey, profile.id, scan, selection, t]);
 
   const keyMenu = useCallback(
-    (key: string) => {
+    (key: string): ContextMenuItem[] => {
       const multi = selection.selected.size > 1 && selection.selected.has(key);
       return [
         {
           id: "open",
           label: t("打开"),
+          icon: Eye,
           hint: "Enter",
           onSelect: () => openKey(key),
         },
         {
           id: "copy-key",
           label: multi ? t("复制 {{count}} 个键名", { count: selection.selected.size }) : t("复制键名"),
+          icon: Copy,
           hint: "Ctrl+C",
           onSelect: () => void copySelection(false),
         },
         {
           id: "copy-tsv",
           label: t("复制为 TSV（含类型与 TTL）"),
+          icon: ScrollText,
           hint: "Ctrl+Shift+C",
           onSelect: () => void copySelection(true),
         },
@@ -317,6 +327,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         {
           id: "refresh",
           label: t("刷新列表"),
+          icon: RefreshCw,
           hint: "F5",
           onSelect: () => refreshKeys(),
         },
@@ -328,6 +339,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
                 label: multi
                   ? t("删除选中的 {{count}} 个键", { count: selection.selected.size })
                   : t("删除键"),
+                icon: Trash2,
                 danger: true,
                 onSelect: () =>
                   requestDelete(
@@ -678,7 +690,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
               role="separator"
               aria-orientation="horizontal"
               aria-label={t("调整编辑器高度")}
-              className="h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-accent/40"
+              className="page-resizer h-[5px] shrink-0 cursor-row-resize bg-transparent hover:bg-accent/40"
               onMouseDown={() => {
                 draggingRef.current = true;
               }}

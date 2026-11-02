@@ -10,8 +10,11 @@ import {
   X,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
 import { isTopOverlayLayer, useOverlayLayer } from "@/components/ui/overlay";
+import { PageNotice, PageStatusBar } from "@/workbench/page-layout";
 import { opsApi } from "@/api/ops-api";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
 import { toAppError } from "@/lib/app-error";
@@ -166,21 +169,24 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
       onMouseDown={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={target.name}
         className={cn(
-          "glass-panel-strong flex h-[88vh] max-h-[88vh] w-[min(1100px,94vw)] flex-col overflow-hidden rounded-[18px]",
+          "page-overlay-surface h-[88vh] max-h-[88vh] w-[min(1100px,94vw)]",
           exiting
             ? "opacity-0 translate-y-2 scale-[0.985] transition-[opacity,transform] duration-150 ease-out"
             : "overlay-enter",
         )}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex shrink-0 items-start gap-2 border-b border-line px-4 py-2.5">
+        <div className="page-overlay-header items-center">
           <span className="mt-0.5 shrink-0">
             <Icon icon={FILE_ICONS[kind.iconKey]} width={15} height={15} aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-13 font-semibold text-fg">{target.name}</h2>
-            <p className="truncate text-11 text-fg-subtle">
+            <h2 className="page-overlay-title truncate">{target.name}</h2>
+            <p className="page-overlay-subtitle truncate">
               {target.path} · {formatSize(target.size)} · {t(kind.label)}
             </p>
           </div>
@@ -209,12 +215,7 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
           </button>
         </div>
 
-        {state.status === "loading" && (
-          <div className="flex flex-1 items-center justify-center gap-2 text-12 text-fg-subtle">
-            <Loader2 size={14} className="animate-spin" />
-            {t("Reading file…")}
-          </div>
-        )}
+        {state.status === "loading" && <LoadingState className="h-full" label={t("Reading file…")} />}
 
         {state.status === "error" && (
           <div className="flex flex-1 items-center justify-center p-6">
@@ -230,18 +231,18 @@ export default function FilePreviewModal({ sessionId, target, onClose, onEdit }:
         {state.status === "ready" && (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {state.result.note && (
-              <div className="shrink-0 border-b border-line bg-warning/10 px-3 py-1.5 text-11 text-warning">
+              <PageNotice tone="warning" className="border-x-0 border-t-0">
                 {state.result.note}
-              </div>
+              </PageNotice>
             )}
             <PreviewBody model={state.result.model} />
           </div>
         )}
 
         {toast && (
-          <div className="shrink-0 border-t border-line bg-surface-2 px-3 py-1.5 text-11 text-fg-muted">
+          <PageStatusBar className="justify-start whitespace-normal">
             <span className="break-all">{toast}</span>
-          </div>
+          </PageStatusBar>
         )}
       </div>
     </div>,
@@ -277,13 +278,12 @@ function PreviewBody({ model }: { model: PreviewResult["model"] }) {
       return <HexPreview bytes={model.bytes} detected={model.detected} />;
     case "unsupported":
       return (
-        <div className="flex h-full items-center justify-center p-6">
-          <div className="flex max-w-[460px] flex-col items-center gap-2 text-center">
-            <AlertCircle size={20} className="text-fg-subtle" />
-            <p className="text-12 leading-relaxed text-fg">{model.reason}</p>
-            {model.hint && <p className="text-11 leading-relaxed text-fg-subtle">{model.hint}</p>}
-          </div>
-        </div>
+        <EmptyState
+          className="h-full"
+          icon={<AlertCircle size={18} strokeWidth={1.5} />}
+          title={model.reason}
+          description={model.hint}
+        />
       );
   }
 }

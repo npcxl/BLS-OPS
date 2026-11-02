@@ -15,7 +15,9 @@ use std::sync::OnceLock;
 use super::capability::{
     Capability, CapabilitySet, Dialect, DialectRules, DriverFamily, EndpointRequirement,
     EngineDescriptor, EngineFields, EngineRequirements, IdentifierQuote, Implementation,
-    OptionField, OptionFieldKind, Transport, VerifiedLevel, VerifiedScope,
+    MySqlProductProfile, OptionField, OptionFieldKind, Transport, VerifiedLevel, VerifiedScope,
+    AURORA_MYSQL_PROFILE, DORIS_PROFILE, MYSQL_STANDARD_PROFILE, OCEANBASE_MYSQL_PROFILE,
+    STARROCKS_PROFILE, TIDB_PROFILE,
 };
 use super::model::DbErrorInfo;
 
@@ -231,6 +233,61 @@ fn mysql_caps() -> CapabilitySet {
     }
 }
 
+/// MySQL 协议兼容产品：查询/浏览/编辑链路复用，但取消与 DDL 未逐版本验证。
+fn mysql_compatible_caps(cancel_note: &'static str) -> CapabilitySet {
+    CapabilitySet {
+        query: Capability::Supported,
+        multiple_result_sets: Capability::limited("多结果集依赖产品版本与连接参数，未实机验证"),
+        cancel: Capability::limited(cancel_note),
+        transaction: Capability::Supported,
+        read_only_enforcement: Capability::Supported,
+        table_browse: Capability::Supported,
+        keyset_pagination: Capability::Supported,
+        table_edit: Capability::Supported,
+        schema_edit: Capability::limited("DDL 语法按产品版本存在差异，未逐项验证"),
+        view_edit: Capability::Supported,
+        export: Capability::Supported,
+    }
+}
+
+/// Doris / StarRocks：MySQL 协议传输的 OLAP 产品，不能按 MySQL 全量能力开放。
+fn olap_caps() -> CapabilitySet {
+    CapabilitySet {
+        query: Capability::Supported,
+        multiple_result_sets: Capability::limited("一次只执行一条语句，没有多结果集"),
+        cancel: Capability::limited("按 query id 取消，当前版本未接入"),
+        transaction: Capability::unsupported("没有跨语句事务，DML/DDL 自动提交"),
+        read_only_enforcement: Capability::limited("没有只读事务：只读连接仅由客户端拦截"),
+        table_browse: Capability::Supported,
+        keyset_pagination: Capability::Supported,
+        table_edit: Capability::limited(
+            "仅 INSERT 可用；UPDATE/DELETE 依赖 Unique Key 表模型，未实机验证",
+        ),
+        schema_edit: Capability::limited("DDL 子集：不支持 CHANGE COLUMN/AFTER，索引语法不同"),
+        view_edit: Capability::Supported,
+        export: Capability::Supported,
+    }
+}
+
+/// SQLite：本地文件，SQL 执行链路已接通；结构浏览与编辑还没接。
+fn sqlite_caps() -> CapabilitySet {
+    CapabilitySet {
+        query: Capability::Supported,
+        multiple_result_sets: Capability::limited(
+            "多语句逐条执行、每条一个结果集；没有协议层多结果集流",
+        ),
+        cancel: Capability::Supported,
+        transaction: Capability::Supported,
+        read_only_enforcement: Capability::Supported,
+        table_browse: Capability::Supported,
+        keyset_pagination: Capability::Supported,
+        table_edit: Capability::unsupported("SQLite 单行编辑尚未接入"),
+        schema_edit: Capability::unsupported("SQLite DDL 生成尚未接入"),
+        view_edit: Capability::unsupported("SQLite 视图编辑尚未接入"),
+        export: Capability::unsupported("SQLite 导出尚未接入"),
+    }
+}
+
 fn redis_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::unsupported("Redis 是键值引擎，不使用 SQL 工作区"),
@@ -367,8 +424,9 @@ fn build() -> Vec<EngineDescriptor> {
     mariadb.capabilities = mysql_caps();
     mariadb.verified = vec![VerifiedScope {
         versions: "—".to_string(),
-        level: VerifiedLevel::ConfigOnly,
-        notes: "复用 mysql_async，但尚未在真实 MariaDB 实例上跑完整链路（批次 2 补测）".to_string(),
+        level: VerifiedLevel::DriverOnly,
+        notes: "复用 mysql_async 的连接/查询/元数据链路；尚未在真实 MariaDB 实例上跑完整链路"
+            .to_string(),
     }];
     engines.push(mariadb);
 
@@ -407,35 +465,60 @@ fn build() -> Vec<EngineDescriptor> {
     }];
     engines.push(redis);
 
-    // ---- 批次 2：MySQL 协议兼容产品（复用驱动，差异另写适配）--------------
-    for (id, product, note) in [
+    // ---- 批次 2：MySQL 协议兼容产品（复用驱动，差异由 MySqlProductProfile 承载）----
+    //
+    // 默认端口按各产品官方文档：TiDB 4000、OceanBase（MySQL 模式）2881、
+    // Doris/StarRocks 的 MySQL 协议入口 9030、Aurora MySQL 3306。
+    // 用户始终可以覆盖端口。
+    for (id, product, port, note) in [
         (
             "tidb",
             "TiDB",
-            "批次 2：复用 MySQL 协议；需按版本验证 KILL、只读事务与 DDL 差异",
+            4000,
+            "MySQL 协议，默认端口 4000；复用 mysql_async，事务与 DDL 差异按版本验证",
         ),
         (
             "oceanbase_mysql",
             "OceanBase（MySQL 模式）",
-            "批次 2：按兼容模式与具体版本验证；不能只凭名称假定与 MySQL 等价",
+            2881,
+            "MySQL 模式默认端口 2881，系统库含 oceanbase；跨版本兼容性未验证",
         ),
         (
             "doris",
             "Apache Doris",
-            "批次 2：MySQL 协议传输；无多语句事务，DDL 与行编辑需单独验证",
+            9030,
+            "MySQL 协议入口默认 9030；无跨语句事务、无只读事务；行编辑仅 INSERT",
         ),
         (
             "starrocks",
             "StarRocks",
-            "批次 2：MySQL 协议传输；无多语句事务，DDL 与行编辑需单独验证",
+            9030,
+            "MySQL 协议入口默认 9030；无跨语句事务、无只读事务；行编辑仅 INSERT",
         ),
         (
             "aurora_mysql",
             "Amazon Aurora MySQL",
-            "批次 2：与 MySQL 8.0 同协议，差异在托管端点、证书与只读副本",
+            3306,
+            "MySQL 8.0 兼容；差异在托管端点、TLS 证书与只读副本",
         ),
     ] {
-        engines.push(config_only(mysql_family(id, product, 3306, note)));
+        let mut engine = mysql_family(id, product, port, note);
+        engine.implementation = Implementation::Implemented;
+        engine.default_username = Some("root");
+        engine.capabilities = match id {
+            "doris" | "starrocks" => olap_caps(),
+            "tidb" => mysql_compatible_caps("复用 KILL，未在该版本实机验证"),
+            "oceanbase_mysql" => mysql_compatible_caps("复用 KILL，未实机验证"),
+            _ => mysql_compatible_caps("与 MySQL 8.0 同协议，托管实例未验证"),
+        };
+        engine.verified = vec![VerifiedScope {
+            versions: "—".to_string(),
+            level: VerifiedLevel::DriverOnly,
+            notes: "mysql_async 的连接/查询/元数据/导出链路已接通；未在真实实例上跑过，\
+                    未验证项按能力标注，不视为已验证"
+                .to_string(),
+        }];
+        engines.push(engine);
     }
 
     // ---- 批次 3：PostgreSQL 家族 + SQLite ---------------------------------
@@ -469,14 +552,18 @@ fn build() -> Vec<EngineDescriptor> {
         },
         SQLITE_OPTIONS,
         SQLITE_RULES,
-        "本地文件数据库：不需要 host/port/用户名/TLS/SSH；驱动在批次 3 接入",
+        "本地文件数据库：不需要 host/port/用户名/TLS/SSH；打开已有文件，不会自动创建",
     );
     sqlite.transport = Transport::LocalFile;
     sqlite.default_port = None;
+    sqlite.implementation = Implementation::Implemented;
+    sqlite.capabilities = sqlite_caps();
     sqlite.verified = vec![VerifiedScope {
-        versions: "—".to_string(),
-        level: VerifiedLevel::ConfigOnly,
-        notes: "批次 0 完成配置模型与保存校验；驱动、打开语义与只读在批次 3 接入".to_string(),
+        versions: "SQLite（rusqlite bundled）".to_string(),
+        level: VerifiedLevel::Query,
+        notes: "本地临时库验证了打开已有文件/拒绝创建/只读打开/查询类型/行数预算/多语句逐条执行；\
+                结构浏览、表编辑、DDL 与导出尚未接入，取消仅有驱动 interrupt 实现"
+            .to_string(),
     }];
     engines.push(config_only(sqlite));
 
@@ -559,6 +646,21 @@ pub fn all() -> &'static [EngineDescriptor] {
     registry().as_slice()
 }
 
+/// MySQL 协议兼容产品的执行差异（会话初始化 / 只读 / 取消 / 系统库 / 事务）。
+///
+/// 非 MySQL 驱动系列的引擎返回 `None`：不要拿 MySQL 的差异去套 PostgreSQL。
+pub fn mysql_product(engine_id: &str) -> Option<&'static MySqlProductProfile> {
+    Some(match engine_id {
+        "mysql" | "mariadb" => &MYSQL_STANDARD_PROFILE,
+        "tidb" => &TIDB_PROFILE,
+        "oceanbase_mysql" => &OCEANBASE_MYSQL_PROFILE,
+        "aurora_mysql" => &AURORA_MYSQL_PROFILE,
+        "doris" => &DORIS_PROFILE,
+        "starrocks" => &STARROCKS_PROFILE,
+        _ => return None,
+    })
+}
+
 pub fn find(id: &str) -> Option<&'static EngineDescriptor> {
     registry().iter().find(|engine| engine.id == id)
 }
@@ -596,6 +698,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mysql_compatible_default_ports_follow_the_product() {
+        // 不能所有 MySQL 协议产品都用 3306：TiDB 4000、OceanBase 2881、
+        // Doris/StarRocks 的 MySQL 入口 9030、Aurora 3306。
+        for (id, port) in [
+            ("mysql", 3306),
+            ("mariadb", 3306),
+            ("tidb", 4000),
+            ("oceanbase_mysql", 2881),
+            ("doris", 9030),
+            ("starrocks", 9030),
+            ("aurora_mysql", 3306),
+        ] {
+            let engine = find(id).unwrap_or_else(|| panic!("{id} 未注册"));
+            assert_eq!(engine.default_port, Some(port), "{id} 默认端口");
+        }
+    }
+
+    #[test]
+    fn olap_products_do_not_claim_transactions_or_server_read_only() {
+        for id in ["doris", "starrocks"] {
+            let engine = find(id).expect("registered");
+            assert_eq!(engine.implementation, Implementation::Implemented, "{id}");
+            assert!(
+                !engine.capabilities.transaction.is_available(),
+                "{id} 没有跨语句事务，不能声明支持"
+            );
+            assert!(
+                engine.capabilities.read_only_enforcement.reason().is_some(),
+                "{id} 的只读只在客户端拦截，必须给出原因"
+            );
+            assert_eq!(
+                engine.verified[0].level,
+                VerifiedLevel::DriverOnly,
+                "{id} 没有实机验证，不能写成 Connect 以上"
+            );
+            assert!(
+                engine.capabilities.table_edit.reason().is_some(),
+                "{id} 的行编辑范围必须写明"
+            );
+        }
+        assert!(find("tidb")
+            .unwrap()
+            .capabilities
+            .transaction
+            .is_available());
+        assert_eq!(
+            find("tidb").unwrap().verified[0].level,
+            VerifiedLevel::DriverOnly
+        );
+    }
+
+    #[test]
+    fn mysql_product_profiles_are_per_product() {
+        assert_eq!(
+            mysql_product("doris").expect("doris").read_only,
+            super::super::capability::ReadOnlyMode::ClientOnly
+        );
+        assert!(matches!(
+            mysql_product("starrocks").expect("starrocks").cancel,
+            super::super::capability::CancelMode::Unsupported { .. }
+        ));
+        assert!(mysql_product("tidb")
+            .expect("tidb")
+            .system_databases
+            .contains(&"metrics_schema"));
+        assert!(mysql_product("oceanbase_mysql")
+            .expect("oceanbase")
+            .system_databases
+            .contains(&"oceanbase"));
+        assert!(mysql_product("postgres").is_none());
+    }
+
+    #[test]
     fn registry_ids_are_unique_and_stable() {
         let mut ids: Vec<&str> = all().iter().map(|engine| engine.id).collect();
         let count = ids.len();
@@ -610,12 +785,23 @@ mod tests {
 
     #[test]
     fn only_real_drivers_are_marked_implemented() {
-        for id in ["mysql", "mariadb", "redis"] {
+        for id in [
+            "mysql",
+            "mariadb",
+            "redis",
+            "sqlite",
+            "tidb",
+            "oceanbase_mysql",
+            "aurora_mysql",
+            "doris",
+            "starrocks",
+        ] {
             assert!(is_supported(id), "{id} 应有真实驱动");
         }
         for id in [
             "postgres",
-            "sqlite",
+            "cockroach",
+            "aurora_pg",
             "sqlserver",
             "oracle",
             "mongodb",

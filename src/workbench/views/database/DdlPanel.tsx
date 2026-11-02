@@ -59,7 +59,7 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
   const createSql = detail?.create_sql ?? "";
 
   const header = (
-    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+    <div className="page-panel-header">
       <Button
         variant={expanded ? "secondary" : "ghost"}
         size="xs"

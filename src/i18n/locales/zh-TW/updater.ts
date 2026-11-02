@@ -59,4 +59,9 @@ export default {
   "The app could not be restarted. Please close and reopen it manually.": "應用重啟失敗，請手動關閉並重新開啟。",
   "Updates are not available in development builds.": "開發版本不支援檢查更新。",
   "The update could not be completed.": "更新未能完成。",
+  "View latest release notes": "查看最新更新日誌",
+  "Reading latest release notes…": "正在讀取最新更新日誌…",
+  "Could not read release notes": "無法讀取更新日誌",
+  "What's new": "本次更新",
+  "No release notes were provided for this version.": "此版本尚未提供更新說明。",
 } as const;

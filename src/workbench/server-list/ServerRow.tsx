@@ -2,6 +2,7 @@ import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
+  Folder,
   FolderInput,
   Pencil,
   Plug,
@@ -115,12 +116,14 @@ export const ServerRow = memo(function ServerRow({
         {
           id: "move-ungrouped",
           label: t(UNGROUPED_LABEL),
+          icon: Folder,
           hint: server.group_id ? undefined : t("Current"),
           onSelect: () => onMoveToGroup(server, null),
         },
         ...groups.map((group) => ({
           id: `move-${group.id}`,
           label: group.name,
+          icon: Folder,
           hint: server.group_id === group.id ? t("Current") : undefined,
           onSelect: () => onMoveToGroup(server, group.id),
         })),

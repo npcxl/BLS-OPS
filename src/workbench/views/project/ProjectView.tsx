@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Boxes, Loader2, RefreshCw } from "@/components/icons";
+import { Boxes, Loader2, RefreshCw, TriangleAlert } from "@/components/icons";
 import { useTranslation } from "react-i18next";
+import { PageNotice, PageScroll, PageTabs } from "@/workbench/page-layout";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useScanTask } from "@/hooks/use-scan-task";
-import { cn } from "@/lib/cn";
 import { opsApi } from "@/api/ops-api";
 import { ModuleEmpty, ModuleFrame } from "@/workbench/views/module-frame";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
@@ -236,90 +237,68 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
 
   return (
     <ModuleFrame
+      contentScroll={false}
       session={session}
       toolbar={
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={loading}
-          onClick={() => void discover()}
-        >
-          {loading ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <RefreshCw size={12} />
-          )}
-          {t("Refresh")}
+        <Button variant="ghost" size="xs" disabled={loading} onClick={() => void discover()}>
+          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          {loading ? t("Discovering…") : t("Refresh")}
         </Button>
       }
     >
-      <div className="flex h-full min-h-0">
-        <div className="ops-scroll flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* 扫描状态横幅：异常 / 断开由 ModuleFrame 统一处理，这里只留进度条 */}
-          {error ? (
-            <div className="mx-5 mt-4">
-              <ErrorState error={error} compact onRetry={retry} />
-            </div>
-          ) : null}
-          {loading && scan && (
-            <div className="mx-5 mt-4">
-              <ScanProgress scan={scan} onCancel={() => void cancel()} />
-            </div>
-          )}
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* 5 个分类：项目 / 待确认 / 应用服务 / 基础设施 / 基本信息 */}
+          <PageTabs
+            value={activeTab}
+            onChange={setActiveTab}
+            label={t("Project categories")}
+            panelId={`project-${tab.id}-content`}
+            items={TABS.map((item) => ({
+              id: item.id,
+              label: t(item.labelKey),
+              count: tabBadges[item.id] || undefined,
+            }))}
+          />
 
-          {/* 显示的是上次扫描缓存、后台仍在复核：明确标注，避免用户误以为这是最终结果。 */}
-          {result?.incremental && !loading && (
-            <div className="mx-5 mt-4 flex items-center gap-2 rounded-[8px] border border-line bg-surface-2/60 px-3 py-2 text-11 text-fg-subtle">
-              <Loader2 size={12} className="animate-spin" />
-              {t("Loaded the last discovery; re-checking in the background…")}
-            </div>
-          )}
+          <PageScroll
+            role="tabpanel"
+            id={`project-${tab.id}-content`}
+            aria-label={t(TABS.find((item) => item.id === activeTab)!.labelKey)}
+            width="overview"
+          >
+            {/* 扫描状态：异常 / 断开由 ModuleFrame 统一处理，这里只留进度与增量说明 */}
+            {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
+            {loading && scan && <ScanProgress scan={scan} onCancel={() => void cancel()} />}
 
-          {/* 5 个 tab：项目 / 待确认 / 应用服务 / 基础设施 / 基本信息 */}
-          <div className="flex items-center gap-1 border-b border-line px-4 pt-3">
-            {TABS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={cn(
-                  "relative flex items-center gap-1.5 px-3 py-2 text-12 transition-colors",
-                  activeTab === item.id
-                    ? "font-medium text-fg"
-                    : "text-fg-muted hover:text-fg",
-                )}
+            {/* 显示的是上次扫描缓存、后台仍在复核：明确标注，避免用户误以为这是最终结果。 */}
+            {result?.incremental && !loading && (
+              <PageNotice
+                tone="info"
+                icon={<Loader2 size={12} className="animate-spin" />}
+                className="rounded-[8px] border border-line"
               >
-                {t(item.labelKey)}
-                {tabBadges[item.id] > 0 && (
-                  <span
-                    className={cn(
-                      "rounded-full px-1.5 text-10",
-                      activeTab === item.id
-                        ? "bg-accent/15 text-accent"
-                        : "bg-surface-3 text-fg-subtle",
-                    )}
-                  >
-                    {tabBadges[item.id]}
-                  </span>
-                )}
-                {activeTab === item.id && (
-                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />
-                )}
-              </button>
-            ))}
-          </div>
+                {t("Loaded the last discovery; re-checking in the background…")}
+              </PageNotice>
+            )}
 
-          <div className="ops-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden">
-            <div className="mx-auto flex w-full max-w-[880px] flex-col gap-4 p-5">
-              {!result && !loading && (
-                <ModuleEmpty
-                  icon={Boxes}
-                  title={t("Discover projects on the server")}
-                  hint={t(
-                    "Identify the OS and installed capabilities first, then enable matching collectors (systemd, Docker, Nginx, PM2…) on demand, and locate projects using Git, processes, ports and config clues. Everything is read-only — nothing is deployed. Click Refresh above to start.",
-                  )}
-                />
-              )}
+            {loading && !result && !scan && <LoadingState label={t("Discovering projects…")} />}
+
+            {!result && !loading && !error && (
+              <ModuleEmpty
+                icon={Boxes}
+                title={t("Discover projects on the server")}
+                hint={t(
+                  "Identify the OS and installed capabilities first, then enable matching collectors (systemd, Docker, Nginx, PM2…) on demand, and locate projects using Git, processes, ports and config clues. Everything is read-only — nothing is deployed.",
+                )}
+                action={
+                  <Button variant="ghost" size="sm" onClick={() => void discover()}>
+                    <RefreshCw size={12} />
+                    {t("Start discovery")}
+                  </Button>
+                }
+              />
+            )}
 
               {result && activeTab === "applications" && (
                 <TabApplications
@@ -372,12 +351,15 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
               )}
 
               {result && result.warnings.length > 0 && (
-                <p className="text-center text-11 text-warning">
+                <PageNotice
+                  tone="warning"
+                  icon={<TriangleAlert size={12} />}
+                  className="rounded-[8px] border border-line"
+                >
                   {t("Scan warnings: {{warnings}}", { warnings: result.warnings.join("; ") })}
-                </p>
+                </PageNotice>
               )}
-            </div>
-          </div>
+          </PageScroll>
         </div>
 
         {panel && (

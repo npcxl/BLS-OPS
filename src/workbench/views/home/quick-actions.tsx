@@ -12,7 +12,7 @@ export interface QuickAction {
 
 export function QuickActions({ actions }: { actions: QuickAction[] }) {
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+    <div className="home-shortcuts">
       {actions.map((action) => {
         const Icon = action.icon;
         return (
@@ -22,17 +22,18 @@ export function QuickActions({ actions }: { actions: QuickAction[] }) {
             onClick={action.onSelect}
             data-testid={`home-action-${action.id}`}
             className={cn(
-              "group flex min-w-0 items-center gap-2.5 rounded-[10px] border border-line bg-surface-1/70 px-3 py-2.5 text-left",
-              "transition-colors hover:border-line-strong hover:bg-surface-hover/60",
+              "home-shortcut group min-w-0 text-left",
+              "focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
             )}
           >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-fg-muted transition-colors group-hover:bg-accent/10 group-hover:text-accent">
-              <Icon size={14} strokeWidth={1.8} />
+            <span className="home-shortcut-icon">
+              <Icon size={19} strokeWidth={1.65} />
             </span>
             <span className="min-w-0 flex flex-col">
-              <span className="truncate text-12 font-medium text-fg">{action.label}</span>
+              <span className="truncate text-13 font-medium text-fg">{action.label}</span>
               <span className="truncate text-11 text-fg-subtle">{action.hint}</span>
             </span>
+            <svg className="home-shortcut-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10" /></svg>
           </button>
         );
       })}

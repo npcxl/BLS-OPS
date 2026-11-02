@@ -170,7 +170,7 @@ export function BackupSettingsGroup() {
       )}
     >
       <ListGroup>
-        <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="page-form-row">
           <div className="min-w-0">
             <div className="text-12 text-fg">{t("Export configuration")}</div>
             <div className="text-11 leading-relaxed text-fg-subtle">

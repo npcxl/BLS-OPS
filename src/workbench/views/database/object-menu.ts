@@ -7,6 +7,19 @@
  */
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  Columns3,
+  Copy,
+  CopyPlus,
+  Eraser,
+  FileCode2,
+  FileText,
+  Pencil,
+  RefreshCw,
+  ScrollText,
+  Table2,
+  Trash2,
+} from "@/components/icons";
 import type { ContextMenuItem } from "@/components/ui/context-menu";
 import type { DbTable, TableOperationKind } from "@/api/types/database";
 import { copyText } from "@/lib/clipboard";
@@ -48,6 +61,7 @@ export function useObjectMenuBuilder(
       {
         id: "data",
         label: t("打开数据"),
+        icon: Table2,
         onSelect: () =>
           openTable({
             profileId: context.profileId,
@@ -59,6 +73,7 @@ export function useObjectMenuBuilder(
       {
         id: "structure",
         label: t("打开结构"),
+        icon: Columns3,
         onSelect: () =>
           openStructure({
             profileId: context.profileId,
@@ -70,6 +85,7 @@ export function useObjectMenuBuilder(
       {
         id: "ddl",
         label: t("查看 DDL"),
+        icon: FileCode2,
         onSelect: () =>
           showDdl({
             profileId: context.profileId,
@@ -84,29 +100,34 @@ export function useObjectMenuBuilder(
               {
                 id: "rename",
                 label: t("重命名表"),
+                icon: Pencil,
                 onSelect: () => onTableOperation(context, table, "rename"),
               },
               {
                 id: "copy-structure",
                 label: t("复制表结构"),
+                icon: Copy,
                 onSelect: () =>
                   onTableOperation(context, table, "copy_structure"),
               },
               {
                 id: "copy-data",
                 label: t("复制表结构和数据"),
+                icon: CopyPlus,
                 onSelect: () => onTableOperation(context, table, "copy_data"),
               },
               { separator: true as const },
               {
                 id: "truncate",
                 label: t("清空表"),
+                icon: Eraser,
                 danger: true,
                 onSelect: () => onTableOperation(context, table, "truncate"),
               },
               {
                 id: "drop",
                 label: t("删除表"),
+                icon: Trash2,
                 danger: true,
                 onSelect: () => onTableOperation(context, table, "drop"),
               },
@@ -117,6 +138,7 @@ export function useObjectMenuBuilder(
                     {
                       id: "edit-view",
                       label: t("编辑视图定义"),
+                      icon: FileText,
                       onSelect: () => onEditView(context, table),
                     },
                   ]
@@ -124,11 +146,13 @@ export function useObjectMenuBuilder(
               {
                 id: "rename-view",
                 label: t("重命名视图"),
+                icon: Pencil,
                 onSelect: () => onTableOperation(context, table, "rename"),
               },
               {
                 id: "drop-view",
                 label: t("删除视图"),
+                icon: Trash2,
                 danger: true,
                 onSelect: () => onTableOperation(context, table, "drop"),
               },
@@ -138,11 +162,13 @@ export function useObjectMenuBuilder(
       {
         id: "copy-name",
         label: t("复制名称"),
+        icon: Copy,
         onSelect: () => void copyText(table.name),
       },
       {
         id: "copy-select",
         label: t("复制 SELECT"),
+        icon: ScrollText,
         onSelect: () =>
           void copyText(
             `SELECT * FROM ${quote(context.database)}.${quote(table.name)} LIMIT 200;`,
@@ -152,6 +178,7 @@ export function useObjectMenuBuilder(
       {
         id: "refresh",
         label: t("刷新"),
+        icon: RefreshCw,
         onSelect: () => {
           void refreshTableDetail(
             context.profileId,

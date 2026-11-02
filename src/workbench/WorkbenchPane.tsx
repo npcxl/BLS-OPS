@@ -40,6 +40,9 @@ export function WorkbenchPane({ pane }: { pane: WorkbenchPaneModel }) {
             return (
               <div
                 key={tab.id}
+                id={`work-panel-${pane.id}-${tab.id}`}
+                role="tabpanel"
+                aria-labelledby={`work-tab-${pane.id}-${tab.id}`}
                 className={cn("absolute inset-0", active ? "block" : "hidden")}
                 aria-hidden={active ? undefined : true}
                 // `inert` keeps focusable elements (buttons, xterm's helper

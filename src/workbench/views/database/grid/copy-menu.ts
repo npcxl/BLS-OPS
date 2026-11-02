@@ -6,6 +6,7 @@
  * 「复制选中区域」和 Ctrl+C 才是同一件事。
  */
 import type { TFunction } from "i18next";
+import { Columns3, Copy, FileJson, FileText, ScrollText } from "@/components/icons";
 import type { ContextMenuItem } from "@/components/ui/context-menu";
 import type { CopyFormat } from "./copy-format";
 
@@ -28,6 +29,7 @@ export function copyMenuItems({
     {
       id: "copy-tsv",
       label: t("复制"),
+      icon: Copy,
       hint: "Ctrl+C",
       disabled: !hasSelection,
       onSelect: () => onCopy("tsv"),
@@ -35,6 +37,7 @@ export function copyMenuItems({
     {
       id: "copy-tsv-headers",
       label: t("复制（含列名）"),
+      icon: Columns3,
       hint: "Ctrl+Shift+C",
       disabled: !hasSelection,
       onSelect: () => onCopy("tsv", true),
@@ -43,18 +46,21 @@ export function copyMenuItems({
     {
       id: "copy-csv",
       label: t("复制为 CSV"),
+      icon: FileText,
       disabled: !hasSelection,
       onSelect: () => onCopy("csv", true),
     },
     {
       id: "copy-json",
       label: t("复制为 JSON"),
+      icon: FileJson,
       disabled: !hasSelection,
       onSelect: () => onCopy("json"),
     },
     {
       id: "copy-insert",
       label: t("复制为 INSERT"),
+      icon: ScrollText,
       disabled: !hasSelection || !canInsert,
       onSelect: () => onCopy("insert"),
     },

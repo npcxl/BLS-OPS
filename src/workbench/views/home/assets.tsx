@@ -379,7 +379,7 @@ function DatabaseRow({
       data-testid={`home-database-row-${profile.id}`}
       className="group flex h-11 w-full items-center gap-2.5 px-3 transition-colors hover:bg-surface-hover/60"
       onContextMenu={menu.onContextMenu(() => [
-        { id: "open", label: t("打开连接"), onSelect: onOpen },
+        { id: "open", label: t("打开连接"), icon: DatabaseIcon, onSelect: onOpen },
         {
           id: "copy-address",
           label: t("Copy connection address"),

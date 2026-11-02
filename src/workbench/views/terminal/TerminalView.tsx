@@ -15,6 +15,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import type { FilePanelFollow } from "@/workbench/views/remote-file/utils";
+import { PageNotice, PageSurface, PageWorkspace } from "@/workbench/page-layout";
 import { LineEditor } from "@/lib/terminal-line-editor";
 import {
   canAutoFill,
@@ -26,7 +27,6 @@ import {
 } from "@/workbench/views/command-center/complete";
 import { ParamPicker } from "./ParamPicker";
 import { TerminalCommandBlocks } from "./TerminalCommandBlocks";
-import { TerminalSelectionMenu } from "./terminal-selection-menu";
 import type { CommandSearchHit } from "@/api/ops-api";
 import type { WorkspaceTab } from "@/workbench/types";
 import { CommandHistoryPanel } from "./CommandHistoryPanel";
@@ -103,9 +103,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * the panel's own cwd can be somewhere else entirely).
    */
   const [follow, setFollow] = useState<FilePanelFollow>({ nonce: 0, path: "" });
-  const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number; text: string } | null>(null);
-  const selectionMenuTimerRef = useRef<number | null>(null);
-  // 终端里的复制（选区菜单 / 复制错误信息）统一走共用模块：有成功失败提示、
+  // 终端里的复制（右键菜单 / 复制错误信息）统一走共用模块：有成功失败提示、
   // 一个计时器、绝不散落 navigator.clipboard。
   const { status: copyStatus, copy: copyToClipboard } = useCopyFeedback();
   // 粘贴读剪贴板（共用模块统一处理失败，绝不散落 navigator.clipboard）。
@@ -912,7 +910,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     paramPicker: Boolean(paramPicker),
     paramHint: Boolean(paramHint),
     runConfirm: Boolean(results.runConfirm),
-    selectionMenu: Boolean(selectionMenu),
     history: historyOpen,
     files: filesOpen,
   };
@@ -933,7 +930,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     overlays.paramPicker,
     overlays.paramHint,
     overlays.runConfirm,
-    overlays.selectionMenu,
     overlays.history,
     overlays.files,
     filesOpen,
@@ -1074,7 +1070,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // 会话才重建实例，绝不因为父组件重渲染就把连接拆掉）。
   useTerminalSession({
     containerRef,
-    suggestWrapperRef,
     terminalRef,
     fitRef,
     lineEditorRef,
@@ -1083,7 +1078,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     cwdTrackerRef,
     coordinatorRef: results.coordinatorRef,
     captureMarkerRef: results.captureMarkerRef,
-    selectionMenuTimerRef,
     cwdProbeTimerRef,
     keyHandlerRef,
     sessionId,
@@ -1096,7 +1090,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     setInAlternate,
     setDraft,
     setCwd,
-    setSelectionMenu,
     setPhase,
     setStatus,
     connect: () => void connect(),
@@ -1132,7 +1125,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     historyOpen,
     filesOpen,
     phase,
-    hasSelection: (terminalRef.current?.getSelection() ?? "") !== "",
+    // 右键那一刻再取：选中文字不会触发重渲染，传布尔值会一直是旧值。
+    hasSelection: () => (terminalRef.current?.getSelection() ?? "") !== "",
     onCopySelection: () => {
       const text = terminalRef.current?.getSelection() ?? "";
       if (!text) return;
@@ -1156,7 +1150,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-row bg-surface-1">
+    <PageSurface>
+      <PageWorkspace row>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <TerminalToolbar
         phase={phase}
@@ -1173,12 +1168,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
       {/* 巡检模式提示条：只读状态必须显眼，否则用户会以为保存失败是 bug。 */}
       {inspection && (
-        <div className="flex h-6 shrink-0 items-center gap-1.5 border-b border-line bg-surface-2/40 px-2 text-10">
-          <span className="min-w-0 truncate text-fg-muted">{tab.title}</span>
-          <span className="ml-auto shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-warning">
-            {t("Read-only")}
-          </span>
-        </div>
+        <PageNotice tone="warning">
+          {t("Inspection mode: commands that modify the server are blocked.")}
+        </PageNotice>
       )}
 
       {error ? (
@@ -1196,7 +1188,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       <div
         ref={suggestWrapperRef}
         className="relative flex min-h-0 flex-1 p-2"
-        onMouseDown={() => setSelectionMenu(null)}
       >
         <div
           ref={containerRef}
@@ -1204,19 +1195,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           data-selectable
           onContextMenu={openToolbarMenu}
         />
-        {selectionMenu && (
-          <TerminalSelectionMenu
-            x={selectionMenu.x}
-            y={selectionMenu.y}
-            text={selectionMenu.text}
-            containerRef={suggestWrapperRef}
-            onCopy={async (value) => {
-              await copyToClipboard(value);
-              // 复制完就收起浮层（提示由共用模块继续显示）。
-              setSelectionMenu(null);
-            }}
-          />
-        )}
         {/* 命令块悬浮复制（增强终端产出）：alternate screen（vim/less）下
             缓冲行语义完全不同，不参与。 */}
         {!inAlternate && results.commandBlocks.length > 0 && (
@@ -1307,9 +1285,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           onClose={closeFiles}
         />
       )}
+      </PageWorkspace>
 
       {/* 右键菜单（portal 到 body）：终端画布上的 onContextMenu 打开。 */}
       <ContextMenu {...terminalMenu.props} />
-    </div>
+    </PageSurface>
   );
 }

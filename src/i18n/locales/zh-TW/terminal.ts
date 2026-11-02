@@ -80,9 +80,6 @@ export default {
   // —— CommandHistoryPanel：命令歷史 ——
   "Commands run in this terminal are recorded here": "在此終端執行的命令會記錄下來",
 
-  // —— terminal-selection-menu：終端選區選單 ——
-  "{{count}} characters selected": "已選擇 {{count}} 個字元",
-
   // —— terminal-font：終端字型（專有名詞保持原樣，未命中 key 原樣顯示）——
   "Sarasa Mono SC (CJK)": "更紗黑體（中文等寬）",
   "System default mono": "系統預設等寬",

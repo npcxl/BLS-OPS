@@ -187,6 +187,90 @@ impl SqlDialect {
             Dialect::None => "非 SQL 引擎",
         }
     }
+
+    /// 按方言拆分语句：只有**不在引号 / 注释里**的分号才是分隔符。
+    ///
+    /// 只读连接的客户端拦截需要逐条判断，不能拿 `sql.contains(';')` 糊弄：
+    /// `SELECT 'a;b'` 是一条只读语句。
+    pub fn split_statements(&self, sql: &str) -> Vec<String> {
+        let hash_comment = self.rules.hash_line_comment;
+        let backslash = self.rules.backslash_escapes;
+        let mut statements: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut chars = sql.chars().peekable();
+        let mut quote: Option<char> = None;
+        let mut line_comment = false;
+        let mut block_comment = false;
+
+        while let Some(ch) = chars.next() {
+            if line_comment {
+                current.push(ch);
+                if ch == '\n' {
+                    line_comment = false;
+                }
+                continue;
+            }
+            if block_comment {
+                current.push(ch);
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    current.push(chars.next().unwrap_or('/'));
+                    block_comment = false;
+                }
+                continue;
+            }
+            if let Some(active) = quote {
+                current.push(ch);
+                if ch == '\\' && backslash {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                    continue;
+                }
+                if ch == active {
+                    // 双写转义：'' / "" / ``
+                    if chars.peek() == Some(&active) {
+                        current.push(chars.next().unwrap_or(active));
+                    } else {
+                        quote = None;
+                    }
+                }
+                continue;
+            }
+            match ch {
+                '\'' | '"' | '`' => {
+                    quote = Some(ch);
+                    current.push(ch);
+                }
+                '-' if chars.peek() == Some(&'-') => {
+                    current.push(ch);
+                    current.push(chars.next().unwrap_or('-'));
+                    line_comment = true;
+                }
+                '#' if hash_comment => {
+                    current.push(ch);
+                    line_comment = true;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    current.push(ch);
+                    current.push(chars.next().unwrap_or('*'));
+                    block_comment = true;
+                }
+                ';' => {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        statements.push(trimmed.to_string());
+                    }
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            statements.push(trimmed.to_string());
+        }
+        statements
+    }
 }
 
 /// 位置参数与占位符的唯一来源。
@@ -343,6 +427,26 @@ mod tests {
         let pg = SqlDialect::of("postgres").unwrap();
         assert!(!pg.is_read_only_statement("# select 1"));
         assert!(pg.is_read_only_statement("-- ok\nselect 1"));
+    }
+
+    #[test]
+    fn statement_splitting_respects_quotes_and_comments() {
+        let sql = SqlDialect::mysql();
+        assert_eq!(sql.split_statements("SELECT 'a;b'"), vec!["SELECT 'a;b'"]);
+        assert_eq!(
+            sql.split_statements("SELECT 1; -- c;\nSELECT 2;"),
+            vec!["SELECT 1", "-- c;\nSELECT 2"]
+        );
+        assert_eq!(
+            sql.split_statements("/* a;b */ SELECT 1"),
+            vec!["/* a;b */ SELECT 1"]
+        );
+        assert!(sql.split_statements("  ;  ").is_empty());
+        // 双写单引号里的分号同样不是分隔符。
+        assert_eq!(
+            sql.split_statements("SELECT 'it''s;ok'"),
+            vec!["SELECT 'it''s;ok'"]
+        );
     }
 
     #[test]

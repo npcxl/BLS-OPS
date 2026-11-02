@@ -36,7 +36,7 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(20);
 const CACHE_TTL_MS: i64 = 60_000;
 
 async fn pooled(profile: &ProfileRuntime) -> Result<Conn, DbErrorInfo> {
-    match tokio::time::timeout(METADATA_TIMEOUT, profile.interactive_pool().get_conn()).await {
+    match tokio::time::timeout(METADATA_TIMEOUT, profile.interactive_pool()?.get_conn()).await {
         Ok(Ok(conn)) => Ok(conn),
         Ok(Err(error)) => Err(map_error(&error, "tcp")),
         Err(_) => Err(DbErrorInfo::new("tcp", "获取元数据连接超时").retryable(true)),
@@ -262,6 +262,12 @@ pub async fn list_databases(
         return Ok(cached);
     }
 
+    if let Some(worker) = profile.sqlite() {
+        let databases = super::sqlite_catalog::databases(worker).await?;
+        cache.put(key, &databases).await;
+        return Ok(databases);
+    }
+
     let catalog = catalog_for(profile).await?;
     let mut conn = pooled(profile).await?;
     let rows = fetch_rows(&mut conn, catalog.databases(), Params::Empty).await?;
@@ -291,6 +297,12 @@ pub async fn list_tables(
     let key = MetadataCache::key(&profile.profile_id, &["tables", database]);
     if let Some(cached) = cache.get(&key).await {
         return Ok(cached);
+    }
+
+    if let Some(worker) = profile.sqlite() {
+        let tables = super::sqlite_catalog::tables(worker).await?;
+        cache.put(key, &tables).await;
+        return Ok(tables);
     }
 
     let catalog = catalog_for(profile).await?;
@@ -330,6 +342,12 @@ pub async fn table_detail(
     let key = MetadataCache::key(&profile.profile_id, &["detail", database, table]);
     if let Some(cached) = cache.get(&key).await {
         return Ok(cached);
+    }
+
+    if let Some(worker) = profile.sqlite() {
+        let detail = super::sqlite_catalog::table_detail(worker, database, table).await?;
+        cache.put(key, &detail).await;
+        return Ok(detail);
     }
 
     let adapter = profile.adapter()?;
@@ -440,6 +458,10 @@ pub async fn table_identity(
     database: &str,
     table: &str,
 ) -> Result<(String, Option<String>), DbErrorInfo> {
+    if let Some(worker) = profile.sqlite() {
+        return super::sqlite_catalog::table_identity(worker, database, table).await;
+    }
+
     let catalog = catalog_for(profile).await?;
     let mut conn = pooled(profile).await?;
     let row = fetch_rows(
@@ -458,6 +480,10 @@ pub async fn table_identity(
 }
 
 pub async fn list_collations(profile: &ProfileRuntime) -> Result<Vec<String>, DbErrorInfo> {
+    if let Some(worker) = profile.sqlite() {
+        return super::sqlite_catalog::collations(worker).await;
+    }
+
     let catalog = catalog_for(profile).await?;
     let sql = catalog.collations().ok_or_else(|| {
         DbErrorInfo::new(

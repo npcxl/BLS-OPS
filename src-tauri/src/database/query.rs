@@ -31,14 +31,15 @@ use tokio::sync::{mpsc, watch, Mutex, Notify, RwLock};
 
 use super::codec;
 use super::driver;
+use super::driver::SqliteWorker;
 use super::model::{
     DbBatch, DbErrorInfo, DbValue, QueryBatchResponse, ResolvedBudget, STATE_CANCELLED,
     STATE_CANCELLING, STATE_COMPLETED, STATE_FAILED, STATE_OUTCOME_UNKNOWN, STATE_QUEUED,
     STATE_RUNNING, STATE_STREAMING,
 };
-use super::protocol::{CancelHandle, ConnectionIdentity};
+use super::protocol::{CancelHandle, ConnectionIdentity, TransactionState};
 use super::runtime::ProfileRuntime;
-use super::session::SessionEntry;
+use super::session::{SessionEntry, SessionKind};
 
 /// 取消/超时后等待服务器确认的时间。超过就判定"结果未知"。
 const CANCEL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -97,6 +98,12 @@ pub struct StartQueryRequest {
 
 impl QueryRegistry {
     pub async fn start(&self, request: StartQueryRequest) -> Result<QueryStarted, DbErrorInfo> {
+        // SQLite 走独立执行路径：worker 线程 + interrupt 取消，没有协议流。
+        // 分派必须在解构 `request` 之前，否则所有权已经离开。
+        if request.session.kind == SessionKind::Sqlite {
+            return self.start_sqlite(request).await;
+        }
+
         let StartQueryRequest {
             session,
             runtime,
@@ -198,6 +205,116 @@ impl QueryRegistry {
             task_finished.store(true, Ordering::Release);
             // notify_one 会保存一个 permit，release 在检查 finished 与
             // 创建 notified() 之间发生的完成通知不会丢失。
+            task_done.notify_one();
+        });
+
+        Ok(QueryStarted {
+            query_id,
+            state: STATE_QUEUED.to_string(),
+            generation,
+            connection: identity,
+        })
+    }
+
+    /// SQLite 查询：worker 一次执行一条语句，结果按预算分批发送。
+    ///
+    /// 没有协议流，所以**没有**"前端不拉取就阻塞服务器"的背压：本地查询已在
+    /// worker 内按预算截断，这里只是把内存里的行分批交给前端。
+    async fn start_sqlite(&self, request: StartQueryRequest) -> Result<QueryStarted, DbErrorInfo> {
+        let StartQueryRequest {
+            session,
+            runtime,
+            sql,
+            budget,
+        } = request;
+        let worker = session.acquire_sqlite().await?;
+        let identity = session.identity.clone();
+        let cancel_handle = session.cancel.clone();
+
+        let query_id = uuid::Uuid::new_v4().to_string();
+        let generation = session.generation;
+        let state = Arc::new(RwLock::new(STATE_QUEUED.to_string()));
+        let (tx, rx) = mpsc::channel::<DbBatch>(2);
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let in_flight_bytes = Arc::new(AtomicUsize::new(0));
+        let cancel_failed = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(Notify::new());
+
+        let handle = Arc::new(QueryHandle {
+            query_id: query_id.clone(),
+            session_id: session.session_id.clone(),
+            profile_id: session.profile_id.clone(),
+            generation,
+            cancel_token: cancel_handle,
+            state: state.clone(),
+            cancel: cancel_tx,
+            cancel_failed: cancel_failed.clone(),
+            in_flight: in_flight.clone(),
+            in_flight_bytes: in_flight_bytes.clone(),
+            started_at: crate::db::AppDb::now(),
+        });
+
+        self.entries.lock().await.insert(
+            query_id.clone(),
+            Arc::new(QueryEntry {
+                handle: handle.clone(),
+                runtime: runtime.clone(),
+                session: session.clone(),
+                finished: finished.clone(),
+                done: done.clone(),
+                receiver: Mutex::new(rx),
+            }),
+        );
+
+        runtime.begin_query();
+
+        let task_runtime = runtime.clone();
+        let task_session = session.clone();
+        let task_query_id = query_id.clone();
+        let panic_session = task_session.clone();
+        let panic_tx = tx.clone();
+        let panic_state = state.clone();
+        let task_finished = finished.clone();
+        let task_done = done.clone();
+        tokio::spawn(async move {
+            let outcome = AssertUnwindSafe(run_sqlite_script(
+                worker,
+                task_runtime.clone(),
+                task_session,
+                task_query_id,
+                sql,
+                budget,
+                tx,
+                state,
+                cancel_rx,
+                cancel_failed,
+                in_flight,
+                in_flight_bytes,
+            ))
+            .catch_unwind()
+            .await;
+            if outcome.is_err() {
+                panic_session.mark_lost().await;
+                *panic_state.write().await = STATE_FAILED.to_string();
+                let _ = panic_tx.try_send(DbBatch::Error {
+                    error: DbErrorInfo::new(
+                        "query",
+                        "SQLite 查询任务异常终止，会话已丢失，请重新连接",
+                    ),
+                });
+                let _ = panic_tx.try_send(DbBatch::Finished {
+                    state: STATE_FAILED.to_string(),
+                    elapsed_ms: 0,
+                    rows: 0,
+                    bytes: 0,
+                    truncated: false,
+                    truncation_reason: None,
+                });
+            }
+            task_runtime.end_query();
+            task_finished.store(true, Ordering::Release);
             task_done.notify_one();
         });
 
@@ -353,6 +470,191 @@ impl QueryRegistry {
         };
         Some(state)
     }
+}
+
+/// 执行一段 SQLite 脚本：逐条语句执行，结果按预算分批发送。
+#[allow(clippy::too_many_arguments)]
+async fn run_sqlite_script(
+    worker: Arc<SqliteWorker>,
+    runtime: Arc<ProfileRuntime>,
+    session: Arc<SessionEntry>,
+    query_id: String,
+    sql: String,
+    budget: ResolvedBudget,
+    tx: mpsc::Sender<DbBatch>,
+    state: Arc<RwLock<String>>,
+    cancel_rx: watch::Receiver<bool>,
+    cancel_failed: Arc<AtomicBool>,
+    in_flight: Arc<AtomicUsize>,
+    in_flight_bytes: Arc<AtomicUsize>,
+) {
+    let started = std::time::Instant::now();
+    *state.write().await = STATE_RUNNING.to_string();
+
+    // SQLite 的 prepare 只编译第一条语句，静默忽略其余会误导用户：
+    // 按方言拆开逐条执行，每条一个结果集。
+    let statements = match runtime.adapter() {
+        Ok(adapter) => adapter.dialect().split_statements(&sql),
+        Err(_) => vec![sql.clone()],
+    };
+    let statements = if statements.is_empty() {
+        vec![sql.clone()]
+    } else {
+        statements
+    };
+
+    let mut clean = true;
+    let mut rows_total = 0u64;
+    let mut bytes_total = 0usize;
+    let mut truncated = false;
+    let mut truncation_reason: Option<String> = None;
+    let mut cancelled = false;
+    let mut error_seen = false;
+    let mut transaction = TransactionState::None;
+
+    for (set_index, statement) in statements.iter().enumerate() {
+        if *cancel_rx.borrow() {
+            cancelled = true;
+            clean = false;
+            break;
+        }
+
+        let remaining_rows = budget.max_rows.saturating_sub(rows_total).max(1);
+        let remaining_bytes = budget
+            .max_bytes
+            .saturating_sub(bytes_total as u64)
+            .max(1024) as usize;
+        let answer = match worker
+            .query(statement, remaining_rows, remaining_bytes)
+            .await
+        {
+            Ok(answer) => answer,
+            Err(error) => {
+                if error.stage == "cancelled" {
+                    cancelled = true;
+                } else {
+                    let _ = tx.try_send(DbBatch::Error { error });
+                    error_seen = true;
+                }
+                clean = false;
+                break;
+            }
+        };
+        transaction = if answer.in_transaction {
+            TransactionState::InTransaction
+        } else {
+            TransactionState::None
+        };
+
+        let result_set_id = format!("{query_id}:{set_index}");
+        if tx
+            .send(DbBatch::ResultSet {
+                result_set_id: result_set_id.clone(),
+                index: set_index as u32,
+                columns: answer.columns.clone(),
+                statement: truncate_sql(statement),
+            })
+            .await
+            .is_err()
+        {
+            cancelled = true;
+            clean = false;
+            break;
+        }
+
+        let set_rows = answer.rows.len() as u64;
+        let mut set_bytes = 0usize;
+        let batch_rows = budget.batch_rows.max(1);
+        let mut aborted = false;
+        for (sequence, chunk) in answer.rows.chunks(batch_rows).enumerate() {
+            let bytes: usize = chunk.iter().flatten().map(approximate_bytes).sum();
+            in_flight.fetch_add(1, Ordering::AcqRel);
+            in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
+            if tx
+                .send(DbBatch::Rows {
+                    result_set_id: result_set_id.clone(),
+                    sequence: sequence as u64,
+                    rows: chunk.to_vec(),
+                    bytes,
+                })
+                .await
+                .is_err()
+            {
+                cancelled = true;
+                clean = false;
+                aborted = true;
+                break;
+            }
+            bytes_total += bytes;
+            set_bytes += bytes;
+        }
+        if aborted {
+            break;
+        }
+        rows_total += set_rows;
+
+        if tx
+            .send(DbBatch::ResultSetEnd {
+                result_set_id,
+                affected_rows: answer.affected_rows.max(0) as u64,
+                last_insert_id: None,
+                warnings: 0,
+                info: String::new(),
+                rows: set_rows,
+                bytes: set_bytes,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            })
+            .await
+            .is_err()
+        {
+            cancelled = true;
+            clean = false;
+            break;
+        }
+
+        if answer.truncated {
+            truncated = true;
+            truncation_reason = Some(if remaining_rows <= set_rows {
+                format!("已达展示行数上限（{} 行）", budget.max_rows)
+            } else {
+                format!(
+                    "已达展示字节预算（{} MiB）",
+                    budget.max_bytes / (1024 * 1024)
+                )
+            });
+            break;
+        }
+    }
+
+    if !truncated && *cancel_rx.borrow() {
+        cancelled = true;
+    }
+
+    let final_state = if cancel_failed.load(Ordering::Acquire) {
+        STATE_OUTCOME_UNKNOWN
+    } else if cancelled {
+        STATE_CANCELLED
+    } else if error_seen {
+        STATE_FAILED
+    } else {
+        STATE_COMPLETED
+    };
+    *state.write().await = final_state.to_string();
+
+    finalize(
+        &tx,
+        final_state,
+        started,
+        rows_total,
+        bytes_total,
+        truncated,
+        truncation_reason,
+    )
+    .await;
+
+    // 被中断的语句可能在事务里，连接状态不再可信：丢弃会话（与 MySQL 同策略）。
+    let keep = clean && !cancelled && transaction == TransactionState::None;
+    session.release_sqlite(worker, keep, transaction).await;
 }
 
 fn is_terminal(state: &str) -> bool {

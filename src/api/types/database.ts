@@ -76,7 +76,12 @@ export interface CapabilitySet {
 }
 
 /** 验证等级：没有真实环境就不能往上写。 */
-export type VerifiedLevel = "config_only" | "connect" | "query" | "manage";
+export type VerifiedLevel =
+  | "config_only"
+  | "driver_only"
+  | "connect"
+  | "query"
+  | "manage";
 
 export interface VerifiedScope {
   versions: string;

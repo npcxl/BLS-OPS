@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
+import { PageNotice } from "@/workbench/page-layout";
 import { useEditorTheme } from "@/lib/cm-theme";
 import { databaseApi } from "@/api/ops-api";
 import type { DatabaseProfile, DbDatabase, DbSessionInfo } from "@/api/types/database";
@@ -491,63 +492,60 @@ export function SqlWorkspace({
        * 而不是给一个点了会报错的开关。
        */}
       {transactionCapable && session && (
-        <div
-          className={cn(
-            "flex h-7 shrink-0 items-center gap-2 border-b px-2 text-11",
-            inTransaction
-              ? "border-warning/30 bg-warning/10 text-warning"
-              : "border-line bg-surface-2/40 text-fg-subtle",
-          )}
+        <PageNotice
+          tone={inTransaction ? "warning" : "neutral"}
+          action={
+            inTransaction ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={txnBusy || running || cancelling}
+                  onClick={() => void runTxn("COMMIT", t("提交事务"))}
+                >
+                  {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                  {t("提交事务")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={txnBusy || running || cancelling}
+                  onClick={() => void runTxn("ROLLBACK", t("回滚事务"))}
+                >
+                  {t("回滚事务")}
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={txnBusy || running || cancelling}
+                onClick={() => void runTxn("START TRANSACTION", t("开启事务"))}
+                title={t("开启后，本会话的语句要显式提交才生效")}
+              >
+                {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                {t("开启事务")}
+              </Button>
+            )
+          }
         >
-          <span className="shrink-0 font-medium">
+          <span className="font-medium">
             {inTransaction
               ? session?.transaction === "in_transaction_read_only"
                 ? t("手动事务（只读）")
                 : t("手动事务：未提交")
               : t("自动提交")}
           </span>
-          <span className="min-w-0 flex-1 truncate text-10">
+          <span className="ml-2 text-10">
             {inTransaction
               ? t("本标签的语句已在事务里，关闭标签前必须选择提交或回滚。")
               : transactionLimitedReason ??
                 t("每条语句单独提交。需要多条语句一起生效时，开启事务。")}
           </span>
-          {inTransaction ? (
-            <>
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={txnBusy || running || cancelling}
-                onClick={() => void runTxn("COMMIT", t("提交事务"))}
-              >
-                {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                {t("提交事务")}
-              </Button>
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={txnBusy || running || cancelling}
-                onClick={() => void runTxn("ROLLBACK", t("回滚事务"))}
-              >
-                {t("回滚事务")}
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={txnBusy || running || cancelling}
-              onClick={() => void runTxn("START TRANSACTION", t("开启事务"))}
-              title={t("开启后，本会话的语句要显式提交才生效")}
-            >
-              {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-              {t("开启事务")}
-            </Button>
-          )}
-        </div>
+        </PageNotice>
       )}
 
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+      <div className="page-toolbar">
         <Select
           className="w-[140px]"
           size="sm"
@@ -745,8 +743,11 @@ export function SqlWorkspace({
       {showResults && (
         <>
           <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label={t("Drag to resize")}
             className={cn(
-              "h-[4px] shrink-0 cursor-row-resize",
+              "page-resizer h-[5px] shrink-0 cursor-row-resize",
               dragging ? "bg-accent/40" : "bg-transparent hover:bg-accent/20",
             )}
             onMouseDown={(event) => {

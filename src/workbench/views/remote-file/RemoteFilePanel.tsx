@@ -32,6 +32,7 @@ import {
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
 import { modalZIndex } from "@/components/ui/overlay";
 import { pushErrorToast } from "@/components/ui/toast";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
@@ -85,6 +86,21 @@ const FileEditorModal = lazy(() => import("@/workbench/views/FileEditorModal"));
  * file must not pull in the PDF renderer, and vice versa.
  */
 const FilePreviewModal = lazy(() => import("@/workbench/views/preview/FilePreviewModal"));
+
+/**
+ * Loading scrim for a lazily imported overlay. Sits at the modal layer so it
+ * never covers a confirmation dialog that opened above it.
+ */
+function LazyOverlayFallback() {
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-black/40"
+      style={{ zIndex: modalZIndex(1) }}
+    >
+      <LoadingState />
+    </div>
+  );
+}
 
 export interface RemoteFilePanelProps {
   /** Owning SSH session. Each session opens its own SFTP client. */
@@ -1072,7 +1088,7 @@ function RemoteFilePanelImpl({
         role="separator"
         aria-orientation="vertical"
         aria-label={t("Drag to resize")}
-        className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-accent/40"
+        className="page-resizer absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize hover:bg-accent/40"
         onPointerDown={startDrag}
       />
 
@@ -1097,7 +1113,7 @@ function RemoteFilePanelImpl({
         </div>
       )}
 
-      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-1.5">
+      <div className="page-panel-header px-1.5">
         {/* 上一级与"返回"合并为一个：文件树里最常用的后退就是回父目录。 */}
         <PanelButton
           label="Go up"
@@ -1358,17 +1374,7 @@ function RemoteFilePanelImpl({
       )}
 
       {editor && (
-        <Suspense
-          fallback={
-            // 占位就站在"弹窗那一层"：不能比弹窗高，否则会盖住确认框。
-            <div
-              className="fixed inset-0 flex items-center justify-center bg-black/50"
-              style={{ zIndex: modalZIndex(1) }}
-            >
-              <Loader2 size={18} className="animate-spin text-fg-subtle" />
-            </div>
-          }
-        >
+        <Suspense fallback={<LazyOverlayFallback />}>
           <FileEditorModal
             sessionId={sessionId}
             path={editor.path}
@@ -1384,16 +1390,7 @@ function RemoteFilePanelImpl({
       )}
 
       {preview && (
-        <Suspense
-          fallback={
-            <div
-              className="fixed inset-0 flex items-center justify-center bg-black/50"
-              style={{ zIndex: modalZIndex(1) }}
-            >
-              <Loader2 size={18} className="animate-spin text-fg-subtle" />
-            </div>
-          }
-        >
+        <Suspense fallback={<LazyOverlayFallback />}>
           <FilePreviewModal
             sessionId={sessionId}
             target={preview}

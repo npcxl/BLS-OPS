@@ -16,7 +16,7 @@ use std::time::Instant;
 use mysql_async::Conn;
 use tokio::sync::Mutex;
 
-use super::driver;
+use super::driver::{self, SqliteWorker};
 use super::model::{DbErrorInfo, DbSessionInfo};
 use super::protocol::{CancelHandle, ConnectionIdentity, TransactionState};
 
@@ -25,8 +25,20 @@ pub const SESSION_BUSY: &str = "busy";
 pub const SESSION_CANCELLING: &str = "cancelling";
 pub const SESSION_LOST: &str = "lost";
 
+/// 会话背后的驱动类型。上层据此分派执行路径，而不是猜引擎名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    MySql,
+    Sqlite,
+}
+
+enum SessionConn {
+    MySql(Conn),
+    Sqlite(Arc<SqliteWorker>),
+}
+
 struct SessionInner {
-    conn: Option<Conn>,
+    conn: Option<SessionConn>,
     state: String,
     current_database: Option<String>,
     transaction: TransactionState,
@@ -36,6 +48,8 @@ pub struct SessionEntry {
     pub session_id: String,
     pub profile_id: String,
     pub generation: u64,
+    /// 会话背后的驱动。`acquire_conn()` 只对 MySQL 有效。
+    pub kind: SessionKind,
     /// 物理连接身份（展示用），不再强制是 MySQL thread id。
     pub identity: ConnectionIdentity,
     /// 取消令牌：由驱动产生，上层只负责原样交回 `runtime.cancel`。
@@ -45,6 +59,9 @@ pub struct SessionEntry {
     pub tls_cipher: Option<String>,
     pub tls_version: Option<String>,
     pub read_only: bool,
+    /// 只读是否由**服务器**保证。产品没有只读事务（Doris/StarRocks）时
+    /// 这里是 `false`：界面必须说明"仅客户端拦截"，查询入口要拦写语句。
+    pub read_only_enforced: bool,
     pub opened_at: i64,
     pub last_used: Mutex<Instant>,
     inner: Mutex<SessionInner>,
@@ -59,6 +76,7 @@ impl SessionEntry {
         server_version: Option<String>,
         tls: super::model::TlsStatus,
         read_only: bool,
+        read_only_enforced: bool,
     ) -> Self {
         let identity = driver::connection_identity(&conn);
         let cancel = CancelHandle::mysql(conn.id());
@@ -67,6 +85,7 @@ impl SessionEntry {
             session_id,
             profile_id,
             generation,
+            kind: SessionKind::MySql,
             identity,
             cancel,
             server_version,
@@ -74,13 +93,49 @@ impl SessionEntry {
             tls_cipher: tls.cipher,
             tls_version: tls.version,
             read_only,
+            read_only_enforced,
             opened_at: crate::db::AppDb::now(),
             last_used: Mutex::new(Instant::now()),
             inner: Mutex::new(SessionInner {
-                conn: Some(conn),
+                conn: Some(SessionConn::MySql(conn)),
                 state: SESSION_READY.to_string(),
                 current_database: None,
                 transaction,
+            }),
+        }
+    }
+
+    /// SQLite 会话：连接跑在驱动的专用线程上，身份是文件路径。
+    pub fn new_sqlite(
+        session_id: String,
+        profile_id: String,
+        generation: u64,
+        worker: Arc<SqliteWorker>,
+        read_only: bool,
+    ) -> Self {
+        let identity = ConnectionIdentity::named(format!("file:{}", worker.path().display()));
+        Self {
+            session_id,
+            profile_id,
+            generation,
+            kind: SessionKind::Sqlite,
+            identity,
+            // SQLite 的取消由 runtime 上的 interrupt handle 完成，令牌表示"支持"。
+            cancel: CancelHandle::Sqlite,
+            server_version: Some(format!("SQLite {}", worker.version())),
+            tls_active: false,
+            tls_cipher: None,
+            tls_version: None,
+            read_only,
+            // 只读连接用 SQLITE_OPEN_READ_ONLY 打开，写由 SQLite 自己拒绝。
+            read_only_enforced: read_only,
+            opened_at: crate::db::AppDb::now(),
+            last_used: Mutex::new(Instant::now()),
+            inner: Mutex::new(SessionInner {
+                conn: Some(SessionConn::Sqlite(worker)),
+                state: SESSION_READY.to_string(),
+                current_database: None,
+                transaction: TransactionState::None,
             }),
         }
     }
@@ -118,7 +173,7 @@ impl SessionEntry {
         }
     }
 
-    /// 取走独占连接。会话正忙时返回错误 —— 同一个编辑器不并发跑两条 SQL。
+    /// 取走独占的 MySQL 连接。非 MySQL 会话（SQLite）明确拒绝。
     pub async fn acquire_conn(&self) -> Result<Conn, DbErrorInfo> {
         let mut inner = self.inner.lock().await;
         match inner.state.as_str() {
@@ -131,12 +186,51 @@ impl SessionEntry {
                 "该会话正在执行另一条语句：请等待完成或先取消",
             )),
             _ => match inner.conn.take() {
-                Some(conn) => {
+                Some(SessionConn::MySql(conn)) => {
                     inner.state = SESSION_BUSY.to_string();
                     Ok(conn)
                 }
+                Some(SessionConn::Sqlite(worker)) => {
+                    // 放回去，不能因为一次不支持的调用就丢掉会话连接。
+                    inner.conn = Some(SessionConn::Sqlite(worker));
+                    Err(DbErrorInfo::new(
+                        "unsupported",
+                        "SQLite 会话不支持该操作：结构浏览/表编辑尚未接入，SQL 执行可用",
+                    ))
+                }
                 None => Err(DbErrorInfo::new("query", "会话连接不可用")),
             },
+        }
+    }
+
+    /// 取走 SQLite 连接（工作线程句柄）。
+    pub async fn acquire_sqlite(&self) -> Result<Arc<SqliteWorker>, DbErrorInfo> {
+        let mut inner = self.inner.lock().await;
+        match inner.state.as_str() {
+            SESSION_LOST => {
+                return Err(DbErrorInfo::new(
+                    "outcome_unknown",
+                    "会话连接已失效：请重新连接",
+                ))
+            }
+            SESSION_BUSY | SESSION_CANCELLING => {
+                return Err(DbErrorInfo::new(
+                    "query",
+                    "该会话正在执行另一条语句：请等待完成或先取消",
+                ))
+            }
+            _ => {}
+        }
+        match inner.conn.take() {
+            Some(SessionConn::Sqlite(worker)) => {
+                inner.state = SESSION_BUSY.to_string();
+                Ok(worker)
+            }
+            Some(SessionConn::MySql(conn)) => {
+                inner.conn = Some(SessionConn::MySql(conn));
+                Err(DbErrorInfo::new("unsupported", "该会话不是 SQLite 连接"))
+            }
+            None => Err(DbErrorInfo::new("query", "会话连接不可用")),
         }
     }
 
@@ -165,7 +259,33 @@ impl SessionEntry {
         }
         inner.transaction = transaction;
         inner.state = SESSION_READY.to_string();
-        inner.conn = Some(conn);
+        inner.conn = Some(SessionConn::MySql(conn));
+    }
+
+    /// 归还 SQLite 连接。`clean = false` 表示语句被中断/结果不可信 → 丢弃会话。
+    pub async fn release_sqlite(
+        &self,
+        worker: Arc<SqliteWorker>,
+        clean: bool,
+        transaction: TransactionState,
+    ) {
+        let mut inner = self.inner.lock().await;
+        if !clean {
+            inner.state = SESSION_LOST.to_string();
+            inner.conn = None;
+            inner.transaction = TransactionState::Unknown;
+            drop(inner);
+            worker.close().await;
+            return;
+        }
+        if inner.state == SESSION_LOST {
+            drop(inner);
+            worker.close().await;
+            return;
+        }
+        inner.transaction = transaction;
+        inner.state = SESSION_READY.to_string();
+        inner.conn = Some(SessionConn::Sqlite(worker));
     }
 
     /// 查询任务异常终止（panic/不可恢复错误）时把会话标记为失效，
@@ -185,8 +305,14 @@ impl SessionEntry {
             inner.conn.take()
         };
         if let Some(conn) = conn {
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
+            match conn {
+                SessionConn::MySql(conn) => {
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect())
+                            .await;
+                }
+                SessionConn::Sqlite(worker) => worker.close().await,
+            }
         }
     }
 

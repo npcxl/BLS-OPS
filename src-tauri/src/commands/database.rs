@@ -467,6 +467,28 @@ pub async fn db_query_start(
         return Err(DbErrorInfo::new("query", "SQL 不能为空"));
     }
     let (session, runtime) = session_and_runtime(&state, &session_id).await?;
+
+    // 只读连接 + 产品没有只读事务（Doris/StarRocks）：服务器不会拒绝写语句，
+    // 只能在入口逐条拦截。**这是客户端保障**，界面必须如实说明。
+    if session.read_only && !session.read_only_enforced {
+        let adapter = runtime.adapter()?;
+        let dialect = adapter.dialect();
+        let writes: Vec<String> = dialect
+            .split_statements(&sql)
+            .into_iter()
+            .filter(|statement| !dialect.is_read_only_statement(statement))
+            .collect();
+        if !writes.is_empty() {
+            return Err(DbErrorInfo::new(
+                "permission",
+                "该连接配置为只读，但这个产品没有服务器只读事务：语句会写数据，已在客户端拒绝",
+            )
+            .with_detail(
+                "只读在这里是客户端拦截，不是服务器保障。确需执行写语句请新建一个非只读连接。",
+            ));
+        }
+    }
+
     let budget = ResolvedBudget::resolve(budget.as_ref());
     state
         .database

@@ -2,15 +2,24 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Loader2, Search, Star, TerminalSquare } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
-import { ModuleEmpty } from "@/workbench/views/module-frame";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingState } from "@/components/ui/loading";
+import {
+  PageNotice,
+  PageSurface,
+  PageToolbar,
+  PageWorkspace,
+} from "@/workbench/page-layout";
+import { ToolbarStat, ToolbarStatus } from "@/workbench/views/module-frame";
 import {
   opsApi,
   RISK_META,
+  toErrorMessage,
   type CommandExecutionResult,
   type CommandSearchHit,
 } from "@/api/ops-api";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ErrorState } from "@/components/ui/error-state";
 import { useActionError } from "@/hooks/use-action-error";
 import { useCommandSession } from "@/hooks/use-command-session";
 import { useCommandSuggestions } from "@/hooks/use-command-suggestions";
@@ -199,12 +208,13 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 p-3">
+    <PageSurface>
       {/* 输入 + 提示：始终可用，不要求已连接服务器。 */}
-      <div className="relative shrink-0">
+      <PageToolbar overflowVisible>
+        <div className="relative min-w-0 flex-1">
         <div
           className={cn(
-            "flex h-9 items-center gap-2 rounded-[9px] border bg-surface-1 px-2.5 transition-colors",
+            "flex h-8 items-center gap-2 rounded-[8px] border bg-surface-1 px-2.5 transition-colors",
             expanded && active ? "border-accent" : "border-line",
           )}
         >
@@ -315,51 +325,69 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
             </div>
           </div>
         )}
-      </div>
+        </div>
+        <ToolbarStatus>
+          <ToolbarStat>
+            {searching
+              ? t("Searching…")
+              : t("{{count}} matches", { count: hits.length })}
+          </ToolbarStat>
+        </ToolbarStatus>
+      </PageToolbar>
 
       {session.hasTarget && session.phase !== "connected" && (
-        <p className="shrink-0 text-11 text-warning">
+        <PageNotice tone="warning">
           {session.phase === "connecting"
             ? t("Connecting to the server… (knowledge search is unaffected)")
             : t("Connection unavailable: {{reason}} (knowledge search is unaffected)", {
                 reason: session.error ?? t("Pick a server from the left sidebar"),
               })}
-        </p>
+        </PageNotice>
       )}
       {error ? (
-        <ErrorState error={error} compact onRetry={retry} className="shrink-0" />
-      ) : null}
-      {suggestions.error ? (
-        <ErrorState error={suggestions.error} compact className="shrink-0" />
+        <PageNotice
+          tone="danger"
+          action={
+            <Button variant="ghost" size="xs" onClick={retry}>
+              {t("Retry")}
+            </Button>
+          }
+        >
+          {toErrorMessage(error)}
+        </PageNotice>
+      ) : suggestions.error ? (
+        <PageNotice tone="danger">{toErrorMessage(suggestions.error)}</PageNotice>
       ) : null}
 
       {/* 结果：结构化 | 原始输出 */}
-      <div className="min-h-0 flex-1">
-        {executing && (
-          <div className="flex h-full items-center justify-center gap-2 text-12 text-fg-subtle">
-            <Loader2 size={14} className="animate-spin" />
-            {t("Running {{id}}…", { id: executing })}
-          </div>
+      <PageWorkspace className="min-h-0 flex-1 p-3">
+        {executing ? (
+          <LoadingState className="h-full" label={t("Running {{id}}…", { id: executing })} />
+        ) : result ? (
+          <ResultPanel result={result} />
+        ) : (
+          <EmptyState
+            icon={
+              session.hasTarget ? (
+                <Search size={18} strokeWidth={1.5} />
+              ) : (
+                <TerminalSquare size={18} strokeWidth={1.5} />
+              )
+            }
+            title={t("No results yet")}
+            description={
+              session.hasTarget
+                ? t(
+                    "Pick a command from the suggestions above to run. Read-only commands return immediately; mutating commands ask for confirmation first. The raw output of every run is kept here.",
+                  )
+                : t(
+                    "No server selected — command knowledge is still searchable (try docker p or a scenario). Select a server on the left to run commands and see structured results.",
+                  )
+            }
+            className="h-full"
+          />
         )}
-        {!executing &&
-          (result ? (
-            <ResultPanel result={result} />
-          ) : (
-            <ModuleEmpty
-              icon={session.hasTarget ? Search : TerminalSquare}
-              title={t("No results yet")}
-              hint={
-                session.hasTarget
-                  ? t(
-                      "Pick a command from the suggestions above to run. Read-only commands return immediately; mutating commands ask for confirmation first. The raw output of every run is kept here.",
-                    )
-                  : t(
-                      "No server selected — command knowledge is still searchable (try docker p or a scenario). Select a server on the left to run commands and see structured results.",
-                    )
-              }
-            />
-          ))}
-      </div>
+      </PageWorkspace>
 
       {paramsTarget && (
         <ParamsDialog
@@ -391,6 +419,6 @@ export function CommandCenterView({ tab }: { tab: WorkspaceTab }) {
           }}
         />
       )}
-    </div>
+    </PageSurface>
   );
 }

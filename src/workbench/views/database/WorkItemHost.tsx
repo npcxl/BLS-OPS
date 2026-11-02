@@ -13,6 +13,8 @@ import {
   SquareTerminal,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { PageNotice, PageStatusBar, PageWorkspace } from "@/workbench/page-layout";
 import { databaseApi } from "@/api/ops-api";
 import type { DbSessionInfo } from "@/api/types/database";
 import { cn } from "@/lib/cn";
@@ -151,7 +153,6 @@ function StructureHost({
         detail={detail}
         loading={loading}
         section="all"
-        title={item.objectName}
         refreshing={loading}
         onRefresh={() => void refreshTableDetail(profileId, item.database!, item.objectName)}
         onClose={() => onRequestClose(item)}
@@ -264,43 +265,37 @@ export function WorkItemHost({
   }, [effectiveActiveId]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <PageWorkspace className="relative">
       {!session && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-11 text-warning">
-          <span className="min-w-0 flex-1">
-            {t("连接已断开：工作项保留，但查询与修改已暂停。事务/临时表不会被恢复。")}
-          </span>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => void reconnect(profileId)}
-          >
-            <PlugZap size={11} />
-            {t("重新连接")}
-          </Button>
-        </div>
+        <PageNotice
+          tone="warning"
+          action={
+            <Button variant="ghost" size="xs" onClick={() => void reconnect(profileId)}>
+              <PlugZap size={11} />
+              {t("重新连接")}
+            </Button>
+          }
+        >
+          {t("连接已断开：工作项保留，但查询与修改已暂停。事务/临时表不会被恢复。")}
+        </PageNotice>
       )}
 
+      {items.length === 0 ? (
+        <PageWorkspace className="items-center justify-center">
+          <EmptyState
+            icon={<DatabaseIcon size={18} strokeWidth={1.5} />}
+            title={t("还没有打开的工作项")}
+            description={t("左侧双击表打开数据页；或新建一份独立 SQL 查询。")}
+            action={
+              <Button variant="primary" size="sm" onClick={() => onNewQuery()} disabled={!session}>
+                <SquareTerminal size={12} />
+                {t("新建查询")}
+              </Button>
+            }
+          />
+        </PageWorkspace>
+      ) : (
       <div className="relative min-h-0 flex-1">
-        {items.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-            <DatabaseIcon size={24} className="text-fg-subtle" />
-            <p className="text-13 text-fg">{t("还没有打开的工作项")}</p>
-            <p className="max-w-sm text-11 leading-relaxed text-fg-subtle">
-              {t("左侧双击表打开数据页；或新建一份独立 SQL 查询。")}
-            </p>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => onNewQuery()}
-              disabled={!session}
-            >
-              <SquareTerminal size={12} />
-              {t("新建查询")}
-            </Button>
-          </div>
-        )}
-
         {items.map((item) => {
           const active = item.id === effectiveActiveId;
           return (
@@ -350,12 +345,13 @@ export function WorkItemHost({
           );
         })}
       </div>
+      )}
 
       {footer && activeItem?.kind !== "table" && (
-        <footer className="flex min-h-8 shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 border-t border-line px-3 py-1 text-11 text-fg-subtle">
+        <PageStatusBar className="justify-end gap-x-3">
           {footer}
-        </footer>
+        </PageStatusBar>
       )}
-    </div>
+    </PageWorkspace>
   );
 }

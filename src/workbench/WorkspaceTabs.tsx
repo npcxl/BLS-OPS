@@ -11,12 +11,14 @@ import {
   Rows2,
   Server,
   SparklesIcon,
+  SquareMinus,
   Stack3Icon,
   Table2,
   TerminalIcon,
   UnorderedListIcon,
   WorldIcon,
   X,
+  XCircle,
   type IconComponent,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -156,16 +158,18 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
 
   const tabMenu = (tab: WorkspaceTab) =>
     menu.onContextMenu(() => [
-      { id: "close", label: t("Close"), onSelect: () => closeTab(pane.id, tab.id) },
+      { id: "close", label: t("Close"), icon: X, onSelect: () => closeTab(pane.id, tab.id) },
       {
         id: "close-others",
         label: t("Close other tabs"),
+        icon: SquareMinus,
         disabled: pane.tabs.length <= 1,
         onSelect: () => closeOtherTabs(pane.id, tab.id),
       },
       {
         id: "close-all",
         label: t("Close all tabs"),
+        icon: XCircle,
         disabled: pane.tabs.length <= 1,
         onSelect: () => closeAllTabs(pane.id),
       },
@@ -175,7 +179,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
     ]);
 
   return (
-    <div className="flex h-[38px] shrink-0 items-center gap-1.5 border-b border-line/80 bg-transparent px-2">
+    <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1.5 border-b border-line/80 bg-transparent px-[var(--page-inline)]">
       <div
         ref={tabStripRef}
         onWheel={onWheel}
@@ -196,15 +200,34 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
           return (
             <div
               key={tab.id}
+              id={`work-tab-${pane.id}-${tab.id}`}
               role="tab"
               aria-selected={active}
+              aria-controls={`work-panel-${pane.id}-${tab.id}`}
+              tabIndex={active ? 0 : -1}
+              title={tab.subtitle ? `${label} · ${tab.subtitle}` : label}
               className={cn(
-                "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] select-none transition-colors duration-100",
+                "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] select-none outline-none transition-colors duration-100",
                 active
                   ? "bg-tab-active text-fg shadow-[var(--tab-active-shadow)]"
                   : "text-fg-muted hover:bg-tab-hover hover:text-fg",
               )}
               onClick={() => setActiveTab(pane.id, tab.id)}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const index = pane.tabs.findIndex((item) => item.id === tab.id);
+                const nextIndex =
+                  event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? pane.tabs.length - 1
+                      : (index + (event.key === "ArrowRight" ? 1 : -1) + pane.tabs.length) % pane.tabs.length;
+                const next = pane.tabs[nextIndex];
+                if (!next) return;
+                setActiveTab(pane.id, next.id);
+                document.getElementById(`work-tab-${pane.id}-${next.id}`)?.focus();
+              }}
               onAuxClick={(e) => {
                 if (e.button === 1) closeTab(pane.id, tab.id);
               }}
@@ -216,6 +239,14 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
                 <Icon size={11} className="shrink-0 opacity-80" />
               )}
               <span className="truncate">{label}</span>
+              {tab.dirty && (
+                <span
+                  role="img"
+                  aria-label={t("Unsaved changes")}
+                  title={t("Unsaved changes")}
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                />
+              )}
               <button
                 type="button"
                 aria-label={t("Close {{title}}", { title: label })}

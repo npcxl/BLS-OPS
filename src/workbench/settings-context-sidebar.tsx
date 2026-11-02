@@ -18,12 +18,14 @@ import {
 import { emptyCredential, useDomainStore } from "@/stores/domain-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
+import { useDensityMode } from "@/hooks/use-density";
 import { useWindowMaterial, useWindowTransparency } from "@/lib/window-material";
 import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
 import { AiProviderSettings } from "./settings-ai";
 import { EmptyRow, Group, ListGroup, Switch } from "./settings-parts";
+import { SegmentedControl } from "./page-layout";
 import { setInspectionMode, useInspectionMode } from "@/stores/inspection-store";
 import { TerminalSettingsGroup } from "./settings-terminal";
 import { BackupSettingsGroup } from "./settings-backup";
@@ -126,6 +128,7 @@ export function SettingsContextSidebar() {
   const appInfo = useDomainStore((s) => s.appInfo);
 
   const [themeMode, setThemeMode] = useThemeMode();
+  const [density, setDensity] = useDensityMode();
   const [transparency, setTransparency] = useWindowTransparency();
   const material = useWindowMaterial();
   // 系统层面的原因（版本过低 / 系统关闭透明效果）不归用户开关管：开关要灰掉。
@@ -174,38 +177,49 @@ export function SettingsContextSidebar() {
   };
 
   return (
-    <div className="flex flex-col gap-5 p-3 pb-6">
+    <div className="flex flex-col gap-5">
       <Group title={t("Appearance")}>
         <ListGroup>
-          <div className="flex items-center justify-between gap-3 px-3 py-2">
+          <div className="page-form-row">
             <span className="shrink-0 text-12 text-fg">{t("Theme")}</span>
-            <div className="flex flex-1 justify-end rounded-[8px] border border-line bg-surface-2 p-0.5">
-              {THEME_OPTIONS.map((option) => {
+            <SegmentedControl
+              value={themeMode}
+              onChange={setThemeMode}
+              label={t("Theme")}
+              items={THEME_OPTIONS.map((option) => {
                 const Icon = option.icon;
-                const active = themeMode === option.id;
-                return (
-                  <Tooltip key={option.id} label={t(option.labelKey)}>
-                    <button
-                      type="button"
-                      aria-label={t(option.labelKey)}
-                      className={cn(
-                        "flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[6px] text-11 transition-colors",
-                        active ? "bg-surface-active text-fg shadow-sm" : "text-fg-muted hover:text-fg",
-                      )}
-                      onClick={() => setThemeMode(option.id)}
-                    >
+                return {
+                  id: option.id,
+                  label: (
+                    <>
                       <Icon size={13} strokeWidth={1.75} className="shrink-0" />
                       <span className="truncate">{t(option.shortKey)}</span>
-                    </button>
-                  </Tooltip>
-                );
+                    </>
+                  ),
+                };
               })}
+            />
+          </div>
+          {/* 密度是全局变体：只改 --page-* 令牌，页面不各自写间距。 */}
+          <div className="page-form-row">
+            <div className="min-w-0">
+              <div className="text-12 text-fg">{t("Compact mode")}</div>
+              <div className="page-form-help">{t("Tighter rows, toolbars and section spacing.")}</div>
             </div>
+            <SegmentedControl
+              value={density}
+              onChange={setDensity}
+              label={t("Density")}
+              items={[
+                { id: "comfortable", label: t("Comfortable") },
+                { id: "compact", label: t("Compact") },
+              ]}
+            />
           </div>
           {/* 窗口透明效果：原生 Acrylic 的开头。关掉时外壳走实色回退
               （`[data-material="solid"]`），不是因为"不支持"，而是用户选择。
               系统版本过低或系统关闭透明效果时，这一项会显示为不可用并说明原因。 */}
-          <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-2">
+          <div className="page-form-row">
             <div className="min-w-0">
               <div className="text-12 text-fg">{t("Window transparency")}</div>
               <div className="text-11 leading-relaxed text-fg-subtle">
@@ -223,7 +237,7 @@ export function SettingsContextSidebar() {
           </div>
           {/* 语言：切换即时生效（i18next 事件广播 → 全部订阅组件重渲染），
               无需重启。选择器里用各自语言的名字展示，方便任何用户找到它。 */}
-          <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-2">
+          <div className="page-form-row">
             <span className="shrink-0 text-12 text-fg">{t("Language")}</span>
             <Select
               className="max-w-40"
@@ -243,7 +257,7 @@ export function SettingsContextSidebar() {
         hint={t("Read-only inside the app.")}
       >
         <ListGroup>
-          <div className="flex items-center justify-between gap-3 px-3 py-2">
+          <div className="page-form-row">
             <div className="min-w-0">
               <div className="text-12 text-fg">{t("Inspection mode (read-only)")}</div>
               <div className="text-11 leading-relaxed text-fg-subtle">
@@ -390,7 +404,7 @@ export function SettingsContextSidebar() {
                 [t("Database"), appInfo.db_path],
               ] as [string, string][]
             ).map(([key, value]) => (
-              <div key={key} className="flex items-center justify-between gap-3 px-3 py-2">
+              <div key={key} className="page-form-row">
                 <span className="shrink-0 text-11 text-fg-muted">{key}</span>
                 <span className="min-w-0 flex-1 truncate text-right text-11 text-fg">{value}</span>
               </div>

@@ -9,13 +9,25 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, Play, RotateCw, Square, SquareCheck, SquareMinus } from "@/components/icons";
+import {
+  Copy,
+  Info,
+  Play,
+  RefreshCw,
+  RotateCw,
+  Square,
+  SquareCheck,
+  SquareMinus,
+} from "@/components/icons";
 import { copyText } from "@/lib/clipboard";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
+import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/cn";
+import { PageToolbarDivider, SegmentedControl } from "@/workbench/page-layout";
 import { servicesChangedEvent } from "@/lib/events";
 import { opsApi, type ServiceActionName, type ServiceUnit } from "@/api/ops-api";
 import { useActionError } from "@/hooks/use-action-error";
@@ -176,7 +188,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
     menu.onContextMenu(() => {
       const running = unit.active === "active" && unit.sub === "running";
       return [
-        { id: "detail", label: t("View details"), onSelect: () => void showDetail(unit) },
+        { id: "detail", label: t("View details"), icon: Info, onSelect: () => void showDetail(unit) },
         { id: "sep1", separator: true },
         {
           id: "start",
@@ -204,6 +216,7 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
         {
           id: "reload",
           label: t("Reload configuration"),
+          icon: RefreshCw,
           disabled: !running || busyUnit !== null,
           onSelect: () => void runAction(unit, "reload"),
         },
@@ -235,29 +248,20 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
       toolbar={
         <>
           <RefreshButton busy={loading} onClick={() => void load()} />
-          <div className="mx-1 h-4 w-px bg-line" />
+          <PageToolbarDivider />
           <ToolbarInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder={t("Search services…")}
+            aria-label={t("Search services…")}
             width="w-40"
           />
-          <div className="mx-1 h-4 w-px bg-line" />
-          {FILTERS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setFilter(item.id)}
-              className={cn(
-                "h-[24px] rounded-[6px] px-2 text-11 transition-colors",
-                filter === item.id
-                  ? "bg-tab-active text-fg"
-                  : "text-fg-muted hover:bg-tab-hover hover:text-fg",
-              )}
-            >
-              {t(item.label)}
-            </button>
-          ))}
+          <SegmentedControl
+            value={filter}
+            onChange={setFilter}
+            label={t("Filter services")}
+            items={FILTERS.map((item) => ({ id: item.id, label: t(item.label) }))}
+          />
           <ToolbarStatus>
             <ToolbarStat>
               {loading ? t("Reading…") : t("{{visible}} / {{total}} services", { visible: visible.length, total: units.length })}
@@ -267,22 +271,41 @@ export function ServiceManagerView({ tab }: { tab: WorkspaceTab }) {
       }
     >
       {error ? (
-        <ErrorState
-          error={error}
-          title={errorTitle}
-          compact
-          onRetry={retry}
-          className="mx-3 mt-3 rounded-[8px] border border-line/70 bg-surface-2/40"
-        />
+        <div className="page-content">
+          <ErrorState error={error} title={errorTitle} compact onRetry={retry} />
+        </div>
       ) : null}
 
-      {!loading && !error && units.length === 0 ? (
-        <ModuleEmpty
-          title={t("No services found")}
-          hint={t("This machine may not be a systemd system, or the current user cannot list units.")}
-        />
+      {loading && units.length === 0 ? (
+        <div className="page-content">
+          <LoadingState label={t("Reading…")} />
+        </div>
+      ) : !loading && !error && units.length === 0 ? (
+        <div className="page-content page-content--reading">
+          <ModuleEmpty
+            title={t("No services found")}
+            hint={t("This machine may not be a systemd system, or the current user cannot list units.")}
+          />
+        </div>
       ) : visible.length === 0 && !loading ? (
-        <ModuleEmpty title={t("No matching services")} hint={t("Try different filters or clear the search.")} />
+        <div className="page-content page-content--reading">
+          <ModuleEmpty
+            title={t("No matching services")}
+            hint={t("Try different filters or clear the search.")}
+            action={
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  setFilter("all");
+                  setSearch("");
+                }}
+              >
+                {t("Clear filters")}
+              </Button>
+            }
+          />
+        </div>
       ) : (
         <ServiceTable
           units={visible}
@@ -345,40 +368,40 @@ function ServiceTable({
 }) {
   const { t } = useTranslation();
   return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
+    <table className="page-table text-11">
+      <thead>
         <tr>
-          <th className="w-[34px] px-3 py-1.5" />
-          <th className="px-2 py-1.5 text-left font-semibold">{t("Service unit")}</th>
-          <th className="w-[150px] px-2 py-1.5 text-left font-semibold">{t("Run state")}</th>
-          <th className="w-[92px] px-2 py-1.5 text-left font-semibold">{t("Autostart")}</th>
-          <th className="px-3 py-1.5 text-left font-semibold">{t("Description")}</th>
+          <th className="w-[34px]" aria-label={t("Run state")} />
+          <th>{t("Service unit")}</th>
+          <th className="w-[150px]">{t("Run state")}</th>
+          <th className="w-[92px]">{t("Autostart")}</th>
+          <th>{t("Description")}</th>
         </tr>
       </thead>
       <tbody>
         {units.map((unit) => (
           <tr
             key={unit.unit}
-            className="cursor-default border-t border-line hover:bg-surface-hover"
+            className="cursor-default border-t border-line/70"
             onContextMenu={onRowContextMenu(unit)}
             onDoubleClick={() => onDetail(unit)}
           >
-            <td className="px-3 py-1.5">
+            <td>
               <span className={cn("block h-[6px] w-[6px] rounded-full", activeTone(unit))} />
             </td>
-            <td className="px-2 py-1.5 font-mono text-fg">
+            <td className="font-mono text-fg">
               {unit.unit}
               {busyUnit === unit.unit && (
                 <RotateCw size={10} className="ml-1.5 inline animate-spin text-accent" />
               )}
             </td>
-            <td className="px-2 py-1.5">
+            <td>
               <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-10", unit.active === "active" && unit.sub === "running" ? "bg-success/12 text-success" : unit.active === "failed" || unit.sub === "failed" ? "bg-danger/12 text-danger" : "bg-surface-3 text-fg-subtle")}>
                 {activeLabel(unit, t)}
               </span>
             </td>
-            <td className="px-2 py-1.5 text-fg-muted">{enabledLabel(unit, t)}</td>
-            <td className="max-w-0 truncate px-3 py-1.5 text-fg-subtle" title={unit.description}>
+            <td className="text-fg-muted">{enabledLabel(unit, t)}</td>
+            <td className="max-w-0 truncate text-fg-subtle" title={unit.description}>
               {unit.description}
             </td>
           </tr>
@@ -410,26 +433,27 @@ function DetailSheet({
   };
 
   return (
-    <div className="absolute inset-0 z-40 flex flex-col bg-app/80 backdrop-blur-sm">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        <span className="text-12 font-semibold text-fg">{unit}</span>
-        <span className="text-11 text-fg-subtle">systemctl status</span>
-        <div className="ml-auto flex items-center gap-1">
+    <Sheet
+      open
+      title={unit}
+      description={t("Live systemctl status for this unit")}
+      onClose={onClose}
+      width={640}
+      actions={
+        <div className="page-actions">
           <Button variant="ghost" size="xs" onClick={() => void copyDetail()}>
             <Copy size={12} />
             {copied ? t("Copied") : t("Copy details")}
           </Button>
           <Button variant="ghost" size="xs" onClick={onReload}>
-            {t("Refresh list")}
-          </Button>
-          <Button variant="ghost" size="xs" onClick={onClose}>
-            {t("Close")}
+            {t("Refresh")}
           </Button>
         </div>
-      </div>
-      <pre className="flex-1 overflow-auto whitespace-pre-wrap p-3 font-mono text-11 leading-relaxed text-fg-muted">
+      }
+    >
+      <pre className="whitespace-pre-wrap px-4 py-3 font-mono text-11 leading-relaxed text-fg-muted">
         {text || t("(no output)")}
       </pre>
-    </div>
+    </Sheet>
   );
 }

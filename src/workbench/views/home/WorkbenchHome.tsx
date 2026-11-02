@@ -23,7 +23,10 @@ import {
   Terminal as TerminalIcon,
   WorldIcon,
 } from "@/components/icons";
+import "./home.css";
+import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { PageScroll, PageSurface } from "@/workbench/page-layout";
 import type { DatabaseProfile } from "@/api/types/database";
 import type { ServerRecord } from "@/api/ops-api";
 import { emptyServer, useDomainStore } from "@/stores/domain-store";
@@ -277,26 +280,30 @@ export function WorkbenchHome() {
   ];
 
   return (
-    <div className="h-full overflow-y-auto bg-surface-1" data-selectable>
-      <div className="mx-auto flex max-w-[1000px] flex-col gap-6 p-7">
-        <div>
-          <h1 className="text-[24px] font-semibold tracking-[-0.01em] text-fg">{t("Workbench")}</h1>
-          <p className="mt-1 text-12 text-fg-muted">{t("Servers, databases and projects in one place")}</p>
-        </div>
+    <PageSurface className="workbench-home" data-selectable>
+      <PageScroll width="overview" padded={false}>
+      <div className="home-content">
+        <header className="home-hero">
+          <div className="home-hero-copy">
+            <h1 className="page-title">{t("Workbench")}</h1>
+            <p className="page-description">{t("Servers, databases and projects in one place")}</p>
+            <div className="page-actions home-hero-actions">
+              <Button variant="primary" size="sm" onClick={() => setQuickConnectOpen(true)}>
+                <PlugZap size={14} />{t("Quick connect")}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={openNewConnectionTab}>
+                <DatabaseIcon size={14} />{t("新建连接")}
+              </Button>
+            </div>
+          </div>
+        </header>
 
-        <section className="flex flex-col gap-2.5">
-          <SectionHeading
-            title={t("Overview")}
-            actions={
-              <span className="hidden max-w-[62%] truncate text-11 text-fg-subtle md:block">
-                {t("Live figures come from the current workspace; everything else is read from local data.")}
-              </span>
-            }
-          />
+        <section className="page-section">
+          <SectionHeading title={t("Overview")} />
           <OverviewSection stats={overview} liveLabel={t("Live")} />
         </section>
 
-        <section className="flex flex-col gap-2.5">
+        <section className="page-section">
           <SectionHeading title={t("Quick actions")} />
           <QuickActions actions={quickActions} />
         </section>
@@ -350,6 +357,7 @@ export function WorkbenchHome() {
           onManage={() => openModuleTab("ssh")}
         />
       </div>
+      </PageScroll>
 
       {quickConnectOpen && (
         <QuickConnectDialog onClose={() => setQuickConnectOpen(false)} onConnect={connectQuick} />
@@ -371,6 +379,6 @@ export function WorkbenchHome() {
           onConfirm={() => void deleteServer(deleteTarget.id).then(() => setDeleteTarget(null))}
         />
       )}
-    </div>
+    </PageSurface>
   );
 }

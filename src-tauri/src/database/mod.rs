@@ -53,6 +53,8 @@ pub mod redis_driver;
 pub mod runtime;
 pub mod schema_ops;
 pub mod session;
+pub mod sqlite_catalog;
+pub mod sqlite_table;
 pub mod table;
 pub mod table_ops;
 pub mod tunnel;

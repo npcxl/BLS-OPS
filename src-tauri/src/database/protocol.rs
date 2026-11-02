@@ -79,6 +79,8 @@ impl TransactionState {
 pub enum CancelHandle {
     /// MySQL 协议：服务端 thread id，取消走另一条控制连接上的 `KILL QUERY`。
     MySqlThread { thread_id: u32 },
+    /// SQLite：驱动持有 interrupt handle，令牌只表示"支持取消"。
+    Sqlite,
     /// 驱动没有实现服务端取消。必须带原因，取消按钮据此禁用并显示说明。
     Unsupported { reason: &'static str },
 }
@@ -98,7 +100,7 @@ impl CancelHandle {
 
     pub fn reason(&self) -> Option<&'static str> {
         match self {
-            Self::MySqlThread { .. } => None,
+            Self::MySqlThread { .. } | Self::Sqlite => None,
             Self::Unsupported { reason } => Some(reason),
         }
     }
@@ -107,7 +109,7 @@ impl CancelHandle {
     pub fn mysql_thread_id(&self) -> Option<u32> {
         match self {
             Self::MySqlThread { thread_id } => Some(*thread_id),
-            Self::Unsupported { .. } => None,
+            Self::Sqlite | Self::Unsupported { .. } => None,
         }
     }
 }

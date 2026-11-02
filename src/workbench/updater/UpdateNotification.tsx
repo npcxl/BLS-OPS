@@ -6,6 +6,8 @@
  * manual check that finds nothing new is reported inside the settings page
  * instead of as a popup.
  */
+import { useState } from "react";
+import { ReleaseNotesDialog } from "./ReleaseNotesDialog";
 import { useTranslation } from "react-i18next";
 import { X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -16,6 +18,7 @@ import { useGuardedUpdate } from "./use-guarded-update";
 
 export function UpdateNotification() {
   const { t } = useTranslation();
+  const [notesOpen, setNotesOpen] = useState(false);
   const { remindLater, dismissBanner } = useUpdaterActions();
   const guard = useGuardedUpdate();
 
@@ -48,7 +51,8 @@ export function UpdateNotification() {
           </p>
         )}
 
-        <div className="flex items-center justify-end gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <Button variant="ghost" size="sm" onClick={() => setNotesOpen(true)}>{t("Release notes")}</Button>
           <Button variant="ghost" size="sm" onClick={remindLater}>
             {t("Remind me later")}
           </Button>
@@ -58,6 +62,7 @@ export function UpdateNotification() {
         </div>
       </div>
 
+      <ReleaseNotesDialog open={notesOpen} onClose={() => setNotesOpen(false)} release={release} />
       <UpdateRestartDialog
         open={guard.pendingAction !== null}
         action={guard.pendingAction === "restart" ? "restart" : "install"}

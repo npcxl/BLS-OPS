@@ -15,7 +15,9 @@ use std::time::Duration;
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
+use super::capability::{ReadOnlyMode, MYSQL_STANDARD_PROFILE};
 use super::driver::{self, EndpointPlan};
+use super::engine_registry;
 use super::export::ExportRegistry;
 use super::metadata::MetadataCache;
 use super::model::{ConnectionTestResult, DbErrorInfo, DbSessionInfo, ProfileRuntimeStatus};
@@ -197,11 +199,52 @@ impl DatabaseManager {
         let session_epoch = self.session_epoch(session_id).await;
 
         let runtime = self.runtime(plan).await?;
+
+        // SQLite：本地文件会话，没有 MySQL 连接/连接池/隧道。
+        if let Some(worker) = runtime.sqlite() {
+            let entry = Arc::new(SessionEntry::new_sqlite(
+                session_id.to_string(),
+                profile_id.clone(),
+                runtime.generation,
+                worker.clone(),
+                runtime.endpoint.read_only,
+            ));
+            if self.current_epoch(&profile_id).await != epoch
+                || self.session_epoch(session_id).await != session_epoch
+                || !self.is_current_runtime(&runtime).await
+            {
+                entry.close().await;
+                return Err(DbErrorInfo::new(
+                    "config",
+                    "建立会话期间连接已关闭或配置已变更，请重试",
+                ));
+            }
+            if let Some(old) = self.sessions.remove(session_id).await {
+                self.queries.release_session(session_id).await;
+                old.close().await;
+            }
+            self.sessions.insert(entry.clone()).await;
+            if self.current_epoch(&profile_id).await != epoch
+                || self.session_epoch(session_id).await != session_epoch
+                || !self.is_current_runtime(&runtime).await
+            {
+                if self.sessions.remove_if_same(&entry).await.is_some() {
+                    entry.close().await;
+                }
+                return Err(DbErrorInfo::new(
+                    "config",
+                    "会话关闭期间创建完成，已拒绝重新注册；请重试",
+                ));
+            }
+            return Ok(entry.info().await);
+        }
+
         let timeout = Duration::from_millis(runtime.endpoint.profile.connect_timeout_ms);
         let opts = driver::build_opts(&runtime.endpoint, false)?;
 
         let mut conn = driver::connect_once(opts, timeout).await?;
-        driver::apply_session_settings(&mut conn, runtime.endpoint.read_only).await?;
+        let product = runtime.mysql_product();
+        driver::apply_session_settings(&mut conn, runtime.endpoint.read_only, product).await?;
 
         let version = driver::server_version(&mut conn).await;
         let tls = driver::read_tls_status(&mut conn).await;
@@ -215,6 +258,8 @@ impl DatabaseManager {
             version,
             tls,
             runtime.endpoint.read_only,
+            // 只有"会话级只读事务"才算服务器保障；Doris/StarRocks 是仅客户端拦截。
+            runtime.endpoint.read_only && product.read_only == ReadOnlyMode::ServerTransaction,
         ));
         entry.set_current_database(current_database).await;
 
@@ -302,6 +347,62 @@ impl DatabaseManager {
     pub async fn test_connection(&self, plan: EndpointPlan) -> ConnectionTestResult {
         let started = std::time::Instant::now();
         let read_only = plan.profile.read_only;
+
+        // SQLite：直接打开文件验证，不走隧道/TCP/连接池。
+        if plan.profile.engine.eq_ignore_ascii_case("sqlite") {
+            let path = plan.profile.engine_options.path.clone().unwrap_or_default();
+            let worker = match super::driver::SqliteWorker::open(
+                std::path::Path::new(path.trim()),
+                read_only,
+            ) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    return ConnectionTestResult {
+                        ok: false,
+                        stage: error.stage.clone(),
+                        error: Some(error),
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        server_version: None,
+                        connection: None,
+                        tls: None,
+                        tunnel_local_port: None,
+                        read_only,
+                    }
+                }
+            };
+            let ping = worker.query("SELECT 1", 1, 64).await;
+            let version = Some(format!("SQLite {}", worker.version()));
+            let identity = Some(super::protocol::ConnectionIdentity::named(format!(
+                "file:{}",
+                worker.path().display()
+            )));
+            worker.close().await;
+            return match ping {
+                Ok(_) => ConnectionTestResult {
+                    ok: true,
+                    stage: "ready".to_string(),
+                    error: None,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    server_version: version,
+                    connection: identity,
+                    tls: None,
+                    tunnel_local_port: None,
+                    read_only,
+                },
+                Err(error) => ConnectionTestResult {
+                    ok: false,
+                    stage: error.stage.clone(),
+                    error: Some(error),
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    server_version: version,
+                    connection: identity,
+                    tls: None,
+                    tunnel_local_port: None,
+                    read_only,
+                },
+            };
+        }
+
         let timeout = Duration::from_millis(plan.profile.connect_timeout_ms);
 
         let endpoint = match driver::resolve_plan(&self.tunnels, plan).await {
@@ -355,7 +456,11 @@ impl DatabaseManager {
             }
         };
 
-        if let Err(error) = driver::apply_session_settings(&mut conn, endpoint.read_only).await {
+        let product = engine_registry::mysql_product(&endpoint.profile.engine)
+            .unwrap_or(&MYSQL_STANDARD_PROFILE);
+        if let Err(error) =
+            driver::apply_session_settings(&mut conn, endpoint.read_only, product).await
+        {
             let tunnel_local_port = endpoint.tunnel_local_port();
             let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
             return ConnectionTestResult {

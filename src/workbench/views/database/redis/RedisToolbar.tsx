@@ -73,7 +73,7 @@ export function RedisToolbar({
   const { t } = useTranslation();
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-line px-2">
+    <div className="page-panel-header">
       {/*
         这里**不再放 db 下拉**：切库是左侧资产树的职责（连接 → db 节点）。
         重复一个下拉只会让"当前库"出现两个真相源；这里只显示上下文。

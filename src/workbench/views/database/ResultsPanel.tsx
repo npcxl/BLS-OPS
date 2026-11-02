@@ -18,7 +18,10 @@ import { AlertTriangle, Copy, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingState } from "@/components/ui/loading";
 import { Modal } from "@/components/ui/modal";
+import { PageNotice } from "@/workbench/page-layout";
 import type { DbColumn, DbValue } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
@@ -166,17 +169,10 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   if (!tab) return null;
 
   if (results.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-12 text-fg-subtle">
-        {tab.runState === "running" ? (
-          <>
-            <Loader2 size={16} className="animate-spin text-accent" />
-            {t("正在执行…")}
-          </>
-        ) : (
-          <span>{t("这次执行没有返回结果")}</span>
-        )}
-      </div>
+    return tab.runState === "running" ? (
+      <LoadingState className="h-full" label={t("正在执行…")} />
+    ) : (
+      <EmptyState className="h-full" title={t("这次执行没有返回结果")} />
     );
   }
 
@@ -193,12 +189,22 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
     void runCopy("tsv");
   };
 
+  // One warning slot: truncation, cache state and local notices never stack.
+  const warning =
+    notice ??
+    tab.cacheWarning ??
+    (tab.truncated && tab.truncationReason
+      ? t("结果不完整：{{reason}}。请增加过滤条件或分页，不要把它当作完整结果。", {
+          reason: tab.truncationReason,
+        })
+      : null);
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div
         role="tablist"
         aria-label={t("执行结果")}
-        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-1"
+        className="page-tabs"
       >
         <button
           type="button"
@@ -212,13 +218,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
               moveResultFocus(event.currentTarget, event.key);
             }
           }}
-          className={cn(
-            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
-            view === "messages"
-              ? "bg-surface-3 text-fg"
-              : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
-            "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
-          )}
+          className="shrink-0"
         >
           {t("消息")}
         </button>
@@ -234,17 +234,11 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
               moveResultFocus(event.currentTarget, event.key);
             }
           }}
-          className={cn(
-            "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
-            view === "summary"
-              ? "bg-surface-3 text-fg"
-              : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
-            "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
-          )}
+          className="shrink-0"
         >
           {t("摘要")}
         </button>
-        <span className="mx-0.5 h-4 w-px shrink-0 bg-line" />
+        <span aria-hidden="true" className="page-tabs__divider" />
         {results.map((result) => {
           const isActive = view === "result" && result.key === (active?.key ?? "");
           return (
@@ -264,13 +258,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
                   moveResultFocus(event.currentTarget, event.key);
                 }
               }}
-              className={cn(
-                "flex h-[28px] shrink-0 items-center gap-1 rounded-[6px] px-2.5 text-12 outline-none",
-                isActive
-                  ? "bg-surface-3 text-fg"
-                  : "text-fg-subtle hover:bg-surface-hover hover:text-fg",
-                "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
-              )}
+              className="shrink-0"
               title={result.statement}
             >
               {result.error && <AlertTriangle size={9} className="text-danger" />}
@@ -295,7 +283,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
           );
         })}
 
-        <span className="ml-auto flex shrink-0 items-center gap-2 pr-1 text-11 text-fg-subtle">
+        <span className="page-tabs__trailing text-11 text-fg-subtle">
           {tab.runState === "running" && (
             <span className="flex items-center gap-1 text-accent">
               <Loader2 size={9} className="animate-spin" />
@@ -331,27 +319,19 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
         </span>
       </div>
 
-      {tab.cacheWarning && (
-        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
-          {tab.cacheWarning}
-        </div>
-      )}
-
-      {tab.truncated && tab.truncationReason && (
-        <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
-          {t("结果不完整：{{reason}}。请增加过滤条件或分页，不要把它当作完整结果。", {
-            reason: tab.truncationReason,
-          })}
-        </div>
-      )}
-
-      {notice && (
-        <div className="flex items-center gap-2 border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
-          <span className="min-w-0 flex-1">{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label={t("关闭")}>
-            ×
-          </button>
-        </div>
+      {warning && (
+        <PageNotice
+          tone="warning"
+          action={
+            notice ? (
+              <Button variant="ghost" size="xs" aria-label={t("关闭")} onClick={() => setNotice(null)}>
+                {t("关闭")}
+              </Button>
+            ) : undefined
+          }
+        >
+          {warning}
+        </PageNotice>
       )}
 
       {view === "messages" ? (

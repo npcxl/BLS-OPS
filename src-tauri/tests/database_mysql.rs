@@ -171,9 +171,13 @@ async fn runtime_for(conn: &rusqlite::Connection) -> (Arc<ProfileRuntime>, Arc<S
     let mut session_conn = driver::connect_once(opts, Duration::from_secs(10))
         .await
         .expect("session conn");
-    driver::apply_session_settings(&mut session_conn, false)
-        .await
-        .expect("session settings");
+    driver::apply_session_settings(
+        &mut session_conn,
+        false,
+        &ops_workbench_lib::database::capability::MYSQL_STANDARD_PROFILE,
+    )
+    .await
+    .expect("session settings");
     let tls = driver::read_tls_status(&mut session_conn).await;
     let session = Arc::new(SessionEntry::new(
         "test-session".to_string(),
@@ -182,6 +186,7 @@ async fn runtime_for(conn: &rusqlite::Connection) -> (Arc<ProfileRuntime>, Arc<S
         session_conn,
         None,
         tls,
+        false,
         false,
     ));
     (runtime, session)

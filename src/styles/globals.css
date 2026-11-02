@@ -5,6 +5,7 @@
 
 @import "tailwindcss";
 @import "./tokens.css";
+@import "./pages.css";
 
 @layer base {
 

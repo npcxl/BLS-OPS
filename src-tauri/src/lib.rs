@@ -140,6 +140,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
+            commands::latest_release_notes,
             // 窗口材质：light/dark 切换时同步 Acrylic 与原生主题
             window_material::app_window_material,
             // 快捷键独立窗口

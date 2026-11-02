@@ -1,9 +1,8 @@
 /**
- * Shared building blocks of the settings sidebar.
+ * Shared building blocks of the settings page.
  *
- * Extracted verbatim from `settings-context-sidebar.tsx` so new sections
- * (P5.1 应用更新) can reuse the exact same macOS-style grouped list instead of
- * growing a second, slightly different look.
+ * 统一使用页面骨架的「设置分组」样式（`.page-form-*`）：分组标题、说明、
+ * 分组列表与行高只有一处定义，新增设置项不再各写一套圆角/内边距。
  */
 import { cn } from "@/lib/cn";
 
@@ -19,35 +18,35 @@ export function Group({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1.5">
-      <div className="flex h-6 items-center justify-between px-0.5">
-        <span className="text-11 font-semibold uppercase tracking-[0.08em] text-fg-subtle">{title}</span>
+    <section className="page-form-group">
+      <div className="page-form-heading">
+        <span>{title}</span>
         {action}
       </div>
-      {hint && <p className="px-0.5 text-11 leading-relaxed text-fg-subtle">{hint}</p>}
+      {hint && <p className="page-form-help px-0.5">{hint}</p>}
       {children}
     </section>
   );
 }
 
-/** macOS-style grouped inset list — a rounded panel whose rows are divided. */
+/** Grouped inset list — one surface, rows divided by a hairline. */
 export function ListGroup({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[10px] border border-line bg-surface-1/70 shadow-[inset_0_1px_0_rgb(255_255_255/0.4)]">
+    <div className="page-form-list">
       <div className="divide-y divide-line/60">{children}</div>
     </div>
   );
 }
 
 export function EmptyRow({ children }: { children: React.ReactNode }) {
-  return <p className="px-3 py-3 text-11 text-fg-subtle">{children}</p>;
+  return <p className="page-form-row justify-center text-11 text-fg-subtle">{children}</p>;
 }
 
 /** A single `label / value` row. */
 export function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-3 py-2">
-      <span className="shrink-0 text-11 text-fg-muted">{label}</span>
+    <div className="page-form-row">
+      <span className="page-form-label shrink-0 text-fg-muted">{label}</span>
       <span className="min-w-0 flex-1 truncate text-right text-11 text-fg">{value}</span>
     </div>
   );

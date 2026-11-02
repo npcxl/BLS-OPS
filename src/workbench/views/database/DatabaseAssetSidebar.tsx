@@ -8,12 +8,17 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  CaseSensitive,
   ChevronRight,
   ChevronsLeft,
+  Copy,
   Database as DatabaseIcon,
   Eye,
   FileCode2,
+  FilePlus2,
+  Info,
   KeyRound,
+  ListTodo,
   Loader2,
   Pencil,
   PlugZap,
@@ -22,6 +27,7 @@ import {
   Table2,
   Trash2,
   TriangleAlert,
+  Unplug,
   X,
 } from "@/components/icons";
 import type {
@@ -745,6 +751,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "open",
         label: t("打开连接"),
+        icon: PlugZap,
         onSelect: () => {
           open(profile);
           if (isRedis) void redisConnect(profile.id);
@@ -756,6 +763,7 @@ export function DatabaseAssetSidebar() {
           {
             id: "reconnect",
             label: t("重新连接"),
+            icon: RefreshCw,
             onSelect: () => {
               // Redis 的 db_redis_connect 会复用已有运行时，重连必须先关掉旧的。
               if (isRedis) void redisReconnect(profile.id);
@@ -766,6 +774,7 @@ export function DatabaseAssetSidebar() {
           {
             id: "close",
             label: t("关闭连接"),
+            icon: Unplug,
             danger: true,
             onSelect: () => setDisconnectTarget(profile),
           },
@@ -779,6 +788,7 @@ export function DatabaseAssetSidebar() {
             {
               id: "info",
               label: t("连接信息"),
+              icon: Info,
               onSelect: () => showConnectionInfo(profile.id),
             },
           ]),
@@ -789,6 +799,7 @@ export function DatabaseAssetSidebar() {
             {
               id: "new-query",
               label: t("新建查询"),
+              icon: FilePlus2,
               onSelect: () => {
                 open(profile);
                 newQuery({
@@ -804,6 +815,7 @@ export function DatabaseAssetSidebar() {
             {
               id: "new-database",
               label: t("新建数据库"),
+              icon: DatabaseIcon,
               onSelect: () => {
                 open(profile);
                 setSchemaDialog({
@@ -817,6 +829,7 @@ export function DatabaseAssetSidebar() {
             {
               id: "refresh",
               label: t("刷新数据库"),
+              icon: RefreshCw,
               onSelect: () => {
                 open(profile);
                 void refreshDatabases(profile.id);
@@ -827,17 +840,20 @@ export function DatabaseAssetSidebar() {
       {
         id: "edit",
         label: t("编辑连接"),
+        icon: Pencil,
         onSelect: () => setDialog({ mode: "edit", profile }),
       },
       {
         id: "copy-name",
         label: t("复制连接名"),
+        icon: Copy,
         onSelect: () => void copyText(profile.name),
       },
       { separator: true },
       {
         id: "delete",
         label: t("删除连接"),
+        icon: Trash2,
         danger: true,
         onSelect: () => setDeleteTarget(profile),
       },
@@ -854,17 +870,20 @@ export function DatabaseAssetSidebar() {
     {
       id: "copy-field-name",
       label: t("复制字段名"),
+      icon: Copy,
       onSelect: () => void copyText(column.name),
     },
     {
       id: "copy-field-type",
       label: t("复制字段类型"),
+      icon: CaseSensitive,
       onSelect: () => void copyText(column.column_type),
     },
     { separator: true as const },
     {
       id: "field-info",
       label: t("查看字段信息"),
+      icon: Info,
       onSelect: () => {
         // 字段卡片挂在数据库标签上，先确保那个标签在。
         open(profile);
@@ -882,12 +901,14 @@ export function DatabaseAssetSidebar() {
     {
       id: "open",
       label: t("打开查询"),
+      icon: FileCode2,
       onSelect: () => openSavedQuery(query),
     },
     { separator: true },
     {
       id: "delete",
       label: t("删除保存的查询"),
+      icon: Trash2,
       danger: true,
       onSelect: () => setDeleteQueryTarget(query),
     },
@@ -903,6 +924,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "open-close",
         label: opened ? t("关闭数据库") : t("打开数据库"),
+        icon: DatabaseIcon,
         onSelect: () => {
           if (opened) {
             closeDatabase(profile.id, database.name);
@@ -915,6 +937,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "objects",
         label: t("打开对象列表"),
+        icon: ListTodo,
         onSelect: () => {
           open(profile);
           openDatabaseObjects({
@@ -927,6 +950,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "new-query",
         label: t("新建查询"),
+        icon: FilePlus2,
         onSelect: () => {
           open(profile);
           newQuery({
@@ -939,6 +963,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "new-table",
         label: t("新建表"),
+        icon: Table2,
         onSelect: () => {
           open(profile);
           void openDatabase(profile.id, database.name);
@@ -952,6 +977,7 @@ export function DatabaseAssetSidebar() {
       {
         id: "new-view",
         label: t("新建视图"),
+        icon: Eye,
         onSelect: () => {
           open(profile);
           void openDatabase(profile.id, database.name);
@@ -966,17 +992,20 @@ export function DatabaseAssetSidebar() {
       {
         id: "refresh",
         label: t("刷新表列表"),
+        icon: RefreshCw,
         onSelect: () => void refreshTables(profile.id, database.name),
       },
       { separator: true },
       {
         id: "copy-name",
         label: t("复制库名"),
+        icon: Copy,
         onSelect: () => void copyText(database.name),
       },
       {
         id: "drop-database",
         label: t("删除数据库"),
+        icon: Trash2,
         danger: true,
         onSelect: () => {
           setSchemaDialog({
@@ -1160,11 +1189,13 @@ export function DatabaseAssetSidebar() {
                             {
                               id: "open",
                               label: t("打开 db {{index}}", { index }),
+                              icon: DatabaseIcon,
                               onSelect: openDb,
                             },
                             {
                               id: "copy",
                               label: t("复制库名"),
+                              icon: Copy,
                               onSelect: () => void copyText(`db ${index}`),
                             },
                           ])}

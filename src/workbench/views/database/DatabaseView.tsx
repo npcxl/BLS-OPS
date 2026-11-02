@@ -11,15 +11,19 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Database as DatabaseIcon,
-  Loader2,
-  TriangleAlert,
-  X,
-} from "@/components/icons";
+import { Database as DatabaseIcon, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { LoadingState } from "@/components/ui/loading";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
+import {
+  PageInspector,
+  PageNotice,
+  PageSurface,
+  PageWorkspace,
+} from "@/workbench/page-layout";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import {
@@ -453,25 +457,32 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
 
   if (!profileId) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
-        <DatabaseIcon size={26} className="text-fg-subtle" />
-        <p className="text-13 text-fg">{t("从左侧选择一个数据库连接")}</p>
-        <p className="max-w-sm text-center text-11 leading-relaxed text-fg-subtle">
-          {t("双击左侧表打开数据页；每个连接的工作项和查询都独立保存。")}
-        </p>
-      </div>
+      <PageSurface>
+        <PageWorkspace className="items-center justify-center">
+          <EmptyState
+            icon={<DatabaseIcon size={18} strokeWidth={1.5} />}
+            title={t("从左侧选择一个数据库连接")}
+            description={t("双击左侧表打开数据页；每个连接的工作项和查询都独立保存。")}
+          />
+        </PageWorkspace>
+      </PageSurface>
     );
   }
 
   if (!profile) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface-1 px-6">
-        <TriangleAlert size={20} className="text-danger" />
-        <p className="text-12 text-fg">{t("连接配置已删除或不存在")}</p>
-        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
-          {t("关闭标签")}
-        </Button>
-      </div>
+      <PageSurface>
+        <PageWorkspace className="items-center justify-center">
+          <EmptyState
+            title={t("连接配置已删除或不存在")}
+            action={
+              <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
+                {t("关闭标签")}
+              </Button>
+            }
+          />
+        </PageWorkspace>
+      </PageSurface>
     );
   }
 
@@ -479,26 +490,20 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   // 不进入 SQL 工作台的工作项体系。
   if (!catalog.ready) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface-1 px-6">
+      <PageSurface>
         {catalog.error ? (
-          <TriangleAlert size={20} className="text-danger" />
+          <div className="page-content page-content--reading">
+            <ErrorState
+              error={catalog.error}
+              title={t("无法读取数据库引擎目录")}
+              compact
+              onRetry={catalog.reload}
+            />
+          </div>
         ) : (
-          <Loader2 size={20} className="animate-spin text-fg-subtle" />
+          <LoadingState className="h-full" label={t("正在读取数据库引擎目录…")} />
         )}
-        <p className="text-12 text-fg">
-          {catalog.error ? t("无法读取数据库引擎目录") : t("正在读取数据库引擎目录…")}
-        </p>
-        {catalog.error && (
-          <>
-            <p className="max-w-sm text-center text-11 leading-relaxed text-fg-subtle">
-              {catalog.error}
-            </p>
-            <Button variant="ghost" size="sm" onClick={catalog.reload}>
-              {t("重试")}
-            </Button>
-          </>
-        )}
-      </div>
+      </PageSurface>
     );
   }
 
@@ -597,44 +602,58 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-content">
+    <PageSurface>
       {notice && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1 text-11 text-warning">
-          <span className="min-w-0 flex-1">{notice}</span>
-          <Button
-            variant="ghost"
-            size="xs"
-            className="h-4 w-4 px-0"
-            aria-label={t("关闭")}
-            onClick={() => setNotice(null)}
-          >
-            <X size={11} />
-          </Button>
-        </div>
+        <PageNotice
+          tone="warning"
+          action={
+            <Button
+              variant="ghost"
+              size="xs"
+              className="h-5 w-5 px-0"
+              aria-label={t("关闭")}
+              onClick={() => setNotice(null)}
+            >
+              <X size={11} />
+            </Button>
+          }
+        >
+          {notice}
+        </PageNotice>
       )}
 
       {!session && sessionError && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-1.5 text-11 text-danger">
-          <StageBadge stage={sessionError.stage} />
-          <div className="min-w-0 flex-1">
-            <p className="break-words leading-relaxed">{sessionError.message}</p>
-            {sessionError.detail && (
-              <p className="mt-0.5 break-words text-10 text-fg-subtle">{sessionError.detail}</p>
-            )}
-          </div>
-          <Button variant="ghost" size="xs" onClick={() => void ensureSession(profileId)}>
-            {t("重试")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            className="shrink-0"
-            aria-label={t("关闭")}
-            onClick={() => clearSessionError(profileId)}
-          >
-            <X size={11} />
-          </Button>
-        </div>
+        <PageNotice
+          tone="danger"
+          action={
+            <>
+              <Button variant="ghost" size="xs" onClick={() => void ensureSession(profileId)}>
+                {t("重试")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                className="h-5 w-5 px-0"
+                aria-label={t("关闭")}
+                onClick={() => clearSessionError(profileId)}
+              >
+                <X size={11} />
+              </Button>
+            </>
+          }
+        >
+          <span className="flex items-start gap-2">
+            <StageBadge stage={sessionError.stage} />
+            <span className="min-w-0 flex-1">
+              <span className="block break-words leading-relaxed">{sessionError.message}</span>
+              {sessionError.detail && (
+                <span className="mt-0.5 block break-words text-10 text-fg-subtle">
+                  {sessionError.detail}
+                </span>
+              )}
+            </span>
+          </span>
+        </PageNotice>
       )}
 
       <DatabaseTabBar
@@ -646,7 +665,7 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         onNewQuery={() => handleNewQuery()}
       />
 
-      <div className="flex min-h-0 flex-1">
+      <PageWorkspace row>
         <div className="relative min-w-0 flex-1">
           <WorkItemHost
             profileId={profileId}
@@ -659,8 +678,8 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         </div>
 
         {dockKind && (
-          <div
-            className="relative shrink-0 border-l border-divider/70 bg-inspector"
+          <PageInspector
+            className="relative min-w-[160px]"
             style={{
               // 非全屏：字段卡片占宽度；全屏：卡片浮在检查器左侧，不挤压中央。
               width: rightWidth + (showFieldCard && !wide ? FIELD_CARD_WIDTH : 0),
@@ -691,15 +710,32 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
             </div>
 
             <div
-              className="absolute left-0 top-0 z-30 h-full w-[4px] cursor-col-resize hover:bg-accent/20"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t("调整右侧面板宽度")}
+              tabIndex={0}
+              className={cn(
+                "page-resizer absolute left-0 top-0 z-30 h-full w-[5px] cursor-col-resize",
+                draggingRight ? "bg-accent/25" : "hover:bg-accent/15",
+              )}
               onMouseDown={(event) => {
                 event.preventDefault();
                 setDraggingRight(true);
               }}
+              onDoubleClick={() => setRightWidth(220)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  setRightWidth(rightWidth + 16);
+                } else if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  setRightWidth(rightWidth - 16);
+                }
+              }}
             />
-          </div>
+          </PageInspector>
         )}
-      </div>
+      </PageWorkspace>
 
       <CloseWorkItemDialog
         item={closing}
@@ -713,6 +749,6 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         onCancel={() => setClosingOthers(null)}
         onConfirm={(action) => void confirmCloseOthers(action)}
       />
-    </div>
+    </PageSurface>
   );
 }

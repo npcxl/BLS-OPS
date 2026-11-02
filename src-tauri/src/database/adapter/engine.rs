@@ -42,6 +42,9 @@ impl StatementPlan {
 /// 一个引擎的执行层适配器。
 #[derive(Debug, Clone, Copy)]
 pub struct AdapterSet {
+    /// 具体产品 id（`mysql` / `tidb` / `doris` …）。同一驱动系列的产品差异
+    /// 由 `engine_registry::mysql_product` 继续细分。
+    engine_id: &'static str,
     dialect: SqlDialect,
     family: DriverFamily,
 }
@@ -53,6 +56,7 @@ impl AdapterSet {
             DbErrorInfo::new("unsupported", format!("未知的数据库类型：{engine_id}"))
         })?;
         Ok(Self {
+            engine_id: engine.id,
             dialect: SqlDialect::new(engine.dialect, engine.dialect_rules),
             family: engine.family,
         })
@@ -61,6 +65,10 @@ impl AdapterSet {
     /// MySQL 家族（现有多数调用点仍走这条路径）。
     pub fn mysql() -> Self {
         Self::of("mysql").expect("mysql 必须注册在引擎表里")
+    }
+
+    pub fn engine_id(&self) -> &'static str {
+        self.engine_id
     }
 
     pub fn family(&self) -> DriverFamily {
@@ -250,14 +258,24 @@ impl AdapterSet {
         }
     }
 
-    /// 只读事务的开启语句。导出必须靠服务器拒绝写入，不能只靠客户端检查。
+    /// 只读事务的开启语句。
     ///
-    /// SQLite / SQL Server / ClickHouse 没有只读事务语义，返回 `unsupported`：
-    /// 用户会看到明确拒绝，而不是一条"看起来只读"的导出。
-    pub fn begin_read_only_transaction(&self) -> Result<&'static str, DbErrorInfo> {
+    /// - `Ok(Some(sql))`：先在服务器上开启只读事务，写语句会被服务器拒绝。
+    /// - `Ok(None)`：产品没有只读事务（Doris/StarRocks），导出继续，但**没有**
+    ///   服务器保障；调用方必须自己确认语句只读。能力矩阵里已标为受限。
+    /// - `Err(..)`：没有任何安全的导出方式，明确拒绝。
+    pub fn begin_read_only_transaction(&self) -> Result<Option<&'static str>, DbErrorInfo> {
         match self.family {
-            DriverFamily::MySql | DriverFamily::Postgres => Ok("START TRANSACTION READ ONLY"),
-            DriverFamily::Oracle => Ok("SET TRANSACTION READ ONLY"),
+            DriverFamily::MySql => {
+                match engine_registry::mysql_product(self.engine_id)
+                    .map(|profile| profile.read_only)
+                {
+                    Some(super::super::capability::ReadOnlyMode::ClientOnly) => Ok(None),
+                    _ => Ok(Some("START TRANSACTION READ ONLY")),
+                }
+            }
+            DriverFamily::Postgres => Ok(Some("START TRANSACTION READ ONLY")),
+            DriverFamily::Oracle => Ok(Some("SET TRANSACTION READ ONLY")),
             DriverFamily::Sqlite => Err(DbErrorInfo::new(
                 "unsupported",
                 "SQLite 没有只读事务：无法保证导出语句不写数据",
@@ -514,15 +532,26 @@ mod tests {
             AdapterSet::mysql()
                 .begin_read_only_transaction()
                 .expect("mysql 支持只读事务"),
-            "START TRANSACTION READ ONLY"
+            Some("START TRANSACTION READ ONLY")
         );
         assert_eq!(
             AdapterSet::of("postgres")
                 .unwrap()
                 .begin_read_only_transaction()
                 .unwrap(),
-            "START TRANSACTION READ ONLY"
+            Some("START TRANSACTION READ ONLY")
         );
+        // Doris/StarRocks 没有只读事务：导出继续，但没有服务器保障。
+        for id in ["doris", "starrocks"] {
+            assert_eq!(
+                AdapterSet::of(id)
+                    .unwrap()
+                    .begin_read_only_transaction()
+                    .unwrap(),
+                None,
+                "{id}"
+            );
+        }
         for id in ["sqlite", "sqlserver", "clickhouse"] {
             assert_eq!(
                 AdapterSet::of(id)

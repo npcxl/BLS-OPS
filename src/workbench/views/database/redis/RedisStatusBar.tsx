@@ -6,6 +6,7 @@
  */
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
+import { PageStatusBar } from "@/workbench/page-layout";
 
 export function RedisStatusBar({
   connected,
@@ -37,11 +38,11 @@ export function RedisStatusBar({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-surface-2 px-3 text-10 text-fg-subtle">
+    <PageStatusBar className="gap-3 text-10">
       <span className="shrink-0 text-fg-muted">
         {t("已选择 {{count}} 个键", { count: selectedCount })}
       </span>
-      <span className="flex items-center gap-1">
+      <span className="page-statusbar__group">
         <span
           className={cn(
             "h-1.5 w-1.5 rounded-full",
@@ -62,6 +63,6 @@ export function RedisStatusBar({
       {hasMore && <span className="text-accent">{t("还有更多（滚动加载）")}</span>}
       {capped && <span className="text-warning">{t("已达界面上限")}</span>}
       {serverVersion && <span className="ml-auto">Redis {serverVersion}</span>}
-    </div>
+    </PageStatusBar>
   );
 }

@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import type { DiskMetrics, NetworkMetrics, ProcessInfo } from "@/api/ops-api";
+import { EmptyState } from "@/components/ui/empty-state";
 import { formatBytes, formatSpeed } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { usageTone } from "./MetricCard";
@@ -8,14 +9,16 @@ export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
   const { t } = useTranslation();
   if (disks.length === 0) {
     return (
-      <p className="px-3 py-4 text-12 text-fg-subtle">
-        {t("No filesystems reported (the host may be unsupported, or a command failed).")}
-      </p>
+      <EmptyState
+        className="min-h-24 py-4"
+        title={t("No filesystems reported")}
+        description={t("The host may be unsupported, or the command failed.")}
+      />
     );
   }
   return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
+    <table className="page-table text-11">
+      <thead>
         <tr>
           {[
             t("Mount point"),
@@ -26,22 +29,20 @@ export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
             t("Avail"),
             t("Usage"),
           ].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
+            <th key={head}>{head}</th>
           ))}
         </tr>
       </thead>
       <tbody>
         {disks.map((disk) => (
-          <tr key={`${disk.device}-${disk.mount_point}`} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{disk.mount_point}</td>
-            <td className="px-3 py-1.5 font-mono text-fg-muted">{disk.device}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{disk.filesystem}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.total)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.used)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(disk.available)}</td>
-            <td className="px-3 py-1.5">
+          <tr key={`${disk.device}-${disk.mount_point}`} className="border-t border-line/70">
+            <td className="font-mono text-fg">{disk.mount_point}</td>
+            <td className="font-mono text-fg-muted">{disk.device}</td>
+            <td className="text-fg-muted">{disk.filesystem}</td>
+            <td className="text-fg-muted">{formatBytes(disk.total)}</td>
+            <td className="text-fg-muted">{formatBytes(disk.used)}</td>
+            <td className="text-fg-muted">{formatBytes(disk.available)}</td>
+            <td>
               <div className="flex items-center gap-1.5">
                 <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-3">
                   <div
@@ -63,14 +64,16 @@ export function NetworkTable({ network }: { network: NetworkMetrics[] }) {
   const { t } = useTranslation();
   if (network.length === 0) {
     return (
-      <p className="px-3 py-4 text-12 text-fg-subtle">
-        {t("No network interfaces reported (loopback lo excluded).")}
-      </p>
+      <EmptyState
+        className="min-h-24 py-4"
+        title={t("No network interfaces reported")}
+        description={t("Loopback interfaces are excluded.")}
+      />
     );
   }
   return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
+    <table className="page-table text-11">
+      <thead>
         <tr>
           {[
             t("Interface"),
@@ -79,20 +82,18 @@ export function NetworkTable({ network }: { network: NetworkMetrics[] }) {
             t("Download"),
             t("Upload"),
           ].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
+            <th key={head}>{head}</th>
           ))}
         </tr>
       </thead>
       <tbody>
         {network.map((nic) => (
-          <tr key={nic.interface} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{nic.interface}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(nic.received_bytes)}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{formatBytes(nic.transmitted_bytes)}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{formatSpeed(nic.receive_speed)}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{formatSpeed(nic.transmit_speed)}</td>
+          <tr key={nic.interface} className="border-t border-line/70">
+            <td className="font-mono text-fg">{nic.interface}</td>
+            <td className="text-fg-muted">{formatBytes(nic.received_bytes)}</td>
+            <td className="text-fg-muted">{formatBytes(nic.transmitted_bytes)}</td>
+            <td className="font-mono text-fg">{formatSpeed(nic.receive_speed)}</td>
+            <td className="font-mono text-fg">{formatSpeed(nic.transmit_speed)}</td>
           </tr>
         ))}
       </tbody>
@@ -103,37 +104,35 @@ export function NetworkTable({ network }: { network: NetworkMetrics[] }) {
 export function ProcessTable({ processes }: { processes: ProcessInfo[] }) {
   const { t } = useTranslation();
   if (processes.length === 0) {
-    return <p className="px-3 py-4 text-12 text-fg-subtle">{t("No process list reported.")}</p>;
+    return (
+      <EmptyState
+        className="min-h-24 py-4"
+        title={t("No process list reported")}
+        description={t("The host may be unsupported, or the command failed.")}
+      />
+    );
   }
   return (
-    <table className="w-full text-11">
-      <thead className="sticky top-0 bg-surface-2 text-fg-subtle">
+    <table className="page-table text-11">
+      <thead>
         <tr>
-          {[
-            t("PID"),
-            t("User"),
-            t("CPU"),
-            t("Memory"),
-            t("Status"),
-            t("Started"),
-            t("Command"),
-          ].map((head) => (
-            <th key={head} className="px-3 py-1.5 text-left font-semibold">
-              {head}
-            </th>
-          ))}
+          {[t("PID"), t("User"), t("CPU"), t("Memory"), t("Status"), t("Started"), t("Command")].map(
+            (head) => (
+              <th key={head}>{head}</th>
+            ),
+          )}
         </tr>
       </thead>
       <tbody>
         {processes.map((process) => (
-          <tr key={process.pid} className="border-t border-line hover:bg-surface-hover">
-            <td className="px-3 py-1.5 font-mono text-fg">{process.pid}</td>
-            <td className="px-3 py-1.5 text-fg-muted">{process.user}</td>
-            <td className="px-3 py-1.5 font-mono text-fg">{process.cpu_percent.toFixed(1)}%</td>
-            <td className="px-3 py-1.5 font-mono text-fg-muted">{process.memory_percent.toFixed(1)}%</td>
-            <td className="px-3 py-1.5 text-fg-muted">{process.status}</td>
-            <td className="px-3 py-1.5 whitespace-nowrap text-fg-muted">{process.started_at}</td>
-            <td className="max-w-0 truncate px-3 py-1.5 font-mono text-fg-muted" title={process.command}>
+          <tr key={process.pid} className="border-t border-line/70">
+            <td className="font-mono text-fg">{process.pid}</td>
+            <td className="text-fg-muted">{process.user}</td>
+            <td className="font-mono text-fg">{process.cpu_percent.toFixed(1)}%</td>
+            <td className="font-mono text-fg-muted">{process.memory_percent.toFixed(1)}%</td>
+            <td className="text-fg-muted">{process.status}</td>
+            <td className="whitespace-nowrap text-fg-muted">{process.started_at}</td>
+            <td className="max-w-0 truncate font-mono text-fg-muted" title={process.command}>
               {process.command}
             </td>
           </tr>

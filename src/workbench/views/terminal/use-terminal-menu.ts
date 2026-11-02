@@ -18,8 +18,13 @@ export interface TerminalMenuActions {
   historyOpen: boolean;
   filesOpen: boolean;
   phase: Phase;
-  /** 有选中时才给"复制"（无选区时 Ctrl+C 是 SIGINT，菜单里不给这个动作）。 */
-  hasSelection: boolean;
+  /**
+   * 有选中时才给"复制"（无选区时 Ctrl+C 是 SIGINT，菜单里不给这个动作）。
+   *
+   * 必须是**取值的函数**：在终端里选中文字不会触发 React 重渲染，渲染期
+   * 算出来的布尔值会一直是旧值 —— 表现就是"明明选了字，右键菜单里只有粘贴"。
+   */
+  hasSelection: () => boolean;
   onCopySelection: () => void;
   onPaste: () => void;
   onSplit: (direction: "horizontal" | "vertical") => void;
@@ -44,7 +49,7 @@ export function buildTerminalMenuItems(
     // 复制/粘贴排在首位：右键菜单最常用的就是这两件事，且与系统的
     // Ctrl+C / Ctrl+V 一一对应。复制只在真有选区时出现 —— 没有选区时
     // Ctrl+C 在终端里的含义是中断（SIGINT），给它配一个"复制"项会误导。
-    ...(actions.hasSelection
+    ...(actions.hasSelection()
       ? [
           {
             label: t("Copy"),
@@ -120,7 +125,11 @@ export function useTerminalMenu(
 ) {
   const { t } = useTranslation();
   return menu.onContextMenu(() => {
+    // 选区必须在失焦**之前**取：blur 是为了让菜单的键盘导航不被终端吞掉，
+    // 但失焦后 xterm 的选区状态不一定还在 —— 先取值再 blur，菜单才不会
+    // 只剩一个「粘贴」。
+    const hasSelection = actions.hasSelection();
     containerRef.current?.querySelector("textarea")?.blur();
-    return buildTerminalMenuItems(t, actions);
+    return buildTerminalMenuItems(t, { ...actions, hasSelection: () => hasSelection });
   });
 }

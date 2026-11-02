@@ -290,9 +290,15 @@ async fn run_export(
         std::path::PathBuf::from(format!("{}.part-{}", request.target_path, task.export_id));
     let target_path = std::path::PathBuf::from(&request.target_path);
 
+    let export_pool = match profile.export_pool() {
+        Ok(pool) => pool,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
     let mut conn: mysql_async::Conn =
-        match tokio::time::timeout(Duration::from_secs(15), profile.export_pool().get_conn()).await
-        {
+        match tokio::time::timeout(Duration::from_secs(15), export_pool.get_conn()).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(error)) => {
                 fail(&task, map_error(&error, "tcp"), &part_path).await;
@@ -325,7 +331,8 @@ async fn run_export(
         }
     };
 
-    // 只读保障必须来自服务器；没有只读事务的引擎直接拒绝导出。
+    // 只读保障优先落到服务器；产品没有只读事务时（Doris/StarRocks）
+    // 导出继续，但这一步的保障是"语句本身只读"，能力矩阵里已标受限。
     let begin_read_only = match adapter.begin_read_only_transaction() {
         Ok(statement) => statement,
         Err(error) => {
@@ -334,9 +341,11 @@ async fn run_export(
             return;
         }
     };
-    if let Err(error) = conn.query_drop(begin_read_only).await {
-        fail(&task, map_error(&error, "permission"), &part_path).await;
-        return;
+    if let Some(statement) = begin_read_only {
+        if let Err(error) = conn.query_drop(statement).await {
+            fail(&task, map_error(&error, "permission"), &part_path).await;
+            return;
+        }
     }
 
     // 统一走预处理语句：过滤条件里的值**必须**是绑定参数，

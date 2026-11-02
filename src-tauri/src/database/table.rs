@@ -478,6 +478,11 @@ pub async fn browse(
     request: &BrowseRequest,
     budget: &ResolvedBudget,
 ) -> Result<BrowseResult, DbErrorInfo> {
+    // SQLite：本地文件、无连接池、无预处理语句，走独立实现。
+    if let Some(worker) = profile.sqlite() {
+        return super::sqlite_table::browse(worker, profile.adapter()?, detail, request, budget)
+            .await;
+    }
     let started = Instant::now();
     let adapter = profile.adapter()?;
     let dialect = adapter.dialect();
@@ -606,7 +611,7 @@ pub async fn browse(
 
     let mut conn: Conn = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        profile.interactive_pool().get_conn(),
+        profile.interactive_pool()?.get_conn(),
     )
     .await
     {
@@ -796,7 +801,7 @@ pub async fn read_cell(
 
     let mut conn = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        profile.interactive_pool().get_conn(),
+        profile.interactive_pool()?.get_conn(),
     )
     .await
     {

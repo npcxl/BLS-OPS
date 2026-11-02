@@ -109,6 +109,11 @@ impl CapabilitySet {
 pub enum VerifiedLevel {
     /// 配置能保存、能通过本地校验（不联网）。
     ConfigOnly,
+    /// 真实驱动已接入、代码路径可执行，但**没有**在真实实例上验证过。
+    ///
+    /// 这一档和 `ConfigOnly` 必须分开：前者是"没有驱动"，后者是"有驱动、
+    /// 缺实例验证"。界面按这个区分显示，不能用"未实机验证"掩盖"没实现"。
+    DriverOnly,
     /// 真实实例上完成连接 + 认证 + TLS。
     Connect,
     /// 真实实例上完成查询、元数据、类型、分页、取消。
@@ -306,6 +311,123 @@ pub struct EngineDescriptor {
     /// 给用户看的补充说明（限制、计划批次）。
     pub note: &'static str,
 }
+
+// ---------------------------------------------------------------------------
+// MySQL 协议兼容产品的执行差异
+// ---------------------------------------------------------------------------
+
+/// 只读保障怎么落地。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadOnlyMode {
+    /// 会话级只读事务：服务器自己拒绝写语句。
+    ServerTransaction,
+    /// 产品没有只读事务：只能在客户端拦截，界面必须说明这是"客户端保障"。
+    ClientOnly,
+}
+
+/// 取消方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CancelMode {
+    /// `KILL QUERY <thread_id>`，走独立控制连接。
+    ThreadKill,
+    /// 产品不支持按连接 id 取消（Doris/StarRocks 按 query id）。
+    Unsupported { reason: &'static str },
+}
+
+/// 事务能力。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionMode {
+    /// 支持显式 BEGIN/COMMIT/ROLLBACK 与多语句事务。
+    Explicit,
+    /// 单语句自动提交，没有跨语句事务（Doris/StarRocks）。
+    AutoCommitOnly,
+}
+
+/// 一个 MySQL 协议兼容产品的执行差异。
+///
+/// **协议兼容不等于产品等价**：会话初始化、只读保障、取消方式、系统库
+/// 和事务都要按产品给。这些值来自各产品公开文档；未在真实实例验证的
+/// 由 `VerifiedScope` 单独记录，不能靠改这里冒充"已验证"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MySqlProductProfile {
+    /// 连接建立后必须执行的会话设置（字符集除外，连接参数里已统一设置）。
+    pub session_init: &'static [&'static str],
+    pub read_only: ReadOnlyMode,
+    pub cancel: CancelMode,
+    /// 系统库名单（精确匹配）。
+    pub system_databases: &'static [&'static str],
+    pub transaction: TransactionMode,
+}
+
+/// MySQL 8.x / MariaDB：标准行为。
+pub const MYSQL_STANDARD_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ServerTransaction,
+    cancel: CancelMode::ThreadKill,
+    system_databases: &["information_schema", "mysql", "performance_schema", "sys"],
+    transaction: TransactionMode::Explicit,
+};
+
+/// TiDB：MySQL 协议 + 分布式事务；默认端口 4000，系统库多 `metrics_schema`。
+pub const TIDB_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ServerTransaction,
+    cancel: CancelMode::ThreadKill,
+    system_databases: &[
+        "information_schema",
+        "mysql",
+        "performance_schema",
+        "sys",
+        "metrics_schema",
+    ],
+    transaction: TransactionMode::Explicit,
+};
+
+/// OceanBase（MySQL 模式）：默认端口 2881，系统库多 `oceanbase`。
+pub const OCEANBASE_MYSQL_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ServerTransaction,
+    cancel: CancelMode::ThreadKill,
+    system_databases: &["information_schema", "mysql", "oceanbase", "sys"],
+    transaction: TransactionMode::Explicit,
+};
+
+/// Amazon Aurora MySQL：与 MySQL 8.0 同协议，差异在托管端点/TLS 与只读副本。
+pub const AURORA_MYSQL_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ServerTransaction,
+    cancel: CancelMode::ThreadKill,
+    system_databases: &["information_schema", "mysql", "performance_schema", "sys"],
+    transaction: TransactionMode::Explicit,
+};
+
+/// Apache Doris：MySQL 协议传输入口默认 **9030**（不是 3306）。
+///
+/// 没有跨语句事务、没有只读事务；取消按 query id 而不是连接 id。
+/// 行级 UPDATE/DELETE 只在 Unique Key 表模型上成立，默认不开。
+pub const DORIS_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ClientOnly,
+    cancel: CancelMode::Unsupported {
+        reason: "Apache Doris 按 query id 取消，不能用连接 id 执行 KILL QUERY",
+    },
+    system_databases: &["information_schema", "__internal_schema"],
+    transaction: TransactionMode::AutoCommitOnly,
+};
+
+/// StarRocks：同 Doris，MySQL 协议入口默认 **9030**。
+pub const STARROCKS_PROFILE: MySqlProductProfile = MySqlProductProfile {
+    session_init: &[],
+    read_only: ReadOnlyMode::ClientOnly,
+    cancel: CancelMode::Unsupported {
+        reason: "StarRocks 按 query id 取消，不能用连接 id 执行 KILL QUERY",
+    },
+    system_databases: &["information_schema", "_statistics_"],
+    transaction: TransactionMode::AutoCommitOnly,
+};
 
 impl EngineDescriptor {
     pub fn is_implemented(&self) -> bool {

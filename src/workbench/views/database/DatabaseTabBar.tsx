@@ -16,10 +16,13 @@ import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Columns3,
+  Copy,
   Database as DatabaseIcon,
   Loader2,
+  PanelRightClose,
   Pin,
   PinOff,
+  SquareMinus,
   SquareTerminal,
   Table2,
   X,
@@ -114,17 +117,20 @@ export function DatabaseTabBar({
     {
       id: "close",
       label: t("关闭"),
+      icon: X,
       hint: "Ctrl+W",
       onSelect: () => onRequestClose(item),
     },
     {
       id: "close-others",
       label: t("关闭其他"),
+      icon: SquareMinus,
       onSelect: () => onRequestCloseOthers(item),
     },
     {
       id: "close-right",
       label: t("关闭右侧"),
+      icon: PanelRightClose,
       onSelect: () => onRequestCloseRight(item),
     },
     { id: "sep-1", separator: true },
@@ -138,17 +144,18 @@ export function DatabaseTabBar({
     {
       id: "copy",
       label: t("复制名称"),
+      icon: Copy,
       disabled: item.kind === "query",
       onSelect: () => void copyText(item.objectName),
     },
   ];
 
   return (
-    <div className="flex h-9 shrink-0 items-stretch border-b border-divider/70 bg-shell/40">
+    <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1 border-b border-divider/70 bg-transparent px-[var(--page-inline)]">
       <div
         role="tablist"
         aria-label={t("工作区标签")}
-        className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {items.map((item) => {
           const active = item.id === effectiveActiveId;
@@ -204,7 +211,7 @@ export function DatabaseTabBar({
               }}
               onContextMenu={menu.onContextMenu(() => buildMenu(item))}
               className={cn(
-                "group relative flex max-w-[220px] min-w-[112px] shrink-0 cursor-default items-center gap-1.5 border-r border-divider/60 px-2.5 text-12 outline-none transition-colors",
+                "group relative flex h-[26px] max-w-[200px] min-w-[112px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] outline-none transition-colors",
                 active
                   ? "bg-tab-active text-fg shadow-[var(--tab-active-shadow)]"
                   : "text-fg-muted hover:bg-tab-hover hover:text-fg",

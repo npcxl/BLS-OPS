@@ -17,6 +17,7 @@ use super::super::model::DbErrorInfo;
 use super::AdapterSet;
 
 pub struct CatalogQueries {
+    engine_id: &'static str,
     family: DriverFamily,
 }
 
@@ -24,6 +25,7 @@ impl CatalogQueries {
     pub fn of(adapter: &AdapterSet) -> Result<Self, DbErrorInfo> {
         match adapter.family() {
             DriverFamily::MySql | DriverFamily::Postgres => Ok(Self {
+                engine_id: adapter.engine_id(),
                 family: adapter.family(),
             }),
             other => Err(DbErrorInfo::new(
@@ -277,13 +279,14 @@ impl CatalogQueries {
         }
     }
 
-    /// 系统库判定。PostgreSQL 用 `pg_` 前缀（pg_catalog / pg_toast / pg_temp_*）。
+    /// 系统库判定。MySQL 家族按产品给名单（TiDB 有 `metrics_schema`、
+    /// OceanBase 有 `oceanbase`、Doris/StarRocks 是另一套），PostgreSQL 用
+    /// `pg_` 前缀。
     pub fn system_database(&self, name: &str) -> bool {
         match self.family {
-            DriverFamily::MySql => matches!(
-                name,
-                "information_schema" | "mysql" | "performance_schema" | "sys"
-            ),
+            DriverFamily::MySql => super::super::engine_registry::mysql_product(self.engine_id)
+                .map(|profile| profile.system_databases.contains(&name))
+                .unwrap_or(false),
             _ => name == "information_schema" || name.starts_with("pg_"),
         }
     }

@@ -7,8 +7,18 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, Copy, Filter, Loader2, RefreshCw, ScrollText } from "@/components/icons";
+import {
+  ArrowDownToLine,
+  Copy,
+  Eraser,
+  Filter,
+  RefreshCw,
+  ScrollText,
+  Search,
+  Server,
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { LoadingState } from "@/components/ui/loading";
 import { SearchField } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
@@ -32,6 +42,7 @@ import {
   ToolbarStat,
   ToolbarStatus,
 } from "@/workbench/views/module-frame";
+import { PageToolbarDivider } from "@/workbench/page-layout";
 import type { WorkspaceTab } from "@/workbench/types";
 
 const LINE_CHOICES = [100, 200, 500, 1000, 5000];
@@ -136,7 +147,12 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
       const levelLabel = priorityLabel(entry.priority);
       return [
         { id: "copy-row", label: t("Copy this line"), icon: Copy, onSelect: () => copyRow(entry) },
-        { id: "copy-all", label: t("Copy all ({{count}})", { count: visible.length }), onSelect: copyAll },
+        {
+          id: "copy-all",
+          label: t("Copy all ({{count}})", { count: visible.length }),
+          icon: Copy,
+          onSelect: copyAll,
+        },
         { id: "sep-filter", separator: true },
         {
           id: "filter-priority",
@@ -151,6 +167,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
         {
           id: "filter-unit",
           label: t("Show unit {{unit}}", { unit: entry.unit }),
+          icon: Server,
           disabled: unit.trim() === entry.unit,
           hint: unit.trim() === entry.unit ? t("Current") : undefined,
           onSelect: () => setUnit(entry.unit),
@@ -158,6 +175,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
         {
           id: "search-unit",
           label: t("Search this message in results"),
+          icon: Search,
           disabled: entry.message.trim() === "",
           onSelect: () => setSearch(entry.message),
         },
@@ -165,6 +183,7 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
         {
           id: "clear-filters",
           label: t("Clear filters"),
+          icon: Eraser,
           disabled: priority === null && unit.trim() === "" && search.trim() === "",
           onSelect: () => {
             setPriority(null);
@@ -175,13 +194,18 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
       ];
     });
 
+  // First load owns the page; later refreshes keep the existing rows in place.
+  const initialLoading = loading && entries.length === 0;
+  const noMatches = entries.length > 0 && visible.length === 0;
+
   return (
     <ModuleFrame
       session={session}
+      contentRef={scrollRef}
       toolbar={
         <>
           <RefreshButton busy={loading} onClick={() => void load()} />
-          <div className="mx-1 h-4 w-px bg-line" />
+          <PageToolbarDivider />
           <Button
             variant="ghost"
             size="xs"
@@ -254,72 +278,85 @@ export function LogCenterView({ tab }: { tab: WorkspaceTab }) {
       }
     >
       {error ? (
-        <div className="mx-3 mt-3">
+        <div className="page-content">
           <ErrorState error={error} compact onRetry={retry} />
         </div>
-      ) : null}
-
-      {!loading && !error && entries.length === 0 ? (
-        <ModuleEmpty
-          icon={ScrollText}
-          title={t("No logs read")}
-          hint={
-            unit.trim()
-              ? t("Unit {{unit}} has no matching records, or the current user cannot read the journal.", {
-                  unit: unit.trim(),
-                })
-              : t("This machine may not have journald, or the current user is not in the systemd-journal group.")
-          }
-        />
-      ) : (
-        <div ref={scrollRef} className="h-full overflow-auto">
-          <table className="w-full text-11">
-            <thead className="sticky top-0 z-10 bg-surface-2 text-fg-subtle">
-              <tr>
-                <th className="w-[168px] px-3 py-1.5 text-left font-semibold">{t("Time (UTC)")}</th>
-                <th className="w-[56px] px-2 py-1.5 text-left font-semibold">{t("Level")}</th>
-                <th className="w-[148px] px-2 py-1.5 text-left font-semibold">{t("Unit")}</th>
-                <th className="px-3 py-1.5 text-left font-semibold">{t("Message")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((entry, index) => (
-                <tr
-                  key={`${entry.timestamp}-${entry.unit}-${index}`}
-                  data-testid="log-row"
-                  className={cn("border-t border-line align-top", rowTone(entry.priority))}
-                  onContextMenu={rowMenu(entry)}
-                >
-                  <td className="px-3 py-1.5 whitespace-nowrap font-mono text-fg-subtle">
-                    {entry.timestamp || "—"}
-                  </td>
-                  <td className={cn("px-2 py-1.5 whitespace-nowrap", priorityTone(entry.priority))}>
-                    {priorityLabel(entry.priority)}
-                  </td>
-                  <td className="px-2 py-1.5 font-mono text-fg-muted">{entry.unit}</td>
-                  <td className="px-3 py-1.5 whitespace-pre-wrap font-mono text-fg">
-                    {entry.message || t("(no message body)")}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {loading && (
-            <div className="flex items-center justify-center gap-2 py-4 text-11 text-fg-subtle">
-              <Loader2 size={12} className="animate-spin" />
-              {t("Reading…")}
-            </div>
-          )}
-          {!loading && visible.length === 0 && search.trim() !== "" && (
-            <div className="py-6 text-center text-12 text-fg-subtle">
-              {t("No records matching \"{{query}}\"", { query: search.trim() })}
-              <Button variant="ghost" size="xs" className="ml-2" onClick={() => void load()}>
-                <RefreshCw size={11} />
-                {t("Read again")}
-              </Button>
-            </div>
-          )}
+      ) : initialLoading ? (
+        <div className="page-content">
+          <LoadingState label={t("Reading…")} />
         </div>
+      ) : !error && entries.length === 0 ? (
+        <div className="page-content page-content--reading">
+          <ModuleEmpty
+            icon={ScrollText}
+            title={t("No logs read")}
+            hint={
+              unit.trim()
+                ? t("Unit {{unit}} has no matching records, or the current user cannot read the journal.", {
+                    unit: unit.trim(),
+                  })
+                : t("This machine may not have journald, or the current user is not in the systemd-journal group.")
+            }
+            action={
+              unit.trim() ? (
+                <Button variant="ghost" size="xs" onClick={() => setUnit("")}>
+                  {t("Clear filters")}
+                </Button>
+              ) : undefined
+            }
+          />
+        </div>
+      ) : noMatches ? (
+        <div className="page-content page-content--reading">
+          <ModuleEmpty
+            icon={ScrollText}
+            title={t("No records matching \"{{query}}\"", { query: search.trim() })}
+            hint={t("Search only covers the rows already read from the journal.")}
+            action={
+              <div className="page-actions">
+                <Button variant="ghost" size="xs" onClick={() => setSearch("")}>
+                  {t("Clear search")}
+                </Button>
+                <Button variant="ghost" size="xs" onClick={() => void load()}>
+                  <RefreshCw size={11} />
+                  {t("Read again")}
+                </Button>
+              </div>
+            }
+          />
+        </div>
+      ) : (
+        <table className="page-table text-11" aria-busy={loading || undefined}>
+          <thead>
+            <tr>
+              <th className="w-[168px]">{t("Time (UTC)")}</th>
+              <th className="w-[56px]">{t("Level")}</th>
+              <th className="w-[148px]">{t("Unit")}</th>
+              <th>{t("Message")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((entry, index) => (
+              <tr
+                key={`${entry.timestamp}-${entry.unit}-${index}`}
+                data-testid="log-row"
+                className={cn("border-t border-line/70 align-top", rowTone(entry.priority))}
+                onContextMenu={rowMenu(entry)}
+              >
+                <td className="whitespace-nowrap font-mono text-fg-subtle">
+                  {entry.timestamp || "—"}
+                </td>
+                <td className={cn("whitespace-nowrap", priorityTone(entry.priority))}>
+                  {priorityLabel(entry.priority)}
+                </td>
+                <td className="font-mono text-fg-muted">{entry.unit}</td>
+                <td className="whitespace-pre-wrap font-mono text-fg">
+                  {entry.message || t("(no message body)")}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       <ContextMenu {...menu.props} title={t("Logs")} />

@@ -1,4 +1,4 @@
-/** 首页的分区外壳：标题行 + 分组列表卡片（与既有首页视觉一致）。 */
+/** 首页的分区外壳：标题行 + 分组列表卡片（与页面分区标题共用样式）。 */
 import type { ReactNode } from "react";
 
 export function SectionHeading({
@@ -11,16 +11,14 @@ export function SectionHeading({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex h-6 items-center justify-between gap-3">
-      <h2 className="flex items-center gap-1.5 text-11 font-semibold tracking-[0.08em] text-fg-subtle uppercase">
-        {title}
-        {typeof count === "number" && (
-          <span className="rounded-[6px] bg-surface-2 px-1.5 py-0.5 text-10 font-medium text-fg-muted">
-            {count}
-          </span>
-        )}
-      </h2>
-      {actions}
+    <div className="page-section-header">
+      <div className="page-section-heading">
+        <h2 className="page-section-title flex items-center gap-2">
+          {title}
+          {typeof count === "number" && <span className="page-tab-count">{count}</span>}
+        </h2>
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
     </div>
   );
 }
@@ -28,7 +26,7 @@ export function SectionHeading({
 /** macOS-style grouped list — a rounded panel whose rows are divided. */
 export function ListPanel({ children }: { children: ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[12px] border border-line bg-surface-1/70 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
+    <div className="home-list-panel">
       <div className="divide-y divide-line/60">{children}</div>
     </div>
   );

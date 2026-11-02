@@ -1,5 +1,6 @@
 import { Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Unplug } from "@/components/icons";
 import { useTranslation } from "react-i18next";
+import { PageToolbar, PageToolbarDivider } from "@/workbench/page-layout";
 import { ToolbarIcon } from "./ToolbarIcon";
 import type { Phase } from "./terminal-phase";
 
@@ -37,7 +38,7 @@ export function TerminalToolbar({
   const { t } = useTranslation();
 
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1  border-line bg-transparent px-2">
+    <PageToolbar>
       <ToolbarIcon label={t("Split Vertically")} icon={Columns2} onClick={() => onSplit("horizontal")} />
       <ToolbarIcon label={t("Split Horizontally")} icon={Rows2} onClick={() => onSplit("vertical")} />
       <ToolbarIcon label={t("Clear Screen")} icon={Eraser} onClick={onClear} />
@@ -51,13 +52,13 @@ export function TerminalToolbar({
         disabled={phase !== "connected"}
         onClick={onRefreshEnvironment}
       />
-      <div className="mx-1 h-4 w-px bg-line" />
+      <PageToolbarDivider />
       {phase === "connected" ? (
         <ToolbarIcon label={t("Disconnect")} icon={Unplug} onClick={onDisconnect} />
       ) : (
         <ToolbarIcon label={t("Reconnect")} icon={PlugZap} disabled={phase === "connecting"} onClick={onReconnect} />
       )}
 
-    </div>
+    </PageToolbar>
   );
 }

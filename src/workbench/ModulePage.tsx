@@ -12,6 +12,7 @@ import {
 } from "@/components/icons";
 import type { NavModule } from "@/workbench/types";
 import { AiPlaceholder } from "@/workbench/views/ai/AiPlaceholder";
+import { PageHeader, PageScroll, PageSection, PageSurface } from "./page-layout";
 import { SshContextSidebar } from "./ssh-context-sidebar";
 import { SettingsContextSidebar } from "./settings-context-sidebar";
 
@@ -70,32 +71,20 @@ const MODULES: Record<NavModule, ModuleSpec> = {
 function ModulePlaceholder({ module }: { module: NavModule }) {
   const { t } = useTranslation();
   const spec = MODULES[module];
-  const Icon = spec.icon;
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3">
-        <div className="flex h-11 w-11 items-center justify-center rounded-[12px] border border-line bg-surface-2 text-fg-subtle">
-          <Icon size={20} strokeWidth={1.75} />
-        </div>
-        <div>
-          <div className="text-15 font-semibold text-fg">{t(spec.title)}</div>
-          <div className="text-12 text-fg-subtle">{spec.description ? t(spec.description) : ""}</div>
-        </div>
-      </div>
-      <div className="overflow-hidden rounded-[12px] border border-line bg-surface-1/70">
-        <div className="divide-y divide-line/60">
-          {spec.sections.map((section) => (
-            <div key={section} className="flex h-9 items-center px-3 text-12 text-fg-subtle">
-              {t(section)}
-            </div>
-          ))}
-          <div className="px-3 py-3 text-11 leading-relaxed text-fg-subtle">
-            {/* No phase references: this text outlives individual milestones. */}
-            {t("This module is not implemented yet.")}
+    <PageSection title={t("Planned sections")}>
+      <div className="page-form-list">
+        {spec.sections.map((section) => (
+          <div key={section} className="page-form-row text-12 text-fg-subtle">
+            {t(section)}
           </div>
-        </div>
+        ))}
+        <p className="page-form-row text-11 leading-relaxed text-fg-subtle">
+          {/* No phase references: this text outlives individual milestones. */}
+          {t("This module is not implemented yet.")}
+        </p>
       </div>
-    </div>
+    </PageSection>
   );
 }
 
@@ -112,13 +101,12 @@ export function ModulePage({ module }: { module: NavModule }) {
   const spec = MODULES[module];
 
   return (
-    <div className="relative z-0 h-full overflow-y-auto bg-surface-1" data-selectable>
-      <div className="mx-auto flex max-w-[620px] flex-col gap-5 px-6 py-6">
-        <div>
-          <h1 className="text-20 font-semibold text-fg">{t(spec.title)}</h1>
-          {spec.description && <p className="mt-0.5 text-12 text-fg-muted">{t(spec.description)}</p>}
-        </div>
-
+    <PageSurface data-selectable>
+      <PageHeader
+        title={t(spec.title)}
+        description={spec.description ? t(spec.description) : undefined}
+      />
+      <PageScroll width="reading">
         {module === "ssh" || module === "servers" ? (
           <SshContextSidebar />
         ) : module === "settings" ? (
@@ -129,7 +117,7 @@ export function ModulePage({ module }: { module: NavModule }) {
         ) : (
           <ModulePlaceholder module={module} />
         )}
-      </div>
-    </div>
+      </PageScroll>
+    </PageSurface>
   );
 }

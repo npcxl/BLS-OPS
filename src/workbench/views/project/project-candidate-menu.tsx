@@ -100,6 +100,7 @@ export function buildCandidateMenuItems({
             children: nginxConfigs.map((file) => ({
               id: `nginx-config-${file}`,
               label: file.split("/").pop() ?? file,
+              icon: FileCode2,
               onSelect: () => onOpenPath(file),
             })),
           },
@@ -144,6 +145,7 @@ export function buildCandidateMenuItems({
           children: dockerContainers.map((instance) => ({
             id: `docker-restart-${instance.id}`,
             label: instance.name,
+            icon: RotateCw,
             disabled: busy,
             onSelect: () => onContainerAction("restart", instance.name),
           })),
@@ -156,6 +158,7 @@ export function buildCandidateMenuItems({
           children: dockerContainers.map((instance) => ({
             id: `docker-stop-${instance.id}`,
             label: instance.name,
+            icon: Square,
             disabled: busy,
             onSelect: () => onStopContainer(instance.name),
           })),
@@ -167,6 +170,7 @@ export function buildCandidateMenuItems({
           children: dockerContainers.map((instance) => ({
             id: `docker-config-${instance.id}`,
             label: instance.name,
+            icon: FileCode2,
             disabled: busy,
             onSelect: () => onInspectContainer(instance.name),
           })),
@@ -238,6 +242,7 @@ export function buildInstanceMenuItems({
       children: paths.map((path) => ({
         id: `copy-${path}`,
         label: path,
+        icon: Copy,
         onSelect: () => onCopyPath(path),
       })),
     });
@@ -272,6 +277,7 @@ export function buildInstanceMenuItems({
         children: nginxConfigs.map((file) => ({
           id: `nginx-config-${file}`,
           label: file.split("/").pop() ?? file,
+          icon: FileCode2,
           onSelect: () => onOpenPath(file),
         })),
       });

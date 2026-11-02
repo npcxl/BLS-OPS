@@ -20,9 +20,6 @@ import type { Phase } from "./terminal-phase";
 import { terminalTheme } from "./theme";
 import type { RenderOutcome, TerminalCommandCoordinator } from "./TerminalCommandCoordinator";
 
-/** 选中文字后多久弹出选区菜单（避免拖动过程中一直闪）。 */
-const SELECTION_MENU_DELAY_MS = 450;
-
 /** 终端里"记历史 + 提交命令"的入口（由 `TerminalView` 提供，ref 里读最新值）。 */
 export interface TerminalCommandEntry {
   note: (command: string) => void;
@@ -41,7 +38,6 @@ export interface TerminalCommandEntry {
  */
 export interface TerminalSessionHost {
   containerRef: RefObject<HTMLDivElement | null>;
-  suggestWrapperRef: RefObject<HTMLDivElement | null>;
   terminalRef: RefObject<Terminal | null>;
   fitRef: RefObject<FitAddon | null>;
   lineEditorRef: RefObject<LineEditor | null>;
@@ -50,7 +46,6 @@ export interface TerminalSessionHost {
   cwdTrackerRef: RefObject<RemoteCwdTracker | null>;
   coordinatorRef: RefObject<TerminalCommandCoordinator | null>;
   captureMarkerRef: RefObject<{ marker: IMarker } | null>;
-  selectionMenuTimerRef: RefObject<number | null>;
   cwdProbeTimerRef: RefObject<number | null>;
   keyHandlerRef: RefObject<(event: KeyboardEvent) => boolean>;
   sessionId: string;
@@ -68,7 +63,6 @@ export interface TerminalSessionHost {
   setInAlternate: (value: boolean) => void;
   setDraft: (value: string) => void;
   setCwd: (value: string | null) => void;
-  setSelectionMenu: (value: { x: number; y: number; text: string } | null) => void;
   setPhase: Dispatch<SetStateAction<Phase>>;
   setStatus: (sessionId: string, status: SessionStatus, patch?: { error?: string }) => void;
   connect: () => void;
@@ -107,6 +101,9 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       fontSize: 13,
       lineHeight: 1.25,
       scrollback: 5000,
+      // 右键在本应用里是"菜单"，不是"选词"：xterm 默认会用右键位置上的单词
+      // 替换当前选区，表现就是"选了一段，右键后复制到的只有一个词 / 选区没了"。
+      rightClickSelectsWord: false,
       theme: terminalTheme(isDark),
     });
     const fit = new FitAddon();
@@ -345,49 +342,6 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       enqueue({ stream: "stderr", text: event.payload });
     });
 
-    const selectionSubscription = instance.onSelectionChange(() => {
-      const host = hostRef.current;
-      if (host.selectionMenuTimerRef.current !== null) window.clearTimeout(host.selectionMenuTimerRef.current);
-      const text = instance.getSelection();
-      if (!text) {
-        host.setSelectionMenu(null);
-        return;
-      }
-      host.selectionMenuTimerRef.current = window.setTimeout(() => {
-        const current = hostRef.current;
-        const wrapper = current.suggestWrapperRef.current;
-        if (!wrapper || !instance.hasSelection()) return;
-        // 菜单渲染在 wrapper（relative 定位父元素）里，坐标必须以 wrapper 为基准。
-        const screen = container.querySelector<HTMLElement>(".xterm-screen");
-        const cols = instance.cols;
-        const rows = instance.rows;
-        const pos = instance.getSelectionPosition?.();
-        const containerRect = container.getBoundingClientRect();
-        const wrapperRect = wrapper.getBoundingClientRect();
-        let x: number;
-        let y: number;
-        if (screen && cols > 0 && rows > 0 && pos) {
-          const rect = screen.getBoundingClientRect();
-          const cellWidth = rect.width / cols;
-          const cellHeight = rect.height / rows;
-          // start/end 是缓冲坐标（含回滚偏移）；可视行 = bufferY - viewportY。
-          const viewportY = instance.buffer.active.viewportY;
-          const endColumn = pos.end.x + 1; // 0 基 → 选中文字右缘
-          const endRow = pos.end.y - viewportY + 1; // 选中行下一行上缘
-          x = containerRect.left - wrapperRect.left + endColumn * cellWidth;
-          y = containerRect.top - wrapperRect.top + endRow * cellHeight;
-          // 越界保护：末端滚出视口（选区跨屏）时退回顶部居中。
-          if (endRow < 0 || endRow > rows) {
-            x = Math.max(12, wrapperRect.width / 2);
-            y = 12;
-          }
-        } else {
-          x = Math.max(12, wrapperRect.width / 2);
-          y = 12;
-        }
-        current.setSelectionMenu({ x, y, text });
-      }, SELECTION_MENU_DELAY_MS);
-    });
     const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
       if (disposed) return;
       hostRef.current.setPhase((current) => (current === "connected" ? "closed" : current));
@@ -410,8 +364,6 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       themeObserver.disconnect();
       viewport?.removeEventListener("scroll", onViewportScroll);
       dataSubscription.dispose();
-      selectionSubscription.dispose();
-      if (host.selectionMenuTimerRef.current !== null) window.clearTimeout(host.selectionMenuTimerRef.current);
       void unlistenOutput.then((fn) => fn());
       void unlistenStderr.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());

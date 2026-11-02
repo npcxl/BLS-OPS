@@ -35,6 +35,8 @@ import {
   Table2,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { isTopOverlayLayer, OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -244,7 +246,7 @@ export function OpenTabsMenu({
             ref={panelRef}
             role="dialog"
             aria-label={t("已打开的标签")}
-            className="overlay-enter fixed flex flex-col overflow-hidden rounded-[10px] border border-line bg-surface-2 shadow-[0_18px_44px_-12px_rgb(15_23_42/0.35),0_2px_8px_rgb(15_23_42/0.12)] outline-none"
+            className="page-overlay-surface overlay-enter fixed outline-none"
             style={{
               left: position.left,
               width: position.width,
@@ -255,10 +257,11 @@ export function OpenTabsMenu({
               zIndex: OVERLAY_Z.popover + Math.min(layer.depth, 8) * 2,
             }}
           >
-            <div className="flex shrink-0 items-center gap-1.5 border-b border-line px-2 py-1.5">
-              <Search size={11} className="shrink-0 text-fg-subtle" />
-              <input
+            <div className="page-overlay-header page-overlay-header--compact">
+              <Input
                 ref={inputRef}
+                size="xs"
+                leading={<Search size={11} />}
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
@@ -268,7 +271,7 @@ export function OpenTabsMenu({
                 aria-label={t("搜索已打开的标签…")}
                 aria-controls={listId}
                 placeholder={t("搜索已打开的标签…")}
-                className="h-6 min-w-0 flex-1 bg-transparent text-12 text-fg outline-none placeholder:text-fg-subtle"
+                className="border-0 bg-transparent shadow-none focus:ring-0"
               />
             </div>
 
@@ -279,9 +282,11 @@ export function OpenTabsMenu({
               className="min-h-0 flex-1 overflow-y-auto p-1"
             >
               {filtered.length === 0 && (
-                <p className="px-2 py-3 text-11 leading-relaxed text-fg-subtle">
-                  {items.length === 0 ? t("还没有打开的工作项") : t("没有匹配的标签")}
-                </p>
+                <EmptyState
+                  className="min-h-20 py-4"
+                  title={items.length === 0 ? t("还没有打开的工作项") : t("没有匹配的标签")}
+                  description={items.length === 0 ? undefined : t("Try a shorter search.")}
+                />
               )}
               {filtered.map((item, index) => {
                 const active = item.id === activeId;
@@ -296,8 +301,8 @@ export function OpenTabsMenu({
                     onMouseEnter={() => setCursor(index)}
                     title={`${item.database ?? "—"} › ${item.objectName}`}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-12 transition-colors",
-                      active ? "bg-accent/10 text-fg" : "text-fg-muted",
+                      "page-tree-row w-full text-left text-12",
+                      active ? "text-fg" : "text-fg-muted",
                       // 当前标签已经有 accent 底色，别再被"键盘光标"的灰色盖掉。
                       index === cursor && !active && "bg-surface-hover",
                     )}
@@ -316,7 +321,7 @@ export function OpenTabsMenu({
               })}
             </div>
 
-            <div className="flex shrink-0 items-center justify-between gap-2 border-t border-line px-2 py-1.5">
+            <div className="page-overlay-footer page-overlay-footer--compact justify-between">
               <span className="text-10 text-fg-subtle">
                 {/* 跟随过滤结果：搜到 2 个时还说 6 个，会让人以为列表没筛。 */}
                 {t("共 {{count}} 个标签", { count: filtered.length })}

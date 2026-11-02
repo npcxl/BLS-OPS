@@ -28,7 +28,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadingState } from "@/components/ui/loading";
 import { ErrorState } from "@/components/ui/error-state";
 import { Select } from "@/components/ui/select";
-import { cn } from "@/lib/cn";
+import { PageHeader, PageSurface, PageTabs, PageWorkspace } from "@/workbench/page-layout";
 import type { WorkspaceTab } from "@/workbench/types";
 
 import { ArtifactImportPanel } from "./artifact-import";
@@ -88,7 +88,8 @@ type PendingDelete =
   | { kind: "service"; id: string; name: string }
   | { kind: "plan"; id: string; name: string };
 
-export function DeployView({ tab }: { tab: WorkspaceTab }) {
+/** `tab` is unused: the page is scoped by the server selector, not the tab title. */
+export function DeployView(_props: { tab: WorkspaceTab }) {
   const { t } = useTranslation();
   const center = useDeploymentCenter();
   const [activeTab, setActiveTab] = useState<TabId>("wizard");
@@ -168,25 +169,31 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
     }
   };
 
+  const initialLoading = center.status.state === "loading" && center.applications.length === 0;
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-1">
-      {/* 页头：服务器选择 + 本阶段边界说明。 */}
-      <div className="flex shrink-0 items-start gap-3 border-b border-line px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-13 font-semibold text-fg">{t("Deployment Center")}</span>
+    <PageSurface>
+      {/* Object context lives in one place: the selected application/environment.
+          The server name is on the work tab, so it is not repeated here. */}
+      <PageHeader
+        title={t("Deployment Center")}
+        description={t(
+          "Plan applications, environments and services. Nothing runs until you confirm and approve a proposal.",
+        )}
+        context={
+          <>
             <span className="rounded-[5px] border border-line bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle">
               {t("Plans are not executed automatically")}
             </span>
-          </div>
-          <p className="mt-0.5 text-11 leading-relaxed text-fg-muted">
-            {t(
-              "Plan applications, environments and services. Generating a proposal never executes anything — deployment runs only after you confirm and approve it.",
+            {selectedApplication && (
+              <span>
+                {selectedApplication.name}
+                {activeEnvironment ? ` · ${activeEnvironment.name}` : ""}
+              </span>
             )}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="text-11 text-fg-muted">{tab.title}</span>
+          </>
+        }
+        actions={
           <Select
             className="w-52"
             size="sm"
@@ -203,48 +210,22 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
               })),
             ]}
           />
-        </div>
-      </div>
+        }
+      />
 
-      {/* Tab 条 */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1">
-        {TAB_ORDER.map((id) => (
-          <span key={id} className="flex items-center gap-1">
-            {/* P5.6：向导之后的页面统一标为「高级管理」。 */}
-            {id === "applications" ? (
-              <span
-                className="mx-1 h-4 w-px shrink-0 bg-line"
-                title={t("Advanced management")}
-                aria-hidden
-              />
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setActiveTab(id)}
-              aria-current={activeTab === id ? "page" : undefined}
-              className={cn(
-                "flex items-center gap-1.5 rounded-[7px] px-2 py-1 text-12 transition-colors",
-                activeTab === id
-                  ? "bg-surface-2 text-fg"
-                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
-              )}
-            >
-              {t(TAB_LABEL_KEYS[id])}
-              {counts[id] === undefined ? null : (
-                <span className="rounded-full bg-surface-3 px-1.5 text-10 text-fg-subtle">
-                  {counts[id]}
-                </span>
-              )}
-            </button>
-          </span>
-        ))}
-        {selectedApplication && (
-          <span className="ml-auto truncate pr-1 text-11 text-fg-subtle">
-            {selectedApplication.name}
-            {activeEnvironment ? ` · ${activeEnvironment.name}` : ""}
-          </span>
-        )}
-      </div>
+      <PageTabs
+        value={activeTab}
+        onChange={setActiveTab}
+        label={t("Deployment sections")}
+        panelId="deploy-content"
+        items={TAB_ORDER.map((id) => ({
+          id,
+          label: t(TAB_LABEL_KEYS[id]),
+          count: counts[id],
+          // The wizard is the default entry; everything after it is advanced management.
+          divider: id === "applications",
+        }))}
+      />
 
       {center.error ? (
         <div className="shrink-0 px-3 pt-2">
@@ -252,10 +233,10 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
         </div>
       ) : null}
 
-      {center.status.state === "loading" && center.applications.length === 0 ? (
-        <LoadingState />
+      {initialLoading ? (
+        <LoadingState className="flex-1" />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col pt-2">
+        <PageWorkspace role="tabpanel" id="deploy-content" className="pt-1">
           {activeTab === "wizard" && (
             <DeploymentWizard
               servers={center.servers}
@@ -361,7 +342,7 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
           )}
 
           {activeTab === "runs" && <RunsList center={center} />}
-        </div>
+        </PageWorkspace>
       )}
 
       <ApplicationDialog
@@ -417,6 +398,6 @@ export function DeployView({ tab }: { tab: WorkspaceTab }) {
         onConfirm={() => void confirmDelete()}
         onCancel={() => setPendingDelete(null)}
       />
-    </div>
+    </PageSurface>
   );
 }

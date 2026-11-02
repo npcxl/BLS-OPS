@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { CheckCircle2, XCircle } from "@/components/icons";
+import { NOTE_SHELL, NOTE_TONE_CLASS } from "@/components/ui/toast";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 
@@ -72,6 +74,8 @@ export function useCopyFeedback(timeoutMs: number = COPY_NOTICE_MS) {
  * - 容器常驻 DOM + `aria-live="polite"`，内容变化才会被读屏播报。
  *
  * 父元素需要 `relative`（各结果视图的根容器都已加）。
+ *
+ * 位置固定在**顶部居中**：底部是分页/状态栏的地盘，提示压在那里容易被忽略。
  */
 export function CopyNotice({ status, className }: { status: CopyStatus; className?: string }) {
   const { t } = useTranslation();
@@ -80,7 +84,7 @@ export function CopyNotice({ status, className }: { status: CopyStatus; classNam
       aria-live="polite"
       role="status"
       className={cn(
-        "pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center",
+        "pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center",
         className,
       )}
     >
@@ -88,13 +92,20 @@ export function CopyNotice({ status, className }: { status: CopyStatus; classNam
         <span
           data-testid="copy-notice"
           className={cn(
-            "rounded-full border px-2.5 py-1 text-10 shadow-sm",
-            status === "ok"
-              ? "border-line bg-surface-3/95 text-fg"
-              : "border-danger/40 bg-surface-1/95 text-danger",
+            // 和 toast 的右下角 note 同一套外壳与色调：同一种"看一眼就消失"
+            // 的提示不能长成两个样子。要调外观请改 toast.tsx 里的常量。
+            NOTE_SHELL,
+            status === "ok" ? NOTE_TONE_CLASS.success : NOTE_TONE_CLASS.danger,
           )}
         >
-          {t(COPY_NOTICE_TEXT[status])}
+          {status === "ok" ? (
+            <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+          ) : (
+            <XCircle size={12} className="mt-0.5 shrink-0" />
+          )}
+          <span className="min-w-0 flex-1 break-words leading-snug">
+            {t(COPY_NOTICE_TEXT[status])}
+          </span>
         </span>
       ) : null}
     </div>

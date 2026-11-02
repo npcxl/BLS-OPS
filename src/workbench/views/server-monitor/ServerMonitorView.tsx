@@ -17,6 +17,8 @@ import {
   WifiOff,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { LoadingState } from "@/components/ui/loading";
 import { Select } from "@/components/ui/select";
 import { useTranslation } from "react-i18next";
 import { opsApi, toErrorMessage, type DiskMetrics } from "@/api/ops-api";
@@ -30,7 +32,15 @@ import {
   totalThroughput,
   type MonitorEntry,
 } from "@/stores/monitor-store";
-import { ToolbarStat, ToolbarStatus } from "@/workbench/views/module-frame";
+import {
+  PageNotice,
+  PageScroll,
+  PageStatusBar,
+  PageSurface,
+  PageTabs,
+  PageToolbar,
+  PageToolbarDivider,
+} from "@/workbench/page-layout";
 import type { WorkspaceTab } from "@/workbench/types";
 import { cn } from "@/lib/cn";
 import { formatBytes, formatSpeed, formatUptime } from "@/lib/format";
@@ -272,39 +282,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           : "bg-fg-subtle";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-1">
-      {/* Host info + connection status */}
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-1 px-3">
-        <span className={cn("h-[6px] w-[6px] rounded-full", statusTone)} />
-        <span className="text-12 font-semibold text-fg">{tab.title}</span>
-        {tab.subtitle && <span className="truncate text-11 text-fg-subtle">{tab.subtitle}</span>}
-        <span className="ml-auto flex items-center gap-2 truncate text-11 text-fg-subtle">
-          {snapshot && snapshot.system.hostname && (
-            <>
-              <span className="font-mono text-fg-muted">{snapshot.system.hostname}</span>
-              <span className="text-line-strong">|</span>
-            </>
-          )}
-          {snapshot && (
-            <span title={`${snapshot.system.kernel} ${snapshot.system.architecture}`}>
-              {snapshot.system.os_name}
-              {snapshot.system.os_version ? ` ${snapshot.system.os_version}` : ""}
-            </span>
-          )}
-          {snapshot && (
-            <>
-              <span className="text-line-strong">|</span>
-              <span>{t("Up {{time}}", { time: formatUptime(snapshot.system.uptime_seconds) })}</span>
-            </>
-          )}
-          {server?.proxy_jump_id && <span className="shrink-0">{t("via jump host")}</span>}
-        </span>
-      </div>
-
-      {/* Toolbar */}
-      {/* One row, always: the status text gives up space instead of wrapping
-          out of sight behind the fixed 40px height. */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-transparent px-2">
+    <PageSurface>
+      {/* One control row. The server name lives on the work tab; host identity
+          lives in the status bar, so nothing is repeated here. */}
+      <PageToolbar>
         <Button
           variant="ghost"
           size="xs"
@@ -324,7 +305,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           <RefreshCw size={12} />
           {t("Refresh")}
         </Button>
-        <div className="mx-1 h-4 w-px bg-line" />
+        <PageToolbarDivider />
         <span className="flex items-center gap-1 text-11 text-fg-subtle">
           {t("Interval")}
           <Select
@@ -339,7 +320,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             }))}
           />
         </span>
-        <div className="mx-1 h-4 w-px bg-line" />
+        <PageToolbarDivider />
         {phase === "connected" || phase === "connecting" ? (
           <Button
             variant="ghost"
@@ -359,58 +340,63 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             {t("Reconnect")}
           </Button>
         )}
-        <ToolbarStatus className="gap-1.5">
-          {entry?.collecting && (
-            <span className="h-[5px] w-[5px] shrink-0 animate-pulse rounded-full bg-accent" />
-          )}
-          <ToolbarStat>{statusLabel}</ToolbarStat>
-          <span className="shrink-0 text-line-strong">|</span>
-          {/* The last collection time is what the user checks, so it stays whole. */}
-          <ToolbarStat className="shrink-0">{formatClock(entry?.lastUpdatedAt ?? null)}</ToolbarStat>
-        </ToolbarStatus>
-      </div>
+      </PageToolbar>
 
-      {/* Banners */}
+      {/* One notice slot per state; the page itself never stacks banners. */}
       {phase === "unsupported" && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-warning/30 bg-warning/10 px-3 py-2 text-12 text-fg">
-          <TriangleAlert size={13} className="mt-0.5 shrink-0 text-warning" />
-          <span className="min-w-0 flex-1">
-            {entry?.unsupportedReason ?? t("Unsupported operating system")}
-            <span className="ml-1 text-fg-subtle">
-              {t("Ops Workbench only provides read-only monitoring for Linux servers; collection has stopped.")}
-            </span>
+        <PageNotice tone="warning" icon={<TriangleAlert size={13} />}>
+          {entry?.unsupportedReason ?? t("Unsupported operating system")}
+          <span className="ml-1 text-fg-subtle">
+            {t("Ops Workbench only provides read-only monitoring for Linux servers; collection has stopped.")}
           </span>
-        </div>
+        </PageNotice>
       )}
       {phase === "error" && entry?.error && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          <WifiOff size={13} className="shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{entry.error}</span>
-        </div>
+        <PageNotice
+          tone="danger"
+          icon={<WifiOff size={13} />}
+          action={
+            <Button variant="ghost" size="xs" onClick={() => void connect()}>
+              {t("Retry")}
+            </Button>
+          }
+        >
+          {entry.error}
+        </PageNotice>
       )}
       {phase === "closed" && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
-          <WifiOff size={13} className="shrink-0" />
-          <span className="min-w-0 flex-1 truncate">
-            {entry?.error ?? t("SSH connection closed; monitoring stopped")}
-          </span>
-          <Button variant="ghost" size="xs" onClick={() => void connect()}>
-            {t("Reconnect")}
-          </Button>
-        </div>
+        <PageNotice
+          icon={<WifiOff size={13} />}
+          action={
+            <Button variant="ghost" size="xs" onClick={() => void connect()}>
+              {t("Reconnect")}
+            </Button>
+          }
+        >
+          {entry?.error ?? t("SSH connection closed; monitoring stopped")}
+        </PageNotice>
       )}
       {phase === "connecting" && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
-          <Activity size={13} className="shrink-0 animate-pulse text-accent" />
-          <span>{t("Establishing monitoring connection (no interactive terminal allocated)…")}</span>
-        </div>
+        <PageNotice icon={<Activity size={13} className="animate-pulse text-accent" />}>
+          {t("Establishing monitoring connection (no interactive terminal allocated)…")}
+        </PageNotice>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {!snapshot && phase !== "unsupported" ? (
-          <p className="px-1 py-6 text-12 text-fg-subtle">
-            {t("No data collected yet. The first collection starts right after connecting.")}
-          </p>
+      <PageScroll>
+        {!snapshot && phase === "connecting" ? (
+          <LoadingState className="h-full" label={t("Collecting the first sample…")} />
+        ) : !snapshot && phase !== "unsupported" ? (
+          <EmptyState
+            icon={<Activity size={18} strokeWidth={1.5} />}
+            title={t("No data collected yet")}
+            description={t("The first collection starts right after connecting.")}
+            action={
+              <Button variant="ghost" size="sm" disabled={!canCollect} onClick={() => void refresh(tab.id)}>
+                <RefreshCw size={12} />
+                {t("Collect now")}
+              </Button>
+            }
+          />
         ) : (
           <div className="flex flex-col gap-3">
             {/* Metric cards */}
@@ -519,37 +505,29 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               />
             </div>
 
-            {/* Detail tabs */}
-            <div className="flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface-1">
-              <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-                {DETAIL_TABS.map((item) => {
+            {/* Detail categories: object tabs, not work tabs. */}
+            <div className="overflow-hidden rounded-[12px] border border-line bg-content">
+              <PageTabs
+                value={detail}
+                onChange={setDetail}
+                label={t("Detail categories")}
+                panelId={`monitor-${tab.id}-detail`}
+                items={DETAIL_TABS.map((item) => {
                   const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setDetail(item.id)}
-                      className={cn(
-                        "flex h-6 items-center gap-1.5 rounded-[7px] px-2 text-11 transition-colors",
-                        detail === item.id
-                          ? "bg-tab-active text-fg"
-                          : "text-fg-muted hover:bg-tab-hover hover:text-fg",
-                      )}
-                    >
-                      <Icon size={12} strokeWidth={1.75} />
-                      {t(item.labelKey)}
-                      <span className="text-fg-subtle">
-                        {item.id === "disk"
-                          ? (snapshot?.disks.length ?? 0)
-                          : item.id === "network"
-                            ? (snapshot?.network.length ?? 0)
-                            : (snapshot?.processes.length ?? 0)}
-                      </span>
-                    </button>
-                  );
+                  return {
+                    id: item.id,
+                    icon: <Icon size={12} strokeWidth={1.75} />,
+                    label: t(item.labelKey),
+                    count:
+                      item.id === "disk"
+                        ? (snapshot?.disks.length ?? 0)
+                        : item.id === "network"
+                          ? (snapshot?.network.length ?? 0)
+                          : (snapshot?.processes.length ?? 0),
+                  };
                 })}
-              </div>
-              <div className="max-h-[320px] min-h-0 overflow-auto">
+              />
+              <div role="tabpanel" id={`monitor-${tab.id}-detail`}>
                 {detail === "disk" && <DiskTable disks={snapshot?.disks ?? []} />}
                 {detail === "network" && <NetworkTable network={snapshot?.network ?? []} />}
                 {detail === "process" && <ProcessTable processes={snapshot?.processes ?? []} />}
@@ -557,7 +535,39 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             </div>
           </div>
         )}
-      </div>
-    </div>
+      </PageScroll>
+
+      <PageStatusBar>
+        <span className="page-statusbar__group">
+          <span className={cn("h-[6px] w-[6px] shrink-0 rounded-full", statusTone)} />
+          <span>{statusLabel}</span>
+        </span>
+        {snapshot?.system.hostname && (
+          <>
+            <span className="text-line-strong">|</span>
+            <span className="font-mono">{snapshot.system.hostname}</span>
+          </>
+        )}
+        {snapshot && (
+          <>
+            <span className="text-line-strong">|</span>
+            <span title={`${snapshot.system.kernel} ${snapshot.system.architecture}`}>
+              {snapshot.system.os_name}
+              {snapshot.system.os_version ? ` ${snapshot.system.os_version}` : ""}
+            </span>
+          </>
+        )}
+        {snapshot && (
+          <>
+            <span className="text-line-strong">|</span>
+            <span>{t("Up {{time}}", { time: formatUptime(snapshot.system.uptime_seconds) })}</span>
+          </>
+        )}
+        {server?.proxy_jump_id && <span>{t("via jump host")}</span>}
+        <span className="page-statusbar__spacer" />
+        {entry?.collecting && <span className="h-[5px] w-[5px] animate-pulse rounded-full bg-accent" />}
+        <span>{formatClock(entry?.lastUpdatedAt ?? null)}</span>
+      </PageStatusBar>
+    </PageSurface>
   );
 }

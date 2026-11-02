@@ -103,7 +103,7 @@ export function PubSubPanel({
 
   return (
     <div className="absolute inset-y-0 right-0 z-20 flex w-[360px] flex-col border-l border-line bg-surface-1 shadow-[-12px_0_32px_rgb(15_23_42/0.08)]">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
+      <div className="page-panel-header">
         <span className="flex-1 text-12 font-medium text-fg-muted">{t("发布 / 订阅")}</span>
         <Button
           variant="ghost"

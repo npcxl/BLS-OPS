@@ -47,7 +47,7 @@ export function TerminalSettingsGroup() {
       hint={t("The font is shared by the terminal and the command output panel.")}
     >
       <ListGroup>
-        <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="page-form-row">
           <span className="shrink-0 text-12 text-fg">{t("Font")}</span>
           <Select
             className="max-w-40"
@@ -67,7 +67,7 @@ export function TerminalSettingsGroup() {
             {PREVIEW_LINES.join("\n")}
           </pre>
         </div>
-        <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <div className="page-form-row">
           <div className="min-w-0">
             <span className="block text-12 text-fg">{t("Compact prompt")}</span>
             <span className="block text-11 leading-relaxed text-fg-subtle">

@@ -10,6 +10,8 @@
 export {
   Activity,
   Archive,
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   Ban,
   Bot,
@@ -18,6 +20,7 @@ export {
   ClipboardPaste,
   Columns2,
   Columns3,
+  CopyPlus,
   CornerDownLeft,
   Database,
   Eraser,

@@ -22,8 +22,17 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Ban,
   ChevronLeft,
   ChevronRight,
+  CircleDashed,
+  Columns3,
+  Copy,
+  CopyPlus,
+  Eraser,
+  Eye,
   FileDown,
   FilePlus2,
   Filter,
@@ -32,6 +41,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Trash2,
   X,
@@ -1111,6 +1121,7 @@ export function TableBrowser({
       {
         id: "sort-asc",
         label: t("升序"),
+        icon: ArrowUp,
         onSelect: () => {
           setSorts([{ column: name, direction: "asc" }]);
           resetPaging();
@@ -1119,6 +1130,7 @@ export function TableBrowser({
       {
         id: "sort-desc",
         label: t("降序"),
+        icon: ArrowDown,
         onSelect: () => {
           setSorts([{ column: name, direction: "desc" }]);
           resetPaging();
@@ -1127,6 +1139,7 @@ export function TableBrowser({
       {
         id: "sort-clear",
         label: t("清除排序"),
+        icon: X,
         onSelect: () => {
           setSorts([]);
           resetPaging();
@@ -1136,6 +1149,7 @@ export function TableBrowser({
       {
         id: "filter",
         label: t("筛选"),
+        icon: Filter,
         onSelect: () => {
           setDraftFilter({ column: name, op: "contains", value: "" });
           setShowFilters(true);
@@ -1144,6 +1158,7 @@ export function TableBrowser({
       {
         id: "copy-column",
         label: t("复制列名"),
+        icon: Copy,
         onSelect: () => void copyText(name),
       },
       { separator: true },
@@ -1152,6 +1167,7 @@ export function TableBrowser({
       {
         id: "column-info",
         label: t("字段属性"),
+        icon: Columns3,
         onSelect: () =>
           openStructure({
             profileId: profile.id,
@@ -1176,21 +1192,25 @@ export function TableBrowser({
       {
         id: "insert",
         label: t("新增行"),
+        icon: Plus,
         onSelect: () => void openEditor("insert", null),
       },
       {
         id: "copy-new",
         label: t("复制为新行"),
+        icon: CopyPlus,
         onSelect: () => insertFromRow(row),
       },
       {
         id: "form-edit",
         label: t("表单编辑"),
+        icon: Pencil,
         onSelect: () => void openEditor("update", row),
       },
       {
         id: "delete-row",
         label: t("删除选中行"),
+        icon: Trash2,
         onSelect: () => requestDeleteRow(rowIndex),
       },
       { separator: true },
@@ -1201,6 +1221,7 @@ export function TableBrowser({
             {
               id: "undo-row",
               label: t("撤销行修改"),
+              icon: RotateCcw,
               onSelect: () => removeRowChange(rowIndex),
             },
           ]
@@ -1517,7 +1538,7 @@ export function TableBrowser({
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* 第一行：新建查询 + 子视图 + 表格修改开关 + 筛选/导出 + 刷新/关闭 */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
+      <div className="page-toolbar">
         <Button
           variant="primary"
           size="xs"
@@ -1638,7 +1659,7 @@ export function TableBrowser({
 
       {/* 第二行：默认收起；点“表格修改”才出现 */}
       {view === "data" && showEditBar && (
-        <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-surface-2/30 px-2">
+        <div className="page-toolbar page-toolbar--secondary">
           <Button
             variant="primary"
             size="xs"
@@ -1901,35 +1922,41 @@ export function TableBrowser({
                   {
                     id: "edit",
                     label: t("编辑"),
+                    icon: Pencil,
                     disabled: !canEdit,
                     onSelect: () => void startCellEdit(cell),
                   },
                   {
                     id: "detail",
                     label: t("查看完整值"),
+                    icon: Eye,
                     onSelect: () => openCellDetail(cell),
                   },
                   { separator: true },
                   {
                     id: "filter-eq",
                     label: t("按此值筛选"),
+                    icon: Filter,
                     onSelect: () => filterByCell(cell, false),
                   },
                   {
                     id: "filter-ne",
                     label: t("排除此值"),
+                    icon: Ban,
                     onSelect: () => filterByCell(cell, true),
                   },
                   { separator: true },
                   {
                     id: "null",
                     label: t("设为 NULL"),
+                    icon: CircleDashed,
                     disabled: !canEdit,
                     onSelect: () => applyCellValue(cell, { kind: "null" }),
                   },
                   {
                     id: "empty",
                     label: t("设为空字符串"),
+                    icon: Eraser,
                     disabled: !canEdit,
                     onSelect: () =>
                       applyCellValue(cell, { kind: "value", value: "" }),
@@ -1937,6 +1964,7 @@ export function TableBrowser({
                   {
                     id: "default",
                     label: t("使用默认值"),
+                    icon: RefreshCw,
                     disabled: !canEdit,
                     onSelect: () => applyCellValue(cell, { kind: "default" }),
                   },
@@ -1946,6 +1974,7 @@ export function TableBrowser({
                         {
                           id: "undo-cell",
                           label: t("撤销当前修改"),
+                          icon: RotateCcw,
                           onSelect: () => removeCellChange(cell),
                         },
                       ]
@@ -1954,6 +1983,7 @@ export function TableBrowser({
                   {
                     id: "delete-row",
                     label: t("删除选中行"),
+                    icon: Trash2,
                     disabled: !canEdit,
                     onSelect: () => requestDeleteRow(cell.row),
                   },

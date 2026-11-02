@@ -20,6 +20,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Pool, PoolConstraints, PoolOpts, SslOpts};
 use rusqlite::Connection;
 
+use super::super::capability::{MySqlProductProfile, ReadOnlyMode};
 use super::super::model::{
     DatabaseProfile, DbErrorInfo, TlsStatus, TLS_DISABLED, TLS_VERIFY_CA, TLS_VERIFY_IDENTITY,
 };
@@ -312,12 +313,24 @@ pub async fn connect_once(opts: Opts, timeout: Duration) -> Result<Conn, DbError
     }
 }
 
-/// 按服务器设置会话：字符集、只读默认事务。
-pub async fn apply_session_settings(conn: &mut Conn, read_only: bool) -> Result<(), DbErrorInfo> {
+/// 按产品设置会话：字符集、产品必需的会话初始化、只读默认事务。
+///
+/// **只读不是所有产品都能落到服务器**：Doris/StarRocks 没有只读事务，
+/// 这里不执行（执行会直接报错），由会话标记"仅客户端拦截"并在入口拒绝写语句。
+pub async fn apply_session_settings(
+    conn: &mut Conn,
+    read_only: bool,
+    product: &MySqlProductProfile,
+) -> Result<(), DbErrorInfo> {
     conn.query_drop("SET NAMES utf8mb4")
         .await
         .map_err(|error| map_error(&error, "query"))?;
-    if read_only {
+    for statement in product.session_init {
+        conn.query_drop(*statement)
+            .await
+            .map_err(|error| map_error(&error, "config"))?;
+    }
+    if read_only && product.read_only == ReadOnlyMode::ServerTransaction {
         // 服务端机制，不是前端开关：之后任何写语句都会被服务器拒绝（1792）。
         conn.query_drop("SET SESSION TRANSACTION READ ONLY")
             .await

@@ -20,6 +20,8 @@ import { buildUpdateDiagnostics } from "@/lib/updater/diagnostics";
 import { useUpdaterStore } from "@/stores/updater-store";
 import { useUpdaterActions } from "@/hooks/use-updater";
 import { useDomainStore } from "@/stores/domain-store";
+import { ReleaseNotesDialog } from "./ReleaseNotesDialog";
+import type { UpdateRelease } from "@/api/types/updater";
 import type { UpdatePhase } from "@/api/types/updater";
 import { Group, InfoRow, ListGroup, Switch } from "../settings-parts";
 import { UpdateRestartDialog } from "./UpdateRestartDialog";
@@ -73,6 +75,16 @@ export function UpdateSection() {
   const appInfo = useDomainStore((s) => s.appInfo);
   /** "Copied" is a one-shot confirmation; two buttons share one message. */
   const [copied, setCopied] = useState<string | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesRelease, setNotesRelease] = useState<UpdateRelease | null>(null);
+  const viewLatestNotes = () => { setNotesRelease(null); setNotesOpen(true); };
+  const checkAndShowNotes = async () => {
+    await check({ manual: true });
+    const state = useUpdaterStore.getState();
+    if (state.phase !== "available" && state.phase !== "up_to_date") return;
+    setNotesRelease(state.release);
+    setNotesOpen(true);
+  };
 
   // Sanitised again at the render site: the UI shows text the user can copy
   // into an issue, so nothing unsanitised may reach the DOM either.
@@ -129,7 +141,10 @@ export function UpdateSection() {
         <InfoRow label={t("Current version")} value={currentVersion ? `v${currentVersion}` : "—"} />
         <InfoRow label={t("Update channel")} value={t("Stable")} />
         <InfoRow label={t("Last checked")} value={formatWhen(lastCheckedAt) ?? t("Never")} />
-        <div className="flex items-center justify-between gap-3 px-3 py-2">
+        <button type="button" className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-12 text-fg hover:bg-surface-hover" onClick={viewLatestNotes}>
+          <span>{t("View latest release notes")}</span><span className="text-fg-subtle" aria-hidden="true">›</span>
+        </button>
+        <div className="page-form-row">
           <span className="shrink-0 text-11 text-fg">{t("Check for updates automatically")}</span>
           <Switch
             checked={autoCheck}
@@ -143,14 +158,7 @@ export function UpdateSection() {
         <ListGroup>
           <InfoRow label={t("New version")} value={`v${release.version}`} />
           <InfoRow label={t("Published")} value={formatWhen(release.date) ?? "—"} />
-          {release.notes && (
-            <div className="px-3 py-2">
-              <span className="mb-1 block text-11 text-fg-muted">{t("Release notes")}</span>
-              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words font-sans text-11 leading-relaxed text-fg">
-                {release.notes}
-              </pre>
-            </div>
-          )}
+
         </ListGroup>
       )}
 
@@ -215,7 +223,7 @@ export function UpdateSection() {
           variant="secondary"
           size="sm"
           disabled={busy}
-          onClick={() => void check({ manual: true })}
+          onClick={() => void checkAndShowNotes()}
         >
           {phase === "checking" ? t("Checking") : t("Check for updates")}
         </Button>
@@ -248,6 +256,9 @@ export function UpdateSection() {
         </button>
       </div>
 
+      <ReleaseNotesDialog open={notesOpen} onClose={() => setNotesOpen(false)} release={notesRelease}
+        action={notesRelease && notesRelease.version === release?.version && canInstall ? <Button variant="primary" size="sm" disabled={busy}
+          onClick={() => { setNotesOpen(false); guard.requestInstall(); }}>{t("Download and install")}</Button> : undefined} />
       <UpdateRestartDialog
         open={guard.pendingAction !== null}
         action={guard.pendingAction === "restart" ? "restart" : "install"}

@@ -7,7 +7,7 @@
  * scroll area. Putting that here keeps five views from drifting apart — and
  * keeps "connection lost" looking the same everywhere.
  */
-import { type InputHTMLAttributes, type ReactNode, useMemo, useState } from "react";
+import { type InputHTMLAttributes, type ReactNode, type Ref, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
+import { PageNotice, PageScroll, PageSurface, PageToolbar, PageWorkspace } from "@/workbench/page-layout";
 import { useDomainStore } from "@/stores/domain-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { CommandSession } from "@/hooks/use-command-session";
@@ -53,45 +54,60 @@ export function ServerPicker({ tabId }: { tabId: string }) {
     });
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
-      <p className="text-13 text-fg-muted">{t("Select a server to start")}</p>
-      {servers.length === 0 ? (
-        <p className="max-w-sm text-center text-12 text-fg-subtle">
-          {t("No entries under \"Servers\" on the left yet — add a server first.")}
-        </p>
-      ) : (
-        <div className="flex w-80 flex-col gap-2">
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder={t("Search servers…")}
-            className="h-[28px] rounded-[7px] border border-line bg-surface-2 px-2 text-12 text-fg outline-none placeholder:text-fg-subtle focus:border-accent"
-          />
-          <div className="flex max-h-[45vh] flex-col overflow-y-auto rounded-[8px] border border-line bg-surface-1">
-            {visible.length === 0 ? (
-              <p className="px-3 py-4 text-center text-12 text-fg-subtle">{t("No matching servers")}</p>
-            ) : (
-              visible.map((server) => (
-                <button
-                  key={server.id}
-                  type="button"
-                  className="flex flex-col items-start gap-0.5 border-b border-line px-3 py-2 text-left last:border-b-0 hover:bg-surface-hover"
-                  onClick={() => attach(server)}
-                >
-                  <span className="text-12 text-fg">{server.name}</span>
-                  <span className="text-11 text-fg-subtle">
-                    {server.username}@{server.host}:{server.port}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
+    <PageSurface>
+      <PageWorkspace className="items-center justify-center">
+        <div className="flex w-full max-w-[400px] flex-col gap-3 px-6">
+          {servers.length === 0 ? (
+            <EmptyState
+              icon={<PlugZap size={18} strokeWidth={1.5} />}
+              title={t("No servers yet")}
+              description={t("No entries under \"Servers\" on the left yet — add a server first.")}
+            />
+          ) : (
+            <>
+              <p className="text-center text-13 text-fg-muted">{t("Select a server to start")}</p>
+              <Input
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder={t("Search servers…")}
+                aria-label={t("Search servers…")}
+                size="xs"
+              />
+              <div className="page-form-list max-h-[45vh] overflow-y-auto">
+                {visible.length === 0 ? (
+                  <EmptyState
+                    title={t("No matching servers")}
+                    className="min-h-24 py-4"
+                    action={
+                      <Button variant="ghost" size="xs" onClick={() => setFilter("")}>
+                        {t("Clear search")}
+                      </Button>
+                    }
+                  />
+                ) : (
+                  visible.map((server) => (
+                    <button
+                      key={server.id}
+                      type="button"
+                      className="page-form-row w-full flex-col items-start gap-0.5 text-left hover:bg-surface-hover"
+                      onClick={() => attach(server)}
+                    >
+                      <span className="text-12 text-fg">{server.name}</span>
+                      <span className="text-11 text-fg-subtle">
+                        {server.username}@{server.host}:{server.port}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </>
+          )}
+          <Button variant="ghost" size="sm" className="self-center" onClick={() => closeTabById(tabId)}>
+            {t("Close this tab")}
+          </Button>
         </div>
-      )}
-      <Button variant="ghost" size="sm" onClick={() => closeTabById(tabId)}>
-        {t("Close this tab")}
-      </Button>
-    </div>
+      </PageWorkspace>
+    </PageSurface>
   );
 }
 
@@ -100,6 +116,8 @@ export function ModuleFrame({
   icon,
   toolbar,
   toolbar2,
+  contentScroll = true,
+  contentRef,
   children,
 }: {
   session: CommandSession;
@@ -109,6 +127,10 @@ export function ModuleFrame({
   toolbar?: ReactNode;
   /** Secondary row (filter bar) shown beneath the first row when present. */
   toolbar2?: ReactNode;
+  /** Pages with their own scrollable panes (project tabs, split workspaces) opt out. */
+  contentScroll?: boolean;
+  /** The page's single scroll viewport (follow-tail logs, scroll restore). */
+  contentRef?: Ref<HTMLDivElement>;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -120,72 +142,83 @@ export function ModuleFrame({
     // so we only point the user at the sidebar; the tab itself closes from its
     // own close button.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface-1 px-6">
-        <p className="text-13 text-fg-muted">{t("Pick a server from the left sidebar")}</p>
-        <p className="max-w-sm text-center text-12 text-fg-subtle">
-          {t(
-            "Logs, containers, gateways and other modules run on a specific server. Pick one from the left list to view its content here.",
-          )}
-        </p>
-      </div>
+      <PageSurface>
+        <PageWorkspace className="items-center justify-center">
+          <EmptyState
+            icon={<PlugZap size={18} strokeWidth={1.5} />}
+            title={t("Pick a server from the left sidebar")}
+            description={t(
+              "Logs, containers, gateways and other modules run on a specific server. Pick one from the left list to view its content here.",
+            )}
+            className="min-h-0 py-0"
+          />
+        </PageWorkspace>
+      </PageSurface>
     );
   }
 
   const banner = () => {
     if (session.phase === "connecting") {
       return (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
-          <Activity size={13} className="shrink-0 animate-pulse text-accent" />
-          <span>{t("Establishing connection (no interactive terminal allocated)…")}</span>
-        </div>
+        <PageNotice icon={<Activity size={13} className="animate-pulse text-accent" />}>
+          {t("Establishing connection (no interactive terminal allocated)…")}
+        </PageNotice>
       );
     }
     if (session.phase === "error") {
       return (
-        <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-12 text-danger">
-          <TriangleAlert size={13} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 flex-1">{session.error ?? t("Connection failed")}</span>
-          <Button variant="ghost" size="xs" onClick={session.connect}>
-            {t("Retry")}
-          </Button>
-        </div>
+        <PageNotice
+          tone="danger"
+          icon={<TriangleAlert size={13} />}
+          action={
+            <Button variant="ghost" size="xs" onClick={session.connect}>
+              {t("Retry")}
+            </Button>
+          }
+        >
+          {session.error ?? t("Connection failed")}
+        </PageNotice>
       );
     }
     if (session.phase === "closed") {
       return (
-        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-3 py-2 text-12 text-fg-muted">
-          <WifiOff size={13} className="shrink-0" />
-          <span className="min-w-0 flex-1">{session.error ?? t("SSH connection closed")}</span>
-          <Button variant="ghost" size="xs" onClick={session.connect}>
-            {t("Reconnect")}
-          </Button>
-        </div>
+        <PageNotice
+          icon={<WifiOff size={13} />}
+          action={
+            <Button variant="ghost" size="xs" onClick={session.connect}>
+              {t("Reconnect")}
+            </Button>
+          }
+        >
+          {session.error ?? t("SSH connection closed")}
+        </PageNotice>
       );
     }
     return null;
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-1">
-      {/* One compact header row: icon + toolbar (filters/actions). The server
-          name itself lives on the tab, so we don't repeat it here — this row
-          is purely the module's controls. Connection problems surface via the
-          banner below, not a permanent status badge. */}
-      <div className="flex h-10 shrink-0 items-center gap-1 overflow-hidden border-b border-line bg-transparent px-2">
+    <PageSurface>
+      {/* One compact control row: icon + filters/actions. The server name lives
+          on the work tab, so it is not repeated here; connection problems use
+          the notice slot below instead of a permanent badge. */}
+      <PageToolbar>
         {Glyph && <Glyph size={13} className="shrink-0 text-fg-subtle" />}
-        {toolbar && <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div>}
-      </div>
+        {toolbar ? <div className="flex min-w-0 flex-1 items-center gap-1">{toolbar}</div> : <div className="page-toolbar-grow" />}
+      </PageToolbar>
 
       {banner()}
 
-      {toolbar2 && (
-        <div className="flex h-9 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line bg-transparent px-2">
-          {toolbar2}
-        </div>
-      )}
+      {toolbar2 && <PageToolbar variant="secondary">{toolbar2}</PageToolbar>}
 
-      <div className="ops-scroll min-h-0 flex-1 overflow-y-scroll overflow-x-hidden">{children}</div>
-    </div>
+      {contentScroll ? (
+        <PageScroll padded={false} viewportRef={contentRef}>
+          {children}
+        </PageScroll>
+      ) : (
+        <PageWorkspace>{children}</PageWorkspace>
+      )}
+    </PageSurface>
   );
 }
 
@@ -208,7 +241,7 @@ export function ToolbarStatus({
     
     <span
       className={cn(
-        "ml-auto flex min-w-0 shrink items-center gap-2 overflow-hidden text-11 text-fg-subtle",
+        "page-toolbar-summary ml-auto flex min-w-0 shrink items-center gap-2 overflow-hidden text-11 text-fg-subtle",
         className,
       )}
     >

@@ -106,7 +106,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
   return (
     <Modal
       open
-      width={360}
+      size="md"
       title={isNew ? t("Add server") : t("Edit server — {{name}}", { name: server.name || server.host })}
       onClose={onClose}
       footer={

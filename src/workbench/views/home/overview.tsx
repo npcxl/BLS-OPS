@@ -21,7 +21,7 @@ export interface OverviewStat {
 
 export function OverviewSection({ stats, liveLabel }: { stats: OverviewStat[]; liveLabel: string }) {
   return (
-    <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+    <div className="home-overview">
       {stats.map((stat) => {
         const Icon = stat.icon;
         return (
@@ -31,13 +31,12 @@ export function OverviewSection({ stats, liveLabel }: { stats: OverviewStat[]; l
             onClick={stat.onOpen}
             data-testid={`home-stat-${stat.id}`}
             className={cn(
-              "group flex min-w-0 flex-col gap-1.5 rounded-[12px] border border-line bg-surface-1/70 p-3.5 text-left",
-              "shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-colors",
-              "hover:border-line-strong hover:bg-surface-hover/40",
+              "home-stat group min-w-0 text-left",
+              "focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-[-2px]",
             )}
           >
             <span className="flex min-w-0 items-center gap-2">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-surface-2 text-fg-subtle transition-colors group-hover:text-fg-muted">
+              <span className="home-stat-icon">
                 <Icon size={13} strokeWidth={1.8} />
               </span>
               <span className="min-w-0 truncate text-11 text-fg-muted">{stat.label}</span>
@@ -48,7 +47,7 @@ export function OverviewSection({ stats, liveLabel }: { stats: OverviewStat[]; l
                 </span>
               )}
             </span>
-            <span className="text-[24px] leading-none font-semibold tabular-nums text-fg">{stat.value}</span>
+            <span className="home-stat-value">{stat.value}</span>
             {stat.hint && <span className="truncate text-11 text-fg-subtle">{stat.hint}</span>}
             {stat.alert && (
               <span className="flex items-center gap-1 text-11 text-danger">

@@ -7,7 +7,8 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 .txt
-docs
+# 设计/验收文档只在本地保留，不进仓库
+docs/
 # Shell redirection leftovers from package manager invocations
 *.err
 
@@ -34,12 +35,13 @@ src-tauri/target*/
 # 一律视为临时输出（项目文档都是 .md）。
 /*.txt
 *_out.txt
+# 只忽略临时脚本：scripts/ 里的发布工具必须入库（release.yml 与 package.json
+# 直接调用 check-versions / bump-version / rewrite-updater-urls / generate-file-icons）
 scripts/tmp-*
 .tmp-*
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo

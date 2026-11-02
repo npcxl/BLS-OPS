@@ -9,8 +9,10 @@ import { useTranslation } from "react-i18next";
 import { Copy, X } from "@/components/icons";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { LoadingState } from "@/components/ui/loading";
 import { copyText } from "@/lib/clipboard";
+import { PageNotice, PageSurface, PageToolbar, PageWorkspace } from "@/workbench/page-layout";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
@@ -145,29 +147,31 @@ export function DetachedSqlWindow() {
 
   if (setupError) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-surface-1 px-6 text-center">
-        <p className="text-13 text-fg">{setupError}</p>
-        <Button variant="ghost" size="sm" onClick={closeWindow}>
-          {t("关闭窗口")}
-        </Button>
-      </div>
+      <PageSurface>
+        <PageWorkspace className="items-center justify-center">
+          <EmptyState
+            title={t("This window has no query")}
+            description={setupError}
+            action={
+              <Button variant="ghost" size="sm" onClick={closeWindow}>
+                {t("关闭窗口")}
+              </Button>
+            }
+          />
+        </PageWorkspace>
+      </PageSurface>
     );
   }
 
   // 只读 DDL 窗口：没有会话、没有执行，只有一段可复制可折行的建表语句。
   if (payload?.kind === "ddl") {
     return (
-      <div className="flex h-screen min-h-0 flex-col bg-surface-1">
-        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
-          <span
-            className="min-w-0 flex-1 truncate text-12 font-medium text-fg"
-            title={payload.title}
-          >
+      <PageSurface>
+        <PageToolbar>
+          <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg" title={payload.title}>
             {payload.title}
           </span>
-          {payload.database && (
-            <span className="shrink-0 text-11 text-fg-subtle">{payload.database}</span>
-          )}
+          {payload.database && <span className="shrink-0 text-11 text-fg-subtle">{payload.database}</span>}
           <Button
             variant={wrap ? "secondary" : "ghost"}
             size="xs"
@@ -196,49 +200,43 @@ export function DetachedSqlWindow() {
             className="h-6 w-6 px-0"
             onClick={closeWindow}
             title={t("关闭窗口")}
+            aria-label={t("关闭窗口")}
           >
             <X size={12} />
           </Button>
-        </div>
-        <div className="min-h-0 flex-1 p-2">
+        </PageToolbar>
+        <PageWorkspace className="p-2">
           <DdlCode sql={payload.sql} wrap={wrap} />
-        </div>
-      </div>
+        </PageWorkspace>
+      </PageSurface>
     );
   }
 
   return (
-    <div className="flex h-screen min-h-0 flex-col bg-surface-1">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
+    <PageSurface>
+      <PageToolbar>
         <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg">
           {payload?.title ?? t("SQL 查询")}
         </span>
-        <span className="shrink-0 text-11 text-fg-subtle">
-          {t("独立窗口")}
-        </span>
+        <span className="shrink-0 text-11 text-fg-subtle">{t("独立窗口")}</span>
         <span
           className="shrink-0 rounded bg-surface-2 px-1 text-10 text-fg-subtle"
           title={t("与主窗口共用数据库会话：事务和临时表会互相影响")}
         >
           {t("共享会话")}
         </span>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={closeWindow}
-          title={t("关闭窗口")}
-        >
+        <Button variant="ghost" size="xs" className="h-6 w-6 px-0" onClick={closeWindow} title={t("关闭窗口")} aria-label={t("关闭窗口")}>
           <X size={12} />
         </Button>
-      </div>
+      </PageToolbar>
 
       {!session && (
-        <div className="shrink-0 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-11 text-warning">
+        <PageNotice tone="warning">
           {t("正在建立数据库连接…执行按钮在连接完成后可用")}
-        </div>
+        </PageNotice>
       )}
 
-      <div className="min-h-0 flex-1">
+      <PageWorkspace>
         {profile && tabId ? (
           <SqlWorkspace
             tabId={tabId}
@@ -252,7 +250,7 @@ export function DetachedSqlWindow() {
         ) : (
           <LoadingState className="h-full" />
         )}
-      </div>
-    </div>
+      </PageWorkspace>
+    </PageSurface>
   );
 }

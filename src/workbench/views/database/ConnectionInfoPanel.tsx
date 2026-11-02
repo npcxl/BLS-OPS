@@ -105,7 +105,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-surface-1">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-2">
+      <div className="page-panel-header">
         <DbEngineIcon
           engine={profile.engine}
           connected={connected}

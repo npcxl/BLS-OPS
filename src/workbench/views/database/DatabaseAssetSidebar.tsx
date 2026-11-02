@@ -8,7 +8,6 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Boxes,
   ChevronRight,
   ChevronsLeft,
   Database as DatabaseIcon,
@@ -474,6 +473,8 @@ export function DatabaseAssetSidebar() {
   const showFieldCard = useDatabaseWorkspaceStore((state) => state.showFieldCard);
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const savedQueries = useDatabaseWorkspaceStore((state) => state.savedQueries);
+  const workspaceItems = useDatabaseWorkspaceStore((state) => state.items);
+  const workspaceActiveId = useDatabaseWorkspaceStore((state) => state.activeId);
   const deleteSavedQuery = useDatabaseWorkspaceStore(
     (state) => state.deleteSavedQuery,
   );
@@ -481,6 +482,8 @@ export function DatabaseAssetSidebar() {
   const [filter, setFilter] = useState("");
   // 选中与"已打开"分开：选中只是当前焦点行，不改变任何打开状态。
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  /** Redis 库节点的展开态：参考图里 db 下面还有"数据 → 所有数据"一层。 */
+  const [redisDbOpen, setRedisDbOpen] = useState<Record<string, boolean>>({});
   const treeRef = useRef<HTMLDivElement | null>(null);
   const [dialog, setDialog] = useState<
     { mode: "create" } | { mode: "edit"; profile: DatabaseProfile } | null
@@ -613,6 +616,27 @@ export function DatabaseAssetSidebar() {
     };
   }, [tables]);
 
+  /**
+   * 切换工作区标签时同步资产树定位。
+   *
+   * 只做两件事：选中对应节点、在连接已展开但库还没加载时补齐表清单。
+   * **不**主动展开用户从没点开的连接 —— 那会让树在切标签时乱跳。
+   */
+  useEffect(() => {
+    const active = useDatabaseWorkspaceStore
+      .getState()
+      .items.find((item) => item.id === workspaceActiveId);
+    if (!active || !active.database) return;
+    if (active.kind !== "table" && active.kind !== "structure") return;
+    const key = detailKey(active.profileId, active.database, active.objectName);
+    setSelectedKey(key);
+    const current = useDatabaseStore.getState();
+    if (!current.expandedProfiles[active.profileId]) return;
+    const dbKey = tablesKey(active.profileId, active.database);
+    if (current.openedDatabases[dbKey] === true) return;
+    void current.openDatabase(active.profileId, active.database);
+  }, [workspaceActiveId, workspaceItems]);
+
   const visibleProfiles = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return profiles;
@@ -633,14 +657,25 @@ export function DatabaseAssetSidebar() {
     });
   };
 
-  /** 双击表：打开连接标签，并在其中打开一个独立表工作项。 */
-  const openTableItem = (profile: DatabaseProfile, database: string, table: string) => {
+  /**
+   * 打开一张表。
+   *
+   * - 单击 = 预览（`preview: true`）：复用同一个预览标签，下一次单击替换它；
+   * - 双击 / 菜单"打开" = 常驻标签，不会被下一次单击顶掉。
+   */
+  const openTableItem = (
+    profile: DatabaseProfile,
+    database: string,
+    table: string,
+    preview: boolean,
+  ) => {
     open(profile);
     openTable({
       profileId: profile.id,
       connectionName: profile.name,
       database,
       table,
+      preview,
     });
   };
 
@@ -1103,41 +1138,91 @@ export function DatabaseAssetSidebar() {
                       if (!profileConnected) void redisConnect(profile.id);
                       selectRedisDb(profile.id, index);
                     };
+                    // 参考图的层级：db → 数据 → 所有数据。默认只展开当前库，
+                    // 否则 16 个库各带两个子节点，一屏全是噪音。
+                    const treeKey = `${profile.id}:${index}`;
+                    const dbExpanded = redisDbOpen[treeKey] ?? active;
                     return (
-                      <div
-                        key={selectionKey}
-                        className={cn(
-                          "flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pl-6 pr-2.5 text-12 hover:bg-surface-hover",
-                          selectedKey === selectionKey && "bg-accent/10",
-                          active ? "text-fg" : "text-fg-muted",
+                      <Fragment key={selectionKey}>
+                        <div
+                          className={cn(
+                            "flex cursor-default items-center gap-1 rounded-[6px] py-1.5 pl-6 pr-2.5 text-12 hover:bg-surface-hover",
+                            selectedKey === selectionKey && "bg-accent/10",
+                            active ? "text-fg" : "text-fg-muted",
+                          )}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedKey(selectionKey);
+                            selectRedisDb(profile.id, index);
+                          }}
+                          onDoubleClick={openDb}
+                          onContextMenu={menu.onContextMenu(() => [
+                            {
+                              id: "open",
+                              label: t("打开 db {{index}}", { index }),
+                              onSelect: openDb,
+                            },
+                            {
+                              id: "copy",
+                              label: t("复制库名"),
+                              onSelect: () => void copyText(`db ${index}`),
+                            },
+                          ])}
+                        >
+                          <ChevronRight
+                            size={10}
+                            aria-hidden="true"
+                            className={cn(
+                              "shrink-0 text-fg-subtle transition-transform",
+                              dbExpanded && "rotate-90",
+                            )}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setRedisDbOpen((current) => ({
+                                ...current,
+                                [treeKey]: !dbExpanded,
+                              }));
+                            }}
+                          />
+                          <DatabaseIcon size={12} className="shrink-0 text-fg-subtle" />
+                          <span className="min-w-0 flex-1 truncate">db {index}</span>
+                          {active && (
+                            <span className="shrink-0 text-9 text-accent" aria-label={t("当前库")}>
+                              ●
+                            </span>
+                          )}
+                        </div>
+                        {dbExpanded && (
+                          <>
+                            <div
+                              className="flex items-center gap-1 py-1 text-12 font-medium text-fg-subtle"
+                              style={indent(3)}
+                            >
+                              {t("数据")}
+                            </div>
+                            <div
+                              className={cn(
+                                "flex cursor-default items-center gap-1 rounded-[6px] py-1 pr-2.5 text-12 hover:bg-surface-hover",
+                                selectedKey === `${selectionKey}:all`
+                                  ? "bg-accent/10 text-fg"
+                                  : "text-fg-muted",
+                              )}
+                              style={indent(4)}
+                              title={t("db {{index}} 的全部键", { index })}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedKey(`${selectionKey}:all`);
+                                openDb();
+                              }}
+                            >
+                              <Table2 size={12} className="shrink-0 text-fg-subtle" />
+                              <span className="min-w-0 flex-1 truncate">
+                                {t("所有数据")}
+                              </span>
+                            </div>
+                          </>
                         )}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedKey(selectionKey);
-                          selectRedisDb(profile.id, index);
-                        }}
-                        onDoubleClick={openDb}
-                        onContextMenu={menu.onContextMenu(() => [
-                          {
-                            id: "open",
-                            label: t("打开 db {{index}}", { index }),
-                            onSelect: openDb,
-                          },
-                          {
-                            id: "copy",
-                            label: t("复制库名"),
-                            onSelect: () => void copyText(`db ${index}`),
-                          },
-                        ])}
-                      >
-                        <DatabaseIcon size={12} className="shrink-0 text-fg-subtle" />
-                        <span className="min-w-0 flex-1 truncate">db {index}</span>
-                        {active && (
-                          <span className="shrink-0 text-9 text-accent" aria-label={t("当前库")}>
-                            ●
-                          </span>
-                        )}
-                      </div>
+                      </Fragment>
                     );
                   })}
 
@@ -1337,12 +1422,16 @@ export function DatabaseAssetSidebar() {
                                         ),
                                       onSelect: () => setSelectedKey(tableKey),
                                       onOpen: () =>
-                                        openTableItem(profile, database.name, table.name),
+                                        openTableItem(profile, database.name, table.name, false),
                                     })}
                                     onFocus={() => setSelectedKey(tableKey)}
-                                    onClick={() => setSelectedKey(tableKey)}
+                                    onClick={() => {
+                                      setSelectedKey(tableKey);
+                                      // 单击预览：复用同一个预览标签，不打断已固定的工作项。
+                                      openTableItem(profile, database.name, table.name, true);
+                                    }}
                                     onDoubleClick={() =>
-                                      openTableItem(profile, database.name, table.name)
+                                      openTableItem(profile, database.name, table.name, false)
                                     }
                                     onContextMenu={(event) => {
                                       event.stopPropagation();
@@ -1474,13 +1563,10 @@ export function DatabaseAssetSidebar() {
                                 </Fragment>
                                 );
                               })}
-                              <CategoryRow
-                                label={t("函数")}
-                                count={0}
-                                icon={<Boxes size={14} className="shrink-0" />}
-                                open={categoryOpen("functions")}
-                                onToggle={() => toggleCat("functions")}
-                              />
+                              {/* 只列真实存在的分类。
+                                  函数 / 备份在当前后端没有元数据来源，
+                                  以前显示 `count={0}` 的占位分类等于告诉用户"这里
+                                  有东西但是空的" —— 属于假状态，已移除。 */}
                               <CategoryRow
                                 label={t("查询")}
                                 count={databaseQueries.length}
@@ -1509,14 +1595,6 @@ export function DatabaseAssetSidebar() {
                                   </span>
                                 </div>
                               ))}
-                              <CategoryRow
-                                label={t("备份")}
-                                count={0}
-                                icon={<DatabaseIcon size={14} className="shrink-0" />}
-                                open={categoryOpen("backups")}
-                                onToggle={() => toggleCat("backups")}
-                              />
-
                             </>
                           );
                         })()}

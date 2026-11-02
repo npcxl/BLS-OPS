@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use ops_workbench_lib::database::{
-    driver, export::ExportRegistry, manager::DatabaseManager, metadata, model::*, mutate, profiles,
-    query, runtime::ProfileRuntime, schema_ops, session::SessionEntry, table, table_ops,
-    tunnel::TunnelRegistry,
+    adapter::AdapterSet, driver, export::ExportRegistry, manager::DatabaseManager, metadata,
+    model::*, mutate, profiles, query, runtime::ProfileRuntime, schema_ops, session::SessionEntry,
+    table, table_ops, tunnel::TunnelRegistry,
 };
 
 fn env(key: &str, fallback: &str) -> String {
@@ -1006,7 +1006,7 @@ async fn mysql_table_operations_are_real() {
         table: "object_ops_demo".to_string(),
         new_name: Some("object_ops_renamed".to_string()),
     };
-    table_ops::apply(&session, &detail, &rename)
+    table_ops::apply(&AdapterSet::mysql(), &session, &detail, &rename)
         .await
         .expect("rename");
     cache.invalidate(None).await;
@@ -1021,7 +1021,7 @@ async fn mysql_table_operations_are_real() {
         table: "object_ops_renamed".to_string(),
         new_name: Some("object_ops_copy".to_string()),
     };
-    table_ops::apply(&session, &renamed, &copy)
+    table_ops::apply(&AdapterSet::mysql(), &session, &renamed, &copy)
         .await
         .expect("copy");
     let copied: Option<u64> = admin
@@ -1039,7 +1039,7 @@ async fn mysql_table_operations_are_real() {
     let copied_detail = metadata::table_detail(&runtime, &cache, "ops_test", "object_ops_copy")
         .await
         .expect("copy detail");
-    table_ops::apply(&session, &copied_detail, &truncate)
+    table_ops::apply(&AdapterSet::mysql(), &session, &copied_detail, &truncate)
         .await
         .expect("truncate");
     let empty: Option<u64> = admin
@@ -1054,7 +1054,7 @@ async fn mysql_table_operations_are_real() {
         table: "object_ops_copy".to_string(),
         new_name: None,
     };
-    table_ops::apply(&session, &copied_detail, &drop_copy)
+    table_ops::apply(&AdapterSet::mysql(), &session, &copied_detail, &drop_copy)
         .await
         .expect("drop copy");
     let drop_renamed = table_ops::TableOperationRequest {
@@ -1063,7 +1063,7 @@ async fn mysql_table_operations_are_real() {
         table: "object_ops_renamed".to_string(),
         new_name: None,
     };
-    table_ops::apply(&session, &renamed, &drop_renamed)
+    table_ops::apply(&AdapterSet::mysql(), &session, &renamed, &drop_renamed)
         .await
         .expect("drop renamed");
 

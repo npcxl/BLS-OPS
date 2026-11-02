@@ -194,8 +194,17 @@ interface DatabaseAssetState {
    * 只用于用户显式点击"重新连接"；绝不自动调用。
    */
   reconnect: (profileId: string) => Promise<DbSessionInfo | null>;
-  /** 在固定会话上执行 COMMIT / ROLLBACK（关闭工作项时用）。 */
-  runSessionCommand: (profileId: string, sql: "COMMIT" | "ROLLBACK") => Promise<void>;
+  /**
+   * 在**固定会话**上执行事务控制语句。
+   *
+   * 只有这三个：`START TRANSACTION` / `COMMIT` / `ROLLBACK`。
+   * 不用 `SET autocommit`：那会改变整条物理连接的语义，而我们的会话与连接
+   * 是绑定的，混用两种事务模型会让"这个标签到底提没提交"变得无法判断。
+   */
+  runSessionCommand: (
+    profileId: string,
+    sql: "START TRANSACTION" | "COMMIT" | "ROLLBACK",
+  ) => Promise<void>;
   closeSession: (profileId: string) => Promise<void>;
   /** 关闭已经不在任何标签里的会话；切换标签不会触发（标签还在）。 */
   pruneSessions: (activeProfileIds: string[]) => Promise<void>;

@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 
+import { applyWindowMaterial } from "@/lib/window-material";
+
 /**
  * Theme manager — follows the OS by default ("system"), with an optional
  * light/dark override persisted in localStorage.
@@ -25,8 +27,17 @@ export function getThemeMode(): ThemeMode {
   return stored === "light" || stored === "dark" ? stored : "system";
 }
 
+/**
+ * 网页主题与原生窗口材质必须**同一次**切换。
+ *
+ * 只改 `data-theme` 的话，Windows 的 Acrylic 会继续跟着系统主题走：
+ * 系统是深色、应用选浅色时，磨砂底色仍是深的，外壳就发灰发黑，
+ * 于是别处只能靠加白底去压 —— 那正是要避免的做法。
+ */
 export function applyTheme() {
-  document.documentElement.dataset.theme = resolve(getThemeMode());
+  const resolved = resolve(getThemeMode());
+  document.documentElement.dataset.theme = resolved;
+  void applyWindowMaterial(resolved);
 }
 
 export function setThemeMode(mode: ThemeMode) {

@@ -15,12 +15,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-
   Loader2,
+  Plus,
   RefreshCw,
-
+  Trash2,
   TriangleAlert,
-
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -539,6 +538,7 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       {/* 主体：键数据主区（上）+ 键值编辑器（下，参考图的底部停靠） */}
       <div className="flex min-h-0 flex-1 flex-col">
         {connection.connected ? (
+          <>
           <RedisKeyGrid
             keys={visibleKeys}
             selected={selection.selected}
@@ -580,6 +580,65 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
             }}
             onLoadMore={() => scan.scan(false)}
           />
+
+          {/*
+           * 网格下方操作栏（参考图同位置）：新增 / 删除 / 刷新 / 加载更多。
+           * 删除目标就是当前选择；没有选择时按钮禁用而不是"删当前行"，
+           * 避免在列表滚到别处时误删。
+           */}
+          <div className="flex h-8 shrink-0 items-center gap-1 border-t border-divider/70 bg-inspector px-2">
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!writable}
+              title={writable ? t("新增键") : t("该连接为只读，无法新增")}
+              onClick={() => setNewKeyOpen(true)}
+            >
+              <Plus size={11} />
+              {t("新增")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!writable || selection.selected.size === 0}
+              title={
+                selection.selected.size === 0
+                  ? t("先在网格里选择要删除的键")
+                  : t("删除选中的 {{count}} 个键", { count: selection.selected.size })
+              }
+              onClick={() => requestDelete([...selection.selected])}
+            >
+              <Trash2 size={11} />
+              {t("删除选中")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={scan.scanning}
+              onClick={refreshKeys}
+              title={t("重新扫描（保留当前匹配模式）")}
+            >
+              <RefreshCw size={11} className={scan.scanning ? "animate-spin" : undefined} />
+              {t("刷新")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!scan.hasMore || scan.scanning}
+              onClick={() => scan.scan(false)}
+              title={
+                scan.hasMore
+                  ? t("继续 SCAN 下一页")
+                  : t("已经扫描到游标末尾，没有更多键")
+              }
+            >
+              {t("加载更多")}
+            </Button>
+            <span className="ml-auto shrink-0 text-11 text-fg-subtle">
+              {t("已加载 {{count}}", { count: scan.keys.length })}
+            </span>
+          </div>
+          </>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6">
             {connection.connecting ? (
@@ -607,8 +666,13 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
           </div>
         )}
 
-        {/* 键值编辑器：底部停靠，高度可拖拽；未选键时给空状态而不是消失 */}
-        {connection.connected && editorVisible && detailKey && (
+        {/*
+         * 键值编辑器：底部停靠，高度可拖拽。
+         * 只要用户没有显式收起，就一直占位 —— 未选键时显示空状态而不是整块
+         * 消失。否则"点一下键 + 出现编辑器"会让网格高度反复跳动，
+         * 多选时还会误以为布局坏了。
+         */}
+        {connection.connected && editorVisible && (
           <>
             <div
               role="separator"

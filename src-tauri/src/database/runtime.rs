@@ -12,6 +12,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, Pool};
 use tokio::sync::Mutex;
 
+use super::adapter::AdapterSet;
 use super::driver::{self, EndpointPlan, ResolvedEndpoint};
 use super::model::DbErrorInfo;
 use super::protocol::CancelHandle;
@@ -58,6 +59,13 @@ impl ProfileRuntime {
             export,
             active_queries: AtomicUsize::new(0),
         })
+    }
+
+    /// 这条运行时对应的引擎适配器（方言 + SQL 模板）。
+    ///
+    /// 上层模块不再自己判断 `engine == "mysql"`；拿到适配器后按它生成语句。
+    pub fn adapter(&self) -> Result<AdapterSet, DbErrorInfo> {
+        AdapterSet::of(&self.endpoint.profile.engine)
     }
 
     pub fn interactive_pool(&self) -> &Pool {

@@ -59,6 +59,8 @@ pub mod systemd;
 pub mod transfer;
 /// 远程回收站（删除先移动，可恢复）。
 pub mod trash;
+/// 原生窗口材质（Acrylic）与网页主题的同步，以及不可用时的实色回退。
+pub mod window_material;
 /// 系统托盘：点 X 隐藏窗口到托盘（不退出），托盘恢复/退出。
 mod tray;
 /// 实例业务分类器：应用服务 / 基础设施 / 系统组件 / 待归类 四个互斥集合。
@@ -98,27 +100,18 @@ pub fn run() {
         // Only used to relaunch the app once an update has been installed.
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            // 窗口毛玻璃（Windows Acrylic）。
-            //
-            // 为什么必须在这一层做：CSS 的 `backdrop-filter` 只能模糊 WebView
-            // **内部**的内容，模糊不了窗口背后的桌面 —— 纯 CSS 永远做不出磨砂。
-            // Acrylic 由 DWM 把窗口背后的桌面模糊掉，页面上的半透明底色只负责
-            // 染色（`--app` 的 alpha 越小越透）。
-            //
-            // 失败不致命：某些 Windows 版本 / 远程桌面会话不支持 Acrylic，
-            // 此时退化成普通的半透明背景，界面仍然可用。
-            #[cfg(target_os = "windows")]
+            // 窗口毛玻璃（Windows Acrylic）由 `window_material` 统一负责：
+            // 主题同步、染色、以及"系统关闭透明效果"时的实色回退都在那里判断。
+            // 这里只做启动时的默认应用（亮色 + 透明开），前端挂载后会按真实
+            // 主题纠正一次 —— 首帧不能等前端，否则会闪一下没有材质的黑窗口。
             {
-                use tauri::window::{Effect, EffectState, EffectsBuilder};
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
-                    let effects = EffectsBuilder::new()
-                        .effect(Effect::Acrylic)
-                        .state(EffectState::Active)
-                        .build();
-                    if let Err(error) = window.set_effects(effects) {
-                        eprintln!("[setup] acrylic unavailable, falling back: {error}");
-                    }
+                    let state = window_material::apply(&window, "light", true);
+                    eprintln!(
+                        "[setup] window material: {} ({:?}, build {})",
+                        state.material, state.reason, state.os_build
+                    );
                 }
             }
             let base_dir = dirs::data_local_dir()
@@ -147,6 +140,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // diagnostics
             commands::app_info,
+            // 窗口材质：light/dark 切换时同步 Acrylic 与原生主题
+            window_material::app_window_material,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）

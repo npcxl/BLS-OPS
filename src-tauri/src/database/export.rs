@@ -22,13 +22,16 @@ use mysql_async::{Params, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{watch, Mutex, RwLock};
 
+use super::adapter::{AdapterSet, ParamBinder};
 use super::codec;
-use super::driver::{is_read_only_sql, map_error, quote_identifier};
+use super::driver::{is_read_only_sql, map_error};
 use super::model::{
     DbErrorInfo, DbTableDetail, ExportOutcome, ExportProgress, ExportRequest, ExportStarted,
 };
 use super::runtime::ProfileRuntime;
 use super::table;
+
+type Binder<'a> = ParamBinder<'a, Value>;
 
 const CHECK_CANCEL_ROWS: u64 = 200;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
@@ -197,12 +200,14 @@ impl ExportRegistry {
 }
 
 fn build_csv_plan(
+    adapter: &AdapterSet,
     request: &ExportRequest,
     detail: Option<&DbTableDetail>,
 ) -> Result<(String, Params), DbErrorInfo> {
+    let dialect = adapter.dialect();
     if let Some(table) = &request.table {
         let detail = detail.ok_or_else(|| DbErrorInfo::new("config", "表结构缺失"))?;
-        let mut params: Vec<Value> = Vec::new();
+        let mut binder = Binder::new(dialect);
         let mut where_parts = Vec::new();
         if let Some(filters) = &request.filters {
             for filter in filters {
@@ -216,7 +221,7 @@ fn build_csv_plan(
                         format!("过滤列不存在：{}", filter.column),
                     ));
                 }
-                if let Some(clause) = table::filter_clause(filter, &mut params)? {
+                if let Some(clause) = table::filter_clause(adapter, filter, &mut binder)? {
                     where_parts.push(clause);
                 }
             }
@@ -240,20 +245,19 @@ fn build_csv_plan(
                 }
                 order_parts.push(format!(
                     "{} {}",
-                    quote_identifier(&sort.column)?,
+                    dialect.quote(&sort.column)?,
                     sort.direction.to_uppercase()
                 ));
             }
         } else if let Some(keys) = &detail.reliable_key {
             for key in keys {
-                order_parts.push(format!("{} ASC", quote_identifier(key)?));
+                order_parts.push(format!("{} ASC", dialect.quote(key)?));
             }
         }
 
+        let qualified = dialect.qualified(Some(&table.database), &table.table)?;
         let sql = format!(
-            "SELECT * FROM {}.{}{}{}",
-            quote_identifier(&table.database)?,
-            quote_identifier(&table.table)?,
+            "SELECT * FROM {qualified}{}{}",
             if where_parts.is_empty() {
                 String::new()
             } else {
@@ -265,7 +269,7 @@ fn build_csv_plan(
                 format!(" ORDER BY {}", order_parts.join(", "))
             }
         );
-        return Ok((sql, Params::Positional(params)));
+        return Ok((sql, Params::Positional(binder.params)));
     }
 
     Ok((request.sql.clone(), Params::Empty))
@@ -303,7 +307,15 @@ async fn run_export(
             }
         };
 
-    let (sql, params) = match build_csv_plan(&request, detail.as_ref()) {
+    let adapter = match profile.adapter() {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+
+    let (sql, params) = match build_csv_plan(&adapter, &request, detail.as_ref()) {
         Ok(plan) => plan,
         Err(error) => {
             fail(&task, error, &part_path).await;
@@ -311,7 +323,16 @@ async fn run_export(
         }
     };
 
-    if let Err(error) = conn.query_drop("START TRANSACTION READ ONLY").await {
+    // 只读保障必须来自服务器；没有只读事务的引擎直接拒绝导出。
+    let begin_read_only = match adapter.begin_read_only_transaction() {
+        Ok(statement) => statement,
+        Err(error) => {
+            let _ = tokio::time::timeout(Duration::from_secs(2), conn.disconnect()).await;
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+    if let Err(error) = conn.query_drop(begin_read_only).await {
         fail(&task, map_error(&error, "permission"), &part_path).await;
         return;
     }

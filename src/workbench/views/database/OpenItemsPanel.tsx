@@ -5,7 +5,7 @@
  * 固定 / 待修改 / 运行中 / 未保存 / 事务未提交等标记。
  * 右键菜单提供关闭、关闭其他、复制名称、定位资产树、固定。
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Columns3,
@@ -81,6 +81,16 @@ export function OpenItemsPanel({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const menu = useContextMenu();
+  /**
+   * 右键打开菜单的那一行。菜单开着期间它一直保持选中底色（否则只剩下
+   * hover 的一闪，看不出菜单到底作用在哪一项）；菜单关了再复原。
+   * 这里只影响高亮，**不**切换中央工作项 —— 右键不该顺手打开东西。
+   */
+  const [contextId, setContextId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!menu.props.open) setContextId(null);
+  }, [menu.props.open]);
 
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -167,6 +177,8 @@ export function OpenItemsPanel({
             </div>
             {groupItems.map((item) => {
               const active = item.id === activeId;
+              // 右键目标与当前工作项共用同一套选中底色，但互不改变对方。
+              const selected = active || item.id === contextId;
               const transaction = transactions[item.profileId]?.transaction;
               const inTransaction =
                 transaction === "in_transaction" ||
@@ -187,12 +199,18 @@ export function OpenItemsPanel({
                     tabIndex={0}
                     title={rowTitle}
                     className={cn(
-                      "group flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1 outline-none",
-                      active
+                      // 行间留 2px：选中底色不会和上下相邻行的 hover 底色粘成一块。
+                      "group my-0.5 flex cursor-default items-center gap-1 rounded-[6px] py-[5px] pl-2 pr-1 outline-none",
+                      selected
                         ? "bg-accent/10 text-fg"
                         : "text-fg-muted hover:bg-surface-hover",
                       "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/40",
                     )}
+                    // 右键按下就标成菜单目标：contextmenu 在 pointerdown 之后才来，
+                    // 等菜单弹出时底色已经就位，不会先闪一下 hover 的灰。
+                    onPointerDown={(event) => {
+                      if (event.button === 2) setContextId(item.id);
+                    }}
                     onClick={() => setActive(item.id)}
                     // 只有键盘（Tab）聚焦才切走当前工作项。鼠标按下同样会给
                     // 这一行焦点，而右键只想弹菜单，不该顺手把工作项打开。

@@ -376,8 +376,10 @@ export const ContextMenu = memo(function ContextMenu({
             data-submenu-open={hasChildren && submenu === index ? "true" : undefined}
             disabled={item.disabled}
             className={cn(
-              "relative flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
+              "relative my-0.5 flex h-8 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
               item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
+              // 选中是"一层薄膜"，不是纯文字变色：亮/暗两套底色见 tokens。
+              highlighted && (item.danger ? "bg-danger/10" : "bg-menu-item-active"),
               item.disabled && "pointer-events-none opacity-40",
             )}
             onPointerEnter={() => {
@@ -399,10 +401,11 @@ export const ContextMenu = memo(function ContextMenu({
               item.onSelect?.();
             }}
           >
-            {/* active indicator bar (left) — replaces the old full-row highlight */}
+            {/* 左缘指示条：危险项跟着走 danger 色，别在红色文字旁边挂一条蓝杠 */}
             <span
               className={cn(
-                "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150",
+                "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
+                item.danger ? "bg-danger" : "bg-accent",
                 highlighted ? "opacity-100" : "opacity-0",
               )}
             />
@@ -466,8 +469,9 @@ export const ContextMenu = memo(function ContextMenu({
                 role="menuitem"
                 disabled={item.disabled}
                 className={cn(
-                  "relative flex h-7 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
+                  "relative my-0.5 flex h-8 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
                   item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
+                  highlighted && (item.danger ? "bg-danger/10" : "bg-menu-item-active"),
                   item.disabled && "pointer-events-none opacity-40",
                 )}
                 onPointerEnter={() => !item.disabled && setSubActive(index)}
@@ -479,7 +483,8 @@ export const ContextMenu = memo(function ContextMenu({
               >
                 <span
                   className={cn(
-                    "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150",
+                    "pointer-events-none absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full transition-opacity duration-150",
+                    item.danger ? "bg-danger" : "bg-accent",
                     highlighted ? "opacity-100" : "opacity-0",
                   )}
                 />

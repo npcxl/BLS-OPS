@@ -40,11 +40,12 @@ import {
 } from "./close-coordination";
 import { ConnectionDialog } from "./ConnectionDialog";
 import { ConnectionInfoPanel } from "./ConnectionInfoPanel";
+import { DatabaseTabBar } from "./DatabaseTabBar";
 import { DdlPanel } from "./DdlPanel";
+import { EngineImplementationPanel } from "./EngineImplementationPanel";
 import { listenDetachedSqlEvents } from "./detached-sql";
 import { FieldCard } from "./FieldCard";
 import { engineMeta, familyOf } from "./db-engines";
-import { OpenItemsPanel } from "./OpenItemsPanel";
 import { RedisBrowser } from "./RedisBrowser";
 import { useEngineCatalog } from "./useEngineCatalog";
 import { WorkItemHost } from "./WorkItemHost";
@@ -117,7 +118,6 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   );
   const newQuery = useDatabaseWorkspaceStore((state) => state.newQuery);
   const closeItem = useDatabaseWorkspaceStore((state) => state.close);
-  const rightCollapsed = useDatabaseWorkspaceStore((state) => state.rightCollapsed);
   const rightWidth = useDatabaseWorkspaceStore((state) => state.rightWidth);
   const rightPanel = useDatabaseWorkspaceStore((state) => state.rightPanel);
   const ddl = useDatabaseWorkspaceStore((state) => state.ddl);
@@ -130,7 +130,6 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   );
   const fieldCard = useDatabaseWorkspaceStore((state) => state.fieldCard);
   const hideFieldCard = useDatabaseWorkspaceStore((state) => state.hideFieldCard);
-  const setRightCollapsed = useDatabaseWorkspaceStore((state) => state.setRightCollapsed);
   const setRightWidth = useDatabaseWorkspaceStore((state) => state.setRightWidth);
 
   const closeTabById = useWorkbenchStore((state) => state.closeTabById);
@@ -193,6 +192,20 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
       window.removeEventListener("mouseup", onUp);
     };
   }, [draggingRight, setRightWidth]);
+
+  /**
+   * 预览标签一旦开始"干活"，就自动升级为常驻标签：
+   * 有未提交修改、未保存 SQL 或正在执行，都不该被下一次单击顶掉。
+   * 判定放在这里而不是表格内部，是因为它同时要覆盖查询与结构工作项。
+   */
+  useEffect(() => {
+    const workbench = useDatabaseWorkspaceStore.getState();
+    for (const item of workspaceItems) {
+      if (item.preview && (item.pendingCount > 0 || item.dirty || item.running)) {
+        workbench.promote(item.id);
+      }
+    }
+  }, [workspaceItems]);
 
   // 重连后 generation 变化：旧 SQL 结果不属于新连接，必须清空；
   // 否则用户会把上一个连接的查询结果当成新会话的结果。
@@ -329,9 +342,13 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
 
   /** 批量关闭也必须走协调器，不能直接过滤 items。 */
   const requestCloseOthers = (item: WorkItem) => {
-    // “关闭其他”针对右侧列表里的全部项目，不只当前连接。
+    // “关闭其他”只作用于**本连接**的标签：标签条就是一个连接一条，
+    // 关掉别的连接里的标签会让那边的上下文凭空消失。
     const others = items.filter(
-      (entry) => entry.id !== item.id && !entry.pinned,
+      (entry) =>
+        entry.profileId === item.profileId &&
+        entry.id !== item.id &&
+        !entry.pinned,
     );
     if (others.length === 0) return;
     const batch = buildCloseBatch(others, sessions);
@@ -346,9 +363,11 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
     setClosingOthers(batch);
   };
 
-  /** 关闭右侧：按右侧列表的顺序（固定项置顶）关掉该项之后的项目。 */
+  /** 关闭右侧：按标签条顺序（固定项置顶）关掉该项之后、同一连接的项目。 */
   const requestCloseRight = (item: WorkItem) => {
-    const ordered = orderedItems(items);
+    const ordered = orderedItems(
+      items.filter((entry) => entry.profileId === item.profileId),
+    );
     const index = ordered.findIndex((entry) => entry.id === item.id);
     if (index < 0) return;
     const targets = ordered.slice(index + 1).filter((entry) => !entry.pinned);
@@ -484,22 +503,10 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   }
 
   const meta = engineMeta(profile.engine);
-  // 未适配：明确说明，不进入 SQL 工作区让用户撞一条 "unsupported" 报错。
+  // 未适配：不进 SQL 工作区让用户撞一条 "unsupported" 报错，而是把
+  // "配置已保存 / 驱动未实现 / 每项能力的状态"如实摊开。
   if (!meta.known || !meta.supported) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface-1 px-6">
-        <TriangleAlert size={20} className="text-warning" />
-        <p className="text-12 text-fg">
-          {t("{{engine}} 尚未适配，配置已保存", { engine: meta.label })}
-        </p>
-        <p className="max-w-md text-center text-11 leading-relaxed text-fg-subtle">
-          {meta.unavailableReason ?? meta.descriptor?.note ?? ""}
-        </p>
-        <Button variant="ghost" size="sm" onClick={() => closeTabById(tab.id)}>
-          {t("关闭标签")}
-        </Button>
-      </div>
-    );
+    return <EngineImplementationPanel profile={profile} descriptor={meta.descriptor} />;
   }
 
   const family = familyOf(profile.engine);
@@ -510,8 +517,12 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const showFieldCard = !!fieldCard && fieldCard.profileId === profileId;
 
   /**
-   * 底部状态内容。表页由 TableBrowser 合并进它的底栏（汇总/分页同一行），
-   * 其他工作项由 WorkItemHost 渲染在最底部；不再有单独的第二行。
+   * 底部状态栏内容（**唯一**一条）。表页由 TableBrowser 合并进它自己的底栏
+   * （范围/分页同一行），其他工作项由 WorkItemHost 渲染在最底部。
+   *
+   * 只放"跨工作项都成立"的信息：连接、库、事务、只读、连接标识。
+   * 加载范围、耗时、草稿数属于具体工作项，由各自的底栏负责 —— 同一个数字
+   * 不要在两条状态栏里各显示一遍。
    */
   const footerContent = (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
@@ -522,45 +533,30 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         )}
       />
       <span className="max-w-[120px] truncate">{profile.name}</span>
+      {session?.current_database && (
+        <span className="max-w-[140px] truncate text-fg-muted">
+          · {session.current_database}
+        </span>
+      )}
       {session?.transaction === "in_transaction" && (
         <span className="shrink-0 text-warning">{t("事务未提交")}</span>
       )}
       {session?.transaction === "in_transaction_read_only" && (
         <span className="shrink-0 text-warning">{t("只读事务")}</span>
       )}
-      <Tooltip
-        side="top"
-        label={
-          rightCollapsed
-            ? t("展开已打开列表")
-            : rightPanel === "ddl"
-              ? t("关闭 DDL，恢复已打开列表")
-              : rightPanel === "connection"
-                ? t("关闭连接信息")
-                : t("收起已打开列表")
-        }
-      >
+      {(rightPanel === "ddl" || rightPanel === "connection") && (
         <Button
           variant="ghost"
           size="xs"
           className="h-auto px-1.5 py-0.5 text-11"
           onClick={() => {
-            if (rightCollapsed) {
-              hideDdl();
-              hideConnectionInfo();
-              setRightCollapsed(false);
-            } else if (rightPanel === "ddl") {
-              hideDdl();
-            } else if (rightPanel === "connection") {
-              hideConnectionInfo();
-            } else {
-              setRightCollapsed(true);
-            }
+            if (rightPanel === "ddl") hideDdl();
+            else hideConnectionInfo();
           }}
         >
-          {t("已打开 {{count}}", { count: workspaceItems.length })}
+          {t("关闭详情")}
         </Button>
-      </Tooltip>
+      )}
       <Tooltip side="top" label={t("刷新元数据缓存")}>
         <Button
           variant="ghost"
@@ -587,8 +583,21 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
     </div>
   );
 
+  /**
+   * 右侧只在**真的有东西要看**时出现：连接信息、DDL 预览、字段卡片。
+   * 默认不再挂"已打开列表"—— 标签条已经是唯一的切换入口，两个列表并存
+   * 会让人分不清哪个才是"当前工作项"。
+   */
+  const dockKind: "ddl" | "connection" | "field" | null = showFieldCard
+    ? "field"
+    : rightPanel === "ddl" && ddl && ddl.profileId === profileId
+      ? "ddl"
+      : rightPanel === "connection" && connectionInfo === profileId
+        ? "connection"
+        : null;
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-1">
+    <div className="flex h-full min-h-0 flex-col bg-content">
       {notice && (
         <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1 text-11 text-warning">
           <span className="min-w-0 flex-1">{notice}</span>
@@ -628,6 +637,15 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         </div>
       )}
 
+      <DatabaseTabBar
+        profileId={profileId}
+        connectionName={profile.name}
+        onRequestClose={requestClose}
+        onRequestCloseOthers={requestCloseOthers}
+        onRequestCloseRight={requestCloseRight}
+        onNewQuery={() => handleNewQuery()}
+      />
+
       <div className="flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
           <WorkItemHost
@@ -640,11 +658,11 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
           />
         </div>
 
-        {!rightCollapsed && (
+        {dockKind && (
           <div
-            className="relative shrink-0 border-l border-line"
+            className="relative shrink-0 border-l border-divider/70 bg-inspector"
             style={{
-              // 非全屏：字段卡片占宽度；全屏：卡片浮在列表左侧，不挤压中央。
+              // 非全屏：字段卡片占宽度；全屏：卡片浮在检查器左侧，不挤压中央。
               width: rightWidth + (showFieldCard && !wide ? FIELD_CARD_WIDTH : 0),
             }}
           >
@@ -664,18 +682,11 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                {rightPanel === "connection" &&
-                connectionInfo === profileId ? (
+                {dockKind === "connection" ? (
                   <ConnectionInfoPanel profileId={profileId} />
-                ) : rightPanel === "ddl" && ddl && ddl.profileId === profileId ? (
+                ) : dockKind === "ddl" && ddl ? (
                   <DdlPanel target={ddl} />
-                ) : (
-                  <OpenItemsPanel
-                    onRequestClose={requestClose}
-                    onRequestCloseOthers={requestCloseOthers}
-                    onRequestCloseRight={requestCloseRight}
-                  />
-                )}
+                ) : null}
               </div>
             </div>
 

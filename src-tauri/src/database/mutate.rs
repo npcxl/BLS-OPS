@@ -5,7 +5,9 @@
 //! * **没有可靠唯一键 → 拒绝写入**。视图、复杂查询结果、无主键表一律只读。
 //! * **事务固定物理连接**：用会话独占的 `Conn`，绝不从池里临时取一条。
 //! * 一条 UPDATE/DELETE 影响行数不是 1 → 回滚并报冲突（或键不再唯一）。
-//! * 乐观并发用 `<=>`（NULL-safe）比较读取时的值；远程已改 → 冲突。
+//! * 乐观并发用方言的 null-safe 等值比较读取时的值（MySQL `<=>`、标准 SQL
+//!   `IS NOT DISTINCT FROM`）；远程已改 → 冲突。SQL 全部由 `AdapterSet` 生成，
+//!   占位符编号与参数顺序由同一个 `Binder` 维护（PostgreSQL 用 `$n`）。
 //! * 非事务引擎（MyISAM 等）默认拒绝；用户显式确认后才逐行执行，
 //!   并明确写出"失败的行无法回滚"。
 //! * `COMMIT` 期间断网 → `outcome_unknown`，不自动重试，给出重新核对入口。
@@ -17,7 +19,8 @@ use std::time::{Duration, Instant};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Value};
 
-use super::driver::{map_error, quote_identifier};
+use super::adapter::{AdapterSet, ParamBinder, SqlDialect};
+use super::driver::map_error;
 use super::model::{
     AssignValue, ColumnAssignment, DbErrorInfo, DbSessionInfo, DbTableDetail, MutationRequest,
     MutationResult, MutationRowOutcome, RowMutation,
@@ -27,11 +30,23 @@ use super::session::SessionEntry;
 
 const TRANSACTIONAL_ENGINES: [&str; 3] = ["innodb", "ndbcluster", "ndb"];
 
-fn is_transactional(engine: &Option<String>) -> bool {
+fn is_transactional(adapter: &AdapterSet, engine: &Option<String>) -> bool {
+    // 方言能直接回答的（PostgreSQL/SQLite/…）不用再看存储引擎。
+    if adapter.transactional_writes() {
+        return true;
+    }
     engine
         .as_deref()
         .map(|value| TRANSACTIONAL_ENGINES.contains(&value.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+/// 位置参数的唯一来源（占位符编号与参数顺序由 `ParamBinder` 保证）。
+type Binder<'a> = ParamBinder<'a, Value>;
+
+/// 文本值统一走同一个绑定入口：列值、定位键、期望值都是文本。
+fn bind_text(binder: &mut Binder<'_>, value: &str) -> String {
+    binder.bind(Value::Bytes(value.as_bytes().to_vec()))
 }
 
 /// 这些类型不能用普通文本编辑器的字符串直接绑定；否则 BIT/BINARY 会被写成
@@ -83,52 +98,66 @@ fn validate_assignment(
     Ok(())
 }
 
-fn assignment_sql(assignment: &ColumnAssignment) -> Result<(String, Option<Value>), DbErrorInfo> {
-    let quoted = quote_identifier(&assignment.column)?;
-    match &assignment.value {
-        AssignValue::Null => Ok((format!("{quoted} = NULL"), None)),
-        AssignValue::Default => Ok((format!("{quoted} = DEFAULT"), None)),
-        AssignValue::Value { value } => Ok((
-            format!("{quoted} = ?"),
-            Some(Value::Bytes(value.clone().into_bytes())),
-        )),
-    }
+fn assignment_sql(
+    dialect: &SqlDialect,
+    assignment: &ColumnAssignment,
+    binder: &mut Binder<'_>,
+) -> Result<String, DbErrorInfo> {
+    let quoted = dialect.quote(&assignment.column)?;
+    Ok(match &assignment.value {
+        AssignValue::Null => format!("{quoted} = NULL"),
+        AssignValue::Default => format!("{quoted} = DEFAULT"),
+        AssignValue::Value { value } => {
+            let placeholder = bind_text(binder, value);
+            format!("{quoted} = {placeholder}")
+        }
+    })
 }
 
-fn expected_sql(assignment: &ColumnAssignment) -> Result<(String, Option<Value>), DbErrorInfo> {
-    let quoted = quote_identifier(&assignment.column)?;
-    match &assignment.value {
-        AssignValue::Null => Ok((format!("{quoted} <=> NULL"), None)),
-        AssignValue::Default => Err(DbErrorInfo::new(
-            "query",
-            "DEFAULT 不能作为乐观并发比较的期望值",
-        )),
-        AssignValue::Value { value } => Ok((
-            format!("{quoted} <=> ?"),
-            Some(Value::Bytes(value.clone().into_bytes())),
-        )),
-    }
+fn expected_sql(
+    adapter: &AdapterSet,
+    assignment: &ColumnAssignment,
+    binder: &mut Binder<'_>,
+) -> Result<String, DbErrorInfo> {
+    let quoted = adapter.dialect().quote(&assignment.column)?;
+    Ok(match &assignment.value {
+        AssignValue::Null => adapter.null_safe_equal(&quoted, "NULL"),
+        AssignValue::Default => {
+            return Err(DbErrorInfo::new(
+                "query",
+                "DEFAULT 不能作为乐观并发比较的期望值",
+            ))
+        }
+        AssignValue::Value { value } => {
+            let placeholder = bind_text(binder, value);
+            adapter.null_safe_equal(&quoted, &placeholder)
+        }
+    })
 }
 
-fn key_sql(key: &[AssignValue], columns: &[String]) -> Result<(String, Vec<Value>), DbErrorInfo> {
+fn key_sql(
+    dialect: &SqlDialect,
+    key: &[AssignValue],
+    columns: &[String],
+    binder: &mut Binder<'_>,
+) -> Result<String, DbErrorInfo> {
     if key.len() != columns.len() {
         return Err(DbErrorInfo::new("query", "行定位键与表的主键列数量不一致"));
     }
     let mut clauses = Vec::new();
-    let mut params = Vec::new();
     for (index, column) in columns.iter().enumerate() {
         match &key[index] {
             AssignValue::Value { value } => {
-                clauses.push(format!("{} = ?", quote_identifier(column)?));
-                params.push(Value::Bytes(value.clone().into_bytes()));
+                let placeholder = bind_text(binder, value);
+                clauses.push(format!("{} = {placeholder}", dialect.quote(column)?));
             }
-            AssignValue::Null => clauses.push(format!("{} IS NULL", quote_identifier(column)?)),
+            AssignValue::Null => clauses.push(format!("{} IS NULL", dialect.quote(column)?)),
             AssignValue::Default => {
                 return Err(DbErrorInfo::new("query", "定位键不能是 DEFAULT"));
             }
         }
     }
-    Ok((clauses.join(" AND "), params))
+    Ok(clauses.join(" AND "))
 }
 
 pub async fn apply(
@@ -138,6 +167,8 @@ pub async fn apply(
     request: &MutationRequest,
 ) -> Result<(MutationResult, DbSessionInfo), DbErrorInfo> {
     let started = Instant::now();
+    let adapter = profile.adapter()?;
+    let adapter = &adapter;
 
     if profile.endpoint.read_only {
         return Err(DbErrorInfo::new(
@@ -158,7 +189,7 @@ pub async fn apply(
         )
     })?;
 
-    let transactional = is_transactional(&detail.engine);
+    let transactional = is_transactional(adapter, &detail.engine);
     if !transactional && !request.allow_non_transactional.unwrap_or(false) {
         return Err(DbErrorInfo::new(
             "unsupported",
@@ -210,7 +241,7 @@ pub async fn apply(
     let mut conn = conn;
 
     if transactional {
-        if let Err(error) = conn.query_drop("START TRANSACTION").await {
+        if let Err(error) = conn.query_drop(adapter.begin_transaction()).await {
             session.release_conn(conn, true).await;
             return Err(map_error(&error, "query"));
         }
@@ -221,7 +252,7 @@ pub async fn apply(
     let mut unknown = false;
 
     for (index, row) in request.rows.iter().enumerate() {
-        match execute_row(&mut conn, detail, &key_columns, row).await {
+        match execute_row(adapter, &mut conn, detail, &key_columns, row).await {
             Ok(affected) => {
                 if affected != 1 {
                     outcomes.push(MutationRowOutcome {
@@ -309,7 +340,7 @@ pub async fn apply(
                         "事务状态未知：网络在提交/回滚期间中断，服务器可能已经写入。不要自动重试，请按主键重新查询核对"
                             .to_string(),
                     ),
-                    verify_hint: Some(verify_hint(detail, request)),
+                    verify_hint: Some(verify_hint(adapter.dialect(), detail, request)),
                 },
                 session.info().await,
             ));
@@ -323,7 +354,7 @@ pub async fn apply(
                 elapsed_ms: started.elapsed().as_millis() as u64,
                 transactional,
                 warning,
-                verify_hint: failure.map(|_| verify_hint(detail, request)),
+                verify_hint: failure.map(|_| verify_hint(adapter.dialect(), detail, request)),
             },
             session.info().await,
         ));
@@ -346,7 +377,7 @@ pub async fn apply(
                             "COMMIT 失败（{}）：事务结果未知，不要自动重试",
                             error
                         )),
-                        verify_hint: Some(verify_hint(detail, request)),
+                        verify_hint: Some(verify_hint(adapter.dialect(), detail, request)),
                     },
                     session.info().await,
                 ));
@@ -363,7 +394,7 @@ pub async fn apply(
                         warning: Some(
                             "COMMIT 超过 15 秒没有响应：事务结果未知，不要自动重试".to_string(),
                         ),
-                        verify_hint: Some(verify_hint(detail, request)),
+                        verify_hint: Some(verify_hint(adapter.dialect(), detail, request)),
                     },
                     session.info().await,
                 ));
@@ -388,27 +419,27 @@ pub async fn apply(
 }
 
 async fn execute_row(
+    adapter: &AdapterSet,
     conn: &mut Conn,
     detail: &DbTableDetail,
     key_columns: &[String],
     row: &RowMutation,
 ) -> Result<u64, DbErrorInfo> {
-    let quoted_database = quote_identifier(&detail.database)?;
-    let quoted_table = quote_identifier(&detail.table)?;
+    let dialect = adapter.dialect();
+    let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
 
     match row.kind.as_str() {
         "insert" => {
             let mut columns = Vec::new();
             let mut placeholders = Vec::new();
-            let mut params: Vec<Value> = Vec::new();
+            let mut binder = Binder::new(dialect);
             for assignment in &row.values {
-                columns.push(quote_identifier(&assignment.column)?);
+                columns.push(dialect.quote(&assignment.column)?);
                 match &assignment.value {
                     AssignValue::Null => placeholders.push("NULL".to_string()),
                     AssignValue::Default => placeholders.push("DEFAULT".to_string()),
                     AssignValue::Value { value } => {
-                        placeholders.push("?".to_string());
-                        params.push(Value::Bytes(value.clone().into_bytes()));
+                        placeholders.push(bind_text(&mut binder, value));
                     }
                 }
             }
@@ -419,11 +450,11 @@ async fn execute_row(
                 ));
             }
             let sql = format!(
-                "INSERT INTO {quoted_database}.{quoted_table} ({}) VALUES ({})",
+                "INSERT INTO {qualified} ({}) VALUES ({})",
                 columns.join(", "),
                 placeholders.join(", ")
             );
-            conn.exec_drop(sql, Params::Positional(params))
+            conn.exec_drop(sql, Params::Positional(binder.params))
                 .await
                 .map_err(|error| map_error(&error, "query"))?;
             Ok(conn.affected_rows())
@@ -436,37 +467,28 @@ async fn execute_row(
             if row.values.is_empty() {
                 return Err(DbErrorInfo::new("query", "更新没有任何列值"));
             }
+            let mut binder = Binder::new(dialect);
             let mut set_parts = Vec::new();
-            let mut params: Vec<Value> = Vec::new();
             for assignment in &row.values {
-                let (sql, param) = assignment_sql(assignment)?;
-                set_parts.push(sql);
-                if let Some(param) = param {
-                    params.push(param);
-                }
+                set_parts.push(assignment_sql(dialect, assignment, &mut binder)?);
             }
-            let (key_clause, key_params) = key_sql(key, key_columns)?;
-            params.extend(key_params);
+            let key_clause = key_sql(dialect, key, key_columns, &mut binder)?;
 
             let mut where_parts = vec![key_clause];
             if let Some(expected) = &row.expected {
                 for assignment in expected {
-                    let (sql, param) = expected_sql(assignment)?;
-                    where_parts.push(sql);
-                    if let Some(param) = param {
-                        params.push(param);
-                    }
+                    where_parts.push(expected_sql(adapter, assignment, &mut binder)?);
                 }
             }
 
             // 刻意不加 `LIMIT 1`：唯一键若已损坏，影响行数会 > 1，
             // 上层的“必须恰好 1 行”检查会回滚，而不是偷偷改一行。
             let sql = format!(
-                "UPDATE {quoted_database}.{quoted_table} SET {} WHERE {}",
+                "UPDATE {qualified} SET {} WHERE {}",
                 set_parts.join(", "),
                 where_parts.join(" AND ")
             );
-            conn.exec_drop(sql, Params::Positional(params))
+            conn.exec_drop(sql, Params::Positional(binder.params))
                 .await
                 .map_err(|error| map_error(&error, "query"))?;
             Ok(conn.affected_rows())
@@ -476,22 +498,19 @@ async fn execute_row(
                 .key
                 .as_ref()
                 .ok_or_else(|| DbErrorInfo::new("query", "删除缺少行定位键"))?;
-            let (key_clause, mut params) = key_sql(key, key_columns)?;
+            let mut binder = Binder::new(dialect);
+            let key_clause = key_sql(dialect, key, key_columns, &mut binder)?;
             let mut where_parts = vec![key_clause];
             if let Some(expected) = &row.expected {
                 for assignment in expected {
-                    let (sql, param) = expected_sql(assignment)?;
-                    where_parts.push(sql);
-                    if let Some(param) = param {
-                        params.push(param);
-                    }
+                    where_parts.push(expected_sql(adapter, assignment, &mut binder)?);
                 }
             }
             let sql = format!(
-                "DELETE FROM {quoted_database}.{quoted_table} WHERE {}",
+                "DELETE FROM {qualified} WHERE {}",
                 where_parts.join(" AND ")
             );
-            conn.exec_drop(sql, Params::Positional(params))
+            conn.exec_drop(sql, Params::Positional(binder.params))
                 .await
                 .map_err(|error| map_error(&error, "query"))?;
             Ok(conn.affected_rows())
@@ -504,24 +523,31 @@ async fn execute_row(
 }
 
 /// 结果未知时给用户的核对语句（**不自动执行**）。
-fn verify_hint(detail: &DbTableDetail, request: &MutationRequest) -> String {
+fn verify_hint(
+    dialect: &SqlDialect,
+    detail: &DbTableDetail,
+    request: &MutationRequest,
+) -> String {
     let keys = detail.reliable_key.clone().unwrap_or_default();
+    let qualified = dialect
+        .qualified(Some(&detail.database), &detail.table)
+        .unwrap_or_else(|_| format!("{}.{}", detail.database, detail.table));
     let mut hints = Vec::new();
     for row in request.rows.iter().take(5) {
         if let Some(key) = &row.key {
             let mut parts = Vec::new();
             for (index, column) in keys.iter().enumerate() {
-                if let Some(AssignValue::Value { value }) = key.get(index) {
-                    parts.push(format!("{} = '{}'", column, value.replace('\'', "''")));
-                }
+                let Some(AssignValue::Value { value }) = key.get(index) else {
+                    continue;
+                };
+                let Ok(quoted) = dialect.quote(column) else {
+                    continue;
+                };
+                // 字面量必须按方言转义：MySQL 下反斜杠是转义符。
+                parts.push(format!("{quoted} = {}", dialect.string_literal(value)));
             }
             if !parts.is_empty() {
-                hints.push(format!(
-                    "SELECT * FROM {}.{} WHERE {};",
-                    detail.database,
-                    detail.table,
-                    parts.join(" AND ")
-                ));
+                hints.push(format!("SELECT * FROM {qualified} WHERE {};", parts.join(" AND ")));
             }
         }
     }

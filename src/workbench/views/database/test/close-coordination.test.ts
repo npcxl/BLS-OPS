@@ -18,6 +18,8 @@ function item(patch: Partial<WorkItem> = {}): WorkItem {
     objectName: "q",
     title: "q",
     pinned: false,
+    preview: false,
+    order: 0,
     createdAt: 0,
     pendingCount: 0,
     running: false,

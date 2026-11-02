@@ -9,6 +9,17 @@
 //! **不是安全边界**：标识符来自验证后的元数据，值一律走参数绑定。
 //! 这里的 `string_literal` 只用于"预览 / 复制为 SQL / DDL 默认值"这类
 //! 必须生成文本的地方。
+//!
+//! 目录：
+//!
+//! | 文件 | 职责 |
+//! |---|---|
+//! | `adapter/mod.rs` | `SqlDialect`：标识符、字面量、占位符、分页、只读判定 |
+//! | `adapter/engine.rs` | `AdapterSet`：按引擎族生成表对象 SQL（做不到就明确拒绝） |
+
+pub mod engine;
+
+pub use engine::{AdapterSet, StatementPlan};
 
 use super::capability::{Dialect, DialectRules, IdentifierQuote};
 use super::engine_registry;
@@ -172,6 +183,39 @@ impl SqlDialect {
             Dialect::ClickHouse => "ClickHouse",
             Dialect::None => "非 SQL 引擎",
         }
+    }
+}
+
+/// 位置参数与占位符的唯一来源。
+///
+/// 参数顺序一旦和占位符错位，写进去的就是别人的值（PostgreSQL 尤其危险：
+/// `$2` 写在 `$1` 前面不会报错）。所以**不允许**"先拼 SQL 再补参数"：
+/// `bind` 同时完成 push 与编号。
+pub struct ParamBinder<'a, P> {
+    dialect: &'a SqlDialect,
+    pub params: Vec<P>,
+}
+
+impl<'a, P> ParamBinder<'a, P> {
+    pub fn new(dialect: &'a SqlDialect) -> Self {
+        Self {
+            dialect,
+            params: Vec::new(),
+        }
+    }
+
+    /// 绑定一个参数，返回它在这条语句里的占位符。
+    pub fn bind(&mut self, value: P) -> String {
+        self.params.push(value);
+        self.dialect.placeholder(self.params.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty()
+    }
+
+    pub fn into_params(self) -> Vec<P> {
+        self.params
     }
 }
 

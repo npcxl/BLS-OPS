@@ -98,6 +98,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 rand = "0.10"
 
+# 窗口材质判断只在 Windows 上需要：系统版本决定 Acrylic 是否可用，
+# 注册表决定用户是否关掉了"透明效果"。两者都已是 tauri 的传递依赖，
+# 这里显式声明是为了能在业务代码里直接引用（不额外下载 crate）。
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+windows-version = "0.1"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)'] }
 

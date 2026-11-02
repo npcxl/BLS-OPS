@@ -28,6 +28,7 @@ import {
   FilePlus2,
   Filter,
   Loader2,
+  Lock,
   Pencil,
   Plus,
   RefreshCw,
@@ -480,6 +481,27 @@ export function TableBrowser({
     detail?.kind === "table" &&
     ((detail?.reliable_key?.length ?? 0) > 0 ||
       (detail?.primary_key?.length ?? 0) > 0);
+
+  /**
+   * 只读必须说清**为什么**：
+   * "权限不足 / 视图 / 没有可靠唯一键 / 连接断了" 是四种完全不同的处境，
+   * 只灰掉按钮会让用户以为是界面 bug。`null` = 可写。
+   */
+  const readOnlyReason = !session
+    ? t("连接已断开，查询与修改已暂停")
+    : profile.read_only
+      ? t("该连接被设为只读")
+      : detail?.kind === "view"
+        ? t("视图不可直接写")
+        : detail && (detail.reliable_key?.length ?? 0) === 0 && (detail.primary_key?.length ?? 0) === 0
+          ? t("没有主键或唯一键，无法安全定位要修改的行")
+          : !detail
+            ? t("正在读取表结构…")
+            : null;
+
+  // 总数：精确 COUNT 与 information_schema 估算必须分开显示，不能把估数说成实数。
+  const totalIsEstimated = total === null && (result?.estimated_rows ?? null) !== null;
+  const displayTotal = total ?? result?.estimated_rows ?? null;
 
   /**
    * 当前焦点行 —— 只在按钮点击/菜单构建时读取，不进 React state：
@@ -1569,6 +1591,15 @@ export function TableBrowser({
             {t("表格修改")}
           </Button>
         )}
+        {view === "data" && readOnlyReason && (
+          <span
+            className="flex shrink-0 items-center gap-1 rounded-[5px] bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle"
+            title={readOnlyReason}
+          >
+            <Lock size={10} />
+            {t("只读")}
+          </span>
+        )}
         <span className="mx-1 h-5 w-px shrink-0 bg-line" />
         <Button
           variant={showFilters ? "secondary" : "ghost"}
@@ -1653,7 +1684,11 @@ export function TableBrowser({
             onClick={() => void submit()}
           >
             {submitting ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-            {t("应用修改")}
+            {/* 数量和目标是"应用草稿"，与数据库事务的 COMMIT/ROLLBACK 是两回事：
+                文案里不出现"提交"，避免用户以为已经在事务里提交了。 */}
+            {pending.length > 0
+              ? t("应用 {{count}} 项修改", { count: pending.length })
+              : t("应用修改")}
           </Button>
           <span className="ml-1 flex items-center gap-0.5">
             <Button
@@ -1680,9 +1715,9 @@ export function TableBrowser({
             size="xs"
             disabled={pending.length === 0}
             onClick={() => setPending(() => NO_PENDING)}
-            title={t("放弃全部未提交修改")}
+            title={t("放弃全部未提交修改（不写数据库）")}
           >
-            {t("放弃")}
+            {t("还原")}
           </Button>
 
         </div>
@@ -1956,14 +1991,15 @@ export function TableBrowser({
                   ) : (
                     <Save size={10} />
                   )}
-                  {t("提交修改")}
+                  {t("应用 {{count}} 项修改", { count: pending.length })}
                 </Button>
                 <Button
                   variant="ghost"
                   size="xs"
                   onClick={() => setPending(() => NO_PENDING)}
+                  title={t("放弃全部未提交修改（不写数据库）")}
                 >
-                  {t("放弃")}
+                  {t("还原")}
                 </Button>
               </span>
             )}
@@ -1981,16 +2017,52 @@ export function TableBrowser({
                 {mutationError}
               </span>
             )}
+            {readOnlyReason && (
+              <span className="max-w-[260px] truncate text-fg-subtle" title={readOnlyReason}>
+                {t("只读：{{reason}}", { reason: readOnlyReason })}
+              </span>
+            )}
             <span className="flex shrink-0 items-center gap-3 whitespace-nowrap">
-              <span>
-                {total === null
+              {/* 加载范围：用户必须知道"现在看到的是哪一段"，而不是以为看到了全表。 */}
+              {result && result.rows.length > 0 && (
+                <span
+                  title={
+                    result.pagination === "keyset"
+                      ? t("键集分页：按可靠唯一键定位，翻页不会随页码变慢")
+                      : t("偏移分页：排序或唯一键不满足键集条件，跨页可能重复/漏行")
+                  }
+                >
+                  {result.pagination === "keyset"
+                    ? t("本页 {{count}} 行", { count: result.rows.length })
+                    : t("第 {{from}}–{{to}} 行", {
+                        from: result.offset + 1,
+                        to: result.offset + result.rows.length,
+                      })}
+                  {result.truncated ? ` · ${t("已截断")}` : ""}
+                </span>
+              )}
+              <span
+                title={
+                  totalIsEstimated
+                    ? t("来自 information_schema 的估算值，不是精确 COUNT")
+                    : t("精确行数")
+                }
+              >
+                {displayTotal === null
                   ? loading
                     ? t("加载中…")
                     : t("暂无数据")
-                  : total === 0
+                  : displayTotal === 0
                     ? t("暂无数据")
-                    : t("共 {{count}} 行", { count: total.toLocaleString() })}
+                    : totalIsEstimated
+                      ? t("约 {{count}} 行（估算）", {
+                          count: displayTotal.toLocaleString(),
+                        })
+                      : t("共 {{count}} 行", { count: displayTotal.toLocaleString() })}
               </span>
+              {result && (
+                <span title={t("本次查询耗时")}>{result.elapsed_ms} ms</span>
+              )}
               <span className="flex items-center gap-1">
                 <Button
                   variant="ghost"

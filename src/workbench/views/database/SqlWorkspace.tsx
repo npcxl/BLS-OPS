@@ -41,7 +41,7 @@ import { ResultsPanel } from "./ResultsPanel";
 import { ExportDialog } from "./ExportDialog";
 import { HistoryDialog } from "./HistoryDialog";
 import { SaveQueryDialog } from "./SaveQueryDialog";
-import { engineMeta } from "./db-engines";
+import { capabilityAllows, capabilityReason, engineMeta } from "./db-engines";
 import { splitSqlStatements, statementAtCursor, type SplitRules } from "./sql-split";
 import {
   DESTRUCTIVE_LABEL,
@@ -129,6 +129,32 @@ export function SqlWorkspace({
   const sqlText = tab?.sql ?? "";
   const running = tab?.runState === "running";
   const cancelling = tab?.runState === "cancelling";
+
+  // 事务：能力来自引擎目录，状态来自服务器的会话信息 —— 两者都不猜。
+  const runSessionCommand = useDatabaseStore((state) => state.runSessionCommand);
+  const [txnBusy, setTxnBusy] = useState(false);
+  const descriptor = engineMeta(profile.engine).descriptor;
+  const transactionCapable = capabilityAllows(descriptor, "transaction");
+  const transactionLimitedReason = capabilityReason(descriptor, "transaction");
+  const inTransaction =
+    session?.transaction === "in_transaction" ||
+    session?.transaction === "in_transaction_read_only";
+
+  const runTxn = async (
+    sql: "START TRANSACTION" | "COMMIT" | "ROLLBACK",
+    label: string,
+  ) => {
+    setTxnBusy(true);
+    setNotice(null);
+    try {
+      await runSessionCommand(profile.id, sql);
+      setNotice(t("{{action}}已完成", { action: label }));
+    } catch (failure) {
+      setNotice(toDbError(failure).message);
+    } finally {
+      setTxnBusy(false);
+    }
+  };
   const resultCount = tab?.results.length ?? 0;
   const showResults = hasRun || resultCount > 0 || running || cancelling;
 
@@ -458,6 +484,69 @@ export function SqlWorkspace({
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col">
+      {/*
+       * 事务条：把"自动提交"与"手动事务"的当前状态放在最显眼处。
+       * 这里只做真实存在的动作 —— START TRANSACTION / COMMIT / ROLLBACK，
+       * 全部走同一条物理会话；不支持事务的引擎直接不显示，
+       * 而不是给一个点了会报错的开关。
+       */}
+      {transactionCapable && session && (
+        <div
+          className={cn(
+            "flex h-7 shrink-0 items-center gap-2 border-b px-2 text-11",
+            inTransaction
+              ? "border-warning/30 bg-warning/10 text-warning"
+              : "border-line bg-surface-2/40 text-fg-subtle",
+          )}
+        >
+          <span className="shrink-0 font-medium">
+            {inTransaction
+              ? session?.transaction === "in_transaction_read_only"
+                ? t("手动事务（只读）")
+                : t("手动事务：未提交")
+              : t("自动提交")}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-10">
+            {inTransaction
+              ? t("本标签的语句已在事务里，关闭标签前必须选择提交或回滚。")
+              : transactionLimitedReason ??
+                t("每条语句单独提交。需要多条语句一起生效时，开启事务。")}
+          </span>
+          {inTransaction ? (
+            <>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={txnBusy || running || cancelling}
+                onClick={() => void runTxn("COMMIT", t("提交事务"))}
+              >
+                {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+                {t("提交事务")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={txnBusy || running || cancelling}
+                onClick={() => void runTxn("ROLLBACK", t("回滚事务"))}
+              >
+                {t("回滚事务")}
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={txnBusy || running || cancelling}
+              onClick={() => void runTxn("START TRANSACTION", t("开启事务"))}
+              title={t("开启后，本会话的语句要显式提交才生效")}
+            >
+              {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
+              {t("开启事务")}
+            </Button>
+          )}
+        </div>
+      )}
+
       <div className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-line px-2">
         <Select
           className="w-[140px]"

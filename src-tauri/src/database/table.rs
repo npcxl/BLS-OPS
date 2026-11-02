@@ -9,23 +9,36 @@
 //!
 //! ## 大字段不是"读进来再截断"
 //!
-//! 对 TEXT/BLOB/JSON 列，SELECT 列表用 `LEFT(col, N)` 投影，另取
-//! `OCTET_LENGTH(col)` 记录真实字节数。**驱动从 socket 收到的就是 N 字节**，
-//! 所以内存峰值由 N 决定，而不是由列里实际存了多大决定。
+//! 对 TEXT/BLOB/JSON 列，SELECT 列表用投影表达式只取前 N 字节，另取字节长度
+//! 记录真实大小。**驱动从 socket 收到的就是 N 字节**，所以内存峰值由 N 决定，
+//! 而不是由列里实际存了多大决定。投影表达式按方言生成（MySQL/PG `LEFT`、
+//! SQLite `SUBSTR`、长度函数 `OCTET_LENGTH`/`DATALENGTH`/`LENGTHB`）。
 //! 完整值需要用户在单元格详情里显式请求（见 `db_read_cell`），
 //! 且只有可靠键存在时才能重新定位那一行。
+//!
+//! ## 占位符
+//!
+//! 所有参数走 `ParamBinder`：MySQL 是 `?`、PostgreSQL 是 `$n`、SQL Server 是
+//! `@pn`。**占位符编号与参数顺序由同一个绑定器维护**，不允许先拼 SQL 再补参数。
 
 use std::time::Instant;
 
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Value};
 
-use super::driver::{map_error, quote_identifier};
+use super::adapter::{AdapterSet, ParamBinder, SqlDialect};
+use super::driver::map_error;
 use super::model::{
     BrowseFilter, BrowseRequest, BrowseResult, BrowseSort, DbColumn, DbErrorInfo, DbTableColumn,
     DbValue, ResolvedBudget,
 };
 use super::runtime::ProfileRuntime;
+
+type Binder<'a> = ParamBinder<'a, Value>;
+
+fn bind_text(binder: &mut Binder<'_>, value: &str) -> String {
+    binder.bind(Value::Bytes(value.as_bytes().to_vec()))
+}
 
 const DEFAULT_PAGE_SIZE: u32 = 200;
 const MAX_PAGE_SIZE: u32 = 1_000;
@@ -255,25 +268,23 @@ fn cursor_text(value: &DbValue) -> Option<String> {
 }
 
 pub(crate) fn filter_clause(
+    adapter: &AdapterSet,
     filter: &BrowseFilter,
-    params: &mut Vec<Value>,
+    binder: &mut Binder<'_>,
 ) -> Result<Option<String>, DbErrorInfo> {
-    let column = quote_identifier(&filter.column)?;
+    let dialect = adapter.dialect();
+    let column = dialect.quote(&filter.column)?;
     let op = filter.op.as_str();
     let clause = match op {
         "is_null" => Some(format!("{column} IS NULL")),
         "not_null" => Some(format!("{column} IS NOT NULL")),
         "eq" => {
-            params.push(Value::Bytes(
-                filter.value.clone().unwrap_or_default().into_bytes(),
-            ));
-            Some(format!("{column} = ?"))
+            let placeholder = bind_text(binder, &filter.value.clone().unwrap_or_default());
+            Some(format!("{column} = {placeholder}"))
         }
         "ne" => {
-            params.push(Value::Bytes(
-                filter.value.clone().unwrap_or_default().into_bytes(),
-            ));
-            Some(format!("{column} <> ?"))
+            let placeholder = bind_text(binder, &filter.value.clone().unwrap_or_default());
+            Some(format!("{column} <> {placeholder}"))
         }
         "gt" | "gte" | "lt" | "lte" => {
             let operator = match op {
@@ -282,10 +293,8 @@ pub(crate) fn filter_clause(
                 "lt" => "<",
                 _ => "<=",
             };
-            params.push(Value::Bytes(
-                filter.value.clone().unwrap_or_default().into_bytes(),
-            ));
-            Some(format!("{column} {operator} ?"))
+            let placeholder = bind_text(binder, &filter.value.clone().unwrap_or_default());
+            Some(format!("{column} {operator} {placeholder}"))
         }
         "contains" | "starts_with" => {
             let raw = filter.value.clone().unwrap_or_default();
@@ -298,8 +307,11 @@ pub(crate) fn filter_clause(
             } else {
                 format!("{escaped}%")
             };
-            params.push(Value::Bytes(pattern.into_bytes()));
-            Some(format!("{column} LIKE ? ESCAPE '\\\\'"))
+            let placeholder = bind_text(binder, &pattern);
+            Some(format!(
+                "{column} LIKE {placeholder} {}",
+                adapter.like_escape()
+            ))
         }
         other => {
             return Err(DbErrorInfo::new(
@@ -319,6 +331,7 @@ struct OrderPlan {
 }
 
 fn plan_order(
+    dialect: &SqlDialect,
     request: &BrowseRequest,
     key_columns: &[String],
     has_reliable_key: bool,
@@ -340,7 +353,7 @@ fn plan_order(
         }
         order_parts.push(format!(
             "{} {}",
-            quote_identifier(&sort.column)?,
+            dialect.quote(&sort.column)?,
             sort.direction.to_uppercase()
         ));
         order_columns.push(sort.column.clone());
@@ -350,7 +363,7 @@ fn plan_order(
         for key in key_columns {
             order_parts.push(format!(
                 "{} {}",
-                quote_identifier(key)?,
+                dialect.quote(key)?,
                 if default_direction { "ASC" } else { "DESC" }
             ));
             order_columns.push(key.clone());
@@ -429,9 +442,10 @@ fn plan_order(
 }
 
 fn keyset_clause(
+    dialect: &SqlDialect,
     keyset: &[(String, bool)],
     cursor: &[Option<String>],
-    params: &mut Vec<Value>,
+    binder: &mut Binder<'_>,
 ) -> Result<String, DbErrorInfo> {
     if keyset.len() != cursor.len() {
         return Err(DbErrorInfo::new("query", "分页游标与排序键数量不一致"));
@@ -440,18 +454,17 @@ fn keyset_clause(
     for index in 0..keyset.len() {
         let mut parts = Vec::new();
         for previous in 0..index {
-            parts.push(format!("{} = ?", quote_identifier(&keyset[previous].0)?));
-            params.push(Value::Bytes(
-                cursor[previous].clone().unwrap_or_default().into_bytes(),
+            let placeholder = bind_text(binder, &cursor[previous].clone().unwrap_or_default());
+            parts.push(format!(
+                "{} = {placeholder}",
+                dialect.quote(&keyset[previous].0)?
             ));
         }
         let operator = if keyset[index].1 { ">" } else { "<" };
+        let placeholder = bind_text(binder, &cursor[index].clone().unwrap_or_default());
         parts.push(format!(
-            "{} {operator} ?",
-            quote_identifier(&keyset[index].0)?
-        ));
-        params.push(Value::Bytes(
-            cursor[index].clone().unwrap_or_default().into_bytes(),
+            "{} {operator} {placeholder}",
+            dialect.quote(&keyset[index].0)?
         ));
         alternatives.push(format!("({})", parts.join(" AND ")));
     }
@@ -466,6 +479,8 @@ pub async fn browse(
     budget: &ResolvedBudget,
 ) -> Result<BrowseResult, DbErrorInfo> {
     let started = Instant::now();
+    let adapter = profile.adapter()?;
+    let dialect = adapter.dialect();
     let page_size = resolved_page_size(request.page_size);
     let mut offset = request.offset.unwrap_or(0);
     if offset > MAX_OFFSET {
@@ -524,7 +539,7 @@ pub async fn browse(
 
     let key_columns = detail.reliable_key.clone().unwrap_or_default();
     let has_reliable_key = !key_columns.is_empty() && detail.kind == "table";
-    let order = plan_order(request, &key_columns, has_reliable_key, true)?;
+    let order = plan_order(dialect, request, &key_columns, has_reliable_key, true)?;
 
     // 大字段投影：只让驱动收到预算内的字节。
     // layout: (原始列下标, 输出列下标, 长度列输出下标)。
@@ -532,11 +547,11 @@ pub async fn browse(
     let mut layout: Vec<(usize, usize, Option<usize>)> = Vec::new();
     let mut output_index = 0usize;
     for column in columns.iter() {
-        let quoted = quote_identifier(&column.name)?;
+        let quoted = dialect.quote(&column.name)?;
         if is_large_type(&column.data_type) {
-            select_parts.push(format!("LEFT({quoted}, {})", budget.field_preview_bytes));
+            select_parts.push(adapter.left_bytes(&quoted, budget.field_preview_bytes));
             let length_position = output_index + 1;
-            select_parts.push(format!("OCTET_LENGTH({quoted})"));
+            select_parts.push(adapter.octet_length(&quoted));
             layout.push((output_index, output_index, Some(length_position)));
             output_index += 2;
         } else {
@@ -546,11 +561,11 @@ pub async fn browse(
         }
     }
 
-    let mut params: Vec<Value> = Vec::new();
+    let mut binder = Binder::new(dialect);
     let mut where_parts: Vec<String> = Vec::new();
     if let Some(filters) = &request.filters {
         for filter in filters {
-            if let Some(clause) = filter_clause(filter, &mut params)? {
+            if let Some(clause) = filter_clause(&adapter, filter, &mut binder)? {
                 where_parts.push(clause);
             }
         }
@@ -559,7 +574,7 @@ pub async fn browse(
     let mut used_keyset = false;
     if let Some(keyset) = &order.keyset {
         if let Some(cursor) = &request.after {
-            where_parts.push(keyset_clause(keyset, cursor, &mut params)?);
+            where_parts.push(keyset_clause(dialect, keyset, cursor, &mut binder)?);
             used_keyset = true;
         }
     }
@@ -570,31 +585,24 @@ pub async fn browse(
         where_parts = vec![where_sql];
     }
 
-    let quoted_database = quote_identifier(&detail.database)?;
-    let quoted_table = quote_identifier(&detail.table)?;
+    let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
     let where_sql = where_parts
         .first()
         .map(|clause| format!(" WHERE {clause}"))
         .unwrap_or_default();
 
-    params.push(Value::from(u64::from(page_size) + 1));
-    if !used_keyset {
-        params.push(Value::from(offset));
-    }
-
-    let sql = if used_keyset {
-        format!(
-            "SELECT {} FROM {quoted_database}.{quoted_table}{where_sql}{} LIMIT ?",
-            select_parts.join(", "),
-            order.sql
-        )
+    let limit = binder.bind(Value::from(u64::from(page_size) + 1));
+    let offset_sql = if used_keyset {
+        String::new()
     } else {
-        format!(
-            "SELECT {} FROM {quoted_database}.{quoted_table}{where_sql}{} LIMIT ? OFFSET ?",
-            select_parts.join(", "),
-            order.sql
-        )
+        format!(" OFFSET {}", binder.bind(Value::from(offset)))
     };
+
+    let sql = format!(
+        "SELECT {} FROM {qualified}{where_sql}{} LIMIT {limit}{offset_sql}",
+        select_parts.join(", "),
+        order.sql
+    );
 
     let mut conn: Conn = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -609,7 +617,7 @@ pub async fn browse(
 
     let rows: Vec<mysql_async::Row> = match tokio::time::timeout(
         std::time::Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000)),
-        conn.exec::<mysql_async::Row, _, _>(sql, Params::Positional(params)),
+        conn.exec::<mysql_async::Row, _, _>(sql, Params::Positional(binder.params)),
     )
     .await
     {
@@ -700,11 +708,11 @@ pub async fn browse(
     let exact_rows = if request.exact_count.unwrap_or(false) {
         // COUNT(*) 只在用户显式点"精确行数"时执行。它**不**复用 keyset 游标：
         // 那是"剩余行数"，不是总数。
-        let mut count_params: Vec<Value> = Vec::new();
+        let mut count_binder = Binder::new(dialect);
         let mut count_clauses: Vec<String> = Vec::new();
         if let Some(filters) = &request.filters {
             for filter in filters {
-                if let Some(clause) = filter_clause(filter, &mut count_params)? {
+                if let Some(clause) = filter_clause(&adapter, filter, &mut count_binder)? {
                     count_clauses.push(clause);
                 }
             }
@@ -714,11 +722,10 @@ pub async fn browse(
         } else {
             format!(" WHERE {}", count_clauses.join(" AND "))
         };
-        let count_sql =
-            format!("SELECT COUNT(*) FROM {quoted_database}.{quoted_table}{count_where}");
+        let count_sql = format!("SELECT COUNT(*) FROM {qualified}{count_where}");
         match tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            conn.exec::<(i64,), _, _>(count_sql, Params::Positional(count_params)),
+            conn.exec::<(i64,), _, _>(count_sql, Params::Positional(count_binder.params)),
         )
         .await
         {
@@ -756,6 +763,8 @@ pub async fn read_cell(
     column: &str,
     max_bytes: usize,
 ) -> Result<(DbValue, usize), DbErrorInfo> {
+    let adapter = profile.adapter()?;
+    let dialect = adapter.dialect();
     let key_columns = detail
         .reliable_key
         .clone()
@@ -769,21 +778,19 @@ pub async fn read_cell(
         .find(|item| item.name == column)
         .ok_or_else(|| DbErrorInfo::new("query", format!("列不存在：{column}")))?;
 
-    let mut params: Vec<Value> = Vec::new();
+    let mut binder = Binder::new(dialect);
     let mut where_parts = Vec::new();
     for (index, key) in key_columns.iter().enumerate() {
-        where_parts.push(format!("{} = ?", quote_identifier(key)?));
-        params.push(Value::Bytes(
-            key_values[index].clone().unwrap_or_default().into_bytes(),
-        ));
+        let placeholder = bind_text(&mut binder, &key_values[index].clone().unwrap_or_default());
+        where_parts.push(format!("{} = {placeholder}", dialect.quote(key)?));
     }
 
-    let quoted_column = quote_identifier(column)?;
+    let quoted_column = dialect.quote(column)?;
+    let projection = adapter.left_bytes(&quoted_column, max_bytes.clamp(1_024, 1024 * 1024));
+    let length = adapter.octet_length(&quoted_column);
+    let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
     let sql = format!(
-        "SELECT LEFT({quoted_column}, {}), OCTET_LENGTH({quoted_column}) FROM {}.{} WHERE {} LIMIT 2",
-        max_bytes.clamp(1_024, 1024 * 1024),
-        quote_identifier(&detail.database)?,
-        quote_identifier(&detail.table)?,
+        "SELECT {projection}, {length} FROM {qualified} WHERE {} LIMIT 2",
         where_parts.join(" AND ")
     );
 
@@ -802,7 +809,7 @@ pub async fn read_cell(
         std::time::Duration::from_millis(profile.endpoint.profile.query_timeout_ms.max(5_000));
     let rows: Vec<(Option<Vec<u8>>, Option<u64>)> = match tokio::time::timeout(
         read_timeout,
-        conn.exec(sql, Params::Positional(params)),
+        conn.exec(sql, Params::Positional(binder.params)),
     )
     .await
     {

@@ -139,16 +139,19 @@ describe("Redis 键网格", () => {
     await flush();
   };
 
-  it("渲染 Key / 类型 / TTL 三列并支持 Ctrl 多选", async () => {
+  it("渲染 键 / 类型 / 值预览 / 大小 四列（TTL 归底部编辑器）并支持 Ctrl 多选", async () => {
     await renderList();
 
     const all = rows();
     expect(all.length).toBe(3);
     expect(all[0].textContent).toContain("user:1");
     expect(all[0].textContent).toContain("string");
-    // 永久键显示 ∞，带 TTL 的显示 1m。
-    expect(all[0].textContent).toContain("∞");
-    expect(all[1].textContent).toContain("1m");
+    // TTL 不在网格里：它是键的属性，放在下方编辑器（参考图同位置）。
+    // 网格只留 键 / 类型 / 值预览 / 大小 四个维度。
+    expect(container.textContent).toContain("值预览");
+    expect(container.textContent).toContain("大小");
+    expect(all[0].textContent).not.toContain("∞");
+    expect(all[1].textContent).not.toContain("1m");
 
     act(() => {
       all[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));

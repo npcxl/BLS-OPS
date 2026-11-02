@@ -257,40 +257,54 @@
    * "外层是背景，内层是白纸"的既有决定，只有外壳这一圈参与模糊。
    */
   .app-shell {
-    /* 模糊由 Windows Acrylic（lib.rs 的 `set_effects`）负责 —— 它模糊窗口
-       **背后**的桌面，CSS 做不到。这里只做染色。
-       alpha 必须留出"能看见磨砂"的余量：0.9 以上等于把 Acrylic 盖死
+    /* 模糊由原生材质（Rust `window_material`）负责 —— 它模糊窗口**背后**的
+       桌面，CSS 做不到。这里只做染色。
+       染色基色与 alpha 都是语义 token：亮/暗成对定义在 tokens.css 里，
+       组件与页面不再各写一份 `rgb(255 255 255 / 0.x)`。
+       alpha 要留出"能看见磨砂"的余量：接近 1 等于把 Acrylic 盖死
        （刷新瞬间能看到磨砂、加载完就没了，就是这个原因）。 */
     background: linear-gradient(
       180deg,
-      rgb(var(--app) / 0.78) 0%,
-      rgb(var(--app) / 0.7) 100%
+      rgb(var(--shell) / var(--shell-top-alpha)) 0%,
+      rgb(var(--shell) / var(--shell-bottom-alpha)) 100%
     );
     /* 顶部一道极淡的内高光：让外壳与内容区之间有"玻璃厚度"。 */
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18);
   }
 
   :root[data-theme="dark"] .app-shell {
-    background: linear-gradient(
-      180deg,
-      rgb(var(--app) / 0.88) 0%,
-      rgb(var(--app) / 0.8) 100%
-    );
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
   }
 
-  /* 浮层面板统一为**纯白实色**（2026-09-03 UI 重构）：与内容区白卡片同一
-     份表面色，去掉半透明与 backdrop blur —— "外层是背景，内层是白纸"。 */
+  /*
+   * 实色回退：原生材质不可用（系统版本过低 / 系统关闭"透明效果" / 用户手动
+   * 关闭）时，外壳不再依赖壁纸，直接给匹配主题的实色。
+   * 这是**唯一**允许把外壳做成不透明的地方 —— 不要在页面里另加白底去"补"。
+   */
+  :root[data-material="solid"] .app-shell {
+    background: rgb(var(--shell));
+  }
+
+  /* 浮层面板：足够遮蔽度的实色（菜单/弹窗/抽屉不能透出背后的表格）。
+     透明度写在 `--overlay` 里成对定义，这里只引用。 */
   .glass-panel {
-    background: rgb(var(--surface-1));
-    border: 1px solid rgb(var(--line) / 0.72);
+    background: rgb(var(--overlay));
+    border: 1px solid rgb(var(--divider) / 0.9);
     box-shadow: 0 20px 60px rgb(15 23 42 / 0.08);
   }
 
   .glass-panel-strong {
-    background: rgb(var(--surface-1));
-    border: 1px solid rgb(var(--line) / 0.8);
+    background: rgb(var(--overlay));
+    border: 1px solid rgb(var(--divider));
     box-shadow: 0 24px 64px rgb(15 23 42 / 0.18);
+  }
+
+  :root[data-theme="dark"] .glass-panel {
+    box-shadow: 0 20px 60px rgb(0 0 0 / 0.42);
+  }
+
+  :root[data-theme="dark"] .glass-panel-strong {
+    box-shadow: 0 24px 64px rgb(0 0 0 / 0.55);
   }
 
   /* liquid-glass-react 是照"绝对居中的胶囊"设计的：它的外壳 div 自带

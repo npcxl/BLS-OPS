@@ -3825,6 +3825,8 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "uuid",
+ "windows-registry",
+ "windows-version",
  "zip 8.6.0",
 ]
 

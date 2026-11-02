@@ -18,6 +18,7 @@ import {
 import { emptyCredential, useDomainStore } from "@/stores/domain-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
+import { useWindowMaterial, useWindowTransparency } from "@/lib/window-material";
 import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
@@ -38,6 +39,22 @@ const THEME_OPTIONS: { id: ThemeMode; labelKey: string; shortKey: string; icon: 
   { id: "light", labelKey: "Light", shortKey: "Light", icon: Sun },
   { id: "dark", labelKey: "Dark", shortKey: "Dark", icon: Moon },
 ];
+
+/** 材质回退原因 → 说明。null 表示磨砂正常。 */
+function materialReasonText(t: (key: string) => string, reason: string): string {
+  switch (reason) {
+    case "user_disabled":
+      return t("Off: the window uses a solid background.");
+    case "system_transparency_off":
+      return t("Windows transparency effects are off in system settings, so a solid background is used.");
+    case "os_unsupported":
+      return t("This Windows version does not support Acrylic, so a solid background is used.");
+    case "platform_unsupported":
+      return t("Native blur is only available on Windows, so a solid background is used.");
+    default:
+      return t("The native material could not be applied, so a solid background is used.");
+  }
+}
 
 function CollapsibleList<T>({
   title,
@@ -109,6 +126,15 @@ export function SettingsContextSidebar() {
   const appInfo = useDomainStore((s) => s.appInfo);
 
   const [themeMode, setThemeMode] = useThemeMode();
+  const [transparency, setTransparency] = useWindowTransparency();
+  const material = useWindowMaterial();
+  // 系统层面的原因（版本过低 / 系统关闭透明效果）不归用户开关管：开关要灰掉。
+  const materialReason =
+    material && material.reason !== "user_disabled" ? material.reason : null;
+  const materialBlocked =
+    materialReason === "os_unsupported" ||
+    materialReason === "system_transparency_off" ||
+    materialReason === "platform_unsupported";
   const inspection = useInspectionMode();
   const servers = useDomainStore((s) => s.servers);
   const [editing, setEditing] = useState<CredentialRecord | null>(null);
@@ -175,6 +201,25 @@ export function SettingsContextSidebar() {
                 );
               })}
             </div>
+          </div>
+          {/* 窗口透明效果：原生 Acrylic 的开头。关掉时外壳走实色回退
+              （`[data-material="solid"]`），不是因为"不支持"，而是用户选择。
+              系统版本过低或系统关闭透明效果时，这一项会显示为不可用并说明原因。 */}
+          <div className="flex items-center justify-between gap-3 border-t border-line/60 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-12 text-fg">{t("Window transparency")}</div>
+              <div className="text-11 leading-relaxed text-fg-subtle">
+                {materialReason
+                  ? materialReasonText(t, materialReason)
+                  : t("Acrylic blur behind the window. Turn off for a solid background.")}
+              </div>
+            </div>
+            <Switch
+              checked={transparency && !materialBlocked}
+              disabled={materialBlocked}
+              label={t("Window transparency")}
+              onChange={(next) => setTransparency(next)}
+            />
           </div>
           {/* 语言：切换即时生效（i18next 事件广播 → 全部订阅组件重渲染），
               无需重启。选择器里用各自语言的名字展示，方便任何用户找到它。 */}

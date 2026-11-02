@@ -17,7 +17,7 @@ import { ChevronRight, Loader2 } from "@/components/icons";
 import type { RedisKeyBrief } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { formatBytes } from "@/lib/format";
-import { formatTtl, kindBadgeClass } from "./redis-shared";
+import { kindBadgeClass } from "./redis-shared";
 import type { RedisValuePreview } from "./useRedisValuePreview";
 
 const ROW_HEIGHT = 22;
@@ -25,9 +25,12 @@ const OVERSCAN = 12;
 
 /**
  * 列模板：表头与每一行共用同一个字符串，杜绝"表头和内容各写一套宽度"。
- * 顺序与参考图一致：键 / 类型 / 值 / 大小 / TTL。
+ *
+ * 顺序严格按参考图：键 / 类型 / 值预览 / 大小。
+ * TTL **不在网格里**：它属于键的属性而不是列表维度，放在下方编辑器中
+ * （选中键后才需要知道它什么时候过期），列里再放一份会把"值预览"挤窄。
  */
-const GRID_COLS = "minmax(180px, 340px) 110px minmax(140px, 1.6fr) 84px 64px";
+const GRID_COLS = "minmax(180px, 340px) 110px minmax(160px, 1.6fr) 84px";
 
 export type RedisGridView = "list" | "tree";
 
@@ -252,13 +255,10 @@ export function RedisKeyGrid({
           {t("类型")}
         </span>
         <span className="flex h-full items-center border-l border-line bg-surface-2/70 px-2">
-          {t("值")}
+          {t("值预览")}
         </span>
         <span className="flex h-full items-center justify-end border-l border-line bg-surface-2/70 px-2">
           {t("大小")}
-        </span>
-        <span className="flex h-full items-center justify-end border-l border-line bg-surface-2/70 px-2">
-          {t("TTL")}
         </span>
       </div>
       <div
@@ -337,7 +337,6 @@ export function RedisKeyGrid({
                     <span className="border-l border-line" />
                     <span className="border-l border-line" />
                     <span className="border-l border-line" />
-                    <span className="border-l border-line" />
                   </>
                 ) : (
                   <>
@@ -366,9 +365,6 @@ export function RedisKeyGrid({
                       previews[row.key!]?.bytes !== undefined
                         ? formatBytes(previews[row.key!].bytes as number)
                         : ""}
-                    </span>
-                    <span className="flex items-center justify-end border-l border-line px-2 text-10 text-fg-subtle">
-                      {formatTtl(row.ttlMs)}
                     </span>
                   </>
                 )}

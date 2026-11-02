@@ -9,7 +9,8 @@ use super::open_db;
 use crate::database::runtime::ProfileRuntime;
 use crate::database::session::SessionEntry;
 use crate::database::{
-    driver, metadata, model::*, mutate, profiles, query, schema_ops, table, table_ops,
+    adapter::AdapterSet, driver, metadata, model::*, mutate, profiles, query, schema_ops, table,
+    table_ops,
 };
 use crate::state::AppState;
 use std::sync::Arc;
@@ -348,7 +349,8 @@ pub async fn db_table_operation_preview(
         &request.table,
     )
     .await?;
-    table_ops::preview(&detail, &request)
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    table_ops::preview(&adapter, &detail, &request)
 }
 
 #[tauri::command]
@@ -366,9 +368,10 @@ pub async fn db_table_operation_apply(
         &request.table,
     )
     .await?;
-    let preview = table_ops::preview(&detail, &request)?;
+    let adapter = AdapterSet::of(&runtime.endpoint.profile.engine)?;
+    let preview = table_ops::preview(&adapter, &detail, &request)?;
     ensure_preview_matches(&expected_sql, &preview.sql)?;
-    let outcome = table_ops::apply(&session, &detail, &request).await;
+    let outcome = table_ops::apply(&adapter, &session, &detail, &request).await;
     // 复制表等操作可能第一条 DDL 成功、第二条失败。
     state
         .database

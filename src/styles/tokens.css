@@ -55,6 +55,28 @@
    * 深色主题（见下方）再降一档，避免盖住等宽文本或变成高亮条。 */
   --grid-selection-bg: rgb(49 117 241 / 0.12);
   --grid-selection-border: rgb(49 117 241 / 0.55);
+
+  /* ── 右键菜单项选中态 ──
+   * 与网格选择态同一套"薄膜"思路：低透明度 accent，压在 LiquidGlass
+   * 玻璃层上仍然透亮；深色主题（见下方）再降一档。 */
+  --menu-item-active: rgb(49 117 241 / 0.1);
+
+  /* ── 外壳 / 内容 / 检查器 / 浮层 ──
+   * 语义分层，组件里只引用这些名字，不要在各页面写死透明度：
+   *   shell     参与原生磨砂的一圈（导航栏、资产树、标签条）；只放染色；
+   *   content   数据、SQL、结构编辑所在的实色纸面，必须稳定可读；
+   *   inspector 右侧检查器 / 底部编辑器这类次一级纸面；
+   *   overlay   菜单、弹窗、抽屉 —— 遮蔽度要高，不能透出背后的表格。
+   * shell 的两个 alpha 是"能看见磨砂"和"文字对比度够"的平衡点：
+   * 再高等于把 Acrylic 盖死，再低则浅色壁纸上正文发虚。 */
+  --shell: 248 250 253;
+  --shell-top-alpha: 0.82;
+  --shell-bottom-alpha: 0.74;
+  --content: 255 255 255;
+  --inspector: 249 251 254;
+  --overlay: 255 255 255;
+  --divider: 220 227 237;
+  --focus-ring: 49 117 241;
 }
 
 :root[data-theme="dark"] {
@@ -95,6 +117,19 @@
 
   --grid-selection-bg: rgb(91 156 255 / 0.16);
   --grid-selection-border: rgb(91 156 255 / 0.45);
+
+  /* 深色下 0.14 才刚好"看得出被选中"，再高就是一整块亮底。 */
+  --menu-item-active: rgb(91 156 255 / 0.14);
+
+  /* 深色下层次靠"低幅度提亮"，不靠实心亮块（见 --tab-active 的说明）。 */
+  --shell: 18 20 26;
+  --shell-top-alpha: 0.9;
+  --shell-bottom-alpha: 0.84;
+  --content: 24 27 35;
+  --inspector: 22 25 32;
+  --overlay: 30 34 43;
+  --divider: 46 54 68;
+  --focus-ring: 91 156 255;
 }
 
 @theme {
@@ -132,9 +167,22 @@
   --color-grid-selection: var(--grid-selection-bg);
   --color-grid-selection-border: var(--grid-selection-border);
 
+  /* ── 右键菜单项选中底（亮/暗成对定义）── */
+  --color-menu-item-active: var(--menu-item-active);
+
   /* ── Tabs（阴影走 --tab-active-shadow，不在这里注册）── */
   --color-tab-hover: rgb(var(--tab-hover));
   --color-tab-active: rgb(var(--tab-active));
+
+  /* ── 外壳 / 内容 / 检查器 / 浮层（组件只用这几个名字）──
+   * `bg-shell` / `bg-content` / `bg-inspector` / `bg-overlay` 由 Tailwind 生成。
+   * 半透明只在外壳层出现；内容层永远实色，避免文字跟着壁纸变淡。 */
+  --color-shell: rgb(var(--shell));
+  --color-content: rgb(var(--content));
+  --color-inspector: rgb(var(--inspector));
+  --color-overlay: rgb(var(--overlay));
+  --color-divider: rgb(var(--divider));
+  --color-focus: rgb(var(--focus-ring));
 
   /* ── Radius ── */
   --radius-control: 8px;

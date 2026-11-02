@@ -1,15 +1,19 @@
 /**
  * 数据库工作区的工作项模型。
  *
- * 一个"工作项"是右侧列表里的一行，也是中央一个**独立**的页面：
+ * 一个"工作项"是顶部标签条上的一个标签，也是中央一个**独立**的页面：
  * - `table`：一张表的数据/结构/索引/DDL；
- * - `query`：一份 SQL 与它的结果。
+ * - `query`：一份 SQL 与它的结果；
+ * - `structure`：表结构编辑器；
+ * - `objects`：某个库的对象清单。
  *
  * 关键约束：
- * - 工作项按稳定 id 去重：同一张表双击两次只定位已有项，不会开两份；
+ * - 工作项按稳定 id 去重：同一张表打开两次只定位已有标签，不会开两份；
  * - 每个工作项的状态（分页、筛选、待修改、SQL、结果、滚动位置）独立，
  *   切换只改可见性，**不卸载**（见 `WorkItemHost`），所以不会丢状态；
- * - 右侧列表是唯一的切换入口，不在中央再放一排横向标签。
+ * - 标签条是唯一的切换入口（顶部），右侧只放检查器/DDL，不重复维护第二份列表；
+ * - `preview` 标签是"单击预览"的那一个：同一连接的预览标签只保留一个，
+ *   下一次单击替换它；开始编辑（有草稿/待提交/运行中）时自动升级为常驻。
  */
 import { create } from "zustand";
 
@@ -26,7 +30,15 @@ export interface WorkItem {
   objectName: string;
   /** 可重命名的显示名。 */
   title: string;
+  /** 固定在标签条最左侧（不参与预览替换）。 */
   pinned: boolean;
+  /**
+   * 预览标签：单击资产树时打开的那个。
+   * 同一连接最多一个；被下一次单击替换。开始编辑后自动置 false。
+   */
+  preview: boolean;
+  /** 标签顺序（拖动排序写入）；固定项仍然置顶。 */
+  order: number;
   createdAt: number;
   /** 表格待提交修改数量（由表格页上报）。 */
   pendingCount: number;
@@ -100,6 +112,8 @@ interface WorkspaceState {
     connectionName: string;
     database: string;
     table: string;
+    /** 单击资产树 = 预览；双击 / 明确打开 = 常驻。 */
+    preview?: boolean;
   }) => string;
   /**
    * 表结构是**独立工作项**：可以和表数据页同时打开，切换时互不影响。
@@ -127,6 +141,10 @@ interface WorkspaceState {
   setActive: (id: string) => void;
   close: (id: string) => void;
   togglePin: (id: string) => void;
+  /** 把预览标签升级为常驻（开始编辑 / 双击打开时调用）。 */
+  promote: (id: string) => void;
+  /** 拖动排序：把 draggedId 放到 targetId 的位置。 */
+  reorder: (draggedId: string, targetId: string) => void;
   rename: (id: string, title: string) => void;
   /** 表重命名后同步已打开的数据/结构工作项。 */
   renameTableItems: (
@@ -195,6 +213,30 @@ interface WorkspaceState {
 const tableId = (profileId: string, database: string, table: string) =>
   `table:${profileId}:${database}:${table}`;
 
+/** 新标签排在最后；`reorder` 只归一化单个连接的顺序，所以取全局最大值。 */
+function nextOrder(items: WorkItem[]): number {
+  return items.reduce((max, item) => (item.order > max ? item.order : max), 0) + 1;
+}
+
+/**
+ * 单击预览时替换掉同一连接上旧的预览标签。
+ *
+ * 有未保存内容的预览标签**不能静默销毁**：待提交修改、未保存 SQL、运行中的
+ * 查询都说明用户已经在里面干活了，这时把它升级为常驻标签，只替换真正空闲的
+ * 那一个。这也是"开始编辑后自动固定"的兜底。
+ */
+function dropReplacedPreview(
+  items: WorkItem[],
+  args: { profileId: string; preview: boolean },
+): WorkItem[] {
+  if (!args.preview) return items;
+  return items.flatMap((item) => {
+    if (item.profileId !== args.profileId || !item.preview) return [item];
+    const busy = item.pendingCount > 0 || item.dirty || item.running;
+    return busy ? [{ ...item, preview: false }] : [];
+  });
+}
+
 export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   items: [],
   activeId: null,
@@ -216,16 +258,25 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
       state.closeRequest?.id === id ? { closeRequest: null } : {},
     ),
 
-  openTable: ({ profileId, connectionName, database, table }) => {
+  openTable: ({ profileId, connectionName, database, table, preview = false }) => {
     const id = tableId(profileId, database, table);
     const existing = get().items.find((item) => item.id === id);
     if (existing) {
-      set({ activeId: id });
+      set((state) => ({
+        activeId: id,
+        // 已经打开过的表被"明确打开"时，顺手把预览标签升级为常驻：
+        // 用户既然点了两次（或从菜单打开），就不该再被下一次单击顶掉。
+        items: preview
+          ? state.items
+          : state.items.map((item) =>
+              item.id === id && item.preview ? { ...item, preview: false } : item,
+            ),
+      }));
       return id;
     }
     set((state) => ({
       items: [
-        ...state.items,
+        ...dropReplacedPreview(state.items, { profileId, preview }),
         {
           id,
           kind: "table",
@@ -235,6 +286,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
           objectName: table,
           title: table,
           pinned: false,
+          preview,
+          order: nextOrder(state.items),
           createdAt: Date.now(),
           pendingCount: 0,
           running: false,
@@ -266,6 +319,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
           objectName: table,
           title: `${table} · 结构`,
           pinned: false,
+          preview: false,
+          order: nextOrder(state.items),
           createdAt: Date.now(),
           pendingCount: 0,
           running: false,
@@ -297,6 +352,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
           objectName: database,
           title: `${database} · 对象`,
           pinned: false,
+          preview: false,
+          order: nextOrder(state.items),
           createdAt: Date.now(),
           pendingCount: 0,
           running: false,
@@ -338,6 +395,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
           objectName: name,
           title: name,
           pinned: false,
+          preview: false,
+          order: nextOrder(state.items),
           createdAt: Date.now(),
           pendingCount: 0,
           running: false,
@@ -354,18 +413,67 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
 
   close: (id) =>
     set((state) => {
+      const ordered = orderedItems(state.items.filter((item) => item.id !== id));
+      const removedIndex = orderedItems(state.items).findIndex((item) => item.id === id);
       const items = state.items.filter((item) => item.id !== id);
+      // 关掉当前标签后落到它右边那个（没有就退回左边），与浏览器/编辑器的
+      // 习惯一致；不要跳到列表末尾 —— 那会让上下文突然变成另一张表。
+      const fallback = ordered[Math.min(Math.max(removedIndex, 0), ordered.length - 1)];
       const activeId =
-        state.activeId === id ? (items[items.length - 1]?.id ?? null) : state.activeId;
+        state.activeId === id ? (fallback?.id ?? null) : state.activeId;
       return { items, activeId };
     }),
 
   togglePin: (id) =>
     set((state) => ({
       items: state.items.map((item) =>
-        item.id === id ? { ...item, pinned: !item.pinned } : item,
+        item.id === id
+          ? {
+              ...item,
+              pinned: !item.pinned,
+              // 固定一定意味着"不被预览替换"；取消固定不会把常驻降回预览。
+              preview: item.pinned ? item.preview : false,
+            }
+          : item,
       ),
     })),
+
+  promote: (id) =>
+    set((state) =>
+      state.items.some((item) => item.id === id && item.preview)
+        ? {
+            items: state.items.map((item) =>
+              item.id === id ? { ...item, preview: false } : item,
+            ),
+          }
+        : state,
+    ),
+
+  reorder: (draggedId, targetId) =>
+    set((state) => {
+      const dragged = state.items.find((item) => item.id === draggedId);
+      const target = state.items.find((item) => item.id === targetId);
+      if (!dragged || !target || dragged.id === target.id) return state;
+      if (dragged.profileId !== target.profileId) return state;
+      const group = orderedItems(
+        state.items.filter((item) => item.profileId === dragged.profileId),
+      );
+      const from = group.findIndex((item) => item.id === draggedId);
+      const to = group.findIndex((item) => item.id === targetId);
+      if (from < 0 || to < 0) return state;
+      const next = [...group];
+      next.splice(from, 1);
+      next.splice(to, 0, dragged);
+      // 只归一化这一个连接的顺序：跨连接的标签条本来就分开渲染。
+      const orderById = new Map(next.map((item, index) => [item.id, index + 1]));
+      return {
+        items: state.items.map((item) =>
+          orderById.has(item.id)
+            ? { ...item, order: orderById.get(item.id) as number }
+            : item,
+        ),
+      };
+    }),
 
   rename: (id, title) =>
     set((state) => ({
@@ -550,10 +658,11 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
     })),
 }));
 
-/** 固定项置顶，其余按打开顺序。 */
+/** 固定项置顶，其余按拖动后的顺序；`order` 相同才回退到打开时间。 */
 export function orderedItems(items: WorkItem[]): WorkItem[] {
   return [...items].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    if (a.order !== b.order) return a.order - b.order;
     return a.createdAt - b.createdAt;
   });
 }

@@ -1,14 +1,18 @@
 //! 表的 DDL 对象操作：重命名、复制、删除、清空。
 //!
-//! 只接受明确的表对象和枚举动作；SQL 由后端按标识符转义生成，前端不能传 SQL。
-//! 执行前检查连接只读、对象类型、会话事务；DDL 不自动重试。
+//! 只接受明确的表对象和枚举动作；SQL 由后端按 `AdapterSet`（引擎族 + 方言）生成，
+//! 前端不能传 SQL。执行前检查连接只读、对象类型、会话事务；DDL 不自动重试。
+//!
+//! 引擎差异（`RENAME TABLE` vs `ALTER TABLE … RENAME TO`、SQLite 没有
+//! `TRUNCATE`）全部在 `adapter::AdapterSet` 里，这里只负责校验与执行。
 
 use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
 use serde::{Deserialize, Serialize};
 
-use super::driver::{map_error, quote_identifier};
+use super::adapter::AdapterSet;
+use super::driver::map_error;
 use super::model::{DbErrorInfo, DbTableDetail};
 use super::session::SessionEntry;
 
@@ -57,67 +61,67 @@ fn target_name(request: &TableOperationRequest) -> Result<&str, DbErrorInfo> {
 }
 
 fn statements(
+    adapter: &AdapterSet,
     detail: &DbTableDetail,
     request: &TableOperationRequest,
 ) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
-    let database = quote_identifier(&request.database)?;
-    let table = quote_identifier(&detail.table)?;
-    let qualified = format!("{database}.{table}");
-
-    match request.kind {
-        TableOperationKind::Rename => {
-            let new_name = quote_identifier(target_name(request)?)?;
-            Ok((
-                vec![format!("RENAME TABLE {qualified} TO {database}.{new_name}")],
-                None,
-                false,
-            ))
-        }
-        TableOperationKind::CopyStructure | TableOperationKind::CopyData => {
-            let new_name = quote_identifier(target_name(request)?)?;
-            let new_qualified = format!("{database}.{new_name}");
-            let mut sql = vec![format!("CREATE TABLE {new_qualified} LIKE {qualified}")];
-            if matches!(request.kind, TableOperationKind::CopyData) {
-                sql.push(format!(
-                    "INSERT INTO {new_qualified} SELECT * FROM {qualified}"
-                ));
-            }
-            Ok((
-                sql,
-                Some(if matches!(request.kind, TableOperationKind::CopyData) {
-                    "复制结构和数据期间如果 INSERT 失败，新表可能已经创建但数据不完整；请检查后手动处理"
-                } else {
-                    "只复制结构，不复制数据和外键引用关系"
-                }
-                .to_string()),
-                false,
-            ))
-        }
+    let is_view = detail.kind == "view";
+    let plan = match &request.kind {
+        TableOperationKind::Rename => adapter.rename_object(
+            &request.database,
+            &detail.table,
+            target_name(request)?,
+            is_view,
+        )?,
+        TableOperationKind::CopyStructure | TableOperationKind::CopyData => adapter.copy_table(
+            &request.database,
+            &detail.table,
+            target_name(request)?,
+            matches!(&request.kind, TableOperationKind::CopyData),
+        )?,
         TableOperationKind::Drop => {
-            let object = if detail.kind == "view" {
-                "VIEW"
-            } else {
-                "TABLE"
-            };
-            Ok((
-                vec![format!("DROP {object} {qualified}")],
-                Some(
-                    if detail.kind == "view" {
-                        "删除视图不会删除基表数据，但会永久移除视图定义"
-                    } else {
-                        "删除表会永久删除结构和数据，无法撤销"
-                    }
-                    .to_string(),
-                ),
-                true,
-            ))
+            adapter.drop_object(&request.database, &detail.table, is_view)?
         }
-        TableOperationKind::Truncate => Ok((
-            vec![format!("TRUNCATE TABLE {qualified}")],
+        TableOperationKind::Truncate => adapter.truncate_table(&request.database, &detail.table)?,
+    };
+
+    let (warning, destructive) = match &request.kind {
+        TableOperationKind::Rename => (None, false),
+        TableOperationKind::CopyStructure => (
+            Some("只复制结构，不复制数据和外键引用关系".to_string()),
+            false,
+        ),
+        TableOperationKind::CopyData => (
+            Some(
+                "复制结构和数据期间如果 INSERT 失败，新表可能已经创建但数据不完整；请检查后手动处理"
+                    .to_string(),
+            ),
+            false,
+        ),
+        TableOperationKind::Drop => (
+            Some(
+                if is_view {
+                    "删除视图不会删除基表数据，但会永久移除视图定义"
+                } else {
+                    "删除表会永久删除结构和数据，无法撤销"
+                }
+                .to_string(),
+            ),
+            true,
+        ),
+        TableOperationKind::Truncate => (
             Some("清空表会删除全部行，但保留表结构".to_string()),
             true,
-        )),
-    }
+        ),
+    };
+
+    // 引擎特有偏差必须让用户看到（SQLite 复制表不保留约束等）。
+    let warning = match (warning, plan.note) {
+        (Some(base), Some(note)) => Some(format!("{base}；{note}")),
+        (None, Some(note)) => Some(note),
+        (base, None) => base,
+    };
+    Ok((plan.statements, warning, destructive))
 }
 
 fn validate_kind(
@@ -146,11 +150,12 @@ fn validate_kind(
 }
 
 pub fn preview(
+    adapter: &AdapterSet,
     detail: &DbTableDetail,
     request: &TableOperationRequest,
 ) -> Result<TableOperationPreview, DbErrorInfo> {
     validate_kind(detail, request)?;
-    let (sql, warning, destructive) = statements(detail, request)?;
+    let (sql, warning, destructive) = statements(adapter, detail, request)?;
     Ok(TableOperationPreview {
         sql: sql
             .iter()
@@ -163,6 +168,7 @@ pub fn preview(
 }
 
 pub async fn apply(
+    adapter: &AdapterSet,
     session: &SessionEntry,
     detail: &DbTableDetail,
     request: &TableOperationRequest,
@@ -185,7 +191,7 @@ pub async fn apply(
         ));
     }
 
-    let (sql, warning, _) = statements(detail, request)?;
+    let (sql, warning, _) = statements(adapter, detail, request)?;
     let mut conn = session.acquire_conn().await?;
     let mut executed = Vec::new();
     let mut result_warning = warning;
@@ -235,6 +241,7 @@ pub async fn apply(
 #[cfg(test)]
 mod tests {
     use super::{preview, TableOperationKind, TableOperationRequest};
+    use crate::database::adapter::AdapterSet;
     use crate::database::model::DbTableDetail;
 
     fn detail(kind: &str) -> DbTableDetail {
@@ -263,9 +270,14 @@ mod tests {
         }
     }
 
+    fn mysql() -> AdapterSet {
+        AdapterSet::mysql()
+    }
+
     #[test]
     fn rename_escapes_identifiers() {
         let result = preview(
+            &mysql(),
             &detail("table"),
             &request(TableOperationKind::Rename, Some("new`orders")),
         )
@@ -280,12 +292,17 @@ mod tests {
     #[test]
     fn destructive_operations_are_marked() {
         assert!(
-            preview(&detail("table"), &request(TableOperationKind::Drop, None))
-                .unwrap()
-                .destructive
+            preview(
+                &mysql(),
+                &detail("table"),
+                &request(TableOperationKind::Drop, None)
+            )
+            .unwrap()
+            .destructive
         );
         assert!(
             preview(
+                &mysql(),
                 &detail("table"),
                 &request(TableOperationKind::Truncate, None)
             )
@@ -296,14 +313,56 @@ mod tests {
 
     #[test]
     fn views_support_rename_and_drop_only() {
-        let drop = preview(&detail("view"), &request(TableOperationKind::Drop, None)).unwrap();
+        let drop = preview(
+            &mysql(),
+            &detail("view"),
+            &request(TableOperationKind::Drop, None),
+        )
+        .unwrap();
         assert_eq!(drop.sql, "DROP VIEW `db`.`orders`;");
 
         let error = preview(
+            &mysql(),
             &detail("view"),
             &request(TableOperationKind::Truncate, None),
         )
         .unwrap_err();
         assert_eq!(error.stage, "permission");
+    }
+
+    #[test]
+    fn preview_follows_the_engine_dialect() {
+        let pg = AdapterSet::of("postgres").expect("pg registered");
+        let rename = preview(
+            &pg,
+            &detail("table"),
+            &request(TableOperationKind::Rename, Some("orders_new")),
+        )
+        .unwrap();
+        assert_eq!(
+            rename.sql,
+            "ALTER TABLE \"db\".\"orders\" RENAME TO \"orders_new\";"
+        );
+
+        let copy = preview(
+            &pg,
+            &detail("table"),
+            &request(TableOperationKind::CopyData, Some("orders_copy")),
+        )
+        .unwrap();
+        assert_eq!(
+            copy.sql,
+            "CREATE TABLE \"db\".\"orders_copy\" (LIKE \"db\".\"orders\" INCLUDING ALL);\nINSERT INTO \"db\".\"orders_copy\" SELECT * FROM \"db\".\"orders\";"
+        );
+
+        // SQLite 只支持连数据一起复制，拒绝"只复制结构"。
+        let sqlite = AdapterSet::of("sqlite").expect("sqlite registered");
+        let error = preview(
+            &sqlite,
+            &detail("table"),
+            &request(TableOperationKind::CopyStructure, Some("orders_copy")),
+        )
+        .unwrap_err();
+        assert_eq!(error.stage, "unsupported");
     }
 }

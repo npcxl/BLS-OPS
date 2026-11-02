@@ -4,20 +4,25 @@
 //!
 //! * 配置校验按这里的 `requirements` 走，不再要求每个数据库都有 host/port；
 //! * 连接入口按 `implementation` 拒绝，未适配的引擎连不上就明说；
+//! * 新建连接的数据库类型列表按 `entry` 过滤，**不靠前端写死数组**；
 //! * `db_engines_catalog` 把它原样发给前端，界面不再自己维护一份。
 //!
 //! **不要把"注册了"当成"支持了"**：`Implementation::ConfigOnly` 只代表配置
 //! 能保存。真实驱动接进来时才改成 `Implemented`，并且必须同时补
 //! `VerifiedScope`（在哪个版本、验证到哪一步、还有什么没验证）。
+//!
+//! **也不要把"隐藏"当成"删除"**：`EntryPolicy::Hidden` 只表示不再给一级
+//! 入口（产品线收敛），引擎仍在注册表里，旧配置照旧能显示产品名、能编辑、
+//! 能连接（前提是 `Implemented`）。
 
 use std::sync::OnceLock;
 
 use super::capability::{
     Capability, CapabilitySet, Dialect, DialectRules, DriverFamily, EndpointRequirement,
-    EngineDescriptor, EngineFields, EngineRequirements, IdentifierQuote, Implementation,
-    MySqlProductProfile, OptionField, OptionFieldKind, Transport, VerifiedLevel, VerifiedScope,
-    AURORA_MYSQL_PROFILE, DORIS_PROFILE, MYSQL_STANDARD_PROFILE, OCEANBASE_MYSQL_PROFILE,
-    STARROCKS_PROFILE, TIDB_PROFILE,
+    EngineDescriptor, EngineFields, EngineRequirements, EntryPolicy, IdentifierQuote,
+    Implementation, MySqlProductProfile, OptionField, OptionFieldKind, Transport, VerifiedLevel,
+    VerifiedScope, AURORA_MYSQL_PROFILE, DORIS_PROFILE, MYSQL_STANDARD_PROFILE,
+    OCEANBASE_MYSQL_PROFILE, STARROCKS_PROFILE, TIDB_PROFILE,
 };
 use super::model::DbErrorInfo;
 
@@ -269,7 +274,12 @@ fn olap_caps() -> CapabilitySet {
     }
 }
 
-/// PostgreSQL：SQL 执行链路已接通（文本协议）；结构浏览与编辑还没接。
+/// PostgreSQL：SQL 执行（文本协议）+ 结构浏览 + 表数据浏览已接通；
+/// 单行编辑、DDL、视图与导出还没接。
+///
+/// 原因写的是**真实调用链**，不是"能力没实现"这种空话：
+/// 编辑走 `SessionEntry::acquire_conn()`（要 MySQL 连接句柄），导出走
+/// `ProfileRuntime::export_pool()`（MySQL 导出池）——PostgreSQL 运行时都没有。
 fn postgres_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::Supported,
@@ -277,29 +287,39 @@ fn postgres_caps() -> CapabilitySet {
         cancel: Capability::Supported,
         transaction: Capability::Supported,
         read_only_enforcement: Capability::Supported,
-        table_browse: Capability::unsupported("PostgreSQL 表数据浏览尚未接入"),
-        keyset_pagination: Capability::unsupported("随表数据浏览一起接入"),
-        table_edit: Capability::unsupported("PostgreSQL 单行编辑尚未接入"),
-        schema_edit: Capability::unsupported("PostgreSQL DDL 生成尚未接入"),
-        view_edit: Capability::unsupported("PostgreSQL 视图编辑尚未接入"),
-        export: Capability::unsupported("PostgreSQL 导出尚未接入"),
+        table_browse: Capability::Supported,
+        keyset_pagination: Capability::Supported,
+        table_edit: Capability::unsupported(
+            "单行编辑需要 MySQL 连接句柄，PostgreSQL 会话不接受：入口已禁用",
+        ),
+        schema_edit: Capability::unsupported("PostgreSQL 的 DDL 生成与改表尚未接入"),
+        view_edit: Capability::unsupported("PostgreSQL 的视图编辑尚未接入"),
+        export: Capability::unsupported("导出需要 MySQL 导出池，PostgreSQL 导出尚未接入"),
     }
 }
 
-/// SQLite：本地文件，SQL 执行链路已接通；结构浏览与编辑还没接。
+/// SQLite：本地文件，**全部链路已接入**（结构浏览 / 表数据 / 单行编辑 / 建表 / 视图 / 按表导出）。
+///
+/// 每项都对应真实调用点：`sqlite_catalog`、`sqlite_table`、`mutate::apply_sqlite`、
+/// `schema_ops` 的 SQLite 分支、`export::run_sqlite_export`。
+/// 改表（ALTER）确实没有：`schema_ops::alter_table_sql` 只接受 MySQL。
 fn sqlite_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::Supported,
         multiple_result_sets: Capability::limited(
             "多语句逐条执行、每条一个结果集；没有协议层多结果集流",
         ),
+        // 取消是驱动级 `InterruptHandle`，不是"关连接"。
         cancel: Capability::Supported,
         transaction: Capability::Supported,
+        // 只读连接用 `SQLITE_OPEN_READ_ONLY` 打开，写语句由 SQLite 自己拒绝。
         read_only_enforcement: Capability::Supported,
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
         table_edit: Capability::limited("单行增删改已接入（事务 + 乐观并发）；二进制列仍只读"),
-        schema_edit: Capability::limited("支持建表；改表/改索引不支持（SQLite 需要重建表）"),
+        schema_edit: Capability::limited(
+            "支持建表与删表；改表/改索引不支持（SQLite 需要重建表）",
+        ),
         view_edit: Capability::limited("支持创建/替换/删除视图；OR REPLACE 用先删后建实现"),
         export: Capability::limited("按表导出已接入；自定义 SQL 导出尚未接入"),
     }
@@ -321,9 +341,24 @@ fn redis_caps() -> CapabilitySet {
     }
 }
 
+/// 标记"只有配置模型"：能力全部置为不可用，并写明原因。
+///
+/// **只能用于没有驱动的引擎。** 已经有驱动、只想把它移出新建列表，用
+/// [`hidden`]：那样能力保留，旧配置还能继续用。
 fn config_only(mut engine: EngineDescriptor) -> EngineDescriptor {
+    debug_assert!(
+        !engine.is_implemented(),
+        "{} 已声明 Implemented：不要用 config_only 覆盖它的能力，请显式给 capabilities",
+        engine.id
+    );
     engine.capabilities =
         CapabilitySet::unimplemented(format!("{} 尚未适配：{}", engine.product, engine.note));
+    engine
+}
+
+/// 移出「新建连接」列表：注册表与已有配置都保留，只改入口策略。
+fn hidden(mut engine: EngineDescriptor, reason: &'static str) -> EngineDescriptor {
+    engine.entry = EntryPolicy::Hidden { reason };
     engine
 }
 
@@ -346,6 +381,8 @@ fn network(
         dialect,
         transport: Transport::Network,
         implementation: Implementation::ConfigOnly,
+        // 默认给一级入口；不出现在列表里的产品由 `hidden` 明确标记。
+        entry: EntryPolicy::Listed,
         default_port: Some(port),
         default_username: None,
         fields,
@@ -410,9 +447,10 @@ fn postgres_family(
 }
 
 fn build() -> Vec<EngineDescriptor> {
+    // 顺序 = 界面顺序：先「新建连接」里可见的产品，再只保留旧配置的引擎。
     let mut engines: Vec<EngineDescriptor> = Vec::new();
 
-    // ---- 已有真实驱动 -----------------------------------------------------
+    // ---- 新建连接可见：只有真实接入驱动的产品 ------------------------------
     let mut mysql = mysql_family(
         "mysql",
         "MySQL",
@@ -430,6 +468,7 @@ fn build() -> Vec<EngineDescriptor> {
     }];
     engines.push(mysql);
 
+    // 复用 mysql_async 不等于 MariaDB 全等：认证插件与部分 DDL 语法要按版本验证。
     let mut mariadb = mysql_family(
         "mariadb",
         "MariaDB",
@@ -446,6 +485,57 @@ fn build() -> Vec<EngineDescriptor> {
             .to_string(),
     }];
     engines.push(mariadb);
+
+    let mut postgres = postgres_family(
+        "postgres",
+        "PostgreSQL",
+        "simple query 文本协议（bigint/numeric 保持字符串精度）；TLS 未接入；\
+         单行编辑、DDL 与导出未接入",
+    );
+    postgres.implementation = Implementation::Implemented;
+    postgres.default_username = Some("postgres");
+    postgres.capabilities = postgres_caps();
+    postgres.verified = vec![VerifiedScope {
+        versions: "PostgreSQL 17.11".to_string(),
+        level: VerifiedLevel::Query,
+        notes: "本地容器验证：连接/认证/simple query/多语句/类型（int8、numeric、bytea、jsonb）\
+                /取消/事务状态/关闭重连；结构浏览与表数据浏览链路已接入但未实机验证；\
+                单行编辑、DDL、导出、TLS 与 SSH 隧道未接入"
+            .to_string(),
+    }];
+    engines.push(postgres);
+
+    let mut sqlite = network(
+        "sqlite",
+        "SQLite",
+        DriverFamily::Sqlite,
+        Dialect::Sqlite,
+        0,
+        SQLITE_FIELDS,
+        EngineRequirements {
+            endpoint: EndpointRequirement::FilePath,
+            username: false,
+            database: false,
+        },
+        SQLITE_OPTIONS,
+        SQLITE_RULES,
+        "本地文件数据库：不需要 host/port/用户名/TLS/SSH；打开已有文件，不会自动创建",
+    );
+    sqlite.transport = Transport::LocalFile;
+    sqlite.default_port = None;
+    sqlite.implementation = Implementation::Implemented;
+    sqlite.capabilities = sqlite_caps();
+    sqlite.verified = vec![VerifiedScope {
+        versions: "SQLite（rusqlite bundled）".to_string(),
+        level: VerifiedLevel::Query,
+        notes: "本地临时库验证了打开已有文件/拒绝创建/只读打开/查询类型/行数预算/多语句逐条执行；\
+                结构浏览、表数据浏览、单行编辑、建表/视图与按表导出已接入但未实机逐项验证，\
+                改表（ALTER）与自定义 SQL 导出确实没有"
+            .to_string(),
+    }];
+    // **不要**再套 `config_only`：SQLite 六条链路都有真实实现，套上去会把
+    // 全部能力改写成 "尚未适配"，界面上就变成一个"能连不能看"的空壳。
+    engines.push(sqlite);
 
     let mut redis = network(
         "redis",
@@ -482,41 +572,50 @@ fn build() -> Vec<EngineDescriptor> {
     }];
     engines.push(redis);
 
-    // ---- 批次 2：MySQL 协议兼容产品（复用驱动，差异由 MySqlProductProfile 承载）----
+    // ---- 不在新建连接列表：保留注册与已有配置 -------------------------------
     //
-    // 默认端口按各产品官方文档：TiDB 4000、OceanBase（MySQL 模式）2881、
-    // Doris/StarRocks 的 MySQL 协议入口 9030、Aurora MySQL 3306。
-    // 用户始终可以覆盖端口。
-    for (id, product, port, note) in [
+    // 这里的产品**仍然在注册表里**：老配置要能显示原产品名、能编辑、能连接。
+    // 只是「新建连接」的数据库类型列表不再给一级入口（见 `EntryPolicy`）。
+    //
+    // MySQL 协议兼容产品：默认端口按各产品官方文档（TiDB 4000、OceanBase
+    // 2881、Doris/StarRocks 9030、Aurora MySQL 3306），用户始终可以覆盖。
+    // 共用 mysql_async **不等于**共用事务/DDL/编辑能力，差异由
+    // `MySqlProductProfile` + 各自的 `CapabilitySet` 承载。
+    for (id, product, port, note, reason) in [
         (
             "tidb",
             "TiDB",
             4000,
             "MySQL 协议，默认端口 4000；复用 mysql_async，事务与 DDL 差异按版本验证",
+            "暂不作为新建连接的一级入口；MySQL 协议驱动保留，已有连接可继续使用与编辑",
         ),
         (
             "oceanbase_mysql",
             "OceanBase（MySQL 模式）",
             2881,
             "MySQL 模式默认端口 2881，系统库含 oceanbase；跨版本兼容性未验证",
+            "暂不作为新建连接的一级入口；MySQL 协议驱动保留，已有连接可继续使用与编辑",
         ),
         (
             "doris",
             "Apache Doris",
             9030,
             "MySQL 协议入口默认 9030；无跨语句事务、无只读事务；行编辑仅 INSERT",
+            "暂不作为一级入口：没有跨语句事务、行编辑仅 INSERT，差异化适配未完成",
         ),
         (
             "starrocks",
             "StarRocks",
             9030,
             "MySQL 协议入口默认 9030；无跨语句事务、无只读事务；行编辑仅 INSERT",
+            "暂不作为一级入口：没有跨语句事务、行编辑仅 INSERT，差异化适配未完成",
         ),
         (
             "aurora_mysql",
             "Amazon Aurora MySQL",
             3306,
             "MySQL 8.0 兼容；差异在托管端点、TLS 证书与只读副本",
+            "取消独立一级入口；后续作为 MySQL 连接预设（托管端点/TLS）处理",
         ),
     ] {
         let mut engine = mysql_family(id, product, port, note);
@@ -535,131 +634,105 @@ fn build() -> Vec<EngineDescriptor> {
                     未验证项按能力标注，不视为已验证"
                 .to_string(),
         }];
-        engines.push(engine);
+        engines.push(hidden(engine, reason));
     }
 
-    // ---- 批次 3：PostgreSQL 家族 + SQLite ---------------------------------
-    let mut postgres = postgres_family(
-        "postgres",
-        "PostgreSQL",
-        "simple query 文本协议（bigint/numeric 保持字符串精度）；TLS 尚未接入",
-    );
-    postgres.implementation = Implementation::Implemented;
-    postgres.default_username = Some("postgres");
-    postgres.capabilities = postgres_caps();
-    postgres.verified = vec![VerifiedScope {
-        versions: "PostgreSQL 17.11".to_string(),
-        level: VerifiedLevel::Query,
-        notes: "本地容器验证：连接/认证/simple query/多语句/类型（int8、numeric、bytea、jsonb）\
-                /取消/事务状态/关闭重连；结构浏览、表编辑、TLS 与 SSH 隧道未验证"
-            .to_string(),
-    }];
-    engines.push(postgres);
-    engines.push(config_only(postgres_family(
-        "cockroach",
-        "CockroachDB",
-        "批次 3：复用 PostgreSQL 协议驱动；系统表、事务重试与 DDL 差异单独适配",
-    )));
-    engines.push(config_only(postgres_family(
-        "aurora_pg",
-        "Amazon Aurora PostgreSQL",
-        "批次 3：复用 PostgreSQL 协议驱动；托管端点的 TLS 与故障转移单独验证",
-    )));
+    engines.push(hidden(
+        config_only(postgres_family(
+            "cockroach",
+            "CockroachDB",
+            "复用 PostgreSQL 协议驱动；系统表、事务重试与 DDL 差异未适配",
+        )),
+        "不在当前支持范围：PostgreSQL 协议可复用，但系统表/事务重试差异未适配",
+    ));
+    engines.push(hidden(
+        config_only(postgres_family(
+            "aurora_pg",
+            "Amazon Aurora PostgreSQL",
+            "复用 PostgreSQL 协议驱动；托管端点的 TLS 与故障转移未验证",
+        )),
+        "取消独立一级入口；后续作为 PostgreSQL 连接预设（托管端点/TLS）处理",
+    ));
 
-    let mut sqlite = network(
-        "sqlite",
-        "SQLite",
-        DriverFamily::Sqlite,
-        Dialect::Sqlite,
-        0,
-        SQLITE_FIELDS,
-        EngineRequirements {
-            endpoint: EndpointRequirement::FilePath,
-            username: false,
-            database: false,
-        },
-        SQLITE_OPTIONS,
-        SQLITE_RULES,
-        "本地文件数据库：不需要 host/port/用户名/TLS/SSH；打开已有文件，不会自动创建",
-    );
-    sqlite.transport = Transport::LocalFile;
-    sqlite.default_port = None;
-    sqlite.implementation = Implementation::Implemented;
-    sqlite.capabilities = sqlite_caps();
-    sqlite.verified = vec![VerifiedScope {
-        versions: "SQLite（rusqlite bundled）".to_string(),
-        level: VerifiedLevel::Query,
-        notes: "本地临时库验证了打开已有文件/拒绝创建/只读打开/查询类型/行数预算/多语句逐条执行；\
-                结构浏览、表编辑、DDL 与导出尚未接入，取消仅有驱动 interrupt 实现"
-            .to_string(),
-    }];
-    engines.push(config_only(sqlite));
+    // SQL Server / MongoDB：留在开发计划里。**不给配置占位入口** ——
+    // 可配置但点连接必然失败，比不出现更伤用户。
+    engines.push(hidden(
+        config_only(network(
+            "sqlserver",
+            "SQL Server",
+            DriverFamily::SqlServer,
+            Dialect::TSql,
+            1433,
+            GENERIC_FIELDS,
+            EngineRequirements {
+                endpoint: EndpointRequirement::HostPort,
+                username: true,
+                database: true,
+            },
+            &[],
+            TSQL_RULES,
+            "开发计划：独立 TDS 驱动；取消与 TLS 需单独评估",
+        )),
+        "开发计划中：TDS 驱动尚未接入，暂不提供新建入口",
+    ));
+    engines.push(hidden(
+        config_only(network(
+            "mongodb",
+            "MongoDB",
+            DriverFamily::MongoDb,
+            Dialect::None,
+            27017,
+            MONGO_FIELDS,
+            EngineRequirements {
+                endpoint: EndpointRequirement::UriOrHost,
+                username: false,
+                database: false,
+            },
+            MONGO_OPTIONS,
+            NO_DIALECT_RULES,
+            "开发计划：文档模型，独立工作区；不接入 SQL 编辑器与表结构编辑",
+        )),
+        "开发计划中：文档型驱动尚未接入，暂不提供新建入口",
+    ));
 
-    // ---- 批次 4：独立驱动 ------------------------------------------------
-    engines.push(config_only(network(
-        "sqlserver",
-        "SQL Server",
-        DriverFamily::SqlServer,
-        Dialect::TSql,
-        1433,
-        GENERIC_FIELDS,
-        EngineRequirements {
-            endpoint: EndpointRequirement::HostPort,
-            username: true,
-            database: true,
-        },
-        &[],
-        TSQL_RULES,
-        "批次 4：独立 TDS 驱动；取消与 TLS 需单独评估",
-    )));
-    engines.push(config_only(network(
-        "oracle",
-        "Oracle",
-        DriverFamily::Oracle,
-        Dialect::Oracle,
-        1521,
-        GENERIC_FIELDS,
-        EngineRequirements {
-            endpoint: EndpointRequirement::HostPort,
-            username: true,
-            database: true,
-        },
-        ORACLE_OPTIONS,
-        ORACLE_RULES,
-        "批次 4 末尾：先比较 OCI/Instant Client 与纯 Rust 路线（认证/TLS/LOB/取消/部署成本）",
-    )));
-    engines.push(config_only(network(
-        "mongodb",
-        "MongoDB",
-        DriverFamily::MongoDb,
-        Dialect::None,
-        27017,
-        MONGO_FIELDS,
-        EngineRequirements {
-            endpoint: EndpointRequirement::UriOrHost,
-            username: false,
-            database: false,
-        },
-        MONGO_OPTIONS,
-        NO_DIALECT_RULES,
-        "批次 4：文档模型，独立工作区；不接入 SQL 编辑器与表结构编辑",
-    )));
-    engines.push(config_only(network(
-        "clickhouse",
-        "ClickHouse",
-        DriverFamily::ClickHouse,
-        Dialect::ClickHouse,
-        8123,
-        GENERIC_FIELDS,
-        EngineRequirements {
-            endpoint: EndpointRequirement::HostPort,
-            username: true,
-            database: false,
-        },
-        CLICKHOUSE_OPTIONS,
-        CLICKHOUSE_RULES,
-        "批次 4：优先 HTTP 接口（含 query_id 取消），原生 TCP 后续评估",
-    )));
+    engines.push(hidden(
+        config_only(network(
+            "oracle",
+            "Oracle",
+            DriverFamily::Oracle,
+            Dialect::Oracle,
+            1521,
+            GENERIC_FIELDS,
+            EngineRequirements {
+                endpoint: EndpointRequirement::HostPort,
+                username: true,
+                database: true,
+            },
+            ORACLE_OPTIONS,
+            ORACLE_RULES,
+            "先比较 OCI/Instant Client 与纯 Rust 路线（认证/TLS/LOB/取消/部署成本）",
+        )),
+        "暂不在支持范围：驱动未接入，后续单独评估 OCI 与纯 Rust 路线",
+    ));
+    engines.push(hidden(
+        config_only(network(
+            "clickhouse",
+            "ClickHouse",
+            DriverFamily::ClickHouse,
+            Dialect::ClickHouse,
+            8123,
+            GENERIC_FIELDS,
+            EngineRequirements {
+                endpoint: EndpointRequirement::HostPort,
+                username: true,
+                database: false,
+            },
+            CLICKHOUSE_OPTIONS,
+            CLICKHOUSE_RULES,
+            "优先 HTTP 接口（含 query_id 取消），原生 TCP 后续评估",
+        )),
+        "暂不在支持范围：驱动未接入",
+    ));
 
     engines
 }
@@ -669,9 +742,19 @@ fn registry() -> &'static Vec<EngineDescriptor> {
     REGISTRY.get_or_init(build)
 }
 
-/// 全部引擎，顺序即界面顺序：先能用的，再配置可保存的。
+/// 全部引擎，顺序即注册表顺序：先是新建连接可见的，再是只保留旧配置的。
+///
+/// 需要"新建连接能选什么"时用 [`listed`]，**不要**在前端再写一份过滤数组。
 pub fn all() -> &'static [EngineDescriptor] {
     registry().as_slice()
+}
+
+/// 「新建连接」列表里的引擎。被隐藏的引擎不会出现在这里。
+pub fn listed() -> Vec<&'static EngineDescriptor> {
+    registry()
+        .iter()
+        .filter(|engine| engine.is_listed())
+        .collect()
 }
 
 /// MySQL 协议兼容产品的执行差异（会话初始化 / 只读 / 取消 / 系统库 / 事务）。
@@ -704,6 +787,12 @@ pub fn require_implemented(id: &str) -> Result<&'static EngineDescriptor, DbErro
             .with_detail("请升级到包含该引擎的版本，或选择已支持的数据库类型。")
     })?;
     if !engine.is_implemented() {
+        // 被移出新建列表的产品，老配置还在：把"入口已收敛"一并说清，
+        // 否则用户会以为是自己填错了配置。
+        let detail = match engine.hidden_reason() {
+            Some(reason) => format!("{}；{}", engine.note, reason),
+            None => engine.note.to_string(),
+        };
         return Err(DbErrorInfo::new(
             "unsupported",
             format!(
@@ -711,7 +800,7 @@ pub fn require_implemented(id: &str) -> Result<&'static EngineDescriptor, DbErro
                 engine.product
             ),
         )
-        .with_detail(engine.note));
+        .with_detail(detail));
     }
     Ok(engine)
 }
@@ -870,7 +959,117 @@ mod tests {
         let oracle = find("oracle").expect("oracle registered");
         assert!(!oracle.is_implemented());
         assert!(oracle.capabilities.query.reason().is_some());
-        assert!(oracle.note.contains("批次 4"));
+        assert!(oracle.hidden_reason().is_some(), "Oracle 不在新建列表里");
+    }
+
+    /// 新建连接列表 = 主力产品，且**每一个都有真实驱动**。
+    ///
+    /// 这条断言挡住两种回归：把没驱动的产品放回列表（点了必失败），
+    /// 以及把有驱动的产品误标成隐藏。
+    #[test]
+    fn new_connection_list_only_contains_implemented_products() {
+        let ids: Vec<&str> = listed().iter().map(|engine| engine.id).collect();
+        assert_eq!(
+            ids,
+            vec!["mysql", "mariadb", "postgres", "sqlite", "redis"],
+            "新建连接的一级入口"
+        );
+        for engine in listed() {
+            assert!(
+                engine.is_implemented(),
+                "{} 出现在新建列表却没有驱动",
+                engine.id
+            );
+        }
+    }
+
+    /// 隐藏 ≠ 删除：产品身份、配置校验与（有驱动时的）能力都要保留。
+    #[test]
+    fn hidden_engines_keep_identity_and_configuration() {
+        for (id, product) in [
+            ("tidb", "TiDB"),
+            ("oceanbase_mysql", "OceanBase（MySQL 模式）"),
+            ("doris", "Apache Doris"),
+            ("starrocks", "StarRocks"),
+            ("aurora_mysql", "Amazon Aurora MySQL"),
+            ("aurora_pg", "Amazon Aurora PostgreSQL"),
+            ("cockroach", "CockroachDB"),
+            ("sqlserver", "SQL Server"),
+            ("mongodb", "MongoDB"),
+            ("oracle", "Oracle"),
+            ("clickhouse", "ClickHouse"),
+        ] {
+            let engine = find(id).unwrap_or_else(|| panic!("{id} 必须仍在注册表里"));
+            assert!(!engine.is_listed(), "{id} 不应出现在新建连接列表");
+            assert_eq!(engine.product, product, "{id} 的产品名不能被改写");
+            assert!(
+                engine.hidden_reason().is_some_and(|reason| !reason.is_empty()),
+                "{id} 必须说明为什么不在列表里"
+            );
+        }
+        // 有驱动的隐藏产品仍然可用：老配置能连上，能力没有被清空。
+        assert!(is_supported("tidb"));
+        assert!(find("tidb").unwrap().capabilities.query.is_available());
+    }
+
+    /// 回归：`config_only(sqlite)` 曾把 SQLite 的全部能力覆盖成"尚未适配"。
+    #[test]
+    fn sqlite_declares_its_real_capabilities() {
+        let sqlite = find("sqlite").expect("sqlite registered");
+        assert!(sqlite.is_implemented());
+        for cap in [
+            &sqlite.capabilities.query,
+            &sqlite.capabilities.cancel,
+            &sqlite.capabilities.transaction,
+            &sqlite.capabilities.table_browse,
+            &sqlite.capabilities.keyset_pagination,
+            &sqlite.capabilities.table_edit,
+            &sqlite.capabilities.schema_edit,
+            &sqlite.capabilities.view_edit,
+            &sqlite.capabilities.export,
+        ] {
+            assert!(
+                cap.is_available(),
+                "SQLite 的这些链路已接入，不能被 config_only 覆盖：{:?}",
+                cap
+            );
+        }
+        // 确实没有的两项必须带原因，不能沉默。
+        assert_eq!(
+            sqlite.capabilities.schema_edit.reason().map(str::to_string),
+            Some("支持建表与删表；改表/改索引不支持（SQLite 需要重建表）".to_string())
+        );
+    }
+
+    /// PostgreSQL：浏览已接通，编辑/DDL/视图/导出必须禁用并说明真实原因。
+    #[test]
+    fn postgres_gates_unwired_entries_with_reasons() {
+        let postgres = find("postgres").expect("postgres registered");
+        for (cap, label) in [
+            (&postgres.capabilities.table_edit, "编辑表数据"),
+            (&postgres.capabilities.schema_edit, "修改表结构"),
+            (&postgres.capabilities.view_edit, "编辑视图"),
+            (&postgres.capabilities.export, "导出"),
+        ] {
+            assert!(!cap.is_available(), "PostgreSQL 的{label}不应开放");
+            assert!(
+                cap.reason().is_some_and(|reason| !reason.is_empty()),
+                "PostgreSQL 的{label}必须说明原因"
+            );
+        }
+        // 结构和表数据浏览已经接线（metadata::* / table::browse 的 PostgreSQL 分支），
+        // 这里放开入口；"有没有实机验证"由 `verified` 单独记录，不混进能力位。
+        assert!(postgres.capabilities.query.is_available());
+        assert!(postgres.capabilities.table_browse.is_available());
+        assert_eq!(
+            postgres.verified[0].level,
+            VerifiedLevel::Query,
+            "浏览链路刚接入，不能写成 Manage"
+        );
+        assert!(
+            postgres.verified[0].notes.contains("未实机验证"),
+            "未验证的部分必须写出来"
+        );
     }
 
     /// 前端按这套 JSON 结构写类型；键名或枚举值改了必须同步，否则界面会
@@ -883,6 +1082,7 @@ mod tests {
         assert_eq!(mysql["dialect"], "mysql");
         assert_eq!(mysql["transport"], "network");
         assert_eq!(mysql["implementation"], "implemented");
+        assert_eq!(mysql["entry"]["state"], "listed");
         assert_eq!(mysql["default_port"], 3306);
         assert_eq!(mysql["fields"]["host"], true);
         assert_eq!(mysql["requirements"]["endpoint"], "host_port");
@@ -891,18 +1091,24 @@ mod tests {
         assert_eq!(mysql["dialect_rules"]["max_ident_bytes"], 64);
         assert_eq!(mysql["verified"][0]["level"], "manage");
 
+        // 隐藏的引擎会带一句给用户看的原因；前端据此解释"为什么列表里没有"。
+        let tidb = serde_json::to_value(find("tidb").expect("tidb")).expect("serialize");
+        assert_eq!(tidb["entry"]["state"], "hidden");
+        assert!(tidb["entry"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()));
+
         let sqlite = serde_json::to_value(find("sqlite").expect("sqlite")).expect("serialize");
         assert_eq!(sqlite["transport"], "local_file");
         assert_eq!(sqlite["requirements"]["endpoint"], "file_path");
         assert_eq!(sqlite["options"][0]["key"], "path");
         assert_eq!(sqlite["options"][0]["kind"]["kind"], "path");
         assert_eq!(
-            sqlite["capabilities"]["query"]["state"], "unsupported",
-            "没有驱动就不能允许执行 SQL"
+            sqlite["capabilities"]["query"]["state"], "supported",
+            "SQLite 有真实驱动，不能被写成未实现"
         );
-        assert!(sqlite["capabilities"]["query"]["reason"]
-            .as_str()
-            .is_some_and(|reason| !reason.is_empty()));
+        assert_eq!(sqlite["capabilities"]["table_browse"]["state"], "supported");
+        assert_eq!(sqlite["entry"]["state"], "listed");
     }
 
     #[test]

@@ -64,6 +64,9 @@ export function DesktopMenuRoot() {
   const subRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef(new Map<number, HTMLButtonElement>());
   const layoutRef = useRef<MenuLayout | null>(null);
+  const requestRef = useRef<string | null>(null);
+  const layoutSequence = useRef(0);
+  const presentedRef = useRef<string | null>(null);
   const measuredRef = useRef({ width: 0, height: 0, subWidth: 0, subHeight: 0 });
 
   const items = useMemo(() => payload?.items.map(toMenuItem) ?? [], [payload]);
@@ -89,14 +92,24 @@ export function DesktopMenuRoot() {
   );
 
   const closeMenu = useCallback((reason: string) => {
-    void invoke("desktop_menu_close", { reason }).catch(() => undefined);
+    const requestId = requestRef.current;
+    if (!requestId) return;
+    requestRef.current = null;
+    layoutSequence.current++;
+    setPayload(null);
+    setLayout(null);
+    void invoke("desktop_menu_close", { requestId, reason }).catch(() => undefined);
   }, []);
 
   // ── 接收菜单数据 ────────────────────────────────────────────────────────
   useEffect(() => {
     let alive = true;
     const apply = (next: MenuShowPayload | null) => {
-      if (!alive || !next) return;
+      if (!alive || !next || requestRef.current === next.requestId) return;
+      requestRef.current = next.requestId;
+      presentedRef.current = null;
+      layoutSequence.current++;
+      document.documentElement.dataset.theme = next.theme;
       layoutRef.current = null;
       measuredRef.current = { width: 0, height: 0, subWidth: 0, subHeight: 0 };
       setLayout(null);
@@ -105,16 +118,23 @@ export function DesktopMenuRoot() {
       setSubActive(-1);
       setPayload(next);
     };
-    const unlisten = listen<MenuShowPayload>("desktop-menu:show", (event) =>
-      apply(event.payload),
-    );
-    // 事件可能早于页面就绪，加载完再拉一次当前请求。
-    void invoke<MenuShowPayload | null>("desktop_menu_pending")
-      .then(apply)
-      .catch(() => undefined);
+    // Install listeners before reading pending state. A late pending response must
+    // never overwrite a newer show event.
+    let sawShow = false;
+    const unlisten = Promise.all([
+      listen<MenuShowPayload>("desktop-menu:show", event => { sawShow = true; apply(event.payload); }),
+      listen<{requestId: string}>("desktop-menu:reset", event => {
+        if (!alive || requestRef.current !== event.payload.requestId) return;
+        requestRef.current = null;
+        layoutSequence.current++;
+        setPayload(null); setLayout(null); setSubmenu(null);
+      }),
+    ]);
+    void unlisten.then(() => invoke<MenuShowPayload | null>("desktop_menu_pending"))
+      .then(next => { if (!sawShow) apply(next); }).catch(() => undefined);
     return () => {
       alive = false;
-      void unlisten.then((stop) => stop());
+      void unlisten.then(stops => stops.forEach(stop => stop()));
     };
   }, []);
 
@@ -138,7 +158,7 @@ export function DesktopMenuRoot() {
   const requestLayout = useCallback(
     async (force: boolean) => {
       const main = mainRef.current;
-      if (!payload || !main) return;
+      if (!payload || !main || requestRef.current !== payload.requestId) return;
       const sub = submenu === null ? null : subRef.current;
       const size = {
         width: main.offsetWidth,
@@ -152,7 +172,7 @@ export function DesktopMenuRoot() {
         Math.abs(last.height - size.height) > 0.5 ||
         Math.abs(last.subWidth - size.subWidth) > 0.5 ||
         Math.abs(last.subHeight - size.subHeight) > 0.5;
-      if (!force && !changed && layoutRef.current) return;
+      if (!force && !changed) return;
       measuredRef.current = size;
 
       const submenuRect = sub
@@ -163,25 +183,43 @@ export function DesktopMenuRoot() {
             height: sub.offsetHeight,
           }
         : null;
+      const sequence = ++layoutSequence.current;
       try {
         const next = await invoke<MenuLayout>("desktop_menu_layout", {
+          requestId: payload.requestId,
           width: size.width,
           height: size.height,
           submenu: submenuRect,
         });
+        if (requestRef.current !== payload.requestId || sequence !== layoutSequence.current) return;
         layoutRef.current = next;
         setLayout(next);
-      } catch {
-        // 会话已经结束（Esc / 失焦）时窗口会被原生侧收起，这里无需再做什么。
+      } catch (error) {
+        if (requestRef.current !== payload.requestId || sequence !== layoutSequence.current) return;
+        console.error("[desktop-menu] layout failed", error);
+        closeMenu("layout-error");
       }
     },
-    [payload, submenu],
+    [payload, submenu, closeMenu],
   );
 
   useLayoutEffect(() => {
     if (!payload) return;
     void requestLayout(true);
   }, [payload, requestLayout]);
+
+  useEffect(() => {
+    if (!payload || !layout || presentedRef.current === payload.requestId) return;
+    const requestId = payload.requestId;
+    const frame = requestAnimationFrame(() => {
+      if (requestRef.current !== requestId) return;
+      presentedRef.current = requestId;
+      void invoke("desktop_menu_present", { requestId }).catch(() => {
+        if (requestRef.current === requestId) closeMenu("layout-error");
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [payload, layout, closeMenu]);
 
   // 应用 max-height 后内容会变矮：再测一次，让窗口贴合最终高度。
   useEffect(() => {
@@ -196,11 +234,12 @@ export function DesktopMenuRoot() {
 
   // ── 交互 ────────────────────────────────────────────────────────────────
   const openSubmenu = useCallback((index: number) => {
+    if (submenu === index) return;
     const node = itemRefs.current.get(index);
     setSubmenu(index);
     setSubActive(-1);
     setSubmenuTop(node ? node.offsetTop - SUBMENU_OVERLAP : 0);
-  }, []);
+  }, [submenu]);
 
   const activate = useCallback(
     (index: number, inSubmenu: boolean) => {

@@ -38,8 +38,8 @@ interface MenuSurfaceProps {
   radius?: number;
   /**
    * 独立菜单窗口用 `flat`：那里没有主窗口的 DOM 可以采样，liquid-glass 的
-   * 位移/折射层只会把桌面背景撕成色带。玻璃改由「原生 Acrylic + 染色层」
-   * 组成（见 `.menu-surface--flat`），视觉令牌与页面内菜单同源。
+   * 位移/折射层只会把桌面背景撕成色带。独立窗口采用透明底与局部染色层，
+   * 不给整个矩形窗口应用 Acrylic，避免透明留白与子菜单间隙被染色。
    */
   flat?: boolean;
 }

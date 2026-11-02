@@ -52,6 +52,8 @@ pub mod query;
 pub mod redis_driver;
 pub mod runtime;
 pub mod schema_ops;
+pub mod postgres_meta;
+pub mod postgres_table;
 pub mod session;
 pub mod sqlite_catalog;
 pub mod sqlite_table;

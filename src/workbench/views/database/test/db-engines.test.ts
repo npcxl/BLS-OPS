@@ -12,11 +12,13 @@ import {
   capabilityAllows,
   capabilityReason,
   engineCatalog,
+  engineChoices,
   engineMeta,
   engineOptionsFor,
   isDefaultPort,
   isEngineSupported,
   isFileEngine,
+  listedEngines,
   setEngineCatalog,
   usernameForEngine,
 } from "../db-engines";
@@ -36,6 +38,7 @@ function descriptor(
     dialect: "mysql",
     transport: "network",
     implementation: "config_only",
+    entry: { state: "listed" },
     default_port: 3306,
     default_username: null,
     fields: {
@@ -135,12 +138,18 @@ const CATALOG: EngineDescriptor[] = [
     ],
     note: "本地文件",
   }),
-  descriptor("sqlserver", { product: "SQL Server", default_port: 1433, family: "sqlserver" }),
+  descriptor("sqlserver", {
+    product: "SQL Server",
+    default_port: 1433,
+    family: "sqlserver",
+    entry: { state: "hidden", reason: "开发计划中：驱动未接入" },
+  }),
   descriptor("oracle", {
     product: "Oracle",
     default_port: 1521,
     family: "oracle",
     requirements: { endpoint: "host_port", username: true, database: true },
+    entry: { state: "hidden", reason: "暂不在支持范围" },
     options: [
       {
         key: "identifier",
@@ -160,6 +169,14 @@ const CATALOG: EngineDescriptor[] = [
     requirements: { endpoint: "host_port", username: false, database: false },
     note: "键值引擎",
   }),
+  // 有驱动但被移出一级入口：产品身份与可用性都必须保留。
+  descriptor("tidb", {
+    product: "TiDB",
+    implementation: "implemented",
+    default_port: 4000,
+    entry: { state: "hidden", reason: "暂不作为新建连接的一级入口" },
+    note: "MySQL 协议",
+  }),
 ];
 
 beforeEach(() => {
@@ -176,7 +193,49 @@ describe("db-engines", () => {
       "sqlserver",
       "oracle",
       "redis",
+      "tidb",
     ]);
+  });
+
+  it("filters the new-connection list by the backend entry policy", () => {
+    // 前端不写死名单：隐藏哪个由注册表的 `entry` 决定。
+    expect(listedEngines().map((engine) => engine.id)).toEqual([
+      "mysql",
+      "mariadb",
+      "postgres",
+      "sqlite",
+      "redis",
+    ]);
+    expect(listedEngines().every((engine) => engine.entry.state === "listed")).toBe(true);
+  });
+
+  it("keeps a hidden engine selectable when editing its own connection", () => {
+    // 旧配置打开时：原产品名、原类型都要在，不能被静默改成 MySQL。
+    const meta = engineMeta("tidb");
+    expect(meta.known).toBe(true);
+    expect(meta.label).toBe("TiDB");
+    expect(meta.listed).toBe(false);
+    expect(meta.hiddenReason).toBe("暂不作为新建连接的一级入口");
+
+    expect(engineChoices("tidb").map((engine) => engine.id)).toContain("tidb");
+    // 新建（没有当前引擎 / 当前引擎就在列表里）时不会看到隐藏的产品。
+    expect(engineChoices(null).map((engine) => engine.id)).not.toContain("tidb");
+    expect(engineChoices("mysql").map((engine) => engine.id)).not.toContain("tidb");
+    // 当前引擎已在列表里时不重复插入。
+    expect(engineChoices("mysql").filter((engine) => engine.id === "mysql")).toHaveLength(1);
+    // 编辑旧连接：草稿已切到 mysql，原引擎 tidb 仍在候选里（切走再切回来不消失）。
+    expect(engineChoices("mysql", "tidb").map((engine) => engine.id)).toContain("tidb");
+    expect(engineChoices("tidb", "tidb").filter((engine) => engine.id === "tidb")).toHaveLength(1);
+  });
+
+  it("does not confuse hidden with unimplemented", () => {
+    // 隐藏但已实现：仍可连接，能力也还在。
+    expect(engineMeta("tidb").supported).toBe(true);
+    expect(isEngineSupported("tidb")).toBe(true);
+    // 隐藏且未实现：连接入口与"测试连接"一起禁用。
+    expect(engineMeta("sqlserver").supported).toBe(false);
+    expect(isEngineSupported("sqlserver")).toBe(false);
+    expect(engineMeta("sqlserver").hiddenReason).toBe("开发计划中：驱动未接入");
   });
 
   it("takes default ports from the catalog", () => {

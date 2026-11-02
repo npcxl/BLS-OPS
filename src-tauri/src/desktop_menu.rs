@@ -32,8 +32,8 @@ use tauri::{
 /// 菜单窗口的 label；主窗口与来源窗口永远不能叫这个名字。
 pub const MENU_LABEL: &str = "context-menu";
 
-/// 菜单刚显示时的短暂失焦不算"用户点了别处"：窗口 show / focus 的过程中
-/// Windows 会先给一次 `Focused(false)`。
+/// Show/focus may briefly emit Focused(false). Defer and re-check focus instead
+/// of dropping this event (dropping the only blur leaves a stuck menu).
 const FOCUS_GRACE: Duration = Duration::from_millis(180);
 
 /// 窗口四周留给阴影与描边的逻辑像素；阴影画不出窗口，所以必须留出这一圈。
@@ -102,6 +102,8 @@ struct Session {
     shown_at: Instant,
     /// 打开时那一次原生材质的结果；layout 不再重复应用（每次重设窗口效果会闪）。
     material: String,
+    visible: bool,
+    last_geometry: Option<((i32, i32), (u32, u32))>,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -149,26 +151,28 @@ fn ensure_window(app: &tauri::AppHandle, theme: &str) -> Result<WebviewWindow, S
     let main = app.get_webview_window("main").ok_or("主窗口不存在")?;
     // `async` 命令 + 隐藏构建：创建 WebView 必须回到事件循环，同步命令会和它
     // 抢主线程（表现为整应用卡住）。
-    let window = WebviewWindowBuilder::new(app, MENU_LABEL, WebviewUrl::App("index.html".into()))
-        .title("")
-        .initialization_script("window.__BLS_VIEW__='context-menu';")
-        .inner_size(260.0, 120.0)
-        .decorations(false)
-        .transparent(true)
-        .shadow(true)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .skip_taskbar(true)
-        .focused(false)
-        .visible(false)
-        .parent(&main)
-        .map_err(|error| format!("无法把菜单窗口挂到主窗口：{error}"))?
-        .build()
-        .map_err(|error| format!("无法创建菜单窗口：{error}"))?;
+    let window =
+        WebviewWindowBuilder::new(app, MENU_LABEL, WebviewUrl::App("desktop-menu.html".into()))
+            .title("")
+            .initialization_script("window.__BLS_VIEW__='context-menu';")
+            .inner_size(260.0, 120.0)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .skip_taskbar(true)
+            .focused(false)
+            .visible(false)
+            .parent(&main)
+            .map_err(|error| format!("无法把菜单窗口挂到主窗口：{error}"))?
+            .build()
+            .map_err(|error| format!("无法创建菜单窗口：{error}"))?;
 
-    // 与主窗口同一套原生材质（Acrylic + 主题），菜单窗口只是尺寸更小。
-    let _ = crate::window_material::apply(&window, theme, true);
+    // Acrylic affects the entire bounding rectangle, including transparent
+    // gutters between submenus. Keep this window transparent; panels own tint.
+    let _ = crate::window_material::apply(&window, theme, false);
 
     let handle = app.clone();
     window.on_window_event(move |event| match event {
@@ -184,43 +188,40 @@ fn ensure_window(app: &tauri::AppHandle, theme: &str) -> Result<WebviewWindow, S
 }
 
 fn dismiss_on_blur(app: &tauri::AppHandle) {
-    // show 期间的首次失焦属于窗口切换噪声，不能当"点击了外部"。
-    let fresh = lock_session()
-        .ok()
-        .and_then(|guard| {
-            guard
-                .as_ref()
-                .map(|session| session.shown_at.elapsed() < FOCUS_GRACE)
+    let check = lock_session().ok().and_then(|guard| {
+        guard.as_ref().and_then(|session| {
+            session.visible.then(|| {
+                (
+                    session.request_id.clone(),
+                    FOCUS_GRACE.saturating_sub(session.shown_at.elapsed()),
+                )
+            })
         })
-        .unwrap_or(false);
-    if fresh {
-        return;
-    }
-    // 先立即结束会话（主窗口据此清理回调表），窗口本身稍后再收：用户在主窗口
-    // 另一处右键时，`blur` 一定先于新的 `show` 到达，立刻 hide 会让菜单闪一下。
-    let session = lock_session().ok().and_then(|mut guard| guard.take());
-    let Some(session) = session else {
+    });
+    let Some((request_id, wait)) = check else {
         return;
     };
-    let _ = app.emit_to(
-        session.source.as_str(),
-        "desktop-menu:closed",
-        serde_json::json!({ "requestId": session.request_id, "reason": "blur" }),
-    );
-    // 失焦说明用户已经点到别处，这里不抢焦点。
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        // 期间已经打开了新菜单：窗口留给它，位置与内容由新请求接管。
-        let has_new_menu = lock_session()
+        // Do not discard an early blur: re-check after the normal focus handoff.
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        let current = lock_session()
             .ok()
-            .map(|guard| guard.is_some())
+            .map(|guard| {
+                guard
+                    .as_ref()
+                    .is_some_and(|session| session.request_id == request_id && session.visible)
+            })
             .unwrap_or(false);
-        if has_new_menu {
+        if !current {
             return;
         }
-        if let Some(window) = handle.get_webview_window(MENU_LABEL) {
-            let _ = window.hide();
+        if let Some(menu) = handle.get_webview_window(MENU_LABEL) {
+            if !menu.is_focused().unwrap_or(false) {
+                dismiss(&handle, "blur");
+            }
         }
     });
 }
@@ -231,15 +232,24 @@ pub fn dismiss(app: &tauri::AppHandle, reason: &str) {
     let Some(session) = session else {
         return;
     };
+    let restore_focus = reason == "escape"
+        && app
+            .get_webview_window(MENU_LABEL)
+            .is_some_and(|window| window.is_focused().unwrap_or(false));
     if let Some(window) = app.get_webview_window(MENU_LABEL) {
         let _ = window.hide();
     }
+    let _ = app.emit_to(
+        MENU_LABEL,
+        "desktop-menu:reset",
+        serde_json::json!({"requestId": session.request_id}),
+    );
     let _ = app.emit_to(
         session.source.as_str(),
         "desktop-menu:closed",
         serde_json::json!({ "requestId": session.request_id, "reason": reason }),
     );
-    if reason != "blur" {
+    if restore_focus {
         if let Some(source) = app.get_webview_window(&session.source) {
             let _ = source.set_focus();
         }
@@ -254,6 +264,20 @@ pub fn on_source_event(app: &tauri::AppHandle, label: &str, event: &tauri::Windo
         .unwrap_or(false);
     if !owns_menu {
         return;
+    }
+    if matches!(
+        event,
+        tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Focused(true)
+    ) {
+        dismiss_on_blur(app);
+    }
+    if matches!(event, tauri::WindowEvent::Resized(_)) {
+        if app
+            .get_webview_window(label)
+            .is_some_and(|window| window.is_minimized().unwrap_or(false))
+        {
+            dismiss(app, "source");
+        }
     }
     if matches!(
         event,
@@ -384,32 +408,27 @@ pub async fn desktop_menu_show(
     collect_actions(&payload.items, &mut actions)?;
 
     let theme = normalize_theme(&payload.theme);
-    {
+    let menu = ensure_window(&app, &theme)?;
+    let previous = {
         let mut guard = lock_session()?;
-        *guard = Some(Session {
+        guard.replace(Session {
             request_id: payload.request_id.clone(),
             source: window.label().to_string(),
             payload: payload.clone(),
             actions,
             shown_at: Instant::now(),
             material: "solid".into(),
-        });
+            visible: false,
+            last_geometry: None,
+        })
+    };
+    if let Some(previous) = previous {
+        let _ = app.emit_to(
+            previous.source.as_str(),
+            "desktop-menu:closed",
+            serde_json::json!({"requestId": previous.request_id, "reason": "replace"}),
+        );
     }
-
-    let menu = ensure_window(&app, &theme)?;
-    // 主题在两次右键之间可能被切换；打开时重新应用一次原生材质。
-    let material = crate::window_material::apply(&menu, &theme, true)
-        .material
-        .to_string();
-    {
-        let mut guard = lock_session()?;
-        if let Some(session) = guard.as_mut() {
-            if session.request_id == payload.request_id {
-                session.material = material;
-            }
-        }
-    }
-
     // 先把窗口挪到锚点附近：上一次的旧位置在事件到达前会露一帧。
     // 窗口已经可见时（换一处右键）不预移动，交给 layout 一次性完成位移。
     if !menu.is_visible().unwrap_or(false) {
@@ -453,6 +472,7 @@ fn require_menu_window(window: &WebviewWindow) -> Result<(), String> {
 pub async fn desktop_menu_layout(
     app: tauri::AppHandle,
     window: WebviewWindow,
+    request_id: String,
     width: f64,
     height: f64,
     submenu: Option<SubmenuRect>,
@@ -461,6 +481,9 @@ pub async fn desktop_menu_layout(
     let (source_label, material, anchor) = {
         let guard = lock_session()?;
         let session = guard.as_ref().ok_or("没有打开的菜单")?;
+        if session.request_id != request_id {
+            return Err("菜单已过期".into());
+        }
         (
             session.source.clone(),
             session.material.clone(),
@@ -506,12 +529,28 @@ pub async fn desktop_menu_layout(
         submenu.map(|rect| (rect.left, rect.top, rect.width, rect.height)),
     );
 
-    menu.set_size(PhysicalSize::new(plan.window_size.0, plan.window_size.1))
-        .map_err(|error| format!("无法调整菜单窗口大小：{error}"))?;
-    menu.set_position(PhysicalPosition::new(plan.window_pos.0, plan.window_pos.1))
-        .map_err(|error| format!("无法移动菜单窗口：{error}"))?;
-    let _ = menu.show();
-    let _ = menu.set_focus();
+    let (first_show, geometry_changed) = {
+        let mut guard = lock_session()?;
+        let session = guard.as_mut().ok_or("没有打开的菜单")?;
+        if session.request_id != request_id {
+            return Err("菜单已过期".into());
+        }
+        let first = !session.visible;
+        let geometry = (plan.window_pos, plan.window_size);
+        let changed = session.last_geometry != Some(geometry);
+        session.last_geometry = Some(geometry);
+        (first, changed)
+    };
+    if first_show && !source.is_focused().unwrap_or(false) && !menu.is_focused().unwrap_or(false) {
+        dismiss(&app, "blur");
+        return Err("来源窗口已失焦".into());
+    }
+    if geometry_changed {
+        menu.set_size(PhysicalSize::new(plan.window_size.0, plan.window_size.1))
+            .map_err(|error| format!("无法调整菜单窗口大小：{error}"))?;
+        menu.set_position(PhysicalPosition::new(plan.window_pos.0, plan.window_pos.1))
+            .map_err(|error| format!("无法移动菜单窗口：{error}"))?;
+    }
 
     Ok(MenuLayout {
         main: plan.main,
@@ -519,6 +558,48 @@ pub async fn desktop_menu_layout(
         max_height: plan.max_height,
         material,
     })
+}
+
+/// The renderer calls this after the measured content has been committed.
+#[tauri::command]
+pub fn desktop_menu_present(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    request_id: String,
+) -> Result<(), String> {
+    require_menu_window(&window)?;
+    let source_label = {
+        let guard = lock_session()?;
+        let session = guard.as_ref().ok_or("没有打开的菜单")?;
+        if session.request_id != request_id {
+            return Err("菜单已过期".into());
+        }
+        if session.visible {
+            return Ok(());
+        }
+        session.source.clone()
+    };
+    let source = app
+        .get_webview_window(&source_label)
+        .ok_or("来源窗口已关闭")?;
+    if !source.is_focused().unwrap_or(false) && !window.is_focused().unwrap_or(false) {
+        dismiss(&app, "blur");
+        return Err("来源窗口已失焦".into());
+    }
+    {
+        let mut guard = lock_session()?;
+        let session = guard.as_mut().ok_or("没有打开的菜单")?;
+        if session.request_id != request_id {
+            return Err("菜单已过期".into());
+        }
+        session.visible = true;
+        session.shown_at = Instant::now();
+    }
+    if let Err(error) = window.show().and_then(|_| window.set_focus()) {
+        dismiss(&app, "layout-error");
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 /// 菜单窗口回传被选中的动作。只认当前 `requestId` 下登记过的 `actionId`。
@@ -543,6 +624,11 @@ pub fn desktop_menu_select(
     drop(guard);
 
     let _ = app.emit_to(
+        MENU_LABEL,
+        "desktop-menu:reset",
+        serde_json::json!({"requestId": session.request_id}),
+    );
+    let _ = app.emit_to(
         session.source.as_str(),
         "desktop-menu:select",
         serde_json::json!({ "requestId": session.request_id, "actionId": action_id }),
@@ -566,10 +652,32 @@ pub fn desktop_menu_select(
 pub fn desktop_menu_close(
     app: tauri::AppHandle,
     window: WebviewWindow,
+    request_id: String,
     reason: String,
 ) -> Result<(), String> {
     require_menu_window(&window)?;
+    if !lock_session()?
+        .as_ref()
+        .is_some_and(|session| session.request_id == request_id)
+    {
+        return Ok(());
+    }
     dismiss(&app, &reason);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn desktop_menu_cancel(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    request_id: String,
+) -> Result<(), String> {
+    if lock_session()?
+        .as_ref()
+        .is_some_and(|session| session.source == window.label() && session.request_id == request_id)
+    {
+        dismiss(&app, "outside");
+    }
     Ok(())
 }
 

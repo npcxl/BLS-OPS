@@ -206,7 +206,10 @@ impl SessionEntry {
             }
             Some(other) => {
                 inner.conn = Some(other);
-                Err(DbErrorInfo::new("unsupported", "该会话不是 PostgreSQL 连接"))
+                Err(DbErrorInfo::new(
+                    "unsupported",
+                    "该会话不是 PostgreSQL 连接",
+                ))
             }
             None => Err(DbErrorInfo::new("query", "会话连接不可用")),
         }
@@ -271,7 +274,7 @@ impl SessionEntry {
         }
     }
 
-    /// 取走独占的 MySQL 连接。非 MySQL 会话（SQLite）明确拒绝。
+    /// 取走独占的 MySQL 连接。非 MySQL 会话（SQLite / PostgreSQL）明确拒绝。
     pub async fn acquire_conn(&self) -> Result<Conn, DbErrorInfo> {
         let mut inner = self.inner.lock().await;
         match inner.state.as_str() {
@@ -291,9 +294,11 @@ impl SessionEntry {
                 Some(SessionConn::Sqlite(worker)) => {
                     // 放回去，不能因为一次不支持的调用就丢掉会话连接。
                     inner.conn = Some(SessionConn::Sqlite(worker));
+                    // SQLite 的结构浏览/表数据/写入各自走 `acquire_sqlite`（worker），
+                    // 这里被调用说明该操作只实现了 MySQL 协议版本。
                     Err(DbErrorInfo::new(
                         "unsupported",
-                        "SQLite 会话不支持该操作：结构浏览/表编辑尚未接入，SQL 执行可用",
+                        "该操作只实现了 MySQL 协议版本，SQLite 不接受 MySQL 连接句柄",
                     ))
                 }
                 Some(SessionConn::Postgres(conn)) => {

@@ -44,6 +44,7 @@ import { cn } from "@/lib/cn";
 import { PageTabs, PageToolbar } from "@/workbench/page-layout";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { findColumnTypePreset, MYSQL_COLUMN_TYPE_OPTIONS } from "./column-types";
+import { capabilityAllows, capabilityReason, engineMeta } from "./db-engines";
 import { parseForeignKeys } from "./foreign-keys";
 
 export type StructureSection = "all" | "columns" | "indexes" | "ddl" | "foreign";
@@ -193,7 +194,17 @@ export function TableStructure({
   );
   const enteredTableRef = useRef<string | null>(null);
 
-  const editable = detail?.kind === "table" && !!profileId && !!sessionId;
+  // 改表能力来自注册表：PostgreSQL 目前没有 DDL 生成，不能给一个点了必失败的
+  // "编辑结构"。SQLite 是 `limited`（能建表、不能改表），这里仍按可用处理。
+  const engine = useDatabaseStore(
+    (state) => state.profiles.find((entry) => entry.id === profileId)?.engine ?? null,
+  );
+  const descriptor = engineMeta(engine ?? "").descriptor;
+  const editBlocked = !capabilityAllows(descriptor, "schema_edit");
+  const editBlockedReason = capabilityReason(descriptor, "schema_edit");
+
+  const editable =
+    detail?.kind === "table" && !!profileId && !!sessionId && !editBlocked;
   const foreignKeys = useMemo(
     () => parseForeignKeys(detail?.create_sql ?? null),
     [detail?.create_sql],
@@ -201,7 +212,7 @@ export function TableStructure({
 
   // 打开结构页默认进入编辑，不再要求先点“编辑结构”。
   useEffect(() => {
-    if (!detail || detail.kind !== "table" || !profileId || !sessionId) return;
+    if (!detail || detail.kind !== "table" || !profileId || !sessionId || editBlocked) return;
     const key = `${profileId}\u0001${detail.database}\u0001${detail.table}`;
     if (enteredTableRef.current === key) return;
     enteredTableRef.current = key;
@@ -212,7 +223,7 @@ export function TableStructure({
     setEditing(true);
     setPreview(null);
     setError(null);
-  }, [detail, profileId, sessionId]);
+  }, [detail, editBlocked, profileId, sessionId]);
 
   useEffect(() => {
     if (!editing) return;
@@ -520,14 +531,20 @@ export function TableStructure({
               {t("新增")}
             </Button>
           </>
-        ) : (
-          editable && (
-            <Button variant="secondary" size="xs" onClick={startEditing}>
-              <Pencil size={11} />
-              {t("编辑结构")}
-            </Button>
-          )
-        )}
+        ) : editable ? (
+          <Button variant="secondary" size="xs" onClick={startEditing}>
+            <Pencil size={11} />
+            {t("编辑结构")}
+          </Button>
+        ) : editBlockedReason ? (
+          // 明确说明为什么不能改，而不是给一个沉默的禁用按钮。
+          <span
+            className="rounded-[5px] bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle"
+            title={editBlockedReason}
+          >
+            {t("结构编辑不可用：{{reason}}", { reason: editBlockedReason })}
+          </span>
+        ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {showColumns && (

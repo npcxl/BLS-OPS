@@ -137,6 +137,10 @@ export function SqlWorkspace({
   const descriptor = engineMeta(profile.engine).descriptor;
   const transactionCapable = capabilityAllows(descriptor, "transaction");
   const transactionLimitedReason = capabilityReason(descriptor, "transaction");
+  // 导出能力同样来自注册表：没接导出链路的引擎（PostgreSQL）不发请求，
+  // 按钮禁用并说明原因。
+  const exportBlocked = !capabilityAllows(descriptor, "export");
+  const exportReason = capabilityReason(descriptor, "export");
   const inTransaction =
     session?.transaction === "in_transaction" ||
     session?.transaction === "in_transaction_read_only";
@@ -677,9 +681,13 @@ export function SqlWorkspace({
           <Button
             variant="ghost"
             size="xs"
-            disabled={!session || !sqlText.trim()}
+            disabled={!session || !sqlText.trim() || exportBlocked}
             onClick={() => setExportOpen(true)}
-            title={t("导出会重新执行这条只读 SQL")}
+            title={
+              exportBlocked
+                ? (exportReason ?? t("该引擎暂不支持导出"))
+                : t("导出会重新执行这条只读 SQL")
+            }
           >
             <FileDown size={12} />
           </Button>

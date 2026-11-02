@@ -101,6 +101,13 @@ export interface EngineFields {
   tls: boolean;
 }
 
+/**
+ * 「新建连接」的入口策略。**与 `implementation` 正交**：
+ * 隐藏不代表没实现（有驱动但不再做一级入口），没实现也不代表要隐藏
+ * （留在注册表里让旧配置有产品名）。
+ */
+export type EntryPolicy = { state: "listed" } | { state: "hidden"; reason: string };
+
 export type EndpointRequirement = "host_port" | "file_path" | "uri_or_host";
 
 export interface EngineRequirements {
@@ -143,6 +150,8 @@ export interface EngineDescriptor {
   dialect: Dialect;
   transport: "network" | "local_file";
   implementation: "implemented" | "config_only";
+  /** 是否出现在「新建连接」的类型列表里；隐藏的引擎仍能编辑旧配置。 */
+  entry: EntryPolicy;
   default_port: number | null;
   default_username: string | null;
   fields: EngineFields;

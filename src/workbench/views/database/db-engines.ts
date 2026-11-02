@@ -27,6 +27,10 @@ export interface DbEngineMeta {
   supported: boolean;
   /** 注册表里有没有这个引擎；老配置里已下线的名字会是 false。 */
   known: boolean;
+  /** 是否出现在「新建连接」的类型列表里（后端 `entry` 策略）。 */
+  listed: boolean;
+  /** 不在新建列表的原因；仍是列表入口时为 null。 */
+  hiddenReason: string | null;
   databaseLabel: string;
   databasePlaceholder: string;
   /** 不能连接时的原因（未适配 / 未知引擎）。 */
@@ -64,9 +68,41 @@ export function setEngineCatalog(entries: EngineDescriptor[]): void {
   revision += 1;
 }
 
-/** 全部引擎（保持后端顺序：先能用的，再配置可保存的）。 */
+/** 全部引擎（保持后端顺序：先是新建连接可见的，再是只保留旧配置的）。 */
 export function engineCatalog(): readonly EngineDescriptor[] {
   return catalog.entries;
+}
+
+/**
+ * 「新建连接」列表里可以选的产品。
+ *
+ * 过滤依据是后端的 `entry` 策略，前端**不维护**任何白名单/黑名单数组：
+ * 产品线调整只改 Rust 注册表，界面自然跟上。
+ */
+export function listedEngines(): readonly EngineDescriptor[] {
+  return catalog.entries.filter((entry) => entry.entry.state === "listed");
+}
+
+/**
+ * 数据库类型下拉框的候选：新建列表 + 传进来的引擎（当前草稿值、这条连接的
+ * 原始值）。
+ *
+ * 后两者是旧配置兼容的关键 —— 引擎被移出一级入口后，编辑那条连接仍要能
+ * 看到原产品名（而不是被静默改成 MySQL，或显示成"未知数据库"）；切走再切
+ * 回来也不能让它从候选里消失。
+ */
+export function engineChoices(
+  ...currents: (DbEngine | string | null | undefined)[]
+): readonly EngineDescriptor[] {
+  const extras: EngineDescriptor[] = [];
+  for (const id of currents) {
+    if (!id) continue;
+    const descriptor = engineDescriptor(id);
+    if (!descriptor || descriptor.entry.state === "listed") continue;
+    if (extras.some((entry) => entry.id === descriptor.id)) continue;
+    extras.push(descriptor);
+  }
+  return [...extras, ...listedEngines()];
 }
 
 export function engineDescriptor(id: DbEngine | string): EngineDescriptor | null {
@@ -79,6 +115,8 @@ const UNKNOWN: Omit<DbEngineMeta, "id"> = {
   transport: "network",
   supported: false,
   known: false,
+  listed: false,
+  hiddenReason: null,
   databaseLabel: "默认数据库（可选）",
   databasePlaceholder: "",
   unavailableReason: "未知的数据库类型：请重新选择",
@@ -99,6 +137,8 @@ export function engineMeta(id: DbEngine | string): DbEngineMeta {
     transport: descriptor.transport === "local_file" ? "file" : "network",
     supported: descriptor.implementation === "implemented",
     known: true,
+    listed: descriptor.entry.state === "listed",
+    hiddenReason: descriptor.entry.state === "hidden" ? descriptor.entry.reason : null,
     databaseLabel: databaseLabel(descriptor),
     databasePlaceholder: databasePlaceholder(descriptor),
     unavailableReason:

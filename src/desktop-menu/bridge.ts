@@ -51,6 +51,16 @@ interface PendingMenu {
 
 let pending: PendingMenu | null = null;
 let bridgeReady: Promise<UnlistenFn[]> | null = null;
+let openGeneration = 0;
+
+/** Called from source-window interactions, never relies solely on native blur. */
+export function cancelDesktopMenu(): void {
+  openGeneration++;
+  const current = pending;
+  if (!current) return;
+  pending = null;
+  void invoke("desktop_menu_cancel", { requestId: current.requestId }).catch(() => undefined);
+}
 
 function currentTheme(): "light" | "dark" {
   return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
@@ -88,13 +98,20 @@ export function toWireMenu(
 
 function ensureBridge(): Promise<UnlistenFn[]> {
   if (bridgeReady) return bridgeReady;
+  document.addEventListener("pointerdown", event => {
+    if (event.button !== 2) cancelDesktopMenu();
+  }, true);
+  document.addEventListener("scroll", cancelDesktopMenu, true);
+  window.addEventListener("beforeunload", cancelDesktopMenu);
   bridgeReady = Promise.all([
     listen<{ requestId: string; actionId: string }>("desktop-menu:select", (event) => {
       const current = pending;
       // 旧菜单（或已关闭的菜单）回传的事件不执行、也不影响新会话。
       if (!current || current.requestId !== event.payload.requestId) return;
+      const handler = current.handlers.get(event.payload.actionId);
+      if (!handler) return;
       pending = null;
-      current.handlers.get(event.payload.actionId)?.();
+      handler();
     }),
     listen<{ requestId: string; reason: string }>("desktop-menu:closed", (event) => {
       if (pending?.requestId === event.payload.requestId) pending = null;
@@ -127,7 +144,9 @@ export async function openDesktopMenu(
   if (!isTauri()) return false;
   if (items.length === 0) return true;
 
+  const generation = ++openGeneration;
   await ensureBridge();
+  if (generation !== openGeneration) return true;
   const handlers = new Map<string, () => void>();
   const wire = toWireMenu(items, handlers);
   const requestId = crypto.randomUUID();
@@ -143,6 +162,7 @@ export async function openDesktopMenu(
     await invoke("desktop_menu_show", { payload });
     return true;
   } catch (error) {
+    if (generation !== openGeneration) return true;
     if (pending?.requestId === requestId) pending = null;
     throw error;
   }

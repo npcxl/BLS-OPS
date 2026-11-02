@@ -21,10 +21,11 @@ import {
   Trash2,
 } from "@/components/icons";
 import type { ContextMenuItem } from "@/components/ui/context-menu";
-import type { DbTable, TableOperationKind } from "@/api/types/database";
+import type { DbTable, EngineDescriptor, TableOperationKind } from "@/api/types/database";
 import { copyText } from "@/lib/clipboard";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
+import { capabilityAllows, engineMeta } from "./db-engines";
 
 export interface ObjectMenuContext {
   profileId: string;
@@ -55,13 +56,32 @@ export function useObjectMenuBuilder(
     (state) => state.refreshTableDetail,
   );
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
+  // 引擎能力从注册表取：菜单只决定"给不给点"，不在前端写引擎名单。
+  const profiles = useDatabaseStore((state) => state.profiles);
 
   return useCallback(
-    (context: ObjectMenuContext, table: DbTable): ContextMenuItem[] => [
+    (context: ObjectMenuContext, table: DbTable): ContextMenuItem[] => {
+      const descriptor: EngineDescriptor | null = engineMeta(
+        profiles.find((profile) => profile.id === context.profileId)?.engine ?? "",
+      ).descriptor;
+      // 浏览与结构共用同一条元数据链路：链路没接，两个入口一起禁用，
+      // 而不是让用户点进去看到一条空表或 "unsupported" 报错。
+      const browseBlocked = !capabilityAllows(descriptor, "table_browse");
+      // 菜单里的 hint 只放短标签：完整原因在表页/结构页顶部横幅与能力面板里，
+      // 塞进菜单会被截断成一串省略号。
+      const browseHint = browseBlocked ? t("未接入") : undefined;
+      const schemaBlocked = !capabilityAllows(descriptor, "schema_edit");
+      const schemaHint = schemaBlocked ? t("未接入") : undefined;
+      const viewBlocked = !capabilityAllows(descriptor, "view_edit");
+      const viewHint = viewBlocked ? t("未接入") : undefined;
+
+      return [
       {
         id: "data",
         label: t("打开数据"),
         icon: Table2,
+        disabled: browseBlocked,
+        hint: browseHint,
         onSelect: () =>
           openTable({
             profileId: context.profileId,
@@ -74,6 +94,8 @@ export function useObjectMenuBuilder(
         id: "structure",
         label: t("打开结构"),
         icon: Columns3,
+        disabled: browseBlocked,
+        hint: browseHint,
         onSelect: () =>
           openStructure({
             profileId: context.profileId,
@@ -86,6 +108,9 @@ export function useObjectMenuBuilder(
         id: "ddl",
         label: t("查看 DDL"),
         icon: FileCode2,
+        // DDL 依赖表定义（`create_sql`），它和结构浏览同一条链路。
+        disabled: browseBlocked,
+        hint: browseHint,
         onSelect: () =>
           showDdl({
             profileId: context.profileId,
@@ -101,12 +126,16 @@ export function useObjectMenuBuilder(
                 id: "rename",
                 label: t("重命名表"),
                 icon: Pencil,
+                disabled: schemaBlocked,
+                hint: schemaHint,
                 onSelect: () => onTableOperation(context, table, "rename"),
               },
               {
                 id: "copy-structure",
                 label: t("复制表结构"),
                 icon: Copy,
+                disabled: schemaBlocked,
+                hint: schemaHint,
                 onSelect: () =>
                   onTableOperation(context, table, "copy_structure"),
               },
@@ -114,6 +143,8 @@ export function useObjectMenuBuilder(
                 id: "copy-data",
                 label: t("复制表结构和数据"),
                 icon: CopyPlus,
+                disabled: schemaBlocked,
+                hint: schemaHint,
                 onSelect: () => onTableOperation(context, table, "copy_data"),
               },
               { separator: true as const },
@@ -122,6 +153,8 @@ export function useObjectMenuBuilder(
                 label: t("清空表"),
                 icon: Eraser,
                 danger: true,
+                disabled: schemaBlocked,
+                hint: schemaHint,
                 onSelect: () => onTableOperation(context, table, "truncate"),
               },
               {
@@ -129,6 +162,8 @@ export function useObjectMenuBuilder(
                 label: t("删除表"),
                 icon: Trash2,
                 danger: true,
+                disabled: schemaBlocked,
+                hint: schemaHint,
                 onSelect: () => onTableOperation(context, table, "drop"),
               },
             ]
@@ -139,6 +174,8 @@ export function useObjectMenuBuilder(
                       id: "edit-view",
                       label: t("编辑视图定义"),
                       icon: FileText,
+                      disabled: viewBlocked,
+                      hint: viewHint,
                       onSelect: () => onEditView(context, table),
                     },
                   ]
@@ -147,6 +184,8 @@ export function useObjectMenuBuilder(
                 id: "rename-view",
                 label: t("重命名视图"),
                 icon: Pencil,
+                disabled: viewBlocked,
+                hint: viewHint,
                 onSelect: () => onTableOperation(context, table, "rename"),
               },
               {
@@ -154,6 +193,8 @@ export function useObjectMenuBuilder(
                 label: t("删除视图"),
                 icon: Trash2,
                 danger: true,
+                disabled: viewBlocked,
+                hint: viewHint,
                 onSelect: () => onTableOperation(context, table, "drop"),
               },
             ]
@@ -188,12 +229,14 @@ export function useObjectMenuBuilder(
           void refreshTables(context.profileId, context.database);
         },
       },
-    ],
+      ];
+    },
     [
       onEditView,
       onTableOperation,
       openStructure,
       openTable,
+      profiles,
       refreshTableDetail,
       refreshTables,
       showDdl,

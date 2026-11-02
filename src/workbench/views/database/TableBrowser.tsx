@@ -74,7 +74,7 @@ import type {
 import { cn } from "@/lib/cn";
 import { toDbError, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
-import { engineMeta } from "./db-engines";
+import { capabilityAllows, capabilityReason, engineMeta } from "./db-engines";
 import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
 import { useScopedShortcut } from "./shortcuts";
 import { TableStructure } from "./TableStructure";
@@ -318,9 +318,18 @@ export function TableBrowser({
     value: string;
   }>({ column: "", op: "contains", value: "" });
 
+  // 引擎能力取自注册表：链路没接的引擎不再发一次注定失败的请求，
+  // 而是把"为什么不能用"直接摆在页面上。
+  const descriptor = engineMeta(profile.engine).descriptor;
+  const browseBlocked = !capabilityAllows(descriptor, "table_browse");
+  const browseReason = capabilityReason(descriptor, "table_browse");
+  const exportBlocked = !capabilityAllows(descriptor, "export");
+  const exportReason = capabilityReason(descriptor, "export");
+
   useEffect(() => {
+    if (browseBlocked) return;
     if (!detail) void refreshTableDetail(profile.id, database, table);
-  }, [database, detail, profile.id, refreshTableDetail, table]);
+  }, [browseBlocked, database, detail, profile.id, refreshTableDetail, table]);
 
   // 右栏需要显示"待修改"标记；只用 ref 保存回调，避免父组件每次渲染
   // 生成新函数 → effect 重跑 → setStatus → 再渲染的死循环。
@@ -338,6 +347,8 @@ export function TableBrowser({
    */
   const load = useCallback(async (force = false) => {
     if (!session) return;
+    // 未接入表数据浏览的引擎：不发请求，页面上直接显示原因。
+    if (browseBlocked) return;
     const loadKey = [
       session.session_id,
       database,
@@ -378,7 +389,7 @@ export function TableBrowser({
     } finally {
       if (nonce === requestNonce.current) setLoading(false);
     }
-  }, [cursor, database, filters, pageIndex, pageSize, session, sorts, table]);
+  }, [browseBlocked, cursor, database, filters, pageIndex, pageSize, session, sorts, table]);
 
   useEffect(() => {
     void load();
@@ -485,29 +496,36 @@ export function TableBrowser({
     [detail],
   );
 
+  // 能力矩阵里没接单行编辑的引擎（PostgreSQL）**不能**给出可点的编辑入口。
+  const editBlocked = !capabilityAllows(descriptor, "table_edit");
+  const editBlockedReason = capabilityReason(descriptor, "table_edit");
+
   const canEdit =
     !!session &&
     !profile.read_only &&
+    !editBlocked &&
     detail?.kind === "table" &&
     ((detail?.reliable_key?.length ?? 0) > 0 ||
       (detail?.primary_key?.length ?? 0) > 0);
 
   /**
    * 只读必须说清**为什么**：
-   * "权限不足 / 视图 / 没有可靠唯一键 / 连接断了" 是四种完全不同的处境，
+   * "引擎没接 / 权限不足 / 视图 / 没有可靠唯一键 / 连接断了" 是五种完全不同的处境，
    * 只灰掉按钮会让用户以为是界面 bug。`null` = 可写。
    */
   const readOnlyReason = !session
     ? t("连接已断开，查询与修改已暂停")
     : profile.read_only
       ? t("该连接被设为只读")
-      : detail?.kind === "view"
-        ? t("视图不可直接写")
-        : detail && (detail.reliable_key?.length ?? 0) === 0 && (detail.primary_key?.length ?? 0) === 0
-          ? t("没有主键或唯一键，无法安全定位要修改的行")
-          : !detail
-            ? t("正在读取表结构…")
-            : null;
+      : editBlocked
+        ? (editBlockedReason ?? t("该引擎暂不支持编辑表数据"))
+        : detail?.kind === "view"
+          ? t("视图不可直接写")
+          : detail && (detail.reliable_key?.length ?? 0) === 0 && (detail.primary_key?.length ?? 0) === 0
+            ? t("没有主键或唯一键，无法安全定位要修改的行")
+            : !detail
+              ? t("正在读取表结构…")
+              : null;
 
   // 总数：精确 COUNT 与 information_schema 估算必须分开显示，不能把估数说成实数。
   const totalIsEstimated = total === null && (result?.estimated_rows ?? null) !== null;
@@ -1634,9 +1652,13 @@ export function TableBrowser({
         <Button
           variant="ghost"
           size="xs"
-          disabled={!session}
+          disabled={!session || exportBlocked}
           onClick={() => setExportOpen(true)}
-          title={t("按当前过滤/排序重新查询整表并流式导出")}
+          title={
+            exportBlocked
+              ? (exportReason ?? t("该引擎暂不支持导出"))
+              : t("按当前过滤/排序重新查询整表并流式导出")
+          }
         >
           <FileDown size={11} />
           {t("导出")}
@@ -1656,6 +1678,19 @@ export function TableBrowser({
           </Button>
         </div>
       </div>
+
+      {/* 引擎没接表数据浏览（例如 PostgreSQL）时，说清原因，不要让用户
+          对着一片空白网格猜是不是加载失败。 */}
+      {browseBlocked && (
+        <div
+          role="status"
+          className="shrink-0 border-b border-line bg-warning/10 px-3 py-1.5 text-11 leading-relaxed text-fg-muted"
+        >
+          {t("该引擎暂不支持浏览表数据：{{reason}}", {
+            reason: browseReason ?? t("驱动尚未接入"),
+          })}
+        </div>
+      )}
 
       {/* 第二行：默认收起；点“表格修改”才出现 */}
       {view === "data" && showEditBar && (

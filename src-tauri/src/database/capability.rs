@@ -150,6 +150,26 @@ pub enum Implementation {
     ConfigOnly,
 }
 
+/// 「新建连接」窗口里要不要给这个产品一个一级入口。
+///
+/// **与 `Implementation` 正交，两件事不能合并**：
+///
+/// * 有驱动也可以不出现在列表里（Aurora、TiDB 暂时不做一级入口），
+///   已有连接的名称、编辑表单、能力说明一律照旧；
+/// * 没驱动也可以留在注册表里（SQL Server / MongoDB 仍在开发计划），
+///   这样旧配置不会变成"未知数据库"，但也不会给用户一个点了必失败的占位入口。
+///
+/// 把两者压成一个布尔，界面就只能二选一地撒谎：要么假装没实现的能用，
+/// 要么把有驱动的产品说成"未知"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum EntryPolicy {
+    /// 出现在「新建连接」的数据库类型列表里。
+    Listed,
+    /// 不在「新建连接」列表；为什么隐藏、以后怎么回来都写在这里。
+    Hidden { reason: &'static str },
+}
+
 /// 驱动系列：决定复用哪个协议实现，**不是**产品身份。
 ///
 /// 序列化成稳定的小写标识（`mysql`/`sqlserver`…），前端路由直接用它，
@@ -299,6 +319,9 @@ pub struct EngineDescriptor {
     pub dialect: Dialect,
     pub transport: Transport,
     pub implementation: Implementation,
+    /// 新建连接列表的入口策略。**不要**用 `implementation` 兼任：
+    /// "隐藏"和"没实现"是两件独立的事（见 `EntryPolicy`）。
+    pub entry: EntryPolicy,
     pub default_port: Option<u16>,
     /// 切到这个引擎时表单自动填的用户名；`None` = 不自动填。
     pub default_username: Option<&'static str>,
@@ -432,6 +455,19 @@ pub const STARROCKS_PROFILE: MySqlProductProfile = MySqlProductProfile {
 impl EngineDescriptor {
     pub fn is_implemented(&self) -> bool {
         self.implementation == Implementation::Implemented
+    }
+
+    /// 是否出现在「新建连接」的数据库类型列表里。
+    pub fn is_listed(&self) -> bool {
+        matches!(self.entry, EntryPolicy::Listed)
+    }
+
+    /// 被移出新建列表的原因；仍是列表入口时返回 `None`。
+    pub fn hidden_reason(&self) -> Option<&'static str> {
+        match self.entry {
+            EntryPolicy::Listed => None,
+            EntryPolicy::Hidden { reason } => Some(reason),
+        }
     }
 
     pub fn is_local_file(&self) -> bool {

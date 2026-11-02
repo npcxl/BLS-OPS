@@ -4,7 +4,7 @@
 //! 数据库不可达时跳过；CI 设 `BLS_TEST_PG_REQUIRED=1` 时不可达必须红。
 
 use ops_workbench_lib::database::{
-    driver, manager::DatabaseManager, model::*, query, session::SessionKind,
+    driver, manager::DatabaseManager, metadata, model::*, query, session::SessionKind, table,
 };
 
 fn env(key: &str, fallback: &str) -> String {
@@ -51,6 +51,146 @@ fn temp_app_db() -> (std::path::PathBuf, rusqlite::Connection) {
 }
 
 #[tokio::test]
+async fn postgres_metadata_and_table_browse_are_real() {
+    let (app_path, app_conn) = temp_app_db();
+    let plan = driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan");
+    let manager = DatabaseManager::default();
+    let info = match manager.open_session(plan.clone(), "pg-meta").await {
+        Ok(info) => info,
+        Err(error) => {
+            if std::env::var("BLS_TEST_PG_REQUIRED").as_deref() == Ok("1") {
+                panic!("required PostgreSQL integration test cannot connect: {error}");
+            }
+            eprintln!("skip PostgreSQL metadata test: {error}");
+            let _ = std::fs::remove_file(app_path);
+            return;
+        }
+    };
+    assert!(!info.session_id.is_empty());
+
+    let runtime = manager.runtime(plan).await.expect("runtime");
+    let conn = runtime.postgres().expect("postgres runtime").clone();
+
+    conn.simple_query("DROP TABLE IF EXISTS it_items", 0)
+        .await
+        .expect("drop");
+    conn.simple_query(
+        "CREATE TABLE it_items (
+             id bigserial PRIMARY KEY,
+             name text NOT NULL,
+             body text
+         )",
+        0,
+    )
+    .await
+    .expect("create table");
+    conn.simple_query(
+        "INSERT INTO it_items (name, body) VALUES ('a', 'A'), ('b', 'B'), ('c', 'C')",
+        0,
+    )
+    .await
+    .expect("seed");
+
+    let cache = metadata::MetadataCache::default();
+    let databases = metadata::list_databases(&runtime, &cache)
+        .await
+        .expect("databases");
+    let database = databases
+        .iter()
+        .find(|item| item.name == "ops_test")
+        .expect("ops_test 必须出现在库列表里");
+    assert!(!database.system);
+
+    let tables = metadata::list_tables(&runtime, &cache, "ops_test")
+        .await
+        .expect("tables");
+    let items = tables
+        .iter()
+        .find(|item| item.name == "it_items")
+        .expect("it_items 必须出现在表列表里");
+    assert_eq!(items.kind, "table");
+    assert!(items.engine.is_none(), "PG 没有存储引擎");
+
+    let detail = metadata::table_detail(&runtime, &cache, "ops_test", "it_items")
+        .await
+        .expect("table detail");
+    assert_eq!(detail.primary_key, vec!["id".to_string()]);
+    assert_eq!(detail.reliable_key, Some(vec!["id".to_string()]));
+    assert!(detail.create_sql.is_none(), "PG 不应编造建表 SQL");
+    assert_eq!(detail.columns.len(), 3);
+    let id = detail
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .expect("id column");
+    assert!(id.primary_key);
+    assert!(!id.nullable);
+    assert!(id.auto_increment, "bigserial 必须识别为自增");
+    assert!(
+        detail.indexes.iter().any(|index| index.primary),
+        "主键索引必须由目录给出"
+    );
+
+    let request = |after: Option<Vec<Option<String>>>, page_size: u32| BrowseRequest {
+        session_id: "pg-meta".to_string(),
+        database: "ops_test".to_string(),
+        table: "it_items".to_string(),
+        page_size: Some(page_size),
+        offset: Some(0),
+        after,
+        sorts: None,
+        filters: None,
+        pagination: Some("auto".to_string()),
+        exact_count: Some(true),
+    };
+
+    let first = table::browse(
+        &runtime,
+        &detail,
+        &request(None, 2),
+        &ResolvedBudget::resolve(None),
+    )
+    .await
+    .expect("browse first");
+    assert_eq!(first.rows.len(), 2);
+    assert_eq!(first.pagination, "keyset");
+    assert_eq!(first.exact_rows, Some(3));
+    assert!(first.has_more);
+    let cursor = first.next_cursor.clone().expect("cursor");
+
+    let second = table::browse(
+        &runtime,
+        &detail,
+        &request(Some(cursor), 2),
+        &ResolvedBudget::resolve(None),
+    )
+    .await
+    .expect("browse second");
+    assert_eq!(second.rows.len(), 1);
+    assert!(!second.has_more);
+    assert_ne!(first.rows[0], second.rows[0], "keyset 第二页不能重复第一页");
+
+    let mut filtered = request(None, 10);
+    filtered.filters = Some(vec![BrowseFilter {
+        column: "name".to_string(),
+        op: "contains".to_string(),
+        value: Some("b".to_string()),
+    }]);
+    let filtered = table::browse(&runtime, &detail, &filtered, &ResolvedBudget::resolve(None))
+        .await
+        .expect("browse filtered");
+    assert_eq!(filtered.rows.len(), 1);
+    assert_eq!(filtered.exact_rows, Some(1));
+
+    conn.simple_query("DROP TABLE it_items", 0)
+        .await
+        .expect("cleanup");
+    manager.close_session("pg-meta").await;
+    manager.close_profile("postgres-test").await;
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
 async fn postgres_connects_and_keeps_numeric_precision() {
     let (app_path, app_conn) = temp_app_db();
     let plan = driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan");
@@ -86,7 +226,8 @@ async fn postgres_connects_and_keeps_numeric_precision() {
 
     let runtime = manager
         .runtime(
-            driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan again"),
+            driver::plan_from_profile(&app_conn, &profile(), Some(&password()))
+                .expect("plan again"),
         )
         .await
         .expect("runtime");

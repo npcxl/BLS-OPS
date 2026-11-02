@@ -16,7 +16,7 @@ import { stageLabel, toAppError } from "@/lib/app-error";
 import { DbEngineIcon } from "./DbEngineIcon";
 import {
   capabilityReason,
-  engineCatalog,
+  engineChoices,
   engineMeta,
   engineOptionsFor,
   isDefaultPort,
@@ -365,18 +365,21 @@ export function ConnectionDialog({
               size="lg"
               onChange={(value) => changeEngine(value as DatabaseProfile["engine"])}
               
-              options={engineCatalog().map((engine) => {
+              // 候选 = 后端标记为「新建列表」的产品 + 当前草稿/这条连接原本的引擎。
+              // 后者让被移出一级入口的旧配置仍能显示原产品名并继续编辑。
+              options={engineChoices(draft.engine, profile?.engine).map((engine) => {
                 const implemented = engine.implementation === "implemented";
                 const versions = engine.verified[0]?.versions;
+                const hidden = engine.entry.state === "hidden";
                 return {
-                  // 未适配的引擎也可以选：先把连接配置存下来，等适配完直接能用。
                   value: engine.id,
                   label: implemented
                     ? engine.product
                     : `${engine.product}（${t("尚未适配")}）`,
                   icon: <DbEngineIcon engine={engine.id} connected size={13} />,
-                  hint:
-                    implemented && versions && versions !== "—"
+                  hint: hidden
+                    ? t("已移出新建列表")
+                    : implemented && versions && versions !== "—"
                       ? versions
                       : undefined,
                 };
@@ -389,6 +392,14 @@ export function ConnectionDialog({
             {!engineSupported && t("（尚未适配）")}
           </p>
         </div>
+
+        {/* 旧配置兼容：引擎被移出一级入口后，编辑这条连接时要说明"为什么
+            类型列表里找不到它了"，而不是让用户以为产品被删了或认错了类型。 */}
+        {meta.hiddenReason && (
+          <p className="rounded-[6px] border border-line bg-surface-2/50 px-2 py-1 text-11 leading-relaxed text-fg-subtle">
+            {t("该类型已移出新建连接列表：{{reason}}", { reason: t(meta.hiddenReason) })}
+          </p>
+        )}
 
         <Field label={t("连接名称")}>
           <input

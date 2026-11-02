@@ -391,9 +391,8 @@
 
   /* ── 独立菜单窗口 ────────────────────────────────────────────────────────
    * 菜单画在自己的透明 WebView 里，没有主窗口内容可以采样：liquid-glass 的
-   * 位移层只会把桌面背景撕成色带，所以这里只用「染色 + 描边 + 阴影」，磨砂由
-   * 原生 Acrylic 提供（Rust `window_material`）。令牌与页面内菜单完全同源，
-   * 不支持原生材质时（solid 回退）tint 的 0.86~0.9 alpha 仍能压住桌面背景。
+   * 位移层只会把桌面背景撕成色带。整窗 Acrylic 也会给透明留白、父子菜单间隙
+   * 染色，因此这里仅对实际面板使用染色、描边与 CSS 阴影。外部区域保持全透明。
    */
   .menu-surface--flat {
     position: relative;
@@ -433,6 +432,8 @@
     left: 0;
     top: 0;
     will-change: transform;
+    border-radius: 12px;
+    overscroll-behavior: contain;
   }
 
   .mac-window {

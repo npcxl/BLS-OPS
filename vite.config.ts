@@ -17,6 +17,12 @@ export default defineConfig(async () => ({
 
   build: {
     sourcemap: false,
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        desktopMenu: fileURLToPath(new URL("./desktop-menu.html", import.meta.url)),
+      },
+    },
   },
 
   test: {

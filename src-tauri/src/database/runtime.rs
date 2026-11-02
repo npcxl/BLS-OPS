@@ -46,7 +46,7 @@ impl ProfileRuntime {
         let endpoint = driver::resolve_plan(tunnels, plan).await?;
 
         // SQLite 是本地文件：既没有隧道，也没有连接池。
-        if endpoint.profile.engine.eq_ignore_ascii_case("sqlite")         {
+        if endpoint.profile.engine.eq_ignore_ascii_case("sqlite") {
             return Self::connect_sqlite(endpoint);
         }
 
@@ -196,10 +196,16 @@ impl ProfileRuntime {
 
     pub fn interactive_pool(&self) -> Result<&Pool, DbErrorInfo> {
         self.interactive.as_ref().ok_or_else(|| {
+            // 元数据与表数据的 MySQL 分支共用这个池；SQLite / PostgreSQL 各有
+            // 独立实现，走到这里说明该引擎还没接过这条链路。
+            let product = engine_registry::find(&self.endpoint.profile.engine)
+                .map(|engine| engine.product)
+                .unwrap_or("该引擎");
             DbErrorInfo::new(
                 "unsupported",
-                "该引擎没有 MySQL 连接池：结构浏览/表数据暂未接入",
+                format!("{product} 的结构浏览与表数据尚未接入：该运行时没有 MySQL 连接池"),
             )
+            .with_detail("SQL 执行不受影响；能力矩阵里对应项才代表是否可用。")
         })
     }
 

@@ -45,7 +45,7 @@ const MAX_PAGE_SIZE: u32 = 1_000;
 /// OFFSET 的预算：不预扫描全表，也不允许"帮我跳到第 1000 万行"。
 const MAX_OFFSET: u64 = 200_000;
 
-pub fn resolved_page_size(value: Option<u32>) -> u32 {
+pub(crate) fn resolved_page_size(value: Option<u32>) -> u32 {
     value.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
 }
 
@@ -482,6 +482,11 @@ pub async fn browse(
     if let Some(worker) = profile.sqlite() {
         return super::sqlite_table::browse(worker, profile.adapter()?, detail, request, budget)
             .await;
+    }
+
+    // PostgreSQL：simple query 文本协议，过滤/游标以字面量内联。
+    if profile.postgres().is_some() {
+        return super::postgres_table::browse(profile, detail, request, budget).await;
     }
     let started = Instant::now();
     let adapter = profile.adapter()?;

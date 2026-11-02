@@ -154,8 +154,10 @@ pub fn run() {
             desktop_menu::desktop_menu_show,
             desktop_menu::desktop_menu_pending,
             desktop_menu::desktop_menu_layout,
+            desktop_menu::desktop_menu_present,
             desktop_menu::desktop_menu_select,
             desktop_menu::desktop_menu_close,
+            desktop_menu::desktop_menu_cancel,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）

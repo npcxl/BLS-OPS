@@ -59,6 +59,7 @@ import {
 } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConnectionDialog } from "./ConnectionDialog";
+import { capabilityAllows, capabilityReason, engineMeta } from "./db-engines";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { useObjectMenuBuilder } from "./object-menu";
 import {
@@ -675,6 +676,17 @@ export function DatabaseAssetSidebar() {
     table: string,
     preview: boolean,
   ) => {
+    // 引擎没接表数据浏览（例如 PostgreSQL）：不要打开一个必然空白的页签，
+    // 直接把"为什么打不开"说清楚。
+    const descriptor = engineMeta(profile.engine).descriptor;
+    if (!capabilityAllows(descriptor, "table_browse")) {
+      pushToast(
+        capabilityReason(descriptor, "table_browse") ?? t("该引擎暂不支持浏览表数据"),
+        "warning",
+        { title: table },
+      );
+      return;
+    }
     open(profile);
     openTable({
       profileId: profile.id,
@@ -920,6 +932,10 @@ export function DatabaseAssetSidebar() {
   ) => {
     const key = `${profile.id}\u0001${database.name}`;
     const opened = !!openedDatabases[key];
+    // 建表/建视图/删库都是 DDL：引擎没接 DDL 生成时不给可点入口。
+    const descriptor = engineMeta(profile.engine).descriptor;
+    const schemaBlocked = !capabilityAllows(descriptor, "schema_edit");
+    const schemaHint = schemaBlocked ? t("未接入") : undefined;
     return [
       {
         id: "open-close",
@@ -964,6 +980,8 @@ export function DatabaseAssetSidebar() {
         id: "new-table",
         label: t("新建表"),
         icon: Table2,
+        disabled: schemaBlocked,
+        hint: schemaHint,
         onSelect: () => {
           open(profile);
           void openDatabase(profile.id, database.name);
@@ -978,6 +996,8 @@ export function DatabaseAssetSidebar() {
         id: "new-view",
         label: t("新建视图"),
         icon: Eye,
+        disabled: schemaBlocked,
+        hint: schemaHint,
         onSelect: () => {
           open(profile);
           void openDatabase(profile.id, database.name);
@@ -1007,6 +1027,8 @@ export function DatabaseAssetSidebar() {
         label: t("删除数据库"),
         icon: Trash2,
         danger: true,
+        disabled: schemaBlocked,
+        hint: schemaHint,
         onSelect: () => {
           setSchemaDialog({
             mode: "drop_database",

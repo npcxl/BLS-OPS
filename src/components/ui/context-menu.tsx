@@ -10,7 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import * as tauriCore from "@tauri-apps/api/core";
-import { openDesktopMenu } from "@/desktop-menu/bridge";
+import { cancelDesktopMenu, openDesktopMenu } from "@/desktop-menu/bridge";
 import { MenuItemRow, MenuSeparator, MenuSurface } from "@/components/ui/menu-surface";
 import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 
@@ -92,6 +92,7 @@ let activeMenuClose: (() => void) | null = null;
 
 /** Closes whichever context menu is open (no-op when none is). */
 export function closeActiveContextMenu(): void {
+  cancelDesktopMenu();
   activeMenuClose?.();
 }
 

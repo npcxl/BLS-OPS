@@ -100,7 +100,7 @@ impl MetadataCache {
         serde_json::from_value(value.clone()).ok()
     }
 
-    async fn put<T: serde::Serialize>(&self, key: String, value: &T) {
+    pub(crate) async fn put<T: serde::Serialize>(&self, key: String, value: &T) {
         if let Ok(value) = serde_json::to_value(value) {
             self.entries
                 .lock()
@@ -268,6 +268,10 @@ pub async fn list_databases(
         return Ok(databases);
     }
 
+    if profile.postgres().is_some() {
+        return super::postgres_meta::databases(profile, cache, key).await;
+    }
+
     let catalog = catalog_for(profile).await?;
     let mut conn = pooled(profile).await?;
     let rows = fetch_rows(&mut conn, catalog.databases(), Params::Empty).await?;
@@ -303,6 +307,10 @@ pub async fn list_tables(
         let tables = super::sqlite_catalog::tables(worker).await?;
         cache.put(key, &tables).await;
         return Ok(tables);
+    }
+
+    if profile.postgres().is_some() {
+        return super::postgres_meta::tables(profile, cache, key, database).await;
     }
 
     let catalog = catalog_for(profile).await?;
@@ -348,6 +356,10 @@ pub async fn table_detail(
         let detail = super::sqlite_catalog::table_detail(worker, database, table).await?;
         cache.put(key, &detail).await;
         return Ok(detail);
+    }
+
+    if profile.postgres().is_some() {
+        return super::postgres_meta::table_detail(profile, cache, key, database, table).await;
     }
 
     let adapter = profile.adapter()?;
@@ -462,6 +474,10 @@ pub async fn table_identity(
         return super::sqlite_catalog::table_identity(worker, database, table).await;
     }
 
+    if profile.postgres().is_some() {
+        return super::postgres_meta::table_identity(profile, database, table).await;
+    }
+
     let catalog = catalog_for(profile).await?;
     let mut conn = pooled(profile).await?;
     let row = fetch_rows(
@@ -482,6 +498,10 @@ pub async fn table_identity(
 pub async fn list_collations(profile: &ProfileRuntime) -> Result<Vec<String>, DbErrorInfo> {
     if let Some(worker) = profile.sqlite() {
         return super::sqlite_catalog::collations(worker).await;
+    }
+
+    if profile.postgres().is_some() {
+        return super::postgres_meta::collations(profile).await;
     }
 
     let catalog = catalog_for(profile).await?;

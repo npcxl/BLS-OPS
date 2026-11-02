@@ -16,6 +16,7 @@
     tabs.forEach(item => {const active = item === tab; item.setAttribute('aria-selected', String(active)); item.tabIndex = active ? 0 : -1;});
     const product = products[tab.dataset.product];
     screenshot.src = product.src;
+    screenshot.parentElement.querySelector('.privacy-mask').toggleAttribute('hidden', tab.dataset.product !== 'ssh');
     screenshot.alt = product.alt;
     screenshot.parentElement.setAttribute('aria-label', '放大' + product.label + '截图');
     panel.setAttribute('aria-labelledby', tab.id);
@@ -37,6 +38,7 @@
       const image = button.querySelector('img');
       viewerImage.src = image.src;
       viewerImage.alt = image.alt;
+      viewerImage.parentElement.querySelector('.privacy-mask').toggleAttribute('hidden', !image.getAttribute('src').endsWith('/ssh.png'));
       document.getElementById('viewer-title').textContent = image.alt;
       viewer.showModal();
       document.body.style.overflow = 'hidden';

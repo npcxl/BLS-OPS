@@ -1,11 +1,13 @@
 /**
  * 数据库工作区的顶部标签条。
  *
- * 这是工作项的**唯一**切换入口（右侧只放检查器 / DDL，不再维护第二份列表）：
+ * 这是工作项的**常驻**切换入口（右侧只放检查器 / DDL，不维护第二份停靠列表）：
  * - 单击切换；中键关闭；双击预览标签 → 固定为常驻；
  * - 拖动排序（只影响本连接，跨连接各自一条标签条）；
  * - 右键：关闭 / 关闭其他 / 关闭右侧 / 固定 / 复制名称；
  * - 预览标签用斜体标题表示"会被下一次单击替换"，有草稿时自动升级（见 store）。
+ * - 标签多到需要横向滚动时，右侧的「已打开的标签」浮窗（OpenTabsMenu）
+ *   提供一次看全 + 搜索，两层数据同源，不额外维护列表状态。
  *
  * 关闭动作一律**回调给 DatabaseView**：它才知道运行中的查询、待提交修改与
  * 未提交事务该怎么收尾。这里不直接调 `close()`，否则会绕过风险确认。
@@ -15,7 +17,6 @@ import { useTranslation } from "react-i18next";
 import {
   Columns3,
   Database as DatabaseIcon,
-  FileCode2,
   Loader2,
   Pin,
   PinOff,
@@ -24,7 +25,6 @@ import {
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { Tooltip } from "@/components/ui/tooltip";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import {
@@ -32,6 +32,8 @@ import {
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+
+import { OpenTabsMenu } from "./OpenTabsMenu";
 
 const KIND_ICON = {
   table: Table2,
@@ -246,16 +248,8 @@ export function DatabaseTabBar({
       </div>
 
       <div className="flex shrink-0 items-center gap-1 px-1.5">
-        <Tooltip side="bottom" label={t("新建查询")}>
-          <button
-            type="button"
-            aria-label={t("新建查询")}
-            onClick={onNewQuery}
-            className="flex h-6 w-6 items-center justify-center rounded-[6px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
-          >
-            <FileCode2 size={13} strokeWidth={1.75} />
-          </button>
-        </Tooltip>
+        {/* 标签多到要横向滚动时，用它一次看全：搜索 + 键盘选择，底部保留新建查询。 */}
+        <OpenTabsMenu profileId={profileId} onNewQuery={onNewQuery} />
       </div>
 
       <ContextMenu {...menu.props} />

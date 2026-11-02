@@ -20,3 +20,12 @@
 .viewer-bar button .icon{width:13px;height:13px}
 .essentials-grid article{min-height:220px}
 @media(max-width:760px){.product-switch .icon{width:13px;height:13px}.line-icon .icon{width:19px;height:19px}.essentials-grid article{min-height:205px}.tech-logo{width:24px;height:24px}}
+/* Privacy covers use screenshot coordinates, scaling with the image and zoom view. */
+.privacy-mask{position:absolute;inset:0;display:block;width:100%;height:100%;pointer-events:none}
+.privacy-mask[hidden]{display:none}
+.viewer-canvas{position:relative;width:100%;line-height:0}
+@media(max-width:760px){.viewer-canvas{min-width:850px}}
+.github-link,.footer-top>div>a{display:inline-flex;align-items:center;gap:7px}
+.github-icon{width:17px;height:17px;fill:currentColor;stroke:none}
+.button .github-icon{fill:currentColor;stroke:none}
+.footer-top .github-icon{width:14px;height:14px}

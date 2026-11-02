@@ -22,6 +22,9 @@ import {
  * - 高亮层与按钮条都**不拦截终端文本选择**：整层 `pointer-events-none`，
  *   只有两个复制按钮 `pointer-events-auto`；
  * - 按钮条 `onMouseDown` 阻断冒泡：不在终端里开启选区、不抢 xterm 焦点；
+ * - **选区优先**：终端里一旦有选中的文字，整层（高亮 + 按钮条）立刻收起，
+ *   只留选区菜单；清掉选区后要等鼠标再动一下才回来，避免复制完立刻又弹出
+ *   挡在眼前；
  * - alternate screen（vim / less）下缓冲语义完全不同，整个悬浮层不渲染
  *   （由调用方挂载条件保证）。
  *
@@ -81,6 +84,11 @@ export function TerminalCommandBlocks({
     const last = lastMouseRef.current;
     const host = hostRef.current ?? (containerRef.current?.parentElement as HTMLElement | null);
     if (!last || !host) return;
+    // 选区优先：拖选过程中就已经有选中文字了，别让块按钮条跟着鼠标跑。
+    if (terminalRef.current?.hasSelection?.()) {
+      setHover(null);
+      return;
+    }
     const geometry = measure();
     if (!geometry) {
       setHover(null);
@@ -145,6 +153,22 @@ export function TerminalCommandBlocks({
   useEffect(() => {
     recompute();
   }, [recompute]);
+
+  /**
+   * 选区一出现就收起（双击选词、键盘扩选不一定伴随 mousemove）。
+   * 选区消失时**不主动回弹**：等下一次 mousemove 再重算，否则刚复制完
+   * 按钮条立刻又冒出来挡在眼前。
+   */
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal?.onSelectionChange) return;
+    const subscription = terminal.onSelectionChange(() => {
+      if (!terminal.hasSelection?.()) return;
+      lastMouseRef.current = null;
+      setHover(null);
+    });
+    return () => subscription.dispose();
+  }, [terminalRef, blocks]);
 
   if (hover === null) {
     return <CopyNotice status={status} />;

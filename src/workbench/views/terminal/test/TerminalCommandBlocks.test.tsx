@@ -51,8 +51,13 @@ let holder: HTMLDivElement;
 let root: Root;
 
 /** 与 TerminalView 相同的结构：wrapper(relative) > container + overlay。 */
-function render(blocks: CommandBlock[]) {
-  const terminal = { rows: 20, buffer: { active: { viewportY: 0 } } } as unknown as Terminal;
+function render(blocks: CommandBlock[], terminalOverrides: Record<string, unknown> = {}) {
+  const terminal = {
+    rows: 20,
+    buffer: { active: { viewportY: 0 } },
+    hasSelection: () => false,
+    ...terminalOverrides,
+  } as unknown as Terminal;
   function Harness() {
     const containerRef = { current: null as HTMLDivElement | null };
     const terminalRef = { current: terminal as Terminal | null };
@@ -206,5 +211,46 @@ describe("TerminalCommandBlocks", () => {
     expect(style).toMatch(/height:\s*80/);
     // 底边正好贴行区底（8 + 320 = 328），不越界。
     expect(248 + 80).toBe(328);
+  });
+
+  it("已有选区时悬停不弹按钮条（选中优先）", () => {
+    render([makeBlock()], { hasSelection: () => true });
+
+    hoverAt(12);
+
+    expect(highlight()).toBeNull();
+    expect(actions()).toBeNull();
+  });
+
+  it("选区出现立刻收起；清掉选区不自动回弹，移动鼠标后恢复", () => {
+    let notify: (() => void) | null = null;
+    let selected = false;
+    render([makeBlock()], {
+      hasSelection: () => selected,
+      onSelectionChange: (listener: () => void) => {
+        notify = listener;
+        return { dispose: () => { notify = null; } };
+      },
+    });
+
+    hoverAt(12);
+    expect(actions()).not.toBeNull();
+
+    act(() => {
+      selected = true;
+      notify?.();
+    });
+    expect(highlight()).toBeNull();
+    expect(actions()).toBeNull();
+
+    // 复制后 clearSelection：不主动把按钮条弹回鼠标下面。
+    act(() => {
+      selected = false;
+      notify?.();
+    });
+    expect(actions()).toBeNull();
+
+    hoverAt(12);
+    expect(actions()).not.toBeNull();
   });
 });

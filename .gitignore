@@ -50,3 +50,5 @@ scripts/tmp-*
 
 # 官网落地页不纳入仓库（本地保留，需要时另行分发）
 website/
+website/dist/
+website/bls-ops-website.zip

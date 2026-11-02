@@ -321,6 +321,15 @@ export const ContextMenu = memo(function ContextMenu({
 
   const submenuItems = submenu === null ? null : items[submenu]?.children;
 
+  /**
+   * 只有菜单里**真的有图标**时才留图标列。
+   * 否则整列 14px 空格没有任何含义，只会让文字偏右、左边空一大块。
+   */
+  const showIconColumn = items.some((item) => !item.separator && Boolean(item.icon));
+  const showSubIconColumn = (submenuItems ?? []).some(
+    (item) => !item.separator && Boolean(item.icon),
+  );
+
   return createPortal(
     <div
       ref={ref}
@@ -357,6 +366,7 @@ export const ContextMenu = memo(function ContextMenu({
               highlighted={active === index}
               hasChildren={hasChildren}
               submenuOpen={submenu === index}
+              showIconColumn={showIconColumn}
               buttonRef={(node) => {
                 if (node) itemRefs.current.set(index, node);
                 else itemRefs.current.delete(index);
@@ -408,6 +418,7 @@ export const ContextMenu = memo(function ContextMenu({
                     key={item.id ?? item.label ?? index}
                     item={item}
                     highlighted={subActive === index}
+                    showIconColumn={showSubIconColumn}
                     onPointerEnter={() => !item.disabled && setSubActive(index)}
                     onClick={() => {
                       if (item.disabled) return;

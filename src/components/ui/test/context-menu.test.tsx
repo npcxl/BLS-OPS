@@ -278,6 +278,21 @@ describe("ContextMenu", () => {
     });
     expect(menuEl()).toBeNull();
   });
+
+  it("菜单自带染色层，文字层排在它之后（不会被染色盖住）", () => {
+    render(simpleItems);
+    rightClick("[data-testid=target]");
+
+    const surface = menuEl()!.querySelector<HTMLElement>(".menu-surface__body");
+    expect(surface).not.toBeNull();
+
+    // 材质层序在上不靠 z-index 猜：染色层必须是 body 的第一个子节点，
+    // 内容层紧随其后。调换顺序会让整块菜单文字被染色压暗。
+    const [tint, content] = Array.from(surface!.children) as HTMLElement[];
+    expect(tint.hasAttribute("data-menu-tint")).toBe(true);
+    expect(tint.getAttribute("aria-hidden")).toBe("true");
+    expect(content.className).toContain("menu-surface__content");
+  });
 });
 
 describe("ContextMenu submenu", () => {
@@ -320,6 +335,15 @@ describe("ContextMenu submenu", () => {
     expect(submenuItems().map((item) => item.textContent)).toEqual(["Ungrouped", "Production"]);
     // The root menu must stay open behind it.
     expect(menuEl()).not.toBeNull();
+  });
+
+  it("子菜单复用同一套玻璃表面，两层各有一块染色", () => {
+    render(parentItems);
+    rightClick("[data-testid=target]");
+    clickItem(menuItems()[1]);
+
+    expect(document.querySelectorAll(".glass-host.menu-surface")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-menu-tint]")).toHaveLength(2);
   });
 
   it("runs the child handler and closes the whole menu", () => {

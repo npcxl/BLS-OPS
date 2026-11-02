@@ -47,4 +47,6 @@ scripts/tmp-*
 *.njsproj
 *.sln
 *.sw?
-website/_preview*
+
+# 官网落地页不纳入仓库（本地保留，需要时另行分发）
+website/

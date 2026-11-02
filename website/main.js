@@ -1,18 +1,23 @@
-/* Illustrative data only. This website never connects to a server. */
 (() => {
   'use strict';
-  const tabs = [...document.querySelectorAll('[data-view]')];
-  const panel = document.getElementById('panel');
-  const views = {
-    terminal: ['>_ SSH 终端', `<div class="muted">Connected to web-server-01 via SSH<br>Ubuntu 24.04 LTS · Welcome to your workspace.</div><div class="command">root@web-server-01 <b>:~# docker ps</b></div><div class="output">CONTAINER ID &nbsp; IMAGE &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; STATUS<br><span>a8f32c7d910e</span> &nbsp; nginx:stable &nbsp; Up 3 days<br><span>b7e21d6c802f</span> &nbsp; redis:7 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Up 3 days</div><div class="command">root@web-server-01 <b>:~# systemctl status nginx</b></div><div class="output"><span>●</span> nginx.service — A high performance web server<br>&nbsp; Active: <span>active (running)</span></div><div class="command">root@web-server-01 <b>:~#</b><span class="block-cursor"></span></div>`],
-    monitor: ['↗ 实时监控', `<div class="muted">web-server-01 / 资源概览 · 演示数据</div><div class="metrics"><div class="metric"><label>CPU 使用率</label><strong>12.8<small> %</small></strong><small>4 vCPU</small><div class="bar"><i style="width:13%"></i></div></div><div class="metric"><label>内存使用</label><strong>2.4<small> GB</small></strong><small>共 8 GB</small><div class="bar"><i style="width:30%"></i></div></div><div class="metric"><label>磁盘使用</label><strong>36<small> %</small></strong><small>36 / 100 GB</small><div class="bar"><i style="width:36%"></i></div></div></div><div class="monitor-foot">↓ 网络接收 &nbsp; 128 KB/s &nbsp; ↑ 网络发送 &nbsp; 64 KB/s<br>运行时间 &nbsp; 3 days, 08:42 · 进程数 &nbsp; 124</div>`],
-    files: ['▤ 远程文件', `<div class="muted">SFTP / var / www / app</div><table class="files"><thead><tr><th>名称</th><th>大小</th><th>权限</th></tr></thead><tbody><tr><td>▸ public/</td><td>—</td><td>drwxr-xr-x</td></tr><tr><td>▸ src/</td><td>—</td><td>drwxr-xr-x</td></tr><tr><td>◇ index.html</td><td>2.4 KB</td><td>-rw-r--r--</td></tr><tr><td>◇ package.json</td><td>1.2 KB</td><td>-rw-r--r--</td></tr><tr><td>◇ nginx.conf</td><td>856 B</td><td>-rw-r--r--</td></tr></tbody></table><div class="monitor-foot">远程目录与终端 cd 联动 · 支持文件上传与文本编辑</div>`]
+  const tabs = [...document.querySelectorAll('[data-product]')];
+  const screenshot = document.getElementById('hero-screenshot');
+  const panel = document.getElementById('product-panel');
+  const viewer = document.getElementById('image-viewer');
+  const viewerImage = document.getElementById('viewer-image');
+  const products = {
+    ssh: {src:'assets/ssh.png', alt:'BLS-OPS 真实服务器界面：左侧服务器列表，中间 SSH 终端，右侧远程文件浏览器', caption:'SSH 终端与远程文件。', label:'服务器工作台'},
+    sql: {src:'assets/sql.png', alt:'BLS-OPS 真实数据库界面：数据库导航、表数据浏览与 SQL 查询工具栏', caption:'SQL 查询与库表管理。', label:'数据库工作台'}
   };
+  // Preload the alternate screenshot so switching is immediate.
+  const alternate = new Image();
+  alternate.src = products.sql.src;
   function select(tab, focus = false) {
-    tabs.forEach(t => {t.setAttribute('aria-selected', String(t === tab)); t.tabIndex = t === tab ? 0 : -1;});
-    const view = views[tab.dataset.view];
-    document.getElementById('demo-title').textContent = view[0];
-    panel.innerHTML = view[1];
+    tabs.forEach(item => {const active = item === tab; item.setAttribute('aria-selected', String(active)); item.tabIndex = active ? 0 : -1;});
+    const product = products[tab.dataset.product];
+    screenshot.src = product.src;
+    screenshot.alt = product.alt;
+    screenshot.parentElement.setAttribute('aria-label', '放大' + product.label + '截图');
     panel.setAttribute('aria-labelledby', tab.id);
     if (focus) tab.focus();
   }
@@ -27,6 +32,19 @@
       if (next !== undefined) {event.preventDefault(); select(tabs[next], true);}
     });
   });
-  select(tabs[0]);
+  document.querySelectorAll('[data-zoom]').forEach(button => {
+    button.addEventListener('click', () => {
+      const image = button.querySelector('img');
+      viewerImage.src = image.src;
+      viewerImage.alt = image.alt;
+      document.getElementById('viewer-title').textContent = image.alt;
+      viewer.showModal();
+      document.body.style.overflow = 'hidden';
+    });
+  });
+  const close = () => viewer.close();
+  document.getElementById('close-viewer').addEventListener('click', close);
+  viewer.addEventListener('click', event => {if(event.target === viewer) {const rect = viewer.getBoundingClientRect(); if(event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();}});
+  viewer.addEventListener('close', () => {document.body.style.overflow = '';});
   document.getElementById('year').textContent = new Date().getFullYear();
 })();

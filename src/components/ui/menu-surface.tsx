@@ -79,6 +79,13 @@ interface MenuItemRowProps {
   submenuOpen?: boolean;
   /** 主菜单需要它来把子菜单位置锚到行上；子菜单不需要。 */
   buttonRef?: (node: HTMLButtonElement | null) => void;
+  /**
+   * 整个菜单是否使用图标列。
+   *
+   * 只有当**至少一项**带图标时才为 true —— 否则不要给每行留一个 14px 的空
+   * 图标位：那会把文字整体推右，左侧出现一条毫无意义的空白（很丑）。
+   */
+  showIconColumn?: boolean;
   onPointerEnter: () => void;
   onClick: () => void;
 }
@@ -86,6 +93,9 @@ interface MenuItemRowProps {
 /**
  * 一行菜单项。选中是"一层薄膜"（`bg-menu-item-active`），不是实心色块；
  * 危险项整行文字/图标/左缘指示条都走 danger 色。
+ *
+ * 无图标的菜单（如连接/数据库的右键菜单）：文字**居中**、左右留白对称，
+ * 不再偏左留空洞。
  */
 export function MenuItemRow({
   item,
@@ -93,10 +103,12 @@ export function MenuItemRow({
   hasChildren = false,
   submenuOpen = false,
   buttonRef,
+  showIconColumn = true,
   onPointerEnter,
   onClick,
 }: MenuItemRowProps) {
   const Icon = item.icon;
+  const iconSlot = showIconColumn || Boolean(Icon);
 
   return (
     <button
@@ -108,7 +120,8 @@ export function MenuItemRow({
       data-submenu-open={hasChildren && submenuOpen ? "true" : undefined}
       disabled={item.disabled}
       className={cn(
-        "relative my-0.5 flex h-8 w-full cursor-default items-center gap-2 rounded-[8px] pl-3 pr-2 text-12 select-none transition-colors",
+        "relative my-0.5 flex h-8 w-full cursor-default items-center rounded-[8px] gap-2 pl-3 pr-2 text-12 select-none transition-colors",
+        !iconSlot && "justify-center gap-0 px-3",
         item.danger ? "text-danger" : highlighted ? "text-accent" : "text-fg",
         // 选中是"一层薄膜"，不是纯文字变色：亮/暗两套底色见 tokens。
         highlighted && (item.danger ? "bg-danger/10" : "bg-menu-item-active"),
@@ -135,10 +148,17 @@ export function MenuItemRow({
             item.danger ? "text-danger/80" : highlighted ? "text-accent" : "text-fg-subtle",
           )}
         />
-      ) : (
+      ) : showIconColumn ? (
         <span className="w-[14px] shrink-0" />
-      )}
-      <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 truncate",
+          iconSlot ? "flex-1 text-left" : "flex-1 text-center",
+        )}
+      >
+        {item.label}
+      </span>
       {item.hint && <span className="shrink-0 text-10 text-fg-subtle">{item.hint}</span>}
       {hasChildren && (
         <ChevronRight

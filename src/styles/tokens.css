@@ -64,11 +64,11 @@
   /* ── 浮层玻璃（右键菜单 / 子菜单）──
    * LiquidGlass 只负责背景模糊与边缘折射，**必须**再叠一层主题染色：
    * 没有它，同一块菜单跨过灰色资产树与白色表格时就是左灰右白。
-   * alpha 取 0.8~0.88：留一成多的透色（仍能看出玻璃），又不会让背景
+   * alpha 取 0.86~0.9：留一成左右的透色（仍能看出玻璃），又不会让背景
    * 文字和色块把 11~13px 的菜单文字顶掉。颜色略偏冷白，压在灰底上不发黄。
    * 深色主题在下方成对定义。 */
-  --glass-menu-tint-top: rgb(255 255 255 / 0.88);
-  --glass-menu-tint-bottom: rgb(248 250 253 / 0.82);
+  --glass-menu-tint-top: rgb(255 255 255 / 0.9);
+  --glass-menu-tint-bottom: rgb(249 251 254 / 0.86);
   --glass-menu-border: rgb(203 213 225 / 0.62);
   --glass-menu-sheen: inset 0 1px 0 rgb(255 255 255 / 0.75);
   --glass-menu-shadow: 0 18px 44px -12px rgb(15 23 42 / 0.26), 0 2px 8px rgb(15 23 42 / 0.1);

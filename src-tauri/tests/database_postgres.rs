@@ -11,7 +11,9 @@ use ops_workbench_lib::database::{
     manager::DatabaseManager,
     metadata,
     model::*,
-    mutate, query,
+    mutate,
+    protocol::TransactionState,
+    query,
     schema_ops::{self, SchemaChange},
     session::SessionKind,
     table,
@@ -185,6 +187,18 @@ async fn postgres_metadata_and_table_browse_are_real() {
     assert_eq!(second.rows.len(), 1);
     assert!(!second.has_more);
     assert_ne!(first.rows[0], second.rows[0], "keyset 第二页不能重复第一页");
+    // 精确总数不包含分页游标：翻到第二页仍然是全量 3 行。
+    assert_eq!(second.exact_rows, Some(3));
+
+    // 游标与排序键数量不一致必须报错，不能 panic 或生成错 SQL。
+    let bad_cursor = table::browse(
+        &runtime,
+        &detail,
+        &request(Some(vec![Some("1".to_string()), Some("2".to_string())]), 2),
+        &ResolvedBudget::resolve(None),
+    )
+    .await;
+    assert!(bad_cursor.is_err(), "长度不匹配的游标必须被拒绝");
 
     let mut filtered = request(None, 10);
     filtered.filters = Some(vec![BrowseFilter {
@@ -350,6 +364,151 @@ async fn postgres_mutation_commits_and_detects_conflict() {
         .await
         .expect("cleanup");
     manager.close_session("pg-mutate").await;
+    manager.close_profile("postgres-test").await;
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn postgres_streaming_zero_rows_transaction_and_export_paging() {
+    let (app_path, app_conn) = temp_app_db();
+    let plan = driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan");
+    let manager = DatabaseManager::default();
+    let info = match manager.open_session(plan, "pg-stream").await {
+        Ok(info) => info,
+        Err(error) => {
+            if std::env::var("BLS_TEST_PG_REQUIRED").as_deref() == Ok("1") {
+                panic!("required PostgreSQL integration test cannot connect: {error}");
+            }
+            eprintln!("skip PostgreSQL streaming test: {error}");
+            let _ = std::fs::remove_file(app_path);
+            return;
+        }
+    };
+    assert!(!info.session_id.is_empty());
+
+    let runtime = manager
+        .runtime(
+            driver::plan_from_profile(&app_conn, &profile(), Some(&password()))
+                .expect("plan again"),
+        )
+        .await
+        .expect("runtime");
+    let session = manager.session("pg-stream").await.expect("session");
+    let conn = runtime.postgres().expect("postgres runtime").clone();
+
+    // 1) 事务状态由**独立控制连接**探测：BEGIN 后必须是 InTransaction。
+    conn.simple_query("BEGIN", 0).await.expect("begin");
+    assert_eq!(
+        conn.transaction_state().await,
+        TransactionState::InTransaction,
+        "BEGIN 后必须探测到事务（同连接查 pg_stat_activity 只会得到 active）"
+    );
+    conn.simple_query("ROLLBACK", 0).await.expect("rollback");
+    assert_eq!(conn.transaction_state().await, TransactionState::None);
+
+    // 2) 零行结果仍然有列：列信息来自 prepare 的 RowDescription。
+    let started = manager
+        .queries
+        .start(query::StartQueryRequest {
+            session: session.clone(),
+            runtime: runtime.clone(),
+            sql: "SELECT 1 AS a, 'x'::text AS b WHERE false".to_string(),
+            budget: ResolvedBudget::resolve(None),
+        })
+        .await
+        .expect("start zero-row query");
+
+    let mut columns = 0usize;
+    let mut status: Option<String> = None;
+    for _ in 0..10 {
+        let batch = manager.queries.next(&started.query_id).await.expect("next");
+        match batch.batch {
+            Some(DbBatch::ResultSet { columns: cols, .. }) => columns = cols.len(),
+            Some(DbBatch::Error { error }) => panic!("零行查询失败：{error}"),
+            Some(DbBatch::Finished { state, .. }) => {
+                status = Some(state);
+                break;
+            }
+            Some(_) => {}
+            None => {
+                if matches!(batch.state.as_str(), "completed" | "failed" | "cancelled") {
+                    status = Some(batch.state);
+                    break;
+                }
+            }
+        }
+    }
+    assert_eq!(columns, 2, "零行结果必须带列信息");
+    assert_eq!(status.as_deref(), Some("completed"));
+
+    // 3) 导出跨页：1200 行 > 单批 500 行，必须全部写出。
+    conn.simple_query("DROP TABLE IF EXISTS pg_export", 0)
+        .await
+        .expect("drop");
+    conn.simple_query(
+        "CREATE TABLE pg_export (id bigint PRIMARY KEY, name text)",
+        0,
+    )
+    .await
+    .expect("create");
+    conn.simple_query(
+        "INSERT INTO pg_export (id, name) SELECT g, 'n' || g FROM generate_series(1, 1200) g",
+        0,
+    )
+    .await
+    .expect("seed");
+
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "public", "pg_export")
+        .await
+        .expect("detail");
+    let out_path =
+        std::env::temp_dir().join(format!("bls-pg-big-export-{}.csv", uuid::Uuid::new_v4()));
+    let registry = export::ExportRegistry::default();
+    let export = registry
+        .start(
+            runtime.clone(),
+            ExportRequest {
+                profile_id: "postgres-test".to_string(),
+                sql: String::new(),
+                database: Some("public".to_string()),
+                target_path: out_path.to_string_lossy().to_string(),
+                pagination: Some("auto".to_string()),
+                page_size: None,
+                sorts: None,
+                filters: None,
+                table: Some(ExportTableTarget {
+                    database: "public".to_string(),
+                    table: "pg_export".to_string(),
+                }),
+                bom: Some(true),
+                max_rows: None,
+            },
+            Some(detail),
+        )
+        .await
+        .expect("start export");
+
+    let mut state = String::new();
+    for _ in 0..400 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let progress = registry.status(&export.export_id).await.expect("status");
+        state = progress.state.clone();
+        if matches!(state.as_str(), "completed" | "failed" | "cancelled") {
+            break;
+        }
+    }
+    assert_eq!(state, "completed");
+    let csv = std::fs::read_to_string(&out_path).expect("read csv");
+    let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').lines().collect();
+    assert_eq!(lines.len(), 1201, "表头 + 1200 行，跨页不能丢行");
+    assert_eq!(lines[0], "id,name");
+
+    let _ = std::fs::remove_file(out_path);
+    conn.simple_query("DROP TABLE pg_export", 0)
+        .await
+        .expect("cleanup");
+    manager.close_session("pg-stream").await;
     manager.close_profile("postgres-test").await;
     let _ = std::fs::remove_file(app_path);
 }
@@ -562,13 +721,14 @@ async fn postgres_connects_and_keeps_numeric_precision() {
     assert_eq!(columns, 3);
     assert_eq!(rows.len(), 1);
     // 文本协议：bigint / numeric 必须是服务器原始字符串，不能经过 f64。
+    // 流式路径有类型信息：bigint 是 Int、numeric 是 Decimal，值仍是完整字符串。
     assert!(
-        matches!(&rows[0][0], DbValue::Text { value, .. } if value == "9223372036854775807"),
+        matches!(&rows[0][0], DbValue::Int { value, .. } if value == "9223372036854775807"),
         "bigint 精度丢失：{:?}",
         rows[0][0]
     );
     assert!(
-        matches!(&rows[0][1], DbValue::Text { value, .. } if value == "12345678901234567890.123456789"),
+        matches!(&rows[0][1], DbValue::Decimal { value } if value == "12345678901234567890.123456789"),
         "numeric 精度丢失：{:?}",
         rows[0][1]
     );

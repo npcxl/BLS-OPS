@@ -228,6 +228,14 @@ pub async fn apply(
     // SQL 里的改动还在，实际已经落库。这里直接拒绝，让用户先显式
     // COMMIT/ROLLBACK，或继续在 SQL 编辑器里操作。
     let session_transaction = session.transaction().await;
+    // 事务状态未知时禁止自动写入：不能把表格修改赌进一个未知的事务。
+    if matches!(session_transaction, TransactionState::Unknown)
+        && session.kind == SessionKind::Postgres
+    {
+        return Err(DbErrorInfo::new("query", "事务状态未知，已禁止自动写入").with_detail(
+            "无法确认会话是否处于事务中；请重新连接后重试，避免把表格修改提交到编辑器里未提交的事务。",
+        ));
+    }
     if matches!(
         session_transaction.as_str(),
         "in_transaction" | "in_transaction_read_only"
@@ -685,8 +693,31 @@ async fn apply_postgres(
         .count() as u64;
 
     if failure.is_some() {
-        if transactional {
-            let _ = pg_exec(&conn, "ROLLBACK").await;
+        let rollback_failed = if transactional {
+            pg_exec(&conn, "ROLLBACK").await.is_err()
+        } else {
+            false
+        };
+        if rollback_failed {
+            // 回滚失败：事务可能还开着，绝不能报告"已回滚"。
+            session
+                .release_postgres(conn, false, TransactionState::Unknown)
+                .await;
+            return Ok((
+                MutationResult {
+                    state: "outcome_unknown".to_string(),
+                    outcomes,
+                    committed_rows: 0,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    transactional,
+                    warning: Some(
+                        "ROLLBACK 失败：事务可能仍未结束，结果未知；已丢弃会话，请重新连接后核对数据"
+                            .to_string(),
+                    ),
+                    verify_hint: Some(verify_hint(dialect, detail, request)),
+                },
+                session.info().await,
+            ));
         }
         for outcome in &mut outcomes {
             if outcome.status == "applied" {
@@ -838,8 +869,31 @@ async fn apply_sqlite(
         .count() as u64;
 
     if failure.is_some() {
-        if transactional {
-            let _ = worker.execute("ROLLBACK").await;
+        let rollback_failed = if transactional {
+            worker.execute("ROLLBACK").await.is_err()
+        } else {
+            false
+        };
+        if rollback_failed {
+            // 回滚失败：事务可能还开着，绝不能报告"已回滚"。
+            session
+                .release_sqlite(worker, false, TransactionState::Unknown)
+                .await;
+            return Ok((
+                MutationResult {
+                    state: "outcome_unknown".to_string(),
+                    outcomes,
+                    committed_rows: 0,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    transactional,
+                    warning: Some(
+                        "ROLLBACK 失败：事务可能仍未结束，结果未知；已丢弃会话，请重新连接后核对数据"
+                            .to_string(),
+                    ),
+                    verify_hint: Some(verify_hint(dialect, detail, request)),
+                },
+                session.info().await,
+            ));
         }
         for outcome in &mut outcomes {
             if outcome.status == "applied" {

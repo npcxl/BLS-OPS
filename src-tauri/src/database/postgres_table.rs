@@ -78,6 +78,19 @@ fn keyset_clause(
     keyset: &[(String, bool)],
     cursor: &[Option<String>],
 ) -> Result<String, DbErrorInfo> {
+    // 游标必须与排序键一一对应；含 NULL 的游标不能参与比较（NULL 比较恒为 NULL）。
+    if keyset.len() != cursor.len() {
+        return Err(DbErrorInfo::new(
+            "query",
+            "分页游标与排序键数量不一致：请重新从第一页开始",
+        ));
+    }
+    if cursor.iter().any(|value| value.is_none()) {
+        return Err(DbErrorInfo::new(
+            "query",
+            "分页游标包含 NULL：该行不能用作稳定游标",
+        ));
+    }
     let dialect = adapter.dialect();
     let mut alternatives = Vec::new();
     for index in 0..keyset.len() {
@@ -210,14 +223,20 @@ pub async fn browse(
     };
 
     let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
-    let mut where_parts: Vec<String> = Vec::new();
+    // 过滤条件与分页游标必须分开：COUNT 只统计过滤结果，不能把游标算进去。
+    let mut filter_parts: Vec<String> = Vec::new();
     if let Some(filters) = &request.filters {
         for filter in filters {
             if let Some(clause) = filter_clause(&adapter, filter)? {
-                where_parts.push(clause);
+                filter_parts.push(clause);
             }
         }
     }
+    let filter_where = if filter_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", filter_parts.join(" AND "))
+    };
 
     // keyset 只在"排序就是唯一键（升序）"且允许 keyset 时使用。
     let keyset_order = key_columns
@@ -227,6 +246,7 @@ pub async fn browse(
     let keyset_allowed = request.pagination.as_deref() != Some("offset")
         && has_reliable_key
         && order_columns == keyset_order;
+    let mut where_parts = filter_parts;
     if keyset_allowed {
         if let Some(cursor) = &request.after {
             where_parts.push(keyset_clause(&adapter, &keyset_order, cursor)?);
@@ -238,6 +258,15 @@ pub async fn browse(
     } else {
         format!(" WHERE {}", where_parts.join(" AND "))
     };
+
+    // OFFSET 上限：越翻越慢，超过上限要求改用 keyset 或收窄过滤。
+    const MAX_OFFSET: u64 = 10_000_000;
+    if !keyset_allowed && offset > MAX_OFFSET {
+        return Err(DbErrorInfo::new(
+            "query",
+            format!("OFFSET 超过上限（{MAX_OFFSET}）：请改用 keyset 分页或缩小过滤范围"),
+        ));
+    }
     let pagination = if keyset_allowed { "keyset" } else { "offset" };
     let limit_sql = if keyset_allowed {
         dialect
@@ -276,7 +305,8 @@ pub async fn browse(
     }
 
     let exact_rows = if request.exact_count.unwrap_or(false) {
-        let count_sql = format!("SELECT COUNT(*) AS c FROM {qualified}{where_sql}");
+        // 只带过滤、不带游标：翻到第 N 页时总数仍然是全量。
+        let count_sql = format!("SELECT COUNT(*) AS c FROM {qualified}{filter_where}");
         first_set(conn, &count_sql, 1)
             .await
             .ok()

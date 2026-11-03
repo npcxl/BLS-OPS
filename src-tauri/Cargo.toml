@@ -37,11 +37,13 @@ mysql_async = { version = "0.37", default-features = false, features = [
 #
 # * 选文本协议而不是二进制：`bigint` / `numeric` 拿到的是服务器原始字符串，
 #   不需要额外类型 feature 就能保持精度（避免 f64/整数溢出）。
-# * 代价：一次 `simple_query` 会把整个结果集读进内存；预算只能在发送阶段截断。
-#   这一点在 `postgres` 引擎的 `VerifiedScope` 与能力矩阵里写明。
+# * SQL 编辑器走 `query_raw` 流式读取（行/字节/单元格/时间预算都在流上执行）；
+#   `simple_query` 只用于元数据、DDL 与导出的分页读取。
+# * 流式路径需要按列类型解码：numeric 用 rust_decimal（保持精确字符串）、
+#   时间类型用 chrono、json 用 serde_json。
 # * TLS 尚未接入（需要 tokio-postgres-rustls）：当前只支持 `tls_mode = disabled`，
 #   其它模式明确拒绝，不做"静默降级到明文"。
-tokio-postgres = "0.7"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
 # Redis 引擎：与 MySQL 管线平行的键值驱动。
 # * `tokio-comp` / `connection-manager`：async 连接管理（自动重连）。
 # * `tokio-rustls-comp`：async TLS 走 rustls —— 与项目其余部分一致，

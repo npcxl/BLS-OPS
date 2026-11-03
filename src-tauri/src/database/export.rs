@@ -26,7 +26,9 @@ use tokio::sync::{watch, Mutex, RwLock};
 
 use super::adapter::{AdapterSet, ParamBinder};
 use super::codec;
-use super::driver::{is_read_only_sql, map_error, SqliteWorker};
+use super::driver::{
+    is_read_only_sql, map_connect_error, map_error, profile_tls_enabled, SqliteWorker,
+};
 use super::model::{
     DbErrorInfo, DbTableDetail, ExportOutcome, ExportProgress, ExportRequest, ExportStarted,
 };
@@ -324,7 +326,12 @@ async fn run_export(
         match tokio::time::timeout(Duration::from_secs(15), export_pool.get_conn()).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(error)) => {
-                fail(&task, map_error(&error, "tcp"), &part_path).await;
+                fail(
+                    &task,
+                    map_connect_error(&error, profile_tls_enabled(&profile.endpoint.profile)),
+                    &part_path,
+                )
+                .await;
                 return;
             }
             Err(_) => {
@@ -724,18 +731,36 @@ async fn run_postgres_export(
     let started = Instant::now();
     let target_path = std::path::PathBuf::from(&request.target_path);
 
-    let conn = match profile.postgres() {
-        Some(conn) => conn.clone(),
-        None => {
-            fail(
-                &task,
-                DbErrorInfo::new("config", "该连接不是 PostgreSQL"),
-                &part_path,
-            )
-            .await;
+    // 独立连接：导出不占用会话连接，也不受用户已打开事务的影响。
+    let endpoint = super::driver::postgres::PostgresEndpoint {
+        host: profile.endpoint.connect_host.clone(),
+        port: profile.endpoint.connect_port,
+        user: profile.endpoint.profile.username.clone(),
+        password: profile.endpoint.password.clone(),
+        database: profile
+            .endpoint
+            .profile
+            .default_database
+            .clone()
+            .unwrap_or_default(),
+    };
+    let connect_timeout =
+        std::time::Duration::from_millis(profile.endpoint.profile.connect_timeout_ms);
+    let conn = match super::driver::PostgresConn::connect(&endpoint, connect_timeout).await {
+        Ok(conn) => conn,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
             return;
         }
     };
+    // 一致性快照：跨页读取必须看到同一个 MVCC 快照，否则翻页会重复或漏行。
+    if let Err(error) = conn
+        .simple_query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", 0)
+        .await
+    {
+        fail(&task, error, &part_path).await;
+        return;
+    }
     let adapter = match profile.adapter() {
         Ok(adapter) => adapter,
         Err(error) => {
@@ -832,7 +857,19 @@ async fn run_postgres_export(
             break;
         };
         let sql = format!("{base} {limit_sql}");
-        let sets = match conn.simple_query(&sql, BATCH_ROWS + 1).await {
+        // 查询执行期间也能取消：取消时向服务端发 CancelRequest，而不是等这一页读完。
+        let sets = tokio::select! {
+            changed = cancel_rx.changed() => {
+                if changed.is_err() || *cancel_rx.borrow() {
+                    cancelled = true;
+                    let _ = conn.cancel().await;
+                    break;
+                }
+                continue;
+            }
+            result = conn.simple_query(&sql, BATCH_ROWS + 1) => result,
+        };
+        let sets = match sets {
             Ok(sets) => sets,
             Err(error) => {
                 error_seen = Some(error);

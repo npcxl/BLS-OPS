@@ -223,9 +223,8 @@ fn ensure_window(app: &tauri::AppHandle, theme: &str) -> Result<WebviewWindow, S
 
     // 这里刻意不监听 `Focused(false)` 来收起菜单：WebView2 的子窗口拿到键盘
     // 焦点时，顶层窗口同样会收到 WM_KILLFOCUS，"失焦"和"内部焦点交接"无法区分，
-    // 监听它只会在菜单刚显示时把它关掉。用户点到别处的收起由菜单页面自己的
-    // DOM blur 触发（见 `desktop-menu/menu-window.tsx`），那条路径看的是真正的
-    // 页面焦点，不会被子窗口误判。
+    // 监听它只会在菜单刚显示时把它关掉。菜单不激活，点击别的应用由来源页面
+    // 的 DOM blur 收起（见 desktop-menu/bridge.ts）。
     let app_handle = app.clone();
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {

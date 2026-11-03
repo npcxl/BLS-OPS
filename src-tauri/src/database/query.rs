@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, watch, Mutex, Notify, RwLock};
 
 use super::codec;
 use super::driver;
+use super::driver::postgres::{decode_cell, map_error as map_pg_error};
 use super::driver::SqliteWorker;
 use super::model::{
     DbBatch, DbErrorInfo, DbValue, QueryBatchResponse, ResolvedBudget, STATE_CANCELLED,
@@ -295,32 +296,49 @@ impl QueryRegistry {
                 let mut cancelled = false;
                 let mut error_seen = false;
 
-                let sets = match conn.simple_query(&sql, budget.max_rows).await {
-                    Ok(sets) => sets,
-                    Err(error) => {
-                        if error.stage == "cancelled" {
-                            cancelled = true;
-                        } else {
-                            let _ = tx.try_send(DbBatch::Error { error });
-                            error_seen = true;
-                        }
-                        Vec::new()
-                    }
+                // 流式读取：`prepare` 拿到 `RowDescription`，零行也有列；
+                // 多语句按方言拆开逐条执行（`prepare` 不支持多语句）。
+                let mut cancel_rx = cancel_rx;
+                let idle_timeout = std::time::Duration::from_millis(
+                    task_runtime.endpoint.profile.query_timeout_ms.max(5_000),
+                );
+                let mut statements = match task_runtime.adapter() {
+                    Ok(adapter) => adapter.dialect().split_statements(&sql),
+                    Err(_) => Vec::new(),
                 };
+                if statements.is_empty() {
+                    statements.push(sql.clone());
+                }
 
                 let mut set_index = 0u32;
-                for set in &sets {
-                    if *cancel_rx.borrow() {
-                        cancelled = true;
+                for statement in &statements {
+                    if cancelled || error_seen {
                         break;
                     }
+                    if *cancel_rx.borrow() {
+                        cancelled = true;
+                        let _ = conn.cancel().await;
+                        break;
+                    }
+                    let (columns, stream) = match conn.query_stream(statement).await {
+                        Ok(opened) => opened,
+                        Err(error) => {
+                            if error.stage == "cancelled" {
+                                cancelled = true;
+                            } else {
+                                let _ = tx.try_send(DbBatch::Error { error });
+                                error_seen = true;
+                            }
+                            break;
+                        }
+                    };
                     let result_set_id = format!("{task_query_id}:{set_index}");
                     if tx
                         .send(DbBatch::ResultSet {
                             result_set_id: result_set_id.clone(),
                             index: set_index,
-                            columns: set.columns.clone(),
-                            statement: truncate_sql(&sql),
+                            columns,
+                            statement: truncate_sql(statement),
                         })
                         .await
                         .is_err()
@@ -328,51 +346,138 @@ impl QueryRegistry {
                         cancelled = true;
                         break;
                     }
+                    let mut stream = Box::pin(stream);
+
                     let mut sequence = 0u64;
-                    for chunk in set.rows.chunks(budget.batch_rows.max(1)) {
-                        let bytes: usize = chunk.iter().flatten().map(approximate_bytes).sum();
+                    let mut pending: Vec<Vec<DbValue>> = Vec::new();
+                    let mut pending_bytes = 0usize;
+
+                    while !cancelled {
+                        if *cancel_rx.borrow() {
+                            cancelled = true;
+                            let _ = conn.cancel().await;
+                            break;
+                        }
+                        let next = tokio::select! {
+                            changed = cancel_rx.changed() => {
+                                if changed.is_err() || *cancel_rx.borrow() {
+                                    cancelled = true;
+                                    let _ = conn.cancel().await;
+                                    break;
+                                }
+                                continue;
+                            }
+                            result = tokio::time::timeout(idle_timeout, stream.try_next()) => result,
+                        };
+                        let row = match next {
+                            Ok(Ok(Some(row))) => row,
+                            Ok(Ok(None)) => break,
+                            Ok(Err(error)) => {
+                                let mapped = map_pg_error(&error, "query");
+                                if mapped.stage == "cancelled" || *cancel_rx.borrow() {
+                                    cancelled = true;
+                                } else {
+                                    let _ = tx.try_send(DbBatch::Error { error: mapped });
+                                    error_seen = true;
+                                }
+                                break;
+                            }
+                            Err(_) => {
+                                let _ = conn.cancel().await;
+                                let _ = tx.try_send(DbBatch::Error {
+                                    error: DbErrorInfo::new(
+                                        "timeout",
+                                        "读取超时：服务器长时间没有返回下一行",
+                                    ),
+                                });
+                                error_seen = true;
+                                break;
+                            }
+                        };
+
+                        let values: Vec<DbValue> = (0..row.columns().len())
+                            .map(|index| {
+                                decode_cell(&row, index, budget.field_preview_bytes)
+                            })
+                            .collect();
+                        let row_bytes: usize = values.iter().map(approximate_bytes).sum();
+
+                        // 行/字节预算：超了就停，不把剩余行读进内存。
+                        if rows_total + pending.len() as u64 >= budget.max_rows
+                            || (bytes_total + pending_bytes + row_bytes) as u64
+                                > budget.max_bytes
+                        {
+                            truncated = true;
+                            break;
+                        }
+
+                        pending_bytes += row_bytes;
+                        pending.push(values);
+
+                        if pending.len() >= budget.batch_rows.max(1) {
+                            let batch = std::mem::take(&mut pending);
+                            let bytes = pending_bytes;
+                            pending_bytes = 0;
+                            in_flight.fetch_add(1, Ordering::AcqRel);
+                            in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
+                            let len = batch.len() as u64;
+                            if tx
+                                .send(DbBatch::Rows {
+                                    result_set_id: result_set_id.clone(),
+                                    sequence,
+                                    rows: batch,
+                                    bytes,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                cancelled = true;
+                                break;
+                            }
+                            sequence += 1;
+                            rows_total += len;
+                            bytes_total += bytes;
+                        }
+                    }
+
+                    if !cancelled && !pending.is_empty() {
+                        let bytes = pending_bytes;
                         in_flight.fetch_add(1, Ordering::AcqRel);
                         in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
+                        let len = pending.len() as u64;
                         if tx
                             .send(DbBatch::Rows {
                                 result_set_id: result_set_id.clone(),
                                 sequence,
-                                rows: chunk.to_vec(),
+                                rows: std::mem::take(&mut pending),
                                 bytes,
                             })
                             .await
-                            .is_err()
+                            .is_ok()
                         {
+                            rows_total += len;
+                            bytes_total += bytes;
+                        } else {
                             cancelled = true;
-                            break;
                         }
-                        sequence += 1;
-                        rows_total += chunk.len() as u64;
-                        bytes_total += bytes;
                     }
-                    if cancelled {
-                        break;
-                    }
-                    if tx
-                        .send(DbBatch::ResultSetEnd {
-                            result_set_id,
-                            affected_rows: set.affected_rows,
-                            last_insert_id: None,
-                            warnings: 0,
-                            info: String::new(),
-                            rows: set.rows.len() as u64,
-                            bytes: 0,
-                            elapsed_ms: started.elapsed().as_millis() as u64,
-                        })
-                        .await
-                        .is_err()
+
+                    if !cancelled
+                        && tx
+                            .send(DbBatch::ResultSetEnd {
+                                result_set_id,
+                                affected_rows: 0,
+                                last_insert_id: None,
+                                warnings: 0,
+                                info: String::new(),
+                                rows: rows_total,
+                                bytes: bytes_total,
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                            })
+                            .await
+                            .is_err()
                     {
                         cancelled = true;
-                        break;
-                    }
-                    if set.truncated {
-                        truncated = true;
-                        break;
                     }
                     set_index += 1;
                 }

@@ -1032,6 +1032,13 @@ async fn execute_statements(
         ));
     }
     let transaction = session.transaction().await;
+    // 事务状态未知时同样不能执行：DDL 不能赌进一个未知事务。
+    if matches!(transaction, TransactionState::Unknown) && session.kind == SessionKind::Postgres {
+        return Err(
+            DbErrorInfo::new("query", "事务状态未知，已拒绝执行 schema 修改")
+                .with_detail("无法确认会话是否处于事务中；请重新连接后再试。"),
+        );
+    }
     if matches!(
         transaction.as_str(),
         "in_transaction" | "in_transaction_read_only"
@@ -1090,6 +1097,13 @@ async fn execute_sqlite_statements(
         ));
     }
     let transaction = session.transaction().await;
+    // 事务状态未知时同样不能执行：DDL 不能赌进一个未知事务。
+    if matches!(transaction, TransactionState::Unknown) && session.kind == SessionKind::Postgres {
+        return Err(
+            DbErrorInfo::new("query", "事务状态未知，已拒绝执行 schema 修改")
+                .with_detail("无法确认会话是否处于事务中；请重新连接后再试。"),
+        );
+    }
     if matches!(
         transaction.as_str(),
         "in_transaction" | "in_transaction_read_only"
@@ -1149,6 +1163,13 @@ async fn execute_postgres_statements(
         ));
     }
     let transaction = session.transaction().await;
+    // 事务状态未知时同样不能执行：DDL 不能赌进一个未知事务。
+    if matches!(transaction, TransactionState::Unknown) && session.kind == SessionKind::Postgres {
+        return Err(
+            DbErrorInfo::new("query", "事务状态未知，已拒绝执行 schema 修改")
+                .with_detail("无法确认会话是否处于事务中；请重新连接后再试。"),
+        );
+    }
     if matches!(
         transaction.as_str(),
         "in_transaction" | "in_transaction_read_only"

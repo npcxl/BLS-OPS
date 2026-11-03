@@ -239,6 +239,20 @@ pub async fn apply(
     }
 
     // SQLite：执行阶段走 worker（没有协议池），前面的校验完全共用。
+    // PostgreSQL：字面量路径 + `IS NOT DISTINCT FROM` 的乐观并发。
+    if session.kind == SessionKind::Postgres {
+        return apply_postgres(
+            profile,
+            session,
+            detail,
+            &key_columns,
+            request,
+            started,
+            transactional,
+        )
+        .await;
+    }
+
     if session.kind == SessionKind::Sqlite {
         return apply_sqlite(
             profile,
@@ -461,16 +475,18 @@ fn sqlite_key_clause(
     Ok(clauses.join(" AND "))
 }
 
-/// SQLite 的写入语句：没有预处理语句，值按方言字面量转义后内联。
+/// 写入语句（无参数绑定路径）：值按方言字面量转义后内联。
 ///
-/// 乐观并发用 `IS`（SQLite 的 null-safe 等值），不依赖 `IS NOT DISTINCT FROM`
-/// 的版本要求。
-fn sqlite_row_sql(
-    dialect: &SqlDialect,
+/// SQLite 与 PostgreSQL 的会话连接不接受 `mysql_async` 的参数类型，因此这条
+/// 路径全部用字面量。乐观并发比较走 `AdapterSet::null_safe_equal`
+/// （MySQL 是 `<=>`、标准 SQL 是 `IS NOT DISTINCT FROM`），不在这里写死运算符。
+fn literal_row_sql(
+    adapter: &AdapterSet,
     qualified: &str,
     key_columns: &[String],
     row: &RowMutation,
 ) -> Result<String, DbErrorInfo> {
+    let dialect = adapter.dialect();
     match row.kind.as_str() {
         "insert" => {
             let mut columns = Vec::new();
@@ -519,7 +535,7 @@ fn sqlite_row_sql(
                 for assignment in expected {
                     let quoted = dialect.quote(&assignment.column)?;
                     where_parts.push(match &assignment.value {
-                        AssignValue::Null => format!("{quoted} IS NULL"),
+                        AssignValue::Null => adapter.null_safe_equal(&quoted, "NULL"),
                         AssignValue::Default => {
                             return Err(DbErrorInfo::new(
                                 "query",
@@ -527,7 +543,7 @@ fn sqlite_row_sql(
                             ))
                         }
                         AssignValue::Value { value } => {
-                            format!("{quoted} IS {}", sqlite_literal(dialect, value))
+                            adapter.null_safe_equal(&quoted, &sqlite_literal(dialect, value))
                         }
                     });
                 }
@@ -548,7 +564,7 @@ fn sqlite_row_sql(
                 for assignment in expected {
                     let quoted = dialect.quote(&assignment.column)?;
                     where_parts.push(match &assignment.value {
-                        AssignValue::Null => format!("{quoted} IS NULL"),
+                        AssignValue::Null => adapter.null_safe_equal(&quoted, "NULL"),
                         AssignValue::Default => {
                             return Err(DbErrorInfo::new(
                                 "query",
@@ -556,7 +572,7 @@ fn sqlite_row_sql(
                             ))
                         }
                         AssignValue::Value { value } => {
-                            format!("{quoted} IS {}", sqlite_literal(dialect, value))
+                            adapter.null_safe_equal(&quoted, &sqlite_literal(dialect, value))
                         }
                     });
                 }
@@ -571,6 +587,164 @@ fn sqlite_row_sql(
             format!("不支持的修改类型：{other}"),
         )),
     }
+}
+
+async fn pg_exec(conn: &super::driver::PostgresConn, sql: &str) -> Result<u64, DbErrorInfo> {
+    let sets = conn.simple_query(sql, 0).await?;
+    Ok(sets.iter().map(|set| set.affected_rows).sum())
+}
+
+/// PostgreSQL 写入：`BEGIN` → 逐行 → `COMMIT`；影响行数不是 1 就回滚。
+#[allow(clippy::too_many_arguments)]
+async fn apply_postgres(
+    profile: &ProfileRuntime,
+    session: &SessionEntry,
+    detail: &DbTableDetail,
+    key_columns: &[String],
+    request: &MutationRequest,
+    started: std::time::Instant,
+    transactional: bool,
+) -> Result<(MutationResult, DbSessionInfo), DbErrorInfo> {
+    let adapter = profile.adapter()?;
+    let dialect = adapter.dialect();
+    let qualified = dialect.qualified(Some(&detail.database), &detail.table)?;
+    let conn = session.acquire_postgres().await?;
+
+    if transactional {
+        if let Err(error) = pg_exec(&conn, "BEGIN").await {
+            session
+                .release_postgres(conn, true, TransactionState::None)
+                .await;
+            return Err(error);
+        }
+    }
+
+    let mut outcomes: Vec<MutationRowOutcome> = Vec::new();
+    let mut failure: Option<DbErrorInfo> = None;
+
+    for (index, row) in request.rows.iter().enumerate() {
+        let sql = match literal_row_sql(&adapter, &qualified, key_columns, row) {
+            Ok(sql) => sql,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        };
+        match pg_exec(&conn, &sql).await {
+            Ok(affected) => {
+                if affected != 1 {
+                    outcomes.push(MutationRowOutcome {
+                        index,
+                        kind: row.kind.clone(),
+                        affected_rows: affected,
+                        status: "conflict".to_string(),
+                        error: Some(DbErrorInfo::new(
+                            "query",
+                            if affected == 0 {
+                                "影响行数为 0：远程数据已变化（或行已被删除）"
+                            } else {
+                                "影响行数超过 1：唯一键不再唯一，已停止"
+                            },
+                        )),
+                    });
+                    failure = Some(DbErrorInfo::new(
+                        "query",
+                        if affected == 0 {
+                            "单行修改影响了 0 行：可能是并发修改或被删除"
+                        } else {
+                            "单行修改影响多行：唯一键约束可能已损坏"
+                        },
+                    ));
+                    break;
+                }
+                outcomes.push(MutationRowOutcome {
+                    index,
+                    kind: row.kind.clone(),
+                    affected_rows: affected,
+                    status: "applied".to_string(),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                outcomes.push(MutationRowOutcome {
+                    index,
+                    kind: row.kind.clone(),
+                    affected_rows: 0,
+                    status: "failed".to_string(),
+                    error: Some(error.clone()),
+                });
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+
+    let committed_rows = outcomes
+        .iter()
+        .filter(|outcome| outcome.status == "applied")
+        .count() as u64;
+
+    if failure.is_some() {
+        if transactional {
+            let _ = pg_exec(&conn, "ROLLBACK").await;
+        }
+        for outcome in &mut outcomes {
+            if outcome.status == "applied" {
+                outcome.status = "rolled_back".to_string();
+            }
+        }
+        let transaction = conn.transaction_state().await;
+        session.release_postgres(conn, true, transaction).await;
+        return Ok((
+            MutationResult {
+                state: "rolled_back".to_string(),
+                outcomes,
+                committed_rows: 0,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                transactional,
+                warning: None,
+                verify_hint: Some(verify_hint(dialect, detail, request)),
+            },
+            session.info().await,
+        ));
+    }
+
+    if transactional {
+        if let Err(error) = pg_exec(&conn, "COMMIT").await {
+            session
+                .release_postgres(conn, false, TransactionState::Unknown)
+                .await;
+            return Ok((
+                MutationResult {
+                    state: "outcome_unknown".to_string(),
+                    outcomes,
+                    committed_rows: 0,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    transactional,
+                    warning: Some(format!(
+                        "COMMIT 失败（{error}）：事务结果未知，不要自动重试"
+                    )),
+                    verify_hint: Some(verify_hint(dialect, detail, request)),
+                },
+                session.info().await,
+            ));
+        }
+    }
+
+    let transaction = conn.transaction_state().await;
+    session.release_postgres(conn, true, transaction).await;
+    Ok((
+        MutationResult {
+            state: "committed".to_string(),
+            outcomes,
+            committed_rows,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            transactional,
+            warning: None,
+            verify_hint: None,
+        },
+        session.info().await,
+    ))
 }
 
 /// SQLite 写入：`BEGIN` → 逐行执行 → `COMMIT`；影响行数不是 1 就回滚。
@@ -602,7 +776,7 @@ async fn apply_sqlite(
     let mut failure: Option<DbErrorInfo> = None;
 
     for (index, row) in request.rows.iter().enumerate() {
-        let sql = match sqlite_row_sql(dialect, &qualified, key_columns, row) {
+        let sql = match literal_row_sql(&adapter, &qualified, key_columns, row) {
             Ok(sql) => sql,
             Err(error) => {
                 failure = Some(error);

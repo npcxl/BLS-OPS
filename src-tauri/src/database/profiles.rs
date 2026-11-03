@@ -192,7 +192,8 @@ fn validate_engine_options(
     profile: &DatabaseProfile,
     engine: &super::capability::EngineDescriptor,
 ) -> Result<(), DbErrorInfo> {
-    for key in profile.engine_options.extra.keys() {
+    // 只要有一个未声明的键就拒绝：`extra` 只存不属于已知字段的键。
+    if let Some(key) = profile.engine_options.extra.keys().next() {
         return Err(DbErrorInfo::new(
             "config",
             format!("{} 没有配置项 {key}", engine.product),
@@ -775,6 +776,62 @@ mod tests {
         let mut no_user = profile("mysql");
         no_user.username.clear();
         assert!(validate_profile(&conn, &no_user).is_err());
+    }
+
+    /// 旧配置兼容：引擎被移出「新建连接」列表后，已有配置仍要能保存、能读回，
+    /// 且 `engine` 标识**原样保留**（不删除、不改写成 MySQL）。
+    #[test]
+    fn hidden_engines_keep_their_engine_id_on_save_and_reload() {
+        let (path, conn) = temp_conn();
+        for engine in ["tidb", "aurora_mysql", "sqlserver", "oracle", "mongodb"] {
+            let mut hidden = profile(engine);
+            // 这几个产品要求填 database；MongoDB 允许 URI 代替主机。
+            hidden.default_database = Some("app".to_string());
+            if engine == "mongodb" {
+                hidden.host.clear();
+                hidden.port = 0;
+                hidden.engine_options.uri = Some("mongodb://127.0.0.1:27017".to_string());
+            }
+
+            let saved = save_profile(&conn, &hidden, None)
+                .unwrap_or_else(|error| panic!("{engine} 的旧配置应仍能保存：{error}"));
+            assert_eq!(
+                saved.engine, engine,
+                "{engine} 不能在保存时被改写成其它引擎"
+            );
+
+            let reloaded = get_profile(&conn, &saved.id)
+                .expect("读取配置")
+                .unwrap_or_else(|| panic!("{engine} 的配置不能丢"));
+            assert_eq!(reloaded.engine, engine, "{engine} 回读后仍应是原产品");
+            assert!(
+                super::super::engine_registry::find(&reloaded.engine).is_some(),
+                "{engine} 必须仍在注册表里，否则界面会显示成'未知数据库'"
+            );
+            assert!(
+                !super::super::engine_registry::find(&reloaded.engine)
+                    .expect("registered")
+                    .is_listed(),
+                "{engine} 本来就不该出现在新建连接列表里"
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 未知引擎必须明确拒绝，**不能**静默落成 MySQL（否则用户会连错库）。
+    #[test]
+    fn unknown_engine_is_rejected_instead_of_falling_back_to_mysql() {
+        let (_path, conn) = temp_conn();
+        let ghost = profile("mysql57_custom");
+        let error = save_profile(&conn, &ghost, None).expect_err("未知引擎必须拒绝");
+        assert!(
+            error.to_string().contains("不支持的数据库类型"),
+            "错误信息要说清是引擎不认识：{error}"
+        );
+        assert!(
+            list_profiles(&conn).expect("列表").is_empty(),
+            "不能留下半条配置"
+        );
     }
 
     #[test]

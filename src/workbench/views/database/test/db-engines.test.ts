@@ -66,6 +66,7 @@ function descriptor(
       schema_edit: unsupported("尚未适配"),
       view_edit: unsupported("尚未适配"),
       export: unsupported("尚未适配"),
+      export_sql: unsupported("尚未适配"),
     },
     dialect_rules: {
       identifier_quote: "backtick",
@@ -318,5 +319,18 @@ describe("db-engines", () => {
     setEngineCatalog([limitedSet]);
     expect(capabilityAllows(limitedSet, "export")).toBe(true);
     expect(capabilityReason(limitedSet, "export")).toBe("导出尚未接入");
+  });
+
+  // 后端目录升级前可能没有新加的能力项（例如 `export_sql`）：
+  // 缺项按"不允许"处理，不能因为读不到就抛出，也不能默认可点。
+  it("treats a missing capability as disabled", () => {
+    const mysql = engineCatalog().find((engine) => engine.id === "mysql")!;
+    const withoutKey = {
+      ...mysql,
+      capabilities: { ...mysql.capabilities },
+    } as EngineDescriptor;
+    delete (withoutKey.capabilities as unknown as Record<string, Capability>).export_sql;
+    expect(capabilityAllows(withoutKey, "export_sql")).toBe(false);
+    expect(capabilityReason(withoutKey, "export_sql")).toBeNull();
   });
 });

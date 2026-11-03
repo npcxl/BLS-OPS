@@ -165,7 +165,12 @@ impl DatabaseManager {
             Some(runtime) => ProfileRuntimeStatus {
                 profile_id: profile_id.to_string(),
                 generation: runtime.generation,
-                connected: true,
+                // 注册表里有对象不代表 socket 还活着（空闲超时/网络中断）。
+                // 探活不创建新会话，也不恢复旧事务。
+                connected: matches!(
+                    tokio::time::timeout(Duration::from_secs(3), runtime.ping()).await,
+                    Ok(Ok(()))
+                ) && self.is_current_runtime(&runtime).await,
                 tunnel_active: runtime.endpoint.tunnel.is_some(),
                 tunnel_local_port: runtime.endpoint.tunnel_local_port(),
                 open_sessions,
@@ -305,6 +310,14 @@ impl DatabaseManager {
         let version = driver::server_version(&mut conn).await;
         let tls = driver::read_tls_status(&mut conn).await;
         let current_database = driver::current_database(&mut conn).await;
+
+        // 上面的可选信息查询允许缺字段，但网络已关闭不能被当作连接成功。
+        use mysql_async::prelude::Queryable;
+        match tokio::time::timeout(timeout, conn.ping()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(driver::map_error(&error, "tcp")),
+            Err(_) => return Err(DbErrorInfo::new("tcp", "建立会话后探活超时").retryable(true)),
+        }
 
         let entry = Arc::new(SessionEntry::new(
             session_id.to_string(),

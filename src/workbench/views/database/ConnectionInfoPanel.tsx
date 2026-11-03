@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { ProfileRuntimeStatus } from "@/api/types/database";
-import { useDatabaseStore } from "@/stores/database-store";
+import { isSqlConnected, useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { DbEngineIcon } from "./DbEngineIcon";
 import { engineMeta } from "./db-engines";
@@ -57,6 +57,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
     (state) => state.statuses[profileId] ?? (null as ProfileRuntimeStatus | null),
   );
   const refreshStatus = useDatabaseStore((state) => state.refreshStatus);
+  const sessionError = useDatabaseStore((state) => state.sessionErrors[profileId]);
   const hideConnectionInfo = useDatabaseWorkspaceStore(
     (state) => state.hideConnectionInfo,
   );
@@ -70,7 +71,7 @@ export function ConnectionInfoPanel({ profileId }: { profileId: string }) {
   // Redis 没有 SQL 会话：连接状态只能看 Rust 运行时状态（statuses），
   // 用 sessions 判断会让已连接的 Redis 永远显示"未连接"。
   const isRedis = profile.engine === "redis";
-  const connected = isRedis ? !!status?.connected : !!session;
+  const connected = isRedis ? !!status?.connected : isSqlConnected(session ?? undefined, status ?? undefined, sessionError);
   const version = session?.server_version ?? status?.server_version ?? t("未知");
   const tls = session?.tls_active
     ? [session.tls_version, session.tls_cipher].filter(Boolean).join(" · ")

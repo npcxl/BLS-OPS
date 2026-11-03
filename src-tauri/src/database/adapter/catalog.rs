@@ -63,6 +63,28 @@ impl CatalogQueries {
         }
     }
 
+    /// 界面上的"库"这一层。
+    ///
+    /// MySQL 里 database 就是表容器；PostgreSQL 里连接已绑定一个 database，
+    /// 真正装表的是 **schema**。所以 PG 返回 schema 列表（`public` + 用户 schema）：
+    /// 跨 database 不可查，展示一堆点不开的库名只会误导。
+    pub fn schemas(&self) -> &'static str {
+        match self.family {
+            DriverFamily::MySql => self.databases(),
+            _ => {
+                r#"
+                SELECT nspname AS name,
+                       NULL::text AS charset,
+                       NULL::text AS collation
+                FROM pg_namespace
+                WHERE nspname NOT LIKE 'pg_%'
+                  AND nspname <> 'information_schema'
+                ORDER BY nspname
+                "#
+            }
+        }
+    }
+
     /// 表/视图列表。参数：schema。
     pub fn tables(&self) -> &'static str {
         match self.family {

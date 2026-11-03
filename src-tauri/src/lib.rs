@@ -10,8 +10,6 @@ pub mod database;
 /// 本地 SQLite 持久化。`pub` 是为了让 `tests/` 里的真实集成测试能用与
 /// 生产完全相同的 schema/迁移，而不是在测试里手抄一份建表 SQL。
 pub mod db;
-/// 桌面级右键菜单：独立透明窗口、屏幕定位与动作路由。
-pub mod desktop_menu;
 /// P5.0 智能部署中心领域模型（应用/环境/服务/方案图/运行/版本）。
 ///
 /// 只建模与校验，**不执行任何部署**：模型里没有任何自由文本命令字段，
@@ -21,6 +19,8 @@ pub mod deployment;
 pub mod deployment_adapter;
 /// Round 1 of project discovery: enumerate real deployment instances.
 pub mod deployment_collector;
+/// 桌面级右键菜单：独立透明窗口、屏幕定位与动作路由。
+pub mod desktop_menu;
 /// On-demand directory-size calculation (SFTP `du` / recursive walk).
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
@@ -61,10 +61,10 @@ pub mod systemd;
 pub mod transfer;
 /// 远程回收站（删除先移动，可恢复）。
 pub mod trash;
-/// 原生窗口材质（Acrylic）与网页主题的同步，以及不可用时的实色回退。
-pub mod window_material;
 /// 系统托盘：点 X 隐藏窗口到托盘（不退出），托盘恢复/退出。
 mod tray;
+/// 原生窗口材质（Acrylic）与网页主题的同步，以及不可用时的实色回退。
+pub mod window_material;
 /// 实例业务分类器：应用服务 / 基础设施 / 系统组件 / 待归类 四个互斥集合。
 /// 只在后端做判定，React 只展示结果。纯逻辑，零 I/O。
 pub mod workload_class;
@@ -158,6 +158,7 @@ pub fn run() {
             desktop_menu::desktop_menu_select,
             desktop_menu::desktop_menu_close,
             desktop_menu::desktop_menu_cancel,
+            desktop_menu::desktop_menu_key,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）

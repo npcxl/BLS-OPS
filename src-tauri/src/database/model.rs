@@ -237,6 +237,8 @@ impl std::fmt::Display for DbErrorInfo {
 /// 一个连接会话（一个 SQL 编辑器标签页 = 一个逻辑会话）。
 #[derive(Debug, Clone, Serialize)]
 pub struct DbSessionInfo {
+    /// 会话可能已 lost，即使所属运行时/连接池仍然存在。
+    pub state: String,
     pub session_id: String,
     pub profile_id: String,
     /// 每次 `db_session_open` / 重连自增：旧响应带旧代次，前端必须丢弃。

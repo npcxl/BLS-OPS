@@ -15,20 +15,14 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 不依赖外部数据库的检查：格式、编译、单元测试、SQLite（本地临时文件）、
+  # 以及用进程内 SSH 服务驱动的端到端用例。
+  # ---------------------------------------------------------------------------
   backend:
-    name: Rust / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
-    env:
-      # 真实 MySQL 集成测试：CI 不允许 skip（数据库不可达时 setup_schema 会 panic）。
-      BLS_TEST_MYSQL_HOST: 127.0.0.1
-      BLS_TEST_MYSQL_PORT: "3306"
-      BLS_TEST_MYSQL_USER: root
-      BLS_TEST_MYSQL_PASSWORD: bls_test_pw
-      BLS_TEST_MYSQL_REQUIRED: "1"
+    name: Rust / format + unit + local integration
+    runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -39,18 +33,6 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Setup MySQL
-        uses: shogo82148/actions-setup-mysql@v1
-        with:
-          mysql-version: "8.0"
-          root-password: bls_test_pw
-
-      # CI 的 MySQL 是临时实例，旧缓存里的 CA 与当前证书不匹配；
-      # TLS 用例在缺少 CA 时会明确 skip，避免拿过期证书误报失败。
-      - name: Remove stale TLS test CA
-        shell: pwsh
-        run: Remove-Item src-tauri/target/test-mysql-ca.pem -ErrorAction SilentlyContinue
-
       - name: Formatting
         working-directory: src-tauri
         run: cargo fmt --all -- --check
@@ -59,12 +41,15 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets
 
-      # Unit tests + the SSH end-to-end suite, which drives a real (in-process)
-      # SSH server: handshake, host-key trust, password auth, ProxyJump.
-      - name: cargo test
+      - name: Unit tests
         working-directory: src-tauri
-        # 数据库集成测试共用 ops_test schema，必须串行，否则会互相 DROP TABLE。
-        run: cargo test --all-targets -- --test-threads=1
+        run: cargo test --lib
+
+      # SQLite 用本地临时文件，不需要任何服务；monitor/p3/ssh 用的是进程内假服务。
+      # 需要真实数据库的用例在下面的 database job 里按引擎分别跑。
+      - name: Local integration tests
+        working-directory: src-tauri
+        run: cargo test --test database_sqlite --test monitor_e2e --test p3_e2e --test ssh_e2e -- --test-threads=1
 
       - name: cargo build
         working-directory: src-tauri
@@ -93,9 +78,89 @@ jobs:
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
 
+  # ---------------------------------------------------------------------------
+  # 真实数据库集成测试：新建连接列表里的 5 个产品中，MySQL 家族与 PostgreSQL
+  # 各起一个真实实例来跑。
+  #
+  # * MySQL 协议家族跑两遍：MySQL 8.0 与 MariaDB 11.4。两者共用驱动，但认证插件、
+  #   DDL 语法、JSON 列的物理类型都不同（MariaDB 的 JSON 是 LONGTEXT），
+  #   只测一边等于把另一边的差异留给用户发现。
+  # * `*_REQUIRED=1`：实例没起来时**必须红**，不能悄悄 skip 掉。
+  # * Redis 不在这里：Windows runner 没有稳定的 Redis 安装方式
+  #   （shogo82148/actions-setup-redis 明确不支持 Windows）。改 redis 相关代码请在
+  #   本地用 docker redis:7 跑 `cargo test --test database_redis`。
+  # ---------------------------------------------------------------------------
+  database:
+    name: DB / ${{ matrix.db }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [mysql-8.0, mariadb-11.4]
+    env:
+      BLS_TEST_MYSQL_HOST: 127.0.0.1
+      BLS_TEST_MYSQL_PORT: "3306"
+      BLS_TEST_MYSQL_USER: root
+      BLS_TEST_MYSQL_PASSWORD: bls_test_pw
+      BLS_TEST_MYSQL_REQUIRED: "1"
+      # database_postgres 的默认端口就是 55432，这里显式对齐，避免两边漂移。
+      BLS_TEST_PG_HOST: 127.0.0.1
+      BLS_TEST_PG_PORT: "55432"
+      BLS_TEST_PG_USER: postgres
+      BLS_TEST_PG_PASSWORD: bls_test_pw
+      BLS_TEST_PG_DB: ops_test
+      BLS_TEST_PG_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup MySQL 8.0
+        if: matrix.db == 'mysql-8.0'
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          distribution: mysql
+          mysql-version: "8.0"
+          root-password: bls_test_pw
+
+      - name: Setup MariaDB 11.4
+        if: matrix.db == 'mariadb-11.4'
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          distribution: mariadb
+          mysql-version: "11.4"
+          root-password: bls_test_pw
+
+      - name: Setup PostgreSQL 17
+        uses: ikalnytskyi/action-setup-postgres@v9
+        with:
+          postgres-version: "17"
+          port: "55432"
+          username: postgres
+          password: bls_test_pw
+          database: ops_test
+
+      # CI 的 MySQL 是临时实例，旧缓存里的 CA 与当前证书不匹配；
+      # TLS 用例在缺少 CA 时会明确 skip，避免拿过期证书误报失败。
+      - name: Remove stale TLS test CA
+        shell: pwsh
+        run: Remove-Item src-tauri/target/test-mysql-ca.pem -ErrorAction SilentlyContinue
+
+      # 数据库集成测试共用 ops_test schema，必须串行，否则会互相 DROP TABLE。
+      - name: Integration tests (${{ matrix.db }} + PostgreSQL 17)
+        working-directory: src-tauri
+        run: cargo test --test database_mysql --test database_postgres -- --test-threads=1
+
   frontend:
     name: Frontend
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

@@ -72,7 +72,10 @@ export interface CapabilitySet {
   table_edit: Capability;
   schema_edit: Capability;
   view_edit: Capability;
+  /** 按表导出（表格页的"导出"）。 */
   export: Capability;
+  /** 导出自定义 SQL 的结果（SQL 工作区的"导出"）——和按表导出是两条链路。 */
+  export_sql: Capability;
 }
 
 /** 验证等级：没有真实环境就不能往上写。 */
@@ -269,6 +272,8 @@ export interface ConnectionIdentity {
 }
 
 export interface DbSessionInfo {
+  /** 老版本后端没有此字段；lost 不能当成可用连接。 */
+  state?: "ready" | "busy" | "cancelling" | "lost";
   session_id: string;
   profile_id: string;
   generation: number;

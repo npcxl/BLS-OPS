@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
+    "test:db": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-db.ps1",
     "check:versions": "node scripts/check-versions.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "icons:regen": "node scripts/generate-file-icons.mjs"

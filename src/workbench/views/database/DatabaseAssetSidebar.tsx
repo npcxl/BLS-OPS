@@ -48,6 +48,7 @@ import { redisDbIndexes, redisDefaultDb } from "./redis/redis-shared";
 import {
   categoryKey,
   detailKey,
+  isSqlConnected,
   tablesKey,
   toDbError,
   useDatabaseStore,
@@ -758,7 +759,7 @@ export function DatabaseAssetSidebar() {
     // Redis 没有 SQL 会话，连接与否只看 Rust 运行时状态（statuses）。
     const connected = isRedis
       ? !!statuses[profile.id]?.connected
-      : !!sessions[profile.id];
+      : isSqlConnected(sessions[profile.id], statuses[profile.id], sessionErrors[profile.id]);
     return [
       {
         id: "open",
@@ -767,6 +768,7 @@ export function DatabaseAssetSidebar() {
         onSelect: () => {
           open(profile);
           if (isRedis) void redisConnect(profile.id);
+          else if (sessions[profile.id]?.state === "lost") void reconnect(profile.id);
           else void ensureSession(profile.id);
         },
       },
@@ -1121,7 +1123,7 @@ export function DatabaseAssetSidebar() {
           // SQL 引擎保留会话兜底，避免状态回读慢时绿灯闪一下。
           const profileConnected = isRedis
             ? !!statuses[profile.id]?.connected
-            : (statuses[profile.id]?.connected ?? !!sessions[profile.id]);
+            : isSqlConnected(sessions[profile.id], statuses[profile.id], sessionErrors[profile.id]);
           // Redis 建连失败必须在树里看得见，不能只躺在 sessionErrors 里。
           const profileSessionError = isRedis
             ? (sessionErrors[profile.id] ?? null)
@@ -1156,6 +1158,7 @@ export function DatabaseAssetSidebar() {
                   open(profile);
                   // Redis 只能走 db_redis_connect：db_connect 只接受 SQL 引擎。
                   if (isRedis) void redisConnect(profile.id);
+                  else if (sessions[profile.id]?.state === "lost") void reconnect(profile.id);
                   else void ensureSession(profile.id);
                 }}
                 onDisconnect={() => setDisconnectTarget(profile)}

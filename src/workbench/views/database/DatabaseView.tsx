@@ -534,7 +534,7 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
       <span
         className={cn(
           "h-1.5 w-1.5 shrink-0 rounded-full",
-          session ? "bg-success" : sessionError ? "bg-danger" : "bg-warning",
+          session && session.state !== "lost" ? "bg-success" : sessionError ? "bg-danger" : "bg-warning",
         )}
       />
       <span className="max-w-[120px] truncate">{profile.name}</span>
@@ -575,14 +575,13 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         <Button
           variant="ghost"
           size="xs"
-          disabled={!session}
           onClick={() => void reconnect(profileId)}
         >
           {t("重连")}
         </Button>
       </Tooltip>
       <span className="ml-1 shrink-0 whitespace-nowrap">
-        {session ? session.connection.label : t("未连接")}
+        {session && session.state !== "lost" ? session.connection.label : t("未连接")}
         {status?.tunnel_local_port ? ` · 127.0.0.1:${status.tunnel_local_port}` : ""}
       </span>
     </div>
@@ -622,12 +621,12 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         </PageNotice>
       )}
 
-      {!session && sessionError && (
+      {(!session || session.state === "lost") && sessionError && (
         <PageNotice
           tone="danger"
           action={
             <>
-              <Button variant="ghost" size="xs" onClick={() => void ensureSession(profileId)}>
+              <Button variant="ghost" size="xs" onClick={() => void reconnect(profileId)}>
                 {t("重试")}
               </Button>
               <Button

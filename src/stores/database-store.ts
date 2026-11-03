@@ -115,6 +115,15 @@ export function toDbError(error: unknown): DbErrorInfo {
   };
 }
 
+/** SQL 会话失效优先于仍存活的元数据连接池。Redis 单独使用运行时状态。 */
+export function isSqlConnected(
+  session?: DbSessionInfo,
+  status?: ProfileRuntimeStatus,
+  error?: DbErrorInfo | null,
+): boolean {
+  return session?.state === "lost" || error ? false : (status?.connected ?? !!session);
+}
+
 export interface OpenTableRequest {
   profileId: string;
   database: string;
@@ -209,6 +218,7 @@ interface DatabaseAssetState {
   /** 关闭已经不在任何标签里的会话；切换标签不会触发（标签还在）。 */
   pruneSessions: (activeProfileIds: string[]) => Promise<void>;
   refreshStatus: (profileId: string) => Promise<void>;
+  refreshSession: (profileId: string) => Promise<void>;
   /**
    * 显式断开一个连接：先关会话，再关掉 Rust 侧的连接运行时（隧道/连接池）。
    * 只用于用户在侧栏点"关闭连接"；标签关闭走 pruneSessions（保留运行时，重开更快）。
@@ -238,6 +248,13 @@ function isRedisProfile(get: () => DatabaseAssetState, profileId: string): boole
  * 后只发一次 `db_redis_connect`（Rust 侧虽然单飞，前端也不该白跑一趟）。
  */
 const redisConnectInFlight = new Map<string, Promise<void>>();
+const sqlConnectInFlight = new Map<string, Promise<DbSessionInfo | null>>();
+const connectionEpoch = new Map<string, number>();
+const statusRevision = new Map<string, number>();
+const lostSessionError = (): DbErrorInfo => toDbError({
+  stage: "tcp", message: "会话连接已关闭，请重新连接",
+  detail: "原事务与临时表无法恢复；重连不会自动重跑 SQL。", retryable: true,
+});
 
 /**
  * 连接类错误：既留在 `sessionErrors`（树里能定位到具体连接），也弹到顶部
@@ -416,6 +433,8 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
         loading: { ...state.loading, [key]: false },
         errors: { ...state.errors, [key]: toDbError(error) },
       }));
+    } finally {
+      await get().refreshStatus(profileId);
     }
   },
 
@@ -478,39 +497,52 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     await get().refreshDatabases(profileId);
   },
 
-  ensureSession: async (profileId) => {
+  ensureSession: (profileId) => {
     // 防御：Redis 没有 SQL 会话。任何入口误用 ensureSession 都必须改走
     // db_redis_connect —— 送进 db_connect 只会被后端以 unsupported 拒绝。
     if (isRedisProfile(get, profileId)) {
-      await get().redisConnect(profileId);
-      return null;
+      return get().redisConnect(profileId).then(() => null);
     }
 
     const existing = get().sessions[profileId];
-    if (existing) return existing;
-
-    set((state) => ({
-      sessionErrors: { ...state.sessionErrors, [profileId]: null },
-    }));
-    try {
-      const info = await databaseApi.connect(profileId, crypto.randomUUID());
+    if (existing) return Promise.resolve(existing.state === "lost" ? null : existing);
+    const inflight = sqlConnectInFlight.get(profileId);
+    if (inflight) return inflight;
+    const epoch = connectionEpoch.get(profileId) ?? 0;
+    const task = (async () => {
       set((state) => ({
-        sessions: { ...state.sessions, [profileId]: info },
+        sessionErrors: { ...state.sessionErrors, [profileId]: null },
       }));
-      void get().refreshStatus(profileId);
-      return info;
-    } catch (error) {
-      const info = toDbError(error);
-      set((state) => ({
-        sessionErrors: { ...state.sessionErrors, [profileId]: info },
-      }));
-      reportConnectError(
-        get().profiles.find((profile) => profile.id === profileId),
-        info,
-        i18n.t("连接失败"),
-      );
-      return null;
-    }
+      try {
+        const info = await databaseApi.connect(profileId, crypto.randomUUID());
+        if ((connectionEpoch.get(profileId) ?? 0) !== epoch) {
+          await databaseApi.disconnect(info.session_id).catch(() => undefined);
+          return null;
+        }
+        set((state) => ({
+          sessions: { ...state.sessions, [profileId]: info },
+        }));
+        void get().refreshStatus(profileId);
+        return info;
+      } catch (error) {
+        if ((connectionEpoch.get(profileId) ?? 0) !== epoch) return null;
+        const info = toDbError(error);
+        set((state) => ({
+          sessionErrors: { ...state.sessionErrors, [profileId]: info },
+        }));
+        reportConnectError(
+          get().profiles.find((profile) => profile.id === profileId),
+          info,
+          i18n.t("连接失败"),
+        );
+        return null;
+      }
+    })();
+    sqlConnectInFlight.set(profileId, task);
+    void task.finally(() => {
+      if (sqlConnectInFlight.get(profileId) === task) sqlConnectInFlight.delete(profileId);
+    });
+    return task;
   },
 
   /**
@@ -593,14 +625,7 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     } finally {
       await databaseApi.queryRelease(started.query_id).catch(() => undefined);
       // 事务状态以服务器 OK 包为准；重新读一次会话信息。
-      try {
-        const info = await databaseApi.sessionInfo(session.session_id);
-        set((state) => ({
-          sessions: { ...state.sessions, [profileId]: info },
-        }));
-      } catch {
-        // 忽略：下一次操作会自然暴露失效。
-      }
+      await get().refreshSession(profileId);
     }
 
     if (batchError) {
@@ -628,26 +653,15 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
   },
 
   reconnect: async (profileId) => {
-    const existing = get().sessions[profileId];
-    if (existing) {
-      try {
-        await databaseApi.disconnect(existing.session_id);
-      } catch {
-        // 旧会话可能已经断开；继续建新会话。
-      }
-    }
-    set((state) => {
-      const sessions = { ...state.sessions };
-      delete sessions[profileId];
-      return {
-        sessions,
-        sessionErrors: { ...state.sessionErrors, [profileId]: null },
-      };
-    });
+    // 换会话还会复用旧池和控制连接；显式重连必须完整重建运行时。
+    await get().disconnectProfile(profileId);
     return get().ensureSession(profileId);
   },
 
   closeSession: async (profileId) => {
+    connectionEpoch.set(profileId, (connectionEpoch.get(profileId) ?? 0) + 1);
+    sqlConnectInFlight.delete(profileId);
+    statusRevision.set(profileId, (statusRevision.get(profileId) ?? 0) + 1);
     const session = get().sessions[profileId];
     if (!session) return;
     set((state) => {
@@ -682,13 +696,46 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
     }));
   },
 
-  refreshStatus: async (profileId) => {
+  refreshSession: async (profileId) => {
+    const session = get().sessions[profileId];
+    if (!session) return;
     try {
-      const status = await databaseApi.profileStatus(profileId);
-      set((state) => ({ statuses: { ...state.statuses, [profileId]: status } }));
-    } catch {
-      // 状态是装饰性的；失败不覆盖已有值。
+      const info = await databaseApi.sessionInfo(session.session_id);
+      if (get().sessions[profileId]?.session_id !== session.session_id) return;
+      if (get().sessions[profileId]?.state === "lost") return;
+      set(state => ({
+        sessions: { ...state.sessions, [profileId]: info },
+        sessionErrors: { ...state.sessionErrors, [profileId]: info.state === "lost" ? lostSessionError() : null },
+      }));
+    } catch (error) {
+      if (get().sessions[profileId]?.session_id !== session.session_id) return;
+      set(state => ({
+        sessions: { ...state.sessions, [profileId]: { ...session, state: "lost", transaction: "unknown" } },
+        sessionErrors: { ...state.sessionErrors, [profileId]: toDbError(error) },
+      }));
     }
+  },
+
+  refreshStatus: async (profileId) => {
+    const revision = (statusRevision.get(profileId) ?? 0) + 1;
+    statusRevision.set(profileId, revision);
+    await Promise.all([get().refreshSession(profileId), (async () => {
+      try {
+        const status = await databaseApi.profileStatus(profileId);
+        if (statusRevision.get(profileId) !== revision) return;
+        set((state) => ({ statuses: { ...state.statuses, [profileId]: status } }));
+      } catch {
+        // 读取失败不把旧的绿色连接标识当成当前事实。
+        // Redis 保持原有连接生命周期；本次只修 SQL 连接。
+        if (isRedisProfile(get, profileId)) return;
+        if (statusRevision.get(profileId) !== revision) return;
+        set(state => ({ statuses: { ...state.statuses, [profileId]: {
+          ...state.statuses[profileId], profile_id: profileId, generation: 0,
+          connected: false, tunnel_active: false, tunnel_local_port: null,
+          open_sessions: 0, active_queries: 0, server_version: null,
+        } } }));
+      }
+    })()]);
   },
 
   disconnectProfile: async (profileId) => {

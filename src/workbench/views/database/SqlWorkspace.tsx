@@ -137,10 +137,15 @@ export function SqlWorkspace({
   const descriptor = engineMeta(profile.engine).descriptor;
   const transactionCapable = capabilityAllows(descriptor, "transaction");
   const transactionLimitedReason = capabilityReason(descriptor, "transaction");
-  // 导出能力同样来自注册表：没接导出链路的引擎（PostgreSQL）不发请求，
-  // 按钮禁用并说明原因。
-  const exportBlocked = !capabilityAllows(descriptor, "export");
-  const exportReason = capabilityReason(descriptor, "export");
+  // 这里导的是**自定义 SQL 的结果**，看 `export_sql` 而不是 `export`：
+  // 按表导出（`export`）接通了不代表这段 SQL 能被重新执行并流式写盘。
+  const exportBlocked = !capabilityAllows(descriptor, "export_sql");
+  const exportReason = capabilityReason(descriptor, "export_sql");
+  // 取消能力缺失（Doris/StarRocks 按 query id 取消，未接入）时不给一个点了
+  // 只会报错的"停止"。只在**明确知道**不支持时禁用：目录还没加载完就挡住取消，
+  // 会让一条卡住的查询彻底没法停。
+  const cancelBlocked = !!descriptor && !capabilityAllows(descriptor, "cancel");
+  const cancelReason = capabilityReason(descriptor, "cancel");
   const inTransaction =
     session?.transaction === "in_transaction" ||
     session?.transaction === "in_transaction_read_only";
@@ -645,9 +650,13 @@ export function SqlWorkspace({
           <Button
             variant="ghost"
             size="xs"
-            disabled={cancelling}
+            disabled={cancelling || cancelBlocked}
             onClick={() => void cancel(tabId)}
-            title={t("发送 KILL QUERY 并在服务器确认前不复用连接")}
+            title={
+              cancelBlocked
+                ? (cancelReason ?? t("该引擎不支持取消查询"))
+                : t("发送 KILL QUERY 并在服务器确认前不复用连接")
+            }
           >
             {cancelling ? (
               <Loader2 size={12} className="animate-spin" />
@@ -686,7 +695,11 @@ export function SqlWorkspace({
             title={
               exportBlocked
                 ? (exportReason ?? t("该引擎暂不支持导出"))
-                : t("导出会重新执行这条只读 SQL")
+                : exportReason
+                  ? t("导出会重新执行这条只读 SQL（{{reason}}）", {
+                      reason: exportReason,
+                    })
+                  : t("导出会重新执行这条只读 SQL")
             }
           >
             <FileDown size={12} />

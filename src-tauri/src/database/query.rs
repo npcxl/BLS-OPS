@@ -1358,14 +1358,25 @@ async fn finalize(
     truncated: bool,
     reason: Option<String>,
 ) {
-    let _ = tx.try_send(DbBatch::Finished {
+    let batch = DbBatch::Finished {
         state: final_state.to_string(),
         elapsed_ms: started.elapsed().as_millis() as u64,
         rows,
         bytes,
         truncated,
         truncation_reason: reason,
-    });
+    };
+    // 缓冲区只有 2 格（见模块注释）。`try_send` 一旦遇到"缓冲满"就会把终态
+    // **直接丢掉**：前端收到的最后一条是 Rows/Error，永远等不到 `Finished`，
+    // 界面上表现为一直停在"取消中"。MariaDB 上取消一条正在执行的语句就能稳定
+    // 复现（ResultSet + Error 占满两格，Finished 是第三条）。
+    //
+    // 所以这里退化成**有上限**的 `send`：前端还在读就等它排空；消费者已经离开
+    //（`release` 掉接收端）就立刻放弃，绝不让任务卡在这里。
+    if let Err(mpsc::error::TrySendError::Full(batch)) = tx.try_send(batch) {
+        const FINAL_BATCH_WAIT: Duration = Duration::from_secs(2);
+        let _ = tokio::time::timeout(FINAL_BATCH_WAIT, tx.send(batch)).await;
+    }
 }
 
 fn truncate_sql(sql: &str) -> String {

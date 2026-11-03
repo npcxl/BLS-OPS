@@ -78,8 +78,14 @@ pub struct CapabilitySet {
     pub schema_edit: Capability,
     /// 视图创建与替换。
     pub view_edit: Capability,
-    /// 结果导出 CSV。
+    /// 把表/键值结果导出 CSV（界面上的"导出表数据"）。
     pub export: Capability,
+    /// 把 SQL 工作区里的查询结果导出 CSV。
+    ///
+    /// **和 `export` 分开**：很多引擎只接了"按表导出"（服务端重新分页查询），
+    /// 自定义 SQL 导出要重新执行一段用户脚本再流式写盘，是另一条链路。
+    /// 压成一个字段，SQL 工作区的导出按钮就只能二选一地撒谎。
+    pub export_sql: Capability,
 }
 
 impl CapabilitySet {
@@ -99,6 +105,7 @@ impl CapabilitySet {
             schema_edit: cap(),
             view_edit: cap(),
             export: cap(),
+            export_sql: cap(),
         }
     }
 }

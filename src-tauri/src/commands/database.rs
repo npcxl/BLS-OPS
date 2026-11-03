@@ -171,7 +171,12 @@ pub async fn db_session_info(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<DbSessionInfo, DbErrorInfo> {
-    Ok(state.database.session(&session_id).await?.info().await)
+    Ok(state
+        .database
+        .session(&session_id)
+        .await?
+        .refresh_info()
+        .await)
 }
 
 #[tauri::command]

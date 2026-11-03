@@ -235,6 +235,7 @@ fn mysql_caps() -> CapabilitySet {
         schema_edit: Capability::Supported,
         view_edit: Capability::Supported,
         export: Capability::Supported,
+        export_sql: Capability::Supported,
     }
 }
 
@@ -252,6 +253,7 @@ fn mysql_compatible_caps(cancel_note: &'static str) -> CapabilitySet {
         schema_edit: Capability::limited("DDL 语法按产品版本存在差异，未逐项验证"),
         view_edit: Capability::Supported,
         export: Capability::Supported,
+        export_sql: Capability::Supported,
     }
 }
 
@@ -260,7 +262,9 @@ fn olap_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::Supported,
         multiple_result_sets: Capability::limited("一次只执行一条语句，没有多结果集"),
-        cancel: Capability::limited("按 query id 取消，当前版本未接入"),
+        // "未接入"是 unsupported 而不是 limited：limited 表示"能用但有边界"，
+        // 界面会照样放行；这里点下去只会拿到一条失败。
+        cancel: Capability::unsupported("按 query id 取消，当前版本未接入"),
         transaction: Capability::unsupported("没有跨语句事务，DML/DDL 自动提交"),
         read_only_enforcement: Capability::limited("没有只读事务：只读连接仅由客户端拦截"),
         table_browse: Capability::Supported,
@@ -271,15 +275,15 @@ fn olap_caps() -> CapabilitySet {
         schema_edit: Capability::limited("DDL 子集：不支持 CHANGE COLUMN/AFTER，索引语法不同"),
         view_edit: Capability::Supported,
         export: Capability::Supported,
+        export_sql: Capability::Supported,
     }
 }
 
-/// PostgreSQL：SQL 执行（文本协议）+ 结构浏览 + 表数据浏览已接通；
-/// 单行编辑、DDL、视图与导出还没接。
+/// PostgreSQL：执行、结构浏览、表数据、单行编辑、建表/删表、视图编辑、按表导出都已接通。
 ///
-/// 原因写的是**真实调用链**，不是"能力没实现"这种空话：
-/// 编辑走 `SessionEntry::acquire_conn()`（要 MySQL 连接句柄），导出走
-/// `ProfileRuntime::export_pool()`（MySQL 导出池）——PostgreSQL 运行时都没有。
+/// 边界写在能力位上，而不是"能力没实现"这种空话：单行编辑的二进制列仍只读；
+/// 导出只支持按表（自定义 SQL 导出没接）；改表/改索引没有 DDL 生成器。
+/// 界面按这些原因禁用入口，而不是让用户点进去撞一条 "unsupported"。
 fn postgres_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::Supported,
@@ -289,12 +293,13 @@ fn postgres_caps() -> CapabilitySet {
         read_only_enforcement: Capability::Supported,
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
-        table_edit: Capability::unsupported(
-            "单行编辑需要 MySQL 连接句柄，PostgreSQL 会话不接受：入口已禁用",
+        table_edit: Capability::limited(
+            "单行增删改已接入（事务 + IS NOT DISTINCT FROM 乐观并发）；二进制列仍只读",
         ),
-        schema_edit: Capability::unsupported("PostgreSQL 的 DDL 生成与改表尚未接入"),
-        view_edit: Capability::unsupported("PostgreSQL 的视图编辑尚未接入"),
-        export: Capability::unsupported("导出需要 MySQL 导出池，PostgreSQL 导出尚未接入"),
+        schema_edit: Capability::limited("支持建表（IDENTITY 自增）与删表；改表/改索引不支持"),
+        view_edit: Capability::limited("支持创建/替换/删除视图（CREATE OR REPLACE VIEW）"),
+        export: Capability::limited("按表导出已接入；导出会重新查询，数据可能已变化"),
+        export_sql: Capability::unsupported("PostgreSQL 的自定义 SQL 导出尚未接入：请按表导出"),
     }
 }
 
@@ -317,11 +322,10 @@ fn sqlite_caps() -> CapabilitySet {
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
         table_edit: Capability::limited("单行增删改已接入（事务 + 乐观并发）；二进制列仍只读"),
-        schema_edit: Capability::limited(
-            "支持建表与删表；改表/改索引不支持（SQLite 需要重建表）",
-        ),
+        schema_edit: Capability::limited("支持建表与删表；改表/改索引不支持（SQLite 需要重建表）"),
         view_edit: Capability::limited("支持创建/替换/删除视图；OR REPLACE 用先删后建实现"),
-        export: Capability::limited("按表导出已接入；自定义 SQL 导出尚未接入"),
+        export: Capability::limited("按表导出已接入；导出会重新查询，数据可能已变化"),
+        export_sql: Capability::unsupported("SQLite 的自定义 SQL 导出尚未接入：请按表导出"),
     }
 }
 
@@ -330,14 +334,16 @@ fn redis_caps() -> CapabilitySet {
         query: Capability::unsupported("Redis 是键值引擎，不使用 SQL 工作区"),
         multiple_result_sets: Capability::unsupported("Redis 命令没有多结果集概念"),
         cancel: Capability::unsupported("Redis 命令不支持服务端取消，断开连接会中断会话"),
-        transaction: Capability::limited("MULTI/EXEC 尚未接入界面"),
+        // 同上：没接入 ≠ 受限。Redis 界面不提供事务入口。
+        transaction: Capability::unsupported("Redis 是键值引擎，MULTI/EXEC 未接入界面"),
         read_only_enforcement: Capability::limited("只读模式尚未在服务端强制，仅界面提示"),
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
         table_edit: Capability::Supported,
         schema_edit: Capability::unsupported("键值引擎没有表结构"),
         view_edit: Capability::unsupported("键值引擎没有视图"),
-        export: Capability::limited("Redis 结果导出尚未接入"),
+        export: Capability::unsupported("Redis 结果导出尚未接入"),
+        export_sql: Capability::unsupported("Redis 没有 SQL，导出尚未接入"),
     }
 }
 
@@ -479,9 +485,12 @@ fn build() -> Vec<EngineDescriptor> {
     mariadb.default_username = Some("root");
     mariadb.capabilities = mysql_caps();
     mariadb.verified = vec![VerifiedScope {
-        versions: "—".to_string(),
-        level: VerifiedLevel::DriverOnly,
-        notes: "复用 mysql_async 的连接/查询/元数据链路；尚未在真实 MariaDB 实例上跑完整链路"
+        versions: "MariaDB 11.4.13".to_string(),
+        level: VerifiedLevel::Manage,
+        notes: "MariaDB 11.4.13 容器上用 root 跑通同一套集成用例（连接/认证/元数据/浏览/\
+                键集分页/单行编辑/DDL/按表导出/取消/重连，10/10 通过）；这套用例用的是 \
+                engine=mysql，MariaDB 注册项自身的差异（系统库名单、默认端口）未逐项单独验证；\
+                JSON 列在 MariaDB 上是 LONGTEXT（驱动返回文本/二进制）；TLS 与 SSH 隧道未验证"
             .to_string(),
     }];
     engines.push(mariadb);
@@ -490,17 +499,18 @@ fn build() -> Vec<EngineDescriptor> {
         "postgres",
         "PostgreSQL",
         "simple query 文本协议（bigint/numeric 保持字符串精度）；TLS 未接入；\
-         单行编辑、DDL 与导出未接入",
+         改表/改索引与自定义 SQL 导出未接入",
     );
     postgres.implementation = Implementation::Implemented;
     postgres.default_username = Some("postgres");
     postgres.capabilities = postgres_caps();
     postgres.verified = vec![VerifiedScope {
         versions: "PostgreSQL 17.11".to_string(),
-        level: VerifiedLevel::Query,
-        notes: "本地容器验证：连接/认证/simple query/多语句/类型（int8、numeric、bytea、jsonb）\
-                /取消/事务状态/关闭重连；结构浏览与表数据浏览链路已接入但未实机验证；\
-                单行编辑、DDL、导出、TLS 与 SSH 隧道未接入"
+        level: VerifiedLevel::Manage,
+        notes: "PostgreSQL 17.11 容器实测（6 个集成用例）：连接/认证/simple query/多语句/\
+                类型精度（int8、numeric、bytea、jsonb）/取消/事务状态/关闭重连/结构浏览/\
+                表数据（keyset）/单行编辑与冲突检测/建表与视图/按表导出/只读连接由服务器\
+                拒绝写入；改表与改索引、自定义 SQL 导出、TLS 与 SSH 隧道未验证"
             .to_string(),
     }];
     engines.push(postgres);
@@ -527,10 +537,11 @@ fn build() -> Vec<EngineDescriptor> {
     sqlite.capabilities = sqlite_caps();
     sqlite.verified = vec![VerifiedScope {
         versions: "SQLite（rusqlite bundled）".to_string(),
-        level: VerifiedLevel::Query,
-        notes: "本地临时库验证了打开已有文件/拒绝创建/只读打开/查询类型/行数预算/多语句逐条执行；\
-                结构浏览、表数据浏览、单行编辑、建表/视图与按表导出已接入但未实机逐项验证，\
-                改表（ALTER）与自定义 SQL 导出确实没有"
+        level: VerifiedLevel::Manage,
+        notes: "本地临时库实测（7 个集成用例）：打开已有文件/拒绝自动创建/只读打开由 SQLite \
+                拒绝写入/查询类型/行数预算/多语句逐条执行/结构浏览/表数据浏览/单行编辑与冲突\
+                检测/建表与视图/按表导出（完整 CSV）；改表（ALTER）、改索引与自定义 SQL 导出\
+                确实没有"
             .to_string(),
     }];
     // **不要**再套 `config_only`：SQLite 六条链路都有真实实现，套上去会把
@@ -1003,7 +1014,9 @@ mod tests {
             assert!(!engine.is_listed(), "{id} 不应出现在新建连接列表");
             assert_eq!(engine.product, product, "{id} 的产品名不能被改写");
             assert!(
-                engine.hidden_reason().is_some_and(|reason| !reason.is_empty()),
+                engine
+                    .hidden_reason()
+                    .is_some_and(|reason| !reason.is_empty()),
                 "{id} 必须说明为什么不在列表里"
             );
         }
@@ -1041,9 +1054,9 @@ mod tests {
         );
     }
 
-    /// PostgreSQL：浏览已接通，编辑/DDL/视图/导出必须禁用并说明真实原因。
+    /// PostgreSQL：执行/浏览/编辑/导出都已接通，但每项都有真实限制。
     #[test]
-    fn postgres_gates_unwired_entries_with_reasons() {
+    fn postgres_capabilities_are_limited_with_reasons() {
         let postgres = find("postgres").expect("postgres registered");
         for (cap, label) in [
             (&postgres.capabilities.table_edit, "编辑表数据"),
@@ -1051,25 +1064,114 @@ mod tests {
             (&postgres.capabilities.view_edit, "编辑视图"),
             (&postgres.capabilities.export, "导出"),
         ] {
-            assert!(!cap.is_available(), "PostgreSQL 的{label}不应开放");
+            assert!(cap.is_available(), "PostgreSQL 的{label}已接入");
             assert!(
                 cap.reason().is_some_and(|reason| !reason.is_empty()),
-                "PostgreSQL 的{label}必须说明原因"
+                "PostgreSQL 的{label}必须说明限制"
             );
         }
         // 结构和表数据浏览已经接线（metadata::* / table::browse 的 PostgreSQL 分支），
         // 这里放开入口；"有没有实机验证"由 `verified` 单独记录，不混进能力位。
         assert!(postgres.capabilities.query.is_available());
         assert!(postgres.capabilities.table_browse.is_available());
+        // 六个集成用例覆盖连接/查询/浏览/编辑/DDL/导出/服务端只读，够 Manage；
+        // 没做的改表、自定义 SQL 导出、TLS 必须在 notes 里点名。
         assert_eq!(
             postgres.verified[0].level,
-            VerifiedLevel::Query,
-            "浏览链路刚接入，不能写成 Manage"
+            VerifiedLevel::Manage,
+            "实机验证到编辑/DDL/导出/只读后才允许写 Manage"
         );
         assert!(
-            postgres.verified[0].notes.contains("未实机验证"),
+            postgres.verified[0].notes.contains("未验证"),
             "未验证的部分必须写出来"
         );
+        // 自定义 SQL 导出确实没接：SQL 工作区的导出按钮据此禁用。
+        assert!(
+            !postgres.capabilities.export_sql.is_available(),
+            "PostgreSQL 的自定义 SQL 导出未接入，不能开放"
+        );
+        assert!(
+            postgres.capabilities.export_sql.reason().is_some(),
+            "禁用的导出必须说明原因"
+        );
+    }
+
+    /// 自定义 SQL 导出是**独立链路**：只有走 MySQL 导出池的引擎接了，
+    /// 其它引擎必须在能力位上禁用并说明原因，不能靠后端报错兜底。
+    #[test]
+    fn export_sql_is_only_claimed_where_the_chain_exists() {
+        for id in [
+            "mysql",
+            "mariadb",
+            "tidb",
+            "oceanbase_mysql",
+            "aurora_mysql",
+            "doris",
+            "starrocks",
+        ] {
+            let engine = find(id).expect("registered");
+            assert!(
+                engine.capabilities.export_sql.is_available(),
+                "{id} 复用 MySQL 导出池，自定义 SQL 导出应可用"
+            );
+        }
+        for id in ["postgres", "sqlite", "redis"] {
+            let engine = find(id).expect("registered");
+            let cap = &engine.capabilities.export_sql;
+            assert!(
+                !cap.is_available(),
+                "{id} 的自定义 SQL 导出未接入，不能开放"
+            );
+            assert!(
+                cap.reason().is_some_and(|reason| !reason.is_empty()),
+                "{id} 必须说明为什么不能导出"
+            );
+        }
+        // 两个口径不能互相顶替：PG 能按表导出，但不能导出自定义 SQL。
+        let postgres = find("postgres").expect("registered");
+        assert!(postgres.capabilities.export.is_available());
+        assert!(!postgres.capabilities.export_sql.is_available());
+    }
+
+    /// `limited` 的语义是"能用但有边界"，界面会照着它放行。把"还没实现"写成
+    /// `limited`，用户点下去只会拿到一条失败——这正是本次收敛要修掉的那类错。
+    #[test]
+    fn unimplemented_work_is_never_declared_as_limited() {
+        // 只拦"未接入"这种结论式措辞；"未实机验证""语法差异"属于真实边界，允许。
+        const FORBIDDEN: [&str; 3] = ["未接入", "尚未接入", "没接"];
+
+        for engine in registry() {
+            let caps = &engine.capabilities;
+            let pairs: [(&str, &Capability); 11] = [
+                ("query", &caps.query),
+                ("multiple_result_sets", &caps.multiple_result_sets),
+                ("cancel", &caps.cancel),
+                ("transaction", &caps.transaction),
+                ("read_only_enforcement", &caps.read_only_enforcement),
+                ("table_browse", &caps.table_browse),
+                ("keyset_pagination", &caps.keyset_pagination),
+                ("table_edit", &caps.table_edit),
+                ("schema_edit", &caps.schema_edit),
+                ("view_edit", &caps.view_edit),
+                ("export", &caps.export),
+            ];
+            for (name, cap) in pairs
+                .into_iter()
+                .chain(std::iter::once(("export_sql", &caps.export_sql)))
+            {
+                let Capability::Limited { reason } = cap else {
+                    continue;
+                };
+                for word in FORBIDDEN {
+                    assert!(
+                        !reason.contains(word),
+                        "{} 的 {} 标成 limited，但原因写着「{word}」：{reason}",
+                        engine.id,
+                        name
+                    );
+                }
+            }
+        }
     }
 
     /// 前端按这套 JSON 结构写类型；键名或枚举值改了必须同步，否则界面会

@@ -29,6 +29,7 @@ const CAPABILITY_ORDER: (keyof CapabilitySet)[] = [
   "schema_edit",
   "view_edit",
   "export",
+  "export_sql",
 ];
 
 const CAPABILITY_LABEL: Record<keyof CapabilitySet, string> = {
@@ -42,7 +43,8 @@ const CAPABILITY_LABEL: Record<keyof CapabilitySet, string> = {
   table_edit: "编辑表数据",
   schema_edit: "修改表结构",
   view_edit: "编辑视图",
-  export: "导出",
+  export: "按表导出",
+  export_sql: "导出自定义 SQL",
 };
 
 const STATE_LABEL = {
@@ -152,6 +154,16 @@ export function EngineImplementationPanel({
 
         {descriptor?.note && (
           <p className="text-11 leading-relaxed text-fg-subtle">{descriptor.note}</p>
+        )}
+
+        {/* 被移出新建列表的产品（SQL Server / MongoDB 等）在这里说清"为什么
+            列表里没有它"，否则老用户会以为是产品被删了。 */}
+        {descriptor?.entry.state === "hidden" && (
+          <p className="text-11 leading-relaxed text-fg-subtle">
+            {t("该类型已移出新建连接列表：{{reason}}", {
+              reason: t(descriptor.entry.reason),
+            })}
+          </p>
         )}
 
         <p className="text-11 leading-relaxed text-fg-subtle">

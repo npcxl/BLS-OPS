@@ -21,7 +21,6 @@
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -32,9 +31,15 @@ use tauri::{
 /// 菜单窗口的 label；主窗口与来源窗口永远不能叫这个名字。
 pub const MENU_LABEL: &str = "context-menu";
 
-/// Show/focus may briefly emit Focused(false). Defer and re-check focus instead
-/// of dropping this event (dropping the only blur leaves a stuck menu).
-const FOCUS_GRACE: Duration = Duration::from_millis(180);
+/// 来源窗口"还能用"的判定：可见且未最小化。
+///
+/// **不能用 `is_focused()`**：WebView2 把键盘焦点放在自己的子窗口里，含 WebView
+/// 的顶层窗口从被激活那一瞬起就会收到 WM_KILLFOCUS，tao 的 `is_focused()`
+/// （`is_active && is_focused`）因此几乎恒为 false。拿它做门禁会把每一次右键都
+/// 判成"来源窗口已失焦"，菜单一次也不会显示 —— 表现为整个应用的右键全部失效。
+fn source_usable(window: &WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false)
+}
 
 /// 窗口四周留给阴影与描边的逻辑像素；阴影画不出窗口，所以必须留出这一圈。
 const WINDOW_PADDING: f64 = 16.0;
@@ -99,7 +104,6 @@ struct Session {
     source: String,
     payload: MenuShowPayload,
     actions: HashSet<String>,
-    shown_at: Instant,
     /// 打开时那一次原生材质的结果；layout 不再重复应用（每次重设窗口效果会闪）。
     material: String,
     visible: bool,
@@ -118,6 +122,48 @@ fn normalize_theme(theme: &str) -> String {
 
 fn lock_session() -> Result<std::sync::MutexGuard<'static, Option<Session>>, String> {
     SESSION.lock().map_err(|_| "右键菜单状态已损坏".to_string())
+}
+
+/// Windows 的普通 show() 在复用窗口时也可能激活它，必须显式使用
+/// SW_SHOWNOACTIVATE。显示/隐藏成对走同一路径，避免 tao 的可见性缓存干扰。
+fn set_menu_visible(window: &WebviewWindow, request: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        #[link(name = "user32")]
+        extern "system" {
+            fn ShowWindow(hwnd: *mut c_void, command: i32) -> i32;
+        }
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as usize;
+        window
+            .run_on_main_thread(move || {
+                let show = request.is_some();
+                if let Some(id) = request {
+                    let current = lock_session().ok().is_some_and(|guard| {
+                        guard
+                            .as_ref()
+                            .is_some_and(|session| session.request_id == id && session.visible)
+                    });
+                    if !current {
+                        return;
+                    }
+                }
+                // HWND 属于本应用的复用菜单窗口；仅在其 UI 线程修改可见性。
+                unsafe {
+                    ShowWindow(hwnd as *mut c_void, if show { 4 } else { 0 });
+                }
+            })
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if request.is_some() {
+            window.show()
+        } else {
+            window.hide()
+        }
+        .map_err(|error| error.to_string())
+    }
 }
 
 fn collect_actions(items: &serde_json::Value, actions: &mut HashSet<String>) -> Result<(), String> {
@@ -164,6 +210,7 @@ fn ensure_window(app: &tauri::AppHandle, theme: &str) -> Result<WebviewWindow, S
             .minimizable(false)
             .skip_taskbar(true)
             .focused(false)
+            .focusable(false)
             .visible(false)
             .parent(&main)
             .map_err(|error| format!("无法把菜单窗口挂到主窗口：{error}"))?
@@ -174,56 +221,21 @@ fn ensure_window(app: &tauri::AppHandle, theme: &str) -> Result<WebviewWindow, S
     // gutters between submenus. Keep this window transparent; panels own tint.
     let _ = crate::window_material::apply(&window, theme, false);
 
-    let handle = app.clone();
+    // 这里刻意不监听 `Focused(false)` 来收起菜单：WebView2 的子窗口拿到键盘
+    // 焦点时，顶层窗口同样会收到 WM_KILLFOCUS，"失焦"和"内部焦点交接"无法区分，
+    // 监听它只会在菜单刚显示时把它关掉。用户点到别处的收起由菜单页面自己的
+    // DOM blur 触发（见 `desktop-menu/menu-window.tsx`），那条路径看的是真正的
+    // 页面焦点，不会被子窗口误判。
+    let app_handle = app.clone();
     window.on_window_event(move |event| match event {
-        tauri::WindowEvent::Focused(false) => dismiss_on_blur(&handle),
         tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
-            dismiss(&handle, "close");
+            dismiss(&app_handle, "close");
         }
         _ => {}
     });
     eprintln!("[desktop-menu] menu window created");
     Ok(window)
-}
-
-fn dismiss_on_blur(app: &tauri::AppHandle) {
-    let check = lock_session().ok().and_then(|guard| {
-        guard.as_ref().and_then(|session| {
-            session.visible.then(|| {
-                (
-                    session.request_id.clone(),
-                    FOCUS_GRACE.saturating_sub(session.shown_at.elapsed()),
-                )
-            })
-        })
-    });
-    let Some((request_id, wait)) = check else {
-        return;
-    };
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        // Do not discard an early blur: re-check after the normal focus handoff.
-        if !wait.is_zero() {
-            tokio::time::sleep(wait).await;
-        }
-        let current = lock_session()
-            .ok()
-            .map(|guard| {
-                guard
-                    .as_ref()
-                    .is_some_and(|session| session.request_id == request_id && session.visible)
-            })
-            .unwrap_or(false);
-        if !current {
-            return;
-        }
-        if let Some(menu) = handle.get_webview_window(MENU_LABEL) {
-            if !menu.is_focused().unwrap_or(false) {
-                dismiss(&handle, "blur");
-            }
-        }
-    });
 }
 
 /// 关闭菜单并清掉会话。`blur` 意味着用户已经点到别处，此时不能抢焦点。
@@ -232,12 +244,9 @@ pub fn dismiss(app: &tauri::AppHandle, reason: &str) {
     let Some(session) = session else {
         return;
     };
-    let restore_focus = reason == "escape"
-        && app
-            .get_webview_window(MENU_LABEL)
-            .is_some_and(|window| window.is_focused().unwrap_or(false));
+    // 菜单不取得焦点，来源窗口始终保有键盘；关闭时也不用强制激活任何窗口。
     if let Some(window) = app.get_webview_window(MENU_LABEL) {
-        let _ = window.hide();
+        let _ = set_menu_visible(&window, None);
     }
     let _ = app.emit_to(
         MENU_LABEL,
@@ -249,11 +258,6 @@ pub fn dismiss(app: &tauri::AppHandle, reason: &str) {
         "desktop-menu:closed",
         serde_json::json!({ "requestId": session.request_id, "reason": reason }),
     );
-    if restore_focus {
-        if let Some(source) = app.get_webview_window(&session.source) {
-            let _ = source.set_focus();
-        }
-    }
 }
 
 /// 来源窗口关闭 / 销毁时收起菜单，避免留下一个没有主人的浮窗。
@@ -265,12 +269,8 @@ pub fn on_source_event(app: &tauri::AppHandle, label: &str, event: &tauri::Windo
     if !owns_menu {
         return;
     }
-    if matches!(
-        event,
-        tauri::WindowEvent::Focused(false) | tauri::WindowEvent::Focused(true)
-    ) {
-        dismiss_on_blur(app);
-    }
+    // 不在这里处理 `Focused`：来源窗口的 WebView 子窗口拿到焦点时同样会触发它，
+    // 用它收菜单等于每次右键都把菜单立刻关掉（见 `source_usable` 的说明）。
     if matches!(event, tauri::WindowEvent::Resized(_)) {
         if app
             .get_webview_window(label)
@@ -416,7 +416,6 @@ pub async fn desktop_menu_show(
             source: window.label().to_string(),
             payload: payload.clone(),
             actions,
-            shown_at: Instant::now(),
             material: "solid".into(),
             visible: false,
             last_geometry: None,
@@ -541,9 +540,9 @@ pub async fn desktop_menu_layout(
         session.last_geometry = Some(geometry);
         (first, changed)
     };
-    if first_show && !source.is_focused().unwrap_or(false) && !menu.is_focused().unwrap_or(false) {
-        dismiss(&app, "blur");
-        return Err("来源窗口已失焦".into());
+    if first_show && !source_usable(&source) {
+        dismiss(&app, "source");
+        return Err("来源窗口已不可用".into());
     }
     if geometry_changed {
         menu.set_size(PhysicalSize::new(plan.window_size.0, plan.window_size.1))
@@ -582,9 +581,9 @@ pub fn desktop_menu_present(
     let source = app
         .get_webview_window(&source_label)
         .ok_or("来源窗口已关闭")?;
-    if !source.is_focused().unwrap_or(false) && !window.is_focused().unwrap_or(false) {
-        dismiss(&app, "blur");
-        return Err("来源窗口已失焦".into());
+    if !source_usable(&source) {
+        dismiss(&app, "source");
+        return Err("来源窗口已不可用".into());
     }
     {
         let mut guard = lock_session()?;
@@ -593,9 +592,8 @@ pub fn desktop_menu_present(
             return Err("菜单已过期".into());
         }
         session.visible = true;
-        session.shown_at = Instant::now();
     }
-    if let Err(error) = window.show().and_then(|_| window.set_focus()) {
+    if let Err(error) = set_menu_visible(&window, Some(request_id)) {
         dismiss(&app, "layout-error");
         return Err(error.to_string());
     }
@@ -634,10 +632,7 @@ pub fn desktop_menu_select(
         serde_json::json!({ "requestId": session.request_id, "actionId": action_id }),
     );
     if let Some(window) = app.get_webview_window(MENU_LABEL) {
-        let _ = window.hide();
-    }
-    if let Some(source) = app.get_webview_window(&session.source) {
-        let _ = source.set_focus();
+        let _ = set_menu_visible(&window, None);
     }
     let _ = app.emit_to(
         session.source.as_str(),
@@ -664,6 +659,33 @@ pub fn desktop_menu_close(
     }
     dismiss(&app, &reason);
     Ok(())
+}
+
+#[tauri::command]
+pub fn desktop_menu_key(
+    app: tauri::AppHandle,
+    window: WebviewWindow,
+    request_id: String,
+    key: String,
+) -> Result<(), String> {
+    if !matches!(
+        key.as_str(),
+        "ArrowDown" | "ArrowUp" | "ArrowLeft" | "ArrowRight" | "Home" | "End" | "Enter" | "Escape"
+    ) {
+        return Err("不支持的菜单按键".into());
+    }
+    let allowed = lock_session()?.as_ref().is_some_and(|session| {
+        session.request_id == request_id && session.source == window.label()
+    });
+    if !allowed {
+        return Ok(());
+    }
+    app.emit_to(
+        MENU_LABEL,
+        "desktop-menu:key",
+        serde_json::json!({"requestId": request_id, "key": key}),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

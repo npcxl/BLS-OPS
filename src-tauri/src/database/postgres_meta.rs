@@ -108,7 +108,8 @@ pub async fn databases(
         .ok_or_else(|| DbErrorInfo::new("config", "该连接不是 PostgreSQL"))?;
     let adapter = profile.adapter()?;
     let catalog = CatalogQueries::of(&adapter)?;
-    let (columns, rows) = run(conn, &adapter, catalog.databases(), &[], 1_000).await?;
+    // PG 的"库"这一层是 schema：连接已绑定 database，跨库不可查。
+    let (columns, rows) = run(conn, &adapter, catalog.schemas(), &[], 1_000).await?;
     let databases: Vec<DbDatabase> = rows
         .iter()
         .map(|values| {
@@ -200,8 +201,14 @@ pub async fn table_detail(
         16_384,
     )
     .await?;
-    let (index_columns, index_rows) =
-        run(conn, &adapter, catalog.indexes(), &[database, table], 16_384).await?;
+    let (index_columns, index_rows) = run(
+        conn,
+        &adapter,
+        catalog.indexes(),
+        &[database, table],
+        16_384,
+    )
+    .await?;
 
     // 索引按名字聚合：一个索引多行（多列）。
     let mut indexes: Vec<DbIndex> = Vec::new();
@@ -312,9 +319,7 @@ pub async fn table_detail(
         kind,
         engine: info.text("engine"),
         collation: info.text("collation"),
-        estimated_rows: info
-            .i64("estimated_rows")
-            .map(|value| value.max(0) as u64),
+        estimated_rows: info.i64("estimated_rows").map(|value| value.max(0) as u64),
         comment: info.text_or("comment", ""),
         // PG 没有单语句的"查看表定义"；不编一段 DDL 冒充。
         create_sql: None,
@@ -348,13 +353,8 @@ pub async fn table_identity(
     let row = rows
         .first()
         .map(|values| PgRow::new(&columns, values))
-        .ok_or_else(|| {
-            DbErrorInfo::new("database", format!("表不存在：{database}.{table}"))
-        })?;
-    Ok((
-        row.text_or("table_type", "BASE TABLE"),
-        row.text("engine"),
-    ))
+        .ok_or_else(|| DbErrorInfo::new("database", format!("表不存在：{database}.{table}")))?;
+    Ok((row.text_or("table_type", "BASE TABLE"), row.text("engine")))
 }
 
 pub async fn collations(profile: &ProfileRuntime) -> Result<Vec<String>, DbErrorInfo> {

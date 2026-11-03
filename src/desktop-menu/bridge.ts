@@ -103,6 +103,20 @@ function ensureBridge(): Promise<UnlistenFn[]> {
   }, true);
   document.addEventListener("scroll", cancelDesktopMenu, true);
   window.addEventListener("beforeunload", cancelDesktopMenu);
+  // 菜单窗口不激活：键盘仍留在来源 WebView，菜单打开期间阻止穿透到编辑器。
+  window.addEventListener("keydown", event => {
+    const current = pending;
+    if (!current) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Escape"].includes(event.key)) {
+      void invoke("desktop_menu_key", { requestId: current.requestId, key: event.key }).catch(() => undefined);
+    } else if (event.key === "Tab") {
+      cancelDesktopMenu();
+    }
+  }, true);
+  // 真正离开来源页面（点击桌面/其他应用、Alt+Tab）时收起，不再依赖菜单 blur。
+  window.addEventListener("blur", cancelDesktopMenu);
   bridgeReady = Promise.all([
     listen<{ requestId: string; actionId: string }>("desktop-menu:select", (event) => {
       const current = pending;

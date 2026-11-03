@@ -244,6 +244,7 @@ impl SessionEntry {
     pub async fn info(&self) -> DbSessionInfo {
         let inner = self.inner.lock().await;
         DbSessionInfo {
+            state: inner.state.clone(),
             session_id: self.session_id.clone(),
             profile_id: self.profile_id.clone(),
             generation: self.generation,
@@ -261,6 +262,29 @@ impl SessionEntry {
 
     pub async fn state(&self) -> String {
         self.inner.lock().await.state.clone()
+    }
+
+    /// 只探测空闲 MySQL 会话，不重连、不触碰正在执行的语句。
+    /// 保留 lost 会话的身份和未知事务状态，直到用户明确重连。
+    pub async fn refresh_info(&self) -> DbSessionInfo {
+        use mysql_async::prelude::Queryable;
+        let mut inner = self.inner.lock().await;
+        if inner.state == SESSION_READY && self.kind == SessionKind::MySql {
+            let alive = match inner.conn.as_mut() {
+                Some(SessionConn::MySql(conn)) => matches!(
+                    tokio::time::timeout(std::time::Duration::from_secs(3), conn.ping()).await,
+                    Ok(Ok(()))
+                ),
+                _ => false,
+            };
+            if !alive {
+                inner.conn = None;
+                inner.state = SESSION_LOST.to_string();
+                inner.transaction = TransactionState::Unknown;
+            }
+        }
+        drop(inner);
+        self.info().await
     }
 
     pub async fn set_current_database(&self, database: Option<String>) {

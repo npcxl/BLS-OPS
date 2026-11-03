@@ -144,14 +144,36 @@ async fn setup_schema(endpoint_opts: mysql_async::Opts) -> bool {
     .await
     .expect("insert types");
 
+    // 20 万行用「数字笛卡尔积」生成，而不是 MySQL 8 的
+    // `cte_max_recursion_depth` + 递归 CTE：那个会话变量 MariaDB 没有，
+    // 夹具会在这里把 MariaDB 一起挡在门外（测的就不再是产品差异了）。
     conn.query_drop(
         r#"
         DROP TABLE IF EXISTS big_table;
         CREATE TABLE big_table (id BIGINT PRIMARY KEY, v INT) ENGINE=InnoDB;
-        SET SESSION cte_max_recursion_depth = 300000;
         INSERT INTO big_table (id, v)
-        WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 200000)
-        SELECT n, n MOD 97 FROM seq;
+        SELECT n, n MOD 97 FROM (
+            SELECT a.d + b.d * 10 + c.d * 100 + d.d * 1000 + e.d * 10000 + f.d * 100000 + 1 AS n
+            FROM (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) a
+            CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) b
+            CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) c
+            CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) d
+            CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) e
+            CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3
+                  UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6
+                  UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) f
+        ) seq
+        WHERE seq.n <= 200000;
         "#,
     )
     .await
@@ -194,26 +216,33 @@ async fn runtime_for(conn: &rusqlite::Connection) -> (Arc<ProfileRuntime>, Arc<S
 
 async fn drain(registry: &query::QueryRegistry, query_id: &str) -> Vec<DbBatch> {
     let mut batches = Vec::new();
+    // 终态可能**先于**最后一条 `Finished` 批次被观察到（`next()` 等批次超时后
+    // 只回状态）。因此"没有批次 + 终态"不能立刻 break，否则会漏掉 `Finished`，
+    // 调用方拿到的终态是空的——这个竞态在 MariaDB 上必现概率明显更高。
+    let mut idle_after_terminal = 0usize;
     for _ in 0..10_000 {
         let response = registry.next(query_id).await.expect("next batch");
-        let mut finished = false;
         match response.batch {
             Some(batch) => {
-                finished = matches!(batch, DbBatch::Finished { .. });
+                idle_after_terminal = 0;
+                let finished = matches!(batch, DbBatch::Finished { .. });
                 batches.push(batch);
+                if finished {
+                    break;
+                }
             }
-            // 状态可能先于最后一批被观察到；无批次 + 终态才表示队列已空。
             None if matches!(
                 response.state.as_str(),
                 "completed" | "cancelled" | "failed" | "outcome_unknown"
             ) =>
             {
-                break;
+                idle_after_terminal += 1;
+                if idle_after_terminal >= 5 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
             None => {}
-        }
-        if finished {
-            break;
         }
     }
     batches
@@ -300,7 +329,31 @@ async fn mysql_types_multi_result_and_cancel() {
     assert_eq!(row[14], DbValue::Null);
     assert!(matches!(&row[13], DbValue::Text { value, .. } if value.is_empty()));
     // JSON / BLOB / BIT 有明确类型
-    assert!(matches!(row[7], DbValue::Json { .. }));
+    //
+    // JSON 按**列声明**判断，不是按产品名猜：MySQL 8 有原生 JSON 类型
+    // （映射成 `DbValue::Json`）；MariaDB 的 JSON 只是 `LONGTEXT` 加
+    // `json_valid` 约束、列 charset 仍是 binary，驱动只能看到 `Binary`/`Text`。
+    // 两种都是产品的真实行为，不能拿一边的标准否定另一边。
+    let json_column = first_columns[7].type_name.to_ascii_lowercase();
+    if json_column.contains("json") {
+        assert!(
+            matches!(row[7], DbValue::Json { .. }),
+            "JSON 列应返回 Json：{:?}",
+            row[7]
+        );
+    } else {
+        assert!(
+            matches!(
+                &row[7],
+                DbValue::Binary {
+                    truncated: false,
+                    ..
+                }
+            ) || matches!(&row[7], DbValue::Text { value, .. } if value.contains("\"a\"")),
+            "MariaDB 的 JSON 列应以文本/二进制原样返回：{:?}",
+            row[7]
+        );
+    }
     assert!(matches!(row[8], DbValue::Binary { .. }));
     assert!(matches!(row[12], DbValue::Bit { .. }));
     // 长文本在结果里被截断，但真实字节数保留
@@ -385,7 +438,9 @@ async fn mysql_types_multi_result_and_cancel() {
         .unwrap_or_default();
     assert!(
         final_state == "cancelled" || final_state == "outcome_unknown",
-        "取消必须有明确终态，收到 {final_state}"
+        "取消必须有明确终态，收到 {final_state:?}（批次 {} 条，会话状态 {}）",
+        slow_batches.len(),
+        session.state().await
     );
     let _ = queries.release(&slow.query_id).await;
     assert_eq!(
@@ -446,15 +501,20 @@ async fn mysql_paging_mutation_and_export() {
         .await
         .expect("setup conn");
         setup
-            .query_drop("SET SESSION cte_max_recursion_depth = 1000")
-            .await
-            .expect("cte");
-        setup
             .query_drop(
                 r#"
                 INSERT INTO ops_test.composite_pk (tenant, seq, label)
-                WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM s WHERE n < 100)
-                SELECT (n-1) DIV 10, (n-1) MOD 10, CONCAT('row-', n) FROM s
+                SELECT (n-1) DIV 10, (n-1) MOD 10, CONCAT('row-', n) FROM (
+                    SELECT a.d + b.d * 10 + 1 AS n
+                    FROM (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) a
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) b
+                ) seq
                 "#,
             )
             .await
@@ -786,19 +846,40 @@ async fn mysql_million_rows_keyset_stays_bounded() {
         let mut setup = driver::connect_once(opts, Duration::from_secs(10))
             .await
             .expect("setup conn");
-        setup
-            .query_drop("SET SESSION cte_max_recursion_depth = 1000000")
-            .await
-            .expect("cte");
         let insert_started = std::time::Instant::now();
         setup
             .query_drop(
                 r#"
                 INSERT INTO ops_test.big_table (id, v)
-                WITH RECURSIVE s(n) AS (
-                    SELECT 200001 UNION ALL SELECT n + 1 FROM s WHERE n < 1000000
-                )
-                SELECT n, n MOD 97 FROM s
+                SELECT n, n MOD 97 FROM (
+                    SELECT a.d + b.d * 10 + c.d * 100 + d.d * 1000 + e.d * 10000
+                           + f.d * 100000 + 1 AS n
+                    FROM (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) a
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) b
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) c
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) d
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) e
+                    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2
+                          UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5
+                          UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8
+                          UNION ALL SELECT 9) f
+                ) seq
+                WHERE seq.n > 200000
                 "#,
             )
             .await
@@ -1349,6 +1430,91 @@ async fn mysql_manager_session_creation_is_serialized() {
         "close_session must remove the raced session"
     );
     manager.close_profile(&base.id).await;
+    let _ = std::fs::remove_file(path);
+}
+
+/// 不改业务表：仅关闭本测试自己的连接，验证注册表不再伪报在线。
+#[tokio::test]
+async fn mysql_connection_health_and_explicit_reconnect() {
+    let (path, db) = temp_app_db();
+    let mut base = profile();
+    base.id = format!("health-{}", uuid::Uuid::new_v4());
+    let make_plan =
+        || driver::plan_from_profile(&db, &base, Some(&password())).expect("health plan");
+    let manager = DatabaseManager::default();
+    let info = match manager.open_session(make_plan(), "health-session").await {
+        Ok(info) => info,
+        Err(error) => {
+            drop(db);
+            let _ = std::fs::remove_file(path);
+            if std::env::var("BLS_TEST_MYSQL_REQUIRED").as_deref() == Ok("1") {
+                panic!("required connection health test cannot connect: {error}");
+            }
+            eprintln!("skip connection health: {error}");
+            return;
+        }
+    };
+    assert!(manager.profile_status(&base.id).await.connected);
+    let runtime = manager.runtime(make_plan()).await.expect("runtime");
+    let mut killer = driver::connect_once(
+        driver::build_opts(&runtime.endpoint, false).expect("opts"),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("test control connection");
+    killer
+        .query_drop(format!(
+            "KILL CONNECTION {}",
+            info.connection.numeric.expect("MySQL id")
+        ))
+        .await
+        .expect("close only this test's session");
+    let lost = manager
+        .session("health-session")
+        .await
+        .expect("session")
+        .refresh_info()
+        .await;
+    assert_eq!(lost.state, "lost");
+    assert_eq!(
+        lost.transaction,
+        ops_workbench_lib::database::protocol::TransactionState::Unknown
+    );
+    // 池还活着不代表被 KILL 的 SQL 会话复活。
+    assert!(manager.profile_status(&base.id).await.connected);
+    assert_eq!(
+        manager
+            .session("health-session")
+            .await
+            .unwrap()
+            .info()
+            .await
+            .state,
+        "lost"
+    );
+    runtime.close().await;
+    assert!(
+        !manager.profile_status(&base.id).await.connected,
+        "a registered but closed runtime must not be reported connected"
+    );
+    manager.close_profile(&base.id).await;
+    let fresh = manager
+        .open_session(make_plan(), "health-session-new")
+        .await
+        .expect("explicit reconnect");
+    assert_eq!(fresh.state, "ready");
+    assert_ne!(fresh.generation, info.generation);
+    let session = manager.session("health-session-new").await.unwrap();
+    let mut conn = session.acquire_conn().await.expect("new connection");
+    let one: Option<u8> = conn
+        .query_first("SELECT 1")
+        .await
+        .expect("real query after reconnect");
+    assert_eq!(one, Some(1));
+    session.release_conn(conn, true).await;
+    manager.close_profile(&base.id).await;
+    killer.disconnect().await.ok();
+    drop(db);
     let _ = std::fs::remove_file(path);
 }
 

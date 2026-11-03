@@ -229,7 +229,10 @@ export function capabilityAllows(
   capability: keyof EngineDescriptor["capabilities"],
 ): boolean {
   if (!descriptor) return false;
-  return descriptor.capabilities[capability].state !== "unsupported";
+  // 老目录（后端还没下发这项能力）按"不允许"处理：宁可少给一个入口，
+  // 也不要发出一条必然失败的命令。
+  const value = descriptor.capabilities[capability];
+  return !!value && value.state !== "unsupported";
 }
 
 export function capabilityReason(

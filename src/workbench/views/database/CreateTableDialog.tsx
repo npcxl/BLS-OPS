@@ -16,6 +16,7 @@ import {
   findColumnTypePreset,
   MYSQL_COLUMN_TYPE_OPTIONS,
 } from "./column-types";
+import { engineMeta } from "./db-engines";
 
 export interface CreateTableTarget {
   profileId: string;
@@ -56,6 +57,12 @@ export function CreateTableDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshTables = useDatabaseStore((state) => state.refreshTables);
+  const profileEngine = useDatabaseStore(
+    (state) =>
+      state.profiles.find((entry) => entry.id === target?.profileId)?.engine ?? "",
+  );
+  // 表选项（ENGINE/CHARSET）只有 MySQL 协议家族有；能力面以外的东西别硬塞给别的引擎。
+  const mysqlTableOptions = engineMeta(profileEngine).descriptor?.family === "mysql";
 
   useEffect(() => {
     if (!target) return;
@@ -84,8 +91,8 @@ export function CreateTableDialog({
       primary_key: columns
         .filter((column) => column.primary)
         .map((column) => column.name.trim()),
-      engine: engine.trim() || null,
-      charset: charset.trim() || null,
+      engine: mysqlTableOptions ? engine.trim() || null : null,
+      charset: mysqlTableOptions ? charset.trim() || null : null,
       collation: null,
     };
   }, [charset, columns, engine, table, target]);
@@ -184,12 +191,18 @@ export function CreateTableDialog({
               placeholder="orders"
             />
           </Field>
-          <Field label={t("引擎")}>
-            <input className={fieldClass} value={engine} onChange={(event) => setEngine(event.target.value)} />
-          </Field>
-          <Field label={t("字符集")}>
-            <input className={fieldClass} value={charset} onChange={(event) => setCharset(event.target.value)} />
-          </Field>
+          {/* 引擎/字符集是 MySQL 的表选项：PostgreSQL / SQLite 没有这两个概念，
+              填了也只会被后端忽略（并回一条 warning），不如直接不显示。 */}
+          {mysqlTableOptions && (
+            <>
+              <Field label={t("引擎")}>
+                <input className={fieldClass} value={engine} onChange={(event) => setEngine(event.target.value)} />
+              </Field>
+              <Field label={t("字符集")}>
+                <input className={fieldClass} value={charset} onChange={(event) => setCharset(event.target.value)} />
+              </Field>
+            </>
+          )}
         </div>
 
         <div className="overflow-hidden rounded-[6px] border border-line">

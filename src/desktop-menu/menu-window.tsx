@@ -129,6 +129,10 @@ export function DesktopMenuRoot() {
         layoutSequence.current++;
         setPayload(null); setLayout(null); setSubmenu(null);
       }),
+      listen<{requestId: string; key: string}>("desktop-menu:key", event => {
+        if (!alive || requestRef.current !== event.payload.requestId) return;
+        window.dispatchEvent(new KeyboardEvent("keydown", {key: event.payload.key, cancelable: true}));
+      }),
     ]);
     void unlisten.then(() => invoke<MenuShowPayload | null>("desktop_menu_pending"))
       .then(next => { if (!sawShow) apply(next); }).catch(() => undefined);
@@ -220,6 +224,8 @@ export function DesktopMenuRoot() {
     });
     return () => cancelAnimationFrame(frame);
   }, [payload, layout, closeMenu]);
+
+  // 菜单不取得焦点；来源窗口负责外部点击/失焦关闭，并转发菜单导航按键。
 
   // 应用 max-height 后内容会变矮：再测一次，让窗口贴合最终高度。
   useEffect(() => {
@@ -371,6 +377,7 @@ export function DesktopMenuRoot() {
   return (
     <div
       className="desktop-menu__stage"
+      onMouseDownCapture={(event) => event.preventDefault()}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) closeMenu("outside");
       }}

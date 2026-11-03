@@ -15,7 +15,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageNotice, PageStatusBar, PageWorkspace } from "@/workbench/page-layout";
-import { databaseApi } from "@/api/ops-api";
 import type { DbSessionInfo } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
@@ -59,14 +58,7 @@ function QueryStatusSync({
     ) {
       return;
     }
-    void databaseApi
-      .sessionInfo(sessionId)
-      .then((info) => {
-        useDatabaseStore.setState((state) => ({
-          sessions: { ...state.sessions, [profileId]: info },
-        }));
-      })
-      .catch(() => undefined);
+    void useDatabaseStore.getState().refreshSession(profileId);
   }, [profileId, runState, sessionId]);
 
   return null;

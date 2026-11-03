@@ -8,7 +8,8 @@
  * 重启 / 停止 / 看配置。没有的事实（systemd 的重启、k8s 的容器操作）不给入口。
  */
 import { useState } from "react";
-import { CircleDashed } from "@/components/icons";
+import { CircleDashed, MoreHorizontal } from "@/components/icons";
+import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -65,13 +66,16 @@ export function RuntimeInstanceCard({
   return (
     <article
       className={cn(
-        "overflow-hidden rounded-[12px] border border-line bg-surface-1 px-4 py-3 shadow-[0_1px_2px_rgb(15_23_42/0.04)]",
+        "project-card project-runtime-card",
         stopped && "opacity-70",
       )}
       onContextMenu={menu.onContextMenu(() => menuItems)}
     >
+      <div className="project-runtime-identity">
+        <span className="project-card-symbol" aria-hidden="true"><meta.icon size={20} strokeWidth={1.5} /></span>
+        <div className="project-runtime-heading">
       <div className="flex flex-wrap items-center gap-1.5">
-        <strong className="text-13 text-fg">{instance.name}</strong>
+        <strong className="project-card-name text-fg">{instance.name}</strong>
         <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
           {meta.label}
         </span>
@@ -104,6 +108,13 @@ export function RuntimeInstanceCard({
             {t("Source unknown")}
           </span>
         )}
+      </div>
+        </div>
+        <Button variant="ghost" size="xs" className="project-more" aria-label={t("Service actions")}
+          title={t("Service actions")} onClick={event => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            menu.openAt(rect.right, rect.bottom + 4, menuItems);
+          }}><MoreHorizontal size={16} /></Button>
       </div>
 
       <div className="mt-1.5">

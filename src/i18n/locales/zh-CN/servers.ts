@@ -1,5 +1,6 @@
 /** zh-CN · 服务器列表（分组/收藏/表单/凭据/主机指纹） —— 由对应模块的 i18n 代理维护。 */
 export default {
+  "Asset details": "资产信息",
   // -- 模块标题（module-server-sidebar 的 MODULE_TITLE 存 key，渲染处 t()） --
   "Server list": "服务器列表",
   Servers: "服务器",

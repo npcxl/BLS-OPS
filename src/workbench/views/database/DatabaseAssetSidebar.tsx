@@ -42,7 +42,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { MacSearchField } from "@/components/ui/mac-controls";
 import { pushToast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import { redisDbIndexes, redisDefaultDb } from "./redis/redis-shared";
 import {

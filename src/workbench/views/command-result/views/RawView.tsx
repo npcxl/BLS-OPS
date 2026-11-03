@@ -1,4 +1,4 @@
-import { Check, Copy } from "@/components/icons";
+import { Copy } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 
@@ -23,8 +23,8 @@ export function RawView({ stdout, stderr }: { stdout: string; stderr?: string })
         className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
         title={t("Copy raw output")}
       >
-        {status === "ok" ? <Check size={11} /> : <Copy size={11} />}
-        {status === "ok" ? t("Copied") : t("Copy")}
+        <Copy size={11} />
+        {t("Copy")}
       </button>
       <pre className="whitespace-pre-wrap break-words px-3 py-2.5 font-mono text-11 leading-[1.55] text-fg-muted">
         {stdout || t("(no output)")}

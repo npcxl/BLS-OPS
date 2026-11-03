@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Database } from "@/components/icons";
+import { Database, MoreHorizontal } from "@/components/icons";
+import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -44,9 +45,7 @@ export function TabInfrastructure({
   const actions = useCandidateActions(serverId, sessionId);
   const [stopTarget, setStopTarget] = useState<string | null>(null);
 
-  const openMenuFor = (instance: DeploymentInstance) =>
-    menu.onContextMenu(() =>
-      buildInstanceMenuItems({
+  const itemsFor = (instance: DeploymentInstance) => buildInstanceMenuItems({
         instance,
         busy: actions.busy,
         t,
@@ -57,8 +56,8 @@ export function TabInfrastructure({
         onStopContainer: (container) => setStopTarget(container),
         onInspectContainer: (container) => void actions.inspectContainer(container),
         onOpenPath,
-      }),
-    );
+      });
+  const openMenuFor = (instance: DeploymentInstance) => menu.onContextMenu(() => itemsFor(instance));
 
   if (instances.length === 0) {
     return (
@@ -73,13 +72,13 @@ export function TabInfrastructure({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="project-card-list">
       {groups.map((group) => (
         <section
           key={group.category}
-          className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]"
+          className="project-card project-infrastructure"
         >
-          <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-2.5">
+          <div className="project-section-heading flex items-center gap-2">
             <span className="rounded-full bg-accent/12 px-2 py-0.5 text-10 font-medium text-accent">
               {t(group.label)}
             </span>
@@ -103,10 +102,10 @@ export function TabInfrastructure({
               return (
                 <div
                   key={instance.id}
-                  className="flex flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-surface-hover/50"
+                  className="project-infrastructure-row flex flex-col gap-2 transition-colors hover:bg-surface-hover/50"
                   onContextMenu={openMenuFor(instance)}
                 >
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 pr-8">
                     <Icon size={14} className="shrink-0 text-accent" />
                     <strong className="text-12 text-fg">{product}</strong>
                     <span className="rounded bg-surface-2 px-1.5 py-0.5 text-10 text-fg-muted">
@@ -133,6 +132,12 @@ export function TabInfrastructure({
                       <span className="text-10 text-fg-subtle">{instance.status}</span>
                     )}
                   </div>
+                  <Button variant="ghost" size="xs" className="project-more project-infrastructure-more"
+                    aria-label={t("Service actions")} title={t("Service actions")}
+                    onClick={event => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      menu.openAt(rect.right, rect.bottom + 4, itemsFor(instance));
+                    }}><MoreHorizontal size={16} /></Button>
                   <div>
                     <PortChips ports={instance.ports} empty="No exposed ports" />
                   </div>

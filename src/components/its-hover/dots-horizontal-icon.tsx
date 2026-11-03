@@ -10,6 +10,7 @@ const DotsHorizontalIcon = forwardRef<AnimatedIconHandle, AnimatedIconProps>(
     const [scope, animate] = useAnimate();
 
     const start = useCallback(async () => {
+      if (!scope.current) return;
       animate(
         ".dot-left",
         {
@@ -49,6 +50,8 @@ const DotsHorizontalIcon = forwardRef<AnimatedIconHandle, AnimatedIconProps>(
     }, [animate]);
 
     const stop = useCallback(() => {
+      // Motion can deliver hover-end after a category switch unmounts the icon.
+      if (!scope.current) return;
       animate(
         ".dot-left, .dot-center, .dot-right",
         { x: 0, scale: 1 },

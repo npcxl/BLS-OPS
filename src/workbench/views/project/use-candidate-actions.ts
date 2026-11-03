@@ -10,7 +10,7 @@
  */
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { isInspectionMode } from "@/stores/inspection-store";
 import { opsApi, toErrorMessage, type ContainerConfig } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
@@ -84,17 +84,11 @@ export function useCandidateActions(serverId: string, sessionId: string) {
     [],
   );
 
-  const copyPath = useCallback(
-    async (path: string) => {
-      const ok = await copyText(path);
-      setNotice(
-        ok
-          ? { tone: "success", text: t("Path copied") }
-          : { tone: "danger", text: t("Copy failed") },
-      );
-    },
-    [t],
-  );
+  // 复制反馈统一走全局提示（与其它入口同一颗胶囊），不再在面板里写一行
+  // "路径已复制" —— 面板内的 notice 只留给真正的业务错误。
+  const copyPath = useCallback(async (path: string) => {
+    await copyTextWithFeedback(path);
+  }, []);
 
   /**
    * 在终端里跟踪到该目录：已有同服务器的终端就复用它（保留 shell 与文件

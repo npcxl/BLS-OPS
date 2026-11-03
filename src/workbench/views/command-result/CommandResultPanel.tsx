@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Check, Copy, CornerDownLeft, FileCode2, Table2, type IconComponent } from "@/components/icons";
+import { Copy, CornerDownLeft, FileCode2, Table2, type IconComponent } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { RISK_META, type CommandExecutionResult } from "@/api/ops-api";
 import { parseStructuredResult, RISK_LABEL_KEYS, VIEW_LABELS } from "./model";
@@ -43,7 +43,6 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
   const risk = result.risk
     ? { ...RISK_META[result.risk], labelKey: RISK_LABEL_KEYS[result.risk] }
     : UNKNOWN_RISK;
-  const [copied, setCopied] = useState<string | null>(null);
   const menu = useContextMenu();
 
   /** False when the output has no meaningful structured view to switch to. */
@@ -57,13 +56,8 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
   ];
   const headerOptions = viewOptions.filter((option) => option.visible);
 
-  const copy = async (id: string, text: string) => {
-    if (await copyText(text)) {
-      setCopied(id);
-      window.setTimeout(() => setCopied((current) => (current === id ? null : current)), 1200);
-    }
-  };
-
+  // 复制反馈统一走 `copyTextWithFeedback`：菜单里没有局部位置显示"已复制"，
+  // 就交给全局提示（同一颗胶囊），不再各写一份 `setCopied` + 定时器。
   const items: ContextMenuItem[] = [
     {
       id: "view-structured",
@@ -85,23 +79,22 @@ export function CommandResultPanel({ result }: { result: CommandExecutionResult 
     { id: "sep-copy", separator: true },
     {
       id: "copy-stdout",
-      label: copied === "stdout" ? t("Output copied") : t("Copy raw output"),
-      icon: copied === "stdout" ? Check : Copy,
-      onSelect: () => void copy("stdout", result.raw.stdout || ""),
+      label: t("Copy raw output"),
+      icon: Copy,
+      onSelect: () => void copyTextWithFeedback(result.raw.stdout || ""),
     },
     {
       id: "copy-command",
-      label: copied === "command" ? t("Command copied") : t("Copy executed command"),
-      icon: copied === "command" ? Check : CornerDownLeft,
-      onSelect: () => void copy("command", result.raw.command_executed),
+      label: t("Copy executed command"),
+      icon: CornerDownLeft,
+      onSelect: () => void copyTextWithFeedback(result.raw.command_executed),
     },
     {
       id: "copy-all",
-      label: copied === "all" ? t("Copied") : t("Copy full result"),
-      icon: copied === "all" ? Check : Copy,
+      label: t("Copy full result"),
+      icon: Copy,
       onSelect: () =>
-        void copy(
-          "all",
+        void copyTextWithFeedback(
           [
             t("Command: {{command}}", { command: result.raw.command_executed }),
             t("Duration: {{ms}} ms", { ms: result.raw.duration_ms }),

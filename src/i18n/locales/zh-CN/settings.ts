@@ -1,5 +1,14 @@
 /** zh-CN · 设置（外观/凭据/已知主机/语言）。 */
 export default {
+  "Select credential": "选择凭据",
+  "Search credentials": "搜索凭据",
+  "Search credentials by name or username…": "搜索凭据名称或用户名…",
+  "No matching credentials": "没有匹配的凭据",
+  "No saved credentials": "还没有保存的凭据",
+  "Enter now and save credential": "立即填写并保存凭据…",
+  "Save credential": "保存凭据",
+  "Save or cancel the new credential first": "请先保存或取消正在填写的凭据",
+  "Fill in the credential name, username and secret": "请填写凭据名称、用户名和密码或私钥",
   // -- 外观 --
   Appearance: "外观",
   Theme: "主题",

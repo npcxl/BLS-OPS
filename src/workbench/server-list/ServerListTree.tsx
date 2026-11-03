@@ -9,7 +9,8 @@ import { LoadingState } from "@/components/ui/loading";
 import { ErrorText } from "@/components/ui/modal";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
-import { emptyServer, useDomainStore } from "@/stores/domain-store";
+import { useDomainStore } from "@/stores/domain-store";
+import { openNewServerTab } from "./open-server-setup";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
 import { NewGroupInput } from "./NewGroupInput";
@@ -99,7 +100,7 @@ export function ServerListTree({
       id: "add-server",
       label: t("Add server"),
       icon: Plus,
-      onSelect: () => setEditing(emptyServer()),
+      onSelect: openNewServerTab,
     },
     { id: "add-group", label: t("New group"), icon: FolderPlus, onSelect: () => setCreatingGroup(true) },
     {
@@ -146,7 +147,7 @@ export function ServerListTree({
                 className="h-5 px-1"
                 aria-label={t("Add server")}
                 tip={t("Add server")}
-                onClick={() => setEditing(emptyServer())}
+                onClick={openNewServerTab}
               />
               <IconButton
                 icon={FolderPlus}

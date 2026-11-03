@@ -27,7 +27,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Params, Value};
 
 use super::adapter::{AdapterSet, ParamBinder, SqlDialect};
-use super::driver::map_error;
+use super::driver::{map_connect_error, map_error, profile_tls_enabled};
 use super::model::{
     BrowseFilter, BrowseRequest, BrowseResult, BrowseSort, DbColumn, DbErrorInfo, DbTableColumn,
     DbValue, ResolvedBudget,
@@ -621,7 +621,12 @@ pub async fn browse(
     .await
     {
         Ok(Ok(conn)) => conn,
-        Ok(Err(error)) => return Err(map_error(&error, "tcp")),
+        Ok(Err(error)) => {
+            return Err(map_connect_error(
+                &error,
+                profile_tls_enabled(&profile.endpoint.profile),
+            ))
+        }
         Err(_) => return Err(DbErrorInfo::new("tcp", "获取表数据连接超时").retryable(true)),
     };
 
@@ -822,7 +827,12 @@ pub async fn read_cell(
     .await
     {
         Ok(Ok(conn)) => conn,
-        Ok(Err(error)) => return Err(map_error(&error, "tcp")),
+        Ok(Err(error)) => {
+            return Err(map_connect_error(
+                &error,
+                profile_tls_enabled(&profile.endpoint.profile),
+            ))
+        }
         Err(_) => return Err(DbErrorInfo::new("tcp", "获取字段读取连接超时").retryable(true)),
     };
 

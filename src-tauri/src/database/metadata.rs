@@ -25,7 +25,7 @@ use mysql_async::{Conn, Params, Row, Value};
 use tokio::sync::Mutex;
 
 use super::adapter::{AdapterSet, CatalogQueries};
-use super::driver::map_error;
+use super::driver::{map_connect_error, map_error, profile_tls_enabled};
 use super::model::{
     DbDatabase, DbErrorInfo, DbIndex, DbIndexColumn, DbTable, DbTableColumn, DbTableDetail,
     MetadataCacheStatus,
@@ -38,7 +38,11 @@ const CACHE_TTL_MS: i64 = 60_000;
 async fn pooled(profile: &ProfileRuntime) -> Result<Conn, DbErrorInfo> {
     match tokio::time::timeout(METADATA_TIMEOUT, profile.interactive_pool()?.get_conn()).await {
         Ok(Ok(conn)) => Ok(conn),
-        Ok(Err(error)) => Err(map_error(&error, "tcp")),
+        // 池子按需建连：这里也可能是"握手被对端关闭"，用连接期映射给出排查方向。
+        Ok(Err(error)) => Err(map_connect_error(
+            &error,
+            profile_tls_enabled(&profile.endpoint.profile),
+        )),
         Err(_) => Err(DbErrorInfo::new("tcp", "获取元数据连接超时").retryable(true)),
     }
 }

@@ -9,6 +9,9 @@
  * - 通用词（Copy / Close / Retry / Search / Copied / Enabled / Running 等）复用 common。
  */
 export default {
+  "Saved servers": "已保存服务器",
+  "Connection method": "连接方式",
+  "Connection details": "连接信息",
   // —— TerminalView：右键菜单 / 工具栏 ——
   "Expanded": "已展开",
   "Copy": "复制",

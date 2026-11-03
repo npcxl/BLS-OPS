@@ -110,6 +110,72 @@ impl CapabilitySet {
     }
 }
 
+/// 逐项 DDL 能力。
+///
+/// **不能用一个 `schema_edit` 代表所有 DDL**：同一个引擎常常"能建表、不能改表"
+/// 或"能删表、不能清空"（SQLite 没有 `CREATE TABLE … LIKE`，PostgreSQL 没有
+/// 改表）。菜单按这里的每一项禁用并给出原因，后端在 `table_ops` 里按同一份
+/// 声明拒绝 —— 两边读同一份事实，界面不会给出一个点了必然失败的入口。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DdlCapabilities {
+    pub create_table: Capability,
+    pub rename_table: Capability,
+    /// 复制表结构 / 结构 + 数据。
+    pub copy_table: Capability,
+    pub truncate_table: Capability,
+    pub drop_table: Capability,
+    /// 加列 / 改列名 / 删列 / 索引增删。
+    pub alter_columns: Capability,
+    pub create_view: Capability,
+    pub drop_view: Capability,
+}
+
+impl DdlCapabilities {
+    /// 由 `schema_edit` / `view_edit` 推导：没有逐项差异的引擎不必重写一遍。
+    pub fn from_schema(schema: &Capability, view: &Capability) -> Self {
+        Self {
+            create_table: schema.clone(),
+            rename_table: schema.clone(),
+            copy_table: schema.clone(),
+            truncate_table: schema.clone(),
+            drop_table: schema.clone(),
+            alter_columns: schema.clone(),
+            create_view: view.clone(),
+            drop_view: view.clone(),
+        }
+    }
+
+    pub fn unimplemented(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        let cap = || Capability::unsupported(reason.clone());
+        Self {
+            create_table: cap(),
+            rename_table: cap(),
+            copy_table: cap(),
+            truncate_table: cap(),
+            drop_table: cap(),
+            alter_columns: cap(),
+            create_view: cap(),
+            drop_view: cap(),
+        }
+    }
+
+    /// 按操作查能力。**唯一**的映射点：界面与执行层都用它。
+    pub fn for_operation(&self, operation: &str) -> Option<&Capability> {
+        Some(match operation {
+            "create_table" => &self.create_table,
+            "rename_table" | "rename" => &self.rename_table,
+            "copy_table" | "copy_structure" | "copy_data" => &self.copy_table,
+            "truncate_table" | "truncate" => &self.truncate_table,
+            "drop_table" | "drop" => &self.drop_table,
+            "alter_columns" => &self.alter_columns,
+            "create_view" => &self.create_view,
+            "drop_view" => &self.drop_view,
+            _ => return None,
+        })
+    }
+}
+
 /// 已验证到哪一步。**没有真实环境就不许往上写。**
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -336,6 +402,8 @@ pub struct EngineDescriptor {
     pub requirements: EngineRequirements,
     pub options: &'static [OptionField],
     pub capabilities: CapabilitySet,
+    /// 逐项 DDL 能力：`capabilities.schema_edit` 只是"这一类操作"的总览。
+    pub ddl_operations: DdlCapabilities,
     pub dialect_rules: DialectRules,
     pub verified: Vec<VerifiedScope>,
     /// 给用户看的补充说明（限制、计划批次）。

@@ -665,7 +665,8 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
       />
 
       <PageWorkspace row>
-        <div className="relative min-w-0 flex-1">
+        {/* WorkItemHost 用 flex:1 分配内部高度，父层必须继续传递 flex 布局。 */}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           <WorkItemHost
             profileId={profileId}
             connectionName={profile.name}

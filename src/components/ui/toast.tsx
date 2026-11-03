@@ -17,7 +17,6 @@ import { useTranslation } from "react-i18next";
 import LiquidGlass from "liquid-glass-react";
 import type { AnimatedIconHandle } from "@/components/icons";
 import {
-  Check,
   CheckCircle2,
   ChevronDown,
   Copy,
@@ -31,9 +30,11 @@ import {
 // ref 拿不到 startAnimation）。
 import TriangleAlertIcon from "@/components/its-hover/triangle-alert-icon";
 import { Button } from "@/components/ui/button";
+import { COPY_NOTICE_MS } from "@/components/ui/copy-feedback";
+import { CopyNoticeSurface } from "@/components/ui/copy-notice-surface";
 import { OVERLAY_Z } from "@/components/ui/overlay";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { canRetry, formatErrorForCopy, stageLabel, toAppError } from "@/lib/app-error";
 
 export type ToastTone = "info" | "success" | "warning" | "error";
@@ -47,6 +48,7 @@ export interface ToastAction {
 }
 
 export interface ToastOptions {
+  variant?: "copy";
   /** 第一行的小标题，例如「订单库 · 连接失败」。 */
   title?: string;
   /** 小标签，例如错误阶段（auth / tcp / tls / ssh_tunnel）。 */
@@ -64,6 +66,7 @@ export interface ToastOptions {
 }
 
 interface ToastItem {
+  variant?: "copy";
   id: string;
   message: string;
   tone: ToastTone;
@@ -128,6 +131,7 @@ export function pushToast(
 ): void {
   const persist = options.persist ?? tone === "error";
   const next: ToastItem = {
+    variant: options.variant,
     id: crypto.randomUUID(),
     message,
     tone,
@@ -140,12 +144,21 @@ export function pushToast(
     actions: options.actions,
   };
 
+  // 复制提示的停留时长与面板内 `CopyNotice` 完全一致（COPY_NOTICE_MS），
+  // 否则同一个"已复制"在一处 1.5s、另一处 3s，看起来像两种东西。
+  const ttl =
+    options.variant === "copy"
+      ? COPY_NOTICE_MS
+      : tone === "error" || tone === "warning"
+        ? ERROR_TTL_MS
+        : NOTE_TTL_MS;
+
   const key = fingerprint(next);
   const duplicate = items.find((item) => fingerprint(item) === key);
   if (duplicate) {
     // 已存在：把它的计时器重置（用户刚又触发了一次，说明还需要看）。
     if (!persist) {
-      window.setTimeout(() => dismissToast(duplicate.id), tone === "error" ? ERROR_TTL_MS : NOTE_TTL_MS);
+      window.setTimeout(() => dismissToast(duplicate.id), ttl);
     }
     return;
   }
@@ -157,10 +170,7 @@ export function pushToast(
   items = [...alerts, ...notes];
   emit();
   if (!persist) {
-    window.setTimeout(
-      () => dismissToast(next.id),
-      tone === "error" || tone === "warning" ? ERROR_TTL_MS : NOTE_TTL_MS,
-    );
+    window.setTimeout(() => dismissToast(next.id), ttl);
   }
 }
 
@@ -215,8 +225,12 @@ export function ToastHost() {
 
   if (visible.length === 0) return null;
 
-  const alerts = visible.filter((item) => item.tone === "error" || item.tone === "warning");
-  const notes = visible.filter((item) => item.tone !== "error" && item.tone !== "warning");
+  const isAlert = (item: ToastItem) => item.tone === "error" || item.tone === "warning";
+  const alerts = visible.filter(isAlert);
+  // 复制提示单独一组：它用的是和面板内 `CopyNotice` **同一颗胶囊**，
+  // 位置也必须是同一处（底部居中），否则"已复制"在应用里仍然有两种位置。
+  const copyNotes = visible.filter((item) => !isAlert(item) && item.variant === "copy");
+  const notes = visible.filter((item) => !isAlert(item) && item.variant !== "copy");
 
   return createPortal(
     <>
@@ -227,6 +241,16 @@ export function ToastHost() {
         >
           {alerts.map((item) => (
             <AlertCard key={item.id} item={item} />
+          ))}
+        </div>
+      )}
+      {copyNotes.length > 0 && (
+        <div
+          className="pointer-events-none fixed inset-x-0 bottom-4 flex flex-col items-center gap-1.5 px-4"
+          style={{ zIndex: OVERLAY_Z.toast }}
+        >
+          {copyNotes.map((item) => (
+            <NoteCard key={item.id} item={item} />
           ))}
         </div>
       )}
@@ -358,35 +382,28 @@ function ToastActionButton({ action }: { action: ToastAction }) {
   );
 }
 
-/** 「复制错误信息」：成功/失败都要有反馈，不能点了像没点。 */
+/**
+ * 「复制错误信息」：结果统一由 `copyTextWithFeedback` 给出（右下角同一颗胶囊）。
+ * 按钮本身不再翻成"已复制 / 复制失败"——失败时那整句会把这一行撑歪。
+ */
 function CopyErrorButton({ item }: { item: ToastItem }) {
   const { t } = useTranslation();
-  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
-
-  useEffect(() => {
-    if (state === "idle") return;
-    const timer = window.setTimeout(() => setState("idle"), 1600);
-    return () => window.clearTimeout(timer);
-  }, [state]);
-
-  const copy = async () => {
-    const text = item.copyText ?? [item.label, item.title, item.message, item.detail].filter(Boolean).join("\n");
-    setState((await copyText(text)) ? "done" : "failed");
+  const copy = () => {
+    const text =
+      item.copyText ?? [item.label, item.title, item.message, item.detail].filter(Boolean).join("\n");
+    void copyTextWithFeedback(text);
   };
 
-  // 失败原因（剪贴板权限）放在 title 里，按钮本身只留短文案 ——
-  // 一句十来个字的告警塞进按钮会把整条通知的排版撑歪。
   return (
     <Button
       variant="ghost"
       size="xs"
-      className={cn("ml-auto", state === "failed" && "text-danger hover:bg-danger/12 hover:text-danger")}
+      className="ml-auto"
       aria-label={t("Copy error details")}
-      title={state === "failed" ? t("Copy failed. Please check clipboard permission") : undefined}
-      onClick={() => void copy()}
+      onClick={copy}
     >
-      {state === "done" ? <Check size={11} /> : <Copy size={12} />}
-      {state === "done" ? t("Copied") : state === "failed" ? t("Copy failed") : t("Copy error details")}
+      <Copy size={12} />
+      {t("Copy error details")}
     </Button>
   );
 }
@@ -394,9 +411,9 @@ function CopyErrorButton({ item }: { item: ToastItem }) {
 /**
  * 轻提示的**外观**（尺寸 / 圆角 / 描边 / 阴影 / 色调）。
  *
- * 复制反馈（`copy-feedback.tsx` 的 `CopyNotice`）复用这两个常量：它们
- * 也是"看一眼就消失"的小提示，长成另一套胶囊就会让同一个应用里出现
- * 两种提示样式。改这里 = 同时改两处。
+ * 注意：**复制类**提示不走这里，而是 `variant: "copy"` → 直接渲染
+ * `CopyNoticeSurface`（和面板内的 `CopyNotice` 是同一颗胶囊）。这样"已复制"
+ * 在应用里只有一种样子；这两个常量只服务信息/成功类的普通轻提示。
  */
 export const NOTE_SHELL =
   "flex items-start gap-1.5 rounded-[8px] border px-2.5 py-2 text-11 shadow-lg shadow-black/20";
@@ -410,6 +427,13 @@ export const NOTE_TONE_CLASS = {
 /** 右下角轻提示：信息 / 成功。 */
 function NoteCard({ item }: { item: ToastItem }) {
   const success = item.tone === "success";
+  // 复制类：容器已经是底部居中的一列，这里只负责同一颗胶囊。
+  if (item.variant === "copy")
+    return (
+      <div className="pointer-events-none flex justify-center" role="status" aria-live="polite">
+        <CopyNoticeSurface ok={success}>{item.message}</CopyNoticeSurface>
+      </div>
+    );
   return (
     <div
       className={cn(

@@ -5,6 +5,13 @@
  * 執行時/基礎設施 Tab、掃描進度、徽標。
  */
 export default {
+  "Project directories, deployment files and runtime links in one place.": "集中檢視專案目錄、部署檔案與執行關聯。",
+  "Review discovered directories and keep your decisions for future scans.": "複核發現的目錄，後續掃描沿用你的確認結果。",
+  "Browse application services and their linked project files.": "檢視應用服務及其關聯的專案檔案。",
+  "Dependencies grouped by their role on this server.": "依用途整理這台伺服器上的基礎依賴。",
+  "System information, runtimes and available discovery tools.": "檢視系統資訊、執行環境與可用的發現工具。",
+  "Project actions": "專案操作",
+  "Service actions": "服務操作",
   // -- 掃描與列表 --
   "Discover projects on the server": "在伺服器上發現專案",
   "Scanning server projects": "正在掃描伺服器專案",
@@ -190,8 +197,6 @@ export default {
   "systemd unit": "unit 檔案",
 
   // -- 專案卡片右鍵選單（project-candidate-menu / use-candidate-actions）--
-  "Path copied": "路徑已複製",
-  "Copy failed": "複製失敗",
   "Track in terminal": "在終端中跟蹤",
   "Nginx reloaded": "Nginx 已重新載入",
   "nginx -t failed; the running config was left untouched": "nginx -t 未通過，正在運行的設定沒有被改動",

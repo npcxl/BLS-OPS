@@ -1,5 +1,14 @@
 /** zh-TW · 設定（外觀/憑據/已知主機/語言）。 */
 export default {
+  "Select credential": "選擇憑據",
+  "Search credentials": "搜尋憑據",
+  "Search credentials by name or username…": "搜尋憑據名稱或使用者名稱…",
+  "No matching credentials": "沒有相符的憑據",
+  "No saved credentials": "尚未儲存憑據",
+  "Enter now and save credential": "立即填寫並儲存憑據…",
+  "Save credential": "儲存憑據",
+  "Save or cancel the new credential first": "請先儲存或取消正在填寫的憑據",
+  "Fill in the credential name, username and secret": "請填寫憑據名稱、使用者名稱和密碼或私鑰",
   // -- 外觀 --
   Appearance: "外觀",
   Theme: "主題",

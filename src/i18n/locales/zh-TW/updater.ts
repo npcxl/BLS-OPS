@@ -1,5 +1,8 @@
 /** zh-TW · 應用更新（P5.1）。key 與英文文案逐字一致（natural keys）。 */
 export default {
+  "Example release notes": "範例日誌",
+  "Showing example notes until release notes are available.": "暫時顯示範例日誌。",
+  "Example content only. Update availability is determined by checking for updates.": "以下為範例內容；是否有新版本，以檢查更新結果為準。",
   // -- 設定 → 應用更新 --
   "App update": "應用更新",
   "Current version": "當前版本",

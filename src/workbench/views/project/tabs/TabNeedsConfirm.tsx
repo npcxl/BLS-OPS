@@ -62,8 +62,8 @@ export function TabNeedsConfirm({
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <p className="text-11 text-fg-subtle">
+    <div className="project-card-list">
+      <p className="project-review-hint text-12 text-fg-subtle">
         {t(
           "These directories might be projects, but the system can't be 100% sure. Confirm or ignore each one; decisions are saved and reused on the next scan.",
         )}

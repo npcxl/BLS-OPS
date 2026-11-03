@@ -11,7 +11,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadingState } from "@/components/ui/loading";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { PageNotice, PageSurface, PageToolbar, PageWorkspace } from "@/workbench/page-layout";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
@@ -36,7 +36,6 @@ export function DetachedSqlWindow() {
   const [tabId, setTabId] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [wrap, setWrap] = useState(true);
-  const [copied, setCopied] = useState(false);
   const initialized = useRef(false);
 
   const sqlPayload = payload && payload.kind !== "ddl" ? payload : null;
@@ -139,12 +138,6 @@ export function DetachedSqlWindow() {
     }
   };
 
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
   if (setupError) {
     return (
       <PageSurface>
@@ -184,13 +177,9 @@ export function DetachedSqlWindow() {
             variant="ghost"
             size="xs"
             className="h-6 w-6 px-0"
-            onClick={() => {
-              void copyText(payload.sql).then((ok) => {
-                if (ok) setCopied(true);
-              });
-            }}
-            title={copied ? t("已复制") : t("复制 DDL")}
-            aria-label={copied ? t("已复制") : t("复制 DDL")}
+            onClick={() => void copyTextWithFeedback(payload.sql)}
+            title={t("复制 DDL")}
+            aria-label={t("复制 DDL")}
           >
             <Copy size={12} />
           </Button>

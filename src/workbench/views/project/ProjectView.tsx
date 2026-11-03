@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Boxes, Loader2, RefreshCw, TriangleAlert } from "@/components/icons";
+import { Boxes, CircleHelp, Database, FolderSearch, Loader2, RefreshCw, Server, TriangleAlert } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { PageNotice, PageScroll, PageTabs } from "@/workbench/page-layout";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import { TabRuntime } from "./tabs/TabRuntime";
 import { TabInfrastructure } from "./tabs/TabInfrastructure";
 import { TabBasicInfo } from "./tabs/TabBasicInfo";
 import { findDuplicateIds, partitionInstances } from "./classify";
+import "./project-view.css";
 
 /** 项目视图里没有配对的终端，文件面板不需要跟随 `cd`。引用必须稳定。 */
 const NO_FOLLOW: FilePanelFollow = { nonce: 0, path: "" };
@@ -234,6 +235,15 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
     infrastructure: infraInstances.length,
     basic_info: 0,
   };
+  const categoryIcons = { applications: FolderSearch, needs_confirm: CircleHelp, runtime: Boxes, infrastructure: Database, basic_info: Server };
+  const CategoryIcon = categoryIcons[activeTab];
+  const descriptions: Record<TabId, string> = {
+    applications: "Project directories, deployment files and runtime links in one place.",
+    needs_confirm: "Review discovered directories and keep your decisions for future scans.",
+    runtime: "Browse application services and their linked project files.",
+    infrastructure: "Dependencies grouped by their role on this server.",
+    basic_info: "System information, runtimes and available discovery tools.",
+  };
 
   return (
     <ModuleFrame
@@ -246,10 +256,11 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
         </Button>
       }
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
+      <div className="project-view flex min-h-0 min-w-0 flex-1">
+        <div className="project-main flex min-h-0 min-w-0 flex-1 flex-col">
           {/* 5 个分类：项目 / 待确认 / 应用服务 / 基础设施 / 基本信息 */}
           <PageTabs
+            className="project-category-tabs"
             value={activeTab}
             onChange={setActiveTab}
             label={t("Project categories")}
@@ -257,16 +268,26 @@ export function ProjectView({ tab }: { tab: WorkspaceTab }) {
             items={TABS.map((item) => ({
               id: item.id,
               label: t(item.labelKey),
-              count: tabBadges[item.id] || undefined,
+              icon: (() => { const Icon = categoryIcons[item.id]; return <Icon size={14} />; })(),
             }))}
           />
 
           <PageScroll
+            className="project-content"
             role="tabpanel"
             id={`project-${tab.id}-content`}
             aria-label={t(TABS.find((item) => item.id === activeTab)!.labelKey)}
             width="overview"
           >
+            <header className="project-page-heading">
+              <span className="project-page-symbol" aria-hidden="true"><CategoryIcon size={23} strokeWidth={1.5} /></span>
+              <div>
+                <div className="project-page-title"><h1>{t(TABS.find(item => item.id === activeTab)!.labelKey)}</h1>
+                  {result && activeTab !== "basic_info" && <span className="project-total">{tabBadges[activeTab]}</span>}
+                </div>
+                <p>{t(descriptions[activeTab])}</p>
+              </div>
+            </header>
             {/* 扫描状态：异常 / 断开由 ModuleFrame 统一处理，这里只留进度与增量说明 */}
             {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
             {loading && scan && <ScanProgress scan={scan} onCancel={() => void cancel()} />}

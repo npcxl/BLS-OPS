@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MacSearchField, MacSegmentedControl } from "@/components/ui/mac-controls";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import type { DatabaseProfile } from "@/api/types/database";
 import type { ServerRecord } from "@/api/ops-api";

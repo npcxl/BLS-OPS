@@ -146,6 +146,24 @@ export interface DialectRules {
   max_ident_bytes: number;
 }
 
+/**
+ * 逐项 DDL 能力。
+ *
+ * `capabilities.schema_edit` 只是"这一类操作"的总览；真正决定某个右键项
+ * 能不能点的是这里。后端 `table_ops` 用同一份声明拒绝，界面与执行不会分叉。
+ */
+export interface DdlCapabilities {
+  create_table: Capability;
+  rename_table: Capability;
+  /** 复制表结构 / 结构 + 数据。 */
+  copy_table: Capability;
+  truncate_table: Capability;
+  drop_table: Capability;
+  alter_columns: Capability;
+  create_view: Capability;
+  drop_view: Capability;
+}
+
 export interface EngineDescriptor {
   id: DbEngine;
   product: string;
@@ -161,6 +179,8 @@ export interface EngineDescriptor {
   requirements: EngineRequirements;
   options: OptionField[];
   capabilities: CapabilitySet;
+  /** 逐项 DDL：右键菜单按它逐项置灰，后端按它逐项校验。 */
+  ddl_operations: DdlCapabilities;
   dialect_rules: DialectRules;
   verified: VerifiedScope[];
   note: string;

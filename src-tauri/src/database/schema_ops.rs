@@ -368,7 +368,9 @@ fn sqlite_create_table_sql(
     let mut defs: Vec<String> = Vec::new();
     for column in columns {
         let mut sql = format!("{} {}", ddl.quote(&column.name)?, column.column_type.trim());
-        if !column.nullable {
+        // 自增列必须是 `INTEGER PRIMARY KEY AUTOINCREMENT` 的连续形式，
+        // 中间插 `NOT NULL` 会让后续匹配不到，也没有必要（主键本就非空）。
+        if !column.nullable && !column.auto_increment {
             sql.push_str(" NOT NULL");
         }
         if let Some(default) = column
@@ -465,11 +467,477 @@ fn same_default(left: Option<&str>, right: Option<&str>) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
+/// SQLite 的类型校验比 MySQL 宽松（任意类型亲和性都可），
+/// 但绝不能把分号/注释塞进 DDL：这里的类型串会被直接拼接。
+fn safe_column_type(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && !trimmed.contains([';', '\'', '"', '`', '\\'])
+        && !trimmed.contains("--")
+        && !trimmed.contains("/*")
+}
+
+/// SQLite 改表：只做 SQLite 原生支持的三种列操作与索引增删。
+///
+/// 不支持原地改类型/可空/默认/注释（SQLite 需要重建表），遇到直接拒绝并说明，
+/// 而不是生成一条会被服务器拒绝的 ALTER。
+fn sqlite_alter_table_sql(
+    ddl: &Ddl<'_>,
+    detail: &super::model::DbTableDetail,
+    request: &AlterTableRequest,
+) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+    if request.columns.is_empty() {
+        return Err(DbErrorInfo::new("config", "表至少需要一个字段"));
+    }
+    let qualified = ddl.qualified(&request.database, &request.table)?;
+    let mut statements = Vec::new();
+    let mut destructive = false;
+
+    // 1) 已存在字段：只允许重命名或原样保留。
+    let mut kept: Vec<String> = Vec::new();
+    for edit in &request.columns {
+        let Some(original_name) = &edit.original_name else {
+            continue;
+        };
+        let original = detail
+            .columns
+            .iter()
+            .find(|column| column.name.eq_ignore_ascii_case(original_name))
+            .ok_or_else(|| DbErrorInfo::new("config", format!("原字段不存在：{original_name}")))?;
+        kept.push(original.name.clone());
+        if !safe_column_type(&edit.column_type) {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("字段 {} 的类型不合法", edit.name),
+            ));
+        }
+        let changed = !edit
+            .column_type
+            .trim()
+            .eq_ignore_ascii_case(original.column_type.trim())
+            || edit.nullable != original.nullable
+            || edit.auto_increment != original.auto_increment
+            || edit.default_value.as_deref() != original.default_value.as_deref()
+            || edit.comment != original.comment;
+        if changed {
+            return Err(DbErrorInfo::new(
+                "unsupported",
+                format!("SQLite 不能原地修改字段 {} 的类型/约束/默认值", original.name),
+            )
+            .with_detail(
+                "SQLite 只支持 ADD COLUMN / RENAME COLUMN / DROP COLUMN；改类型需要重建表，请在 SQL 编辑器手工处理。",
+            ));
+        }
+        if !edit.name.eq_ignore_ascii_case(&original.name) {
+            statements.push(format!(
+                "ALTER TABLE {qualified} RENAME COLUMN {} TO {}",
+                ddl.quote(&original.name)?,
+                ddl.quote(&edit.name)?
+            ));
+        }
+    }
+
+    // 2) 被删除的字段：主键拒绝，其余 DROP COLUMN。
+    for original in &detail.columns {
+        if kept
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&original.name))
+        {
+            continue;
+        }
+        if detail
+            .primary_key
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(&original.name))
+        {
+            return Err(DbErrorInfo::new(
+                "permission",
+                format!("主键字段 {} 不能删除", original.name),
+            ));
+        }
+        statements.push(format!(
+            "ALTER TABLE {qualified} DROP COLUMN {}",
+            ddl.quote(&original.name)?
+        ));
+        destructive = true;
+    }
+
+    // 3) 新字段：ADD COLUMN。NOT NULL 无默认值在 SQLite 上必然失败，提前拒绝。
+    for edit in &request.columns {
+        if edit.original_name.is_some() {
+            continue;
+        }
+        if !safe_column_type(&edit.column_type) {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("字段 {} 的类型不合法", edit.name),
+            ));
+        }
+        let has_default = edit
+            .default_value
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !edit.nullable && !has_default {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("SQLite 新增 NOT NULL 字段 {} 必须给默认值", edit.name),
+            )
+            .with_detail("否则已有行无法满足约束，ALTER TABLE 会直接失败。"));
+        }
+        if edit.auto_increment {
+            return Err(
+                DbErrorInfo::new("unsupported", "SQLite 不能给已有表新增自增列")
+                    .with_detail("自增只支持建表时声明 INTEGER PRIMARY KEY AUTOINCREMENT。"),
+            );
+        }
+        let mut definition = format!("{} {}", ddl.quote(&edit.name)?, edit.column_type.trim());
+        if !edit.nullable {
+            definition.push_str(" NOT NULL");
+        }
+        if let Some(default) = edit
+            .default_value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
+                definition.push_str(" DEFAULT CURRENT_TIMESTAMP");
+            } else {
+                definition.push_str(&format!(" DEFAULT {}", ddl.literal(default)));
+            }
+        }
+        statements.push(format!("ALTER TABLE {qualified} ADD COLUMN {definition}"));
+    }
+
+    // 4) 索引：只支持新增与删除；改已有索引必须先删后建（不猜用户意图）。
+    for index in &request.indexes {
+        let original = index
+            .original_name
+            .as_deref()
+            .and_then(|name| detail.indexes.iter().find(|item| item.name == name));
+        match original {
+            Some(existing) => {
+                let same_columns = existing
+                    .columns
+                    .iter()
+                    .map(|column| column.name.to_ascii_lowercase())
+                    .eq(index.columns.iter().map(|name| name.to_ascii_lowercase()));
+                if existing.name != index.name || existing.unique != index.unique || !same_columns {
+                    return Err(DbErrorInfo::new(
+                        "unsupported",
+                        format!("SQLite 不支持原地修改索引 {}", existing.name),
+                    )
+                    .with_detail("请先删除该索引，再新建一个。"));
+                }
+            }
+            None => {
+                if index.name.trim().is_empty() || index.columns.is_empty() {
+                    return Err(DbErrorInfo::new("config", "新索引必须有名字和列"));
+                }
+                let columns = index
+                    .columns
+                    .iter()
+                    .map(|name| ddl.quote(name))
+                    .collect::<Result<Vec<_>, _>>()?;
+                statements.push(format!(
+                    "CREATE {}INDEX {} ON {qualified} ({})",
+                    if index.unique { "UNIQUE " } else { "" },
+                    ddl.quote(&index.name)?,
+                    columns.join(", ")
+                ));
+            }
+        }
+    }
+    // 索引被整段删掉：`indexes` 里不再出现，按名字 DROP。
+    let keep_indexes: Vec<&str> = request
+        .indexes
+        .iter()
+        .filter_map(|index| index.original_name.as_deref())
+        .collect();
+    for existing in &detail.indexes {
+        if existing.primary || keep_indexes.contains(&existing.name.as_str()) {
+            continue;
+        }
+        statements.push(format!("DROP INDEX {}", ddl.quote(&existing.name)?));
+        destructive = true;
+    }
+
+    Ok((
+        statements,
+        Some(
+            "SQLite 的 ALTER TABLE 只支持增删列、重命名列与索引增删；改类型/约束需要重建表"
+                .to_string(),
+        ),
+        destructive,
+    ))
+}
+
+/// PostgreSQL 改表：`ALTER TABLE` 按动作拆成多条，整批在事务里执行。
+///
+/// 与 SQLite 的差别：PG 支持原地改类型、改可空、改默认值、改注释，
+/// 所以这些不再拒绝；自增（序列/IDENTITY）仍拒绝原地切换。
+fn pg_alter_table_sql(
+    ddl: &Ddl<'_>,
+    detail: &super::model::DbTableDetail,
+    request: &AlterTableRequest,
+) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+    if request.columns.is_empty() {
+        return Err(DbErrorInfo::new("config", "表至少需要一个字段"));
+    }
+    let qualified = ddl.qualified(&request.database, &request.table)?;
+    let mut statements = Vec::new();
+    let mut destructive = false;
+    let mut kept: Vec<String> = Vec::new();
+
+    for edit in &request.columns {
+        let Some(original_name) = &edit.original_name else {
+            continue;
+        };
+        let original = detail
+            .columns
+            .iter()
+            .find(|column| column.name.eq_ignore_ascii_case(original_name))
+            .ok_or_else(|| DbErrorInfo::new("config", format!("原字段不存在：{original_name}")))?;
+        kept.push(original.name.clone());
+        if !safe_column_type(&edit.column_type) {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("字段 {} 的类型不合法", edit.name),
+            ));
+        }
+        let quoted = ddl.quote(&original.name)?;
+        if !edit.name.eq_ignore_ascii_case(&original.name) {
+            statements.push(format!(
+                "ALTER TABLE {qualified} RENAME COLUMN {quoted} TO {}",
+                ddl.quote(&edit.name)?
+            ));
+        }
+        if !edit
+            .column_type
+            .trim()
+            .eq_ignore_ascii_case(original.column_type.trim())
+        {
+            statements.push(format!(
+                "ALTER TABLE {qualified} ALTER COLUMN {quoted} TYPE {}",
+                edit.column_type.trim()
+            ));
+        }
+        if edit.nullable != original.nullable {
+            statements.push(if edit.nullable {
+                format!("ALTER TABLE {qualified} ALTER COLUMN {quoted} DROP NOT NULL")
+            } else {
+                format!("ALTER TABLE {qualified} ALTER COLUMN {quoted} SET NOT NULL")
+            });
+        }
+        if edit.auto_increment != original.auto_increment {
+            return Err(DbErrorInfo::new(
+                "unsupported",
+                format!("PostgreSQL 不能原地切换字段 {} 的自增", original.name),
+            )
+            .with_detail("自增与序列/IDENTITY 绑定，需要手工改写列定义；请在 SQL 编辑器里处理。"));
+        }
+        let edited_default = edit.default_value.as_deref().map(str::trim);
+        let original_default = original.default_value.as_deref().map(str::trim);
+        if edited_default != original_default {
+            match edited_default.filter(|value| !value.is_empty()) {
+                Some(default) => {
+                    statements.push(if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
+                        format!(
+                            "ALTER TABLE {qualified} ALTER COLUMN {quoted} SET DEFAULT CURRENT_TIMESTAMP"
+                        )
+                    } else {
+                        format!(
+                            "ALTER TABLE {qualified} ALTER COLUMN {quoted} SET DEFAULT {}",
+                            ddl.literal(default)
+                        )
+                    });
+                }
+                None => statements.push(format!(
+                    "ALTER TABLE {qualified} ALTER COLUMN {quoted} DROP DEFAULT"
+                )),
+            }
+        }
+        if edit.comment != original.comment {
+            statements.push(format!(
+                "COMMENT ON COLUMN {qualified}.{} IS {}",
+                ddl.quote(&edit.name)?,
+                ddl.literal(&edit.comment)
+            ));
+        }
+    }
+
+    // 被删除的字段：主键拒绝，其余 DROP COLUMN。
+    for original in &detail.columns {
+        if kept
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&original.name))
+        {
+            continue;
+        }
+        if detail
+            .primary_key
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(&original.name))
+        {
+            return Err(DbErrorInfo::new(
+                "permission",
+                format!("主键字段 {} 不能删除", original.name),
+            ));
+        }
+        statements.push(format!(
+            "ALTER TABLE {qualified} DROP COLUMN {}",
+            ddl.quote(&original.name)?
+        ));
+        destructive = true;
+    }
+
+    // 新字段：ADD COLUMN。NOT NULL 无默认值在已有数据上必然失败，提前拒绝。
+    for edit in &request.columns {
+        if edit.original_name.is_some() {
+            continue;
+        }
+        if !safe_column_type(&edit.column_type) {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("字段 {} 的类型不合法", edit.name),
+            ));
+        }
+        let has_default = edit
+            .default_value
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !edit.nullable && !has_default {
+            return Err(DbErrorInfo::new(
+                "config",
+                format!("PostgreSQL 新增 NOT NULL 字段 {} 必须给默认值", edit.name),
+            )
+            .with_detail("否则已有行无法满足约束，ALTER TABLE 会直接失败。"));
+        }
+        if edit.auto_increment {
+            return Err(
+                DbErrorInfo::new("unsupported", "PostgreSQL 不能给已有表新增 IDENTITY 列")
+                    .with_detail(
+                        "请在 SQL 编辑器里手工 `ADD COLUMN ... GENERATED BY DEFAULT AS IDENTITY`。",
+                    ),
+            );
+        }
+        let mut definition = format!(
+            "ADD COLUMN {} {}",
+            ddl.quote(&edit.name)?,
+            edit.column_type.trim()
+        );
+        if !edit.nullable {
+            definition.push_str(" NOT NULL");
+        }
+        if let Some(default) = edit
+            .default_value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if default.eq_ignore_ascii_case("CURRENT_TIMESTAMP") {
+                definition.push_str(" DEFAULT CURRENT_TIMESTAMP");
+            } else {
+                definition.push_str(&format!(" DEFAULT {}", ddl.literal(default)));
+            }
+        }
+        statements.push(format!("ALTER TABLE {qualified} {definition}"));
+        if !edit.comment.is_empty() {
+            statements.push(format!(
+                "COMMENT ON COLUMN {qualified}.{} IS {}",
+                ddl.quote(&edit.name)?,
+                ddl.literal(&edit.comment)
+            ));
+        }
+    }
+
+    // 索引：新增 / 改名 / 删除；改列或改唯一性需要先删后建。
+    for index in &request.indexes {
+        let existing = index
+            .original_name
+            .as_deref()
+            .and_then(|name| detail.indexes.iter().find(|item| item.name == name));
+        match existing {
+            Some(existing) => {
+                let same_columns = existing
+                    .columns
+                    .iter()
+                    .map(|column| column.name.to_ascii_lowercase())
+                    .eq(index.columns.iter().map(|name| name.to_ascii_lowercase()));
+                if existing.unique != index.unique || !same_columns {
+                    return Err(DbErrorInfo::new(
+                        "unsupported",
+                        format!(
+                            "PostgreSQL 不支持原地修改索引 {} 的列或唯一性",
+                            existing.name
+                        ),
+                    )
+                    .with_detail("请先删除该索引，再新建一个。"));
+                }
+                if existing.name != index.name {
+                    statements.push(format!(
+                        "ALTER INDEX {} RENAME TO {}",
+                        ddl.qualified(&request.database, &existing.name)?,
+                        ddl.quote(&index.name)?
+                    ));
+                }
+            }
+            None => {
+                if index.name.trim().is_empty() || index.columns.is_empty() {
+                    return Err(DbErrorInfo::new("config", "新索引必须有名字和列"));
+                }
+                let columns = index
+                    .columns
+                    .iter()
+                    .map(|name| ddl.quote(name))
+                    .collect::<Result<Vec<_>, _>>()?;
+                statements.push(format!(
+                    "CREATE {}INDEX {} ON {qualified} ({})",
+                    if index.unique { "UNIQUE " } else { "" },
+                    ddl.qualified(&request.database, &index.name)?,
+                    columns.join(", ")
+                ));
+            }
+        }
+    }
+    let keep_indexes: Vec<&str> = request
+        .indexes
+        .iter()
+        .filter_map(|index| index.original_name.as_deref())
+        .collect();
+    for existing in &detail.indexes {
+        if existing.primary || keep_indexes.contains(&existing.name.as_str()) {
+            continue;
+        }
+        statements.push(format!(
+            "DROP INDEX {}",
+            ddl.qualified(&request.database, &existing.name)?
+        ));
+        destructive = true;
+    }
+
+    Ok((
+        statements,
+        Some(
+            "PostgreSQL 的 ALTER TABLE 会按列动作拆成多条语句并整体回滚；改类型在数据不兼容时会失败"
+                .to_string(),
+        ),
+        destructive,
+    ))
+}
+
 fn alter_table_sql(
     ddl: &Ddl<'_>,
     detail: &super::model::DbTableDetail,
     request: &AlterTableRequest,
 ) -> Result<(Vec<String>, Option<String>, bool), DbErrorInfo> {
+    if ddl.is_sqlite() {
+        return sqlite_alter_table_sql(ddl, detail, request);
+    }
+    if ddl.is_postgres() {
+        return pg_alter_table_sql(ddl, detail, request);
+    }
     ddl.require_mysql("修改表结构")?;
     if request.columns.is_empty() {
         return Err(DbErrorInfo::new("config", "表至少需要一个字段"));
@@ -1246,6 +1714,66 @@ mod tests {
     /// 这些测试锁的是 MySQL 生成的 DDL 文本。
     fn preview(change: &SchemaChange) -> Result<super::SchemaPreview, super::DbErrorInfo> {
         preview_with_adapter(&AdapterSet::mysql(), change)
+    }
+
+    #[test]
+    fn sqlite_ddl_uses_native_syntax() {
+        let sqlite = AdapterSet::of("sqlite").expect("sqlite registered");
+        let create = preview_with_adapter(
+            &sqlite,
+            &SchemaChange::CreateTable {
+                database: "main".to_string(),
+                table: "notes".to_string(),
+                columns: vec![
+                    NewColumn {
+                        name: "id".to_string(),
+                        column_type: "INTEGER".to_string(),
+                        nullable: false,
+                        auto_increment: true,
+                        default_value: None,
+                        comment: String::new(),
+                    },
+                    NewColumn {
+                        name: "body".to_string(),
+                        column_type: "TEXT".to_string(),
+                        nullable: true,
+                        auto_increment: false,
+                        default_value: None,
+                        comment: String::new(),
+                    },
+                ],
+                primary_key: vec!["id".to_string()],
+                engine: Some("InnoDB".to_string()),
+                charset: None,
+                collation: None,
+            },
+        )
+        .expect("preview");
+        assert!(
+            create.sql.contains("INTEGER PRIMARY KEY AUTOINCREMENT"),
+            "自增必须落成 SQLite 原生语法：{}",
+            create.sql
+        );
+        assert!(
+            !create.sql.to_uppercase().contains("ENGINE"),
+            "SQLite 不能出现 ENGINE：{}",
+            create.sql
+        );
+        assert!(create.warning.is_some(), "忽略表选项必须提示");
+
+        // SQLite 没有 CREATE OR REPLACE VIEW：OR REPLACE 必须先删。
+        let view = preview_with_adapter(
+            &sqlite,
+            &SchemaChange::SaveView {
+                database: "main".to_string(),
+                view: "notes_v".to_string(),
+                select_sql: "SELECT id FROM notes".to_string(),
+                or_replace: true,
+            },
+        )
+        .expect("view");
+        assert!(view.sql.starts_with("DROP VIEW IF EXISTS"), "{}", view.sql);
+        assert!(view.sql.contains("CREATE VIEW"));
     }
 
     #[test]

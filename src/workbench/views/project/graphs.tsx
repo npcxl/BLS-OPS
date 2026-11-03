@@ -30,14 +30,14 @@ export function CapabilityGraph({ profile }: { profile: ServerCapabilityProfile 
   const missing = deployment.filter(([, v]) => v === false).map(([k]) => k);
 
   return (
-    <section className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
-      <div className="flex items-center gap-2 border-b border-line bg-surface-2/70 px-4 py-3">
+    <section className="project-card project-capabilities">
+      <div className="project-section-heading flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-accent/12 px-2 py-0.5 text-10 font-medium text-accent">
           {t("Server capability profile")}
         </span>
         <span className="text-11 text-fg-subtle">{t("Identify the server first, then decide which collectors to enable")}</span>
       </div>
-      <div className="grid gap-3 p-4 lg:grid-cols-2">
+      <div className="project-detail-grid">
         <Detail title={t("System profile")} items={sysFacts} />
         <Detail title={t("Runtimes")} items={runtimes.map(([k, v]) => `${k} ${v}`)} />
         {buildTools.length > 0 && <Detail title={t("Build tools")} items={buildTools.map(([k, v]) => `${k} ${v}`)} />}

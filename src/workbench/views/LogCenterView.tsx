@@ -22,7 +22,7 @@ import { LoadingState } from "@/components/ui/loading";
 import { SearchField } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import {
   JOURNAL_PRIORITIES,

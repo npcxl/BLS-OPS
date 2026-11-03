@@ -209,7 +209,7 @@ export function WorkspaceTabs({ pane }: { pane: WorkbenchPane }) {
               className={cn(
                 "group relative flex h-[26px] max-w-[200px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] select-none outline-none transition-colors duration-100",
                 active
-                  ? "bg-tab-active text-fg shadow-[var(--tab-active-shadow)]"
+                  ? "bg-tab-active text-tab-active-fg shadow-[var(--tab-active-shadow)]"
                   : "text-fg-muted hover:bg-tab-hover hover:text-fg",
               )}
               onClick={() => setActiveTab(pane.id, tab.id)}

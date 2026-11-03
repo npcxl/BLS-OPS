@@ -10,7 +10,7 @@ import { useTranslation } from "react-i18next";
 import { Copy, ExternalLink, Loader2, Maximize2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { pushToast } from "@/components/ui/toast";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { useDatabaseStore } from "@/stores/database-store";
 import {
   useDatabaseWorkspaceStore,
@@ -30,7 +30,6 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
   );
   const refreshTableDetail = useDatabaseStore((state) => state.refreshTableDetail);
   const hideDdl = useDatabaseWorkspaceStore((state) => state.hideDdl);
-  const [copied, setCopied] = useState(false);
   // 侧栏窄：默认折行（配合挂起缩进好读），需要对照长行时可以关掉换横向滚动。
   const [wrap, setWrap] = useState(true);
   // 全屏：直接把面板铺满窗口，不动布局、不动工作项，退出即回到侧栏。
@@ -41,12 +40,6 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
       void refreshTableDetail(target.profileId, target.database, target.table);
     }
   }, [detail, refreshTableDetail, target.database, target.profileId, target.table]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
 
   // 全屏时 Esc 退出：只在展开状态下装监听，收起时完全不响应。
   useScopedShortcut({
@@ -114,13 +107,9 @@ export function DdlPanel({ target }: { target: DdlTarget }) {
         size="xs"
         className="h-6 w-6 px-0"
         disabled={!createSql}
-        onClick={() => {
-          void copyText(createSql).then((ok) => {
-            if (ok) setCopied(true);
-          });
-        }}
-        title={copied ? t("已复制") : t("复制 DDL")}
-        aria-label={copied ? t("已复制") : t("复制 DDL")}
+        onClick={() => void copyTextWithFeedback(createSql)}
+        title={t("复制 DDL")}
+        aria-label={t("复制 DDL")}
       >
         <Copy size={11} />
       </Button>

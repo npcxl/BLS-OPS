@@ -7,10 +7,11 @@ import { cn } from "@/lib/cn";
  * Default variant is ghost (dense desktop tooling, not filled buttons everywhere).
  */
 
-type Variant = "primary" | "secondary" | "ghost" | "outline" | "danger";
+type Variant = "primary" | "secondary" | "ghost" | "outline" | "danger" | "contrast";
 type Size = "xs" | "sm" | "md" | "lg";
 
 const variantClasses: Record<Variant, string> = {
+  contrast: "bg-fg text-surface-1 border border-transparent hover:bg-fg/90 active:bg-fg/80",
   primary:
     "bg-accent !text-white shadow-[0_1px_0_rgb(255_255_255/0.35)_inset,0_1px_2px_rgb(15_23_42/0.12)] hover:bg-accent/92 active:bg-accent/84",
   secondary:

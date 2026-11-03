@@ -31,6 +31,7 @@ import {
   useContextMenu,
   type ContextMenuItem,
 } from "@/components/ui/context-menu";
+import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { pushToast } from "@/components/ui/toast";
 import { copyText } from "@/lib/clipboard";
 import { databaseApi } from "@/api/ops-api";
@@ -90,6 +91,10 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // 复制反馈与表格结果区共用同一套（面板底部胶囊 + 统一时长）。
+  const { status: copyStatus, notify: notifyCopy } = useCopyFeedback();
+  /** 复制的自定义文案（「已复制 N 个键」）；失败时留空走共享的失败文案。 */
+  const [copyLabel, setCopyLabel] = useState("");
   // 编辑器在**下方**（参考图），高度可拖拽；视图/类型过滤只影响已加载的行。
   const [editorHeight, setEditorHeight] = useState(readEditorHeight);
   const [editorVisible, setEditorVisible] = useState(true);
@@ -249,12 +254,12 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
         ? `Key\tType\tTTL\n${rows.join("\n")}`
         : targets.join("\n");
       const ok = await copyText(text);
-      pushToast(
-        ok ? t("已复制 {{count}} 个键", { count: targets.length }) : t("复制失败"),
-        ok ? "success" : "error",
-      );
+      // 与表格结果区用**同一个**复制反馈（面板底部胶囊），不再往右下角弹 toast：
+      // 同一个"复制成功"在两个地方长成两样，用户会以为是两件事。
+      setCopyLabel(ok ? t("已复制 {{count}} 个键", { count: targets.length }) : "");
+      notifyCopy(ok);
     },
-    [selection.selected, selection.activeKey, visibleKeys, t],
+    [selection.selected, selection.activeKey, visibleKeys, t, notifyCopy],
   );
 
   const requestDelete = useCallback((keys: string[]) => {
@@ -548,7 +553,8 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
 
 
       {/* 主体：键数据主区（上）+ 键值编辑器（下，参考图的底部停靠） */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <CopyNotice status={copyStatus} label={copyLabel || undefined} />
         {connection.connected ? (
           <>
           <RedisKeyGrid

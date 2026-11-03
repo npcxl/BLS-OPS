@@ -25,8 +25,6 @@ export default {
   "Copy raw output (without escape markers)": "复制原始输出（去掉转义标记）",
   "Copy executed command": "复制已执行的命令",
   "Copy path": "复制路径",
-  "Command copied": "命令已复制",
-  "Output copied": "输出已复制",
 
   // -- 元信息 --
   "Command: {{command}}": "命令：{{command}}",

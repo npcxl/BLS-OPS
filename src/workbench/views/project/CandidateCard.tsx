@@ -8,6 +8,7 @@ import {
   FolderSearch,
   GitMerge,
   Globe,
+  MoreHorizontal,
   Split,
 } from "@/components/icons";
 import { useTranslation } from "react-i18next";
@@ -185,14 +186,14 @@ export function CandidateCard({
 
   return (
     <article
-      className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)] transition-shadow hover:shadow-[0_2px_6px_rgb(15_23_42/0.07)]"
+      className="project-card project-candidate-card"
       onContextMenu={menu.onContextMenu(() => menuItems)}
     >
-      <div className="flex w-full items-center gap-3 px-4 py-3 text-left">
-        <FolderSearch size={16} className="shrink-0 text-accent" />
+      <div className="project-card-header flex w-full items-start gap-3 text-left">
+        <span className="project-card-symbol" aria-hidden="true"><FolderSearch size={20} strokeWidth={1.5} /></span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <strong className="truncate text-13 text-fg">{candidate.name}</strong>
+            <strong className="project-card-name text-fg">{candidate.name}</strong>
             {/* 主状态标签（唯一一枚）：人工结论优先覆盖算法结论。
                 project_kind 不再上卡片：能进项目/待确认列表的都是业务项目候选，
                 基础设施改判场景已由「信息有变化」徽标提示复核。 */}
@@ -269,6 +270,11 @@ export function CandidateCard({
             </span>
           </div>
         </div>
+        <Button variant="ghost" size="xs" className="project-more" aria-label={t("Project actions")}
+          title={t("Project actions")} onClick={event => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            menu.openAt(rect.right, rect.bottom + 4, menuItems);
+          }}><MoreHorizontal size={16} /></Button>
       </div>
 
       {/* 右键动作的结果就地反馈：成功是确认，失败是原文（绝不静默）。 */}
@@ -287,7 +293,8 @@ export function CandidateCard({
       <div className="border-t border-line">
         <button
           type="button"
-          className="flex w-full items-center gap-1.5 px-4 py-2 text-11 text-fg-subtle transition-colors hover:bg-surface-hover/60 hover:text-fg"
+          className="project-card-disclosure flex w-full items-center gap-1.5 text-11 text-fg-muted transition-colors hover:bg-surface-hover/60 hover:text-fg"
+          aria-expanded={showDeploy}
           onClick={() => setShowDeploy((value) => !value)}
         >
           <ChevronRight
@@ -318,6 +325,7 @@ export function CandidateCard({
               <Button
                 variant="ghost"
                 size="xs"
+                aria-expanded={expanded}
                 onClick={() => setExpanded((value) => !value)}
               >
                 <ChevronRight

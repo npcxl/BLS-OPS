@@ -8,7 +8,7 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { formatBytes } from "@/lib/format";
 import { openExternal } from "@/lib/open-external";
 import {
@@ -20,8 +20,7 @@ import { buildUpdateDiagnostics } from "@/lib/updater/diagnostics";
 import { useUpdaterStore } from "@/stores/updater-store";
 import { useUpdaterActions } from "@/hooks/use-updater";
 import { useDomainStore } from "@/stores/domain-store";
-import { ReleaseNotesDialog } from "./ReleaseNotesDialog";
-import type { UpdateRelease } from "@/api/types/updater";
+import { openReleaseNotes } from "../settings-navigation";
 import type { UpdatePhase } from "@/api/types/updater";
 import { Group, InfoRow, ListGroup, Switch } from "../settings-parts";
 import { UpdateRestartDialog } from "./UpdateRestartDialog";
@@ -73,19 +72,8 @@ export function UpdateSection() {
   const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt);
   const autoCheck = useUpdaterStore((s) => s.autoCheck);
   const appInfo = useDomainStore((s) => s.appInfo);
-  /** "Copied" is a one-shot confirmation; two buttons share one message. */
-  const [copied, setCopied] = useState<string | null>(null);
-  const [notesOpen, setNotesOpen] = useState(false);
-  const [notesRelease, setNotesRelease] = useState<UpdateRelease | null>(null);
-  const viewLatestNotes = () => { setNotesRelease(null); setNotesOpen(true); };
-  const checkAndShowNotes = async () => {
-    await check({ manual: true });
-    const state = useUpdaterStore.getState();
-    if (state.phase !== "available" && state.phase !== "up_to_date") return;
-    setNotesRelease(state.release);
-    setNotesOpen(true);
-  };
-
+  /** 只剩"外链打开失败"这一条本地提示；复制反馈已交给 `copyTextWithFeedback`。 */
+  const [notice, setNotice] = useState<string | null>(null);
   // Sanitised again at the render site: the UI shows text the user can copy
   // into an issue, so nothing unsanitised may reach the DOM either.
   const detail = error ? sanitizeUpdateDetail(error.detail) : "";
@@ -104,21 +92,14 @@ export function UpdateSection() {
     [appInfo?.arch, appInfo?.os, currentVersion, error, errorStage, lastCheckedAt, release?.version],
   );
 
-  const copy = async (text: string, message: "Copied" | "Diagnostics copied") => {
-    const ok = await copyText(text);
-    setCopied(ok ? message : null);
-    if (!ok) return;
-    window.setTimeout(() => setCopied(null), 2000);
-  };
-
   const busy = phase === "checking" || phase === "downloading" || phase === "installing";
 
   /** 外链打开失败（系统无浏览器 handler / 权限被拒）时的可见反馈。 */
   const openReleases = async () => {
     const ok = await openExternal(RELEASES_PAGE_URL);
     if (ok) return;
-    setCopied("Opening the browser failed");
-    window.setTimeout(() => setCopied(null), 3000);
+    setNotice("Opening the browser failed");
+    window.setTimeout(() => setNotice(null), 3000);
   };
   // Installing is allowed whenever we hold a release and are not already
   // mid-flight or waiting for a restart. From `downloaded` the same button
@@ -141,7 +122,7 @@ export function UpdateSection() {
         <InfoRow label={t("Current version")} value={currentVersion ? `v${currentVersion}` : "—"} />
         <InfoRow label={t("Update channel")} value={t("Stable")} />
         <InfoRow label={t("Last checked")} value={formatWhen(lastCheckedAt) ?? t("Never")} />
-        <button type="button" className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-12 text-fg hover:bg-surface-hover" onClick={viewLatestNotes}>
+        <button type="button" className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left text-12 text-fg hover:bg-surface-hover" onClick={openReleaseNotes}>
           <span>{t("View latest release notes")}</span><span className="text-fg-subtle" aria-hidden="true">›</span>
         </button>
         <div className="page-form-row">
@@ -201,7 +182,11 @@ export function UpdateSection() {
             {t("Error code: {{code}}", { code: error.code })}
           </p>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Button variant="secondary" size="sm" onClick={() => void copy(detail, "Copied")}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void copyTextWithFeedback(detail)}
+            >
               {t("Copy error details")}
             </Button>
             <Button
@@ -216,14 +201,14 @@ export function UpdateSection() {
         </div>
       )}
 
-      {copied && <p className="px-0.5 text-11 text-success">{t(copied)}</p>}
+      {notice && <p className="px-0.5 text-11 text-success">{t(notice)}</p>}
 
       <div className="flex flex-wrap items-center gap-1.5 px-0.5">
         <Button
           variant="secondary"
           size="sm"
           disabled={busy}
-          onClick={() => void checkAndShowNotes()}
+          onClick={() => void check({ manual: true })}
         >
           {phase === "checking" ? t("Checking") : t("Check for updates")}
         </Button>
@@ -242,7 +227,7 @@ export function UpdateSection() {
             {t("Remind me later")}
           </Button>
         )}
-        <Button variant="ghost" size="sm" onClick={() => void copy(diagnostics, "Diagnostics copied")}>
+        <Button variant="ghost" size="sm" onClick={() => void copyTextWithFeedback(diagnostics)}>
           {t("Copy diagnostics")}
         </Button>
         {/* 外链必须走 opener 插件：WebView 里的裸 <a target="_blank"> 点了
@@ -256,9 +241,6 @@ export function UpdateSection() {
         </button>
       </div>
 
-      <ReleaseNotesDialog open={notesOpen} onClose={() => setNotesOpen(false)} release={notesRelease}
-        action={notesRelease && notesRelease.version === release?.version && canInstall ? <Button variant="primary" size="sm" disabled={busy}
-          onClick={() => { setNotesOpen(false); guard.requestInstall(); }}>{t("Download and install")}</Button> : undefined} />
       <UpdateRestartDialog
         open={guard.pendingAction !== null}
         action={guard.pendingAction === "restart" ? "restart" : "install"}

@@ -8,10 +8,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
-import { Field, Modal, fieldClass } from "@/components/ui/modal";
-import { Select } from "@/components/ui/select";
+import { Field } from "@/components/ui/modal";
+import { Input } from "@/components/ui/input";
+import { PageScroll } from "@/workbench/page-layout";
+import { CredentialPicker } from "@/workbench/credential-picker";
 import { useSubmit } from "@/hooks/use-submit";
-import type { CredentialRecord } from "@/api/ops-api";
 import { useDomainStore } from "@/stores/domain-store";
 
 /** How the quick-connect attempt authenticates. */
@@ -27,35 +28,37 @@ export interface QuickConnectTarget {
   port: number;
 }
 
-export function QuickConnectDialog({
+export function QuickConnectForm({
   onClose,
   onConnect,
 }: {
   onClose: () => void;
-  onConnect: (target: QuickConnectTarget, auth: QuickConnectAuth, saveAsServer: boolean) => void;
+  onConnect: (target: QuickConnectTarget, auth: QuickConnectAuth, saveAsServer: boolean) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const credentials = useDomainStore((s) => s.credentials);
   const [username, setUsername] = useState("root");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("22");
-  const [credentialId, setCredentialId] = useState<string>(credentials[0]?.id ?? "");
+  const [credentialId, setCredentialId] = useState<string>(credentials.find(item => item.username === "root")?.id ?? "");
   const [password, setPassword] = useState("");
   const [saveAsServer, setSaveAsServer] = useState(true);
   const submit = useSubmit();
+  const [creatingCredential, setCreatingCredential] = useState(false);
 
   const usingOneTimePassword = credentialId === "";
   const parsedPort = Number(port.trim());
 
   const connect = () =>
     submit.run(async () => {
+      if (creatingCredential) throw new Error(t("Save or cancel the new credential first"));
       const cleanHost = host.trim();
       if (!cleanHost) throw new Error(t("Please enter a host"));
       if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
         throw new Error(t("Port must be between 1 and 65535"));
       }
       if (usingOneTimePassword && !password) throw new Error(t("Please enter a password"));
-      onConnect(
+      await onConnect(
         { username: username.trim() || "root", host: cleanHost, port: parsedPort },
         usingOneTimePassword ? { password } : { credentialId },
         saveAsServer,
@@ -63,47 +66,22 @@ export function QuickConnectDialog({
     });
 
   return (
-    <Modal
-      open
-      width={440}
-      title={t("Quick connect")}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            {t("Cancel")}
-          </Button>
-          <Button variant="primary" size="sm" disabled={submit.pending} onClick={() => void connect()}>
-            {submit.pending ? t("Connecting") : t("Connect")}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        <Field label={t("Host")}>
-          <input
+    <form className="flex min-h-0 min-w-0 flex-1 flex-col" onSubmit={event => {event.preventDefault();void connect();}}>
+      <PageScroll width="reading">
+      <div className="flex flex-col gap-4 py-2">
+        <div className="page-form-heading">{t("Connection details")}</div>
+        <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3">
+        <Field label={t("Host")} required>
+          <Input
             autoFocus
-            className={fieldClass}
             value={host}
             onChange={(event) => setHost(event.target.value)}
             placeholder="192.168.1.10"
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void connect();
-            }}
           />
         </Field>
 
-        <div className="grid grid-cols-[1fr_96px] gap-2">
-          <Field label={t("Username")}>
-            <input
-              className={fieldClass}
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-          </Field>
-          <Field label={t("Port")}>
-            <input
-              className={fieldClass}
+          <Field label={t("Port")} required>
+            <Input
               inputMode="numeric"
               value={port}
               onChange={(event) => setPort(event.target.value)}
@@ -111,31 +89,18 @@ export function QuickConnectDialog({
           </Field>
         </div>
 
-        {credentials.length > 0 && (
-          <Field
-            label={t("Saved credentials")}
-            hint={t("Select \"one-time password\" to connect without any saved credentials")}
-          >
-            <Select
-              value={credentialId}
-              placeholder={t("Use one-time password (not saved)")}
-              onChange={setCredentialId}
-              options={[
-                { value: "", label: t("Use one-time password (not saved)") },
-                ...credentials.map((credential: CredentialRecord) => ({
-                  value: credential.id,
-                  label: `${credential.name} · ${credential.username}`,
-                  hint:
-                    credential.credential_type === "private_key"
-                      ? t("Private key")
-                      : t("Password"),
-                })),
-              ]}
-            />
-          </Field>
-        )}
+        <div className="flex flex-col gap-4 border-t border-line/60 pt-4">
+        <div className="page-form-heading">{t("Authentication")}</div>
+        <Field label={t("Username")}>
+          <Input value={username} disabled={creatingCredential} onChange={event => setUsername(event.target.value)} placeholder="root" />
+        </Field>
 
-        {usingOneTimePassword && (
+        <CredentialPicker value={credentialId} username={username} host={host}
+          label={t("Credential")} noneLabel={t("Use one-time password (not saved)")}
+          onChange={setCredentialId} onEditingChange={setCreatingCredential}
+          onCreated={credential=>{setCredentialId(credential.id);setUsername(credential.username);setPassword("");}} />
+
+        {usingOneTimePassword && !creatingCredential && (
           <Field
             label={t("One-time password")}
             hint={
@@ -144,20 +109,17 @@ export function QuickConnectDialog({
                 : t("Used for this connection only; not written to the system credential manager.")
             }
           >
-            <input
+            <Input
               type="password"
-              className={fieldClass}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void connect();
-              }}
               placeholder={t("Login password")}
             />
           </Field>
         )}
+        </div>
 
-        <label className="flex items-center gap-2 text-12 text-fg-muted">
+        <label className="flex items-center gap-2 border-t border-line/60 pt-4 text-12 text-fg-muted">
           <input type="checkbox" checked={saveAsServer} onChange={(event) => setSaveAsServer(event.target.checked)} />
           {t("Save as server (connect directly from the list next time)")}
         </label>
@@ -171,6 +133,13 @@ export function QuickConnectDialog({
 
         {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
-    </Modal>
+      </PageScroll>
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">
+        <Button variant="ghost" size="sm" disabled={submit.pending || creatingCredential} onClick={onClose}>{t("Cancel")}</Button>
+        <Button variant="primary" size="sm" type="submit" disabled={submit.pending || creatingCredential}>
+          {submit.pending ? t("Connecting") : t("Connect")}
+        </Button>
+      </div>
+    </form>
   );
 }

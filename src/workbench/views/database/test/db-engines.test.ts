@@ -68,6 +68,16 @@ function descriptor(
       export: unsupported("尚未适配"),
       export_sql: unsupported("尚未适配"),
     },
+    ddl_operations: {
+      create_table: unsupported("尚未适配"),
+      rename_table: unsupported("尚未适配"),
+      copy_table: unsupported("尚未适配"),
+      truncate_table: unsupported("尚未适配"),
+      drop_table: unsupported("尚未适配"),
+      alter_columns: unsupported("尚未适配"),
+      create_view: unsupported("尚未适配"),
+      drop_view: unsupported("尚未适配"),
+    },
     dialect_rules: {
       identifier_quote: "backtick",
       backslash_escapes: true,

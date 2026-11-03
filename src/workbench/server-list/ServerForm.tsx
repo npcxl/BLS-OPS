@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plug } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -11,11 +11,12 @@ import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useSubmit } from "@/hooks/use-submit";
 import { UNGROUPED_LABEL } from "./sections";
+import { PageScroll } from "@/workbench/page-layout";
+import { CredentialPicker } from "@/workbench/credential-picker";
 
 /** Full server editor. Shared by every sidebar and the workbench home. */
-export function ServerForm({ server, onClose }: { server: ServerRecord; onClose: () => void }) {
+export function ServerForm({ server, onClose, variant = "modal" }: { server: ServerRecord; onClose: () => void; variant?: "modal" | "inline" }) {
   const { t } = useTranslation();
-  const credentials = useDomainStore((s) => s.credentials);
   const groups = useDomainStore((s) => s.groups);
   const servers = useDomainStore((s) => s.servers);
   const saveServer = useDomainStore((s) => s.saveServer);
@@ -25,6 +26,8 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
   const [form, setForm] = useState<ServerRecord>(server);
   const [tagText, setTagText] = useState(server.tags.join(", "));
   const submit = useSubmit();
+  const [creatingCredential, setCreatingCredential] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const [testState, setTestState] = useState<{ pending: boolean; result: string | null }>({
     pending: false,
     result: null,
@@ -35,6 +38,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
 
   const save = () =>
     submit.run(async () => {
+      if (creatingCredential) throw new Error(t("Save or cancel the new credential first"));
       await saveServer({
         ...form,
         tags: tagText
@@ -95,6 +99,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        if (variant === "inline" && !bodyRef.current?.contains(document.activeElement)) return;
         event.preventDefault();
         if (!submit.pending) void save();
       }
@@ -103,39 +108,36 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
-  return (
-    <Modal
-      open
-      size="md"
-      title={isNew ? t("Add server") : t("Edit server — {{name}}", { name: server.name || server.host })}
-      onClose={onClose}
-      footer={
+  const footer = (
         <>
           {saveMessage && <span className="mr-auto text-11 text-success">{t(saveMessage)}</span>}
-          <Button variant="ghost" size="sm" disabled={submit.pending} onClick={onClose}>
+          <Button variant="ghost" size="sm" disabled={submit.pending || creatingCredential} onClick={onClose}>
             {t("Close")}
           </Button>
           <Button
             variant="primary"
             size="sm"
-            disabled={submit.pending}
-            onClick={() => void save()}
+            disabled={submit.pending || creatingCredential}
+            type={variant === "inline" ? "submit" : "button"}
+            onClick={variant === "modal" ? () => void save() : undefined}
           >
             {submit.pending ? t("Saving") : t("Save Ctrl+S")}
           </Button>
         </>
-      }
-    >
-      <div className="flex flex-col gap-2.5">
+  );
+  const body = (
+      <div ref={bodyRef} className={variant === "inline" ? "flex flex-col gap-4 py-2" : "flex flex-col gap-2.5"}>
+        {variant === "inline" && <div className="page-form-heading">{t("Connection details")}</div>}
         <Field label={t("Name")}>
           <Input
+            autoFocus={variant === "inline"}
             value={form.name}
             placeholder={t("e.g. API-01")}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
           />
         </Field>
 
-        <div className="grid grid-cols-[1fr_88px] gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3">
           <Field label={t("Host")}>
             <Input
               value={form.host}
@@ -154,40 +156,21 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
           </Field>
         </div>
 
+        {variant === "inline" && <div className="page-form-heading border-t border-line/60 pt-4">{t("Authentication")}</div>}
         <Field label={t("Username")}>
           <Input
+            disabled={creatingCredential}
             value={form.username}
             onChange={(event) => setForm({ ...form, username: event.target.value })}
           />
         </Field>
 
-        <Field
-          label={t("Credential")}
-          hint={
-            credentials.length === 0
-              ? t("No credentials yet. Create one in Settings → Credentials")
-              : undefined
-          }
-        >
-          {/* 空串 = 不选凭据，保持既有 `value || null` 语义（不能用 0/false 顶替）。 */}
-          <Select
-            value={form.credential_id ?? ""}
-            placeholder={t("No credential")}
-            onChange={(value) => setForm({ ...form, credential_id: value || null })}
-            options={[
-              { value: "", label: t("No credential") },
-              ...credentials.map((credential) => ({
-                value: credential.id,
-                label: `${credential.name} · ${credential.username}`,
-                hint:
-                  credential.credential_type === "private_key"
-                    ? t("Private key")
-                    : t("Password"),
-              })),
-            ]}
-          />
-        </Field>
+        <CredentialPicker value={form.credential_id ?? ""} username={form.username} host={form.host}
+          onEditingChange={setCreatingCredential}
+          onChange={id=>setForm(current=>({...current,credential_id:id||null}))}
+          onCreated={credential=>setForm(current=>({...current,credential_id:credential.id,username:credential.username}))} />
 
+        {variant === "inline" && <div className="page-form-heading border-t border-line/60 pt-4">{t("Asset details")}</div>}
         <Field label={t("Group")}>
           <Select
             value={form.group_id ?? ""}
@@ -226,7 +209,7 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
         </Field>
 
         <div className="flex items-center gap-2 pt-1">
-          <Button variant="outline" size="sm" disabled={testState.pending} onClick={() => void runTest()}>
+          <Button variant="outline" size="sm" disabled={testState.pending || creatingCredential} onClick={() => void runTest()}>
             <Plug size={12} />
             {testState.pending ? t("Testing…") : t("Test connection")}
           </Button>
@@ -237,6 +220,12 @@ export function ServerForm({ server, onClose }: { server: ServerRecord; onClose:
 
         {submit.error ? <ErrorState error={submit.error} compact /> : null}
       </div>
-    </Modal>
   );
+  if (variant === "inline") return <form className="flex min-h-0 min-w-0 flex-1 flex-col"
+    onSubmit={event => {event.preventDefault();void save();}}>
+    <PageScroll width="reading">{body}</PageScroll>
+    <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">{footer}</div>
+  </form>;
+  return <Modal open size="md" title={isNew ? t("Add server") : t("Edit server — {{name}}", {name:server.name || server.host})}
+    onClose={onClose} footer={footer} busy={submit.pending}>{body}</Modal>;
 }

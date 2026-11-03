@@ -18,10 +18,10 @@
 use std::sync::OnceLock;
 
 use super::capability::{
-    Capability, CapabilitySet, Dialect, DialectRules, DriverFamily, EndpointRequirement,
-    EngineDescriptor, EngineFields, EngineRequirements, EntryPolicy, IdentifierQuote,
-    Implementation, MySqlProductProfile, OptionField, OptionFieldKind, Transport, VerifiedLevel,
-    VerifiedScope, AURORA_MYSQL_PROFILE, DORIS_PROFILE, MYSQL_STANDARD_PROFILE,
+    Capability, CapabilitySet, DdlCapabilities, Dialect, DialectRules, DriverFamily,
+    EndpointRequirement, EngineDescriptor, EngineFields, EngineRequirements, EntryPolicy,
+    IdentifierQuote, Implementation, MySqlProductProfile, OptionField, OptionFieldKind, Transport,
+    VerifiedLevel, VerifiedScope, AURORA_MYSQL_PROFILE, DORIS_PROFILE, MYSQL_STANDARD_PROFILE,
     OCEANBASE_MYSQL_PROFILE, STARROCKS_PROFILE, TIDB_PROFILE,
 };
 use super::model::DbErrorInfo;
@@ -307,7 +307,7 @@ fn postgres_caps() -> CapabilitySet {
 ///
 /// 每项都对应真实调用点：`sqlite_catalog`、`sqlite_table`、`mutate::apply_sqlite`、
 /// `schema_ops` 的 SQLite 分支、`export::run_sqlite_export`。
-/// 改表（ALTER）确实没有：`schema_ops::alter_table_sql` 只接受 MySQL。
+/// 改表只做 SQLite 原生支持的列操作（ADD / RENAME / DROP COLUMN）与索引增删。
 fn sqlite_caps() -> CapabilitySet {
     CapabilitySet {
         query: Capability::Supported,
@@ -322,7 +322,9 @@ fn sqlite_caps() -> CapabilitySet {
         table_browse: Capability::Supported,
         keyset_pagination: Capability::Supported,
         table_edit: Capability::limited("单行增删改已接入（事务 + 乐观并发）；二进制列仍只读"),
-        schema_edit: Capability::limited("支持建表与删表；改表/改索引不支持（SQLite 需要重建表）"),
+        schema_edit: Capability::limited(
+            "支持建表/删表、加列、改列名、删列、索引增删；改类型/约束与索引改名需要重建表，建库/删库不支持",
+        ),
         view_edit: Capability::limited("支持创建/替换/删除视图；OR REPLACE 用先删后建实现"),
         export: Capability::limited("按表导出已接入；导出会重新查询，数据可能已变化"),
         export_sql: Capability::unsupported("SQLite 的自定义 SQL 导出尚未接入：请按表导出"),
@@ -368,6 +370,16 @@ fn hidden(mut engine: EngineDescriptor, reason: &'static str) -> EngineDescripto
     engine
 }
 
+/// 逐项 DDL 能力默认跟随 `schema_edit` / `view_edit`；有真实差异的引擎
+/// 在调用它之后再单独覆盖某一项（例如 SQLite 的复制表）。
+fn inherit_ddl(mut engine: EngineDescriptor) -> EngineDescriptor {
+    engine.ddl_operations = DdlCapabilities::from_schema(
+        &engine.capabilities.schema_edit,
+        &engine.capabilities.view_edit,
+    );
+    engine
+}
+
 fn network(
     id: &'static str,
     product: &'static str,
@@ -395,6 +407,9 @@ fn network(
         requirements,
         options,
         capabilities: CapabilitySet::unimplemented("尚未适配"),
+        // 逐项 DDL 默认全关；接入了 DDL 的引擎用 `inherit_ddl` 按
+        // `schema_edit`/`view_edit` 推导，再覆盖真实差异。
+        ddl_operations: DdlCapabilities::unimplemented("尚未适配"),
         dialect_rules: rules,
         verified: vec![VerifiedScope {
             versions: "—".to_string(),
@@ -472,7 +487,7 @@ fn build() -> Vec<EngineDescriptor> {
         notes: "本地容器跑通连接/类型/分页/取消/事务修改/DDL/导出；双向 TLS 与 5.7 未验证"
             .to_string(),
     }];
-    engines.push(mysql);
+    engines.push(inherit_ddl(mysql));
 
     // 复用 mysql_async 不等于 MariaDB 全等：认证插件与部分 DDL 语法要按版本验证。
     let mut mariadb = mysql_family(
@@ -493,7 +508,7 @@ fn build() -> Vec<EngineDescriptor> {
                 JSON 列在 MariaDB 上是 LONGTEXT（驱动返回文本/二进制）；TLS 与 SSH 隧道未验证"
             .to_string(),
     }];
-    engines.push(mariadb);
+    engines.push(inherit_ddl(mariadb));
 
     let mut postgres = postgres_family(
         "postgres",
@@ -513,6 +528,11 @@ fn build() -> Vec<EngineDescriptor> {
                 拒绝写入；改表与改索引、自定义 SQL 导出、TLS 与 SSH 隧道未验证"
             .to_string(),
     }];
+    let mut postgres = inherit_ddl(postgres);
+    // PostgreSQL 侧只接了"建表 / 删表 / 视图"：改列与改索引没有 DDL 生成器，
+    // 复制表也只是把结构+数据搬过去，外键与序列不会跟着走 —— 逐项写清楚。
+    postgres.ddl_operations.alter_columns =
+        Capability::unsupported("PostgreSQL 的改列/改索引尚未接入：请用 SQL 工作区手动执行");
     engines.push(postgres);
 
     let mut sqlite = network(
@@ -546,6 +566,11 @@ fn build() -> Vec<EngineDescriptor> {
     }];
     // **不要**再套 `config_only`：SQLite 六条链路都有真实实现，套上去会把
     // 全部能力改写成 "尚未适配"，界面上就变成一个"能连不能看"的空壳。
+    let mut sqlite = inherit_ddl(sqlite);
+    // 复制表是 SQLite 唯一的缺口：没有 `CREATE TABLE … LIKE`，也没接
+    // "读建表语句再改写"。菜单据此单独置灰，而不是整个 schema_edit 一起关。
+    sqlite.ddl_operations.copy_table =
+        Capability::unsupported("SQLite 没有 CREATE TABLE … LIKE：复制表尚未接入");
     engines.push(sqlite);
 
     let mut redis = network(
@@ -645,7 +670,7 @@ fn build() -> Vec<EngineDescriptor> {
                     未验证项按能力标注，不视为已验证"
                 .to_string(),
         }];
-        engines.push(hidden(engine, reason));
+        engines.push(hidden(inherit_ddl(engine), reason));
     }
 
     engines.push(hidden(
@@ -824,6 +849,44 @@ pub fn is_supported(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 新建连接列表里只能有真实驱动：没驱动的引擎必须 Hidden（旧配置仍可编辑）。
+    #[test]
+    fn only_implemented_engines_are_listed() {
+        for engine in all() {
+            if engine.is_listed() {
+                assert!(
+                    engine.is_implemented(),
+                    "{} 没有驱动却出现在新建列表",
+                    engine.id
+                );
+            }
+        }
+        for id in ["mysql", "mariadb", "postgres", "sqlite", "redis"] {
+            let engine = find(id).expect("registered");
+            assert!(engine.is_implemented(), "{id} 应已实现");
+            assert!(engine.is_listed(), "{id} 有驱动但不在新建列表");
+        }
+        // 明确不做的引擎：注册与旧配置保留，但不再出现在新建入口。
+        for id in [
+            "cockroach",
+            "aurora_pg",
+            "sqlserver",
+            "oracle",
+            "mongodb",
+            "clickhouse",
+        ] {
+            let engine = find(id).expect("registered");
+            assert!(!engine.is_implemented(), "{id} 不能宣称已实现");
+            assert!(!engine.is_listed(), "{id} 没有驱动，不能出现在新建列表");
+            assert!(
+                engine
+                    .hidden_reason()
+                    .is_some_and(|reason| !reason.is_empty()),
+                "{id} 隐藏必须给原因"
+            );
+        }
+    }
 
     #[test]
     fn mysql_compatible_default_ports_follow_the_product() {
@@ -1047,11 +1110,10 @@ mod tests {
                 cap
             );
         }
-        // 确实没有的两项必须带原因，不能沉默。
-        assert_eq!(
-            sqlite.capabilities.schema_edit.reason().map(str::to_string),
-            Some("支持建表与删表；改表/改索引不支持（SQLite 需要重建表）".to_string())
-        );
+        // 受限范围必须写清楚：建库/删库与"原地改类型"确实不支持。
+        let reason = sqlite.capabilities.schema_edit.reason().unwrap_or_default();
+        assert!(reason.contains("建库/删库不支持"), "实际：{reason}");
+        assert!(reason.contains("重建表"), "实际：{reason}");
     }
 
     /// PostgreSQL：执行/浏览/编辑/导出都已接通，但每项都有真实限制。
@@ -1211,6 +1273,52 @@ mod tests {
         );
         assert_eq!(sqlite["capabilities"]["table_browse"]["state"], "supported");
         assert_eq!(sqlite["entry"]["state"], "listed");
+    }
+
+    /// 逐项 DDL：同一个 `schema_edit` 之下必须能区分具体操作。
+    ///
+    /// 回归点：以前菜单只读 `schema_edit` 一个开关，SQLite 的"复制表"跟着
+    /// 一起亮，点下去必然失败。
+    #[test]
+    fn ddl_operations_are_declared_per_action() {
+        let mysql = find("mysql").expect("mysql");
+        for (name, capability) in [
+            ("create_table", &mysql.ddl_operations.create_table),
+            ("rename_table", &mysql.ddl_operations.rename_table),
+            ("copy_table", &mysql.ddl_operations.copy_table),
+            ("truncate_table", &mysql.ddl_operations.truncate_table),
+            ("drop_table", &mysql.ddl_operations.drop_table),
+            ("alter_columns", &mysql.ddl_operations.alter_columns),
+            ("create_view", &mysql.ddl_operations.create_view),
+            ("drop_view", &mysql.ddl_operations.drop_view),
+        ] {
+            assert!(capability.is_available(), "MySQL 的 {name} 已接入");
+        }
+
+        let sqlite = find("sqlite").expect("sqlite");
+        assert!(sqlite.ddl_operations.rename_table.is_available());
+        assert!(!sqlite.ddl_operations.copy_table.is_available());
+        assert!(
+            sqlite
+                .ddl_operations
+                .copy_table
+                .reason()
+                .is_some_and(|reason| reason.contains("CREATE TABLE")),
+            "SQLite 的复制表必须说明缺口，而不是笼统的「未支持」"
+        );
+
+        let postgres = find("postgres").expect("postgres");
+        assert!(postgres.ddl_operations.drop_table.is_available());
+        assert!(postgres.ddl_operations.copy_table.is_available());
+        assert!(!postgres.ddl_operations.alter_columns.is_available());
+
+        let redis = find("redis").expect("redis");
+        assert!(!redis.ddl_operations.create_table.is_available());
+
+        // JSON 契约：前端按 `ddl_operations.<op>.state` 读。
+        let value = serde_json::to_value(mysql).expect("serialize");
+        assert!(value["ddl_operations"]["copy_table"]["state"].is_string());
+        assert!(value["ddl_operations"]["truncate_table"].is_object());
     }
 
     #[test]

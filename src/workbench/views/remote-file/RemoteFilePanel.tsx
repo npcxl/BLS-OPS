@@ -44,7 +44,7 @@ import { editorSyncEvent } from "@/lib/events";
 import { useDomainStore } from "@/stores/domain-store";
 import { useSessionStore } from "@/stores/session-store";
 import { fileKind, isEditableKind } from "@/lib/file-kind";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
 import { useDirSizeStore } from "@/stores/dir-size-store";

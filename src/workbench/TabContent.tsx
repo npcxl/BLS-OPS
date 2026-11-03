@@ -5,6 +5,7 @@ import type { WorkspaceTab } from "@/workbench/types";
 import { WorkbenchHome } from "@/workbench/views/home/WorkbenchHome";
 import { ModulePage } from "@/workbench/ModulePage";
 import { PlaceholderView } from "@/workbench/views/PlaceholderView";
+import { ServerSetupPage } from "@/workbench/server-list/ServerSetupPage";
 
 /**
  * xterm and its addons are ~400 KB of the bundle and are only needed once a
@@ -84,6 +85,8 @@ export function TabContent({ tab }: { tab: WorkspaceTab }) {
           <TerminalView tab={tab} />
         </Suspense>
       );
+    case "server":
+      return <ServerSetupPage tabId={tab.id} />;
     case "monitor":
       return (
         <Suspense fallback={<TerminalFallback />}>

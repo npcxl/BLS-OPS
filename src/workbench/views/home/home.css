@@ -10,9 +10,6 @@
 .workbench-home .home-hero .page-description { margin-top:14px; font-size:14px; line-height:1.8; color:rgb(var(--fg-muted)); }
 .workbench-home .home-hero-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:24px; }
 .workbench-home .home-hero-actions > button { min-height:34px; padding-inline:16px; border-radius:6px; font-size:12px; box-shadow:none; }
-.workbench-home .home-hero-actions > button:first-child { color:rgb(var(--surface-1)); background:rgb(var(--fg)); border-color:rgb(var(--fg)); }
-.workbench-home .home-hero-actions > button:first-child:hover { opacity:.85; }
-.workbench-home .home-hero-actions > button:not(:first-child) { background:transparent; color:rgb(var(--fg)); border:1px solid rgb(var(--line)); }
 .workbench-home .page-section-title { font-size:14px; font-weight:500; color:rgb(var(--fg)); letter-spacing:0; }
 .workbench-home .page-section { gap:14px; }
 .workbench-home .home-overview { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-block:1px solid rgb(var(--line)/.8); }

@@ -1,0 +1,30 @@
+/* Connection-only layout; surfaces and colors inherit the product theme. */
+.db-connection-form { gap: 16px; min-width: 0; }
+.db-connection-scroll { container-type: inline-size; }
+.db-connection-page .db-connection-form { padding-block: 10px 18px; }
+.db-connection-modal .db-connection-form { padding: 8px 6px; }
+.db-connection-endpoint { grid-template-columns: minmax(0, 1fr) minmax(110px, .32fr); }
+.db-connection-section-heading { margin-bottom: 2px; }
+.db-connection-auth, .db-connection-advanced { border-top: 1px solid rgb(var(--line) / .65); padding-top: 14px; }
+.db-connection-auth > .page-form-heading { margin-bottom: 10px; }
+.db-connection-advanced > button { justify-content: flex-start; gap: 8px; }
+.db-connection-advanced > button > span:first-of-type { color: rgb(var(--fg-muted)); font-size: 13px; font-weight: 600; }
+.db-connection-footer > button:last-child { min-width: 112px; }
+.db-engine-popover { position: fixed; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid rgb(var(--line) / .8); border-radius: 16px; background: rgb(var(--surface-1) / .94); backdrop-filter: blur(24px) saturate(125%); box-shadow: 0 14px 40px rgb(0 0 0 / .14), inset 0 1px 0 rgb(255 255 255 / .12); }
+.db-engine-popover [aria-selected="true"] { border-color: rgb(var(--accent) / .2); }
+@container (max-width: 440px) {
+  .db-connection-columns { grid-template-columns: minmax(0, 1fr); }
+  .db-connection-section-heading { flex-wrap: wrap; }
+}
+@media (max-width: 480px) {
+  .db-connection-columns { grid-template-columns: minmax(0, 1fr); }
+  .db-connection-endpoint { grid-template-columns: minmax(0, 1fr) 100px; }
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .db-engine-popover { background: rgb(var(--surface-1)); }
+}
+
+/* 深色下阴影要更重、内高光要更淡：0.12 的白线在深底上会变成一条实心亮边。 */
+:root[data-theme="dark"] .db-engine-popover {
+  box-shadow: 0 18px 48px rgb(0 0 0 / .52), inset 0 1px 0 rgb(255 255 255 / .06);
+}

@@ -98,7 +98,6 @@ export default {
   "A component crashed at runtime. You can retry, or copy the error details to report it.":
     "某个组件在运行时崩溃。你可以重试，或复制错误信息反馈给开发者。",
   "Copy error details": "複製錯誤資訊",
-  "Copy failed": "複製失敗",
   "Copy failed. Please check clipboard permission": "複製失敗，請檢查剪貼簿許可權",
   "No results": "無結果",
   "No content": "暫無內容",
@@ -122,7 +121,6 @@ export default {
   "Details: {{detail}}": "具體原因：{{detail}}",
   "Error code: {{code}}": "錯誤代碼：{{code}}",
   "Copy diagnostics": "複製診斷資訊",
-  "Diagnostics copied": "診斷資訊已複製",
   "Download manually from GitHub": "前往 GitHub 手動下載",
   "Opening the browser failed": "開啟瀏覽器失敗",
   Quit: "結束",

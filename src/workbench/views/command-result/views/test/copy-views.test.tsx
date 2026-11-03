@@ -209,7 +209,7 @@ describe("复制提示（共用 CopyNotice）", () => {
       await act(async () => {
         nodes("kv-value")[0].click();
       });
-      const layer = container.querySelector('[data-testid="copy-notice"]')?.parentElement;
+      const layer = container.querySelector('[data-testid="copy-notice"]')?.closest('[role="status"]');
       expect(layer?.className).toContain("absolute");
       expect(layer?.className).toContain("pointer-events-none");
       expect(layer?.getAttribute("aria-live")).toBe("polite");

@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Bot, Database, FileDescriptionIcon, Info, Monitor, RefreshCw, ShieldCheck, TerminalIcon, type IconComponent } from "@/components/icons";
-import { Button } from "@/components/ui/button";
 import { PageHeader, PageScroll, PageSurface } from "./page-layout";
-import { SettingsContextSidebar, type SettingsCategory } from "./settings-context-sidebar";
-import { ReleaseNotesDialog } from "./updater/ReleaseNotesDialog";
+import { SettingsContextSidebar } from "./settings-context-sidebar";
+import { ReleaseNotesPanel } from "./updater/ReleaseNotesPanel";
+import { useSettingsNavigation, type SettingsPageCategory as Category } from "./settings-navigation";
+import { useUpdaterStore } from "@/stores/updater-store";
 import "./settings-page.css";
 
-type Category = SettingsCategory | "release-notes";
 const CATEGORIES: {id: Category; title: string; icon: IconComponent; divider?: boolean}[] = [
   {id:"general", title:"General settings", icon:Monitor},
   {id:"terminal", title:"Terminal & shortcuts", icon:TerminalIcon},
@@ -22,8 +22,9 @@ const CATEGORIES: {id: Category; title: string; icon: IconComponent; divider?: b
 /** Settings owns its two scroll regions; changing category never alters the app shell. */
 export function SettingsPage() {
   const {t} = useTranslation();
-  const [category, setCategory] = useState<Category>("general");
-  const [notesOpen, setNotesOpen] = useState(false);
+  const category = useSettingsNavigation(state => state.category);
+  const setCategory = useSettingsNavigation(state => state.setCategory);
+  const release = useUpdaterStore(state => state.release);
   const viewport = useRef<HTMLDivElement>(null);
   const active = CATEGORIES.find(item=>item.id===category)!;
   useEffect(()=>{if(viewport.current) viewport.current.scrollTop=0;},[category]);
@@ -36,24 +37,20 @@ export function SettingsPage() {
             const Icon=item.icon;
             return <button key={item.id} type="button" aria-current={category===item.id ? "page" : undefined}
               className={item.divider ? "settings-nav-item settings-nav-divider" : "settings-nav-item"}
-              onClick={()=>{setCategory(item.id); if(item.id==="release-notes") setNotesOpen(true);}}>
+              onClick={()=>setCategory(item.id)}>
               <Icon size={17} strokeWidth={1.65} /><span>{t(item.title)}</span>
+              {(item.id === "updates" || item.id === "release-notes") && release &&
+                <span className="settings-update-badge" aria-label={t("A new version is available")}>v{release.version}</span>}
             </button>;
           })}
         </nav>
       </aside>
-      <section className="settings-detail" aria-label={t(active.title)}>
-        <PageHeader title={t(active.title)} bordered />
+      <section className={`settings-detail${category === "release-notes" ? " settings-detail--release-notes" : ""}`} aria-label={t(active.title)}>
+        {category !== "release-notes" && <PageHeader title={t(active.title)} bordered />}
         <PageScroll width="reading" viewportRef={viewport}>
-          {category === "release-notes" ? <div className="settings-release-entry">
-            <span className="settings-release-icon"><FileDescriptionIcon size={29} strokeWidth={1.4} /></span>
-            <h2>{t("Release notes")}</h2>
-            <p>{t("Only the latest release is shown.")}</p>
-            <Button variant="secondary" size="sm" onClick={()=>setNotesOpen(true)}>{t("View latest release notes")}</Button>
-          </div> : <SettingsContextSidebar category={category} />}
+          {category === "release-notes" ? <ReleaseNotesPanel /> : <SettingsContextSidebar category={category} />}
         </PageScroll>
       </section>
     </div>
-    <ReleaseNotesDialog open={notesOpen} onClose={()=>setNotesOpen(false)} />
   </PageSurface>;
 }

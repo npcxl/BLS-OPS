@@ -7,7 +7,7 @@ import { Copy, Pencil, Plug, Server as ServerIcon, Star, Trash2 } from "@/compon
 import { Button } from "@/components/ui/button";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { Tooltip } from "@/components/ui/tooltip";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import type { ServerRecord } from "@/api/ops-api";
 import { relativeTime, timestampTitle } from "./utils";
 

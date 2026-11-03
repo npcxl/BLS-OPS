@@ -144,6 +144,9 @@ export function MenuItemRow({
       aria-haspopup={hasChildren || undefined}
       aria-expanded={hasChildren ? submenuOpen : undefined}
       data-submenu-open={hasChildren && submenuOpen ? "true" : undefined}
+      // 禁用原因用原生 tooltip 显示：菜单里没有空间铺长文案，而原因必须
+      // 和主窗口按钮说的是同一句（同一个能力声明的 reason）。
+      title={item.reason}
       disabled={item.disabled}
       className={cn(
         "relative my-0.5 flex h-8 w-full cursor-default items-center rounded-[8px] gap-2 pl-3 pr-2 text-12 select-none transition-colors",

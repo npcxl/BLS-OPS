@@ -1,7 +1,6 @@
-import { useState } from "react";
-import { Check, Copy } from "@/components/icons";
+import { Copy } from "@/components/icons";
 import { useTranslation } from "react-i18next";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { segmentLine } from "@/workbench/views/terminal/result-search";
 
 /** 命中片段包 `<mark>`（底色由主题令牌控制），原文不改。 */
@@ -54,25 +53,17 @@ export function RawStreamView({
   searchQuery?: string;
 }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    if (await copyText(stdout || "")) {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    }
-  };
 
   return (
     <div className="relative h-full min-w-0 bg-surface-1">
       <button
         type="button"
-        onClick={() => void copy()}
+        onClick={() => void copyTextWithFeedback(stdout || "")}
         className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
         title={t("Copy raw output (without escape markers)")}
       >
-        {copied ? <Check size={11} /> : <Copy size={11} />}
-        {copied ? t("Copied") : t("Copy")}
+        <Copy size={11} />
+        {t("Copy")}
       </button>
       <div className="h-full overflow-auto">
         <pre className="w-max whitespace-pre px-3 py-2.5 font-mono text-11 leading-[1.8] text-fg-muted">

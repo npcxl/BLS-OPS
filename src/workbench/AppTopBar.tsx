@@ -1,4 +1,4 @@
-import { PanelLeftOpen } from "@/components/icons";
+import { PanelLeftOpen, Search } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { cn } from "@/lib/cn";
@@ -29,6 +29,8 @@ export function AppTopBar() {
   const activeModule = useWorkbenchStore((s) => s.activeModule);
   const collapsed = useWorkbenchStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
+  const setCommandPaletteOpen = useWorkbenchStore((s) => s.setCommandPaletteOpen);
+  const commandPaletteOpen = useWorkbenchStore((s) => s.commandPaletteOpen);
 
   const mac = isMacOS();
 
@@ -73,6 +75,22 @@ export function AppTopBar() {
       <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-11 font-medium text-fg-subtle opacity-0 transition-opacity duration-150 group-hover:opacity-100">
         {t(MODULE_TITLES[activeModule] ?? "Ops Workbench")}
       </span>
+      {/* 不占标题栏布局空间；Windows 三个窗口按钮共 132px，左侧留 12px。 */}
+      <button
+        type="button"
+        data-tauri-drag-region="false"
+        aria-label={t("Search actions, servers, tasks…")}
+        title={t("Search actions, servers, tasks…")}
+        aria-haspopup="dialog"
+        aria-expanded={commandPaletteOpen}
+        onClick={() => setCommandPaletteOpen(true)}
+        className={cn(
+          "absolute top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[6px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent",
+          mac ? "right-3" : "right-[144px]",
+        )}
+      >
+        <Search size={14} strokeWidth={1.8} aria-hidden="true" />
+      </button>
       {!mac && <WindowControls />}
     </header>
   );

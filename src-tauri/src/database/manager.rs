@@ -20,7 +20,9 @@ use super::driver::{self, EndpointPlan};
 use super::engine_registry;
 use super::export::ExportRegistry;
 use super::metadata::MetadataCache;
-use super::model::{ConnectionTestResult, DbErrorInfo, DbSessionInfo, ProfileRuntimeStatus};
+use super::model::{
+    ConnectionTestResult, DbErrorInfo, DbSessionInfo, ProfileRuntimeStatus, TLS_DISABLED,
+};
 use super::profiles;
 use super::query::QueryRegistry;
 use super::runtime::ProfileRuntime;
@@ -315,7 +317,12 @@ impl DatabaseManager {
         use mysql_async::prelude::Queryable;
         match tokio::time::timeout(timeout, conn.ping()).await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => return Err(driver::map_error(&error, "tcp")),
+            Ok(Err(error)) => {
+                return Err(driver::map_connect_error(
+                    &error,
+                    runtime.endpoint.profile.tls_mode != TLS_DISABLED,
+                ))
+            }
             Err(_) => return Err(DbErrorInfo::new("tcp", "建立会话后探活超时").retryable(true)),
         }
 

@@ -5,17 +5,19 @@
  * - 单击切换；中键关闭；双击预览标签 → 固定为常驻；
  * - 拖动排序（只影响本连接，跨连接各自一条标签条）；
  * - 右键：关闭 / 关闭其他 / 关闭右侧 / 固定 / 复制名称；
- * - 预览标签用斜体标题表示"会被下一次单击替换"，有草稿时自动升级（见 store）。
+ * - 预览标签用小标记表示"会被下一次单击替换"，有草稿时自动升级（见 store）。
  * - 标签多到需要横向滚动时，右侧的「已打开的标签」浮窗（OpenTabsMenu）
  *   提供一次看全 + 搜索，两层数据同源，不额外维护列表状态。
  *
  * 关闭动作一律**回调给 DatabaseView**：它才知道运行中的查询、待提交修改与
  * 未提交事务该怎么收尾。这里不直接调 `close()`，否则会绕过风险确认。
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Columns3,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Database as DatabaseIcon,
   Loader2,
@@ -28,7 +30,7 @@ import {
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import {
   orderedItems,
@@ -44,6 +46,17 @@ const KIND_ICON = {
   query: SquareTerminal,
   objects: DatabaseIcon,
 } as const;
+
+/** 标签条两端的渐隐：只在那一侧确实被挡住时出现。 */
+function tabStripMask(left: boolean, right: boolean): string | undefined {
+  if (!left && !right) return undefined;
+  const stops: string[] = [];
+  stops.push(left ? "transparent 0px" : "#000 0px");
+  if (left) stops.push("#000 20px");
+  if (right) stops.push("#000 calc(100% - 20px)");
+  stops.push(right ? "transparent 100%" : "#000 100%");
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+}
 
 function ItemBadges({ item }: { item: WorkItem }) {
   const { t } = useTranslation();
@@ -112,6 +125,63 @@ export function DatabaseTabBar({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const dragRef = useRef<string | null>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  /** 左右是否还有被挡住的标签：用来给两端加渐隐提示。 */
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const hasOverflow = edges.left || edges.right;
+
+  // 标签条是横向的，鼠标滚轮默认只给纵向（这里被隐藏了）—— 不转发的话
+  // 用户会觉得"标签太多滚不动"。React 的 onWheel 是 passive 的，
+  // preventDefault 不生效，所以必须用原生监听。
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const onWheel = (event: WheelEvent) => {
+      if (strip.scrollWidth <= strip.clientWidth) return;
+      // 触控板的横向手势（deltaX）优先，普通滚轮用 deltaY。
+      const unit = event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? strip.clientWidth : 1;
+      const delta = (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * unit;
+      if (delta === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      strip.scrollLeft += delta;
+    };
+    strip.addEventListener("wheel", onWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // 两端渐隐 + 切标签时把它滚进可见区。
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const sync = () => {
+      const max = strip.scrollWidth - strip.clientWidth;
+      setEdges({ left: strip.scrollLeft > 1, right: max > 1 && strip.scrollLeft < max - 1 });
+    };
+    sync();
+    strip.addEventListener("scroll", sync, { passive: true });
+    // 测试环境（happy-dom）没有 ResizeObserver：没有它只是少了窗口缩放时的
+    // 渐隐刷新，不影响滚动本身。
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    observer?.observe(strip);
+    return () => {
+      strip.removeEventListener("scroll", sync);
+      observer?.disconnect();
+    };
+  }, [items.length]);
+
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip || !effectiveActiveId) return;
+    const tab = strip.querySelector<HTMLElement>("[data-tab-active='true']");
+    // 只滚标签条，不要连带滚动页面。
+    if (!tab) return;
+    const left = tab.offsetLeft;
+    const right = left + tab.offsetWidth;
+    if (left < strip.scrollLeft) strip.scrollLeft = left;
+    else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth;
+  }, [effectiveActiveId, items.length, hasOverflow]);
 
   const buildMenu = (item: WorkItem) => [
     {
@@ -151,11 +221,22 @@ export function DatabaseTabBar({
   ];
 
   return (
-    <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1 border-b border-divider/70 bg-transparent px-[var(--page-inline)]">
+    <div className="flex h-[var(--page-toolbar-height)] w-full min-w-0 max-w-full shrink-0 items-center gap-1 overflow-hidden border-b border-divider/70 bg-transparent px-[var(--page-inline)]">
+      {(edges.left || edges.right) && <button type="button" aria-label={t("向左滚动标签")}
+        title={t("向左滚动标签")} disabled={!edges.left}
+        className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
+        onClick={() => { const strip = stripRef.current; if (strip) strip.scrollLeft -= Math.max(160, strip.clientWidth * .7); }}><ChevronLeft size={13} /></button>}
+      <div className="relative flex min-w-0 flex-1 basis-0 items-center overflow-hidden">
       <div
+        ref={stripRef}
         role="tablist"
         aria-label={t("工作区标签")}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        // 滚轮可滚动 + 两端渐隐：标签条不显示滚动条，用户需要知道"还有更多"。
+        style={{
+          maskImage: tabStripMask(edges.left, edges.right),
+          WebkitMaskImage: tabStripMask(edges.left, edges.right),
+        }}
       >
         {items.map((item) => {
           const active = item.id === effectiveActiveId;
@@ -166,8 +247,9 @@ export function DatabaseTabBar({
               key={item.id}
               role="tab"
               aria-selected={active}
+              data-tab-active={active ? "true" : undefined}
               tabIndex={active ? 0 : -1}
-              title={`${connectionName} › ${item.database ?? "—"} › ${item.objectName}`}
+              title={`${connectionName} › ${item.database ?? "—"} › ${item.objectName}${item.preview ? ` · ${t("预览标签，双击保留")}` : ""}`}
               draggable
               onDragStart={(event) => {
                 dragRef.current = item.id;
@@ -213,7 +295,7 @@ export function DatabaseTabBar({
               className={cn(
                 "group relative flex h-[26px] max-w-[200px] min-w-[112px] shrink-0 cursor-default items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] outline-none transition-colors",
                 active
-                  ? "bg-tab-active text-fg shadow-[var(--tab-active-shadow)]"
+                  ? "bg-tab-active text-tab-active-fg shadow-[var(--tab-active-shadow)]"
                   : "text-fg-muted hover:bg-tab-hover hover:text-fg",
                 isDropTarget && "before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-full before:bg-accent",
                 draggingId === item.id && "opacity-50",
@@ -224,15 +306,10 @@ export function DatabaseTabBar({
                 strokeWidth={1.75}
                 className={cn("shrink-0", active ? "text-accent" : "text-fg-subtle")}
               />
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate",
-                  // 预览标签斜体：一眼能看出它会被下一次单击替换。
-                  item.preview && "italic",
-                )}
-              >
+              <span className="min-w-0 flex-1 truncate">
                 {item.title}
               </span>
+              {item.preview && <span className="shrink-0 rounded bg-surface-2 px-1 text-10 not-italic text-fg-subtle">{t("预览")}</span>}
               {item.pinned && <Pin size={10} className="shrink-0 text-fg-subtle" />}
               <ItemBadges item={item} />
               <button
@@ -253,6 +330,11 @@ export function DatabaseTabBar({
           );
         })}
       </div>
+      </div>
+      {(edges.left || edges.right) && <button type="button" aria-label={t("向右滚动标签")}
+        title={t("向右滚动标签")} disabled={!edges.right}
+        className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
+        onClick={() => { const strip = stripRef.current; if (strip) strip.scrollLeft += Math.max(160, strip.clientWidth * .7); }}><ChevronRight size={13} /></button>}
 
       <div className="flex shrink-0 items-center gap-1 px-1.5">
         {/* 标签多到要横向滚动时，用它一次看全：搜索 + 键盘选择，底部保留新建查询。 */}

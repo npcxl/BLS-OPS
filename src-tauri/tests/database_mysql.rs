@@ -248,6 +248,37 @@ async fn drain(registry: &query::QueryRegistry, query_id: &str) -> Vec<DbBatch> 
     batches
 }
 
+/// 握手探测：连接失败时的诊断靠它读服务器问候包，必须能对真实服务器工作。
+#[tokio::test]
+async fn greeting_probe_reads_the_real_server() {
+    let profile = profile();
+    let greeting =
+        match driver::probe_greeting(&profile.host, profile.port, Duration::from_secs(5)).await {
+            Ok(greeting) => greeting,
+            Err(reason) => {
+                eprintln!("skip greeting probe: {reason}");
+                return;
+            }
+        };
+    assert_eq!(greeting.protocol_version, 10);
+    assert!(
+        !greeting.server_version.is_empty(),
+        "必须读出服务器版本，实际得到 {greeting:?}"
+    );
+    assert!(
+        greeting
+            .auth_plugin
+            .as_deref()
+            .is_some_and(|plugin| plugin.contains("password") || plugin.contains("auth")),
+        "必须读出认证插件名，实际得到 {greeting:?}"
+    );
+    // 不硬性要求 TLS：只把事实打出来，排查时对照用。
+    eprintln!(
+        "[greeting] {} (ssl={} plugin={:?})",
+        greeting.server_version, greeting.ssl_supported, greeting.auth_plugin
+    );
+}
+
 #[tokio::test]
 async fn mysql_types_multi_result_and_cancel() {
     let (path, conn) = temp_app_db();

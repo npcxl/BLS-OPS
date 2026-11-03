@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Boxes } from "@/components/icons";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/lib/cn";
+import { SegmentedControl } from "@/workbench/page-layout";
 import { ModuleEmpty } from "@/workbench/views/module-frame";
 import type { DeploymentInstance } from "@/api/ops-api";
 import { instanceRole } from "../classify";
@@ -83,29 +83,17 @@ export function TabRuntime({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {FILTERS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setFilter(f.id)}
-            className={cn(
-              "rounded-full px-2.5 py-1 text-10 transition-colors",
-              filter === f.id
-                ? "bg-accent/15 text-accent"
-                : "bg-surface-2 text-fg-subtle hover:text-fg",
-            )}
-          >
-            {t(f.labelKey)}
-            <span className="ml-1 tabular-nums opacity-70">{counts[f.id]}</span>
-          </button>
-        ))}
-      </div>
+      <SegmentedControl className="project-filters" value={filter} onChange={setFilter}
+        label={t("App services")}
+        items={FILTERS.map(f => ({ id: f.id, label: <>{t(f.labelKey)}<span className="project-filter-count">{counts[f.id]}</span></> }))} />
 
       {visible.length === 0 ? (
-        <p className="text-11 text-fg-subtle">{t("No instances match this filter.")}</p>
+        <div className="project-filter-empty">
+          <p>{t("No instances match this filter.")}</p>
+          <button type="button" onClick={() => setFilter("all")}>{t("All apps")}</button>
+        </div>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="project-card-list">
           {visible.map((instance) => (
             <RuntimeInstanceCard
               key={instance.id}

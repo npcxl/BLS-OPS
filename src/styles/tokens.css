@@ -36,7 +36,8 @@
    * 深色主题会把高光压到接近 0（见下方）；0.55 的白色内高光在深底上
    * 会变成一条实心白边，整条 tab 条就显得很"重"。 */
   --tab-hover: 236 242 249;
-  --tab-active: 226 235 246;
+  --tab-active: 236 236 236;
+  --tab-active-fg: 38 38 38;
   --tab-active-shadow: inset 0 1px 0 rgb(255 255 255 / 0.55), 0 1px 2px rgb(15 23 42 / 0.06);
 
   /* ── 表单控件 ──
@@ -118,6 +119,7 @@
      surface-active(50 58 72) 这种实心块在深底上像按钮，压过内容。 */
   --tab-hover: 32 37 46;
   --tab-active: 40 46 57;
+  --tab-active-fg: 236 239 245;
   --tab-active-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.28);
 
   --field-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
@@ -193,6 +195,7 @@
   /* ── Tabs（阴影走 --tab-active-shadow，不在这里注册）── */
   --color-tab-hover: rgb(var(--tab-hover));
   --color-tab-active: rgb(var(--tab-active));
+  --color-tab-active-fg: rgb(var(--tab-active-fg));
 
   /* ── 外壳 / 内容 / 检查器 / 浮层（组件只用这几个名字）──
    * `bg-shell` / `bg-content` / `bg-inspector` / `bg-overlay` 由 Tailwind 生成。

@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { i18n } from "@/i18n";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 
 interface Props {
   children: ReactNode;
@@ -30,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
   private handleRetry = () => this.setState({ error: null });
 
   private handleCopy = () => {
-    void copyText(
+    void copyTextWithFeedback(
       `${this.state.error?.message ?? i18n.t("Unknown error")}\n\n${this.state.error?.stack ?? ""}`,
     );
   };

@@ -12,7 +12,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, Copy, RotateCcw, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { canRetry, formatErrorForCopy, stageLabel, toAppError } from "@/lib/app-error";
 
 export interface ErrorStateProps {
@@ -44,16 +44,13 @@ export function ErrorState({
   const { t } = useTranslation();
   const info = toAppError(error);
   const [showDetail, setShowDetail] = useState(false);
-  const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
   const label = stageLabel(info.stage);
   const detail = info.detail;
   const retryable = canRetry(info, onRetry);
 
-  const copy = async () => {
-    const ok = await copyText(formatErrorForCopy(info, title));
-    setCopied(ok ? "done" : "failed");
-    window.setTimeout(() => setCopied("idle"), 1600);
-  };
+  // 复制结果（成功/失败原因）统一由全局提示给出，按钮只保留一个固定文案：
+  // 失败时把整句"复制失败，请检查剪贴板权限"塞进按钮会撑坏这一行。
+  const copy = () => void copyTextWithFeedback(formatErrorForCopy(info, title));
 
   return (
     <div
@@ -114,13 +111,9 @@ export function ErrorState({
             {showDetail ? t("Hide details") : t("Show details")}
           </Button>
         )}
-        <Button variant="ghost" size="xs" onClick={() => void copy()}>
+        <Button variant="ghost" size="xs" onClick={copy}>
           <Copy size={11} />
-          {copied === "done"
-            ? t("Copied")
-            : copied === "failed"
-              ? t("Copy failed. Please check clipboard permission")
-              : t("Copy error details")}
+          {t("Copy error details")}
         </Button>
       </div>
 

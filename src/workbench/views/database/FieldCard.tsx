@@ -9,7 +9,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Copy, KeyRound, Loader2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { useDatabaseStore } from "@/stores/database-store";
 import {
   useDatabaseWorkspaceStore,

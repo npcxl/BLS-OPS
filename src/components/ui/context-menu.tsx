@@ -13,6 +13,7 @@ import * as tauriCore from "@tauri-apps/api/core";
 import { cancelDesktopMenu, openDesktopMenu } from "@/desktop-menu/bridge";
 import { MenuItemRow, MenuSeparator, MenuSurface } from "@/components/ui/menu-surface";
 import { OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
+import { pushToast } from "@/components/ui/toast";
 
 /**
  * Reusable desktop context menu.
@@ -43,6 +44,13 @@ export interface ContextMenuItem {
   separator?: boolean;
   /** Right-aligned secondary text (shortcut hint). */
   hint?: string;
+  /**
+   * 禁用原因（与主窗口按钮/横幅读同一句）。
+   *
+   * 菜单里没有空间铺长文案，所以它作为行的原生 tooltip 出现；`hint` 只留给
+   * 快捷键。两者混用会让"Ctrl+W"和"固定项不参与预览替换"挤在同一列。
+   */
+  reason?: string;
   onSelect?: () => void;
   /**
    * Turns the item into a submenu parent. Selecting it (or hovering it, or →)
@@ -467,6 +475,7 @@ export const ContextMenu = memo(function ContextMenu({
  */
 export function useContextMenu() {
   const [state, setState] = useState<ContextMenuState | null>(null);
+  const { t } = useTranslation();
 
   const close = useCallback(() => setState(null), []);
 
@@ -475,21 +484,36 @@ export function useContextMenu() {
       (event: ReactMouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
-        // 同一时刻只保留一个右键菜单：新位置/新实例打开前，先关掉已经
-        // 打开的那个（例：行菜单开着，再去空白处右键不能让两个并存）。
-        closeActiveContextMenu();
-        const items = build(event);
+        // 只收旧 DOM 菜单。桌面菜单交给 bridge 替换，不能先 cancel 再 show。
+        activeMenuClose?.();
+        let items: ContextMenuItem[];
+        try {
+          items = build(event);
+        } catch (error) {
+          // 业务侧构造菜单时抛错（例如读到了还没加载的 store）以前是**静默**
+          // 的：右键点了没反应，控制台之外没有任何线索。至少把原因说出来。
+          console.error("[context-menu] builder failed", error);
+          pushToast(
+            `${t("右键菜单构建失败")}：${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+          return;
+        }
         if (isTauri()) {
-          // 桌面窗口才能画出主窗口边界；失败时退回页面内菜单，别丢功能。
-          void openDesktopMenu(items, { x: event.clientX, y: event.clientY }).catch((error) => {
+          // 桌面窗口才能画出主窗口边界；**任何失败都要退回页面内菜单**，
+          // 包括"窗口没能在超时内显示"这种既不抛错也不出画面情况。
+          const fallback = () => setState({ x: event.clientX, y: event.clientY, items });
+          void openDesktopMenu(items, { x: event.clientX, y: event.clientY }, {
+            onUnavailable: fallback,
+          }).catch((error) => {
             console.error("[context-menu] desktop menu failed", error);
-            setState({ x: event.clientX, y: event.clientY, items });
+            fallback();
           });
           return;
         }
         setState({ x: event.clientX, y: event.clientY, items });
       },
-    [],
+    [t],
   );
 
   /**
@@ -497,15 +521,16 @@ export function useContextMenu() {
    * 坐标是来源窗口客户区里的 CSS 像素；屏幕定位由桌面菜单窗口负责。
    */
   const openAt = useCallback((x: number, y: number, items: ContextMenuItem[]) => {
-    closeActiveContextMenu();
+    activeMenuClose?.();
+    const fallback = () => setState({ x, y, items });
     if (isTauri()) {
-      void openDesktopMenu(items, { x, y }).catch((error) => {
+      void openDesktopMenu(items, { x, y }, { onUnavailable: fallback }).catch((error) => {
         console.error("[context-menu] desktop menu failed", error);
-        setState({ x, y, items });
+        fallback();
       });
       return;
     }
-    setState({ x, y, items });
+    fallback();
   }, []);
 
   return {

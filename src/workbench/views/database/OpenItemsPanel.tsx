@@ -27,7 +27,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { IconButton } from "@/components/ui/mac-button";
 
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";

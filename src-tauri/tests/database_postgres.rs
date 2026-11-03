@@ -14,7 +14,7 @@ use ops_workbench_lib::database::{
     mutate,
     protocol::TransactionState,
     query,
-    schema_ops::{self, SchemaChange},
+    schema_ops::{self, AlterTableRequest, ColumnEdit, SchemaChange},
     session::SessionKind,
     table,
 };
@@ -509,6 +509,161 @@ async fn postgres_streaming_zero_rows_transaction_and_export_paging() {
         .await
         .expect("cleanup");
     manager.close_session("pg-stream").await;
+    manager.close_profile("postgres-test").await;
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn postgres_alter_table_changes_columns() {
+    let (app_path, app_conn) = temp_app_db();
+    let plan = driver::plan_from_profile(&app_conn, &profile(), Some(&password())).expect("plan");
+    let manager = DatabaseManager::default();
+    let info = match manager.open_session(plan, "pg-alter").await {
+        Ok(info) => info,
+        Err(error) => {
+            if std::env::var("BLS_TEST_PG_REQUIRED").as_deref() == Ok("1") {
+                panic!("required PostgreSQL integration test cannot connect: {error}");
+            }
+            eprintln!("skip PostgreSQL alter test: {error}");
+            let _ = std::fs::remove_file(app_path);
+            return;
+        }
+    };
+    assert!(!info.session_id.is_empty());
+
+    let runtime = manager
+        .runtime(
+            driver::plan_from_profile(&app_conn, &profile(), Some(&password()))
+                .expect("plan again"),
+        )
+        .await
+        .expect("runtime");
+    let session = manager.session("pg-alter").await.expect("session");
+    let conn = runtime.postgres().expect("postgres runtime").clone();
+    let adapter = AdapterSet::of("postgres").expect("postgres adapter");
+
+    conn.simple_query("DROP TABLE IF EXISTS pg_alter", 0)
+        .await
+        .expect("drop");
+    conn.simple_query(
+        "CREATE TABLE pg_alter (id bigint PRIMARY KEY, body text)",
+        0,
+    )
+    .await
+    .expect("create");
+    conn.simple_query("INSERT INTO pg_alter VALUES (1, 'x')", 0)
+        .await
+        .expect("seed");
+
+    let detail = metadata::table_detail(
+        &runtime,
+        &metadata::MetadataCache::default(),
+        "public",
+        "pg_alter",
+    )
+    .await
+    .expect("detail");
+
+    let columns: Vec<ColumnEdit> = detail
+        .columns
+        .iter()
+        .map(|column| ColumnEdit {
+            original_name: Some(column.name.clone()),
+            name: column.name.clone(),
+            // 只改 body 的类型，其余原样。
+            column_type: if column.name == "body" {
+                "varchar(64)".to_string()
+            } else {
+                column.column_type.clone()
+            },
+            nullable: column.nullable,
+            auto_increment: column.auto_increment,
+            default_value: column.default_value.clone(),
+            comment: column.comment.clone(),
+        })
+        .chain(std::iter::once(ColumnEdit {
+            original_name: None,
+            name: "extra".to_string(),
+            column_type: "text".to_string(),
+            nullable: true,
+            auto_increment: false,
+            default_value: None,
+            comment: "备注".to_string(),
+        }))
+        .collect();
+
+    let request = AlterTableRequest {
+        database: "public".to_string(),
+        table: "pg_alter".to_string(),
+        columns,
+        indexes: Vec::new(),
+        primary_key: Some(detail.primary_key.clone()),
+    };
+    let preview = schema_ops::alter_table_preview(&adapter, &detail, &request).expect("preview");
+    assert!(
+        preview.sql.contains("TYPE varchar(64)"),
+        "改类型必须是 ALTER COLUMN TYPE：{}",
+        preview.sql
+    );
+    assert!(
+        preview.sql.contains("ADD COLUMN \"extra\" text"),
+        "新增列必须是 ADD COLUMN：{}",
+        preview.sql
+    );
+    assert!(
+        preview.sql.contains("COMMENT ON COLUMN"),
+        "PG 支持列注释，必须生成 COMMENT ON：{}",
+        preview.sql
+    );
+
+    schema_ops::apply_alter_table(&adapter, &session, &detail, &request)
+        .await
+        .expect("alter table");
+
+    let after = metadata::table_detail(
+        &runtime,
+        &metadata::MetadataCache::default(),
+        "public",
+        "pg_alter",
+    )
+    .await
+    .expect("detail after");
+    assert!(
+        after.columns.iter().any(|column| column.name == "extra"),
+        "新列必须存在：{:?}",
+        after
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>()
+    );
+    let body = after
+        .columns
+        .iter()
+        .find(|column| column.name == "body")
+        .expect("body column");
+    assert_eq!(body.column_type, "character varying(64)");
+    // 注释是给**新增列**写的：COMMENT ON COLUMN 必须跟着 extra 走。
+    let extra = after
+        .columns
+        .iter()
+        .find(|column| column.name == "extra")
+        .expect("extra column");
+    assert_eq!(extra.comment, "备注");
+
+    // 原地切自增：PG 需要改序列/IDENTITY 定义，必须拒绝而不是生成错 DDL。
+    let mut bad = request.clone();
+    if let Some(column) = bad.columns.iter_mut().find(|column| column.name == "id") {
+        column.auto_increment = true;
+    }
+    let error = schema_ops::alter_table_preview(&adapter, &after, &bad).unwrap_err();
+    assert_eq!(error.stage, "unsupported");
+    assert!(error.detail.is_some());
+
+    conn.simple_query("DROP TABLE pg_alter", 0)
+        .await
+        .expect("cleanup");
+    manager.close_session("pg-alter").await;
     manager.close_profile("postgres-test").await;
     let _ = std::fs::remove_file(app_path);
 }

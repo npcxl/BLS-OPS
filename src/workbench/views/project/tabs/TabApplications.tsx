@@ -59,7 +59,7 @@ export function TabApplications({
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="project-card-list">
       {list.map((candidate) => (
         <CandidateCard
           key={candidate.id}

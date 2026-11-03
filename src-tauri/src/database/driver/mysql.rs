@@ -300,16 +300,222 @@ pub fn build_export_pool(opts: Opts) -> Pool {
 /// 建立一条独占连接。连接超时是**客户端**强制的：服务器不响应时不会挂死。
 pub async fn connect_once(opts: Opts, timeout: Duration) -> Result<Conn, DbErrorInfo> {
     ensure_crypto_provider();
+    let tls_enabled = opts.ssl_opts().is_some();
+    let host = opts.ip_or_hostname().to_string();
+    let port = opts.tcp_port();
     let started = Instant::now();
     match tokio::time::timeout(timeout, Conn::new(opts)).await {
         Ok(Ok(conn)) => Ok(conn),
-        Ok(Err(error)) => Err(map_error(&error, "tcp")),
+        Ok(Err(error)) => {
+            let mut info = map_connect_error(&error, tls_enabled);
+            // 没有服务器错误码 = 对端没回错误包就断了。这时唯一有用的事实是
+            // "它到底有没有说 MySQL 协议"，补一次只读探测（失败才做，不发送认证数据）。
+            if info.code.is_none() {
+                let probe = probe_greeting(&host, port, Duration::from_secs(3).min(timeout)).await;
+                let line = match probe {
+                    Ok(greeting) => format!(
+                        "探测结果：{}。服务器确实在说 MySQL 协议，说明它是在认证/握手响应阶段\
+                             拒绝了这条连接（认证插件、TLS 要求或账号白名单）。",
+                        greeting.summary()
+                    ),
+                    Err(reason) => format!(
+                        "探测结果：{reason}。对端在发出第一条数据前就关闭了连接——端口不是 \
+                             MySQL 协议，或中间设备只接受 TLS。"
+                    ),
+                };
+                info.detail = Some(match info.detail.take() {
+                    Some(detail) => format!("{detail}\n{line}"),
+                    None => line,
+                });
+            }
+            Err(info)
+        }
         Err(_) => Err(DbErrorInfo::new(
             "tcp",
             format!("连接超时（{} 秒）", started.elapsed().as_secs().max(1)),
         )
         .retryable(true)
         .with_detail("请检查地址、端口、安全组与 SSH 隧道是否可用。")),
+    }
+}
+
+/// 服务器初始问候包里我们关心的几个事实。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerGreeting {
+    pub protocol_version: u8,
+    pub server_version: String,
+    /// 服务端能力位里的 `CLIENT_SSL`。
+    pub ssl_supported: bool,
+    pub auth_plugin: Option<String>,
+}
+
+impl ServerGreeting {
+    pub fn summary(&self) -> String {
+        format!(
+            "{}（协议 v{}，{}，认证插件 {}）",
+            self.server_version,
+            self.protocol_version,
+            if self.ssl_supported {
+                "声明支持 TLS"
+            } else {
+                "未声明支持 TLS"
+            },
+            self.auth_plugin.as_deref().unwrap_or("未知")
+        )
+    }
+}
+
+/// 只读探测：连上去读第一包，**不发送任何认证数据**。
+///
+/// 握手被对端关闭时，靠它区分"端口根本不是 MySQL"和"服务器在说 MySQL、
+/// 只是拒绝了我们的握手响应"——这两种的排查方向完全不同。
+pub async fn probe_greeting(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<ServerGreeting, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut stream =
+        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await {
+            Err(_) => return Err("TCP 连接超时".to_string()),
+            Ok(Err(error)) => return Err(format!("TCP 连接失败：{error}")),
+            Ok(Ok(stream)) => stream,
+        };
+
+    let mut header = [0u8; 4];
+    match tokio::time::timeout(timeout, stream.read_exact(&mut header)).await {
+        Err(_) => return Err("等待服务器问候超时（对端没有发送任何数据）".to_string()),
+        Ok(Err(error)) => return Err(format!("读取服务器问候失败：{error}")),
+        Ok(Ok(_)) => {}
+    }
+    let len = header[0] as usize | (header[1] as usize) << 8 | (header[2] as usize) << 16;
+    if len == 0 || len > 4096 {
+        return Err(format!(
+            "服务器问候长度异常（{len} 字节），对端不像 MySQL 协议"
+        ));
+    }
+    let mut payload = vec![0u8; len];
+    match tokio::time::timeout(timeout, stream.read_exact(&mut payload)).await {
+        Err(_) => return Err("读取服务器问候超时（包头到了、内容没到）".to_string()),
+        Ok(Err(error)) => return Err(format!("读取服务器问候失败：{error}")),
+        Ok(Ok(_)) => {}
+    }
+    parse_greeting(&payload).ok_or_else(|| "服务器问候不是 MySQL 协议格式".to_string())
+}
+
+/// 解析 protocol v10 的初始问候包；字段对不上就返回 `None`，不猜。
+fn parse_greeting(payload: &[u8]) -> Option<ServerGreeting> {
+    if payload.first().copied()? != 10 {
+        return None;
+    }
+    let mut cursor = 1;
+    let end = payload[cursor..].iter().position(|byte| *byte == 0)? + cursor;
+    let server_version = String::from_utf8_lossy(&payload[cursor..end]).to_string();
+    cursor = end + 1;
+    // connection id(4) + auth-plugin-data-part-1(8) + filler(1)
+    cursor += 13;
+    let lower = u16::from_le_bytes([*payload.get(cursor)?, *payload.get(cursor + 1)?]);
+    cursor += 2;
+    cursor += 1; // charset
+    cursor += 2; // status flags
+    let upper = u16::from_le_bytes([*payload.get(cursor)?, *payload.get(cursor + 1)?]);
+    cursor += 2;
+    let capabilities = u32::from(lower) | (u32::from(upper) << 16);
+    let ssl_supported = capabilities & 0x0800 != 0;
+    cursor += 1; // auth-plugin-data len
+    cursor += 10; // reserved
+
+    // 插件名在问候包末尾（`CLIENT_PLUGIN_AUTH` 时）：跳过随机 salt，只认
+    // "全小写/数字/下划线"的 NUL 片段，避免把随机字节当插件名。
+    let auth_plugin = payload
+        .get(cursor..)?
+        .split(|byte| *byte == 0)
+        .map(|chunk| String::from_utf8_lossy(chunk).to_string())
+        .find(|text| {
+            text.len() > 4
+                && text
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        });
+
+    Some(ServerGreeting {
+        protocol_version: 10,
+        server_version,
+        ssl_supported,
+        auth_plugin,
+    })
+}
+
+/// 这条配置是否启用了 TLS。连接期错误要不要往 TLS 方向归因，全看它。
+pub fn profile_tls_enabled(profile: &DatabaseProfile) -> bool {
+    profile.tls_mode != TLS_DISABLED
+}
+
+/// 连接期错误：在通用映射之上补"下一步该查什么"。
+///
+/// `Input/output error: connection closed` 的真实含义是**对端在握手阶段直接
+/// 关掉了 TCP**（读包时拿到 EOF，服务器连错误包都没回）。这句原始文本对用户
+/// 没有任何指导意义，所以按 `io::ErrorKind` 分类给出可能原因；服务器已经回了
+/// 错误包（`code.is_some()`）的情况不覆盖，因为那条信息本来就足够具体。
+pub fn map_connect_error(error: &mysql_async::Error, tls_enabled: bool) -> DbErrorInfo {
+    let mut info = map_error(error, "tcp");
+    if info.code.is_some() {
+        return info;
+    }
+
+    let kind = match error {
+        mysql_async::Error::Io(mysql_async::IoError::Io(io)) => Some(io.kind()),
+        _ => None,
+    };
+    let raw = info.message.clone();
+    let lower = raw.to_lowercase();
+
+    let detail = match kind {
+        Some(std::io::ErrorKind::UnexpectedEof)
+        | Some(std::io::ErrorKind::ConnectionReset)
+        | Some(std::io::ErrorKind::BrokenPipe) => {
+            // TLS 握手被对端拒绝时也是"读不到预期的握手包"：错误里没有 TLS
+            // 字样，只能靠配置判断，否则会一直标成 tcp。
+            if tls_enabled {
+                info.stage = "tls".to_string();
+            }
+            info.message = "服务器在握手阶段关闭了连接（没有返回错误包）".to_string();
+            let tls_hint = if tls_enabled {
+                "服务器不支持 TLS，或拒绝了本次 TLS 握手（当前连接配置了 TLS）"
+            } else {
+                "服务器要求 TLS（require_secure_transport=ON），而当前是明文连接"
+            };
+            Some(format!(
+                "按可能性排查：1) 端口不是 MySQL 协议端口（填成了 HTTP / 代理 / 监控端口）；\
+                 2) {tls_hint}；\
+                 3) 服务器已按 max_connect_errors 封禁该来源 IP：在服务器执行 `FLUSH HOSTS` 后重试；\
+                 4) 连接被防火墙 / 负载均衡 / 跳板机中断。原始错误：{raw}"
+            ))
+        }
+        Some(std::io::ErrorKind::ConnectionRefused) => {
+            info.message = "端口拒绝连接（没有服务在监听）".to_string();
+            Some(format!(
+                "确认 MySQL 的 bind-address 与端口，以及安全组/防火墙是否放行。原始错误：{raw}"
+            ))
+        }
+        Some(std::io::ErrorKind::TimedOut) => {
+            info.message = "连接超时".to_string();
+            Some(format!(
+                "服务器可能只监听内网地址、被安全组拦截，或 SSH 隧道尚未就绪。原始错误：{raw}"
+            ))
+        }
+        // DNS 失败在各平台上没有稳定的 ErrorKind，退回文本匹配。
+        _ if lower.contains("lookup") || lower.contains("dns") || lower.contains("解析") => {
+            info.message = "域名解析失败".to_string();
+            Some(format!("检查主机名拼写与 DNS 配置。原始错误：{raw}"))
+        }
+        _ => None,
+    };
+
+    match detail {
+        Some(detail) => info.with_detail(detail),
+        None => info,
     }
 }
 
@@ -547,5 +753,123 @@ mod tests {
         assert!(is_read_only_sql("WITH x AS (SELECT 1) SELECT * FROM x"));
         assert!(!is_read_only_sql("UPDATE t SET a = 1"));
         assert!(!is_read_only_sql("select * from t into outfile '/tmp/x'"));
+    }
+
+    fn io_error(kind: std::io::ErrorKind, message: &str) -> mysql_async::Error {
+        mysql_async::Error::Io(mysql_async::IoError::Io(std::io::Error::new(kind, message)))
+    }
+
+    /// 用户实际看到的那一句：`Input/output error: connection closed`。
+    /// 它的含义是"对端在握手阶段关了 TCP"，必须给出可执行的排查方向，
+    /// 且原始文本要留在 detail 里，方便事后对日志。
+    #[test]
+    fn peer_close_during_handshake_explains_what_to_check() {
+        let info = map_connect_error(
+            &io_error(std::io::ErrorKind::UnexpectedEof, "connection closed"),
+            false,
+        );
+        assert_eq!(info.stage, "tcp");
+        assert_eq!(info.code, None);
+        assert!(info.message.contains("握手"), "{}", info.message);
+        let detail = info.detail.expect("必须给出排查提示");
+        assert!(detail.contains("require_secure_transport"));
+        assert!(detail.contains("max_connect_errors"));
+        assert!(detail.contains("connection closed"), "原始文本不能丢");
+    }
+
+    /// 配了 TLS 却读不到握手包：八成是 TLS 本身，标签也要跟着变成 tls。
+    #[test]
+    fn peer_close_with_tls_is_reported_as_tls_stage() {
+        let info = map_connect_error(
+            &io_error(std::io::ErrorKind::UnexpectedEof, "connection closed"),
+            true,
+        );
+        assert_eq!(info.stage, "tls");
+        assert!(info.detail.expect("提示").contains("配置了 TLS"));
+    }
+
+    #[test]
+    fn refused_and_timeout_get_their_own_wording() {
+        let refused = map_connect_error(
+            &io_error(std::io::ErrorKind::ConnectionRefused, "refused"),
+            false,
+        );
+        assert!(refused.message.contains("拒绝"), "{}", refused.message);
+
+        let timeout =
+            map_connect_error(&io_error(std::io::ErrorKind::TimedOut, "timed out"), false);
+        assert!(timeout.message.contains("超时"), "{}", timeout.message);
+    }
+
+    /// 构造一个 protocol v10 问候包：版本串 + 能力位 + 插件名。
+    fn greeting_packet(version: &str, capabilities: u32, plugin: &str) -> Vec<u8> {
+        let mut payload = vec![10u8];
+        payload.extend_from_slice(version.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&42u32.to_le_bytes()); // connection id
+        payload.extend_from_slice(b"12345678"); // auth data part 1
+        payload.push(0); // filler
+        payload.extend_from_slice(&(capabilities as u16).to_le_bytes());
+        payload.push(0x21); // charset
+        payload.extend_from_slice(&2u16.to_le_bytes()); // status
+        payload.extend_from_slice(&((capabilities >> 16) as u16).to_le_bytes());
+        payload.push(21); // auth plugin data len
+        payload.extend_from_slice(&[0u8; 10]); // reserved
+                                               // salt 用非 UTF-8 字节，确保不会被误认为插件名
+        payload.extend_from_slice(&[0x9f, 0x8e, 0x8d, 0x8c, 0x00]);
+        payload.extend_from_slice(plugin.as_bytes());
+        payload.push(0);
+        payload
+    }
+
+    #[test]
+    fn greeting_parser_reads_version_tls_flag_and_plugin() {
+        let greeting = parse_greeting(&greeting_packet(
+            "8.0.36-log",
+            0x0000_0800 | 0x0000_0008,
+            "caching_sha2_password",
+        ))
+        .expect("合法问候包必须能解析");
+        assert_eq!(greeting.protocol_version, 10);
+        assert_eq!(greeting.server_version, "8.0.36-log");
+        assert!(greeting.ssl_supported);
+        assert_eq!(
+            greeting.auth_plugin.as_deref(),
+            Some("caching_sha2_password")
+        );
+
+        let plain = parse_greeting(&greeting_packet(
+            "5.7.44",
+            0x0000_0008,
+            "mysql_native_password",
+        ))
+        .expect("解析");
+        assert!(
+            !plain.ssl_supported,
+            "没有 CLIENT_SSL 能力位就不能报支持 TLS"
+        );
+        assert_eq!(plain.auth_plugin.as_deref(), Some("mysql_native_password"));
+    }
+
+    #[test]
+    fn greeting_parser_rejects_non_mysql_payloads() {
+        assert!(parse_greeting(b"").is_none());
+        assert!(parse_greeting(b"HTTP/1.1 400 Bad Request\r\n").is_none());
+        // 协议版本不是 10（例如代理返回的其它协议）
+        assert!(parse_greeting(&[9, b'x', 0]).is_none());
+    }
+
+    /// 服务器已经回了错误包（比如密码错）时，不能用"握手被关闭"覆盖它。
+    #[test]
+    fn server_error_keeps_its_own_message() {
+        let server = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 1045,
+            message: "Access denied".to_string(),
+            state: "28000".to_string(),
+        });
+        let info = map_connect_error(&server, false);
+        assert_eq!(info.stage, "auth");
+        assert!(info.message.contains("Access denied"));
+        assert!(info.detail.is_none());
     }
 }

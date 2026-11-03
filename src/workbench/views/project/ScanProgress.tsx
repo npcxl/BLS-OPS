@@ -12,7 +12,7 @@ export function ScanProgress({
 }) {
   const { t } = useTranslation();
   return (
-    <section className="overflow-hidden rounded-[12px] border border-line bg-surface-1 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
+    <section className="project-card project-scan" role="status">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-2/70 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <Loader2 size={14} className="animate-spin text-accent" />
@@ -33,7 +33,8 @@ export function ScanProgress({
           <span>{t("Progress")}</span>
           <span>{scan.progress.progress}%</span>
         </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar"
+          aria-label={t("Scanning server projects")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={scan.progress.progress}>
           <div
             className="h-full rounded-full bg-accent transition-[width]"
             style={{ width: `${scan.progress.progress}%` }}

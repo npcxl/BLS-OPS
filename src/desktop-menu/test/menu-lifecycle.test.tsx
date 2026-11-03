@@ -75,4 +75,29 @@ describe("desktop menu request lifecycle", () => {
     expect(ipc.invoke).toHaveBeenCalledWith("desktop_menu_close",{requestId:"outside",reason:"outside"});
     expect(holder.querySelector(".desktop-menu__panel")).toBeNull();
   });
+
+  it("handles keyboard navigation forwarded by the still-focused source window", async () => {
+    await emit("desktop-menu:show",payload("keys"));
+    await emit("desktop-menu:key",{requestId:"keys",key:"ArrowDown"});
+    await emit("desktop-menu:key",{requestId:"keys",key:"Enter"});
+    expect(ipc.invoke).toHaveBeenCalledWith("desktop_menu_select",{requestId:"keys",actionId:"a0"});
+  });
+
+  it("ignores forwarded keys from a replaced request", async () => {
+    await emit("desktop-menu:show",payload("current"));
+    await emit("desktop-menu:key",{requestId:"old",key:"Escape"});
+    expect(holder.querySelector(".desktop-menu__panel")).not.toBeNull();
+    expect(ipc.invoke).not.toHaveBeenCalledWith("desktop_menu_close",expect.anything());
+  });
+
+  it("forwarded Escape closes a submenu before closing the menu", async () => {
+    await emit("desktop-menu:show",{...payload("tree"),items:[{label:"Parent",children:[{label:"Child",actionId:"child"}]}]});
+    await emit("desktop-menu:key",{requestId:"tree",key:"ArrowDown"});
+    await emit("desktop-menu:key",{requestId:"tree",key:"ArrowRight"});
+    expect(holder.querySelectorAll(".desktop-menu__panel")).toHaveLength(2);
+    await emit("desktop-menu:key",{requestId:"tree",key:"Escape"});
+    expect(holder.querySelectorAll(".desktop-menu__panel")).toHaveLength(1);
+    await emit("desktop-menu:key",{requestId:"tree",key:"Escape"});
+    expect(ipc.invoke).toHaveBeenCalledWith("desktop_menu_close",{requestId:"tree",reason:"escape"});
+  });
 });

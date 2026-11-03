@@ -5,6 +5,13 @@
  * 运行时/基础设施 Tab、扫描进度、徽标。
  */
 export default {
+  "Project directories, deployment files and runtime links in one place.": "集中查看项目目录、部署文件与运行关联。",
+  "Review discovered directories and keep your decisions for future scans.": "复核发现的目录，后续扫描沿用你的确认结果。",
+  "Browse application services and their linked project files.": "查看应用服务及其关联的项目文件。",
+  "Dependencies grouped by their role on this server.": "按用途整理这台服务器上的基础依赖。",
+  "System information, runtimes and available discovery tools.": "查看系统信息、运行环境与可用的发现工具。",
+  "Project actions": "项目操作",
+  "Service actions": "服务操作",
   // -- 扫描与列表 --
   "Discover projects on the server": "在服务器上发现项目",
   "Scanning server projects": "正在扫描服务器项目",
@@ -191,8 +198,6 @@ export default {
   "systemd unit": "unit 文件",
 
   // -- 项目卡片右键菜单（project-candidate-menu / use-candidate-actions）--
-  "Path copied": "路径已复制",
-  "Copy failed": "复制失败",
   "Track in terminal": "在终端中跟踪",
   "Nginx reloaded": "Nginx 已重载",
   "nginx -t failed; the running config was left untouched": "nginx -t 未通过，正在运行的配置没有被改动",

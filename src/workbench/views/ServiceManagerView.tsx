@@ -19,7 +19,7 @@ import {
   SquareCheck,
   SquareMinus,
 } from "@/components/icons";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
@@ -422,13 +422,6 @@ function DetailSheet({
   onReload: () => void;
 }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const copyDetail = async () => {
-    const ok = await copyText(text);
-    setCopied(ok);
-    if (ok) window.setTimeout(() => setCopied(false), 1500);
-  };
 
   return (
     <Sheet
@@ -439,9 +432,9 @@ function DetailSheet({
       width={640}
       actions={
         <div className="page-actions">
-          <Button variant="ghost" size="xs" onClick={() => void copyDetail()}>
+          <Button variant="ghost" size="xs" onClick={() => void copyTextWithFeedback(text)}>
             <Copy size={12} />
-            {copied ? t("Copied") : t("Copy details")}
+            {t("Copy details")}
           </Button>
           <Button variant="ghost" size="xs" onClick={onReload}>
             {t("Refresh")}

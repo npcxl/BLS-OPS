@@ -29,7 +29,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PageScroll, PageSurface } from "@/workbench/page-layout";
 import type { DatabaseProfile } from "@/api/types/database";
 import type { ServerRecord } from "@/api/ops-api";
-import { emptyServer, useDomainStore } from "@/stores/domain-store";
+import { useDomainStore } from "@/stores/domain-store";
+import { openNewServerTab } from "@/workbench/server-list/open-server-setup";
 import { useSessionStore } from "@/stores/session-store";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -38,7 +39,6 @@ import { AssetsSection } from "./assets";
 import { FavoritesSection } from "./favorites";
 import { OverviewSection, type OverviewStat } from "./overview";
 import { QuickActions, type QuickAction } from "./quick-actions";
-import { QuickConnectDialog, type QuickConnectAuth, type QuickConnectTarget } from "./quick-connect";
 import { RecentSection, type RecentDatabaseItem, type RecentServerItem } from "./recent";
 import { SectionHeading } from "./section";
 import { useDatabaseActivity } from "./use-database-activity";
@@ -46,7 +46,6 @@ import { useProjectAssets } from "./use-project-assets";
 
 export function WorkbenchHome() {
   const { t } = useTranslation();
-  const [quickConnectOpen, setQuickConnectOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
 
@@ -159,36 +158,7 @@ export function WorkbenchHome() {
       port: profile.port,
     });
 
-  const connectQuick = (
-    target: QuickConnectTarget,
-    auth: QuickConnectAuth,
-    saveAsServer: boolean,
-  ) => {
-    const { username, host, port } = target;
-    const open = (serverId?: string) =>
-      openTab({
-        id: crypto.randomUUID(),
-        type: "terminal",
-        title: serverId ? (servers.find((server) => server.id === serverId)?.name ?? host) : host,
-        subtitle: `${host}:${port}`,
-        serverId,
-        quickTarget: serverId ? undefined : `${username}@${host}:${port}`,
-        credentialId: auth.credentialId,
-        oneTimePassword: auth.password,
-        sessionId: crypto.randomUUID(),
-      });
-
-    if (saveAsServer) {
-      void useDomainStore
-        .getState()
-        .saveServer({ ...emptyServer(), name: host, host, port, username, credential_id: auth.credentialId ?? null })
-        .then((saved) => open(saved.id))
-        .catch(() => open());
-    } else {
-      open();
-    }
-    setQuickConnectOpen(false);
-  };
+  const openQuickConnect = () => openTab({ id: crypto.randomUUID(), type: "terminal", title: t("New Terminal") });
 
   const overview: OverviewStat[] = [
     {
@@ -240,7 +210,7 @@ export function WorkbenchHome() {
       label: t("Quick connect"),
       hint: t("Connect once without saving a server"),
       icon: PlugZap,
-      onSelect: () => setQuickConnectOpen(true),
+      onSelect: openQuickConnect,
     },
     {
       id: "terminal",
@@ -288,10 +258,10 @@ export function WorkbenchHome() {
             <h1 className="page-title">{t("Workbench")}</h1>
             <p className="page-description">{t("Servers, databases and projects in one place")}</p>
             <div className="page-actions home-hero-actions">
-              <Button variant="primary" size="sm" onClick={() => setQuickConnectOpen(true)}>
+              <Button variant="contrast" size="sm" onClick={openQuickConnect}>
                 <PlugZap size={14} />{t("Quick connect")}
               </Button>
-              <Button variant="secondary" size="sm" onClick={openNewConnectionTab}>
+              <Button variant="outline" size="sm" onClick={openNewConnectionTab}>
                 <DatabaseIcon size={14} />{t("新建连接")}
               </Button>
             </div>
@@ -345,7 +315,7 @@ export function WorkbenchHome() {
           onNewConnection={openNewConnectionTab}
           onOpenProject={(project) => openModuleTabForServer("projects", project.serverId)}
           onReloadProjects={projectAssets.reload}
-          onAddServer={() => setEditingServer(emptyServer())}
+          onAddServer={openNewServerTab}
           onManageServers={() => openModuleTab("ssh")}
           onManageDatabases={() => openModuleTab("database")}
           onManageProjects={() => openModuleTab("projects")}
@@ -358,10 +328,6 @@ export function WorkbenchHome() {
         />
       </div>
       </PageScroll>
-
-      {quickConnectOpen && (
-        <QuickConnectDialog onClose={() => setQuickConnectOpen(false)} onConnect={connectQuick} />
-      )}
 
       {editingServer && <ServerForm server={editingServer} onClose={() => setEditingServer(null)} />}
 

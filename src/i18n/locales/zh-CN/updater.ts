@@ -1,5 +1,8 @@
 /** zh-CN · 应用更新（P5.1）。key 与英文文案逐字一致（natural keys）。 */
 export default {
+  "Example release notes": "示例日志",
+  "Showing example notes until release notes are available.": "暂时显示示例日志。",
+  "Example content only. Update availability is determined by checking for updates.": "以下为示例内容；是否有新版本，以检查更新结果为准。",
   // -- 设置 → 应用更新 --
   "App update": "应用更新",
   "Current version": "当前版本",

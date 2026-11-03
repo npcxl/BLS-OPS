@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, XCircle } from "@/components/icons";
-import { NOTE_SHELL, NOTE_TONE_CLASS } from "@/components/ui/toast";
+import { CopyNoticeSurface } from "@/components/ui/copy-notice-surface";
 import { cn } from "@/lib/cn";
 import { copyText } from "@/lib/clipboard";
 
@@ -69,44 +68,38 @@ export function useCopyFeedback(timeoutMs: number = COPY_NOTICE_MS) {
 /**
  * 结果面板底部的轻量提示。
  *
- * - 挂在**绝对定位**层（`pointer-events-none`）：不参与布局 → 既不会遮挡
- *   内容，也不会让面板尺寸跳动；
+ * - 挂在**绝对定位**层（`pointer-events-none`）：不参与布局、不阻拦操作，
+ *   不会让面板尺寸跳动；
  * - 容器常驻 DOM + `aria-live="polite"`，内容变化才会被读屏播报。
  *
  * 父元素需要 `relative`（各结果视图的根容器都已加）。
  *
- * 位置固定在**顶部居中**：底部是分页/状态栏的地盘，提示压在那里容易被忽略。
+ * 放在内容区底部、分页栏上方：不覆盖顶部筛选 / 导出等操作。
  */
-export function CopyNotice({ status, className }: { status: CopyStatus; className?: string }) {
+export function CopyNotice({
+  status,
+  className,
+  label,
+}: {
+  status: CopyStatus;
+  className?: string;
+  /** 覆盖默认文案（例如「已复制 3 个键」）；不传就用共享的 Copied / 复制失败。 */
+  label?: string;
+}) {
   const { t } = useTranslation();
   return (
     <div
       aria-live="polite"
       role="status"
       className={cn(
-        "pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center",
+        "pointer-events-none absolute inset-x-0 bottom-14 z-20 flex justify-center px-4",
         className,
       )}
     >
       {status !== "idle" ? (
-        <span
-          data-testid="copy-notice"
-          className={cn(
-            // 和 toast 的右下角 note 同一套外壳与色调：同一种"看一眼就消失"
-            // 的提示不能长成两个样子。要调外观请改 toast.tsx 里的常量。
-            NOTE_SHELL,
-            status === "ok" ? NOTE_TONE_CLASS.success : NOTE_TONE_CLASS.danger,
-          )}
-        >
-          {status === "ok" ? (
-            <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
-          ) : (
-            <XCircle size={12} className="mt-0.5 shrink-0" />
-          )}
-          <span className="min-w-0 flex-1 break-words leading-snug">
-            {t(COPY_NOTICE_TEXT[status])}
-          </span>
-        </span>
+        <CopyNoticeSurface ok={status === "ok"}>
+          {label ?? t(COPY_NOTICE_TEXT[status])}
+        </CopyNoticeSurface>
       ) : null}
     </div>
   );

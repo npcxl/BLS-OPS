@@ -1,5 +1,6 @@
 /** zh-TW · 伺服器列表（分組/收藏/表單/憑據/主機指紋） —— 由對應模組的 i18n 代理維護。 */
 export default {
+  "Asset details": "資產資訊",
   // -- 模組標題（module-server-sidebar 的 MODULE_TITLE 存 key，渲染處 t()） --
   "Server list": "伺服器列表",
   Servers: "伺服器",

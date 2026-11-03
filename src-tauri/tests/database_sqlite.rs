@@ -12,7 +12,7 @@ use ops_workbench_lib::database::{
     metadata,
     model::*,
     mutate, query,
-    schema_ops::{self, SchemaChange},
+    schema_ops::{self, AlterTableRequest, ColumnEdit, SchemaChange},
     session::SessionKind,
     table,
 };
@@ -504,6 +504,178 @@ async fn sqlite_ddl_creates_table_and_view_and_rejects_database() {
         &adapter,
         &SchemaChange::CreateDatabase {
             name: "x".to_string(),
+            charset: None,
+            collation: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.stage, "unsupported");
+
+    manager.close_session("ddl-session").await;
+    manager.close_profile("sqlite-test").await;
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn sqlite_ddl_creates_table_view_and_alters_columns() {
+    let (app_path, app_conn) = temp_app_db();
+    let db_path = sqlite_db("ddl");
+    let plan = driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan");
+    let manager = DatabaseManager::default();
+    manager
+        .open_session(plan, "ddl-session")
+        .await
+        .expect("open");
+    let runtime = manager
+        .runtime(driver::plan_from_profile(&app_conn, &profile(&db_path), None).expect("plan"))
+        .await
+        .expect("runtime");
+    let session = manager.session("ddl-session").await.expect("session");
+    let worker = runtime.sqlite().expect("sqlite runtime").clone();
+    let adapter = AdapterSet::of("sqlite").expect("sqlite adapter");
+    let cache = metadata::MetadataCache::default();
+
+    let create = SchemaChange::CreateTable {
+        database: "main".to_string(),
+        table: "notes".to_string(),
+        columns: vec![
+            schema_ops::NewColumn {
+                name: "id".to_string(),
+                column_type: "INTEGER".to_string(),
+                nullable: false,
+                auto_increment: true,
+                default_value: None,
+                comment: String::new(),
+            },
+            schema_ops::NewColumn {
+                name: "body".to_string(),
+                column_type: "TEXT".to_string(),
+                nullable: true,
+                auto_increment: false,
+                default_value: None,
+                comment: String::new(),
+            },
+        ],
+        primary_key: vec!["id".to_string()],
+        engine: Some("InnoDB".to_string()),
+        charset: None,
+        collation: None,
+    };
+    let preview = schema_ops::preview(&adapter, &create).expect("preview");
+    assert!(
+        preview.sql.contains("INTEGER PRIMARY KEY AUTOINCREMENT"),
+        "{}",
+        preview.sql
+    );
+    assert!(
+        !preview.sql.to_uppercase().contains("ENGINE"),
+        "SQLite 不能出现 ENGINE：{}",
+        preview.sql
+    );
+    assert!(preview.warning.is_some(), "忽略 ENGINE 必须提示");
+    schema_ops::apply(&adapter, &session, &create)
+        .await
+        .expect("create table");
+
+    // AUTOINCREMENT 生效：不写 id 也能插入。
+    worker
+        .execute("INSERT INTO notes (body) VALUES ('x')")
+        .await
+        .expect("insert with autoincrement");
+
+    let view = SchemaChange::SaveView {
+        database: "main".to_string(),
+        view: "notes_v".to_string(),
+        select_sql: "SELECT id, body FROM notes".to_string(),
+        or_replace: true,
+    };
+    schema_ops::apply(&adapter, &session, &view)
+        .await
+        .expect("create view");
+    // SQLite 没有 CREATE OR REPLACE：第二次必须走先删后建。
+    schema_ops::apply(&adapter, &session, &view)
+        .await
+        .expect("replace view");
+    let answer = worker
+        .query("SELECT COUNT(*) FROM notes_v", 1, 4096)
+        .await
+        .expect("query view");
+    assert_eq!(answer.rows.len(), 1);
+
+    // 改表：新增一列（可空）应该成功。
+    let detail = metadata::table_detail(&runtime, &cache, "main", "notes")
+        .await
+        .expect("detail");
+    let mut columns: Vec<ColumnEdit> = detail
+        .columns
+        .iter()
+        .map(|column| ColumnEdit {
+            original_name: Some(column.name.clone()),
+            name: column.name.clone(),
+            column_type: column.column_type.clone(),
+            nullable: column.nullable,
+            auto_increment: column.auto_increment,
+            default_value: column.default_value.clone(),
+            comment: column.comment.clone(),
+        })
+        .collect();
+    columns.push(ColumnEdit {
+        original_name: None,
+        name: "extra".to_string(),
+        column_type: "TEXT".to_string(),
+        nullable: true,
+        auto_increment: false,
+        default_value: None,
+        comment: String::new(),
+    });
+    let alter = AlterTableRequest {
+        database: "main".to_string(),
+        table: "notes".to_string(),
+        columns,
+        indexes: Vec::new(),
+        primary_key: Some(detail.primary_key.clone()),
+    };
+    schema_ops::apply_alter_table(&adapter, &session, &detail, &alter)
+        .await
+        .expect("add column");
+    // 换一个新缓存：同一个 key 会直接命中旧结构，读不到刚加的列。
+    let after = metadata::table_detail(
+        &runtime,
+        &metadata::MetadataCache::default(),
+        "main",
+        "notes",
+    )
+    .await
+    .expect("detail again");
+    assert!(
+        after.columns.iter().any(|column| column.name == "extra"),
+        "新列必须存在：{:?}",
+        after
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>()
+    );
+
+    // 原地改类型 SQLite 不支持：必须明确拒绝，而不是生成一条会失败的 ALTER。
+    let mut changed = alter.clone();
+    if let Some(column) = changed
+        .columns
+        .iter_mut()
+        .find(|column| column.name == "body")
+    {
+        column.column_type = "BLOB".to_string();
+    }
+    let error = schema_ops::alter_table_preview(&adapter, &after, &changed).unwrap_err();
+    assert_eq!(error.stage, "unsupported");
+    assert!(error.detail.is_some(), "拒绝必须说明该怎么处理");
+
+    // SQLite 没有库：建库/删库明确拒绝。
+    let error = schema_ops::preview(
+        &adapter,
+        &SchemaChange::CreateDatabase {
+            name: "other".to_string(),
             charset: None,
             collation: None,
         },

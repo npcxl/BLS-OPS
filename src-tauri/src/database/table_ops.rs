@@ -149,12 +149,50 @@ fn validate_kind(
     }
 }
 
+/// 逐项 DDL 能力校验。
+///
+/// 与菜单读的是**同一份**注册表声明：界面按它置灰并显示原因，这里按它拒绝。
+/// 只用一个 `schema_edit` 判断会让"能建表但不能复制表"的引擎（SQLite）在
+/// 菜单里全亮、点下去必然失败。
+fn validate_capability(
+    adapter: &AdapterSet,
+    detail: &DbTableDetail,
+    request: &TableOperationRequest,
+) -> Result<(), DbErrorInfo> {
+    let Some(engine) = super::engine_registry::find(adapter.engine_id()) else {
+        // 没注册的引擎交给驱动自己报错，这里不替它编理由。
+        return Ok(());
+    };
+    let is_view = detail.kind == "view";
+    let operation = match (&request.kind, is_view) {
+        (TableOperationKind::Rename, false) => "rename_table",
+        // 视图的"重命名"和执行 `CREATE OR REPLACE VIEW` 是同一条链路。
+        (TableOperationKind::Rename, true) => "create_view",
+        (TableOperationKind::CopyStructure | TableOperationKind::CopyData, _) => "copy_table",
+        (TableOperationKind::Drop, false) => "drop_table",
+        (TableOperationKind::Drop, true) => "drop_view",
+        (TableOperationKind::Truncate, _) => "truncate_table",
+    };
+    let Some(capability) = engine.ddl_operations.for_operation(operation) else {
+        return Ok(());
+    };
+    if capability.is_available() {
+        return Ok(());
+    }
+    Err(DbErrorInfo::new(
+        "unsupported",
+        capability.reason().unwrap_or("该数据库不支持这个对象操作"),
+    )
+    .with_detail(format!("引擎 {} 未声明 {} 能力", engine.product, operation)))
+}
+
 pub fn preview(
     adapter: &AdapterSet,
     detail: &DbTableDetail,
     request: &TableOperationRequest,
 ) -> Result<TableOperationPreview, DbErrorInfo> {
     validate_kind(detail, request)?;
+    validate_capability(adapter, detail, request)?;
     let (sql, warning, destructive) = statements(adapter, detail, request)?;
     Ok(TableOperationPreview {
         sql: sql
@@ -174,6 +212,7 @@ pub async fn apply(
     request: &TableOperationRequest,
 ) -> Result<TableOperationOutcome, DbErrorInfo> {
     validate_kind(detail, request)?;
+    validate_capability(adapter, detail, request)?;
     if session.read_only {
         return Err(DbErrorInfo::new(
             "permission",

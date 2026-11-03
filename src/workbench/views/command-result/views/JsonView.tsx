@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "@/components/icons";
+import { ChevronDown, ChevronRight, Copy, FileJson, FileText, Search, X } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { i18n } from "@/i18n";
@@ -29,8 +29,7 @@ export function JsonView({ value }: { value: unknown }) {
   const [mode, setMode] = useState<"tree" | "text">("tree");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  // 复制提示统一走共用 hook（视图内不再自己起定时器）。
+  // 复制反馈只有一条：面板底部的 CopyNotice（按钮不再自己翻成“已复制”）。
   const { status, copy } = useCopyFeedback();
 
   // value 变化（如模块链切换结果）时重置折叠状态，避免旧路径残留在新数据上。
@@ -38,11 +37,6 @@ export function JsonView({ value }: { value: unknown }) {
     setCollapsed(new Set());
     setQuery("");
   }, [value]);
-
-  // 提示消失时顺带清掉按钮上的“已复制”勾选（不再另设定时器）。
-  useEffect(() => {
-    if (status === "idle") setCopiedKey(null);
-  }, [status]);
 
   const pretty = useMemo(() => prettyJson(value), [value]);
   const containerPaths = useMemo(() => {
@@ -55,11 +49,6 @@ export function JsonView({ value }: { value: unknown }) {
     () => (normalizedQuery ? collectMatches(value, normalizedQuery) : null),
     [value, normalizedQuery],
   );
-
-  const flashCopied = async (text: string, key: string) => {
-    setCopiedKey(key);
-    await copy(text);
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface-1">
@@ -133,12 +122,12 @@ export function JsonView({ value }: { value: unknown }) {
 
         <button
           type="button"
-          onClick={() => void flashCopied(pretty, "whole")}
+          onClick={() => void copy(pretty)}
           className="flex shrink-0 items-center gap-1 rounded-[6px] border border-line bg-surface-1 px-1.5 py-0.5 text-10 text-fg-subtle hover:text-fg"
           title={t("Copy whole JSON")}
         >
-          {copiedKey === "whole" ? <Check size={11} /> : <Copy size={11} />}
-          {copiedKey === "whole" ? t("Copied") : t("Copy")}
+          <Copy size={11} />
+          {t("Copy")}
         </button>
       </div>
 
@@ -163,13 +152,7 @@ export function JsonView({ value }: { value: unknown }) {
           matches && matches.length > 0 ? (
             <div className="px-1 py-1">
               {matches.map((entry) => (
-                <SearchResultRow
-                  key={entry.path}
-                  entry={entry}
-                  copiedKey={copiedKey}
-                  onCopy={flashCopied}
-                  copyValue={copy}
-                />
+                <SearchResultRow key={entry.path} entry={entry} onCopy={copy} copyValue={copy} />
               ))}
             </div>
           ) : (
@@ -180,8 +163,7 @@ export function JsonView({ value }: { value: unknown }) {
             value={value}
             collapsed={collapsed}
             setCollapsed={setCollapsed}
-            copiedKey={copiedKey}
-            onCopy={flashCopied}
+            onCopy={copy}
             copyValue={copy}
           />
         )}
@@ -206,15 +188,14 @@ function JsonTree({
   value,
   collapsed,
   setCollapsed,
-  copiedKey,
   onCopy,
   copyValue,
 }: {
   value: unknown;
   collapsed: Set<string>;
   setCollapsed: Dispatch<SetStateAction<Set<string>>>;
-  copiedKey: string | null;
-  onCopy: (text: string, key: string) => Promise<void>;
+  /** 复制节点的路径 / 节点 JSON（行尾按钮）。 */
+  onCopy: (text: string) => Promise<void>;
   /** 点击叶子节点时复制它的**实际值**。 */
   copyValue: (text: string) => Promise<void>;
 }) {
@@ -295,19 +276,19 @@ function JsonTree({
             <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
               <button
                 type="button"
-                onClick={() => void onCopy(row.path, `path:${row.path}`)}
+                onClick={() => void onCopy(row.path)}
                 className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
                 title={t("Copy path")}
               >
-                {copiedKey === `path:${row.path}` ? <Check size={11} /> : <Copy size={11} />}
+                <Copy size={11} />
               </button>
               <button
                 type="button"
-                onClick={() => void onCopy(jsonOf(row.value), `value:${row.path}`)}
+                onClick={() => void onCopy(jsonOf(row.value))}
                 className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
                 title={t("Copy node JSON")}
               >
-                {copiedKey === `value:${row.path}` ? <Check size={11} /> : <Copy size={11} />}
+                <Copy size={11} />
               </button>
             </span>
           </div>
@@ -415,13 +396,11 @@ function collectMatches(value: unknown, query: string, limit = 500): MatchEntry[
 
 function SearchResultRow({
   entry,
-  copiedKey,
   onCopy,
   copyValue,
 }: {
   entry: MatchEntry;
-  copiedKey: string | null;
-  onCopy: (text: string, key: string) => Promise<void>;
+  onCopy: (text: string) => Promise<void>;
   copyValue: (text: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -441,11 +420,11 @@ function SearchResultRow({
       <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
-          onClick={() => void onCopy(entry.path, `path:${entry.path}`)}
+          onClick={() => void onCopy(entry.path)}
           className="rounded p-0.5 text-fg-subtle hover:bg-surface-3 hover:text-fg"
           title={t("Copy path")}
         >
-          {copiedKey === `path:${entry.path}` ? <Check size={11} /> : <Copy size={11} />}
+          <Copy size={11} />
         </button>
       </span>
     </div>

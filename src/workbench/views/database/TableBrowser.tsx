@@ -56,7 +56,7 @@ import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
 import { pushToast } from "@/components/ui/toast";
-import { copyText } from "@/lib/clipboard";
+import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import type {
   AssignValue,
   BrowseFilter,

@@ -49,13 +49,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
+import { NoticePill, type NoticeTone } from "@/components/ui/copy-notice-surface";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 
 import { LoadingState } from "@/components/ui/loading";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { databaseApi } from "@/api/ops-api";
-import { pushToast } from "@/components/ui/toast";
 import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import type {
   AssignValue,
@@ -98,7 +98,9 @@ import {
 import { copyMenuItems } from "./grid/copy-menu";
 import { copySelectionToClipboard } from "./grid/copy-service";
 import type { CopyFormat } from "./grid/copy-format";
-import { quoteIdentifierWith, quoteStringLiteral } from "./grid/copy-format";
+
+import { assignmentText, sameAssignment, valueDiff } from "./pending-value-diff";
+import { pendingRow } from "./pending-row";
 import { parseClipboardMatrix, planPaste, type PastePlan } from "./grid/paste";
 import {
   canRedo,
@@ -636,15 +638,21 @@ export function TableBrowser({
       if (index >= 0) {
         const entry = current[index];
         if (entry.kind !== "update") return current;
-        const values = entry.values.some((item) => item.column === column.name)
+        if (sameAssignment(entry.values.find((item) => item.column === column.name)?.value, value)) return current;
+        let values = entry.values.some((item) => item.column === column.name)
           ? entry.values.map((item) =>
               item.column === column.name ? assignment : item,
             )
           : [...entry.values, assignment];
+        if (sameAssignment(entry.expected.find((item) => item.column === column.name)?.value, value)) {
+          values = values.filter((item) => item.column !== column.name);
+        }
+        if (!values.length) return current.filter((_, itemIndex) => itemIndex !== index);
         return current.map((item, itemIndex) =>
           itemIndex === index ? { ...entry, values } : item,
         );
       }
+      if (sameAssignment(expectedOfRow(expectedRow).find((item) => item.column === column.name)?.value, value)) return current;
       return [
         ...current,
         {
@@ -732,10 +740,14 @@ export function TableBrowser({
   /** 查看完整值：有可靠键时按主键重读，否则只显示已接收的预览。 */
   const openCellDetail = (cell: CellAddress) => {
     const column = result?.columns[cell.col]?.name;
-    const value = pageRows[cell.row]?.[cell.col];
+    const value = displayRows[cell.row]?.[cell.col];
     if (!column || !value) return;
     const row = pageRows[cell.row];
     const located = row ? keyOfRow(row) : null;
+    if (displayRows[cell.row]?.[cell.col] !== pageRows[cell.row]?.[cell.col]) {
+      setCellDetail({ column, value });
+      return;
+    }
     if (!detail?.reliable_key || !canEdit || !located) {
       setCellDetail({ column, value });
       return;
@@ -771,7 +783,7 @@ export function TableBrowser({
       setError(t("该表没有可靠主键或是只读连接，无法直接编辑"));
       return;
     }
-    const value = pageRows[cell.row]?.[cell.col];
+    const value = displayRows[cell.row]?.[cell.col];
     const resultColumnName = result?.columns[cell.col]?.name;
     const column =
       detail.columns.find((entry) => entry.name === resultColumnName) ??
@@ -1009,7 +1021,7 @@ export function TableBrowser({
     if (selection.mode === null) return;
     const outcome = await copySelectionToClipboard({
       columns: result?.columns ?? EMPTY_COLUMNS,
-      rows: result?.rows ?? EMPTY_ROWS,
+      rows: displayRows,
       selection,
       format,
       includeHeaders,
@@ -1288,9 +1300,10 @@ export function TableBrowser({
     ]);
   };
 
-  const submit = async (allowOverride?: boolean) => {
+  const submit = async (allowOverride?: boolean, skipExpected?: boolean) => {
     if (!session || pending.length === 0) return;
     const allow = allowOverride ?? allowNonTransactional;
+    const withoutExpected = skipExpected ?? false;
     const live = useDatabaseStore.getState().sessions[profile.id];
     if (
       live &&
@@ -1312,19 +1325,21 @@ export function TableBrowser({
         if (entry.kind === "insert") {
           return { kind: "insert", key: null, values: entry.values, expected: null };
         }
+        // 「跳过并发校验」= 只按主键定位，不再逐列比对旧值。用户在冲突提示里
+        // 明确选了这条路才走，默认仍然带校验。
         if (entry.kind === "delete") {
           return {
             kind: "delete",
             key: entry.key,
             values: [],
-            expected: entry.expected,
+            expected: withoutExpected ? null : entry.expected,
           };
         }
         return {
           kind: "update",
           key: entry.key,
           values: entry.values,
-          expected: entry.expected,
+          expected: withoutExpected ? null : entry.expected,
         };
       });
 
@@ -1352,19 +1367,9 @@ export function TableBrowser({
         // 已经落库：队列与撤销历史一起清空，避免"撤销"把已提交的改动找回队列。
         dispatchPending({ type: "reset" });
         setShowPending(false);
-        pushToast(
-          t("已提交 {{count}} 处修改", {
-            count: outcome.outcomes.filter((item) => item.status === "applied").length,
-          }),
-          "success",
-        );
+        // 结果提示由 `mutationNotice` 的胶囊统一给出（不再另弹 toast）。
         // 必须强制重新查询；load() 会被同条件去重守卫直接 return。
         await load(true);
-      } else {
-        pushToast(
-          outcome.state === "rolled_back" ? t("已回滚，未写入数据库") : t("结果未知，请勿自动重试"),
-          "error",
-        );
       }
     } catch (failure) {
       // 错误只留在"待提交修改"的弹窗与工具栏里（那里本来就有完整展示），
@@ -1398,52 +1403,58 @@ export function TableBrowser({
     setPageIndex((index) => Math.max(0, index - 1));
   };
 
-  // 引用与字面量按引擎方言（未加载目录时回落 MySQL）。
-  const dialect = engineMeta(profile.engine).descriptor?.dialect_rules;
-  const quoteIdentifier = (name: string) => quoteIdentifierWith(name, dialect);
-
-  // 提交前的 DML 预览：把待提交队列翻译成即将执行的 SQL（只读，不执行）。
-  const dmlPreview = useMemo(() => {
-    const target = `${quoteIdentifier(database)}.${quoteIdentifier(table)}`;
-    const literal = (value: AssignValue) =>
-      value.kind === "null"
-        ? "NULL"
-        : value.kind === "default"
-          ? "DEFAULT"
-          : quoteStringLiteral(value.value, dialect);
-    const whereOf = (entry: Extract<Pending, { kind: "update" | "delete" }>) => {
-      if (entry.expected.length > 0) {
-        return entry.expected
-          .map((item) => `${quoteIdentifier(item.column)} = ${literal(item.value)}`)
-          .join(" AND ");
+  /**
+   * 提交结果 → 一颗胶囊。
+   *
+   * 以前这里是"横幅 + 徽标 + 详情面板"三套东西，还各自弹过 toast。现在统一
+   * 成和复制反馈同一个 `NoticePill`：成功自动消失，冲突/失败留在原地等处理。
+   */
+  const mutationNotice = useMemo(() => {
+    if (!mutation) return null;
+    const failed = mutation.outcomes.filter((item) => item.status !== "applied");
+    const applied = mutation.outcomes.length - failed.length;
+    const conflicts = mutation.outcomes.some((item) => item.status === "conflict");
+    if (mutation.state === "committed") {
+      if (failed.length === 0) {
+        return {
+          tone: "success" as NoticeTone,
+          text: t("已提交 {{count}} 处修改", { count: applied }),
+          sticky: false,
+          conflicts: false,
+          unknown: false,
+          hint: undefined as string | undefined,
+        };
       }
-      const keys = detail?.reliable_key ?? [];
-      return entry.key
-        .map(
-          (value, index) =>
-            `${quoteIdentifier(keys[index] ?? `key${index + 1}`)} = ${literal(value)}`,
-        )
-        .join(" AND ");
+      return {
+        tone: (conflicts ? "warning" : "danger") as NoticeTone,
+        text: t("{{failed}} 处未写入，{{applied}} 处已提交", {
+          failed: failed.length,
+          applied,
+        }),
+        sticky: true,
+        conflicts,
+        unknown: false,
+        // 校验用的 SQL 只放进 tooltip：它很长，铺在界面里会把表格挤走。
+        hint: mutation.verify_hint ?? undefined,
+      };
+    }
+    const unknown = mutation.state === "outcome_unknown";
+    return {
+      tone: (mutation.state === "rolled_back" ? "warning" : "danger") as NoticeTone,
+      text: mutation.state === "rolled_back" ? t("已回滚，未写入数据库") : t("结果未知，请勿自动重试"),
+      sticky: true,
+      conflicts: false,
+      unknown,
+      hint: mutation.verify_hint ?? undefined,
     };
-    return pending
-      .map((entry) => {
-        if (entry.kind === "insert") {
-          const columns = entry.values
-            .map((item) => quoteIdentifier(item.column))
-            .join(", ");
-          const values = entry.values.map((item) => literal(item.value)).join(", ");
-          return `INSERT INTO ${target} (${columns}) VALUES (${values});`;
-        }
-        if (entry.kind === "delete") {
-          return `DELETE FROM ${target} WHERE ${whereOf(entry)};`;
-        }
-        const sets = entry.values
-          .map((item) => `${quoteIdentifier(item.column)} = ${literal(item.value)}`)
-          .join(", ");
-        return `UPDATE ${target} SET ${sets} WHERE ${whereOf(entry)};`;
-      })
-      .join("\n");
-  }, [database, detail?.reliable_key, dialect, pending, table]);
+  }, [mutation, t]);
+
+  // 成功提示像复制反馈一样自动消失；冲突/回滚要等用户处理，不自动关。
+  useEffect(() => {
+    if (!mutationNotice || mutationNotice.sticky) return;
+    const timer = window.setTimeout(() => setMutation(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [mutationNotice]);
 
   // Ctrl+S 提交暂存修改：只在当前工作项活动时装监听 ——
   // 隐藏的表页（切走但常驻）不能抢这个快捷键，否则会提交到看不见的表上。
@@ -1491,6 +1502,21 @@ export function TableBrowser({
   const columns = detail?.columns ?? [];
   // 引用必须稳定：`?? []` 每次都新建数组，会让网格误判"换了数据"而重置选择。
   const pageRows = result?.rows ?? EMPTY_ROWS;
+  // Only the rendering/copy layer sees draft values. Keep original keys and expected
+  // values intact, including when the user edits a primary key more than once.
+  const displayRows = useMemo(() => {
+    if (!pending.length || !detail) return pageRows;
+    const updates = new Map<string, ColumnAssignment[]>();
+    for (const entry of pending) {
+      if (entry.kind === "update") updates.set(keyToString(entry.key), entry.values);
+    }
+    const columns = (result?.columns ?? []).map((column) => column.name);
+    return pageRows.map((row) => {
+      const located = keyOfRow(row);
+      const values = located && updates.get(keyToString(located.key));
+      return values ? pendingRow(row, columns, values) : row;
+    });
+  }, [pageRows, pending, detail, result?.columns, keyOfRow]);
 
   // 提交成功 → 刷新回来后按主键把改过的行标绿（行号可能已经变了，不能用旧索引）。
   useEffect(() => {
@@ -1923,7 +1949,7 @@ export function TableBrowser({
             <VirtualDataGrid
               apiRef={gridApi}
               columns={result?.columns ?? EMPTY_COLUMNS}
-              rows={pageRows}
+              rows={displayRows}
               rowOffset={pageIndex * pageSize}
               editable={canEdit}
               onSort={(column) => sortBy(column)}
@@ -2174,42 +2200,66 @@ export function TableBrowser({
         </>
       )}
 
-      {mutation && (mutation.warning || mutation.verify_hint) && (
-        <div className="max-h-32 shrink-0 overflow-y-auto border-t border-line bg-surface-2/60 px-2 py-1 text-11 leading-relaxed text-fg-muted">
-          {mutation.warning && <p className="text-warning">{mutation.warning}</p>}
-          {mutation.verify_hint && (
-            <pre className="mt-1 whitespace-pre-wrap font-mono text-11 text-fg-subtle">
-              {mutation.verify_hint}
-            </pre>
-          )}
-          {mutation.state === "outcome_unknown" && (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="mt-1"
-              onClick={() => {
-                dispatchPending({ type: "reset" });
-                setMutation(null);
-                void load(true);
-              }}
+      {/*
+       * 提交结果：和复制反馈同一颗胶囊，浮在分页栏上方。
+       * 成功自动消失；冲突/回滚留在这里等用户处理。
+       */}
+      {mutationNotice && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-14 z-20 flex justify-center px-4">
+          <div className="pointer-events-auto max-w-full">
+            <NoticePill
+              tone={mutationNotice.tone}
+              title={mutationNotice.hint}
+              onDismiss={mutationNotice.sticky ? () => setMutation(null) : undefined}
+              actions={
+                mutationNotice.sticky ? (
+                  <>
+                    {mutationNotice.unknown && (
+                      <button
+                        type="button"
+                        className="rounded-full px-1.5 py-0.5 text-11 font-medium text-fg-muted hover:bg-surface-2 hover:text-fg"
+                        onClick={() => {
+                          dispatchPending({ type: "reset" });
+                          setMutation(null);
+                          void load(true);
+                        }}
+                      >
+                        {t("我已核对，刷新数据")}
+                      </button>
+                    )}
+                    {mutationNotice.conflicts && (
+                      <>
+                        {/*
+                         * 冲突多半是"并发校验列对不上"（时间精度、定点数文本化、
+                         * 排序规则……）。给一条明确出路：只按主键定位再提交一次。
+                         */}
+                        <button
+                          type="button"
+                          className="rounded-full px-1.5 py-0.5 text-11 font-medium text-fg hover:bg-surface-2"
+                          onClick={() => void submit(undefined, true)}
+                        >
+                          {t("跳过并发校验，仍然应用")}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-full px-1.5 py-0.5 text-11 font-medium text-fg-muted hover:bg-surface-2 hover:text-fg"
+                          onClick={() => {
+                            dispatchPending({ type: "reset" });
+                            setMutation(null);
+                            void load(true);
+                          }}
+                        >
+                          {t("放弃并刷新")}
+                        </button>
+                      </>
+                    )}
+                  </>
+                ) : undefined
+              }
             >
-              {t("我已核对，刷新数据")}
-            </Button>
-          )}
-          {mutation.outcomes.some((outcome) => outcome.status === "conflict") && (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="mt-1"
-              onClick={() => {
-                dispatchPending({ type: "reset" });
-                setMutation(null);
-                void load(true);
-              }}
-            >
-              {t("发生冲突：放弃暂存并刷新")}
-            </Button>
-          )}
+              {mutationNotice.text}
+            </NoticePill>
+          </div>
         </div>
       )}
 
@@ -2247,59 +2297,87 @@ export function TableBrowser({
 
       <Modal
         open={showPending}
-        title={t("待提交的修改")}
-        width={620}
+        title={t("查看变更")}
+        description={`${database} / ${table} · ${t("待提交 {{count}} 项", { count: pending.length })}`}
+        size="xl"
         onClose={() => setShowPending(false)}
         footer={
-          <Button variant="secondary" size="xs" onClick={() => setShowPending(false)}>
+          <Button variant="secondary" size="sm" onClick={() => setShowPending(false)}>
             {t("关闭")}
           </Button>
         }
       >
-        <div className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
+        <div className="ops-scroll flex max-h-[55vh] flex-col gap-4 overflow-y-auto pr-1">
+          {pending.length === 0 && (
+            <div className="py-10 text-center text-13 text-fg-subtle">{t("暂无变更")}</div>
+          )}
           {pending.map((entry) => (
             <div
               key={entry.id}
-              className="flex items-start gap-2 rounded-[6px] border border-line px-2 py-1 text-11"
+              className="shrink-0 overflow-hidden rounded-xl border border-line/70 bg-surface-1"
             >
+              <div className="flex min-w-0 items-center gap-2 border-b border-line/60 bg-surface-2/50 px-3 py-2">
               <span
                 className={cn(
-                  "rounded px-1 text-10",
+                  "shrink-0 rounded-md px-2 py-0.5 text-11 font-medium",
                   entry.kind === "insert"
-                    ? "bg-success/15 text-success"
+                    ? "bg-success/10 text-success"
                     : entry.kind === "delete"
-                      ? "bg-danger/15 text-danger"
-                      : "bg-accent/15 text-accent",
+                      ? "bg-danger/10 text-danger"
+                      : "bg-surface-3 text-fg-muted",
                 )}
               >
-                {entry.kind === "insert" ? "INSERT" : entry.kind === "delete" ? "DELETE" : "UPDATE"}
+                {entry.kind === "insert" ? t("新增") : entry.kind === "delete" ? t("删除") : t("修改")}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-11 text-fg-muted">
+                <div className="min-w-0 flex-1 truncate font-mono text-12 text-fg" title={entry.kind === "insert" ? undefined : entry.label}>
                   {entry.kind === "insert" ? t("新增行") : entry.label}
                 </div>
-                <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-11 text-fg-subtle">
-                  {(entry.kind === "delete" ? [] : entry.values).map((assignment) => (
-                    <span key={assignment.column} className="font-mono">
-                      {assignment.column} ={" "}
-                      {assignment.value.kind === "null"
-                        ? "NULL"
-                        : assignment.value.kind === "default"
-                          ? "DEFAULT"
-                          : assignment.value.value}
-                    </span>
-                  ))}
-                </div>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="w-6 shrink-0 !px-0"
+                  aria-label={t("移除")}
+                  title={t("移除")}
+                  onClick={() => setPending((current) => current.filter((item) => item.id !== entry.id))}
+                >
+                  <X size={14} />
+                </Button>
               </div>
-              <button
-                type="button"
-                aria-label={t("移除")}
-                onClick={() =>
-                  setPending((current) => current.filter((item) => item.id !== entry.id))
-                }
-              >
-                <X size={10} />
-              </button>
+                <div className="overflow-x-auto">
+                  <table className="w-full table-fixed border-collapse text-12 leading-relaxed">
+                    <thead>
+                      <tr className="text-left text-11 text-fg-subtle">
+                        <th className="w-1/4 px-3 py-2 font-medium">{t("字段")}</th>
+                        <th className="px-3 py-2 font-medium">{t("原值")}</th>
+                        <th className="px-3 py-2 font-medium">{t("新值")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(entry.kind === "delete" ? entry.expected : entry.values).filter((assignment) =>
+                        entry.kind !== "update" || !sameAssignment(entry.expected.find((old) => old.column === assignment.column)?.value, assignment.value),
+                      ).map((assignment) => {
+                        const old = entry.kind === "insert" ? undefined : entry.expected.find((item) => item.column === assignment.column)?.value;
+                        const next = entry.kind === "delete" ? undefined : assignment.value;
+                        const before = assignmentText(old);
+                        const after = assignmentText(next);
+                        const diff = old?.kind === "value" && next?.kind === "value"
+                          ? valueDiff(before, after)
+                          : { prefix: "", removed: before, added: after, suffix: "" };
+                        return (
+                          <tr key={assignment.column} className="border-t border-line/40 align-top">
+                            <th scope="row" className="break-all px-3 py-3 text-left font-mono font-normal text-fg-muted">{assignment.column}</th>
+                            <td className="whitespace-pre-wrap break-all px-3 py-3 font-mono text-fg">
+                              {diff.prefix}<span className={old ? "rounded-sm bg-danger/10 text-danger" : "text-fg-subtle"}>{diff.removed}</span>{diff.suffix}
+                            </td>
+                            <td className="whitespace-pre-wrap break-all px-3 py-3 font-mono text-fg">
+                              {diff.prefix}<span className={next ? "rounded-sm bg-success/12 text-success" : "text-fg-subtle"}>{diff.added}</span>{diff.suffix}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
             </div>
           ))}
         </div>
@@ -2337,16 +2415,6 @@ export function TableBrowser({
               );
             })}
           </ul>
-        )}
-        {pending.length > 0 && (
-          <details className="mt-1 rounded-[6px] border border-line bg-surface-2/40 px-2 py-1">
-            <summary className="cursor-default select-none text-11 text-fg-subtle">
-              {t("预览 DML（{{count}} 条）", { count: pending.length })}
-            </summary>
-            <pre className="ops-scroll mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-11 leading-[1.7] text-fg-muted">
-              {dmlPreview}
-            </pre>
-          </details>
         )}
         {mutationError && <ErrorText>{mutationError}</ErrorText>}
       </Modal>

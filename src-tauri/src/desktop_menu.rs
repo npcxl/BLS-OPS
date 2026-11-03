@@ -221,8 +221,12 @@ fn hide_menu(window: &WebviewWindow) -> Result<(), String> {
             .run_on_main_thread(move || {
                 // A newer show may have installed a session while this hide
                 // waited in the UI queue. It must never hide that replacement.
-                let Ok(guard) = lock_session() else { return; };
-                if guard.is_some() { return; }
+                let Ok(guard) = lock_session() else {
+                    return;
+                };
+                if guard.is_some() {
+                    return;
+                }
                 drop(guard);
                 // HWND 属于本应用的复用菜单窗口；仅在其 UI 线程修改可见性。
                 unsafe {
@@ -1025,7 +1029,9 @@ pub fn desktop_menu_blur(
     let owned = lock_session()?.as_ref().is_some_and(|session| {
         session.request_id == request_id && session.source == window.label()
     });
-    if !owned { return Ok(false); }
+    if !owned {
+        return Ok(false);
+    }
     #[cfg(target_os = "windows")]
     let external = {
         use std::ffi::c_void;
@@ -1035,8 +1041,10 @@ pub fn desktop_menu_blur(
             fn GetAncestor(hwnd: *mut c_void, flags: u32) -> *mut c_void;
         }
         let source = window.hwnd().map_err(|error| error.to_string())?.0 as usize;
-        let menu = app.get_webview_window(MENU_LABEL)
-            .and_then(|menu| menu.hwnd().ok()).map(|hwnd| hwnd.0 as usize);
+        let menu = app
+            .get_webview_window(MENU_LABEL)
+            .and_then(|menu| menu.hwnd().ok())
+            .map(|hwnd| hwnd.0 as usize);
         // A null foreground occurs during activation transitions. It does not
         // establish that the user switched away, so leave this menu intact.
         unsafe {
@@ -1047,10 +1055,13 @@ pub fn desktop_menu_blur(
     };
     #[cfg(not(target_os = "windows"))]
     let external = !window.is_focused().unwrap_or(true)
-        && !app.get_webview_window(MENU_LABEL)
+        && !app
+            .get_webview_window(MENU_LABEL)
             .is_some_and(|menu| menu.is_focused().unwrap_or(false));
     eprintln!("[desktop-menu] blur {request_id} external={external}");
-    if external { dismiss(&app, Some(&request_id), "blur"); }
+    if external {
+        dismiss(&app, Some(&request_id), "blur");
+    }
     Ok(external)
 }
 

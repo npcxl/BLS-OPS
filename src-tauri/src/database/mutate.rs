@@ -300,7 +300,7 @@ pub async fn apply(
                         error: Some(DbErrorInfo::new(
                             "query",
                             if affected == 0 {
-                                "影响行数为 0：远程数据已变化（或行已被删除）"
+                                "没有匹配到这一行：可能已被其他会话修改/删除，或并发校验列的值已变化（可重试「跳过并发校验」）"
                             } else {
                                 "影响行数超过 1：唯一键不再唯一，已停止"
                             },
@@ -309,7 +309,7 @@ pub async fn apply(
                     failure = Some(DbErrorInfo::new(
                         "query",
                         if affected == 0 {
-                            "单行修改影响了 0 行：可能是并发修改或被删除"
+                            "单行修改没有匹配到目标行：可能是并发修改/删除，或并发校验列已变化"
                         } else {
                             "单行修改影响多行：唯一键约束可能已损坏"
                         },
@@ -649,7 +649,7 @@ async fn apply_postgres(
                         error: Some(DbErrorInfo::new(
                             "query",
                             if affected == 0 {
-                                "影响行数为 0：远程数据已变化（或行已被删除）"
+                                "没有匹配到这一行：可能已被其他会话修改/删除，或并发校验列的值已变化（可重试「跳过并发校验」）"
                             } else {
                                 "影响行数超过 1：唯一键不再唯一，已停止"
                             },
@@ -658,7 +658,7 @@ async fn apply_postgres(
                     failure = Some(DbErrorInfo::new(
                         "query",
                         if affected == 0 {
-                            "单行修改影响了 0 行：可能是并发修改或被删除"
+                            "单行修改没有匹配到目标行：可能是并发修改/删除，或并发校验列已变化"
                         } else {
                             "单行修改影响多行：唯一键约束可能已损坏"
                         },
@@ -825,7 +825,7 @@ async fn apply_sqlite(
                         error: Some(DbErrorInfo::new(
                             "query",
                             if answer.affected_rows == 0 {
-                                "影响行数为 0：远程数据已变化（或行已被删除）"
+                                "没有匹配到这一行：可能已被其他会话修改/删除，或并发校验列的值已变化（可重试「跳过并发校验」）"
                             } else {
                                 "影响行数超过 1：唯一键不再唯一，已停止"
                             },
@@ -834,7 +834,7 @@ async fn apply_sqlite(
                     failure = Some(DbErrorInfo::new(
                         "query",
                         if answer.affected_rows == 0 {
-                            "单行修改影响了 0 行：可能是并发修改或被删除"
+                            "单行修改没有匹配到目标行：可能是并发修改/删除，或并发校验列已变化"
                         } else {
                             "单行修改影响多行：唯一键约束可能已损坏"
                         },

@@ -251,6 +251,14 @@ pub fn build_opts(endpoint: &ResolvedEndpoint, pool: bool) -> Result<Opts, DbErr
         .tcp_nodelay(true)
         .stmt_cache_size(Some(16usize))
         .wait_timeout(Some(600usize))
+        // **`affected_rows` 要报"匹配到的行数"，而不是"值真正变化的行数"。**
+        //
+        // MySQL 默认语义下，把某列的旧值原样写回去（用户在表格里点了保存、
+        // 但值没变；或者并发校验把所有列都带上）也算 0 行受影响，而
+        // `mutate.rs` 用"受影响行数 != 1"判定并发冲突 —— 结果就是
+        // "表格里的数据改不了"，界面上只显示一条冲突提示。
+        // 打开 CLIENT_FOUND_ROWS 后，WHERE 命中就是 1，正好是乐观并发想要的。
+        .client_found_rows(true)
         // 单包硬上限：驱动在解码前会按包长分配内存。
         // 16 MiB 足以容纳单个 JSON/文本单元格，又能让"一行 2 GB"的
         // 意外立刻变成可解释的错误，而不是把进程内存吃光。

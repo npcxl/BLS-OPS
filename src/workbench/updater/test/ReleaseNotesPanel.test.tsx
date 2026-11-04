@@ -54,7 +54,7 @@ describe("release notes and shared updater", () => {
   it("groups the latest notes into cards without splitting code fences or rendering HTML", async () => {
     metadata.read.mockResolvedValue({...release, notes: "## Connections\n- First improvement\n\n```sql\n## SQL comment\n```\n\n## Interface\n<script>unsafe</script>"});
     await render();
-    const cards = holder.querySelectorAll(".release-notes-body");
+    const cards = holder.querySelectorAll(".release-notes-text-section");
     expect(cards).toHaveLength(2);
     expect(cards[0].querySelector("pre")?.textContent).toBe("## SQL comment");
     expect(cards[1].querySelector("h2")?.textContent).toBe("Interface");
@@ -62,10 +62,17 @@ describe("release notes and shared updater", () => {
     expect(holder.querySelector(".release-notes-cloud")?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  it("shows explicitly marked example notes offline without inventing an available update", async () => {
+  it("shows published history offline without inventing an available update", async () => {
     await render();
-    expect(document.body.textContent).toContain("Example release notes");
-    expect(document.body.textContent).toContain("v1.0.0");
+    expect(document.body.textContent).not.toContain("Example release notes");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(12);
+    expect(holder.querySelector(".release-notes-version-tag")?.textContent).toBe("v0.1.19");
+    expect(holder.textContent).toContain("Upcoming release");
+    expect(holder.textContent).toContain("11 published releases");
+    expect(document.body.textContent).toContain("v0.1.17");
+    expect(document.body.textContent).not.toContain("v0.1.14");
+    expect(holder.querySelector(".release-notes-heading")).toBeNull();
+    expect(button("Check for updates")).toBeUndefined();
     expect(button("Download and install")).toBeUndefined();
     expect(client.check).not.toHaveBeenCalled();
     expect(client.download).not.toHaveBeenCalled();
@@ -73,9 +80,35 @@ describe("release notes and shared updater", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it("filters changes by kind while keeping published version identities", async () => {
+    await render();
+    const choose = async (text: string) => {
+      const radio = Array.from(holder.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(node => node.textContent === text)!;
+      await act(async () => radio.click());
+      expect(radio.getAttribute("aria-checked")).toBe("true");
+    };
+    await choose("Highlights");
+    expect(holder.textContent).toContain("数据库工作台");
+    expect(holder.textContent).not.toContain("外部下载链接修复");
+    await choose("Performance and fixes");
+    expect(holder.textContent).toContain("外部下载链接修复");
+    expect(holder.textContent).not.toContain("新增对象浏览");
+    await choose("All versions");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(12);
+  });
+
+  it("marks the prepared notes published when release metadata confirms the version", async () => {
+    metadata.read.mockResolvedValue({...release, version:"0.1.19"});
+    await render();
+    expect(holder.textContent).not.toContain("Upcoming release");
+    expect(holder.textContent).toContain("12 published releases");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(12);
+    expect(button("Download and install")).toBeUndefined();
+  });
+
   it("uses the checked release for its notes and download action", async () => {
     await render();
-    await click("Check for updates");
+    await act(async () => useUpdaterStore.getState().check({manual: true}));
     expect(document.body.textContent).toContain("v1.0.1");
     expect(document.body.textContent).toContain("Real release notes");
     expect(document.body.textContent).not.toContain("Example release notes");
@@ -110,7 +143,7 @@ describe("release notes and shared updater", () => {
     });
     await render(); await click("Download and install");
     expect(document.body.querySelector("progress")?.value).toBe(50);
-    expect(button("Check for updates")?.disabled).toBe(true);
+    expect(button("Check for updates")).toBeUndefined();
     expect(button("Download and install")).toBeUndefined();
     await act(async () => finish());
     expect(client.download).toHaveBeenCalledTimes(1);
@@ -134,7 +167,9 @@ describe("release notes and shared updater", () => {
     expect(holder.querySelector(".release-notes-page")).not.toBeNull();
     expect(holder.querySelectorAll(".page-scroll")).toHaveLength(1);
     expect(holder.querySelector(".settings-detail > .page-header")).toBeNull();
-    expect(holder.querySelector(".page-scroll .release-notes-heading h1")?.textContent).toBe("Release notes");
+    expect(holder.querySelector(".release-notes-heading")).toBeNull();
+    expect(holder.querySelector(".page-content--reading")).toBeNull();
+    expect(holder.querySelector(".release-notes-filter-bar")).not.toBeNull();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 

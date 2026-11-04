@@ -1,5 +1,13 @@
 /** zh-CN · 应用更新（P5.1）。key 与英文文案逐字一致（natural keys）。 */
 export default {
+  "Upcoming release": "待发布",
+  "All versions": "全部版本",
+  "Highlights": "主要特性",
+  "Performance and fixes": "性能与修复",
+  "Filter release notes": "筛选更新日志",
+  "{{count}} published releases": "共 {{count}} 个发布记录",
+  "Published release history": "已发布版本记录",
+  "Showing saved release history. Latest notes could not be refreshed.": "已显示本地版本记录，最新日志暂未刷新。",
   "Example release notes": "示例日志",
   "Showing example notes until release notes are available.": "暂时显示示例日志。",
   "Example content only. Update availability is determined by checking for updates.": "以下为示例内容；是否有新版本，以检查更新结果为准。",

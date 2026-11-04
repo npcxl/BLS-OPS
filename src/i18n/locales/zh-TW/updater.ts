@@ -1,5 +1,13 @@
 /** zh-TW · 應用更新（P5.1）。key 與英文文案逐字一致（natural keys）。 */
 export default {
+  "Upcoming release": "待發佈",
+  "All versions": "全部版本",
+  "Highlights": "主要特性",
+  "Performance and fixes": "效能與修復",
+  "Filter release notes": "篩選更新日誌",
+  "{{count}} published releases": "共 {{count}} 個發佈記錄",
+  "Published release history": "已發佈版本記錄",
+  "Showing saved release history. Latest notes could not be refreshed.": "已顯示本機版本記錄，最新日誌暫未重新整理。",
   "Example release notes": "範例日誌",
   "Showing example notes until release notes are available.": "暫時顯示範例日誌。",
   "Example content only. Update availability is determined by checking for updates.": "以下為範例內容；是否有新版本，以檢查更新結果為準。",

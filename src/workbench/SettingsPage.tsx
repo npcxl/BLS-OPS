@@ -47,7 +47,7 @@ export function SettingsPage() {
       </aside>
       <section className={`settings-detail${category === "release-notes" ? " settings-detail--release-notes" : ""}`} aria-label={t(active.title)}>
         {category !== "release-notes" && <PageHeader title={t(active.title)} bordered />}
-        <PageScroll width="reading" viewportRef={viewport}>
+        <PageScroll width={category === "release-notes" ? "full" : "reading"} viewportRef={viewport}>
           {category === "release-notes" ? <ReleaseNotesPanel /> : <SettingsContextSidebar category={category} />}
         </PageScroll>
       </section>

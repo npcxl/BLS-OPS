@@ -301,17 +301,23 @@ export function DatabaseObjects({
                     key={table.name}
                     className={cn(
                       "absolute flex w-full cursor-default items-center gap-2 border-b border-line px-3 text-12",
-                      active ? "bg-accent/10" : "hover:bg-surface-hover",
+                      active
+                        ? "bg-accent/10 shadow-[inset_2px_0_0_var(--color-accent)]"
+                        : "hover:bg-surface-hover",
                     )}
+                    data-state={active ? "selected" : undefined}
                     style={{ top: rowIndex * ROW_HEIGHT, height: ROW_HEIGHT }}
                     onClick={() => setSelected(table.name)}
                     onDoubleClick={() => openTableRow(table.name)}
-                    onContextMenu={menu.onContextMenu(() =>
-                      objectMenu(
+                    onContextMenu={menu.onContextMenu(() => {
+                      // Right-click selects its target before the native popup takes
+                      // focus. Keep the cue visible while the pointer is over the menu.
+                      setSelected(table.name);
+                      return objectMenu(
                         { profileId, connectionName, database },
                         table,
-                      ),
-                    )}
+                      );
+                    })}
                     title={`${database}.${table.name}`}
                   >
                     {table.kind === "view" ? (
@@ -319,7 +325,7 @@ export function DatabaseObjects({
                     ) : (
                       <Table2 size={12} className="shrink-0 text-fg-subtle" />
                     )}
-                    <span className="min-w-0 flex-1 truncate text-fg">
+                    <span className={cn("min-w-0 flex-1 truncate text-fg", active && "font-medium")}>
                       {highlight(table.name, deferredQuery)}
                     </span>
                     <span className="shrink-0 text-11 text-fg-subtle">

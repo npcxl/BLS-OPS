@@ -362,7 +362,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     null,
   );
   const [dragging, setDragging] = useState<SelectionMode | null>(null);
-  const dragRef = useRef<{ x: number; y: number; mode: SelectionMode } | null>(null);
+  const dragRef = useRef<{ x: number; y: number; startX: number; startY: number; moved: boolean; mode: SelectionMode } | null>(null);
 
   const bounds: GridBounds = useMemo(
     () => ({ rows: rows.length, cols: columns.length }),
@@ -472,8 +472,11 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
       const element = containerRef.current;
       if (!element || rows.length === 0 || columns.length === 0) return null;
       const rect = element.getBoundingClientRect();
-      const localX = clientX - rect.left;
-      const localY = clientY - rect.top;
+      const localX = clientX - rect.left - element.clientLeft;
+      const localY = clientY - rect.top - element.clientTop;
+      // Native scrollbar tracks/thumbs are outside the client viewport. Never
+      // prevent their default behaviour or turn them into a selection gesture.
+      if (localX < 0 || localY < 0 || localX >= element.clientWidth || localY >= element.clientHeight) return null;
       if (localY < HEADER_HEIGHT) {
         if (localX < GUTTER_WIDTH) return { kind: "corner" };
         const col = columnAtOffset(element.scrollLeft + localX - GUTTER_WIDTH, starts);
@@ -527,7 +530,18 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   // ---- 拖动选择 -----------------------------------------------------------
   const applyDrag = useCallback(
     (clientX: number, clientY: number, mode: SelectionMode) => {
-      const hit = hitTest(clientX, clientY);
+      const element = containerRef.current;
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      const left = rect.left + element.clientLeft;
+      const top = rect.top + element.clientTop;
+      // Preserve the gesture's original kind when crossing headers or leaving
+      // the viewport. The auto-scroll loop handles motion beyond these bounds.
+      const x = mode === "row" ? left + 1
+        : Math.max(left + GUTTER_WIDTH, Math.min(clientX, left + element.clientWidth - 1));
+      const y = mode === "column" ? top + 1
+        : Math.max(top + HEADER_HEIGHT, Math.min(clientY, top + element.clientHeight - 1));
+      const hit = hitTest(x, y);
       if (!hit) return;
       if (hit.kind === "cell") {
         store.update((state) => extendSelection(state, hit.point, store.getBounds(), mode));
@@ -561,22 +575,30 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   const beginDrag = useCallback(
     (event: React.MouseEvent, mode: SelectionMode) => {
       stopDrag();
-      dragRef.current = { x: event.clientX, y: event.clientY, mode };
+      dragRef.current = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, mode };
       const onMove = (moveEvent: MouseEvent) => {
         if (!dragRef.current) return;
+        if ((moveEvent.buttons & 1) === 0) { stopDrag(); return; }
+        const moved = dragRef.current.moved || Math.hypot(moveEvent.clientX - dragRef.current.startX, moveEvent.clientY - dragRef.current.startY) >= 3;
         dragRef.current = {
           ...dragRef.current,
           x: moveEvent.clientX,
           y: moveEvent.clientY,
+          moved,
         };
-        applyDrag(moveEvent.clientX, moveEvent.clientY, mode);
+        if (moved) applyDrag(moveEvent.clientX, moveEvent.clientY, mode);
       };
       const onUp = () => stopDrag();
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
+      window.addEventListener("blur", onUp);
+      const onVisibility = () => { if (document.hidden) stopDrag(); };
+      document.addEventListener("visibilitychange", onVisibility);
       dragCleanupRef.current = () => {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
+        window.removeEventListener("blur", onUp);
+        document.removeEventListener("visibilitychange", onVisibility);
       };
       setDragging(mode);
     },
@@ -592,14 +614,18 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
     const tick = () => {
       const drag = dragRef.current;
       const element = containerRef.current;
-      if (drag && element) {
+      if (drag?.moved && element) {
         const rect = element.getBoundingClientRect();
+        const right = rect.left + element.clientLeft + element.clientWidth;
+        const bottom = rect.top + element.clientTop + element.clientHeight;
         let dx = 0;
         let dy = 0;
         if (drag.y < rect.top + HEADER_HEIGHT + DRAG_EDGE) dy = -DRAG_STEP;
-        else if (drag.y > rect.bottom - DRAG_EDGE) dy = DRAG_STEP;
+        else if (drag.y > bottom - DRAG_EDGE) dy = DRAG_STEP;
         if (drag.x < rect.left + GUTTER_WIDTH + DRAG_EDGE) dx = -DRAG_STEP;
-        else if (drag.x > rect.right - DRAG_EDGE) dx = DRAG_STEP;
+        else if (drag.x > right - DRAG_EDGE) dx = DRAG_STEP;
+        if (drag.mode === "row") dx = 0;
+        if (drag.mode === "column") dy = 0;
         if (dx !== 0 || dy !== 0) {
           element.scrollLeft += dx;
           element.scrollTop += dy;
@@ -615,6 +641,10 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   // ---- 鼠标 ---------------------------------------------------------------
   const onMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    stopDrag();
+    // Overlay scrollbars may sit inside clientWidth/clientHeight, but their
+    // native mouse target is the scroller itself rather than its content.
+    if (event.target === event.currentTarget) return;
     const target = event.target as HTMLElement;
     if (target.closest("[data-cell-editor]")) return;
     if (target.closest("[data-sort-button]")) return;
@@ -665,6 +695,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
    * 焦点，随后的 Ctrl+C 会被输入框当成原生复制 —— 选中区域的 TSV 复制就没了。
    */
   const onDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) return;
     const target = event.target as HTMLElement;
     if (target.closest("[data-cell-editor]") || target.closest("[data-sort-button]")) return;
     const hit = hitTest(event.clientX, event.clientY);
@@ -704,6 +735,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   };
 
   const onContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget) return;
     const hit = hitTest(event.clientX, event.clientY);
     if (!hit) return;
     ensureSelectionFor(hit);

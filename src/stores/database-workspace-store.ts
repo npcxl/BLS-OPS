@@ -72,7 +72,24 @@ export interface SavedQuery {
   updatedAt: number;
 }
 
+/**
+ * 工作项的两种展示：顶部标签条（默认）或右侧竖排列表。
+ *
+ * 两种模式是**同一份** `items` 的两种视图，切换只改渲染位置，不动工作项本身：
+ * 标签条更适合少量标签的横向切换，右侧列表在标签很多、标题又长时更好扫。
+ */
+export type WorkItemLayout = "top" | "right";
+
 const SAVED_KEY = "ops.db.savedQueries";
+const LAYOUT_KEY = "ops.db.workItemLayout";
+
+function loadLayout(): WorkItemLayout {
+  try {
+    return localStorage.getItem(LAYOUT_KEY) === "right" ? "right" : "top";
+  } catch {
+    return "top";
+  }
+}
 
 function loadSaved(): SavedQuery[] {
   try {
@@ -106,6 +123,9 @@ interface WorkspaceState {
   rightCollapsed: boolean;
   rightWidth: number;
   savedQueries: SavedQuery[];
+  /** 顶部标签条 / 右侧列表，落 localStorage（重启后保持上次的选择）。 */
+  layout: WorkItemLayout;
+  setLayout: (layout: WorkItemLayout) => void;
 
   openTable: (args: {
     profileId: string;
@@ -250,6 +270,16 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
   fieldCard: null,
   closeRequest: null,
   savedQueries: loadSaved(),
+  layout: loadLayout(),
+
+  setLayout: (layout) => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, layout);
+    } catch {
+      // 存不下只影响"下次启动用哪种展示"，当前会话仍然照常切换。
+    }
+    set({ layout });
+  },
 
   requestClose: (id, profileId, mode = "one") =>
     set({ closeRequest: { id, profileId, mode } }),

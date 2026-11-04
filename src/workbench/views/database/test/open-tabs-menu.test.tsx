@@ -9,8 +9,9 @@ import {
 import { OpenTabsMenu } from "../OpenTabsMenu";
 
 /**
- * 标签条右侧「已打开的标签」浮窗：
- * - 只列当前连接的标签（别的连接属于它们自己的标签条）；
+ * 标签条右侧的「更多」（⋯）入口：
+ * - 点一下先出菜单，菜单里只有「已打开的标签」浮窗与「标签向右打开」；
+ * - 浮窗只列当前连接的标签（别的连接属于它们自己的标签条）；
  * - 搜索按标题 / 表名 / 库名过滤；
  * - 点击、↑↓ + Enter 都能切到对应标签并收起；
  * - Esc 关闭；底部仍能新建查询。
@@ -64,14 +65,24 @@ const ITEMS: WorkItem[] = [
 let holder: HTMLDivElement;
 let root: Root;
 
-const trigger = () => holder.querySelector<HTMLElement>('button[aria-haspopup="dialog"]');
+const trigger = () => holder.querySelector<HTMLElement>('button[aria-haspopup="menu"]');
 const dialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]');
 const options = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
 const searchInput = () =>
   document.body.querySelector<HTMLInputElement>('input[aria-label="搜索已打开的标签…"]');
 
-function openPanel() {
+const menuItems = () =>
+  Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+const menuItem = (label: string) =>
+  menuItems().find((item) => item.textContent?.includes(label)) ?? null;
+
+function openMenu() {
   act(() => trigger()!.click());
+}
+
+function openPanel() {
+  openMenu();
+  act(() => menuItem("已打开的标签")!.click());
 }
 
 /** React 19 的受控 input：必须先走原型上的 setter，否则 value 改了但 onChange 不触发。 */
@@ -106,7 +117,32 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   holder.remove();
-  useDatabaseWorkspaceStore.setState({ items: [], activeId: null });
+  useDatabaseWorkspaceStore.setState({ items: [], activeId: null, layout: "top" });
+});
+
+describe("OpenTabsMenu · 更多菜单", () => {
+  it("点一下先出菜单，只有「已打开的标签」和「标签向右打开」", () => {
+    openMenu();
+
+    const labels = menuItems().map((item) => item.textContent ?? "");
+    expect(labels.some((label) => label.includes("已打开的标签"))).toBe(true);
+    expect(labels.some((label) => label.includes("标签向右打开"))).toBe(true);
+    // 新建连接在左侧资产树的 +，新建查询在 SQL 页工具栏：菜单里不重复摆。
+    expect(labels.some((label) => label.includes("新建"))).toBe(false);
+    // 菜单打开时还不该冒出浮窗：那是第二次点击的事。
+    expect(dialog()).toBeNull();
+  });
+
+  it("选「标签向右打开」切换到右侧列表，再回来是「回到顶部」", () => {
+    openMenu();
+    act(() => menuItem("标签向右打开")!.click());
+    expect(useDatabaseWorkspaceStore.getState().layout).toBe("right");
+
+    openMenu();
+    expect(menuItem("标签回到顶部")).not.toBeNull();
+    act(() => menuItem("标签回到顶部")!.click());
+    expect(useDatabaseWorkspaceStore.getState().layout).toBe("top");
+  });
 });
 
 describe("OpenTabsMenu", () => {

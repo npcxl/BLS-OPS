@@ -18,19 +18,14 @@ import {
   Columns3,
   ChevronLeft,
   ChevronRight,
-  Copy,
   Database as DatabaseIcon,
   Loader2,
-  PanelRightClose,
   Pin,
-  PinOff,
-  SquareMinus,
   SquareTerminal,
   Table2,
   X,
 } from "@/components/icons";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
-import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import {
   orderedItems,
@@ -39,6 +34,7 @@ import {
 } from "@/stores/database-workspace-store";
 
 import { OpenTabsMenu } from "./OpenTabsMenu";
+import { workItemMenuItems } from "./work-item-row";
 
 const KIND_ICON = {
   table: Table2,
@@ -183,42 +179,14 @@ export function DatabaseTabBar({
     else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth;
   }, [effectiveActiveId, items.length, hasOverflow]);
 
-  const buildMenu = (item: WorkItem) => [
-    {
-      id: "close",
-      label: t("关闭"),
-      icon: X,
-      hint: "Ctrl+W",
-      onSelect: () => onRequestClose(item),
-    },
-    {
-      id: "close-others",
-      label: t("关闭其他"),
-      icon: SquareMinus,
-      onSelect: () => onRequestCloseOthers(item),
-    },
-    {
-      id: "close-right",
-      label: t("关闭右侧"),
-      icon: PanelRightClose,
-      onSelect: () => onRequestCloseRight(item),
-    },
-    { id: "sep-1", separator: true },
-    {
-      id: "pin",
-      label: item.pinned ? t("取消固定") : t("固定到最左"),
-      hint: item.pinned ? undefined : t("固定项不参与预览替换"),
-      icon: item.pinned ? PinOff : Pin,
-      onSelect: () => togglePin(item.id),
-    },
-    {
-      id: "copy",
-      label: t("复制名称"),
-      icon: Copy,
-      disabled: item.kind === "query",
-      onSelect: () => void copyText(item.objectName),
-    },
-  ];
+  // 菜单与右侧列表共用一份：同一个标签在两个入口里的右键项必须一致。
+  const buildMenu = (item: WorkItem) =>
+    workItemMenuItems(item, {
+      close: onRequestClose,
+      closeOthers: onRequestCloseOthers,
+      closeRight: onRequestCloseRight,
+      togglePin,
+    });
 
   return (
     <div className="flex h-[var(--page-toolbar-height)] w-full min-w-0 max-w-full shrink-0 items-center gap-1 overflow-hidden border-b border-divider/70 bg-transparent px-[var(--page-inline)]">

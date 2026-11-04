@@ -46,6 +46,8 @@ export {
   Music,
   Network,
   Pause,
+  PanelRight,
+  PanelTop,
   Pin,
   PinOff,
   Plus,

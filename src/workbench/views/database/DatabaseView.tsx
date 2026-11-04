@@ -53,6 +53,7 @@ import { engineMeta, familyOf } from "./db-engines";
 import { RedisBrowser } from "./RedisBrowser";
 import { useEngineCatalog } from "./useEngineCatalog";
 import { WorkItemHost } from "./WorkItemHost";
+import { WorkItemRail } from "./WorkItemRail";
 
 const FIELD_CARD_WIDTH = 260;
 
@@ -116,6 +117,8 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
 
   const items = useDatabaseWorkspaceStore((state) => state.items);
   const activeId = useDatabaseWorkspaceStore((state) => state.activeId);
+  /** 工作项展示：顶部标签条（默认）或右侧竖排列表。 */
+  const layout = useDatabaseWorkspaceStore((state) => state.layout);
   const closeRequest = useDatabaseWorkspaceStore((state) => state.closeRequest);
   const consumeCloseRequest = useDatabaseWorkspaceStore(
     (state) => state.consumeCloseRequest,
@@ -655,14 +658,18 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         </PageNotice>
       )}
 
-      <DatabaseTabBar
-        profileId={profileId}
-        connectionName={profile.name}
-        onRequestClose={requestClose}
-        onRequestCloseOthers={requestCloseOthers}
-        onRequestCloseRight={requestCloseRight}
-        onNewQuery={() => handleNewQuery()}
-      />
+      {/* 顶部标签条与右侧列表是同一份工作项的两种展示，只渲染其中一个：
+          两种同时出现会让人分不清哪个才是"当前工作项"。 */}
+      {layout === "top" && (
+        <DatabaseTabBar
+          profileId={profileId}
+          connectionName={profile.name}
+          onRequestClose={requestClose}
+          onRequestCloseOthers={requestCloseOthers}
+          onRequestCloseRight={requestCloseRight}
+          onNewQuery={() => handleNewQuery()}
+        />
+      )}
 
       <PageWorkspace row>
         {/* WorkItemHost 用 flex:1 分配内部高度，父层必须继续传递 flex 布局。 */}
@@ -734,6 +741,16 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
               }}
             />
           </PageInspector>
+        )}
+
+        {layout === "right" && (
+          <WorkItemRail
+            profileId={profileId}
+            onNewQuery={() => handleNewQuery()}
+            onRequestClose={requestClose}
+            onRequestCloseOthers={requestCloseOthers}
+            onRequestCloseRight={requestCloseRight}
+          />
         )}
       </PageWorkspace>
 

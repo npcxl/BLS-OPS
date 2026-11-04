@@ -1,15 +1,15 @@
 /**
- * 标签条右侧的「已打开的标签」浮窗。
+ * 标签条右侧的「更多」（⋯）入口。
  *
- * 标签条在标签变多后只能横向滚动，找一张表要来回拖；这个浮窗把当前连接的
- * 所有工作项收进一张可搜索的列表：
- * - 输入即过滤（标题 / 表名 / 库名）；
- * - ↑↓ 选择、Enter 打开、Esc 关闭；
- * - 单击任意一行直接切到那个标签，浮窗自动收起；
- * - 底部保留「新建查询」，所以标签条右侧换成这个入口后并没有丢掉新建动作。
+ * 菜单只有两项，都是**标签列表本身**的事：
+ * - 已打开的标签：可搜索的浮窗（标签多到横向滚动时一次看全）；
+ * - 标签向右打开 / 标签回到顶部：工作项在顶部标签条与右侧列表之间切换。
  *
- * 为什么是 portal + fixed：标签条外层有 `overflow-x-auto`，绝对定位会被裁掉；
- * 浮层同时登记到 OverlayManager，Esc 只关最上面这一层（弹窗里的标签条也一样）。
+ * 新建连接在左侧资产树标题栏的 `+`，新建查询在 SQL 页工具栏 —— 菜单里不重复
+ * 摆一份"新建"，否则同一个动作有了第二个入口。
+ *
+ * 右侧列表模式下顶部标签条是隐藏的，列表已经摊开，所以那里的入口直接就是
+ * 「回到顶部」，不再多一层菜单。
  */
 import {
   useEffect,
@@ -23,28 +23,25 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
-  Check,
-  Columns3,
-  Database as DatabaseIcon,
-  FileCode2,
   FilePlus2,
-  History,
-  Loader2,
-  Pin,
+  ListTodo,
+  MoreHorizontal,
+  PanelRight,
+  PanelTop,
   Search,
-  Table2,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { isTopOverlayLayer, OVERLAY_Z, useOverlayLayer } from "@/components/ui/overlay";
 import { Tooltip } from "@/components/ui/tooltip";
-import { cn } from "@/lib/cn";
 import {
   orderedItems,
   useDatabaseWorkspaceStore,
   type WorkItem,
 } from "@/stores/database-workspace-store";
+import { WorkItemRow } from "./work-item-row";
 
 const PANEL_WIDTH = 316;
 const PANEL_MAX_HEIGHT = 380;
@@ -59,42 +56,23 @@ interface PanelPosition {
   bottom?: number;
 }
 
-function KindIcon({ item, active }: { item: WorkItem; active: boolean }) {
-  const className = cn("shrink-0", active ? "text-accent" : "text-fg-subtle");
-  if (item.kind === "table") return <Table2 size={12} className={className} />;
-  if (item.kind === "structure") return <Columns3 size={12} className={className} />;
-  if (item.kind === "objects") return <DatabaseIcon size={12} className={className} />;
-  return <FileCode2 size={12} className={className} />;
-}
-
-/** 与标签条上保持同一套标记：固定 / 执行中 / 待提交 / 未保存。 */
-function RowBadges({ item }: { item: WorkItem }) {
-  return (
-    <>
-      {item.pinned && <Pin size={9} className="shrink-0 text-accent" />}
-      {item.running && <Loader2 size={10} className="shrink-0 animate-spin text-accent" />}
-      {item.pendingCount > 0 && (
-        <span className="shrink-0 rounded-[4px] bg-warning/20 px-1 text-[9px] leading-4 text-warning">
-          {item.pendingCount}
-        </span>
-      )}
-      {item.dirty && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
-    </>
-  );
-}
-
 export function OpenTabsMenu({
   profileId,
   onNewQuery,
+  variant = "tabs",
 }: {
   profileId: string;
   onNewQuery: () => void;
+  /** `rail` = 右侧列表的标题栏：列表已经摊开，只留"回到顶部"。 */
+  variant?: "tabs" | "rail";
 }) {
   const { t } = useTranslation();
   const listId = `open-tabs-${useId()}`;
   const allItems = useDatabaseWorkspaceStore((state) => state.items);
   const activeId = useDatabaseWorkspaceStore((state) => state.activeId);
   const setActive = useDatabaseWorkspaceStore((state) => state.setActive);
+  const layout = useDatabaseWorkspaceStore((state) => state.layout);
+  const setLayout = useDatabaseWorkspaceStore((state) => state.setLayout);
 
   const items = useMemo(
     () => orderedItems(allItems.filter((item) => item.profileId === profileId)),
@@ -109,6 +87,7 @@ export function OpenTabsMenu({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const layer = useOverlayLayer(open, "open-tabs");
+  const menu = useContextMenu();
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -126,12 +105,47 @@ export function OpenTabsMenu({
     if (returnFocus) buttonRef.current?.focus();
   };
 
-  const openMenu = () => {
+  const openPanel = () => {
     setSearch("");
     const index = items.findIndex((item) => item.id === activeId);
     setCursor(index >= 0 ? index : 0);
     setOpen(true);
   };
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    // 右对齐到按钮、贴着按钮下沿展开：菜单往右下方长，不遮住标签本身。
+    const x = rect ? rect.right - 200 : 0;
+    const y = rect ? rect.bottom + 6 : 0;
+    menu.openAt(x, y, menuItems());
+  };
+
+  const menuItems = () => [
+    {
+      id: "tabs",
+      label: t("已打开的标签"),
+      icon: ListTodo,
+      onSelect: openPanel,
+    },
+    { separator: true as const },
+    ...(layout === "top"
+      ? [
+          {
+            id: "layout-right",
+            label: t("标签向右打开"),
+            icon: PanelRight,
+            onSelect: () => setLayout("right"),
+          },
+        ]
+      : [
+          {
+            id: "layout-top",
+            label: t("标签回到顶部"),
+            icon: PanelTop,
+            onSelect: () => setLayout("top"),
+          },
+        ]),
+  ];
 
   const choose = (item: WorkItem) => {
     setActive(item.id);
@@ -223,21 +237,42 @@ export function OpenTabsMenu({
     }
   };
 
+  // 右侧列表模式：列表就摊在旁边，一个「回到顶部」按钮比只含一项的菜单直接。
+  if (variant === "rail") {
+    return (
+      <Tooltip side="bottom" label={t("标签回到顶部")}>
+        <button
+          type="button"
+          aria-label={t("标签回到顶部")}
+          onClick={() => setLayout("top")}
+          className="flex h-6 w-6 items-center justify-center rounded-[6px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+        >
+          <PanelTop size={13} strokeWidth={1.75} />
+        </button>
+      </Tooltip>
+    );
+  }
+
   return (
     <>
-      <Tooltip side="bottom" label={t("已打开的标签")}>
+      <Tooltip side="bottom" label={t("标签列表")}>
         <button
           ref={buttonRef}
           type="button"
-          aria-label={t("已打开的标签")}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          onClick={() => (open ? close(false) : openMenu())}
+          aria-label={t("标签列表")}
+          aria-haspopup="menu"
+          aria-expanded={menu.props.open}
+          onClick={() => {
+            if (open) close(false);
+            openMenu();
+          }}
           className="flex h-6 w-6 items-center justify-center rounded-[6px] text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg aria-expanded:bg-surface-active aria-expanded:text-fg"
         >
-          <History size={13} strokeWidth={1.75} />
+          <MoreHorizontal size={14} strokeWidth={1.75} />
         </button>
       </Tooltip>
+
+      <ContextMenu {...menu.props} />
 
       {open &&
         position &&
@@ -288,37 +323,16 @@ export function OpenTabsMenu({
                   description={items.length === 0 ? undefined : t("Try a shorter search.")}
                 />
               )}
-              {filtered.map((item, index) => {
-                const active = item.id === activeId;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    data-index={index}
-                    onClick={() => choose(item)}
-                    onMouseEnter={() => setCursor(index)}
-                    title={`${item.database ?? "—"} › ${item.objectName}`}
-                    className={cn(
-                      "page-tree-row w-full text-left text-12",
-                      active ? "text-fg" : "text-fg-muted",
-                      // 当前标签已经有 accent 底色，别再被"键盘光标"的灰色盖掉。
-                      index === cursor && !active && "bg-surface-hover",
-                    )}
-                  >
-                    <KindIcon item={item} active={active} />
-                    <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                    {item.database && (
-                      <span className="max-w-[88px] shrink-0 truncate text-10 text-fg-subtle">
-                        {item.database}
-                      </span>
-                    )}
-                    <RowBadges item={item} />
-                    {active && <Check size={11} className="shrink-0 text-accent" />}
-                  </button>
-                );
-              })}
+              {filtered.map((item, index) => (
+                <div key={item.id} data-index={index} onMouseEnter={() => setCursor(index)}>
+                  <WorkItemRow
+                    item={item}
+                    active={item.id === activeId}
+                    highlighted={index === cursor}
+                    onSelect={() => choose(item)}
+                  />
+                </div>
+              ))}
             </div>
 
             <div className="page-overlay-footer page-overlay-footer--compact justify-between">

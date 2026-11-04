@@ -42,6 +42,7 @@ pub mod capability;
 pub mod driver;
 pub mod engine_registry;
 pub mod export;
+mod export_format;
 pub mod manager;
 pub mod metadata;
 pub mod model;

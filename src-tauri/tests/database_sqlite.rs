@@ -371,6 +371,7 @@ async fn sqlite_export_writes_complete_csv() {
         .start(
             runtime.clone(),
             ExportRequest {
+                format: Default::default(),
                 profile_id: "sqlite-test".to_string(),
                 sql: String::new(),
                 database: Some("main".to_string()),
@@ -412,6 +413,103 @@ async fn sqlite_export_writes_complete_csv() {
     manager.close_session("export-session").await;
     manager.close_profile("sqlite-test").await;
     let _ = std::fs::remove_file(out_path);
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(app_path);
+}
+
+#[tokio::test]
+async fn sqlite_export_all_formats_are_complete_and_sql_roundtrips() {
+    let (app_path, app_conn) = temp_app_db();
+    let db_path = sqlite_db("formats");
+    let manager = DatabaseManager::default();
+    let plan = driver::plan_from_profile(&app_conn, &profile(&db_path), None).unwrap();
+    let runtime = manager.runtime(plan).await.unwrap();
+    let cache = metadata::MetadataCache::default();
+    let detail = metadata::table_detail(&runtime, &cache, "main", "items")
+        .await
+        .unwrap();
+    let registry = export::ExportRegistry::default();
+    for format in ["csv", "tsv", "json", "jsonl", "sql", "html", "xml"] {
+        let out = std::env::temp_dir().join(format!(
+            "bls-export-formats-{}.{format}",
+            uuid::Uuid::new_v4()
+        ));
+        let request: ExportRequest = serde_json::from_value(serde_json::json!({
+            "profile_id":"sqlite-test", "sql":"", "target_path":out, "format":format,
+            "table":{"database":"main", "table":"items"}, "bom":true
+        }))
+        .unwrap();
+        let started = registry
+            .start(runtime.clone(), request, Some(detail.clone()))
+            .await
+            .unwrap();
+        for _ in 0..400 {
+            let status = registry.status(&started.export_id).await.unwrap();
+            if status.state != "running" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let outcome = registry.outcome(&started.export_id).await.unwrap();
+        assert_eq!(outcome.state, "completed", "{format}: {:?}", outcome.error);
+        assert_eq!(outcome.rows, 2);
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(
+            outcome.bytes,
+            bytes.len() as u64,
+            "byte count includes header and footer"
+        );
+        let body = std::str::from_utf8(&bytes).unwrap();
+        match format {
+            "json" => {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(body)
+                        .unwrap()
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
+            "jsonl" => {
+                assert_eq!(body.lines().count(), 2);
+                for line in body.lines() {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap();
+                }
+            }
+            "sql" => {
+                let target = rusqlite::Connection::open_in_memory().unwrap();
+                target
+                    .execute_batch(
+                        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, payload BLOB);",
+                    )
+                    .unwrap();
+                target.execute_batch(body).unwrap();
+                let blob: Vec<u8> = target
+                    .query_row("SELECT payload FROM items WHERE id=1", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(blob, vec![0, 255]);
+            }
+            "html" => {
+                assert!(body.ends_with("</tbody></table></body></html>\n"));
+            }
+            "xml" => {
+                assert!(body.ends_with("</rows>\n"));
+                assert!(body.contains("encoding=\"base64\""));
+            }
+            _ => {
+                assert_eq!(body.trim_start_matches('\u{feff}').lines().count(), 3);
+            }
+        }
+        assert!(
+            !std::path::Path::new(&format!("{}.part-{}", out.display(), started.export_id))
+                .exists()
+        );
+        registry.remove(&started.export_id).await;
+        std::fs::remove_file(out).unwrap();
+    }
+    manager.close_profile("sqlite-test").await;
+    drop(app_conn);
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(app_path);
 }

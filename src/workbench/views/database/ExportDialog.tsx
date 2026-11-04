@@ -1,5 +1,5 @@
 /**
- * CSV 导出对话框。
+ * Streaming data export dialog.
  *
  * - 前端只收进度（轮询 `db_export_status`），**从不接收导出数据**；
  * - 明确提示"重新查询导出，数据可能已变化"；
@@ -11,6 +11,10 @@ import { useTranslation } from "react-i18next";
 import { FileDown, FolderOpen, Loader2, Square, TriangleAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Field, Modal, fieldClass } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
+import { MacSwitch } from "@/components/ui/mac-controls";
+import { EXPORT_FORMATS, exportFileName } from "./export-formats";
+import "./export-dialog.css";
 import { pushToast } from "@/components/ui/toast";
 import { databaseApi } from "@/api/ops-api";
 import type {
@@ -18,6 +22,7 @@ import type {
   BrowseSort,
   ExportOutcome,
   ExportProgress,
+  ExportFormat,
 } from "@/api/types/database";
 import { toDbError } from "@/stores/database-store";
 
@@ -48,6 +53,7 @@ export function ExportDialog({
   const [pathAuthorized, setPathAuthorized] = useState(false);
   const [maxRows, setMaxRows] = useState(0);
   const [bom, setBom] = useState(true);
+  const [format, setFormat] = useState<ExportFormat>("csv");
   const [exportId, setExportId] = useState<string | null>(null);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [outcome, setOutcome] = useState<ExportOutcome | null>(null);
@@ -92,7 +98,7 @@ export function ExportDialog({
   const browse = async () => {
     try {
       const chosen = await databaseApi.pickExportPath(
-        path || "export.csv",
+        path || `export.${format}`, format,
       );
       if (chosen) {
         setPath(chosen);
@@ -104,6 +110,11 @@ export function ExportDialog({
   };
 
   const start = async () => {
+    if (busy) return;
+    if (!Number.isSafeInteger(maxRows) || maxRows < 0) {
+      setError(t("最多行数必须是有效的非负整数"));
+      return;
+    }
     if (!path.trim() || !pathAuthorized) {
       setError(t("请选择导出文件路径"));
       return;
@@ -111,8 +122,11 @@ export function ExportDialog({
     setBusy(true);
     setError(null);
     setOutcome(null);
+    setProgress(null);
     try {
+      if (exportId) await databaseApi.exportRemove(exportId);
       const started = await databaseApi.exportStart(profileId, {
+        format,
         profile_id: profileId,
         sql: table ? "" : sql,
         database: table?.database ?? null,
@@ -120,7 +134,7 @@ export function ExportDialog({
         table: table ? { database: table.database, table: table.table } : null,
         filters: table?.filters ?? null,
         sorts: table?.sorts ?? null,
-        bom,
+        bom: (format === "csv" || format === "tsv") && bom,
         max_rows: maxRows > 0 ? maxRows : null,
       });
       setExportId(started.export_id);
@@ -141,9 +155,9 @@ export function ExportDialog({
             setProgress(current);
             if (["completed", "cancelled", "failed"].includes(current.state)) {
               stopPolling();
-              setBusy(false);
               const final = await databaseApi.exportOutcome(started.export_id);
               setOutcome(final);
+              setBusy(false);
               if (final.state === "completed") {
                 pushToast(
                   t("导出完成：{{rows}} 行", { rows: final.rows.toLocaleString() }),
@@ -180,8 +194,10 @@ export function ExportDialog({
   return (
     <Modal
       open={open}
-      title={title ?? t("导出 CSV")}
-      width={520}
+      title={title ?? t("导出数据")}
+      description={table ? `${table.database} / ${table.table}` : t("查询结果")}
+      size="lg"
+      className="database-export-dialog"
       onClose={busy && !terminal ? undefined : onClose}
       footer={
         <>
@@ -206,47 +222,56 @@ export function ExportDialog({
         </>
       }
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-5">
+        <Field label={t("文件格式")}>
+          <Select ariaLabel={t("文件格式")} value={format} disabled={busy}
+            options={EXPORT_FORMATS.map(option => ({ ...option, disabled: option.value === "sql" && !table,
+              hint: option.value === "sql" && !table ? t("仅表数据") : option.hint }))}
+            onChange={value => {
+              const next = value as ExportFormat;
+              setFormat(next);
+              setPath(current => exportFileName(current || "export", next));
+              setPathAuthorized(false);
+              setOutcome(null);
+              setProgress(null);
+              setError(null);
+            }} />
+          <p className="export-format-hint">{t(EXPORT_FORMATS.find(option => option.value === format)!.description)}</p>
+        </Field>
         <Field label={t("保存到")}>
           <div className="grid grid-cols-[1fr_auto] gap-2">
             <input
               className={fieldClass}
+              aria-label={t("保存到")}
               value={path}
               readOnly
               placeholder={t("请选择导出文件路径")}
             />
-            <Button variant="ghost" size="sm" onClick={() => void browse()}>
+            <Button variant="secondary" size="md" disabled={busy} onClick={() => void browse()}>
               <FolderOpen size={12} />
               {t("浏览…")}
             </Button>
           </div>
         </Field>
 
-        <div className="grid grid-cols-2 gap-2">
+        <section className="export-options" aria-label={t("导出选项")}>
           <Field label={t("最多行数（0 = 不限制）")} hint={t("达到上限会提前结束并提示")}>
             <input
               className={fieldClass}
               type="number"
               min={0}
+              step={1}
+              disabled={busy}
               value={maxRows}
-              onChange={(event) => setMaxRows(Math.max(0, Number(event.target.value) || 0))}
+              onChange={(event) => setMaxRows(Math.max(0, Math.floor(Number(event.target.value) || 0)))}
             />
           </Field>
-          <label className="mt-5 flex items-center gap-1.5 text-11 text-fg-muted">
-            <input
-              type="checkbox"
-              checked={bom}
-              onChange={(event) => setBom(event.target.checked)}
-            />
-            {t("UTF-8 BOM")}
-          </label>
-        </div>
-
-        <div className="rounded-[8px] border border-line bg-surface-2/50 px-2 py-1.5 text-11 leading-relaxed text-fg-subtle">
-          {t(
-            "NULL 导出为空字段，空字符串导出为 \"\"；含逗号/引号/换行的值会被引号包裹。写入临时文件成功后才改名为目标文件。",
-          )}
-        </div>
+          {(format === "csv" || format === "tsv") && <div className="export-encoding">
+            <div><span>{t("UTF-8 BOM")}</span><p>{t("便于 Excel 识别中文")}</p></div>
+            <MacSwitch aria-label={t("UTF-8 BOM")} checked={bom} onChange={setBom} disabled={busy} />
+          </div>}
+        </section>
+        <p className="export-format-hint">{t("按当前筛选与排序重新查询导出，数据可能与页面显示不同。二进制字段以 Base64 保存，SQL 使用数据库二进制字面量。")}</p>
 
         {error && <ErrorText>{error}</ErrorText>}
 

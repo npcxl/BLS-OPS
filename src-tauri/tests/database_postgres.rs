@@ -322,6 +322,7 @@ async fn postgres_mutation_commits_and_detects_conflict() {
         .start(
             runtime.clone(),
             ExportRequest {
+                format: Default::default(),
                 profile_id: "postgres-test".to_string(),
                 sql: String::new(),
                 database: Some("public".to_string()),
@@ -469,6 +470,7 @@ async fn postgres_streaming_zero_rows_transaction_and_export_paging() {
         .start(
             runtime.clone(),
             ExportRequest {
+                format: Default::default(),
                 profile_id: "postgres-test".to_string(),
                 sql: String::new(),
                 database: Some("public".to_string()),
@@ -945,6 +947,7 @@ async fn postgres_export_writes_complete_csv() {
         .start(
             runtime.clone(),
             ExportRequest {
+                format: Default::default(),
                 profile_id: "postgres-test".to_string(),
                 sql: String::new(),
                 database: Some("public".to_string()),

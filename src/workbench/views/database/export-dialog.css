@@ -1,0 +1,5 @@
+.database-export-dialog .export-format-hint { margin: 7px 0 0; color: rgb(var(--fg-subtle)); font-size: 11px; line-height: 1.75; }
+.database-export-dialog .export-options { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 20px; border-top: 1px solid rgb(var(--line) / .6); padding-top: 18px; }
+.database-export-dialog .export-encoding { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 20px; color: rgb(var(--fg-muted)); font-size: 12px; }
+.database-export-dialog .export-encoding p { margin-top: 5px; color: rgb(var(--fg-subtle)); font-size: 11px; }
+@media (max-width: 560px) { .database-export-dialog .export-options { grid-template-columns: minmax(0, 1fr); gap: 12px; } .database-export-dialog .export-encoding { padding-top: 0; } }

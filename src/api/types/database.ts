@@ -629,7 +629,10 @@ export interface ExportTableTarget {
   table: string;
 }
 
+export type ExportFormat = "csv" | "tsv" | "json" | "jsonl" | "sql" | "html" | "xml";
+
 export interface ExportRequest {
+  format?: ExportFormat;
   profile_id: string;
   sql: string;
   database: string | null;

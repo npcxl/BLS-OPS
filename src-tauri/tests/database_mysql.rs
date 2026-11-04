@@ -711,6 +711,7 @@ async fn mysql_paging_mutation_and_export() {
         .start(
             runtime.clone(),
             ExportRequest {
+                format: Default::default(),
                 profile_id: profile.id.clone(),
                 sql: "SELECT id, name, note FROM ops_test.types_demo".to_string(),
                 database: Some("ops_test".to_string()),

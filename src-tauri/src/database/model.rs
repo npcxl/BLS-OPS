@@ -684,8 +684,37 @@ pub struct MutationResult {
 // 导出
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    #[default]
+    Csv,
+    Tsv,
+    Json,
+    Jsonl,
+    Sql,
+    Html,
+    Xml,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+            Self::Json => "json",
+            Self::Jsonl => "jsonl",
+            Self::Sql => "sql",
+            Self::Html => "html",
+            Self::Xml => "xml",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportRequest {
+    #[serde(default)]
+    pub format: ExportFormat,
     pub profile_id: String,
     /// 重新执行的 SQL（必须是只读语句）。表达式导出永远重新查询：
     /// 我们**不**把前端缓存的结果再传回 Rust 假装它是完整数据。

@@ -26,6 +26,7 @@ import type {
   ExportOutcome,
   ExportProgress,
   ExportRequest,
+  ExportFormat,
   ExportStarted,
   HistoryWrite,
   MetadataCacheStatus,
@@ -1532,8 +1533,8 @@ export const databaseApi = {
     }),
 
   // -- 导出 ----------------------------------------------------------------
-  pickExportPath: (suggestedName: string) =>
-    invoke<string | null>("db_pick_export_path", { suggestedName }),
+  pickExportPath: (suggestedName: string, format: ExportFormat = "csv") =>
+    invoke<string | null>("db_pick_export_path", { suggestedName, format }),
   exportStart: (profileId: string, request: ExportRequest) =>
     invoke<ExportStarted>("db_export_start", { profileId, request }),
   exportStatus: (exportId: string) =>

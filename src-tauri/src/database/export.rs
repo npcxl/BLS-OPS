@@ -1,4 +1,4 @@
-//! CSV 流式导出。
+//! Multi-format streaming export.
 //!
 //! * **Rust 分批读取、流式写盘**；IPC 只传进度（前端轮询
 //!   `db_export_status`），从不把导出数据搬进 WebView。
@@ -29,6 +29,7 @@ use super::codec;
 use super::driver::{
     is_read_only_sql, map_connect_error, map_error, profile_tls_enabled, SqliteWorker,
 };
+use super::export_format::ExportEncoder;
 use super::model::{
     DbErrorInfo, DbTableDetail, ExportOutcome, ExportProgress, ExportRequest, ExportStarted,
 };
@@ -81,6 +82,9 @@ impl ExportRegistry {
             ));
         }
 
+        if request.format == super::model::ExportFormat::Sql && request.table.is_none() {
+            return Err(DbErrorInfo::new("config", "SQL INSERT 导出仅支持表数据"));
+        }
         let export_id = uuid::Uuid::new_v4().to_string();
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let task = Arc::new(ExportTask {
@@ -405,7 +409,7 @@ async fn run_export(
         let _ = conn.query_drop("ROLLBACK").await;
         fail(
             &task,
-            DbErrorInfo::new("query", "该语句没有结果集，无法导出为 CSV"),
+            DbErrorInfo::new("query", "该语句没有结果集，无法导出"),
             &part_path,
         )
         .await;
@@ -428,34 +432,28 @@ async fn run_export(
     let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
     let mut written: u64 = 0;
 
-    if request.bom.unwrap_or(true) {
-        match write_text(&mut writer, "\u{feff}").await {
-            Ok(bytes) => written += bytes,
-            Err(error) => {
-                fail(
-                    &task,
-                    DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-                    &part_path,
-                )
-                .await;
-                return;
-            }
-        }
-    }
-
-    let header = columns
+    let names = columns
         .iter()
-        .map(|column| codec::csv_field(&column.name_str()))
-        .collect::<Vec<_>>()
-        .join(",");
-    if let Err(error) = write_text(&mut writer, &format!("{header}\r\n")).await {
-        fail(
-            &task,
-            DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-            &part_path,
-        )
-        .await;
-        return;
+        .map(|column| column.name_str().to_string())
+        .collect();
+    let mut encoder = match ExportEncoder::new(&request, names, adapter.dialect().clone()) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+    match write_text(&mut writer, &encoder.header()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
     }
 
     let mut rows: u64 = 0;
@@ -500,22 +498,25 @@ async fn run_export(
                 }
             };
 
-            let mut line = String::with_capacity(256);
-            let columns_ref = row.columns_ref();
-            for index in 0..columns_ref.len() {
-                if index > 0 {
-                    line.push(',');
+            let cells = row
+                .columns_ref()
+                .iter()
+                .enumerate()
+                .map(|(index, column)| {
+                    let value = row
+                        .as_ref(index)
+                        .cloned()
+                        .unwrap_or(mysql_async::Value::NULL);
+                    codec::to_value(column, value, usize::MAX)
+                })
+                .collect::<Vec<_>>();
+            let line = match encoder.row(&cells) {
+                Ok(line) => line,
+                Err(error) => {
+                    write_error = Some(error);
+                    break;
                 }
-                let value = row
-                    .as_ref(index)
-                    .cloned()
-                    .unwrap_or(mysql_async::Value::NULL);
-                // `usize::MAX`：导出必须写完整值；单字段上限由驱动的
-                // max_allowed_packet（16 MiB）兜底，超大会在这里得到明确错误。
-                let cell = codec::to_value(&columns_ref[index], value, usize::MAX);
-                line.push_str(&codec::csv_cell(&cell));
-            }
-            line.push_str("\r\n");
+            };
 
             match write_text(&mut writer, &line).await {
                 Ok(bytes) => written += bytes,
@@ -579,6 +580,18 @@ async fn run_export(
         return;
     }
 
+    match write_text(&mut writer, encoder.footer()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
+    }
     if let Err(error) = writer.flush().await {
         let _ = conn.query_drop("ROLLBACK").await;
         fail(
@@ -809,35 +822,29 @@ async fn run_postgres_export(
     let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
     let mut written: u64 = 0;
 
-    if request.bom.unwrap_or(true) {
-        match write_text(&mut writer, "\u{feff}").await {
-            Ok(bytes) => written += bytes,
-            Err(error) => {
-                fail(
-                    &task,
-                    DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-                    &part_path,
-                )
-                .await;
-                return;
-            }
-        }
-    }
-
-    let header = detail
+    let names = detail
         .columns
         .iter()
-        .map(|column| codec::csv_field(&column.name))
-        .collect::<Vec<_>>()
-        .join(",");
-    if let Err(error) = write_text(&mut writer, &format!("{header}\r\n")).await {
-        fail(
-            &task,
-            DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-            &part_path,
-        )
-        .await;
-        return;
+        .map(|column| column.name.clone())
+        .collect();
+    let mut encoder = match ExportEncoder::new(&request, names, adapter.dialect().clone()) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+    match write_text(&mut writer, &encoder.header()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
     }
 
     let mut rows: u64 = 0;
@@ -889,14 +896,13 @@ async fn run_postgres_export(
                 cancelled = true;
                 break 'outer;
             }
-            let mut line = String::with_capacity(256);
-            for (index, value) in row.iter().enumerate() {
-                if index > 0 {
-                    line.push(',');
+            let line = match encoder.row(row) {
+                Ok(line) => line,
+                Err(error) => {
+                    error_seen = Some(error);
+                    break 'outer;
                 }
-                line.push_str(&codec::csv_cell(value));
-            }
-            line.push_str("\r\n");
+            };
             match write_text(&mut writer, &line).await {
                 Ok(bytes) => written += bytes,
                 Err(error) => {
@@ -945,6 +951,18 @@ async fn run_postgres_export(
         return;
     }
 
+    match write_text(&mut writer, encoder.footer()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
+    }
     if let Err(error) = writer.flush().await {
         fail(
             &task,
@@ -1062,35 +1080,29 @@ async fn run_sqlite_export(
     let mut writer = tokio::io::BufWriter::with_capacity(64 * 1024, file);
     let mut written: u64 = 0;
 
-    if request.bom.unwrap_or(true) {
-        match write_text(&mut writer, "\u{feff}").await {
-            Ok(bytes) => written += bytes,
-            Err(error) => {
-                fail(
-                    &task,
-                    DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-                    &part_path,
-                )
-                .await;
-                return;
-            }
-        }
-    }
-
-    let header = detail
+    let names = detail
         .columns
         .iter()
-        .map(|column| codec::csv_field(&column.name))
-        .collect::<Vec<_>>()
-        .join(",");
-    if let Err(error) = write_text(&mut writer, &format!("{header}\r\n")).await {
-        fail(
-            &task,
-            DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
-            &part_path,
-        )
-        .await;
-        return;
+        .map(|column| column.name.clone())
+        .collect();
+    let mut encoder = match ExportEncoder::new(&request, names, adapter.dialect().clone()) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            fail(&task, error, &part_path).await;
+            return;
+        }
+    };
+    match write_text(&mut writer, &encoder.header()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
     }
 
     let mut rows: u64 = 0;
@@ -1128,14 +1140,13 @@ async fn run_sqlite_export(
                 cancelled = true;
                 break 'outer;
             }
-            let mut line = String::with_capacity(256);
-            for (index, value) in row.iter().enumerate() {
-                if index > 0 {
-                    line.push(',');
+            let line = match encoder.row(row) {
+                Ok(line) => line,
+                Err(error) => {
+                    error_seen = Some(error);
+                    break 'outer;
                 }
-                line.push_str(&codec::csv_cell(value));
-            }
-            line.push_str("\r\n");
+            };
             match write_text(&mut writer, &line).await {
                 Ok(bytes) => written += bytes,
                 Err(error) => {
@@ -1184,6 +1195,18 @@ async fn run_sqlite_export(
         return;
     }
 
+    match write_text(&mut writer, encoder.footer()).await {
+        Ok(bytes) => written += bytes,
+        Err(error) => {
+            fail(
+                &task,
+                DbErrorInfo::new("config", format!("写导出文件失败：{error}")),
+                &part_path,
+            )
+            .await;
+            return;
+        }
+    }
     if let Err(error) = writer.flush().await {
         fail(
             &task,

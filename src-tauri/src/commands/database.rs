@@ -574,17 +574,21 @@ pub async fn db_mutate_apply(
 // 导出
 // ---------------------------------------------------------------------------
 
-fn export_file_name(suggested: &str) -> String {
+fn export_file_name(suggested: &str, format: ExportFormat) -> String {
     let trimmed = suggested.trim();
     let base = std::path::Path::new(trimmed)
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-        .unwrap_or("export.csv");
-    if base.to_ascii_lowercase().ends_with(".csv") {
+        .unwrap_or("export");
+    let extension = format.extension();
+    if base
+        .to_ascii_lowercase()
+        .ends_with(&format!(".{extension}"))
+    {
         base.to_string()
     } else {
-        format!("{base}.csv")
+        format!("{base}.{extension}")
     }
 }
 
@@ -594,14 +598,17 @@ pub async fn db_pick_export_path(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     suggested_name: String,
+    format: Option<ExportFormat>,
 ) -> Result<Option<String>, DbErrorInfo> {
     use tauri_plugin_dialog::DialogExt;
 
+    let format = format.unwrap_or_default();
+    let extension = format.extension();
     let picked = app
         .dialog()
         .file()
-        .set_file_name(export_file_name(&suggested_name))
-        .add_filter("CSV", &["csv"])
+        .set_file_name(export_file_name(&suggested_name, format))
+        .add_filter(extension.to_ascii_uppercase(), &[extension])
         .blocking_save_file();
     let Some(picked) = picked else {
         return Ok(None);
@@ -610,7 +617,7 @@ pub async fn db_pick_export_path(
         .into_path()
         .map_err(|error| db_error(format!("无法解析导出路径：{error}")))?;
     if path.extension().is_none() {
-        path.set_extension("csv");
+        path.set_extension(extension);
     }
     let path = path.to_string_lossy().to_string();
     state
@@ -874,6 +881,7 @@ pub fn db_engines_catalog() -> Vec<crate::database::capability::EngineDescriptor
 #[cfg(test)]
 mod tests {
     use super::{export_file_name, sql_file_name};
+    use crate::database::model::ExportFormat;
 
     #[test]
     fn sql_file_name_never_contains_path_segments() {
@@ -885,10 +893,16 @@ mod tests {
 
     #[test]
     fn export_file_name_never_contains_path_segments() {
-        assert_eq!(export_file_name("orders"), "orders.csv");
-        assert_eq!(export_file_name("../../orders.csv"), "orders.csv");
-        assert_eq!(export_file_name(r"C:\exports\orders.CSV"), "orders.CSV");
-        assert_eq!(export_file_name("  "), "export.csv");
+        assert_eq!(export_file_name("orders", ExportFormat::Csv), "orders.csv");
+        assert_eq!(
+            export_file_name("../../orders.csv", ExportFormat::Csv),
+            "orders.csv"
+        );
+        assert_eq!(
+            export_file_name(r"C:\exports\orders.CSV", ExportFormat::Csv),
+            "orders.CSV"
+        );
+        assert_eq!(export_file_name("  ", ExportFormat::Csv), "export.csv");
     }
 }
 

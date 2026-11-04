@@ -157,8 +157,8 @@ describe("结果面板三视图", () => {
     expect(text).toContain("> 返回 2 行");
     expect(text).toContain("> 查询时间: 0.004s");
     expect(text).toContain("总耗时");
-    // 消息页不渲染数据网格。
-    expect(container.querySelector('[role="grid"]')).toBeNull();
+    // Keep grids mounted so draft edits survive a trip to the message view.
+    expect(container.querySelector('[role="grid"]')?.closest(".hidden")).not.toBeNull();
   });
 
   it("摘要页区分返回行与影响行，点击行跳回结果", () => {

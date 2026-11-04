@@ -20,6 +20,7 @@ fn flags(column: &Column) -> ColumnFlags {
 pub fn to_column(index: usize, column: &Column, primary_key: bool) -> DbColumn {
     let flags = flags(column);
     DbColumn {
+        origin_database: Some(column.schema_str().to_string()),
         index,
         name: column.name_str().to_string(),
         org_name: column.org_name_str().to_string(),

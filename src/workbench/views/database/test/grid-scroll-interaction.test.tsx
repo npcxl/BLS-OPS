@@ -35,7 +35,7 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
   vi.stubGlobal("ResizeObserver", class {observe() {} disconnect() {}});
   holder = document.createElement("div"); document.body.appendChild(holder); root = createRoot(holder); api = {current: null};
-  act(() => root.render(<VirtualDataGrid columns={columns} rows={rows} editable={false} apiRef={api} />));
+  act(() => root.render(<VirtualDataGrid columns={columns} rows={rows} selectionKey="result-1" editable={false} apiRef={api} />));
   grid = holder.querySelector('[role="grid"]')!;
   Object.defineProperties(grid, {clientWidth: {value: 600}, clientHeight: {value: 300}});
   vi.spyOn(grid, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 616, 316));
@@ -43,6 +43,14 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); holder.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("native scrolling does not start grid selection", () => {
+  it("retains selection for draft value updates and resets it for a new result", () => {
+    act(()=>api.current!.focusCell({row:2,col:1}));
+    const updated=rows.map((row,index)=>index===2?[...row]:row);
+    act(()=>root.render(<VirtualDataGrid columns={columns} rows={updated} selectionKey="result-1" editable={false} apiRef={api}/>));
+    expect(api.current!.getFocus()).toEqual({row:2,col:1});
+    act(()=>root.render(<VirtualDataGrid columns={columns} rows={updated} selectionKey="result-2" editable={false} apiRef={api}/>));
+    expect(api.current!.getFocus()).toBeNull();
+  });
   it.each([[610,100], [200,310], [610,310]])("leaves the native scrollbar/corner (%i,%i) alone", (x,y) => {
     act(() => api.current!.focusCell({row: 2, col: 1}));
     const selected = api.current!.getSelection();

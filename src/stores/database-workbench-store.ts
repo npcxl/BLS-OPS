@@ -33,6 +33,9 @@ const TERMINAL: DbQueryState[] = [
 ];
 
 export interface StatementResult {
+  sourceSql?: string;
+  sessionId?: string;
+  generation?: number;
   key: string;
   statementIndex: number;
   resultSetIndex: number;
@@ -62,6 +65,8 @@ export type TabRunState =
   | "outcome_unknown";
 
 export interface DatabaseTabState {
+  pendingResultEdits?: number;
+  resultWriteInFlight?: boolean;
   profileId: string;
   sql: string;
   results: StatementResult[];
@@ -146,6 +151,8 @@ interface WorkbenchDbState {
   historyEnabled: boolean;
   ensureTab: (tabId: string, profileId: string) => void;
   setSql: (tabId: string, sql: string) => void;
+  setPendingResultEdits: (tabId: string, count: number) => void;
+  setResultWriteInFlight: (tabId: string, active: boolean) => void;
   clearResults: (tabId: string) => void;
   setActiveResult: (tabId: string, key: string) => void;
   runStatements: (args: {
@@ -191,7 +198,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
   clearResults: (tabId) =>
     set((state) => {
       const tab = state.tabs[tabId];
-      if (!tab) return state;
+      if (!tab || tab.resultWriteInFlight || (tab.pendingResultEdits ?? 0) > 0) return state;
       return {
         tabs: {
           ...state.tabs,
@@ -227,6 +234,16 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     }
     set({ historyEnabled: enabled });
   },
+
+  setPendingResultEdits: (tabId, count) => set(state => {
+    const tab = state.tabs[tabId];
+    if (!tab || (tab.pendingResultEdits ?? 0) === count) return state;
+    return {tabs: {...state.tabs, [tabId]: {...tab, pendingResultEdits: count}}};
+  }),
+  setResultWriteInFlight: (tabId, active) => set(state => {
+    const tab=state.tabs[tabId];if(!tab || !!tab.resultWriteInFlight===active)return state;
+    return {tabs:{...state.tabs,[tabId]:{...tab,resultWriteInFlight:active}}};
+  }),
 
   runStatements: async ({ tabId, profileId, sessionId, statements }) => {
     const filtered = statements.map((statement) => statement.trim()).filter(Boolean);
@@ -299,6 +316,8 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
       });
 
       const statementResult = await drainQuery({
+        sessionId,
+        generation: started.generation,
         tabId,
         profileId,
         statementIndex: index,
@@ -390,6 +409,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
 
   dispose: (tabId, options) => {
     const tab = get().tabs[tabId];
+    if (tab?.resultWriteInFlight) return;
     if (tab?.queryId) {
       void databaseApi.queryRelease(tab.queryId).catch(() => undefined);
     }
@@ -466,6 +486,8 @@ async function startWithRetry(sessionId: string, statement: string) {
 }
 
 interface DrainArgs {
+  sessionId: string;
+  generation: number;
   tabId: string;
   profileId: string;
   statementIndex: number;
@@ -511,6 +533,9 @@ async function drainQuery(args: DrainArgs): Promise<{
             statementIndex: args.statementIndex,
             resultSetIndex: payload.index,
             statement: payload.statement || args.statement,
+            sourceSql: args.statement,
+            sessionId: args.sessionId,
+            generation: args.generation,
             columns: payload.columns,
             rows: [],
             affectedRows: 0,

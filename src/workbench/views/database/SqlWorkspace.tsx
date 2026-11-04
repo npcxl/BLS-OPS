@@ -249,6 +249,9 @@ export function SqlWorkspace({
   const runParsed = useCallback(
     async (statements: string[]) => {
       if (!session) return;
+      if (useDatabaseWorkbenchStore.getState().tabs[tabId]?.pendingResultEdits) {
+        setNotice(t("请先应用或还原结果修改，再重新运行查询"));return;
+      }
       // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
       if (contextDatabase && session.current_database !== contextDatabase) {
         const switched = await switchDatabase(contextDatabase);
@@ -310,6 +313,9 @@ export function SqlWorkspace({
   );
 
   const handleClearResults = () => {
+    if (useDatabaseWorkbenchStore.getState().tabs[tabId]?.pendingResultEdits) {
+      setNotice(t("请先应用或还原结果修改，再清空结果"));return;
+    }
     clearResults(tabId);
     setHasRun(false);
     viewRef.current?.focus();
@@ -340,9 +346,10 @@ export function SqlWorkspace({
     const list = databases
       .filter((entry) => !entry.system)
       .map((entry) => ({ value: entry.name, label: entry.name }));
-    const current = session?.current_database ?? contextDatabase;
-    if (current && !list.some((entry) => entry.value === current)) {
-      list.unshift({ value: current, label: current });
+    for (const current of [contextDatabase, session?.current_database]) {
+      if (current && !list.some((entry) => entry.value === current)) {
+        list.unshift({ value: current, label: current });
+      }
     }
     return list;
   }, [contextDatabase, databases, session?.current_database]);
@@ -372,19 +379,19 @@ export function SqlWorkspace({
     if (targetId === profile.id) return;
     const target = profiles.find((entry) => entry.id === targetId);
     if (!target) return;
-    openDatabaseTab({
-      id: target.id,
-      name: target.name,
-      host: target.host,
-      port: target.port,
-    });
-    newQuery({
+    const nextId = newQuery({
       profileId: target.id,
       connectionName: target.name,
-      database: target.default_database ?? contextDatabase ?? null,
+      // The new connection owns a different namespace. Never inherit the
+      // source database (even when both connections happen to share its name).
+      database: null,
       sql: sqlText,
       title: item?.title ?? `${target.name} · SQL`,
     });
+    const workbench = useDatabaseWorkbenchStore.getState();
+    workbench.ensureTab(nextId, target.id);
+    workbench.setSql(nextId, sqlText);
+    openDatabaseTab({ id: target.id, name: target.name, host: target.host, port: target.port });
   };
 
   const handleDetach = async () => {
@@ -393,7 +400,7 @@ export function SqlWorkspace({
       await openDetachedSqlWindow({
         profileId: profile.id,
         connectionName: connectionName ?? profile.name,
-        database: database ?? null,
+        database: contextDatabase,
         sql: sqlText,
         title: item?.title ?? `${profile.name} · SQL`,
       });
@@ -459,7 +466,7 @@ export function SqlWorkspace({
       itemId: tabId,
       profileId: profile.id,
       connectionName: item.connectionName || connectionName || profile.name,
-      database: item.database ?? database ?? null,
+      database: contextDatabase,
       name,
       sql: sqlText,
     });
@@ -567,7 +574,7 @@ export function SqlWorkspace({
         <Select
           className="w-[130px]"
           size="sm"
-          value={session?.current_database ?? contextDatabase ?? ""}
+          value={contextDatabase ?? ""}
           placeholder={t("选择数据库")}
           ariaLabel={t("选择数据库")}
           title={t("选择当前查询使用的数据库")}

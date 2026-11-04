@@ -221,6 +221,11 @@ fn run_query(
         });
     }
 
+    let origins = if stmt.readonly() {
+        column_origins(conn, sql)
+    } else {
+        Vec::new()
+    };
     let columns: Vec<DbColumn> = (0..column_count)
         .map(|index| {
             let name = stmt.column_name(index).unwrap_or_default().to_string();
@@ -228,11 +233,27 @@ fn run_query(
             // 留空比编一个 `TEXT` 更诚实；前端按值类型展示。
             let type_name = String::new();
             DbColumn {
+                origin_database: origins
+                    .get(index)
+                    .and_then(|o| o.as_ref())
+                    .map(|o| o.0.clone()),
                 index,
                 name: name.clone(),
-                org_name: name,
-                table: String::new(),
-                org_table: String::new(),
+                org_name: origins
+                    .get(index)
+                    .and_then(|o| o.as_ref())
+                    .map(|o| o.2.clone())
+                    .unwrap_or(name),
+                table: origins
+                    .get(index)
+                    .and_then(|o| o.as_ref())
+                    .map(|o| o.1.clone())
+                    .unwrap_or_default(),
+                org_table: origins
+                    .get(index)
+                    .and_then(|o| o.as_ref())
+                    .map(|o| o.1.clone())
+                    .unwrap_or_default(),
                 type_name,
                 // SQLite 没有协议层类型码：0 表示"没有码"，前端按 type_name 显示。
                 type_code: 0,
@@ -275,6 +296,50 @@ fn run_query(
         truncated,
         in_transaction: !conn.is_autocommit(),
     })
+}
+
+/// SQLite's bundled build exposes column provenance. Preparing this metadata
+/// statement does not execute SQL; it lives on the same dedicated worker thread.
+fn column_origins(conn: &Connection, sql: &str) -> Vec<Option<(String, String, String)>> {
+    use rusqlite::ffi;
+    use std::ffi::{CStr, CString};
+    let Ok(sql) = CString::new(sql) else {
+        return Vec::new();
+    };
+    unsafe {
+        let mut stmt = std::ptr::null_mut();
+        let code = ffi::sqlite3_prepare_v2(
+            conn.handle(),
+            sql.as_ptr(),
+            -1,
+            &mut stmt,
+            std::ptr::null_mut(),
+        );
+        if code != ffi::SQLITE_OK || stmt.is_null() {
+            if !stmt.is_null() {
+                ffi::sqlite3_finalize(stmt);
+            }
+            return Vec::new();
+        }
+        let text = |ptr: *const std::ffi::c_char| -> Option<String> {
+            if ptr.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+            }
+        };
+        let columns = (0..ffi::sqlite3_column_count(stmt))
+            .map(|index| {
+                Some((
+                    text(ffi::sqlite3_column_database_name(stmt, index))?,
+                    text(ffi::sqlite3_column_table_name(stmt, index))?,
+                    text(ffi::sqlite3_column_origin_name(stmt, index))?,
+                ))
+            })
+            .collect();
+        ffi::sqlite3_finalize(stmt);
+        columns
+    }
 }
 
 fn to_value(raw: ValueRef<'_>) -> DbValue {
@@ -349,6 +414,33 @@ pub fn map_error(error: &rusqlite::Error, stage_hint: &str) -> DbErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_column_origins_are_exact() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES(1,'a'); CREATE TEMP TABLE users(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO temp.users VALUES(2,'b');").unwrap();
+        let answer = run_query(
+            &conn,
+            "SELECT u.id AS identity, u.name FROM main.users u",
+            100,
+            1024,
+        )
+        .unwrap();
+        assert_eq!(answer.columns[0].origin_database.as_deref(), Some("main"));
+        assert_eq!(answer.columns[0].org_table, "users");
+        assert_eq!(answer.columns[0].org_name, "id");
+        assert_eq!(answer.columns[0].name, "identity");
+        let shadow = run_query(&conn, "SELECT * FROM users", 100, 1024).unwrap();
+        assert_eq!(shadow.columns[0].origin_database.as_deref(), Some("temp"));
+        let derived = run_query(
+            &conn,
+            "SELECT id+1 AS calculated FROM main.users",
+            100,
+            1024,
+        )
+        .unwrap();
+        assert!(derived.columns[0].origin_database.is_none());
+    }
 
     fn temp_db(name: &str) -> PathBuf {
         let path =

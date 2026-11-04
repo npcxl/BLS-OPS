@@ -136,12 +136,35 @@ impl PostgresConn {
             .prepare(sql)
             .await
             .map_err(|error| map_error(&error, "query"))?;
-        let columns = statement
+        let mut columns: Vec<DbColumn> = statement
             .columns()
             .iter()
             .enumerate()
             .map(|(index, column)| column_meta(index, column))
             .collect();
+        let oids: Vec<u32> = statement
+            .columns()
+            .iter()
+            .filter_map(|column| column.table_oid())
+            .collect();
+        if !oids.is_empty() {
+            // Resolve protocol table/attribute identities, never infer a table from
+            // a display alias or from the connection's current search_path.
+            if let Ok(origins) = self.client.query(
+                "SELECT c.oid, a.attnum, n.nspname, c.relname, a.attname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE c.oid=ANY($1) AND a.attnum>0 AND NOT a.attisdropped",
+                &[&oids],
+            ).await {
+                for (index, column) in statement.columns().iter().enumerate() {
+                    if let (Some(oid), Some(attnum)) = (column.table_oid(), column.column_id()) {
+                        if let Some(origin) = origins.iter().find(|row| row.get::<_, u32>(0) == oid && row.get::<_, i16>(1) == attnum) {
+                            columns[index].origin_database = Some(origin.get(2));
+                            columns[index].org_table = origin.get(3);
+                            columns[index].org_name = origin.get(4);
+                        }
+                    }
+                }
+            }
+        }
         let stream = self
             .client
             .query_raw(&statement, std::iter::empty::<&str>())
@@ -176,6 +199,7 @@ impl PostgresConn {
                             .iter()
                             .enumerate()
                             .map(|(index, column)| DbColumn {
+                                origin_database: None,
                                 index,
                                 name: column.name().to_string(),
                                 org_name: column.name().to_string(),
@@ -303,6 +327,7 @@ async fn read_backend_pid(client: &Client) -> Option<i32> {
 
 fn column_meta(index: usize, column: &Column) -> DbColumn {
     DbColumn {
+        origin_database: None,
         index,
         name: column.name().to_string(),
         org_name: column.name().to_string(),

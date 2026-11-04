@@ -323,6 +323,8 @@ pub enum DbValue {
 /// 列元数据。`index` 是行内下标，重复列名靠它区分。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DbColumn {
+    #[serde(default)]
+    pub origin_database: Option<String>,
     pub index: usize,
     pub name: String,
     pub org_name: String,

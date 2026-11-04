@@ -439,7 +439,7 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
     return id;
   },
 
-  setActive: (id) => set({ activeId: id }),
+  setActive: (id) => set(state => state.activeId === id ? state : { activeId: id }),
 
   close: (id) =>
     set((state) => {

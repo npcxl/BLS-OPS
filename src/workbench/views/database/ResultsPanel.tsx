@@ -7,16 +7,12 @@
  *   错误条直接显示在网格上方，不必切到消息页。
  *
  * 交互：Excel 式行列选择、复制（TSV/CSV/JSON）、双击查看完整（已接收）值。
- * **任意 SQL 没有可靠行定位**，所以这里：
- * - 不提供"重新读取完整字段"，截断的值会明确标注；
- * - 网格是只读的（`editable=false`）：粘贴/Delete/F2 都在网格层被拦掉，
- *   不会误改服务器数据。
+ * 单表且完整主键可验证时复用表修改流程；其余查询明确只读。
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Copy, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadingState } from "@/components/ui/loading";
@@ -25,9 +21,10 @@ import { PageNotice } from "@/workbench/page-layout";
 import type { DbColumn, DbValue } from "@/api/types/database";
 import { cn } from "@/lib/cn";
 import { useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
-import { VirtualDataGrid, type CellAddress, type DataGridApi } from "./VirtualDataGrid";
+import { type DataGridApi } from "./VirtualDataGrid";
 import { EMPTY_SELECTION } from "./grid/selection";
-import { copyMenuItems } from "./grid/copy-menu";
+import { QueryResultGrid } from "./QueryResultGrid";
+import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { copySelectionToClipboard } from "./grid/copy-service";
 import type { CopyFormat } from "./grid/copy-format";
 import {
@@ -82,7 +79,6 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   const setActive = useDatabaseWorkbenchStore((state) => state.setActiveResult);
   const { status: copyStatus, copy, notify } = useCopyFeedback();
   const gridApi = useRef<DataGridApi | null>(null);
-  const menu = useContextMenu();
 
   const [detail, setDetail] = useState<{
     column: string;
@@ -91,6 +87,18 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [view, setView] = useState<ResultView>("result");
 
+  const pendingCounts=useRef<Record<string,number>>({});
+  const reportPending=useCallback((key:string,value:number)=>{
+    if ((pendingCounts.current[key] ?? 0)===value) return;
+    if (value) pendingCounts.current[key]=value;else delete pendingCounts.current[key];
+    const count=Object.values(pendingCounts.current).reduce((sum,n)=>sum+n,0);
+    useDatabaseWorkbenchStore.getState().setPendingResultEdits(tabId,count);
+    useDatabaseWorkspaceStore.getState().setStatus(tabId,{pendingCount:count});
+  },[tabId]);
+  useEffect(()=>()=>{
+    useDatabaseWorkbenchStore.getState().setPendingResultEdits(tabId,0);
+    useDatabaseWorkspaceStore.getState().setStatus(tabId,{pendingCount:0});
+  },[tabId]);
   const results = tab?.results ?? [];
   const activeKey = tab?.activeResultKey ?? results[0]?.key ?? null;
   const active = useMemo(
@@ -121,7 +129,7 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
       if (selection.mode === null) return;
       const outcome = await copySelectionToClipboard({
         columns,
-        rows,
+        rows: gridApi.current?.getRows?.() ?? rows,
         selection,
         format,
         includeHeaders,
@@ -153,18 +161,6 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
     },
     [columns, notify, rows, t],
   );
-
-  const openCopyMenu = (event: React.MouseEvent) => {
-    const hasSelection = (gridApi.current?.getSelection() ?? EMPTY_SELECTION).mode !== null;
-    menu.onContextMenu(() =>
-      copyMenuItems({
-        t,
-        hasSelection,
-        canInsert: false,
-        onCopy: (format, includeHeaders) => void runCopy(format, includeHeaders),
-      }),
-    )(event);
-  };
 
   if (!tab) return null;
 
@@ -410,23 +406,8 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
             </div>
           )}
 
-          <div className="min-h-0 flex-1">
-            {columns.length > 0 ? (
-              <VirtualDataGrid
-                apiRef={gridApi}
-                columns={columns}
-                rows={rows}
-                editable={false}
-                onCopy={({ format }) => void runCopy("tsv", format === "tsv-headers")}
-                onOpenCell={(cell: CellAddress) => {
-                  const value = rows[cell.row]?.[cell.col];
-                  if (value) setDetail({ column: columns[cell.col]?.name ?? "", value });
-                }}
-                onCellContextMenu={(_cell, event) => openCopyMenu(event)}
-                onRowContextMenu={(_row, event) => openCopyMenu(event)}
-                onColumnContextMenu={(_col, event) => openCopyMenu(event)}
-              />
-            ) : (
+          <div className={columns.length ? "contents" : "min-h-0 flex-1"}>
+            {columns.length > 0 ? null : (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-12 text-fg-subtle">
                 <span>
                   {t("影响 {{count}} 行", { count: active?.affectedRows ?? 0 })}
@@ -445,8 +426,13 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
         </>
       )}
 
+      {results.filter(result=>result.columns.length>0).map(result=><div key={result.key}
+        className={view === "result" && result.key === active?.key ? "min-h-0 flex-1" : "hidden"}>
+        <QueryResultGrid tabId={tabId} result={result} active={view === "result" && result.key === active?.key}
+          apiRef={result.key===active?.key ? gridApi : undefined} onPendingCount={reportPending}
+          onCopy={(format,headers)=>void runCopy(format,headers)} onOpenCell={(cell,value)=>setDetail({column:result.columns[cell.col]?.name ?? "",value})} />
+      </div>)}
       <CopyNotice status={copyStatus} />
-      <ContextMenu {...menu.props} />
 
       <Modal
         open={detail !== null}
@@ -461,17 +447,17 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
               onClick={() => void copy(copyCellText(detail.value))}
             >
               <Copy size={12} />
-              {t("复制完整值")}
+              {t((detail.value.kind === "text" || detail.value.kind === "json" || detail.value.kind === "binary") && detail.value.truncated ? "复制已接收的值" : "复制完整值")}
             </Button>
           )
         }
       >
         {detail && (
           <div className="flex flex-col gap-2">
-            {detail.value.kind === "text" && detail.value.truncated && (
+            {(detail.value.kind === "text" || detail.value.kind === "json" || detail.value.kind === "binary") && detail.value.truncated && (
               <p className="rounded border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] text-warning">
                 {t(
-                  "该值在查询结果中已被截断（原始 {{bytes}} 字节）。任意 SQL 结果没有可靠行定位，无法重新读取完整值。",
+                  "该值在查询结果中已被截断（原始 {{bytes}} 字节），这里只显示已接收的预览。请从表数据页读取完整值。",
                   { bytes: detail.value.bytes },
                 )}
               </p>

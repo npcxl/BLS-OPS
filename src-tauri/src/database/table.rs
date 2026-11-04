@@ -90,6 +90,7 @@ fn is_binary_type(data_type: &str) -> bool {
 /// 把 `information_schema` 的列定义变成结果列的元数据。
 fn browse_column(index: usize, column: &DbTableColumn) -> DbColumn {
     DbColumn {
+        origin_database: None,
         index,
         name: column.name.clone(),
         org_name: column.name.clone(),

@@ -266,6 +266,7 @@ export type DbValue =
   | { kind: "unsupported"; type_name: string; preview: string; bytes: number };
 
 export interface DbColumn {
+  origin_database?: string | null;
   index: number;
   name: string;
   org_name: string;

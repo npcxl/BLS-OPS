@@ -297,6 +297,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   }, [activeWorkItem, fieldCard, hideFieldCard]);
 
   const requestClose = (item: WorkItem) => {
+    if (useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight) {
+      setNotice(t("正在应用结果修改，请等待完成后关闭"));return;
+    }
     const latest = useDatabaseWorkspaceStore
       .getState()
       .items.find((entry) => entry.id === item.id);
@@ -358,6 +361,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
         !entry.pinned,
     );
     if (others.length === 0) return;
+    if (others.some(item=>useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight)) {
+      setNotice(t("正在应用结果修改，请等待完成后关闭"));return;
+    }
     const batch = buildCloseBatch(others, sessions);
     if (!batch.risks.some(hasCloseRisk)) {
       for (const entry of others) {
@@ -379,6 +385,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
     if (index < 0) return;
     const targets = ordered.slice(index + 1).filter((entry) => !entry.pinned);
     if (targets.length === 0) return;
+    if (targets.some(item=>useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight)) {
+      setNotice(t("正在应用结果修改，请等待完成后关闭"));return;
+    }
     const batch = buildCloseBatch(targets, sessions);
     if (!batch.risks.some(hasCloseRisk)) {
       for (const entry of targets) {
@@ -394,6 +403,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const confirmCloseOthers = async (action: CloseBatchAction) => {
     const batch = closingOthers;
     if (!batch) return;
+    if (batch.items.some(item=>useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight)) {
+      setNotice(t("正在应用结果修改，请等待完成后关闭"));return;
+    }
     const workbench = useDatabaseWorkbenchStore.getState();
     try {
       // 顺序必须是：取消查询 → 等后端终态 → 回滚事务 → 关闭工作项。
@@ -435,6 +447,9 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const confirmClose = async (action: CloseAction) => {
     const item = closing;
     if (!item) return;
+    if (useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight) {
+      setNotice(t("正在应用结果修改，请等待完成后关闭"));return;
+    }
     try {
       // 先停查询并确认终态；超时/未知时禁止继续 COMMIT/ROLLBACK 或关闭。
       await settleQueriesBeforeClose([item.id], {

@@ -36,15 +36,16 @@ function QueryStatusSync({
   profileId: string;
 }) {
   const runState = useDatabaseWorkbenchStore((state) => state.tabs[itemId]?.runState);
+  const applying = useDatabaseWorkbenchStore((state) => state.tabs[itemId]?.resultWriteInFlight);
   const sessionId = useDatabaseStore(
     (state) => state.sessions[profileId]?.session_id,
   );
   const setStatus = useDatabaseWorkspaceStore((state) => state.setStatus);
   useEffect(() => {
     setStatus(itemId, {
-      running: runState === "running" || runState === "cancelling",
+      running: !!applying || runState === "running" || runState === "cancelling",
     });
-  }, [itemId, runState, setStatus]);
+  }, [applying, itemId, runState, setStatus]);
 
   // 查询结束后重新读会话信息：事务状态（BEGIN/COMMIT）与会话丢失
   // （transaction=Unknown）必须同步到界面，不能只靠用户手动刷新。
@@ -230,7 +231,6 @@ export function WorkItemHost({
   const { t } = useTranslation();
   const allItems = useDatabaseWorkspaceStore((state) => state.items);
   const activeId = useDatabaseWorkspaceStore((state) => state.activeId);
-  const setActive = useDatabaseWorkspaceStore((state) => state.setActive);
   const reconnect = useDatabaseStore((state) => state.reconnect);
   const items = useMemo(
     () => allItems.filter((item) => item.profileId === profileId),
@@ -242,18 +242,16 @@ export function WorkItemHost({
     ? activeId
     : (items[items.length - 1]?.id ?? null);
   const activeItem = items.find((item) => item.id === effectiveActiveId) ?? null;
-  useEffect(() => {
-    if (items.length > 0 && effectiveActiveId && effectiveActiveId !== activeId) {
-      setActive(effectiveActiveId);
-    }
-  }, [activeId, effectiveActiveId, items.length, setActive]);
+  // This fallback is local rendering state. Other connection hosts remain
+  // mounted while hidden; writing it back would make them steal activeId
+  // from one another indefinitely. Only explicit navigation changes activeId.
 
   // 常驻隐藏会让浏览器把焦点丢到 body；记住每项最后聚焦的元素，切回时还给它。
   const lastFocusRef = useRef<Record<string, HTMLElement | null>>({});
   useEffect(() => {
     if (!effectiveActiveId) return;
     const element = lastFocusRef.current[effectiveActiveId];
-    if (element?.isConnected) element.focus({ preventScroll: true });
+    if (element?.isConnected && element.getClientRects().length > 0) element.focus({ preventScroll: true });
   }, [effectiveActiveId]);
 
   return (

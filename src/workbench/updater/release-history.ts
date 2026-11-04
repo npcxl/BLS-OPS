@@ -17,6 +17,8 @@ export interface ReleaseHistoryEntry {
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
   { version: "0.1.19", date: "2026-11-04", title: "多格式导出与工作区体验优化", upcoming: true, changes: [
+    { kind: "feature", title: "查询结果编辑", text: "单表且包含完整主键的结果可直接编辑，支持暂存、差异查看与应用修改。" },
+    { kind: "fix", title: "查询连接", text: "修复多连接新建查询时的循环更新，切换连接清空库选择并保留 SQL。" },
     { kind: "feature", title: "数据导出", text: "支持 CSV、TSV、JSON、JSON Lines、SQL INSERT、HTML、XML，统一导出界面。" },
     { kind: "feature", title: "工作标签", text: "支持顶部标签与右侧列表切换，统一搜索、固定和关闭操作。" },
     { kind: "fix", title: "操作反馈", text: "右键时高亮目标行，修复选中数据后滚动条误触框选与串轴滚动。" },

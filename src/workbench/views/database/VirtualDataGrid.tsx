@@ -66,6 +66,7 @@ export type CellAddress = CellPoint;
 
 /** 父组件（工具栏/右键菜单/提交后移动焦点）用这个命令式 API。 */
 export interface DataGridApi {
+  getRows?: () => DbValue[][];
   getSelection(): SelectionState;
   getFocus(): CellAddress | null;
   selectAll(): void;
@@ -179,6 +180,8 @@ type Hit =
 interface VirtualDataGridProps {
   columns: DbColumn[];
   rows: DbValue[][];
+  /** Keep focus/selection while projecting drafts over the same result set. */
+  selectionKey?: unknown;
   /**
    * 0 基行偏移：第 n 行显示 `rowOffset + n + 1`。
    * 分页时传 `(pageIndex * pageSize)` —— **不要传 `BrowseResult.offset`**，
@@ -320,6 +323,7 @@ const GridRow = memo(function GridRow({
 export const VirtualDataGrid = memo(function VirtualDataGrid({
   columns,
   rows,
+  selectionKey = rows,
   rowOffset = 0,
   className,
   apiRef,
@@ -354,6 +358,8 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
 }: VirtualDataGridProps) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const displayedRowsRef = useRef(rows);
+  displayedRowsRef.current = rows;
   const suppressBlur = useRef(false);
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -383,7 +389,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   // 换数据（翻页/切结果集）时清空选择：旧索引对新数据没有意义。
   useEffect(() => {
     store.reset();
-  }, [rows, store]);
+  }, [selectionKey, store]);
 
   useEffect(() => {
     setWidths(initialWidths(columns));
@@ -871,6 +877,7 @@ export const VirtualDataGrid = memo(function VirtualDataGrid({
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = {
+      getRows: () => displayedRowsRef.current,
       getSelection: () => store.getSnapshot(),
       getFocus: () => (store.getSnapshot().mode === null ? null : store.getSnapshot().focus),
       selectAll: () => store.update((current, gridBounds) => selectAll(current, gridBounds)),

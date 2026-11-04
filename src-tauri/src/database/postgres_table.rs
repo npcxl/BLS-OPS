@@ -115,6 +115,7 @@ fn keyset_clause(
 
 fn browse_column(index: usize, column: &DbTableColumn, table: &str) -> DbColumn {
     DbColumn {
+        origin_database: None,
         index,
         name: column.name.clone(),
         org_name: column.name.clone(),

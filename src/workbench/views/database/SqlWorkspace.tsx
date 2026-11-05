@@ -12,7 +12,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import CodeMirror, { EditorView } from "@uiw/react-codemirror";
-import { MySQL, sql as sqlLanguage } from "@codemirror/lang-sql";
+import { sql as sqlLanguage } from "@codemirror/lang-sql";
+import { autocompletion } from "@codemirror/autocomplete";
 import {
   Eraser,
   FileCode2,
@@ -34,7 +35,7 @@ import { PageNotice } from "@/workbench/page-layout";
 import { useEditorTheme } from "@/lib/cm-theme";
 import { databaseApi } from "@/api/ops-api";
 import type { DatabaseProfile, DbDatabase, DbSessionInfo } from "@/api/types/database";
-import { toDbError, useDatabaseStore } from "@/stores/database-store";
+import { detailKey, tablesKey, toDbError, useDatabaseStore } from "@/stores/database-store";
 import { saveDraft, useDatabaseWorkbenchStore } from "@/stores/database-workbench-store";
 import { useDatabaseWorkspaceStore } from "@/stores/database-workspace-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -52,6 +53,8 @@ import {
 } from "./sql-risk";
 import { formatSql } from "./sql-format";
 import { openDetachedSqlWindow } from "./detached-sql";
+import { completionDialect, createSqlCompletion } from "./sql-completion";
+import "./sql-completion.css";
 
 const EMPTY_DATABASES: DbDatabase[] = [];
 
@@ -124,8 +127,6 @@ export function SqlWorkspace({
   const databases = useDatabaseStore(
     (state) => state.databases[profile.id] ?? EMPTY_DATABASES,
   );
-  const tables = useDatabaseStore((state) => state.tables);
-  const details = useDatabaseStore((state) => state.details);
 
   const sqlText = tab?.sql ?? "";
   const running = tab?.runState === "running";
@@ -185,23 +186,30 @@ export function SqlWorkspace({
     return () => window.clearTimeout(timer);
   }, [sqlText, tabId]);
 
-  // 编辑器补全：已加载的库/表/字段。没展开的对象不会出现在补全里，
-  // 这比"猜一份元数据"诚实。
-  const schema = useMemo(() => {
-    const namespace: Record<string, Record<string, string[]>> = {};
-    for (const database of databases) {
-      const key = `${profile.id}\u0001${database.name}`;
-      const list = tables[key] ?? [];
-      const tableMap: Record<string, string[]> = {};
-      for (const table of list) {
-        const detailKey = `${profile.id}\u0001${database.name}\u0001${table.name}`;
-        tableMap[table.name] =
-          details[detailKey]?.columns.map((column) => column.name) ?? [];
-      }
-      namespace[database.name] = tableMap;
-    }
-    return namespace;
-  }, [databases, details, profile.id, tables]);
+  /*
+   * 编辑器补全：按光标位置给表/字段/关键字，元数据**首次用到才查**。
+   *
+   * 先读资产树已经拉到的缓存（展开过就不再多一次 IPC），没有再走元数据接口；
+   * 会话断了直接不补 —— 宁可没有提示，也不要给一份过期的字段名。
+   */
+  const completionSource = useMemo(
+    () =>
+      createSqlCompletion(profile.engine, contextDatabase, {
+        valid: () => !!useDatabaseStore.getState().sessions[profile.id],
+        tables: async (target) => {
+          const cached = useDatabaseStore.getState().tables[tablesKey(profile.id, target)];
+          if (cached) return cached;
+          return databaseApi.tables(profile.id, target);
+        },
+        detail: async (target, table) => {
+          const cached =
+            useDatabaseStore.getState().details[detailKey(profile.id, target, table)];
+          if (cached) return cached;
+          return databaseApi.tableDetail(profile.id, target, table);
+        },
+      }),
+    [contextDatabase, profile.engine, profile.id],
+  );
 
   useEffect(() => {
     if (!dragging) return;
@@ -412,12 +420,22 @@ export function SqlWorkspace({
   const extensions = useMemo(
     () => [
       sqlLanguage({
-        dialect: MySQL,
-        schema,
+        // 方言决定关键字与类型名：PG 的 `SERIAL`、SQLite 的 `AUTOINCREMENT`
+        // 必须跟着连接走，不能一律按 MySQL 提示。
+        dialect: completionDialect(profile.engine),
         upperCaseKeywords: true,
       }),
+      autocompletion({
+        // override 会顶掉 lang-sql 自带的 schema/关键字源，避免同一个词出现两遍。
+        override: [completionSource],
+        activateOnTyping: true,
+        selectOnOpen: true,
+        icons: true,
+        maxRenderedOptions: 80,
+        optionClass: (item) => `sql-completion-option sql-completion-option--${item.type ?? "text"}`,
+      }),
     ],
-    [schema],
+    [completionSource, profile.engine],
   );
 
   /** 格式化：有选区只排选区，否则排整段；写回编辑器后仍会走 onChange 落草稿。 */
@@ -757,7 +775,8 @@ export function SqlWorkspace({
           basicSetup={{
             foldGutter: false,
             highlightActiveLine: true,
-            autocompletion: true,
+            // 补全走下面 extensions 里的自定义源（override），这里再开一份会叠加。
+            autocompletion: false,
             closeBrackets: true,
             lineNumbers: true,
           }}

@@ -230,6 +230,9 @@ export function TableBrowser({
 
   const detailKey = `${profile.id}\u0001${database}\u0001${table}`;
   const detail: DbTableDetail | null = details[detailKey] ?? null;
+  // 表/视图结构加载失败以前是**静默**的：表格照样打开，但列信息全空，
+  // 用户只能看到一片空白网格。把原因摆出来，至少知道是权限还是对象不存在。
+  const detailError = useDatabaseStore((state) => state.errors[detailKey] ?? null);
 
   const [view, setView] = useState<"data" | "structure" | "indexes" | "ddl">(
     initialView,
@@ -372,7 +375,8 @@ export function TableBrowser({
       if (shouldCount) setTotal(next.exact_rows);
     } catch (failure) {
       if (nonce !== requestNonce.current) return;
-      setError(toDbError(failure).message);
+      const info = toDbError(failure);
+      setError(info.detail ? `${info.message} · ${info.detail}` : info.message);
     } finally {
       if (nonce === requestNonce.current) setLoading(false);
     }
@@ -1909,6 +1913,11 @@ export function TableBrowser({
           {result?.warning && (
             <div className="border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
               {result.warning}
+            </div>
+          )}
+          {detailError && (
+            <div className="border-b border-danger/30 bg-danger/10 px-2 py-1 text-11 text-danger">
+              {t("读取表结构失败")}：{detailError.message}
             </div>
           )}
           {error && (

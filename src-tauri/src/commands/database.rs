@@ -3,6 +3,7 @@
 //! 这一层只做三件事：同步读 SQLite（`open_db` 不跨 await）、把 plan 交给
 //! `DatabaseManager`、把 `DbErrorInfo` 原样返回。**没有任何 SQL 拼接**。
 
+use futures_util::FutureExt;
 use tauri::State;
 
 use super::open_db;
@@ -17,6 +18,28 @@ use std::sync::Arc;
 
 fn db_error(error: impl std::fmt::Display) -> DbErrorInfo {
     DbErrorInfo::new("config", error.to_string())
+}
+
+/// async 命令里 panic 时，Tauri 的 IPC responder 永远不会被调用：前端拿到的是
+/// 一个空响应（旧代码显示成 `[object ArrayBuffer]`），真正原因只留在 stderr 里。
+/// 把 panic 收成普通错误返回，界面至少能指出"后端崩在哪一句"。
+async fn guard_panic<T, F>(task: F) -> Result<T, DbErrorInfo>
+where
+    F: std::future::Future<Output = Result<T, DbErrorInfo>>,
+{
+    match std::panic::AssertUnwindSafe(task).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => Err(DbErrorInfo::new("internal", panic_text(payload))),
+    }
+}
+
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    let detail = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "未知 panic（payload 不是字符串）".to_string());
+    format!("后端命令异常中断：{detail}")
 }
 
 /// 同步阶段读出连接计划（`rusqlite::Connection` 在块结束时析构）。
@@ -256,8 +279,11 @@ pub async fn db_metadata_table(
     database: String,
     table: String,
 ) -> Result<DbTableDetail, DbErrorInfo> {
-    let runtime = runtime_for(&state, &profile_id).await?;
-    metadata::table_detail(&runtime, &state.database.metadata, &database, &table).await
+    guard_panic(async {
+        let runtime = runtime_for(&state, &profile_id).await?;
+        metadata::table_detail(&runtime, &state.database.metadata, &database, &table).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -421,16 +447,19 @@ pub async fn db_table_browse(
     state: State<'_, AppState>,
     request: BrowseRequest,
 ) -> Result<BrowseResult, DbErrorInfo> {
-    let (_session, runtime) = session_and_runtime(&state, &request.session_id).await?;
-    let detail = metadata::table_detail(
-        &runtime,
-        &state.database.metadata,
-        &request.database,
-        &request.table,
-    )
-    .await?;
-    let budget = ResolvedBudget::resolve(None);
-    table::browse(&runtime, &detail, &request, &budget).await
+    guard_panic(async {
+        let (_session, runtime) = session_and_runtime(&state, &request.session_id).await?;
+        let detail = metadata::table_detail(
+            &runtime,
+            &state.database.metadata,
+            &request.database,
+            &request.table,
+        )
+        .await?;
+        let budget = ResolvedBudget::resolve(None);
+        table::browse(&runtime, &detail, &request, &budget).await
+    })
+    .await
 }
 
 #[tauri::command]

@@ -92,8 +92,37 @@ function readExpanded(): PersistedExpanded {
 
 const initialExpanded = readExpanded();
 
+/**
+ * Tauri 的 IPC 只有在响应带 JSON/文本头时才解析成值；后端没来得及回内容
+ * （命令中断、panic、responder 被丢弃）时，前端拿到的是一个**原始字节**，
+ * 原样 `String()` 只会得到 `[object ArrayBuffer]` —— 没有任何可行动信息。
+ * 这里尽量把字节解成文本，再判断空响应。
+ */
+function ipcByteText(error: ArrayBuffer | ArrayBufferView): string {
+  const bytes =
+    error instanceof ArrayBuffer
+      ? new Uint8Array(error)
+      : new Uint8Array(error.buffer, error.byteOffset, error.byteLength);
+  if (bytes.length === 0) return "";
+  return new TextDecoder().decode(bytes).trim();
+}
+
 /** 把所有异常统一成后端同款结构，界面只认一种错误形状。 */
 export function toDbError(error: unknown): DbErrorInfo {
+  if (error instanceof ArrayBuffer || ArrayBuffer.isView(error)) {
+    const text = ipcByteText(error);
+    return {
+      // 桥接层失败：既不是后端 SQL 错误，也不是连接错误。
+      stage: "ipc",
+      code: null,
+      sql_state: null,
+      message:
+        text ||
+        "后端没有返回任何内容（IPC 空响应）：该命令可能被中断或异常退出，请重试；若每次都这样，请查看应用日志",
+      detail: null,
+      retryable: false,
+    };
+  }
   if (error && typeof error === "object" && "stage" in error && "message" in error) {
     const value = error as Partial<DbErrorInfo>;
     return {

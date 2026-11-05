@@ -221,13 +221,16 @@ async fn create_table_sql(
 ) -> Option<String> {
     let qualified = adapter.dialect().qualified(Some(database), table).ok()?;
     let statement = catalog.create_table_statement(&qualified)?;
-    match tokio::time::timeout(
-        METADATA_TIMEOUT,
-        conn.query::<(String, String), _>(statement),
-    )
-    .await
-    {
-        Ok(Ok(rows)) => rows.into_iter().next().map(|(_, create)| create),
+    // **不能**用 `(String, String)` 元组接收：`SHOW CREATE TABLE` 对视图返回 4 列
+    // （View / Create View / character_set_client / collation_connection），
+    // 元组列数不匹配时 mysql_async 会直接 panic。这个 panic 发生在 async 命令里，
+    // Tauri 的 responder 永远不会被调用 —— 前端只拿到空响应，界面表现为
+    // "视图看不了"且没有任何错误信息。按列取第 2 列，表/视图都能拿到 DDL。
+    match tokio::time::timeout(METADATA_TIMEOUT, conn.query::<Row, _>(statement)).await {
+        Ok(Ok(rows)) => rows.into_iter().next().and_then(|row| match row.as_ref(1) {
+            Some(Value::Bytes(bytes)) => String::from_utf8(bytes.clone()).ok(),
+            _ => None,
+        }),
         _ => None,
     }
 }

@@ -1,10 +1,10 @@
 /**
- * Published GitHub Releases, checked 2026-11-04 (not every Git tag was published).
+ * Published GitHub Releases, checked 2026-11-05 (not every Git tag was published).
  * Dates: GitHub published_at; v0.1.18 uses the release tag date (user confirmed
  * the release; the public GitHub release listing has not included it yet).
  * Summaries: release text and commits since the
- * preceding published release. The upcoming v0.1.19 entry is prepared from the
- * current worktree for release; its date is the planned release date.
+ * preceding published release. v0.1.20 is built from the current worktree; its
+ * date is the planned release date.
  * Source: https://github.com/npcxl/BLS-OPS/releases
  */
 export interface ReleaseHistoryEntry {
@@ -16,7 +16,13 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
-  { version: "0.1.19", date: "2026-11-04", title: "多格式导出与工作区体验优化", upcoming: true, changes: [
+  { version: "0.1.20", date: "2026-11-05", title: "SQL 自动补全与视图浏览修复", changes: [
+    { kind: "feature", title: "SQL 补全", text: "编辑器按光标位置提示库、表、字段与关键字；提示语言跟随连接引擎（MySQL / PostgreSQL / SQLite），不再一律按 MySQL 给词。" },
+    { kind: "feature", title: "补全数据", text: "元数据首次用到才查询，资产树已加载的直接复用；会话断开时不给过期字段名。" },
+    { kind: "fix", title: "视图浏览", text: "修复打开视图只显示一条无内容错误、表格空白的问题：读取视图定义时列数不匹配导致后端中断，现在按列解析，视图可正常浏览数据与查看 DDL。" },
+    { kind: "fix", title: "错误提示", text: "后端没返回内容时不再显示 [object ArrayBuffer]，改为可读原因；表/视图结构读取失败会直接说明，不再静默留一张空表。" },
+  ] },
+  { version: "0.1.19", date: "2026-11-04", title: "多格式导出与工作区体验优化", changes: [
     { kind: "feature", title: "查询结果编辑", text: "单表且包含完整主键的结果可直接编辑，支持暂存、差异查看与应用修改。" },
     { kind: "fix", title: "查询连接", text: "修复多连接新建查询时的循环更新，切换连接清空库选择并保留 SQL。" },
     { kind: "feature", title: "数据导出", text: "支持 CSV、TSV、JSON、JSON Lines、SQL INSERT、HTML、XML，统一导出界面。" },

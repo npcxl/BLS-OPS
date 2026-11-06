@@ -432,15 +432,22 @@ export function createSqlCompletion(
         });
       }
     }
+    /*
+     * **关键字/函数必须排在表名之前**。
+     *
+     * 业务库里几百张表时，表名会把 200 条上限占满，关键字被挤出结果 ——
+     * 输入 `SE` 只看到 `eh_license` 这类表名（模糊匹配能命中 "se"），
+     * 看不到 `SELECT`，这正是"像 Navicat 那样提示关键字"失效的原因。
+     */
+    for (const keyword of KEYWORDS) {
+      push({ label: keyword, type: "keyword", boost: 10 });
+    }
+    for (const name of FUNCTIONS) push(functionCompletion(name));
     if (database) {
       for (const table of await tablesOf(database)) {
         push(tableCompletion(dialect, database, table));
       }
     }
-    for (const keyword of KEYWORDS) {
-      push({ label: keyword, type: "keyword", boost: 10 });
-    }
-    for (const name of FUNCTIONS) push(functionCompletion(name));
 
     if (context.aborted || !metadata.valid() || options.length === 0) return null;
     // 结果多的时候把字段/表顶到前面：boost 已经在选项里，这里只兜底截断。

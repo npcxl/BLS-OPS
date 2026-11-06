@@ -111,6 +111,24 @@ describe("createSqlCompletion", () => {
     expect(await complete("-- from users\n")).toEqual([]);
   });
 
+  it("库里表很多时关键字仍然在候选里", async () => {
+    // 300 张表足以把 200 条上限占满：关键字如果排在表名之后就会被截掉，
+    // 表现就是输入 `SE` 只看到表名、看不到 `SELECT`。
+    const many = Array.from({ length: 300 }, (_, index) => table(`eh_license_${index}`));
+    const state = EditorState.create({
+      doc: "SE",
+      extensions: [sqlLanguage({ upperCaseKeywords: true })],
+    });
+    const source = createSqlCompletion("mysql", "ops", {
+      ...metadata(),
+      tables: async () => many,
+    });
+    const result = await source(new CompletionContext(state, 2, false));
+    const labels = result?.options.map((option) => option.label) ?? [];
+
+    expect(labels).toContain("SELECT");
+  });
+
   it("会话失效时不补", async () => {
     const state = EditorState.create({
       doc: "SELECT * FROM ",

@@ -231,6 +231,48 @@ export function TableStructure({
     setError(null);
   }, [columns, indexes, editing]);
 
+  /*
+   * **必须放在提前 return 之前**：detail 首次是 null 时上面会 `return`，
+   * 如果这个 useMemo 写在 return 之后，detail 到达后的下一次渲染就会多调
+   * 一个 hook，React 直接抛 #310（Rendered more hooks than during the
+   * previous render）。内部已经处理 `!detail`，提前求值不会出错。
+   */
+  const request = useMemo<AlterTableRequest | null>(() => {
+    if (!editing || !detail || !profileId) return null;
+    const marked = columns.filter((column) => column.primary);
+    // 主键成员没变时保持库里原来的列序，避免"只是挪了字段顺序"也被当成重建主键。
+    const unchanged =
+      marked.length === detail.primary_key.length &&
+      marked.every((column) =>
+        detail.primary_key.some((key) => key.toLowerCase() === column.name.toLowerCase()),
+      );
+    const primaryKey = unchanged
+      ? detail.primary_key.map(
+          (key) =>
+            marked.find((column) => column.name.toLowerCase() === key.toLowerCase())?.name ??
+            key,
+        )
+      : marked.map((column) => column.name);
+    return {
+      database: detail.database,
+      table: detail.table,
+      columns: columns.map((column) => ({
+        original_name: column.original_name,
+        name: column.name,
+        column_type: composeColumnType(column),
+        nullable: column.nullable,
+        auto_increment: column.auto_increment,
+        default_value: column.default_value,
+        comment: column.comment,
+      })),
+      indexes: indexes.map(({ key: _key, primary: _primary, ...index }) => ({
+        ...index,
+        columns: index.columns.filter(Boolean),
+      })),
+      primary_key: primaryKey,
+    };
+  }, [columns, detail, editing, indexes, profileId]);
+
   if (loading && !detail) {
     return <LoadingState className="h-full" />;
   }
@@ -394,42 +436,6 @@ export function TableStructure({
           onSelect: () => patchColumn(column.key, { primary: true, nullable: false }),
         },
   ];
-
-  const request = useMemo<AlterTableRequest | null>(() => {
-    if (!editing || !detail || !profileId) return null;
-    const marked = columns.filter((column) => column.primary);
-    // 主键成员没变时保持库里原来的列序，避免"只是挪了字段顺序"也被当成重建主键。
-    const unchanged =
-      marked.length === detail.primary_key.length &&
-      marked.every((column) =>
-        detail.primary_key.some((key) => key.toLowerCase() === column.name.toLowerCase()),
-      );
-    const primaryKey = unchanged
-      ? detail.primary_key.map(
-          (key) =>
-            marked.find((column) => column.name.toLowerCase() === key.toLowerCase())?.name ??
-            key,
-        )
-      : marked.map((column) => column.name);
-    return {
-      database: detail.database,
-      table: detail.table,
-      columns: columns.map((column) => ({
-        original_name: column.original_name,
-        name: column.name,
-        column_type: composeColumnType(column),
-        nullable: column.nullable,
-        auto_increment: column.auto_increment,
-        default_value: column.default_value,
-        comment: column.comment,
-      })),
-      indexes: indexes.map(({ key: _key, primary: _primary, ...index }) => ({
-        ...index,
-        columns: index.columns.filter(Boolean),
-      })),
-      primary_key: primaryKey,
-    };
-  }, [columns, detail, editing, indexes, profileId]);
 
   const patchColumn = (key: string, patch: Partial<DraftColumn>) => {
     setColumns((current) =>

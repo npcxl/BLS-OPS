@@ -232,6 +232,19 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     sessionStatus === "connected" && (phase === "connected" || phase === "error");
   const pollingEnabled = canCollect && !entry?.paused && isActiveTab && pageVisible;
   const intervalMs = entry?.intervalMs ?? 5_000;
+  const snapshot = entry?.snapshot ?? null;
+
+  // The disk card shows the fullest filesystem: that is the one that matters.
+  // **放在 hasTarget 提前 return 之前**：否则从"未选服务器"切到"已选"时
+  // 多出一个 hook，React 会抛 #310（Rendered more hooks than during the
+  // previous render）。
+  const fullestDisk = useMemo(() => {
+    if (!snapshot) return null;
+    return snapshot.disks.reduce<DiskMetrics | null>(
+      (worst, disk) => (worst === null || disk.usage_percent > worst.usage_percent ? disk : worst),
+      null,
+    );
+  }, [snapshot]);
 
   useEffect(() => {
     if (!pollingEnabled) return;
@@ -245,19 +258,9 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     return <MonitorPicker tabId={tab.id} servers={servers} />;
   }
 
-  const snapshot = entry?.snapshot ?? null;
   const throughput = totalThroughput(snapshot);
   const memory = snapshot?.memory;
   const cpu = snapshot?.cpu;
-
-  // The disk card shows the fullest filesystem: that is the one that matters.
-  const fullestDisk = useMemo(() => {
-    if (!snapshot) return null;
-    return snapshot.disks.reduce<DiskMetrics | null>(
-      (worst, disk) => (worst === null || disk.usage_percent > worst.usage_percent ? disk : worst),
-      null,
-    );
-  }, [snapshot]);
 
   const statusLabel =
     phase === "connected"

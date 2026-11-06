@@ -87,12 +87,20 @@ export interface DatabaseTabState {
 }
 
 const draftKey = (profileId: string) => `ops.db.sql.${profileId}`;
+/**
+ * 同一连接"最后一份草稿"。
+ *
+ * 查询工作项的 id 是 `query:${uuid}`，每次新建/重启都会变；只按工作项 id 存，
+ * 升级或重开 App 后新建的查询必然读不到旧草稿，表现就是"我的 SQL 全没了"。
+ * 这里额外留一份按连接的兜底副本。
+ */
+const lastDraftKey = (profileId: string) => `ops.db.sql.last.${profileId}`;
 const historyFlagKey = "ops.db.history.enabled";
 
 function loadDraft(tabId: string, profileId: string): string {
   try {
     const own = localStorage.getItem(draftKey(tabId));
-    if (own !== null) return own;
+    if (own !== null && own !== "") return own;
     // 兼容旧版本：草稿曾经按连接存。第一次打开新工作项时迁移一次，
     // 避免升级后用户发现草稿"消失"。
     const legacyKey = draftKey(profileId);
@@ -102,23 +110,33 @@ function loadDraft(tabId: string, profileId: string): string {
       localStorage.setItem(draftKey(tabId), legacy);
       return legacy;
     }
-    return "";
+    return localStorage.getItem(lastDraftKey(profileId)) ?? "";
   } catch {
     return "";
   }
 }
 
-export function saveDraft(profileId: string, sql: string): void {
+export function saveDraft(tabId: string, sql: string, profileId?: string): void {
   try {
-    localStorage.setItem(draftKey(profileId), sql);
+    // 空内容不落盘：编辑器挂载早期 `sqlText` 还是 ""，500ms 后写回会把用户
+    // 上一次的 SQL 覆盖成空。宁可"清空后重开又回来"，也不能悄悄丢内容。
+    if (!sql) return;
+    localStorage.setItem(draftKey(tabId), sql);
+    if (profileId) localStorage.setItem(lastDraftKey(profileId), sql);
   } catch {
     // 存不进去只影响"下次恢复"，不阻塞编辑。
   }
 }
 
-export function clearDraft(profileId: string): void {
+export function clearDraft(tabId: string, profileId?: string): void {
   try {
-    localStorage.removeItem(draftKey(profileId));
+    const own = localStorage.getItem(draftKey(tabId));
+    localStorage.removeItem(draftKey(tabId));
+    // 兜底副本只在"它确实就是这份草稿"时清，避免关掉一个旧标签
+    // 把另一个查询的兜底内容一起删掉。
+    if (profileId && own && localStorage.getItem(lastDraftKey(profileId)) === own) {
+      localStorage.removeItem(lastDraftKey(profileId));
+    }
   } catch {
     // ignore
   }
@@ -414,7 +432,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
       void databaseApi.queryRelease(tab.queryId).catch(() => undefined);
     }
     // 默认保留草稿；只有显式关闭工作项才清，避免标签切换误删用户输入。
-    if (options?.clearDraft) clearDraft(tabId);
+    if (options?.clearDraft) clearDraft(tabId, tab?.profileId);
     set((state) => {
       const tabs = { ...state.tabs };
       delete tabs[tabId];

@@ -182,9 +182,12 @@ export function SqlWorkspace({
 
   useEffect(() => {
     // 草稿按工作项隔离，多个查询互不覆盖。
-    const timer = window.setTimeout(() => saveDraft(tabId, sqlText), 500);
+    // 工作项状态还没建立时 `sqlText` 一定是空串：这时落盘会把已有草稿覆盖成空，
+    // 所以先确认 tab 存在，再按"工作项 + 连接"各存一份。
+    if (!useDatabaseWorkbenchStore.getState().tabs[tabId]) return;
+    const timer = window.setTimeout(() => saveDraft(tabId, sqlText, profile.id), 500);
     return () => window.clearTimeout(timer);
-  }, [sqlText, tabId]);
+  }, [profile.id, sqlText, tabId]);
 
   /*
    * 编辑器补全：按光标位置给表/字段/关键字，元数据**首次用到才查**。

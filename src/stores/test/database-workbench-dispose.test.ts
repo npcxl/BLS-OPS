@@ -33,4 +33,22 @@ describe("database workbench dispose", () => {
 
     expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
   });
+
+  it("空内容不会把已有草稿覆盖成空", () => {
+    saveDraft(TAB_ID, "select 3", PROFILE_ID);
+    // 编辑器挂载早期 sqlText 是 ""，这时落盘不能清掉用户原来的 SQL。
+    saveDraft(TAB_ID, "", PROFILE_ID);
+
+    expect(localStorage.getItem(DRAFT_KEY)).toBe("select 3");
+  });
+
+  it("重启后新建的工作项能读到同一连接的最后一份草稿", () => {
+    saveDraft(TAB_ID, "select 4", PROFILE_ID);
+    // 新工作项 id 与旧的不同（`query:${uuid}`），按 id 找不到草稿。
+    useDatabaseWorkbenchStore.getState().ensureTab("query:test:restart", PROFILE_ID);
+
+    expect(
+      useDatabaseWorkbenchStore.getState().tabs["query:test:restart"]?.sql,
+    ).toBe("select 4");
+  });
 });

@@ -65,10 +65,10 @@ describe("release notes and shared updater", () => {
   it("shows published history offline without inventing an available update", async () => {
     await render();
     expect(document.body.textContent).not.toContain("Example release notes");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(13);
-    expect(holder.querySelector(".release-notes-version-tag")?.textContent).toBe("v0.1.20");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(14);
+    expect(holder.querySelector(".release-notes-version-tag")?.textContent).toBe("v0.1.21");
     expect(holder.textContent).not.toContain("Upcoming release");
-    expect(holder.textContent).toContain("13 published releases");
+    expect(holder.textContent).toContain("14 published releases");
     expect(document.body.textContent).toContain("v0.1.17");
     expect(document.body.textContent).not.toContain("v0.1.14");
     expect(holder.querySelector(".release-notes-heading")).toBeNull();
@@ -94,15 +94,15 @@ describe("release notes and shared updater", () => {
     expect(holder.textContent).toContain("外部下载链接修复");
     expect(holder.textContent).not.toContain("新增对象浏览");
     await choose("All versions");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(13);
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(14);
   });
 
   it("marks the prepared notes published when release metadata confirms the version", async () => {
-    metadata.read.mockResolvedValue({...release, version:"0.1.20"});
+    metadata.read.mockResolvedValue({...release, version:"0.1.21"});
     await render();
     expect(holder.textContent).not.toContain("Upcoming release");
-    expect(holder.textContent).toContain("13 published releases");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(13);
+    expect(holder.textContent).toContain("14 published releases");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(14);
     expect(button("Download and install")).toBeUndefined();
   });
 
@@ -117,7 +117,7 @@ describe("release notes and shared updater", () => {
     expect(client.install).toHaveBeenCalledTimes(1);
     expect(client.relaunch).not.toHaveBeenCalled();
     expect(button("Restart now")).toBeDefined();
-  });
+  });+
 
   it("reuses a checked update without fetching another manifest", async () => {
     useUpdaterStore.setState({release,phase:"available"});

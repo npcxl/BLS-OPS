@@ -16,6 +16,12 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.21", date: "2026-11-06", title: "修复崩溃与 SQL 草稿丢失", changes: [
+    { kind: "fix", title: "结构页", text: "修复打开表/视图结构页时 React 直接崩溃（Rendered more hooks than during the previous render）：结构面板在详情到达前提前返回，详情到达后多调一个 hook。" },
+    { kind: "fix", title: "服务器监控", text: "修复从「未选服务器」切到已选服务器时同一类 hook 数量变化导致的崩溃。" },
+    { kind: "fix", title: "SQL 草稿", text: "修复重启或新建查询后编辑器一片空白：查询工作项的 id 每次重建都会变，按 id 存的草稿读不到；现在额外按连接保留最后一份草稿，且空内容不再覆盖已有草稿。" },
+    { kind: "fix", title: "SQL 补全", text: "修复输入 SE 只看到表名、看不到 SELECT：库里表太多时表名把关键字挤出候选上限，现在关键字和函数优先入列。" },
+  ] },
   { version: "0.1.20", date: "2026-11-05", title: "SQL 自动补全与视图浏览修复", changes: [
     { kind: "feature", title: "SQL 补全", text: "编辑器按光标位置提示库、表、字段与关键字；提示语言跟随连接引擎（MySQL / PostgreSQL / SQLite），不再一律按 MySQL 给词。" },
     { kind: "feature", title: "补全数据", text: "元数据首次用到才查询，资产树已加载的直接复用；会话断开时不给过期字段名。" },

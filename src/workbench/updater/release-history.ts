@@ -16,6 +16,9 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.22", date: "2026-11-09", title: "修复查询结果不显示", changes: [
+    { kind: "fix", title: "查询结果", text: "修复查询返回了行数（例如 20 行、14 KiB）但网格一片空白：行批次原地追加后数组引用未变，grid 的 useMemo 一直返回首次缓存的空数组；现在把行数纳入依赖，数据到达即渲染。" },
+  ] },
   { version: "0.1.21", date: "2026-11-06", title: "修复崩溃与 SQL 草稿丢失", changes: [
     { kind: "fix", title: "结构页", text: "修复打开表/视图结构页时 React 直接崩溃（Rendered more hooks than during the previous render）：结构面板在详情到达前提前返回，详情到达后多调一个 hook。" },
     { kind: "fix", title: "服务器监控", text: "修复从「未选服务器」切到已选服务器时同一类 hook 数量变化导致的崩溃。" },

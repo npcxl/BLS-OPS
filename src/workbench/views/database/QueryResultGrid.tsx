@@ -82,11 +82,16 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
       .catch(error=>{if(current)setMetadataError(toDbError(error).message);});
     return()=>{current=false;};
   },[active,basicReason,target,profile?.id,metadata,attempt]);
+  /*
+   * `drainQuery` 追加行批次时是**原地 push**（避免百万行时每批复制整个数组），
+   * 数组引用不会变；如果 useMemo 只依赖 `result.rows`，就会一直返回第一次
+   * 缓存的空数组 —— 统计写着 20 行、网格却一行不画。行数必须进依赖。
+   */
   const key=useMemo(()=>{
     if (!target.value || !metadata) return {indexes:[] as number[],reason:null};
     try {return {indexes:validateQueryKey(target.value,metadata,result.rows),reason:null};}
     catch(error){return {indexes:[] as number[],reason:(error as Error).message};}
-  },[target,metadata,result.rows]);
+  },[target,metadata,result.rows,result.rows.length]);
   const reason=basicReason ?? metadataError ?? (!metadata ? "正在验证原表与主键…" : key.reason)
     ?? (locked ? "结果需要重新查询后才能继续编辑" : null);
   const editable=!reason && !locked && !busy;
@@ -95,7 +100,7 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
   const rows=useMemo(()=>result.rows.map((row,index)=>{
     const draft=drafts.find(d=>d.row===index);
     return draft && target.value ? pendingRow(row,target.value.names,draft.values) : row;
-  }),[result.rows,drafts,target]);
+  }),[result.rows,result.rows.length,drafts,target]);
   const modified=useMemo(()=>new Set(drafts.flatMap(d=>d.values.map(v=>`${d.row}:${target.value?.names.indexOf(v.column)}`))),[drafts,target]);
   const writable=(cell:CellAddress)=>{
     const value=result.rows[cell.row]?.[cell.col];

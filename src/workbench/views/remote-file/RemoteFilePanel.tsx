@@ -236,6 +236,16 @@ function RemoteFilePanelImpl({
         // 过期响应：直接丢弃，什么状态都不写。
         if (seq !== loadSeqRef.current) return;
         setEntries(result.entries);
+        /*
+         * 列表变了，指向"已不存在文件"的状态必须清掉。
+         *
+         * 典型场景：删除一个文件 → 再创建同名文件 → 新行按 path 命中旧的
+         * `selected` / `renaming`，于是整行要么一直停在选中态（单击没有任何
+         * 反馈），要么直接渲染成重命名输入框 —— 用户看到的就是"这个文件点不动"。
+         */
+        const present = new Set(result.entries.map((entry) => entry.path));
+        setSelected((current) => (current && present.has(current) ? current : null));
+        setRenaming((current) => (current && present.has(current.path) ? current : null));
         setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
         // Reconcile with the canonical path the server actually resolved.
         setNav((current) => {
@@ -572,10 +582,21 @@ function RemoteFilePanelImpl({
     };
   }, [connected, sessionId, t]);
 
+  /**
+   * 删除后清掉指向该文件的状态。
+   * 不清的话，重新创建同名文件时新行会命中旧的 `selected` / `renaming`，
+   * 表现为"整行一直选中、单击没反应"或"直接变成重命名输入框、打不开"。
+   */
+  const forgetEntryState = (path: string) => {
+    setSelected((current) => (current === path ? null : current));
+    setRenaming((current) => (current?.path === path ? null : current));
+  };
+
   const confirmRemove = () => {
     if (!deleteTarget || blockedByInspection()) return;
     const target = deleteTarget;
     setDeleteTarget(null);
+    forgetEntryState(target.path);
     // 删除 = 移入服务器回收区。移不过去（跨文件系统 / 无权限）时如实报错，
     // **不会**偷偷改成永久删除 —— 那正是"以为能恢复、其实已经没了"的来源。
     runAndRefresh(() => opsApi.trashMove(sessionId, target.path));
@@ -585,6 +606,7 @@ function RemoteFilePanelImpl({
     if (!purgeTarget || blockedByInspection()) return;
     const target = purgeTarget;
     setPurgeTarget(null);
+    forgetEntryState(target.path);
     runAndRefresh(() => opsApi.sftpRemove(sessionId, target.path));
   };
 

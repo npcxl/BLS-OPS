@@ -68,6 +68,9 @@ import type { CompletionItem } from "./completion/types";
 const MUTATES_DIRECTORY =
   /^\s*(mkdir|rmdir|rm|mv|cp|touch|unlink|ln|install|git\s+clone|tar\s+-?[xj])\b/;
 
+/** 文件面板开关的本地记忆（默认收起，见 `filesOpen` 初始化）。 */
+const FILES_PANEL_KEY = "ops.terminal.filesPanel";
+
 /**
  * 接受候选（Enter / → / Tab）的结果。
  *
@@ -93,7 +96,24 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // 原始异常：横幅统一解析成 阶段 / 摘要 / 详情（终端里只写摘要一行）。
   const [error, setError] = useState<unknown | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(true);
+  /*
+   * 文件面板默认**不展开**：终端宽度优先留给命令输出（日志/表格动辄 100+ 列）。
+   * 需要时从工具栏或右键菜单打开，开关状态按机器记住 —— 上次收起就保持收起。
+   */
+  const [filesOpen, setFilesOpen] = useState(() => {
+    try {
+      return localStorage.getItem(FILES_PANEL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILES_PANEL_KEY, filesOpen ? "1" : "0");
+    } catch {
+      // 存不下只影响"下次是否默认展开"，不影响本次。
+    }
+  }, [filesOpen]);
   // 稳定引用：`RemoteFilePanel` 是 memo 的，内联箭头函数会让它每次父渲染都失效
   // （终端每敲一个字都会重渲染父组件）。
   const closeFiles = useCallback(() => setFilesOpen(false), []);
@@ -337,11 +357,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 记历史 + `cd` 跟随 —— 任何来源的执行都要留下痕迹。 */
   const noteExecutedCommand = useCallback(
     (command: string) => {
-      if (tab.serverId || tab.quickTarget) {
-        void opsApi
-          .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
-          .catch(() => undefined);
-      }
+      // 快速连接（只有 quickTarget、没有 serverId）也要记：否则下次重连，
+      // 历史面板按 server_id 过滤时会一片空白。
+      void opsApi
+        .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
+        .catch(() => undefined);
       // `cd` 跟踪：目标由**终端自己的 cwd** 解析（`resolveCd`，与 shell 同语义，
       // 支持 ~ / - / 相对路径），先记为"待定"，等真实退出码确认。
       // 文件面板的跟随**不在这里**：它等 `onCwdConfirmed`（确认成功才跳）——

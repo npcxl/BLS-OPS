@@ -20,11 +20,18 @@ export function CommandHistoryPanel({
 
   useEffect(() => {
     void opsApi
-      .listHistory(200)
+      .listHistory(500)
       .then((rows) =>
         setItems(
           rows
-            .filter((row) => row.session_id === sessionId || (!!serverId && row.server_id === serverId))
+            // 有 serverId 时按「本会话 + 同服务器」过滤；快速连接没有 serverId，
+            // 过滤只会把历史全部挡掉，这里直接展示最近的记录。
+            .filter(
+              (row) =>
+                !serverId ||
+                row.session_id === sessionId ||
+                row.server_id === serverId,
+            )
             .map((row) => ({ id: row.id, command: row.command, timestamp: row.timestamp })),
         ),
       )

@@ -186,7 +186,8 @@ function TableHost({
   connectionName: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: (database?: string | null) => void;
+  /** 第二参数是当前表：从表页新建查询要带上它的 SELECT 模板。 */
+  onNewQuery: (database?: string | null, table?: string) => void;
   footer?: ReactNode;
   active: boolean;
 }) {
@@ -206,7 +207,7 @@ function TableHost({
       initialView="data"
       onClose={() => onRequestClose(item)}
       onPendingChange={(count) => setStatus(item.id, { pendingCount: count })}
-      onNewQuery={() => onNewQuery(item.database)}
+      onNewQuery={() => onNewQuery(item.database, item.objectName)}
       footer={footer}
       active={active}
     />
@@ -225,7 +226,7 @@ export function WorkItemHost({
   connectionName: string;
   session: DbSessionInfo | null;
   onRequestClose: (item: WorkItem) => void;
-  onNewQuery: (database?: string | null) => void;
+  onNewQuery: (database?: string | null, table?: string) => void;
   footer?: ReactNode;
 }) {
   const { t } = useTranslation();

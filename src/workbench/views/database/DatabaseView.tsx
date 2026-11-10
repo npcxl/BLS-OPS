@@ -57,6 +57,14 @@ import { WorkItemRail } from "./WorkItemRail";
 
 const FIELD_CARD_WIDTH = 260;
 
+/** SELECT 模板里的标识符引号：MySQL 家族用反引号，PostgreSQL/SQLite 用双引号。 */
+function quoteName(engine: string, name: string): string {
+  const quote = ["postgres", "cockroach", "aurora_pg", "sqlite"].includes(engine)
+    ? '"'
+    : "`";
+  return `${quote}${name.split(quote).join(quote + quote)}${quote}`;
+}
+
 function StageBadge({ stage }: { stage: string }) {
   return (
     <span className="rounded bg-danger/15 px-1.5 py-0.5 text-11 font-medium text-danger">
@@ -227,7 +235,7 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
     }
   }, [generation, workspaceItems]);
 
-  const handleNewQuery = (database?: string | null) => {
+  const handleNewQuery = (database?: string | null, table?: string) => {
     if (!profileId || !profile) return;
     if (!session) {
       setNotice(t("连接尚未建立，无法新建查询"));
@@ -235,15 +243,27 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
     }
     // 上下文优先：从表/结构/对象列表打开时用它们所属的库，
     // 从连接空白处打开时回退到会话当前库 / 连接默认库。
-    newQuery({
+    const target =
+      database ?? session.current_database ?? profile.default_database ?? null;
+    /*
+     * 从某张表新建查询 → 直接带上那张表的 SELECT，用户接着就能改条件。
+     * 没有表上下文（标签条上的"新建查询"）→ 从空白开始，**不继承上一次草稿**：
+     * 新查询应该属于当前上下文，而不是上一次编辑过的内容。
+     */
+    const initialSql =
+      table && target
+        ? `SELECT * FROM ${quoteName(profile.engine, target)}.${quoteName(
+            profile.engine,
+            table,
+          )} LIMIT 200;`
+        : "";
+    const id = newQuery({
       profileId,
       connectionName: profile.name,
-      database:
-        database ??
-        session.current_database ??
-        profile.default_database ??
-        null,
+      database: target,
     });
+    // 先建好工作项状态：WorkItemHost 的 ensureTab 看到已存在就不会再用草稿覆盖。
+    useDatabaseWorkbenchStore.getState().ensureTab(id, profileId, initialSql);
   };
 
   // DDL 面板只属于当前连接；切到另一个连接的标签时恢复列表。

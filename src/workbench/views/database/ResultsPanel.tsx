@@ -73,7 +73,14 @@ function copyCellText(value: DbValue): string {
   return value.value;
 }
 
-export function ResultsPanel({ tabId }: { tabId: string }) {
+export function ResultsPanel({
+  tabId,
+  onPage,
+}: {
+  tabId: string;
+  /** 翻页回调（offset）。只有单条只读查询才有分页条。 */
+  onPage?: (offset: number) => void;
+}) {
   const { t } = useTranslation();
   const tab = useDatabaseWorkbenchStore((state) => state.tabs[tabId]);
   const setActive = useDatabaseWorkbenchStore((state) => state.setActiveResult);
@@ -107,6 +114,9 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
   );
   const rows = active?.rows ?? EMPTY_ROWS;
   const columns = active?.columns ?? EMPTY_COLUMNS;
+  const pagination = tab?.pagination ?? null;
+  const pageIndex = pagination ? Math.floor(pagination.offset / pagination.pageSize) + 1 : 0;
+  const pageBusy = tab?.runState === "running" || tab?.runState === "cancelling";
 
   /**
    * 总耗时不能只看 `tab.elapsedMs`：后端 `Finished` 批次是 `try_send` 发的，
@@ -432,6 +442,27 @@ export function ResultsPanel({ tabId }: { tabId: string }) {
           apiRef={result.key===active?.key ? gridApi : undefined} onPendingCount={reportPending}
           onCopy={(format,headers)=>void runCopy(format,headers)} onOpenCell={(cell,value)=>setDetail({column:result.columns[cell.col]?.name ?? "",value})} />
       </div>)}
+      {pagination && (
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-1 text-11 text-fg-muted">
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={pageBusy || pagination.offset === 0}
+            onClick={() => onPage?.(Math.max(0, pagination.offset - pagination.pageSize))}
+          >
+            {t("上一页")}
+          </Button>
+          <span>{t("第 {{page}} 页", { page: pageIndex })}</span>
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={pageBusy || !pagination.hasMore}
+            onClick={() => onPage?.(pagination.offset + pagination.pageSize)}
+          >
+            {t("下一页")}
+          </Button>
+        </div>
+      )}
       <CopyNotice status={copyStatus} />
 
       <Modal

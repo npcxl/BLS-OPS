@@ -64,6 +64,21 @@ export type TabRunState =
   | "failed"
   | "outcome_unknown";
 
+/**
+ * 单条只读查询的分页上下文。
+ *
+ * 结果集是单向流，做不到"翻页时继续读同一个游标"；这里用 SQL 层分页
+ * （外层包 `LIMIT n OFFSET m`，翻页重新执行），所以必须记住原始语句。
+ */
+export interface QueryPagination {
+  /** 用户原始语句（未包 LIMIT/OFFSET），翻页时以它为基准。 */
+  baseSql: string;
+  pageSize: number;
+  offset: number;
+  /** 本页是否可能还有下一页：本页返回行数 === pageSize。 */
+  hasMore: boolean;
+}
+
 export interface DatabaseTabState {
   pendingResultEdits?: number;
   resultWriteInFlight?: boolean;
@@ -71,6 +86,8 @@ export interface DatabaseTabState {
   sql: string;
   results: StatementResult[];
   activeResultKey: string | null;
+  /** 仅单条只读 SELECT 有值；多语句/写操作不分页。 */
+  pagination?: QueryPagination | null;
   runState: TabRunState;
   queryId: string | null;
   currentStatement: number;
@@ -87,14 +104,6 @@ export interface DatabaseTabState {
 }
 
 const draftKey = (profileId: string) => `ops.db.sql.${profileId}`;
-/**
- * 同一连接"最后一份草稿"。
- *
- * 查询工作项的 id 是 `query:${uuid}`，每次新建/重启都会变；只按工作项 id 存，
- * 升级或重开 App 后新建的查询必然读不到旧草稿，表现就是"我的 SQL 全没了"。
- * 这里额外留一份按连接的兜底副本。
- */
-const lastDraftKey = (profileId: string) => `ops.db.sql.last.${profileId}`;
 const historyFlagKey = "ops.db.history.enabled";
 
 function loadDraft(tabId: string, profileId: string): string {
@@ -110,33 +119,29 @@ function loadDraft(tabId: string, profileId: string): string {
       localStorage.setItem(draftKey(tabId), legacy);
       return legacy;
     }
-    return localStorage.getItem(lastDraftKey(profileId)) ?? "";
+    // **不按连接兜底**：查询工作项每次新建 id 都不同，拿"同连接最后一份草稿"
+    // 会让新查询带着上一次的 SQL（用户明确要求新建查询从当前上下文开始）。
+    return "";
   } catch {
     return "";
   }
 }
 
-export function saveDraft(tabId: string, sql: string, profileId?: string): void {
+/** `_profileId` 保留在签名里：调用方按"工作项 + 连接"记录上下文，暂未参与存储键。 */
+export function saveDraft(tabId: string, sql: string, _profileId?: string): void {
   try {
     // 空内容不落盘：编辑器挂载早期 `sqlText` 还是 ""，500ms 后写回会把用户
     // 上一次的 SQL 覆盖成空。宁可"清空后重开又回来"，也不能悄悄丢内容。
     if (!sql) return;
     localStorage.setItem(draftKey(tabId), sql);
-    if (profileId) localStorage.setItem(lastDraftKey(profileId), sql);
   } catch {
     // 存不进去只影响"下次恢复"，不阻塞编辑。
   }
 }
 
-export function clearDraft(tabId: string, profileId?: string): void {
+export function clearDraft(tabId: string, _profileId?: string): void {
   try {
-    const own = localStorage.getItem(draftKey(tabId));
     localStorage.removeItem(draftKey(tabId));
-    // 兜底副本只在"它确实就是这份草稿"时清，避免关掉一个旧标签
-    // 把另一个查询的兜底内容一起删掉。
-    if (profileId && own && localStorage.getItem(lastDraftKey(profileId)) === own) {
-      localStorage.removeItem(lastDraftKey(profileId));
-    }
   } catch {
     // ignore
   }
@@ -167,7 +172,11 @@ function emptyTab(tabId: string, profileId: string): DatabaseTabState {
 interface WorkbenchDbState {
   tabs: Record<string, DatabaseTabState>;
   historyEnabled: boolean;
-  ensureTab: (tabId: string, profileId: string) => void;
+  /**
+   * 为工作项建立运行时状态。
+   * `initialSql` 显式传入时用它覆盖草稿（从某张表新建查询）；不传才读工作项草稿。
+   */
+  ensureTab: (tabId: string, profileId: string, initialSql?: string) => void;
   setSql: (tabId: string, sql: string) => void;
   setPendingResultEdits: (tabId: string, count: number) => void;
   setResultWriteInFlight: (tabId: string, active: boolean) => void;
@@ -178,6 +187,8 @@ interface WorkbenchDbState {
     profileId: string;
     sessionId: string;
     statements: string[];
+    /** 单条只读查询的分页上下文；其它场景传 null/不传。 */
+    pagination?: QueryPagination | null;
   }) => Promise<void>;
   cancel: (tabId: string) => Promise<void>;
   /**
@@ -199,11 +210,15 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     }
   })(),
 
-  ensureTab: (tabId, profileId) =>
+  ensureTab: (tabId, profileId, initialSql) =>
     set((state) => {
       const existing = state.tabs[tabId];
       if (existing && existing.profileId === profileId) return state;
-      return { tabs: { ...state.tabs, [tabId]: emptyTab(tabId, profileId) } };
+      const tab = emptyTab(tabId, profileId);
+      // 显式给了初始 SQL（例如从某张表新建查询）就覆盖草稿：
+      // 新查询的上下文来自用户刚打开的表，而不是上一次编辑的内容。
+      if (initialSql !== undefined) tab.sql = initialSql;
+      return { tabs: { ...state.tabs, [tabId]: tab } };
     }),
 
   setSql: (tabId, sql) =>
@@ -263,13 +278,14 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     return {tabs:{...state.tabs,[tabId]:{...tab,resultWriteInFlight:active}}};
   }),
 
-  runStatements: async ({ tabId, profileId, sessionId, statements }) => {
+  runStatements: async ({ tabId, profileId, sessionId, statements, pagination }) => {
     const filtered = statements.map((statement) => statement.trim()).filter(Boolean);
     if (filtered.length === 0) return;
 
     const reset: DatabaseTabState = {
       ...emptyTab(tabId, profileId),
       sql: get().tabs[tabId]?.sql ?? "",
+      pagination: pagination ?? null,
       runState: "running",
       totalStatements: filtered.length,
       currentStatement: 0,
@@ -280,6 +296,8 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
     let firstError: DbErrorInfo | null = null;
     let stopped = false;
     let finalState: DbQueryState = "running";
+    /** 最后一条语句返回的行数：判断"是否还有下一页"。 */
+    let lastRows = 0;
 
     for (let index = 0; index < filtered.length; index += 1) {
       if (stopped) break;
@@ -364,6 +382,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
       }
 
       finalState = statementResult.state;
+      lastRows = statementResult.rows;
       if (statementResult.error) {
         firstError = firstError ?? statementResult.error;
       }
@@ -388,6 +407,10 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
           [tabId]: {
             ...tab,
             queryId: null,
+            // 本页满页就认为可能还有下一页（不做 COUNT，翻到底再没有就是最后一页）。
+            pagination: tab.pagination
+              ? { ...tab.pagination, hasMore: lastRows >= tab.pagination.pageSize }
+              : null,
             runState:
               finalState === "cancelled"
                 ? "cancelled"

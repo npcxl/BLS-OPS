@@ -42,13 +42,25 @@ describe("database workbench dispose", () => {
     expect(localStorage.getItem(DRAFT_KEY)).toBe("select 3");
   });
 
-  it("重启后新建的工作项能读到同一连接的最后一份草稿", () => {
+  it("新建工作项不会继承同连接上一次的草稿", () => {
     saveDraft(TAB_ID, "select 4", PROFILE_ID);
-    // 新工作项 id 与旧的不同（`query:${uuid}`），按 id 找不到草稿。
+    // 新工作项 id 与旧的不同（`query:${uuid}`）；不能拿"同连接最后一份草稿"，
+    // 否则从某张表新建查询会带着上一次的 SQL。
     useDatabaseWorkbenchStore.getState().ensureTab("query:test:restart", PROFILE_ID);
 
     expect(
       useDatabaseWorkbenchStore.getState().tabs["query:test:restart"]?.sql,
-    ).toBe("select 4");
+    ).toBe("");
+  });
+
+  it("显式初始 SQL 覆盖草稿（从某张表新建查询）", () => {
+    saveDraft(TAB_ID, "select 5", PROFILE_ID);
+    useDatabaseWorkbenchStore
+      .getState()
+      .ensureTab("query:test:table", PROFILE_ID, "SELECT * FROM `bls`.`biz_inventory` LIMIT 200;");
+
+    expect(
+      useDatabaseWorkbenchStore.getState().tabs["query:test:table"]?.sql,
+    ).toBe("SELECT * FROM `bls`.`biz_inventory` LIMIT 200;");
   });
 });

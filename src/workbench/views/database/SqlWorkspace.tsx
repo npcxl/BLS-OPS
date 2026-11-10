@@ -58,6 +58,32 @@ import "./sql-completion.css";
 
 const EMPTY_DATABASES: DbDatabase[] = [];
 
+/** 一页行数。分页是 SQL 层的 `LIMIT/OFFSET`，与后端 10,000 行的展示预算无关。 */
+const PAGE_SIZE = 1_000;
+
+/**
+ * 只有**单条只读 SELECT / WITH** 才能安全地用外层 `LIMIT n OFFSET m` 分页。
+ *
+ * 多语句、写操作、`FOR UPDATE`、`INTO OUTFILE` 都不能包进派生表；这些场景
+ * 仍然一次性执行，靠展示预算兜底。
+ */
+export function pageableSql(statements: string[]): string | null {
+  if (statements.length !== 1) return null;
+  const statement = statements[0].trim().replace(/;\s*$/, "");
+  const bare = statement
+    .replace(/^(?:\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)*/, "")
+    .trim();
+  if (!/^(select|with)\b/i.test(bare)) return null;
+  if (/\bfor\s+update\b|\binto\s+(outfile|dumpfile)\b/i.test(bare)) return null;
+  return statement;
+}
+
+/** 外层分页：`SELECT * FROM (<原语句>) AS __ops_page LIMIT n OFFSET m`。 */
+export function wrapPageSql(baseSql: string, pageSize: number, offset: number): string {
+  const bare = baseSql.trim().replace(/;\s*$/, "");
+  return `SELECT * FROM (${bare}) AS __ops_page LIMIT ${pageSize} OFFSET ${offset}`;
+}
+
 export function SqlWorkspace({
   tabId,
   profile,
@@ -258,7 +284,10 @@ export function SqlWorkspace({
 
   /** 真正执行：切库 + 提交语句。危险语句的确认在 `execute` 里先过一遍。 */
   const runParsed = useCallback(
-    async (statements: string[]) => {
+    async (
+      statements: string[],
+      page?: { baseSql: string; pageSize: number; offset: number } | null,
+    ) => {
       if (!session) return;
       if (useDatabaseWorkbenchStore.getState().tabs[tabId]?.pendingResultEdits) {
         setNotice(t("请先应用或还原结果修改，再重新运行查询"));return;
@@ -276,6 +305,14 @@ export function SqlWorkspace({
         profileId: profile.id,
         sessionId: session.session_id,
         statements,
+        pagination: page
+          ? {
+              baseSql: page.baseSql,
+              pageSize: page.pageSize,
+              offset: page.offset,
+              hasMore: false,
+            }
+          : null,
       });
     },
     [contextDatabase, profile.id, runStatements, session, switchDatabase, tabId],
@@ -318,9 +355,35 @@ export function SqlWorkspace({
         return;
       }
 
+      // 单条只读 SELECT → 走分页（一页 1,000 行，翻页重新执行外层 LIMIT/OFFSET）；
+      // 多语句/写操作保持原样，一次性执行完。
+      const baseSql = pageableSql(parsed.statements);
+      if (baseSql) {
+        await runParsed([wrapPageSql(baseSql, PAGE_SIZE, 0)], {
+          baseSql,
+          pageSize: PAGE_SIZE,
+          offset: 0,
+        });
+        return;
+      }
+
       await runParsed(parsed.statements);
     },
     [runParsed, session, sqlText, t],
+  );
+
+  /** 结果区翻页：按 `LIMIT pageSize OFFSET offset` 重新执行原始语句。 */
+  const goToPage = useCallback(
+    async (offset: number) => {
+      const page = useDatabaseWorkbenchStore.getState().tabs[tabId]?.pagination;
+      if (!page || !session || offset < 0) return;
+      await runParsed([wrapPageSql(page.baseSql, page.pageSize, offset)], {
+        baseSql: page.baseSql,
+        pageSize: page.pageSize,
+        offset,
+      });
+    },
+    [runParsed, session, tabId],
   );
 
   const handleClearResults = () => {
@@ -807,7 +870,7 @@ export function SqlWorkspace({
           />
 
           <div className="min-h-0 flex-1">
-            <ResultsPanel tabId={tabId} />
+            <ResultsPanel tabId={tabId} onPage={goToPage} />
           </div>
         </>
       )}

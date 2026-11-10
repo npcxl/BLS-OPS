@@ -123,8 +123,12 @@ fn trim_opt(value: &Option<String>) -> Option<&str> {
 }
 
 /// 展示预算（可被设置覆盖，但有硬上限）。
-pub const DEFAULT_MAX_ROWS: u64 = 1_000;
-pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+///
+/// **1,000 行太小**：查 4,000 行会在第 1,000 行触发截断，后端随后 KILL 查询、
+/// 连接带未读结果无法复用而被丢弃 —— 用户看到的是"结果只有 1000 行 + 会话连接
+/// 已关闭"。10,000 行 / 32 MiB 覆盖绝大多数手工查询，超过这个量级本就该导出。
+pub const DEFAULT_MAX_ROWS: u64 = 10_000;
+pub const DEFAULT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// 单批目标行数 / 字节数。
 pub const DEFAULT_BATCH_ROWS: usize = 200;
 pub const DEFAULT_BATCH_BYTES: usize = 256 * 1024;

@@ -395,6 +395,10 @@ impl QueryRegistry {
                             }
                         };
 
+                        // 超过展示预算后继续把结果集读干净（丢弃），否则连接不能复用。
+                        if truncated {
+                            continue;
+                        }
                         let values: Vec<DbValue> = (0..row.columns().len())
                             .map(|index| {
                                 decode_cell(&row, index, budget.field_preview_bytes)
@@ -402,13 +406,14 @@ impl QueryRegistry {
                             .collect();
                         let row_bytes: usize = values.iter().map(approximate_bytes).sum();
 
-                        // 行/字节预算：超了就停，不把剩余行读进内存。
+                        // 行/字节预算：到顶后只是**不再保留**，仍然继续读到底，
+                        // 让连接回到可以发下一条命令的状态（不 KILL、不断连）。
                         if rows_total + pending.len() as u64 >= budget.max_rows
                             || (bytes_total + pending_bytes + row_bytes) as u64
                                 > budget.max_bytes
                         {
                             truncated = true;
-                            break;
+                            continue;
                         }
 
                         pending_bytes += row_bytes;
@@ -503,7 +508,12 @@ impl QueryRegistry {
                     rows_total,
                     bytes_total,
                     truncated,
-                    truncated.then(|| format!("已达展示行数上限（{} 行）", budget.max_rows)),
+                    truncated.then(|| {
+                        format!(
+                            "已显示前 {} 行，其余结果已跳过（连接保持可用）",
+                            budget.max_rows
+                        )
+                    }),
                 )
                 .await;
 
@@ -1228,6 +1238,11 @@ async fn run_script(
 
                 match next {
                     Ok(Some(row)) => {
+                        // 超过展示预算后继续把结果集读干净：只丢弃、不解码、不保留。
+                        // 这是"连接不断"的代价 —— 网络照读，内存不变。
+                        if truncated {
+                            continue;
+                        }
                         let columns_ref = row.columns_ref();
                         let values: Vec<DbValue> = (0..columns_ref.len())
                             .map(|index| {
@@ -1281,17 +1296,19 @@ async fn run_script(
                         {
                             truncated = true;
                             truncation_reason = Some(if rows_total >= budget.max_rows {
-                                format!("已达展示行数上限（{} 行）", budget.max_rows)
+                                format!(
+                                    "已显示前 {} 行，其余结果已跳过（连接保持可用）",
+                                    budget.max_rows
+                                )
                             } else {
                                 format!(
-                                    "已达展示字节预算（{} MiB）",
+                                    "已显示前 {} MiB，其余结果已跳过（连接保持可用）",
                                     budget.max_bytes / (1024 * 1024)
                                 )
                             });
-                            // 主动停止服务器执行：不把剩余结果读进内存。
-                            let _ = runtime.cancel(&cancel_handle).await;
-                            *state.write().await = STATE_CANCELLING.to_string();
-                            break 'outer;
+                            // **不要 KILL**：MySQL 的连接必须把结果集读干净才能复用，
+                            // 中途停下只能丢弃连接（用户会看到"会话连接已关闭"）。
+                            // 这里继续消费剩余行但不再保留 —— 内存不变，连接干净归还。
                         }
                     }
                     Ok(None) => break,

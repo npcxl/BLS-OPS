@@ -16,6 +16,12 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.27", date: "2026-11-11", title: "中英双语与命令知识库", changes: [
+    { kind: "feature", title: "中英双语", text: "语言精简为中国（简体）与英文；首次启动按系统语言与时区推断（大中华区默认中文），手动切换后以选择为准。英文补齐数据库工作台、引擎说明、导出格式、只读原因与 300+ 条终端命令说明。" },
+    { kind: "fix", title: "中文界面", text: "修复中文界面偶发显示英文：英文资源里给中文 key 补了译文后，中文缺这条就会回退成英文。现在中文 key 始终命中自身，也不会覆盖已写好的中文措辞。" },
+    { kind: "fix", title: "新建连接", text: "数据库引擎下拉宽度跟随触发按钮（原来固定 340px，说明文字被大量截断）；能力面板的受限原因与验证备注一并本地化。" },
+    { kind: "feature", title: "命令知识库", text: "内置命令知识库迁移为 catalog.json 并在构建期生成，检索与展示行为不变，以后补命令只改数据文件。" },
+  ] },
   { version: "0.1.26", date: "2026-11-11", title: "修复监控趋势图崩溃", changes: [
     { kind: "fix", title: "监控图表", text: "修复 0.1.25 打不开趋势图的问题：渐变色用了 CSS Color 4 的 rgb(r g b / a) 写法，CanvasGradient 只认传统 rgba(r, g, b, a)，渲染时抛 addColorStop 异常、整块图表中断。现在统一输出 rgba()。" },
   ] },

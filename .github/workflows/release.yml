@@ -273,7 +273,9 @@ jobs:
         with:
           tauriScript: pnpm tauri
           tagName: v__VERSION__
-          releaseName: "BLS-OPS v__VERSION__"
+          # 仓库叫 BLS-OPS，产品名是 Ops Workbench：Release 标题统一用产品名，
+          # 用户下载页看到的和应用标题栏一致。
+          releaseName: "Ops Workbench v__VERSION__"
           # **直接发布，不留草稿**：草稿对匿名用户不可见，`latest.json` 也就读不到，
           # 客户端检查更新会一直报"尚未发布任何更新版本"。以前要人工点 Publish，
           # 现在 tag 推送即上线（回滚仍可手动把 release 转回 draft）。

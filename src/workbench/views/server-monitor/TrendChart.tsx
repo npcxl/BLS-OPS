@@ -28,11 +28,21 @@ const VARIABLE: Record<MetricTone, string> = {
   ai: "--ai",
 };
 
-/** 把 `--accent: 49 117 241` 这样的 token 转成 canvas 能用的颜色。 */
+/**
+ * 把 `--accent: 49 117 241` 这样的 token 转成 canvas 能用的颜色。
+ *
+ * **必须是传统 `rgba(r, g, b, a)` 写法**：`rgb(49 117 241 / 0.32)` 是合法的
+ * CSS Color 4，但 ECharts/zrender 的解析器只认逗号分隔的三/四参形式，
+ * 直接把空格斜杠写法塞进 `CanvasGradient.addColorStop` 会抛
+ * "The value provided ('undefined') could not be parsed as a color"。
+ */
 function tokenColor(name: string, alpha = 1): string {
   try {
     const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    if (raw) return `rgb(${raw} / ${alpha})`;
+    const parts = raw.split(/[\s,/]+/).filter(Boolean);
+    if (parts.length >= 3) {
+      return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`;
+    }
   } catch {
     /* 无 DOM（测试环境）时走兜底色 */
   }

@@ -36,6 +36,7 @@ export interface TerminalCompletion {
   notice: string | null;
   activeIndex: number;
   setActiveIndex: (index: number) => void;
+  /** 是否正在计算（空窗期给面板一行"读取中"）。 */
   searching: boolean;
   /** 清空提示（提交命令 / Ctrl+C 时调用）。 */
   clear: () => void;
@@ -56,6 +57,12 @@ export function useTerminalCompletion(options: TerminalCompletionOptions): Termi
   const [items, setItems] = useState<CompletionItem[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  /**
+   * 是否有一次补全在算（远程目录要走 SFTP，`cd ` 之后有几十到几百毫秒）。
+   *
+   * 只用来在**空窗期**给面板一行"读取中"，避免"按空格面板就消失了"的错觉；
+   * 只在 false→true 切一次，不会每键触发渲染。
+   */
   const [searching, setSearching] = useState(false);
   const schedulerRef = useRef<CompletionScheduler | null>(null);
 
@@ -104,7 +111,8 @@ export function useTerminalCompletion(options: TerminalCompletionOptions): Termi
       setSearching(false);
       return;
     }
-    setSearching(true);
+    // 只在 false → true 时切：每键都 set 会多一轮渲染。
+    setSearching((current) => current || true);
     // 光标前只有一个词（还没有参数）→ 只能是命令名补全，走内置知识库，
     // 不经过任何远程请求。这种输入不该跟着远程目录/Docker 一起等防抖。
     const typed = context.line.slice(0, context.cursor).trim();

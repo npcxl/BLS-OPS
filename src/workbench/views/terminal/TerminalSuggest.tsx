@@ -5,6 +5,7 @@ import {
   FileText,
   Folder,
   Layers,
+  Loader2,
   Network,
   Play,
   Settings,
@@ -69,6 +70,7 @@ function Highlighted({
 export function TerminalSuggest({
   items,
   notice,
+  loading = false,
   activeIndex,
   onHover,
   onApply,
@@ -78,6 +80,8 @@ export function TerminalSuggest({
   items: CompletionItem[];
   /** 底部说明（环境状态 / "没有匹配的远程目录"…）。 */
   notice?: string | null;
+  /** 正在计算（远程目录要走 SFTP）：此时空窗期显示"读取中"，面板不消失。 */
+  loading?: boolean;
   activeIndex: number;
   onHover: (index: number) => void;
   /** 填入候选（**不执行**）。 */
@@ -110,9 +114,10 @@ export function TerminalSuggest({
     node?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  // 没有候选 → 不显示面板。只有 notice 时也不弹：自动展开之后那就是一条
-  // 一直挡在命令上的空提示（"No matching remote directories"），纯噪音。
-  if (items.length === 0 || !anchor) return null;
+  // 没有候选**且没有在算** → 不显示面板。只有 notice 时也不弹：自动展开之后
+  // 那就是一条一直挡在命令上的空提示（"No matching remote directories"），纯噪音。
+  if (!anchor) return null;
+  if (items.length === 0 && !loading) return null;
 
   return (
     <div
@@ -125,6 +130,13 @@ export function TerminalSuggest({
         maxWidth: "min(520px, calc(100% - 8px))",
       }}
     >
+      {items.length === 0 && (
+        // 空窗期（`cd ` 正在列远程目录）：给一行字，面板不要闪掉。
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-11 text-fg-subtle">
+          <Loader2 size={11} className="animate-spin" />
+          {t("Reading candidates…")}
+        </div>
+      )}
       {items.length > 0 && (
         <div ref={listRef} className="max-h-[180px] overflow-y-auto py-0.5">
           {items.map((item, index) => {

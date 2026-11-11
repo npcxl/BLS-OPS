@@ -67,6 +67,24 @@ export default {
     "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭",
   "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close · ▶ / Ctrl+Enter to run":
     "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭 · ▶ / Ctrl+Enter 直接执行",
+  "Reading candidates…": "正在读取候选…",
+
+  // —— TerminalComposer：对话式输入条 ——
+  "Send": "发送",
+  "Send · Enter": "发送（Enter）",
+  "Not connected": "未连接",
+  "Tab to complete · ↑↓ to pick · Esc to dismiss": "Tab 补全 · ↑↓ 选择 · Esc 关闭",
+  "1-9 or Tab to complete · ↑↓ to pick · Esc to dismiss":
+    "1-9 或 Tab 补全 · ↑↓ 选择 · Esc 关闭",
+  "A full-screen program is running — type directly in the terminal above":
+    "全屏程序运行中 —— 请直接在上方终端里操作",
+  "Input is captured by the running program": "输入由正在运行的程序接管",
+  "Type a command, Enter to send · Shift+Enter for a new line · ↑↓ for history":
+    "输入命令，回车发送 · Shift+Enter 换行 · ↑↓ 翻历史",
+  "Type a command, Enter to send · ↑↓ for history": "输入命令，回车发送 · ↑↓ 翻历史",
+  "Terminal command": "终端命令",
+  "{{count}} commands in history · ↑↓ to recall": "历史 {{count}} 条 · ↑↓ 翻看",
+  "Ctrl+C interrupts": "Ctrl+C 中断",
 
   // —— ParamPicker：参数取值选择器 ——
   "Select service unit": "选择服务单元",

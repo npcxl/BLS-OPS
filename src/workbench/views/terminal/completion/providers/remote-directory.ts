@@ -63,11 +63,17 @@ export function createRemoteDirectoryProvider(
         parsed.token !== null &&
         ctx.cursor >= parsed.token.end;
       /*
-       * cwd 未知（Shell Integration 还没报回 OSC 7）时**退回家目录/根目录**：
-       * 用户敲 `cd ` 要的是"当前能去哪"，此时给"unknown, cannot complete"
-       * 等于把补全关掉。退到 home 至少能列出常见目录，比空着有用。
+       * **裸 `cd`（没参数）在 shell 里的语义是"回家目录"**，所以候选取 home，
+       * 而不是当前目录 —— 之前这里用 `cwd` 优先，用户敲 `cd ` 列出来的是
+       * `/`（bin、boot、dev…），跟他想去的 `~` 完全不是一回事。
+       *
+       * 带参数时（`cd /us`、`cd ../`）仍以 cwd 为基准解析相对路径。
+       * 两者都拿不到时退回 `/`：至少能列出根目录，比"unknown, cannot complete"
+       * 有用。
        */
-      const base = ctx.cwd ?? ctx.home ?? "/";
+      const base = bareCd
+        ? (ctx.home ?? ctx.cwd ?? "/")
+        : (ctx.cwd ?? ctx.home ?? "/");
       // `home` 保持原值：`cd ~/` 在 home 未知时必须继续报 needsHome，
       // 绝不能把 `/` 当成家目录（那是编出来的路径）。
       const input = analyzePathInput(bareCd ? "" : parsed.prefix, base, ctx.home);

@@ -59,7 +59,12 @@ export class CompletionScheduler {
       if (!target) return;
       void this.dispatch(seq, target);
     };
-    const delay = options.immediate ? 0 : this.debounceMs;
+    /*
+     * "immediate" 不真的是 0ms：连打三个字符会连开三个 0ms 定时器，
+     * 每个都触发一次 setState → 大组件重渲染，手感就是卡。合并到下一帧
+     * （16ms）足以保持"输入即出"，又不会一个按键一轮渲染。
+     */
+    const delay = options.immediate ? 16 : this.debounceMs;
     if (this.options.setTimer) {
       this.timer = this.options.setTimer(fire, delay);
     } else {

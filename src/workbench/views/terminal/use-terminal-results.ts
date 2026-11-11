@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal, type IMarker } from "@xterm/xterm";
+import { Terminal, type IDecoration, type IMarker } from "@xterm/xterm";
 import { opsApi } from "@/api/ops-api";
 import type { SuggestedRisk } from "@/api/types/environment";
 import { hasUnresolvedPlaceholder } from "@/workbench/views/command-center/complete";
@@ -11,6 +11,7 @@ import {
   beginBlock,
   disposeBlocks,
   finishBlock,
+  isFailedBlock,
   type CommandBlock,
 } from "./terminal-command-blocks";
 import {
@@ -118,6 +119,60 @@ export function useTerminalResults(host: TerminalResultsHost) {
     applyBlocks({ blocks: [], evicted: blocksRef.current });
   }, [applyBlocks]);
 
+  /**
+   * 命令块的**斑马条纹**：整个块（命令回显行 + 它的输出）铺一条底色，
+   * 让"我输入了什么、它输出了什么"自然连成一个片区；失败块用红色。
+   *
+   * 用 xterm decoration（`layer: "bottom"`）铺在文字下面，不拦截点击、不影响
+   * 选区。只保留最近 200 条，长会话不累积 DOM。
+   */
+  const stripesRef = useRef<IDecoration[]>([]);
+  const stripeSeqRef = useRef(0);
+  const stripeBlock = useCallback((terminal: Terminal | null, block: CommandBlock) => {
+    if (!terminal) return;
+    /*
+     * **装饰失败绝不能影响命令提交。**
+     *
+     * `registerDecoration` 是 xterm 的 proposed API，版本差异 / 内部状态都可能
+     * 让它抛异常；一次抛错就会把 `execute` 整个打断 —— 用户看到的是
+     * "点发送、回车都没反应"。条纹只是视觉分隔，丢了也要照常发命令。
+     */
+    try {
+      const start = block.startMarker.line;
+      const end = block.endMarker?.line ?? start;
+      if (start < 0 || end < 0) return;
+      const height = Math.max(1, Math.abs(end - start) + 1);
+      const decoration = terminal.registerDecoration({
+        // CommandBlock 存的是 marker 的结构子集，实际就是同一枚 IMarker。
+        marker: block.startMarker as unknown as IMarker,
+        width: terminal.cols,
+        height,
+        layer: "bottom",
+      });
+      if (!decoration) return;
+      const tone = isFailedBlock(block)
+        ? "stripe-error"
+        : stripeSeqRef.current++ % 2 === 0
+          ? "stripe-a"
+          : "stripe-b";
+      decoration.onRender((element) => {
+        element.classList.add("cmd-stripe", tone);
+      });
+      stripesRef.current.push(decoration);
+      if (stripesRef.current.length > 200) {
+        stripesRef.current.splice(0, stripesRef.current.length - 200).forEach((item) => item.dispose());
+      }
+    } catch (cause) {
+      console.warn("[terminal] command block stripe unavailable", cause);
+    }
+  }, []);
+
+  const clearStripes = useCallback(() => {
+    stripesRef.current.forEach((item) => item.dispose());
+    stripesRef.current = [];
+    stripeSeqRef.current = 0;
+  }, []);
+
   if (!coordinatorRef.current) {
     coordinatorRef.current = new TerminalCommandCoordinator({
       match: (text) => opsApi.commandMatchText(text),
@@ -126,21 +181,30 @@ export function useTerminalResults(host: TerminalResultsHost) {
         // 在当前光标行注册终点 marker 正好停在输出最后一行。
         const instance = terminalRef.current;
         const endMarker = instance?.registerMarker(0) ?? null;
-        applyBlocks(
-          finishBlock(blocksRef.current, result.boundary.exitCode, endMarker, result.renderedText),
+        const mutation = finishBlock(
+          blocksRef.current,
+          result.boundary.exitCode,
+          endMarker,
+          result.renderedText,
         );
+        applyBlocks(mutation);
+        // 整块条纹（命令 + 输出）；失败块用红色，不再是 hover 才看得见。
+        const finished = mutation.blocks[mutation.blocks.length - 1];
+        if (finished?.finished) stripeBlock(instance, finished);
       },
       // 护栏兜底（受控标记始终没来）：主动向终端要一次当前快照。
       captureNow: () => consumeTerminalSnapshot(captureMarkerRef.current),
     });
   }
+
   useEffect(
     () => () => {
       coordinatorRef.current?.dispose();
       releaseCaptureMarker();
       clearCommandBlocks();
+      clearStripes();
     },
-    [clearCommandBlocks, releaseCaptureMarker],
+    [clearCommandBlocks, clearStripes, releaseCaptureMarker],
   );
 
   /**

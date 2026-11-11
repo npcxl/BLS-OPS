@@ -50,6 +50,7 @@ import {
   type SuggestAnchor,
 } from "./terminal-suggest";
 import { TerminalGhost } from "./terminal-ghost";
+import { TerminalComposer } from "./TerminalComposer";
 import { parseLine } from "./completion/path-input";
 import { useTerminalCompletion } from "./use-terminal-completion";
 import { useServerEnvironment } from "./use-server-environment";
@@ -97,6 +98,25 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [error, setError] = useState<unknown | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
+  /**
+   * 底部输入条的 ↑/↓ 历史（应用里记过的命令，新的在前）。
+   *
+   * 与 shell 的 history 无关：命令由我们提交，所以自己掌握顺序更可靠；
+   * `historyRevision` 每次提交 +1，这里跟着重新拉一次。
+   */
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void opsApi
+      .listHistory(60)
+      .then((rows) => {
+        if (!cancelled) setCommandHistory(rows.map((row) => row.command));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [historyRevision, sessionId]);
   /*
    * 文件面板默认**不展开**：终端宽度优先留给命令输出（日志/表格动辄 100+ 列）。
    * 需要时从工具栏或右键菜单打开，开关状态按机器记住 —— 上次收起就保持收起。
@@ -131,10 +151,21 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /**
    * 正在输入的命令行（由 LineEditor 从按键流还原）。驱动命令提示 —— 与
    * 命令中心共用 `useCommandSuggestions`，因此输入 `docker p` 的行为一致。
+   *
+   * **必须同步更新**（不能合并到 rAF）：ghost / 候选条的显隐都取决于它。
+   * 曾经为了省重渲染把它延后一帧，结果"按第一下空格时 draft 还是旧的（不带
+   * 尾随空格）→ ghost 仍然画在光标处 → 正好盖住刚回显的空格"，用户看到的就是
+   * "第一次空格显示上没用，其实已经打进去了"，第二下才正常。
    */
   const [draft, setDraft] = useState("");
-  /** Ctrl+Space 可临时关闭提示（有人就是不喜欢）。 */
-  const [suggestOpen, setSuggestOpen] = useState(true);
+  /**
+   * 终端补全提示**默认关闭**（用户裁决 2026-11-11："去掉提示，不需要"）。
+   *
+   * 关闭后不再渲染候选条 / ghost，也不再发起任何补全检索 —— 输入就是纯粹的
+   * 原生终端输入，不会再出现"提示跟我抢键盘""按空格面板乱跳"这类问题。
+   * 想临时用一下：Ctrl+Space 打开（同一个键再按一次关闭）。
+   */
+  const [suggestOpen, setSuggestOpen] = useState(false);
   /**
    * 建议面板是否展开（统一补全状态机，见 `terminal-suggest.ts`）。
    *
@@ -203,6 +234,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   /** 终端定位容器（提示面板的 absolute 父元素）。 */
   const suggestWrapperRef = useRef<HTMLDivElement>(null);
+  /**
+   * 补全当前是否启用（渲染期同步的镜像）。
+   *
+   * `updateSuggestAnchor` 定义得比 `suggestionsEnabled` 早，又要用它决定
+   * "要不要测量" —— 用 ref 读最新值，避免为了一个布尔量重建回调。
+   */
+  const suggestionsEnabledRef = useRef(false);
 
   /**
    * 把焦点还给终端（**只在焦点真的丢了的时候**）。
@@ -214,7 +252,19 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    *
    * 焦点还在时**不做任何事**：避免无谓的 focus 事件（会重置光标闪烁节奏）。
    */
+  /**
+   * 焦点该回哪儿：对话式输入下是底部输入条，只有全屏交互程序运行时才是终端。
+   * 在渲染期同步（`inAlternate` 声明得比 `refocusTerminal` 晚）。
+   */
+  const focusTargetRef = useRef<"terminal" | "composer">("composer");
   const refocusTerminal = useCallback(() => {
+    if (focusTargetRef.current === "composer") {
+      const composer = document.querySelector<HTMLTextAreaElement>("[data-terminal-composer]");
+      if (composer) {
+        if (document.activeElement !== composer) composer.focus();
+        return;
+      }
+    }
     const instance = terminalRef.current;
     if (!instance) return;
     const textarea = containerRef.current?.querySelector("textarea");
@@ -226,6 +276,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * 此时任何提示都是噪音，且"当前行"也不再是 shell 命令行。
    */
   const [inAlternate, setInAlternate] = useState(false);
+  // 键盘归属：全屏程序 → 终端；其余 → 底部输入条。
+  focusTargetRef.current = inAlternate ? "terminal" : "composer";
 
   const splitPane = useWorkbenchStore((s) => s.splitPane);
   const updateTab = useWorkbenchStore((s) => s.updateTab);
@@ -253,6 +305,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    */
   const suggestionsEnabled =
     phase === "connected" && !inAlternate && suggestOpen && draft.trim().length > 0;
+  suggestionsEnabledRef.current = suggestionsEnabled;
 
   // 继续输入 = 重新展开候选条（输入法式）。程序性填入（Tab/选择器写行）
   // 通过 `programmaticDraftRef` 豁免，不重复触发。
@@ -318,6 +371,15 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const container = containerRef.current;
       const wrapper = suggestWrapperRef.current;
       if (!instance || !container || !wrapper) {
+        setSuggestAnchor(null);
+        return;
+      }
+      /*
+       * 补全关着（行尾是空格 / 已提交 / 全屏程序）就不做测量：
+       * `getBoundingClientRect` 会强制同步布局，每敲一个键量一次，在大量输出
+       * 时就是肉眼可见的卡顿。没有提示要定位时，这次测量纯属浪费。
+       */
+      if (!suggestionsEnabledRef.current) {
         setSuggestAnchor(null);
         return;
       }
@@ -686,15 +748,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     keyHandlerRef.current = (event) => {
       if (event.isComposing || event.keyCode === 229) return false;
       /*
-       * 空格**永远**原样发给 shell。
+       * 空格**原样交给 xterm / 远端 shell**，补全链路绝不接管它。
        *
-       * 补全的 insertText 常带前导空格（裸 `cd` → `" ops/"`），ghost 也画在
-       * 光标处 —— 一旦补全链路把空格当成"接受候选"，shell 收不到空格、屏幕上
-       * 光标不动，而本地 LineEditor 却把空格记进了行里（用户看到的就是
-       * "按空格没反应，其实已经空了"）。这里在最前面放行，任何补全分支都碰不到它。
+       * 之前把空格当成"接受候选"或"由我们代发"都试过，结果只会在按键层
+       * 制造额外分支。空格丢失的假象其实来自显示：ghost 画在光标处，盖住了
+       * 刚回显的空格（见下面 `ghostText` 的注释）。这里只做放行。
        */
-      if (event.key === " ") return false;
-      if (event.code === "Space" && !event.ctrlKey) return false;
+      if (event.key === " " || (event.code === "Space" && !event.ctrlKey)) return false;
       // Ctrl+C / Ctrl+V：终端里这两个键有双重身份，必须按"有没有选区"分流。
       //
       // - Ctrl+C **有选中** → 复制（用户刚从回滚缓冲里选了东西，此时他要的
@@ -856,19 +916,21 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * "我书写完应该不要提示这个"。说明文字只在**有候选**时作为底栏出现。
    */
   /*
-   * **行尾是空格时自动提示一律不弹**（用户裁决 2026-11-11）。
+   * 有候选就显示，**按空格不让它消失**（用户裁决 2026-11-11）：
+   * "提示不要跟我操作有冲突，它意识它的，我输入我的"。
    *
-   * 空格没有可见字形，面板/ghost 贴着光标一弹，看起来就是"按空格卡住、
-   * 光标不动"，其实空格已经在命令行里。输入参数时也不需要命令名候选。
-   * 想看参数候选仍然可以按 Tab（那是显式请求，走 `suggestExpanded`）。
+   * 空格之后面板会换成参数候选（`cd ` → 目录），那是提示该做的事；因为
+   * 一次空格就把面板关掉，等于提示在和用户抢键盘。
    */
-  const autoPopoverAllowed = !draft.endsWith(" ");
   const suggestPanelVisible =
     suggestionsEnabled &&
     suggestExpanded &&
-    autoPopoverAllowed &&
     !paramPicker &&
-    suggestions.items.length > 0;
+    /*
+     * 有候选，**或者**正在算（`cd ` 之后要等 SFTP 列目录）。第二种情况留一行
+     * "读取中"而不是让面板消失 —— 否则看起来就是"按空格把提示关掉了"。
+     */
+    (suggestions.items.length > 0 || suggestions.searching);
 
   // 行内 ghost（收起态）：第一条候选的剩余部分 + Tab 徽标。
   const parsed = parseLine(draft, draft.length);
@@ -1097,6 +1159,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     // 面板也不该动）。
     onCwdConfirmed: (path) => setFollow((current) => ({ nonce: current.nonce + 1, path })),
     setInAlternate,
+    // 全屏交互程序把键盘收回去；平时键盘在底部输入条（disableStdin）。
+    interactive: inAlternate,
     setDraft,
     setCwd,
     setPhase,
@@ -1203,6 +1267,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           className="min-h-0 min-w-0 flex-1 overflow-hidden bg-surface-1"
           data-selectable
           onContextMenu={openToolbarMenu}
+          /*
+           * 点终端 = 想打字：把焦点交回输入条（没有选区时）。xterm 现在是
+           * `disableStdin`，点它不会得到输入焦点，不这样处理就是"点了没反应"。
+           */
+          onClick={() => {
+            if (terminalRef.current?.hasSelection()) return;
+            refocusTerminal();
+          }}
         />
         {/* 命令块悬浮复制（增强终端产出）：alternate screen（vim/less）下
             缓冲行语义完全不同，不参与。 */}
@@ -1236,6 +1308,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           <TerminalSuggest
             items={suggestions.items}
             notice={suggestions.notice}
+            loading={suggestions.searching}
             activeIndex={suggestions.activeIndex}
             onHover={suggestions.setActiveIndex}
             onApply={applySuggestion}
@@ -1270,6 +1343,22 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             自动消失，不会把终端或结果面板撑大。 */}
         <CopyNotice status={copyStatus} />
       </div>
+
+      {/*
+       * 对话式输入条（用户裁决 2026-11-11）：键盘不再进 xterm，上面的终端
+       * 只当输出面板。发送走唯一提交入口 `executeTerminalCommand` —— 标记、
+       * 捕获、结果面板、历史记录都与终端里敲命令完全一致。
+       */}
+      <TerminalComposer
+        disabled={phase !== "connected"}
+        interactive={inAlternate}
+        history={commandHistory}
+        onSubmit={(command) => {
+          noteExecutedCommand(command);
+          executeTerminalCommand(command, "input");
+        }}
+        onInterrupt={() => sendInput("\x03")}
+      />
 
       {pendingPaste !== null && (
         <ConfirmDialog

@@ -50,6 +50,13 @@ export interface TerminalSessionHost {
    */
   onCwdConfirmed: (path: string) => void;
   setInAlternate: (value: boolean) => void;
+  /**
+   * 终端里是否正在跑全屏交互程序（vim/top/less）。
+   *
+   * 对话式输入下终端默认 `disableStdin`（键盘在底部输入条）；只有交互程序
+   * 运行时才把键盘还给终端 —— 否则 vim 完全没法用。
+   */
+  interactive: boolean;
   setDraft: (value: string) => void;
   setCwd: (value: string | null) => void;
   setPhase: Dispatch<SetStateAction<Phase>>;
@@ -85,7 +92,22 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       .trim();
     const instance = new Terminal({
       convertEol: true,
-      cursorBlink: true,
+      /*
+       * 命令行的斑马条纹用 `registerDecoration`，它在 xterm 里属于 proposed API
+       * —— 不开这个开关会直接抛 "You must set the allowProposedApi option to
+       * true"，连带把整条命令提交链路打断（表现就是"点了发送没反应"）。
+       * 只用于 decoration，不涉及终端核心行为。
+       */
+      allowProposedApi: true,
+      /*
+       * **对话式输入**：终端只当输出面板用。
+       *
+       * 键盘输入走底部输入条（`TerminalComposer`），xterm 不接收 stdin：
+       * IME 上屏、方块光标遮字符、行重绘延迟、补全抢键这些问题一次性绕开。
+       * 进 vim/top 这类全屏程序时由下面的 effect 临时打开（见 `interactive`）。
+       */
+      disableStdin: !hostRef.current.interactive,
+      cursorBlink: false,
       /*
        * **细竖线光标，不要方块**。
        *
@@ -117,6 +139,14 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
+    // 交互程序（vim/top/less）运行期间：键盘临时还给终端，退出后收回。
+    const applyInteractive = (value: boolean) => {
+      instance.options.disableStdin = !value;
+      instance.options.cursorBlink = value;
+      if (value) instance.focus();
+    };
+    applyInteractive(hostRef.current.interactive);
+
     // Claim only the suggestion keys; everything else reaches the shell.
     instance.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -143,6 +173,23 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       host.setDraft(editor?.canComplete ? editor.current : "");
       // 输入会移动光标 → 重算提示面板锚点。
       host.updateSuggestAnchor();
+    });
+
+    /*
+     * 全屏程序（vim / top / less）的进出**不能再靠按键事件判断**：对话式输入下
+     * 键盘不经过 xterm（`disableStdin`），`onData` 根本不会触发 —— 那样一旦进过
+     * vim，`inAlternate` 会永远停在 true，输入条被永久禁用（用户看到的"按钮一直
+     * 灰、点了没反应"就是这么来的）。
+     *
+     * 改成监听输出：buffer 切到 alternate 就把键盘还给终端，切回来就收回。
+     */
+    const bufferSubscription = instance.onWriteParsed(() => {
+      const alternate = instance.buffer.active.type !== "normal";
+      if (alternate === hostRef.current.interactive) return;
+      hostRef.current.setInAlternate(alternate);
+      instance.options.disableStdin = !alternate;
+      instance.options.cursorBlink = alternate;
+      if (alternate) instance.focus();
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -352,6 +399,7 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       themeObserver.disconnect();
       viewport?.removeEventListener("scroll", onViewportScroll);
       dataSubscription.dispose();
+      bufferSubscription.dispose();
       void unlistenOutput.then((fn) => fn());
       void unlistenStderr.then((fn) => fn());
       void unlistenClosed.then((fn) => fn());
@@ -372,4 +420,21 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     // Reconnecting on target change is intentional; `connect` is stable per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasTarget, sessionId, updateSuggestAnchor]);
+
+  /*
+   * 交互程序进出时切换键盘归属：
+   * - 普通命令行（`interactive = false`，绝大多数时间）→ `disableStdin`，
+   *   键盘归底部输入条；
+   * - 进了 vim/top/less（`interactive = true`）→ 键盘还给终端，否则完全没法用。
+   *
+   * 选项可以运行时改，不需要重建实例（重建会断开 SSH 会话）。
+   */
+  const interactive = host.interactive;
+  useEffect(() => {
+    const instance = hostRef.current.terminalRef.current;
+    if (!instance) return;
+    instance.options.disableStdin = !interactive;
+    instance.options.cursorBlink = interactive;
+    if (interactive) instance.focus();
+  }, [interactive]);
 }

@@ -192,7 +192,9 @@ describe("CompletionScheduler", () => {
     // 参数位 → 可能查远程目录，保留防抖。
     scheduler.request(ctx("cd /var"));
 
-    expect(delays[0]).toBe(0);
+    // `immediate` 合并到下一帧（16ms）而不是 0：连打时不再每键一轮渲染。
+    expect(delays[0]).toBeGreaterThan(0);
+    expect(delays[0]).toBeLessThan(scheduler.debounceMs);
     expect(delays[1]).toBe(scheduler.debounceMs);
     scheduler.dispose();
   });

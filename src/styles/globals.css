@@ -168,6 +168,27 @@
     background-color: rgb(var(--fg-subtle));
   }
 
+  /*
+   * 终端命令行的斑马条纹（xterm decoration，`layer: "bottom"` 铺在文字下面）。
+   *
+   * 两条淡底交替：一眼能分出"哪几行是我输入的命令"，输出区保持原样。
+   * 错误仍然是结果面板里的红色，这里不用红色，避免和报错抢注意力。
+   */
+  .cmd-stripe {
+    pointer-events: none;
+    border-radius: 2px;
+  }
+  .cmd-stripe.stripe-a {
+    background-color: rgb(var(--accent) / 0.07);
+  }
+  .cmd-stripe.stripe-b {
+    background-color: rgb(var(--fg) / 0.045);
+  }
+  /* 失败块（退出码非 0）：**默认**就红，不再等 hover 才显示 exit 码。 */
+  .cmd-stripe.stripe-error {
+    background-color: rgb(var(--danger) / 0.09);
+  }
+
   /* xterm owns its scroll container, so the global scrollbar rules do not
      reach the terminal viewport. Keep the rail visible when scrollback exists. */
   .xterm .xterm-viewport {

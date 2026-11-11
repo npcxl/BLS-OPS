@@ -403,6 +403,49 @@ const COMMANDS: KnownCommand[] = [
   { name: "convert", about: "ImageMagick 转换" },
 ];
 
+/**
+ * 命令表的只读视图：给底部输入条（`TerminalComposer`）做本地补全用。
+ *
+ * 导出而不是复制一份：新增命令只改上面这张表，输入条与补全链路永远一致。
+ * **按名字去重** —— 同类命令分在不同小节时表里会有重复项（`lsof`、`lsblk`），
+ * 渲染成列表会触发 React 的 duplicate key 警告。
+ */
+export const COMMAND_NAMES: readonly { name: string; about: string }[] = (() => {
+  const seen = new Set<string>();
+  return COMMANDS.filter((command) => {
+    if (seen.has(command.name)) return false;
+    seen.add(command.name);
+    return true;
+  });
+})();
+
+/**
+ * 命令名匹配打分：`null` = 不匹配，数字越小越靠前。
+ *
+ * - `0` 前缀精确（`doc` → docker）
+ * - `1` 前缀（大小写不同）
+ * - `2..n` 子序列（`dc` → docker，跳过的字符越多分越高）
+ */
+export function commandMatchScore(input: string, name: string): number | null {
+  const a = input.toLowerCase();
+  const b = name.toLowerCase();
+  if (!a) return null;
+  if (b.startsWith(a)) return a === b ? 0 : 1;
+  // 首字符不同不做缩写匹配：否则 `kc` 也会命中 docker。
+  if (a[0] !== b[0]) return null;
+  let cursor = 0;
+  let gaps = 0;
+  let previous = -1;
+  for (const char of a) {
+    const found = b.indexOf(char, cursor);
+    if (found === -1) return null;
+    if (previous >= 0) gaps += found - previous - 1;
+    previous = found;
+    cursor = found + 1;
+  }
+  return 2 + gaps;
+}
+
 /** 输入与候选是否只差一个字符（插入 / 删除 / 替换 / 相邻换位）。 */
 function oneEditApart(input: string, candidate: string): boolean {
   const a = input.toLowerCase();

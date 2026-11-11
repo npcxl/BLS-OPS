@@ -16,6 +16,13 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.28", date: "2026-11-11", title: "终端对话式输入与命令块", changes: [
+    { kind: "feature", title: "对话式输入", text: "终端下方新增独立输入条（弧形 CurvedInput：文字、光标、发送键都沿弧线走），Enter 或点按钮发送，上方的终端变成纯输出区。中文输入法、光标遮挡、行重绘这些在裸终端里难以避免的问题一次性绕开。" },
+    { kind: "feature", title: "命令补全", text: "输入命令词时弹出候选（内置 300+ 命令，前缀与缩写都行：doc → docker、dc → docker），1-9 或 Tab 直接选、↑↓ 移动、Esc 关闭；不选则原样执行，输入法组合期间不拦截。" },
+    { kind: "feature", title: "命令块条纹", text: "每条命令与它的输出合成一个片区：成功块在两种淡底间交替，失败块（退出码非 0）默认淡红，不用悬停也能看出哪条命令报错了。" },
+    { kind: "fix", title: "发送与提交", text: "修复回车/点击发送无反应：命令块的装饰用了 xterm 的 proposed API，未开启时抛错会打断整条提交链路；现在开启该选项并给装饰加了兜底，装饰失败也照常发送。" },
+    { kind: "fix", title: "vim 之后输入条变灰", text: "全屏程序（vim/top）的进出改由输出判断，不再依赖按键事件——之前进过 vim 后输入条会被永久禁用。" },
+  ] },
   { version: "0.1.27", date: "2026-11-11", title: "中英双语与命令知识库", changes: [
     { kind: "feature", title: "中英双语", text: "语言精简为中国（简体）与英文；首次启动按系统语言与时区推断（大中华区默认中文），手动切换后以选择为准。英文补齐数据库工作台、引擎说明、导出格式、只读原因与 300+ 条终端命令说明。" },
     { kind: "fix", title: "中文界面", text: "修复中文界面偶发显示英文：英文资源里给中文 key 补了译文后，中文缺这条就会回退成英文。现在中文 key 始终命中自身，也不会覆盖已写好的中文措辞。" },

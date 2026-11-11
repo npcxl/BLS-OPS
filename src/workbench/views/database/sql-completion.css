@@ -2,19 +2,29 @@
  * SQL 补全浮层。CodeMirror 默认的补全框又窄又灰，一屏看不清字段类型；
  * 这里把它做成"列表 + 右侧类型 + 右侧详情"的形状，键盘选中态用 accent 侧条标出来。
  *
+ * 2026-11-11 调优（用户反馈"提示词看不清楚"）：
+ * - 底改成 `--surface-1` + `--line-strong` 边框 + 更深投影：浮在编辑器上要有一层
+ *   明确的"纸"，不能和背景融成一片；
+ * - 字号 12.5 → 13，行高 28 → 30，条目之间的信息密度不降但更好认；
+ * - 右侧类型从 11 → 11.5 并改用 `--fg-muted`：`varchar(64)` 这种要能一眼看清；
+ * - `z-index` 拉高，避免被结果区/工具栏的层叠上下文盖住。
+ *
  * 只改 `cm-tooltip-autocomplete` 这一族类名，DDL 预览等其它编辑器共用同一套观感。
  */
 
 .cm-tooltip.cm-tooltip-autocomplete {
   /* 编辑器本身可能只占窗口的一半，太宽会被裁，用 vw 兜一层。 */
-  min-width: min(320px, 92vw);
-  max-width: min(560px, 92vw);
-  padding: 4px;
-  border: 1px solid rgb(var(--line) / 0.9);
+  min-width: min(340px, 92vw);
+  max-width: min(600px, 92vw);
+  padding: 5px;
+  border: 1px solid rgb(var(--line-strong) / 0.9);
   border-radius: 10px;
-  background: rgb(var(--surface-2));
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
-  font-size: 12.5px;
+  background: rgb(var(--surface-1));
+  box-shadow:
+    0 16px 40px rgb(0 0 0 / 0.28),
+    0 2px 8px rgb(0 0 0 / 0.12);
+  font-size: 13px;
+  z-index: 60;
 }
 
 .cm-tooltip-autocomplete > ul {
@@ -26,24 +36,61 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 28px;
-  padding: 4px 8px 4px 6px;
+  min-height: 30px;
+  padding: 5px 9px 5px 7px;
   border-radius: 6px;
   color: rgb(var(--fg-muted));
   line-height: 1.5;
 }
 
 .cm-tooltip-autocomplete > ul > li[aria-selected] {
-  background: rgb(var(--accent) / 0.14);
+  background: rgb(var(--accent) / 0.16);
   color: rgb(var(--fg));
   /* 选中态用左侧细条，不整行铺满 accent：深色主题下实心色块太刺眼。 */
-  box-shadow: inset 2px 0 0 rgb(var(--accent));
+  box-shadow: inset 3px 0 0 rgb(var(--accent));
+}
+
+/*
+ * **选中行里的匹配高亮必须换一种标识方式。**
+ *
+ * 非选中行用 accent 色标出匹配的 `S`，但选中行背景本身就是 accent 色系的
+ * —— 蓝底蓝字，`SUM` 会显示成 `UM`（首字母完全隐形），用户以为候选是错的。
+ * 选中行改用下划线标匹配，颜色跟随正文。
+ */
+.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+/* 选中行的右侧类型同样要提亮：`--fg-muted` 在 accent 底上对比不足。 */
+.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail {
+  color: rgb(var(--fg) / 0.78);
 }
 
 .cm-tooltip-autocomplete .cm-completionIcon {
   width: 16px;
   padding-right: 0;
-  opacity: 0.75;
+  opacity: 0.85;
+}
+
+/*
+ * 图标按类型上色：函数 / 关键字 / 字段 / 表 一眼能分。
+ * 全灰的时候用户只能靠右侧小字读类型，扫起来很慢。
+ */
+.cm-tooltip-autocomplete .cm-completionIcon-function {
+  color: rgb(var(--ai));
+}
+.cm-tooltip-autocomplete .cm-completionIcon-keyword {
+  color: rgb(var(--warning));
+}
+.cm-tooltip-autocomplete .cm-completionIcon-property,
+.cm-tooltip-autocomplete .cm-completionIcon-field {
+  color: rgb(var(--accent));
+}
+.cm-tooltip-autocomplete .cm-completionIcon-class {
+  color: rgb(var(--success));
 }
 
 .cm-tooltip-autocomplete .cm-completionLabel {
@@ -51,7 +98,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: 13px;
   color: inherit;
 }
 
@@ -65,25 +112,26 @@
 .cm-tooltip-autocomplete .cm-completionDetail {
   margin-left: auto;
   padding-left: 12px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-style: normal;
-  color: rgb(var(--fg-subtle));
+  color: rgb(var(--fg-muted));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 45%;
+  max-width: 48%;
 }
 
 /* 详情浮层：库.表.字段 + 是否可空 + 注释，别挤成一行。 */
 .cm-tooltip.cm-completionInfo {
-  max-width: 320px;
-  padding: 8px 10px;
-  border: 1px solid rgb(var(--line) / 0.9);
+  max-width: 340px;
+  padding: 9px 11px;
+  border: 1px solid rgb(var(--line-strong) / 0.9);
   border-radius: 8px;
-  background: rgb(var(--surface-2));
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
-  font-size: 11.5px;
+  background: rgb(var(--surface-1));
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.24);
+  font-size: 12px;
   line-height: 1.6;
   color: rgb(var(--fg-muted));
   white-space: pre-wrap;
+  z-index: 60;
 }

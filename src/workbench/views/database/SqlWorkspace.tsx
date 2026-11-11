@@ -809,7 +809,13 @@ export function SqlWorkspace({
 
       <div
         className={cn(
-          "relative min-h-0 overflow-hidden",
+          /*
+           * **不能 overflow-hidden**：CodeMirror 的补全浮层是相对编辑器绝对定位的，
+           * 容器一裁，面板下沿（第 5 行之后）就看不见了 —— 表现就是"提示词看不全、
+           * 鼠标点不到"。滚动裁剪由 CodeMirror 自己的 scroller 负责，外层不需要。
+           * `z-20` 保证浮层盖在下方结果区之上。
+           */
+          "relative z-20 min-h-0 overflow-visible",
           showResults ? "shrink-0 border-b border-line" : "flex-1",
         )}
         style={showResults ? { height: editorHeight } : undefined}

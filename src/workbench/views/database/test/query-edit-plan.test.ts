@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import "./zh-setup";
 import type { DbColumn, DbTableDetail, DbValue } from "@/api/types/database";
 import { queryEditTarget, simpleSelect, validateQueryKey } from "../query-edit-plan";
 
@@ -36,12 +37,13 @@ describe("query result edit eligibility",()=>{
     expect(simpleSelect('SELECT * FROM "MixedCase"',"postgres").table).toBe("MixedCase");
     expect(simpleSelect('SELECT * FROM USERS',"postgres").table).toBe("users");
   });
-  it("requires full primary keys, never substitutes a unique index",()=>{
+  it("uses the table's reliable key and requires every key column",()=>{
     const target=queryEditTarget("SELECT * FROM users","mysql",columns);
-    expect(()=>validateQueryKey(target,{...detail,primary_key:[]},[row("1")])).toThrow("没有主键");
-    expect(()=>validateQueryKey(target,{...detail,primary_key:["id","tenant_id"]},[row("1")])).toThrow("完整主键");
+    expect(validateQueryKey(target,{...detail,primary_key:[],reliable_key:["name"]},[row("1")])).toEqual([1]);
+    expect(()=>validateQueryKey(target,{...detail,primary_key:[],reliable_key:null},[row("1")])).toThrow("可靠唯一键");
+    expect(()=>validateQueryKey(target,{...detail,reliable_key:["id","tenant_id"]},[row("1")])).toThrow("结果缺少定位字段：tenant_id");
     expect(()=>validateQueryKey(target,{...detail,kind:"view"},[row("1")])).toThrow("视图");
-    expect(()=>validateQueryKey(target,detail,[row("1"),row("1")])).toThrow("主键重复");
+    expect(()=>validateQueryKey(target,detail,[row("1"),row("1")])).toThrow("定位键重复");
   });
   it("requires exact column provenance rather than display names",()=>{
     expect(()=>queryEditTarget("SELECT * FROM users","mysql",columns.map(c=>({...c,org_table:""})))).toThrow("来源");

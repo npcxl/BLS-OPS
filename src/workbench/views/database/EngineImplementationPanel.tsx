@@ -106,8 +106,9 @@ export function EngineImplementationPanel({
             </dd>
             <dt className="text-fg-subtle">{t("验证等级")}</dt>
             <dd className="text-fg">
+              {/* notes 也是后端下发的中文，t() 会给英文界面拿到译文（没有就回退原文）。 */}
               {verified
-                ? `${verified.level} · ${verified.notes || verified.versions}`
+                ? `${verified.level} · ${t(verified.notes || verified.versions)}`
                 : t("未验证")}
             </dd>
           </dl>
@@ -144,7 +145,8 @@ export function EngineImplementationPanel({
                     {t(STATE_LABEL[state])}
                   </span>
                   <span className="min-w-0 flex-1 text-11 leading-relaxed text-fg-subtle">
-                    {entry && entry.state !== "supported" ? entry.reason : ""}
+                    {/* reason 由后端注册表下发（中文），用 t() 让英文界面能翻。 */}
+                    {entry && entry.state !== "supported" ? t(entry.reason) : ""}
                   </span>
                 </li>
               );
@@ -153,7 +155,7 @@ export function EngineImplementationPanel({
         </section>
 
         {descriptor?.note && (
-          <p className="text-11 leading-relaxed text-fg-subtle">{descriptor.note}</p>
+          <p className="text-11 leading-relaxed text-fg-subtle">{t(descriptor.note)}</p>
         )}
 
         {/* 被移出新建列表的产品（SQL Server / MongoDB 等）在这里说清"为什么

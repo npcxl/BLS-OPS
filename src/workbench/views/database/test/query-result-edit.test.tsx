@@ -127,9 +127,21 @@ describe("editable query result mutation flow",()=>{
     expect(button("应用修改").disabled).toBe(true);
     expect(useDatabaseWorkbenchStore.getState().tabs[tabId].pendingResultEdits).toBe(1);
   });
-  it("explains missing primary keys rather than enabling a writable-looking grid",async()=>{
+  it("commits the active edit using a reliable unique key when the table has no primary key",async()=>{
+    vi.mocked(databaseApi.tableDetail).mockResolvedValue({...detail,primary_key:[],reliable_key:["name"]});
+    await render();
+    expect(mock.grid!.editable).toBe(true);
+    act(()=>mock.grid!.onStartEdit!({row:0,col:1}));
+    act(()=>mock.grid!.onEditingValueChange!("789"));
+    await act(async()=>button("应用修改").click());
+    expect(databaseApi.mutate).toHaveBeenCalledWith(expect.objectContaining({rows:[expect.objectContaining({
+      key:[{kind:"value",value:"123"}],
+      values:[{column:"name",value:{kind:"value",value:"789"}}],
+    })]}));
+  });
+  it("shows the missing key column when the result is read-only",async()=>{
     useDatabaseWorkbenchStore.setState(s=>({tabs:{...s.tabs,[tabId]:{...s.tabs[tabId],results:[{...source,sourceSql:"SELECT name FROM main.users",columns:[col("name")],rows:[[source.rows[0][1]]]}]}}}));
     await render();expect(mock.grid!.editable).toBe(false);
-    expect(holder.textContent).toContain("完整主键");
+    expect(holder.textContent).toContain("结果缺少定位字段：id");
   });
 });

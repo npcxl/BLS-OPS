@@ -281,8 +281,8 @@ const sqlConnectInFlight = new Map<string, Promise<DbSessionInfo | null>>();
 const connectionEpoch = new Map<string, number>();
 const statusRevision = new Map<string, number>();
 const lostSessionError = (): DbErrorInfo => toDbError({
-  stage: "tcp", message: "会话连接已关闭，请重新连接",
-  detail: "原事务与临时表无法恢复；重连不会自动重跑 SQL。", retryable: true,
+  stage: "tcp", message: i18n.t("会话连接已关闭，请重新连接"),
+  detail: i18n.t("原事务与临时表无法恢复；重连不会自动重跑 SQL。"), retryable: true,
 });
 
 /**
@@ -629,7 +629,7 @@ export const useDatabaseStore = create<DatabaseAssetState>()((set, get) => ({
 
   runSessionCommand: async (profileId, sql) => {
     const session = get().sessions[profileId];
-    if (!session) throw new Error("会话不存在，无法执行事务命令");
+    if (!session) throw new Error(i18n.t("会话不存在，无法执行事务命令"));
     const started = await databaseApi.queryStart(session.session_id, sql);
     let terminal: string | null = null;
     let batchError: DbErrorInfo | null = null;

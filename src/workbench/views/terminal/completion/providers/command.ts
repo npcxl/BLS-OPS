@@ -12,6 +12,7 @@
  * - 命令词为空（还没开始敲）不接管，免得一上来就糊一屏。
  */
 
+import { i18n } from "@/i18n";
 import type {
   CompletionContext,
   CompletionItem,
@@ -497,7 +498,8 @@ export function createCommandProvider(): CompletionProvider {
         label: command.name,
         // 带一个尾随空格：补完命令名就能直接接参数，少按一次空格。
         insertText: `${command.name} `,
-        detail: command.about,
+        // `about` 以中文撰写，英文界面由 `locales/en/commands.ts` 提供译文。
+        detail: i18n.t(command.about),
         icon: "command",
         type: "command",
         replaceRange: { start: 0, end: ctx.cursor },

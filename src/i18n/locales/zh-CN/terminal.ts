@@ -21,6 +21,7 @@ export default {
   "Split Horizontally": "水平分栏",
   "Clear Screen": "清空屏幕",
   "Command History": "命令历史",
+  "Search command history": "搜索命令历史",
   "Remote Files": "远程文件",
   "Refresh Environment": "刷新环境",
   "Re-probe Docker / Nginx": "重新探测 Docker / Nginx",

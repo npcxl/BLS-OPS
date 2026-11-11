@@ -1,3 +1,4 @@
+import { i18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -61,7 +62,7 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
   const [paste,setPaste]=useState<PasteCell[] | null>(null);
   const target=useMemo(()=>{
     try {
-      if (!result.sourceSql) throw new Error("结果缺少完整查询信息，请重新执行查询");
+      if (!result.sourceSql) throw new Error(i18n.t("结果缺少完整查询信息，请重新执行查询"));
       return {value:queryEditTarget(result.sourceSql,profile?.engine ?? "",result.columns),reason:null};
     } catch (error) {return {value:null,reason:(error as Error).message};}
   },[result.sourceSql,result.columns,profile?.engine]);
@@ -92,9 +93,10 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
     try {return {indexes:validateQueryKey(target.value,metadata,result.rows),reason:null};}
     catch(error){return {indexes:[] as number[],reason:(error as Error).message};}
   },[target,metadata,result.rows,result.rows.length]);
-  const reason=basicReason ?? metadataError ?? (!metadata ? "正在验证原表与主键…" : key.reason)
+  const checking=!basicReason && !metadataError && !metadata;
+  const reason=basicReason ?? metadataError ?? key.reason
     ?? (locked ? "结果需要重新查询后才能继续编辑" : null);
-  const editable=!reason && !locked && !busy;
+  const editable=!checking && !reason && !busy;
   useEffect(()=>{onPendingCount(result.key,drafts.length);},[result.key,drafts.length,onPendingCount]);
   useEffect(()=>()=>onPendingCount(result.key,0),[result.key,onPendingCount]);
   const rows=useMemo(()=>result.rows.map((row,index)=>{
@@ -136,6 +138,7 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
     const changed=next.filter(d=>d.values.length);
     onPendingCount(result.key,changed.length);
     setPast(p=>[...p.slice(-49),drafts]);setFuture([]);setDrafts(changed);setNotice(null);
+    return changed;
   };
   const startEdit=(cell:CellAddress)=>{
     if (!editable) return;
@@ -145,21 +148,27 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
   const undo=()=>{if(!busy && past.length){setFuture(f=>[drafts,...f]);setDrafts(past[past.length-1]);setPast(p=>p.slice(0,-1));}};
   const redo=()=>{if(!busy && future.length){setPast(p=>[...p,drafts]);setDrafts(future[0]);setFuture(f=>f.slice(1));}};
   const apply=async()=>{
-    if (busyRef.current || !editable || !drafts.length || !metadata || !target.value || !profile || !session) return;
+    if (busyRef.current || !editable || !metadata || !target.value || !profile || !session) return;
     if (useDatabaseWorkbenchStore.getState().tabs[tabId]?.resultWriteInFlight) return;
+    const submitted = editing && !editCommitted.current
+      ? change([{ ...editing.cell, value: { kind: "value", value: editing.value } }])
+      : drafts;
+    if (!submitted?.length) return;
+    editCommitted.current = true;
+    setEditing(null);
     useDatabaseWorkbenchStore.getState().setResultWriteInFlight(tabId,true);
     busyRef.current=true;setBusy(true);setNotice(null);setNoticeTone("danger");
-    const submitted=drafts;const sourceRows=result.rows;
+    const sourceRows=result.rows;
     try {
       const fresh=await databaseApi.sessionInfo(session.session_id);
       const current=useDatabaseStore.getState().profiles.find(p=>p.id===profile.id);
-      if (!current || current.read_only || fresh.read_only || fresh.state==="lost" || fresh.generation!==result.generation || fresh.session_id!==result.sessionId || fresh.transaction!=="none") throw new Error("连接、权限或事务状态已变化，请重新执行查询");
+      if (!current || current.read_only || fresh.read_only || fresh.state==="lost" || fresh.generation!==result.generation || fresh.session_id!==result.sessionId || fresh.transaction!=="none") throw new Error(i18n.t("连接、权限或事务状态已变化，请重新执行查询"));
       await databaseApi.invalidateMetadata(profile.id);
       const detail=await databaseApi.tableDetail(profile.id,target.value.database,target.value.table);
       validateQueryKey(target.value,detail,sourceRows);
-      if (JSON.stringify(detail.primary_key)!==JSON.stringify(metadata.primary_key)) throw new Error("原表主键已变化，请重新执行查询");
+      if (JSON.stringify(detail.reliable_key)!==JSON.stringify(metadata.reliable_key)) throw new Error(i18n.t("原表定位键已变化，请重新执行查询"));
       const live=useDatabaseWorkbenchStore.getState().tabs[tabId];
-      if (live?.runState!=="completed" || !live.results.some(r=>r.key===result.key && r.rows===sourceRows)) throw new Error("查询结果已变化，已停止提交");
+      if (live?.runState!=="completed" || !live.results.some(r=>r.key===result.key && r.rows===sourceRows)) throw new Error(i18n.t("查询结果已变化，已停止提交"));
       const outcome=await databaseApi.mutate({sessionId:session.session_id,database:target.value.database,table:target.value.table,
         rows:submitted.map(d=>({kind:"update",key:d.key,values:d.values,expected:d.expected}))});
       if (outcome.state!=="committed") {
@@ -177,9 +186,9 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
         try {
           const answer=await databaseApi.browse({session_id:session.session_id,database:target.value.database,table:target.value.table,
             filters:key.indexes.map(i=>({column:target.value!.names[i],op:"eq" as const,value:raw(updated[draft.row][i])})),page_size:1,exact_count:false});
-          if (answer.rows.length!==1) throw new Error("记录已变化");
+          if (answer.rows.length!==1) throw new Error(i18n.t("记录已变化"));
           const canonical=target.value.names.map(n=>answer.rows[0][answer.columns.findIndex(c=>c.name===n)]);
-          if (canonical.some(v=>!v)) throw new Error("字段已变化");
+          if (canonical.some(v=>!v)) throw new Error(i18n.t("字段已变化"));
           updated[draft.row]=canonical;
         } catch {reloadFailed=true;}
       }
@@ -206,7 +215,10 @@ export function QueryResultGrid({tabId, result, active, apiRef, onCopy, onOpenCe
   return <div className="relative flex h-full min-h-0 flex-col">
     <div className="page-toolbar">
       <span className="page-toolbar-grow min-w-0 truncate text-11 text-fg-subtle" title={reason ?? `${target.value?.database}.${target.value?.table}`}>
-        {reason ? t("只读：{{reason}}",{reason:t(reason)}) : t("可编辑 · {{table}}",{table:`${target.value?.database}.${target.value?.table}`})}
+        {checking ? t("正在验证原表与定位键…") : reason
+          ? t("只读：{{reason}}",{reason:t(reason)})
+          : t("可编辑 · {{table}}",{table:`${target.value?.database}.${target.value?.table}`})}
+        {!checking && !reason && <span className="ml-2">{drafts.length ? t("{{count}} 行待提交", {count: drafts.length}) : t("双击单元格编辑")}</span>}
       </span>
       {metadataError && <Button size="xs" onClick={()=>setAttempt(a=>a+1)}>{t("重试")}</Button>}
       <Button size="xs" disabled={(!drafts.length && !editing) || busy} onClick={()=>setShowChanges(true)}>{t("查看变更")}{drafts.length?` (${drafts.length})`:""}</Button>

@@ -232,6 +232,21 @@ export default {
   "有选区运行选区，无选区运行全部（Ctrl+Enter）":
     "Runs the selection, or the whole statement (Ctrl+Enter)",
   "运行脚本": "Run script",
+  "运行当前语句": "Run current statement",
+  "运行选区": "Run selection",
+  "运行选区或光标所在语句（Ctrl+Enter）": "Run the selection or statement at the cursor (Ctrl+Enter)",
+  "输入 SQL。Ctrl+Enter 运行当前语句，Ctrl+Shift+Enter 运行脚本。":
+    "Enter SQL. Ctrl+Enter runs the current statement. Ctrl+Shift+Enter runs the script.",
+  "正在验证原表与定位键…": "Checking the source table and its row key…",
+  "双击单元格编辑": "Double-click a cell to edit",
+  "{{count}} 行待提交": "{{count}} rows pending",
+  "原表没有可用的主键或可靠唯一键，查询结果只读":
+    "The source table has no usable primary or reliable unique key",
+  "结果缺少定位字段：{{columns}}": "Missing row key columns: {{columns}}",
+  "原表定位键已变化，请重新执行查询": "The source table's row key has changed. Run the query again.",
+  "定位键值不完整或类型不支持，无法安全定位记录":
+    "An incomplete or unsupported row key value prevents safe updates",
+  "结果定位键重复，无法唯一定位原记录": "Duplicate row keys prevent safe updates",
   "格式化": "Format",
   "新建 SQL 查询（{{database}}）": "New SQL query ({{database}})",
   "刷新表列表（{{database}}）": "Refresh tables ({{database}})",

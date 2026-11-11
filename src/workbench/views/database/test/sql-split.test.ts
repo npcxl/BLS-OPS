@@ -65,6 +65,9 @@ describe("SQL 语句拆分", () => {
     expect(statementAtCursor(sql, 0)).toBe("SELECT 1");
     expect(statementAtCursor(sql, sql.indexOf("SELECT 2") + 2)).toBe("SELECT 2");
     expect(statementAtCursor(sql, sql.length)).toBe("SELECT 3");
+    const spaced = "  SELECT 1;\n\nSELECT 2;\nDELETE FROM users;";
+    expect(statementAtCursor(spaced, 0)).toBe("SELECT 1");
+    expect(statementAtCursor(spaced, spaced.indexOf("\n\n") + 1)).toBe("SELECT 1");
   });
 
   describe("方言语义", () => {

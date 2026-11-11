@@ -41,9 +41,25 @@ export { LOCALES, DEFAULT_LOCALE, localeLabel, type LocaleCode } from "./locales
  *
  * 只保留中文（简体）与英文：其余语言目录已移除，避免半翻译状态。
  */
+/**
+ * 中文 key 在 zh-CN 下必须命中"它自己"。
+ *
+ * `fallbackLng: "en"` 的副作用：`en` 里为中文 key 补了英文之后，zh-CN 缺这条
+ * 就会回退到英文 —— 中文界面反而显示英文（例如导出对话框的 `文件格式` 变成
+ * `File format`）。这里把 `en` 中所有"key 本身是中文"的条目自动补成恒等映射，
+ * 既不用手工维护上千条 `"中文": "中文"`，也不会覆盖 zh-CN 已有的措辞。
+ */
+function chineseIdentityMap(): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const key of Object.keys(en)) {
+    if (/[\u4e00-\u9fa5]/.test(key) && !(key in zhCN)) map[key] = key;
+  }
+  return map;
+}
+
 const resources: Record<string, { translation: Record<string, string> }> = {
   en: { translation: en },
-  "zh-CN": { translation: zhCN },
+  "zh-CN": { translation: { ...chineseIdentityMap(), ...zhCN } },
 };
 
 /**

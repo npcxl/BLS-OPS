@@ -52,6 +52,37 @@ const mount = async () => act(async () => root.render(<>
 </>));
 
 describe("multiple resident query hosts and connection context", () => {
+  it.each([
+    ["SELECT * FROM users ORDER BY id", "SELECT * FROM users ORDER BY id\nLIMIT 1000 OFFSET 0"],
+    ["SELECT * FROM users LIMIT 200", "SELECT * FROM users LIMIT 200"],
+  ])("runs %s and retains the original result source", async (sql, executedSql) => {
+    const queryId = "q1";
+    const connection = session("a").connection;
+    vi.spyOn(databaseApi, "queryStart").mockResolvedValue({
+      query_id: queryId, generation: 1, state: "running", connection,
+    });
+    const batch = { query_id: queryId, generation: 1, in_flight: 0, in_flight_bytes: 0 };
+    vi.spyOn(databaseApi, "queryNext")
+      .mockResolvedValueOnce({
+        ...batch, state: "running",
+        batch: { kind: "result_set", result_set_id: "q1:0", index: 0, columns: [], statement: executedSql },
+      })
+      .mockResolvedValueOnce({ ...batch, state: "completed", batch: null });
+    vi.spyOn(databaseApi, "queryRelease").mockResolvedValue();
+    vi.spyOn(databaseApi, "historyRecord").mockResolvedValue({} as Awaited<ReturnType<typeof databaseApi.historyRecord>>);
+    useDatabaseWorkbenchStore.getState().setSql(aId, sql);
+    await mount();
+    await act(async () => useDatabaseWorkspaceStore.getState().setActive(aId));
+    const run = Array.from(holder.querySelectorAll<HTMLButtonElement>('[data-connection="a"] button'))
+      .find(button => button.textContent?.trim() === "运行当前语句");
+    expect(run).toBeDefined();
+    await act(async () => run!.click());
+    expect(databaseApi.queryStart).toHaveBeenCalledWith("session-a", executedSql);
+    expect(useDatabaseWorkbenchStore.getState().tabs[aId].results[0]).toMatchObject({
+      sourceSql: sql, statement: sql, sessionId: "session-a", generation: 1,
+    });
+  });
+
   it("does not let background hosts fight over global activeId", async () => {
     await mount();
     expect(useDatabaseWorkspaceStore.getState().activeId).toBe(bId);

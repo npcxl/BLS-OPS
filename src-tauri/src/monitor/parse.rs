@@ -351,9 +351,7 @@ pub fn parse_os_release(input: &str) -> (Option<String>, Option<String>) {
 pub fn parse_nvidia_smi(input: &str) -> Vec<GpuMetrics> {
     fn number(value: &str) -> f64 {
         let text = value.trim();
-        if text.is_empty()
-            || text.eq_ignore_ascii_case("[N/A]")
-            || text.eq_ignore_ascii_case("N/A")
+        if text.is_empty() || text.eq_ignore_ascii_case("[N/A]") || text.eq_ignore_ascii_case("N/A")
         {
             return 0.0;
         }

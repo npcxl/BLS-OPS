@@ -11,7 +11,7 @@ use super::exec::{require_linux, result_for, run, run_all, run_first, unsupporte
 use super::model::{
     CpuMetrics, CpuSample, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetSample, NetworkMetrics,
     ProcessInfo, Rates, SystemInfo, BASELINE_DELAY, CMD_CPU, CMD_DISKS, CMD_GPU, CMD_HOSTNAME,
-    CMD_LOADAVG, CMD_MEMORY, CMD_NETWORK, CMD_OS_RELEASE, CMD_PROCESSES, CMD_PROBE_GPU, CMD_UNAME,
+    CMD_LOADAVG, CMD_MEMORY, CMD_NETWORK, CMD_OS_RELEASE, CMD_PROBE_GPU, CMD_PROCESSES, CMD_UNAME,
     CMD_UPTIME, PROCESS_LIMIT, SUPPORTED_OS,
 };
 use super::parse::{

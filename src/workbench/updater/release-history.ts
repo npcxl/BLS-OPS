@@ -16,6 +16,14 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.23", date: "2026-11-10", title: "查询结果分页与 GPU 监控", changes: [
+    { kind: "fix", title: "超预算不再断连", text: "结果超过展示上限时不再 KILL 查询并丢弃连接（以前会弹「会话连接已关闭」）；现在继续读完但只保留预算内的行，连接保持可用。默认上限同时提高到 10000 行 / 32 MiB。" },
+    { kind: "feature", title: "结果分页", text: "单条只读查询按 1000 行一页浏览，结果区提供上一页 / 第 N 页 / 下一页；翻页按 LIMIT/OFFSET 重新执行，不缓存全量结果。多语句与写操作不分页。" },
+    { kind: "feature", title: "GPU 监控", text: "装了 NVIDIA 驱动的服务器显示每块卡的利用率、显存、温度与功耗；没有 nvidia-smi 的机器静默跳过，不显示空卡片，也不影响快照其它指标。" },
+    { kind: "feature", title: "新建查询带当前表", text: "从某张表新建查询时直接带上 SELECT * FROM 库.表 LIMIT 200；空白处新建从空白开始，不再继承上一次的 SQL。" },
+    { kind: "fix", title: "终端", text: "文件面板默认收起（开关按机器记住）；命令历史对快速连接也记录；删除后重新创建的同名文件不再点不动。" },
+    { kind: "fix", title: "界面", text: "服务器列表分组标题弱化并缩进；监控页限制最大宽度、趋势图加高并带参考线，全屏不再被拉伸；连接失败通知改为居中。" },
+  ] },
   { version: "0.1.22", date: "2026-11-09", title: "修复查询结果不显示", changes: [
     { kind: "fix", title: "查询结果", text: "修复查询返回了行数（例如 20 行、14 KiB）但网格一片空白：行批次原地追加后数组引用未变，grid 的 useMemo 一直返回首次缓存的空数组；现在把行数纳入依赖，数据到达即渲染。" },
   ] },

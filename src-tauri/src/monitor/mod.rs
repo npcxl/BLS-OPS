@@ -42,7 +42,7 @@ pub(crate) use exec::unsupported_message;
 /// directly to assert on real command output.
 pub use parse::{
     cpu_usage_percent, parse_cpu_stat, parse_disk_usage, parse_loadavg, parse_meminfo,
-    parse_net_dev, parse_os_release, parse_processes, parse_uname, parse_uptime,
+    parse_net_dev, parse_nvidia_smi, parse_os_release, parse_processes, parse_uname, parse_uptime,
 };
 
 #[cfg(test)]

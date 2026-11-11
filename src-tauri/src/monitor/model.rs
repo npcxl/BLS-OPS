@@ -41,6 +41,11 @@ pub(crate) const CMD_PROCESSES: &str = "ps -eo pid,user,pcpu,pmem,stat,lstart,co
 /// `/etc/os-release` is the documented location; systemd also publishes it in
 /// `/usr/lib/os-release` for distributions that treat `/etc` as editable.
 pub(crate) const CMD_OS_RELEASE: &[&str] = &["cat /etc/os-release", "cat /usr/lib/os-release"];
+/// 有没有 NVIDIA 工具链：**只探一次**（按会话缓存）。`nvidia-smi` 冷启动要
+/// 加载 NVML（100~200ms），每轮都跑一遍纯属浪费；探不到就永久跳过 GPU。
+pub(crate) const CMD_PROBE_GPU: &str = "command -v nvidia-smi";
+/// 只要需要的那几个字段，不用默认表格输出。`nounits` 去掉 `MiB`/`%` 后缀。
+pub(crate) const CMD_GPU: &str = "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits";
 
 // -- Data model -------------------------------------------------------------
 
@@ -99,6 +104,23 @@ pub struct NetworkMetrics {
     pub transmit_speed: f64,
 }
 
+/// 一块 NVIDIA GPU 的实时状态（`nvidia-smi` 只读查询）。
+///
+/// 没有 NVIDIA 驱动 / 没有 `nvidia-smi` 的机器上这个列表恒为空 —— 不报错、
+/// 不显示空卡片，避免把"没有 GPU"渲染成"GPU 异常"。
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct GpuMetrics {
+    pub index: u32,
+    pub name: String,
+    /// 0–100（`utilization.gpu`）。
+    pub utilization_percent: f64,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub temperature_c: f64,
+    /// 部分卡（虚拟化/受限驱动）不报功耗，此时为 0。
+    pub power_watts: f64,
+}
+
 /// One process from `ps`, sorted by CPU usage.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ProcessInfo {
@@ -127,6 +149,9 @@ pub struct MonitorSnapshot {
     pub disks: Vec<DiskMetrics>,
     pub network: Vec<NetworkMetrics>,
     pub processes: Vec<ProcessInfo>,
+    /// 没有 NVIDIA 工具链时为空（不是错误）。
+    #[serde(default)]
+    pub gpus: Vec<GpuMetrics>,
 }
 
 /// Aggregate jiffies read from one `/proc/stat` sample.

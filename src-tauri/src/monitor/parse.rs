@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::model::{CpuSample, DiskMetrics, MemoryMetrics, NetSample, NetworkMetrics, ProcessInfo};
+use super::model::{
+    CpuSample, DiskMetrics, GpuMetrics, MemoryMetrics, NetSample, NetworkMetrics, ProcessInfo,
+};
 
 fn percent(part: u64, total: u64) -> f64 {
     if total == 0 {
@@ -338,6 +340,52 @@ pub fn parse_os_release(input: &str) -> (Option<String>, Option<String>) {
         pick(["PRETTY_NAME", "NAME"]),
         pick(["VERSION_ID", "VERSION"]),
     )
+}
+
+/// `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` → 每块 GPU 一行。
+///
+/// 字段顺序：`index, name, utilization.gpu, memory.used, memory.total,
+/// temperature.gpu, power.draw`。`memory.used/total` 的单位是 **MiB**（`nounits`
+/// 去掉了后缀），这里换算成字节；功耗在受限驱动或虚拟化下是 `[N/A]`，按 0
+/// 处理，绝不编一个假数字。
+pub fn parse_nvidia_smi(input: &str) -> Vec<GpuMetrics> {
+    fn number(value: &str) -> f64 {
+        let text = value.trim();
+        if text.is_empty()
+            || text.eq_ignore_ascii_case("[N/A]")
+            || text.eq_ignore_ascii_case("N/A")
+        {
+            return 0.0;
+        }
+        text.parse::<f64>().unwrap_or(0.0)
+    }
+
+    let mib = 1024.0 * 1024.0;
+    let mut gpus = Vec::new();
+
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+        // 7 个字段；名字里出现逗号时，多出来的段并回名字。
+        if parts.len() < 7 {
+            continue;
+        }
+        let tail = parts.len() - 5;
+        gpus.push(GpuMetrics {
+            index: parts[0].parse::<u32>().unwrap_or(0),
+            name: parts[1..tail].join(", "),
+            utilization_percent: number(parts[tail]),
+            memory_used: (number(parts[tail + 1]) * mib).round() as u64,
+            memory_total: (number(parts[tail + 2]) * mib).round() as u64,
+            temperature_c: number(parts[tail + 3]),
+            power_watts: number(parts[tail + 4]),
+        });
+    }
+
+    gpus
 }
 
 /// Turns byte counters into speeds by comparing against the previous reading.

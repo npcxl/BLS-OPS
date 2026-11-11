@@ -10,13 +10,14 @@ use crate::ssh::SshSessionManager;
 use super::exec::{require_linux, result_for, run, run_all, run_first, unsupported_message};
 use super::model::{
     CpuMetrics, CpuSample, DiskMetrics, MemoryMetrics, MonitorSnapshot, NetSample, NetworkMetrics,
-    ProcessInfo, Rates, SystemInfo, BASELINE_DELAY, CMD_CPU, CMD_DISKS, CMD_HOSTNAME, CMD_LOADAVG,
-    CMD_MEMORY, CMD_NETWORK, CMD_OS_RELEASE, CMD_PROCESSES, CMD_UNAME, CMD_UPTIME, PROCESS_LIMIT,
-    SUPPORTED_OS,
+    ProcessInfo, Rates, SystemInfo, BASELINE_DELAY, CMD_CPU, CMD_DISKS, CMD_GPU, CMD_HOSTNAME,
+    CMD_LOADAVG, CMD_MEMORY, CMD_NETWORK, CMD_OS_RELEASE, CMD_PROCESSES, CMD_PROBE_GPU, CMD_UNAME,
+    CMD_UPTIME, PROCESS_LIMIT, SUPPORTED_OS,
 };
 use super::parse::{
     cpu_usage_percent, network_metrics, parse_cpu_stat, parse_disk_usage, parse_loadavg,
-    parse_meminfo, parse_net_dev, parse_os_release, parse_processes, parse_uname, parse_uptime,
+    parse_meminfo, parse_net_dev, parse_nvidia_smi, parse_os_release, parse_processes, parse_uname,
+    parse_uptime,
 };
 use super::registry::MonitorRegistry;
 
@@ -239,6 +240,22 @@ pub async fn collect_snapshot(
         return Ok(unsupported_snapshot(session_id, &system));
     }
 
+    /*
+     * GPU 单独探一次（结果按会话缓存）：`nvidia-smi` 冷启动要加载 NVML
+     * （100~200ms），每轮都跑会明显拖慢快照；没有它就永久跳过，不报错。
+     */
+    let gpu_available = match registry.gpu_probe(session_id).await {
+        Some(value) => value,
+        None => {
+            let available = run(manager, session_id, CMD_PROBE_GPU)
+                .await
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false);
+            registry.store_gpu_probe(session_id, available).await;
+            available
+        }
+    };
+
     let mut commands: Vec<&str> = vec![
         CMD_HOSTNAME,
         CMD_UPTIME,
@@ -251,6 +268,9 @@ pub async fn collect_snapshot(
     ];
     if cached_os.is_none() {
         commands.push(CMD_OS_RELEASE[0]);
+    }
+    if gpu_available {
+        commands.push(CMD_GPU);
     }
     let outputs = run_all(manager, session_id, &commands).await;
 
@@ -268,6 +288,16 @@ pub async fn collect_snapshot(
         .ok_or_else(|| anyhow!("无法解析 /proc/meminfo"))?;
     let disks = parse_disk_usage(&result_for(&outputs, CMD_DISKS)?);
     let processes = parse_processes(&result_for(&outputs, CMD_PROCESSES)?, PROCESS_LIMIT);
+    // GPU 查询失败（驱动升级中、权限受限）只让这一块留空，不让整张快照失败。
+    let gpus = if gpu_available {
+        outputs
+            .get(CMD_GPU)
+            .and_then(|result| result.as_ref().ok())
+            .map(|text| parse_nvidia_smi(text))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let rates = resolve_rates(
         manager,
@@ -330,5 +360,6 @@ pub async fn collect_snapshot(
         disks,
         network: rates.network,
         processes,
+        gpus,
     })
 }

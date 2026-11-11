@@ -401,7 +401,12 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             }
           />
         ) : (
-          <div className="flex flex-col gap-3">
+          /*
+           * **限制最大宽度**：全屏/带鱼屏下如果让四张卡平分整个视口，每张会宽到
+           * 500px+，数字孤零零挂在左边、右边全是空白 —— 这就是"拉伸感"的来源。
+           * 1440 以内保持四列，再宽也不会继续摊开。
+           */
+          <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4">
             {/* Metric cards */}
             <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
               <MetricCard
@@ -468,8 +473,34 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               />
             </div>
 
+            {/*
+              GPU：只有装了 NVIDIA 工具链的机器才有；没有时整块不渲染，
+              不显示"无 GPU"的空卡片。
+            */}
+            {(snapshot?.gpus ?? []).length > 0 && (
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {(snapshot?.gpus ?? []).map((gpu) => (
+                  <MetricCard
+                    key={gpu.index}
+                    icon={Cpu}
+                    label={`GPU ${gpu.index} · ${gpu.name}`}
+                    value={gpu.utilization_percent.toFixed(1)}
+                    unit="%"
+                    percent={gpu.utilization_percent}
+                    detail={[
+                      `${formatBytes(gpu.memory_used)} / ${formatBytes(gpu.memory_total)}`,
+                      `${gpu.temperature_c.toFixed(0)}°C`,
+                      gpu.power_watts > 0 ? `${gpu.power_watts.toFixed(0)} W` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  />
+                ))}
+              </div>
+            )}
+
             {/* Trends — 30 minutes */}
-            <div className="flex flex-wrap gap-3">
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
               <TrendChart
                 title={t("CPU usage")}
                 value={`${(cpu?.usage_percent ?? 0).toFixed(1)}%`}
@@ -530,7 +561,11 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                   };
                 })}
               />
-              <div role="tabpanel" id={`monitor-${tab.id}-detail`}>
+              <div
+                role="tabpanel"
+                id={`monitor-${tab.id}-detail`}
+                className="max-h-[46vh] overflow-auto"
+              >
                 {detail === "disk" && <DiskTable disks={snapshot?.disks ?? []} />}
                 {detail === "network" && <NetworkTable network={snapshot?.network ?? []} />}
                 {detail === "process" && <ProcessTable processes={snapshot?.processes ?? []} />}

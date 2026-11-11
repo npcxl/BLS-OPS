@@ -80,6 +80,36 @@ VERSION_ID=\"22.04\"
 PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"
 ";
 
+const NVIDIA_SMI: &str = "\
+0, NVIDIA GeForce RTX 4090, 12, 1234, 24564, 45, 120.50
+1, NVIDIA A100-SXM4-40GB, 0, 0, 40960, 30, [N/A]
+";
+
+#[test]
+fn nvidia_smi_reads_every_gpu_and_turns_na_into_zero() {
+    let gpus = super::parse_nvidia_smi(NVIDIA_SMI);
+    assert_eq!(gpus.len(), 2);
+
+    assert_eq!(gpus[0].index, 0);
+    assert_eq!(gpus[0].name, "NVIDIA GeForce RTX 4090");
+    assert_eq!(gpus[0].utilization_percent, 12.0);
+    assert_eq!(gpus[0].memory_used, 1234 * 1024 * 1024);
+    assert_eq!(gpus[0].memory_total, 24564 * 1024 * 1024);
+    assert_eq!(gpus[0].temperature_c, 45.0);
+    assert_eq!(gpus[0].power_watts, 120.5);
+
+    // 受限驱动下 power.draw 是 `[N/A]`：按 0 处理，不编数字。
+    assert_eq!(gpus[1].power_watts, 0.0);
+    assert_eq!(gpus[1].memory_total, 40960 * 1024 * 1024);
+}
+
+#[test]
+fn nvidia_smi_ignores_empty_and_malformed_lines() {
+    assert!(super::parse_nvidia_smi("").is_empty());
+    assert!(super::parse_nvidia_smi("\n\n").is_empty());
+    assert!(super::parse_nvidia_smi("not,a,gpu,row").is_empty());
+}
+
 #[test]
 fn cpu_stat_reads_the_aggregate_line_and_counts_cores() {
     let sample = parse_cpu_stat(STAT_FIRST).expect("parse /proc/stat");

@@ -44,7 +44,7 @@ export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
             <td className="text-fg-muted">{formatBytes(disk.available)}</td>
             <td>
               <div className="flex items-center gap-1.5">
-                <div className="h-1 w-16 overflow-hidden rounded-full bg-surface-3">
+                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-3">
                   <div
                     className={cn("h-full rounded-full", usageTone(disk.usage_percent))}
                     style={{ width: `${Math.min(100, Math.max(0, disk.usage_percent))}%` }}

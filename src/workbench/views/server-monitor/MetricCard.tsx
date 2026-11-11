@@ -23,19 +23,22 @@ export function MetricCard({
   percent?: number;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-[12px] border border-line bg-surface-1 p-3">
-      <div className="flex items-center gap-1.5 text-fg-subtle">
-        <Icon size={13} strokeWidth={1.75} />
-        <span className="text-11">{label}</span>
+    <div className="flex min-h-[92px] min-w-0 flex-col justify-between gap-2 rounded-[12px] border border-line bg-surface-1 p-3.5">
+      <div className="flex min-w-0 items-center gap-1.5 text-fg-subtle">
+        <Icon size={13} strokeWidth={1.75} className="shrink-0" />
+        <span className="truncate text-11">{label}</span>
       </div>
       <div className="flex items-baseline gap-1">
-        <span className="font-mono text-20 text-fg">{value}</span>
+        <span className="font-mono text-[24px] leading-none tracking-tight text-fg">{value}</span>
         {unit && <span className="text-11 text-fg-subtle">{unit}</span>}
       </div>
       {percent !== undefined && (
-        <div className="h-1 w-full overflow-hidden rounded-full bg-surface-3">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
           <div
-            className={cn("h-full rounded-full transition-[width] duration-300 ease-out", usageTone(percent))}
+            className={cn(
+              "h-full rounded-full transition-[width] duration-300 ease-out",
+              usageTone(percent),
+            )}
             style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
           />
         </div>

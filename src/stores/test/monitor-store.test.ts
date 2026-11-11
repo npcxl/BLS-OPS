@@ -58,6 +58,7 @@ function snapshot(overrides: Partial<MonitorSnapshot> = {}): MonitorSnapshot {
       },
     ],
     processes: [],
+    gpus: [],
     ...overrides,
   };
 }

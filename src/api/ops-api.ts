@@ -233,6 +233,7 @@ export {
 export {
   type CpuMetrics,
   type DiskMetrics,
+  type GpuMetrics,
   type MemoryMetrics,
   type MonitorSnapshot,
   type NetworkMetrics,

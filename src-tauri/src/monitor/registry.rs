@@ -40,6 +40,9 @@ pub struct MonitorRegistry {
     samples: Arc<Mutex<HashMap<String, SampleCache>>>,
     /// 主机静态信息（会话生命周期内有效）。
     hosts: Arc<Mutex<HashMap<String, HostInfo>>>,
+    /// 该会话有没有 `nvidia-smi`：只探一次。`nvidia-smi` 冷启动要加载 NVML，
+    /// 每轮都跑会白白多花 100~200ms。
+    gpu_probe: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl MonitorRegistry {
@@ -48,6 +51,21 @@ impl MonitorRegistry {
     pub async fn forget(&self, session_id: &str) {
         self.samples.lock().await.remove(session_id);
         self.hosts.lock().await.remove(session_id);
+        self.gpu_probe.lock().await.remove(session_id);
+    }
+
+    /// 该会话的 GPU 探测结果（`None` = 还没探过）。
+    pub async fn gpu_probe(&self, session_id: &str) -> Option<bool> {
+        self.gpu_probe.lock().await.get(session_id).copied()
+    }
+
+    /// 记下探测结果；同一会话只写一次。
+    pub async fn store_gpu_probe(&self, session_id: &str, available: bool) {
+        self.gpu_probe
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_insert(available);
     }
 
     /// 取该会话缓存的主机静态信息（没有就是 `None`）。

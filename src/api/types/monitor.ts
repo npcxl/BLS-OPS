@@ -62,6 +62,19 @@ export interface ProcessInfo {
   command: string;
 }
 
+/** 一块 NVIDIA GPU。没有 `nvidia-smi` 的机器上 `gpus` 恒为空数组。 */
+export interface GpuMetrics {
+  index: number;
+  name: string;
+  /** 0–100. */
+  utilization_percent: number;
+  memory_used: number;
+  memory_total: number;
+  temperature_c: number;
+  /** 受限驱动/虚拟化下为 0（`[N/A]`）。 */
+  power_watts: number;
+}
+
 export interface MonitorSnapshot {
   session_id: string;
   /** Unix seconds of the collection. */
@@ -75,4 +88,6 @@ export interface MonitorSnapshot {
   disks: DiskMetrics[];
   network: NetworkMetrics[];
   processes: ProcessInfo[];
+  /** 没有 NVIDIA 工具链时为空（不是错误）。 */
+  gpus: GpuMetrics[];
 }

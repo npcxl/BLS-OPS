@@ -16,6 +16,11 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.25", date: "2026-11-11", title: "SQL 补全体验修复", changes: [
+    { kind: "fix", title: "补全候选", text: "输入第二个字母不再突然空白：以前 CodeMirror 复用第一次的 200 条结果做过滤，表多时关键字排在后面，一过滤就没了；现在每次输入都重新计算候选。" },
+    { kind: "fix", title: "选中态", text: "补全面板选中行只保留淡背景（去掉整行蓝底与左侧色条），匹配字符改用下划线标示，不会再被同色背景吞掉首字母。" },
+    { kind: "fix", title: "编辑器", text: "去掉活动行与选区上的 1px 描边 —— 在不同主题下它会显示成文字上下各一条虚线。" },
+  ] },
   { version: "0.1.24", date: "2026-11-11", title: "终端命令智能补全与监控图表", changes: [
     { kind: "feature", title: "命令名补全", text: "内置 300+ 常用命令（含 systemd、Docker、K8s、数据库客户端、排障工具）：敲 unz 直接提示 unzip，拼错一个字符（连相邻键敲反 unizp）也能纠正；补全后自动带空格，接着就能输参数。" },
     { kind: "feature", title: "按语义补文件", text: "unzip 只提示 .zip、tar 只提示压缩包、unrar 只提示 .rar、gunzip 只提示 .gz；目录始终保留，方便继续往里走。当前目录没有对应类型时会明说，而不是静默空白。" },

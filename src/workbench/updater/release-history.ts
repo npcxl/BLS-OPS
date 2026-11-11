@@ -16,6 +16,12 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.24", date: "2026-11-11", title: "终端命令智能补全与监控图表", changes: [
+    { kind: "feature", title: "命令名补全", text: "内置 300+ 常用命令（含 systemd、Docker、K8s、数据库客户端、排障工具）：敲 unz 直接提示 unzip，拼错一个字符（连相邻键敲反 unizp）也能纠正；补全后自动带空格，接着就能输参数。" },
+    { kind: "feature", title: "按语义补文件", text: "unzip 只提示 .zip、tar 只提示压缩包、unrar 只提示 .rar、gunzip 只提示 .gz；目录始终保留，方便继续往里走。当前目录没有对应类型时会明说，而不是静默空白。" },
+    { kind: "feature", title: "趋势图换 ECharts", text: "监控页四条趋势改平滑曲线 + 渐变面积，鼠标悬停显示时刻与数值；颜色跟随主题 token，亮色/暗色都不刺眼。按需引入，只打包 line/grid/tooltip。" },
+    { kind: "fix", title: "cd 补全", text: "Shell Integration 还没报回当前目录时不再只显示 unknown，而是退回家目录列出可进入的目录；~ 仍然在 home 未知时明确拒绝，不编造路径。" },
+  ] },
   { version: "0.1.23", date: "2026-11-10", title: "查询结果分页与 GPU 监控", changes: [
     { kind: "fix", title: "超预算不再断连", text: "结果超过展示上限时不再 KILL 查询并丢弃连接（以前会弹「会话连接已关闭」）；现在继续读完但只保留预算内的行，连接保持可用。默认上限同时提高到 10000 行 / 32 MiB。" },
     { kind: "feature", title: "结果分页", text: "单条只读查询按 1000 行一页浏览，结果区提供上一页 / 第 N 页 / 下一页；翻页按 LIMIT/OFFSET 重新执行，不缓存全量结果。多语句与写操作不分页。" },

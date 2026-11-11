@@ -43,11 +43,15 @@
   line-height: 1.5;
 }
 
-.cm-tooltip-autocomplete > ul > li[aria-selected] {
-  background: rgb(var(--accent) / 0.16);
-  color: rgb(var(--fg));
-  /* 选中态用左侧细条，不整行铺满 accent：深色主题下实心色块太刺眼。 */
-  box-shadow: inset 3px 0 0 rgb(var(--accent));
+/*
+ * 选中态：**只有一层淡底**，不加左侧色条（用户明确要求去掉）。
+ * `!important` 是因为 CodeMirror 自己的主题会注入同选择器的规则，且注入顺序在
+ * 我们这个文件之后 —— 不加就会被它的实心 accent 背景盖回去（"颜色太深"）。
+ */
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: rgb(var(--accent) / 0.1) !important;
+  color: rgb(var(--fg)) !important;
+  box-shadow: none;
 }
 
 /*
@@ -119,6 +123,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 48%;
+}
+
+/*
+ * 编辑器里的装饰线一律去掉。
+ *
+ * CodeMirror 的活动行 / 选区 / 选中匹配高亮在不同主题下会带上 `outline` 或
+ * `border`（选中一个词后，字的上下各出现一条虚线 —— 用户明确反馈"为什么上下
+ * 都有虚线"）。选中只需要背景色，不需要任何描边。
+ */
+.cm-editor .cm-selectionBackground,
+.cm-editor .cm-activeLine,
+.cm-editor .cm-line,
+.cm-editor .cm-selectionMatch,
+.cm-editor .cm-searchMatch,
+.cm-editor .cm-selectionLayer > div,
+.cm-editor .cm-gutterElement {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 /* 详情浮层：库.表.字段 + 是否可空 + 注释，别挤成一行。 */

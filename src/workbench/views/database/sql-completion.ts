@@ -450,11 +450,19 @@ export function createSqlCompletion(
     }
 
     if (context.aborted || !metadata.valid() || options.length === 0) return null;
-    // 结果多的时候把字段/表顶到前面：boost 已经在选项里，这里只兜底截断。
+    /*
+     * 结果多的时候把字段/表顶到前面：boost 已经在选项里，这里只兜底截断。
+     *
+     * `validFor: /^$/` 是**故意的**：以前给的是"任意词字符都算有效"，
+     * CodeMirror 就会拿上一次的结果直接过滤，不再重算 —— 敲第一个字母时
+     * 只返回了 200 条（表多时关键字被截在后面），再敲一个字母就只剩那 200 条
+     * 里的子集，看起来就是"输入两个字母后提示没了"。现在每次输入都重新算，
+     * 候选永远是完整的（元数据有缓存，代价很小）。
+     */
     return {
       from,
       options: options.slice(0, 200),
-      validFor: /^[\w$\u0080-\uffff]*$/,
+      validFor: /^$/,
     } satisfies CompletionResult;
   };
 }

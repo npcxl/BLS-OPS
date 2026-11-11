@@ -144,7 +144,7 @@ export const ServerRow = memo(function ServerRow({
         type="button"
         data-testid={`server-open-${server.id}`}
         data-server-row-open
-        className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-[5px] text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50"
+        className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-[5px] py-1.5 pl-3 text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50"
         onClick={() => onOpen(server)}
         onKeyDown={(event) => {
           // Same arrow-key traversal as the database tree: rows are one list,
@@ -170,14 +170,14 @@ export const ServerRow = memo(function ServerRow({
         }}
       >
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-12 text-fg">{server.name}</span>
+          <span className="truncate text-12 font-medium text-fg">{server.name}</span>
           {server.proxy_jump_id && (
-            <span className="shrink-0 rounded-[4px] border border-line px-1 text-11 text-fg-subtle">
+            <span className="shrink-0 rounded-[4px] border border-line px-1 text-10 text-fg-subtle">
               {t("Jump")}
             </span>
           )}
         </span>
-        <span className="truncate text-12 text-fg-subtle">
+        <span className="truncate text-11 text-fg-subtle">
           {server.username}@{server.host}:{server.port}
         </span>
       </button>

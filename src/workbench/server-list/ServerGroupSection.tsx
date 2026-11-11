@@ -46,7 +46,7 @@ export function ServerGroupSectionView({
           onCancel={onCancelRename}
         />
       ) : (
-        <div className="group/g flex w-full items-center px-2.5 py-1.5 text-13 font-medium text-fg-subtle hover:text-fg">
+        <div className="group/g mt-1 flex w-full items-center px-2.5 py-1.5 text-10 font-semibold tracking-wide text-fg-subtle hover:text-fg">
           <button
             type="button"
             data-testid={`group-toggle-${section.id}`}
@@ -54,7 +54,7 @@ export function ServerGroupSectionView({
             onClick={onToggleFold}
           >
             <ChevronRight
-              size={13}
+              size={11}
               aria-hidden="true"
               className={cn("shrink-0 transition-transform", !folded && "rotate-90")}
             />
@@ -84,7 +84,10 @@ export function ServerGroupSectionView({
             </span>
           )}
           {/* 数量恒定在整行最右（hover 操作按钮在它左侧浮现，不把它挤走）。 */}
-          <span data-testid={`group-count-${section.id}`} className="shrink-0">
+          <span
+            data-testid={`group-count-${section.id}`}
+            className="shrink-0 text-10 tabular-nums"
+          >
             {section.servers.length}
           </span>
         </div>
@@ -92,7 +95,7 @@ export function ServerGroupSectionView({
 
       {!folded &&
         (section.servers.length === 0 ? (
-          <p className="px-2.5 py-1.5 text-12 text-fg-subtle">{t("No servers")}</p>
+          <p className="py-1 pl-5 text-11 text-fg-subtle">{t("No servers")}</p>
         ) : (
           section.servers.map((server) => (
             <div key={server.id}>{renderRow(server)}</div>

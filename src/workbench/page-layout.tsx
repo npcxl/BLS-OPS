@@ -299,17 +299,25 @@ export function PageNotice({
   tone = "neutral",
   icon,
   className,
+  centered = false,
 }: {
   children: ReactNode;
   action?: ReactNode;
   tone?: "neutral" | "info" | "warning" | "danger";
   icon?: ReactNode;
   className?: string;
+  /** 图标 / 文案 / 动作整体居中（连接失败这类单句通知）。 */
+  centered?: boolean;
 }) {
   return (
     <div
       role={tone === "danger" ? "alert" : "status"}
-      className={cn("page-notice", tone !== "neutral" && `page-notice--${tone}`, className)}
+      className={cn(
+        "page-notice",
+        tone !== "neutral" && `page-notice--${tone}`,
+        centered && "page-notice--centered",
+        className,
+      )}
     >
       {icon}
       <div className="page-notice__message">{children}</div>

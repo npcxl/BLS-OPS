@@ -436,6 +436,24 @@
     overflow-wrap: anywhere;
   }
 
+  /*
+   * 居中变体：连接失败这类"整条只有一句错误 + 一个重试"的通知，左对齐时
+   * 右侧会留一大片空白，看起来像没排版。图标 / 文案 / 动作整体居中。
+   */
+  .page-notice--centered {
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .page-notice--centered .page-notice__message {
+    flex: 0 1 auto;
+  }
+
+  .page-notice--centered > svg {
+    margin-top: 0;
+  }
+
   .page-notice > svg {
     flex-shrink: 0;
     margin-top: 2px;

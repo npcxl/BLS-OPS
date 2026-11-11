@@ -124,7 +124,7 @@ impl Default for AdapterRegistry {
 /// 登记全部内置适配器。
 fn register_builtins(registry: &mut AdapterRegistry) {
     // ── 第三层：专用语义解析 ──
-    registry.register("docker-container-table", |stdout, ctx| {
+    registry.register("docker-container-table", |stdout, _ctx| {
         let (view, columns, rows) = super::domain::docker::container_table(stdout);
         AdapterOutcome::Structured {
             view,

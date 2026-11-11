@@ -169,6 +169,7 @@ export function ModuleFrame({
       return (
         <PageNotice
           tone="danger"
+          centered
           icon={<TriangleAlert size={13} />}
           action={
             <Button variant="ghost" size="xs" onClick={session.connect}>
@@ -183,6 +184,7 @@ export function ModuleFrame({
     if (session.phase === "closed") {
       return (
         <PageNotice
+          centered
           icon={<WifiOff size={13} />}
           action={
             <Button variant="ghost" size="xs" onClick={session.connect}>

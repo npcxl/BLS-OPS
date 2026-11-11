@@ -181,7 +181,7 @@ export function ServerListTree({
                 <button
                   type="button"
                   data-testid="favorites-toggle"
-                  className="flex w-full items-center gap-1 px-2.5 py-1 text-11 font-medium text-fg-subtle hover:text-fg"
+                  className="flex w-full items-center gap-1 px-2.5 py-1.5 text-10 font-semibold tracking-wide text-fg-subtle hover:text-fg"
                   onClick={() => setFavoritesFolded((current) => !current)}
                 >
                   <ChevronRight

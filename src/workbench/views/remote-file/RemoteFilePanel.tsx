@@ -38,7 +38,7 @@ import { pushErrorToast } from "@/components/ui/toast";
 import { VscodeLogoIcon } from "@/components/ui/vscode-logo-icon";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { comboFromKey, useShortcutBindings } from "@/stores/shortcut-store";
-import { opsApi, type RemoteFileEntry } from "@/api/ops-api";
+import { opsApi, TRANSFER_EVENT, type TransferTask, type RemoteFileEntry } from "@/api/ops-api";
 import type { EditorSyncEventPayload } from "@/api/types/editor-sync";
 import { editorSyncEvent } from "@/lib/events";
 import { useDomainStore } from "@/stores/domain-store";
@@ -53,6 +53,7 @@ import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
 import { TrashDialog } from "./TrashDialog";
 import { TransferCenterDialog } from "./TransferCenterDialog";
+import { useRemoteDirectory } from "./use-remote-directory";
 import {
   AUTO_DIR_SIZE_LIMIT,
   hasUsableSize,
@@ -68,7 +69,6 @@ import {
   type EditorTarget,
   type FilePanelFollow,
   type NameDialog,
-  type PanelStatus,
 } from "./utils";
 
 const DEFAULT_WIDTH = 320;
@@ -146,12 +146,9 @@ function RemoteFilePanelImpl({
   const { t } = useTranslation();
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   /** Canonical navigation history: back/forward + current location. */
-  const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
-  const [entries, setEntries] = useState<RemoteFileEntry[]>([]);
-  const [status, setStatus] = useState<PanelStatus>({ state: "idle" });
   const [selected, setSelected] = useState<string | null>(null);
   const menu = useContextMenu();
-  const [nameDialog, setNameDialog] = useState<NameDialog | null>(null);
+  const [nameDialog, setNameDialog] = useState<(NameDialog & { directory: string }) | null>(null);
   /**
    * 就地重命名状态：只记路径与进入编辑时的文件名，输入框长在那一行里
    * （像资源管理器那样），不再弹 Modal。
@@ -200,7 +197,16 @@ function RemoteFilePanelImpl({
     setDraggingState(next);
   }, []);
 
-  const cwd = nav.index >= 0 && nav.index < nav.stack.length ? nav.stack[nav.index] : null;
+  const onListed = useCallback((items: RemoteFileEntry[], nextSelection?: string | null) => {
+    const paths = new Set(items.map(entry => entry.path));
+    setSelected(current => {
+      const candidate = nextSelection === undefined ? current : nextSelection;
+      return candidate && paths.has(candidate) ? candidate : null;
+    });
+    setRenaming(current => current && paths.has(current.path) ? current : null);
+  }, []);
+  const { cwd, entries, status, run: load, refresh: refreshDirectory, refreshChanged } =
+    useRemoteDirectory(sessionId, connected, initialPath, onListed);
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
 
   /**
@@ -212,216 +218,41 @@ function RemoteFilePanelImpl({
   /** 工具栏「⋯」的菜单（与行右键菜单各自独立，全局仍只允许一个可见）。 */
   const toolMenu = useContextMenu();
 
-  /**
-   * 目录加载的请求序号。
-   *
-   * 快速切换目录时会同时有多个 `sftpListDir` 在飞。没有序号时，**先发后到**
-   * 的旧响应会把用户最后选择的目录覆盖掉（页面"跳回"旧目录）。
-   * 只允许最新一次请求更新列表、路径与错误。
-   */
-  const loadSeqRef = useRef(0);
-
-  const load = useCallback(
-    async (path: string, options?: { silent?: boolean }) => {
-      // 静默刷新：删文件 / 上传 / 重命名之后只换列表内容，不切 loading 页、
-      // 不清选中项 —— 否则整块列表现消失再出现，就是"闪一下"。
-      const silent = options?.silent ?? false;
-      const seq = ++loadSeqRef.current;
-      if (!silent) {
-        setStatus({ state: "loading" });
-        setSelected(null);
-      }
-      try {
-        const result = await opsApi.sftpListDir(sessionId, path);
-        // 过期响应：直接丢弃，什么状态都不写。
-        if (seq !== loadSeqRef.current) return;
-        setEntries(result.entries);
-        /*
-         * 列表变了，指向"已不存在文件"的状态必须清掉。
-         *
-         * 典型场景：删除一个文件 → 再创建同名文件 → 新行按 path 命中旧的
-         * `selected` / `renaming`，于是整行要么一直停在选中态（单击没有任何
-         * 反馈），要么直接渲染成重命名输入框 —— 用户看到的就是"这个文件点不动"。
-         */
-        const present = new Set(result.entries.map((entry) => entry.path));
-        setSelected((current) => (current && present.has(current) ? current : null));
-        setRenaming((current) => (current && present.has(current.path) ? current : null));
-        setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
-        // Reconcile with the canonical path the server actually resolved.
-        setNav((current) => {
-          if (current.stack[current.index] === result.path) return current;
-          return {
-            stack: [...current.stack.slice(0, current.index + 1), result.path],
-            index: current.index + 1,
-          };
-        });
-      } catch (cause) {
-        if (seq !== loadSeqRef.current) return;
-        if (silent) {
-          // 刷新失败时保留已有列表：把列表换成错误页等于把用户正在看的东西
-          // 抹掉，比报错本身更糟。错误走统一通知，带阶段与复制。
-          pushErrorToast(cause, { title: t("Refresh failed"), persist: false });
-        } else {
-          setStatus({ state: "error", error: cause });
-        }
-      }
-    },
-    [sessionId, t],
-  );
-
-  /**
-   * 跳到指定路径：目录直接打开；文件则打开它所在的目录并**选中**，
-   * 让"查看 docker-compose.yml / nginx.conf"这类入口一步到位。
-   * 路径不存在或无权限时退到父目录，把错误留给 `load` 如实呈现。
-   */
-  const revealInto = useCallback(
-    async (target: string, cancelled: boolean) => {
-      try {
-        const entry = await opsApi.sftpStat(sessionId, target);
-        if (cancelled) return;
-        if (entry.kind === "directory") {
-          await load(target);
-          if (!cancelled) setSelected(null);
-        } else {
-          await load(parentOf(target));
-          if (!cancelled) setSelected(target);
-        }
-      } catch {
-        const parent = parentOf(target);
-        if (parent !== target) await load(parent);
-      }
-    },
-    [load, sessionId],
-  );
-
-  // Open SFTP and land in the home directory when the session comes up —
-  // unless the caller asked for a specific starting point (`initialPath`), in
-  // which case we go straight there. Doing this in one effect (rather than
-  // racing a separate "jump" effect) is what keeps the two async listings from
-  // overwriting each other's navigation stack.
-  useEffect(() => {
-    if (!connected) {
-      setStatus({ state: "disconnected" });
-      setEntries([]);
-      setNav({ stack: [], index: -1 });
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      setStatus({ state: "loading" });
-      try {
-        const homePath = await opsApi.sftpOpen(sessionId);
-        if (cancelled) return;
-
-        const target = initialPath?.trim();
-        if (target) {
-          await revealInto(target, cancelled);
-          return;
-        }
-
-        setNav({ stack: [homePath], index: 0 });
-        const result = await opsApi.sftpListDir(sessionId, homePath);
-        if (cancelled) return;
-        setEntries(result.entries);
-        setStatus(result.entries.length === 0 ? { state: "empty" } : { state: "ready" });
-      } catch (cause) {
-        if (!cancelled) setStatus({ state: "error", error: cause });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // `initialPath` 只在挂载时生效（后续跳转走 `reveal`），故意不入依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, sessionId]);
-
-  // Follow the terminal's directory: the terminal pushes a **confirmed
-  // absolute path** whenever the working directory really changed (the shell
-  // reported a new cwd via OSC 7, or a `cd` exited 0) — all we do here is
-  // jump. Nonce 0 is the initial state, not a change — reacting to it would
-  // reload the initial listing a second time.
   const followNonce = follow.nonce;
   const followPath = follow.path;
   useEffect(() => {
-    if (followNonce === 0 || !followPath) return;
-    void load(followPath);
-    // 每个 nonce 只响应一次，`load` 有意不入依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followNonce, followPath]);
+    if (connected && followNonce !== 0 && followPath) void load(followPath);
+  }, [connected, followNonce, followPath, load]);
 
-  // Subsequent jump requests from another view (项目发现的"查看 Docker 配置"/
-  // "查看 Nginx 配置")。挂载时的首次落地由 `initialPath` 负责。
   const revealNonce = reveal?.nonce ?? 0;
   const revealPath = reveal?.path;
   useEffect(() => {
-    if (revealNonce === 0 || !revealPath || !connected) return;
-    // 首次落地已由 `initialPath` 在挂载时完成，不重复加载同一路径。
+    if (!connected || revealNonce === 0 || !revealPath) return;
     if (revealNonce === 1 && initialPath === revealPath) return;
-    void revealInto(revealPath, false);
-    // `revealInto`/`connected` 有意不入依赖：每个 nonce 只响应一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revealNonce, revealPath]);
+    void load(revealPath, { resolve: true });
+  }, [connected, initialPath, load, revealNonce, revealPath]);
 
-  const navigate = useCallback(
-    (path: string) => {
-      // 换目录时退出就地重命名：回到原目录不能又停在编辑框里。
-      setRenaming(null);
-      setNav((current) => ({
-        stack: [...current.stack.slice(0, current.index + 1), path],
-        index: current.index + 1,
-      }));
-      void load(path);
-    },
-    [load],
-  );
+  const navigate = useCallback((path: string) => {
+    setRenaming(null);
+    void load(path);
+  }, [load]);
 
-  /**
-   * 左箭头 = 回上一级。历史上"后退 / 前进 / 上一级"是三个按钮，文件树里
-   * 真正天天用的只有向上，合并成一个之后顶部才腾得下地址栏。
-   */
   const goUp = () => {
-    if (!cwd) return;
-    navigate(parentOf(cwd));
+    if (cwd && cwd !== "/") navigate(parentOf(cwd));
   };
 
   const refresh = () => {
-    if (cwd) void load(cwd);
+    if (cwd) void refreshDirectory(cwd);
+    else void load(null);
   };
 
-  /**
-   * 地址栏回车：**先探测再跳**。不存在的路径只在顶部提示，绝不把当前列表
-   * 换成错误页 —— 那样等于把用户正在看的内容抹掉。
-   *
-   * - 目录 → 直接进去
-   * - 文件 → 进它所在目录并选中（输入 `/etc/nginx/nginx.conf` 能一步定位）
-   * - 不存在 / 无权限 → 留在原目录，提示里带路径与原因
-   */
-  const commitPath = useCallback(
-    async (draft: string) => {
-      const raw = draft.trim();
-      setPathDraft(null);
-      if (!raw) return;
-      // 相对路径按当前目录补全：地址栏里输入 `logs` 与在 shell 里 `cd logs` 同义。
-      const target = raw.startsWith("/") ? raw : `${cwd ?? ""}/${raw}`;
-      if (target === cwd) return;
-      try {
-        const entry = await opsApi.sftpStat(sessionId, target);
-        if (entry.kind === "directory") {
-          navigate(target);
-          return;
-        }
-        // 文件：落到父目录并选中。已经在父目录里就不再重载（省一次闪）。
-        const parent = parentOf(target);
-        if (parent !== cwd) await load(parent);
-        setSelected(target);
-      } catch (cause) {
-        // 打不开文件多半是权限或路径不存在：走顶部错误通知，带阶段、详情与复制，
-        // 而不是挤在面板底部那一行灰字里（滚一下就没了）。
-        pushErrorToast(cause, { title: t("Cannot open {{path}}", { path: target }) });
-      }
-    },
-    [cwd, load, navigate, sessionId, t],
-  );
+  const commitPath = useCallback((draft: string) => {
+    const raw = draft.trim();
+    setPathDraft(null);
+    if (!raw) return;
+    const target = raw.startsWith("/") ? raw : `${cwd === "/" ? "" : cwd ?? ""}/${raw}`;
+    if (target !== cwd) void load(target, { resolve: true });
+  }, [cwd, load]);
 
   const openEntry = useCallback(
     (entry: RemoteFileEntry) => {
@@ -444,22 +275,41 @@ function RemoteFilePanelImpl({
   // -- file operations -------------------------------------------------------
 
   const runAndRefresh = useCallback(
-    (action: () => Promise<unknown>) => {
+    (action: () => Promise<unknown>, path = cwd) => {
       void action()
-        .then(() => {
-          // 静默刷新：操作成功后列表原地更新，不闪。
-          if (cwd) return load(cwd, { silent: true });
-          return undefined;
-        })
+        .then(() => { if (path) return refreshDirectory(path); })
         .catch((cause) => pushErrorToast(cause, { title: t("Operation failed"), persist: false }));
     },
-    [cwd, load, t],
+    [cwd, refreshDirectory, t],
   );
 
-  /** 操作后原地刷新列表（不切 loading、不清选中）。 */
   const refreshSilently = useCallback(() => {
-    if (cwd) void load(cwd, { silent: true });
-  }, [cwd, load]);
+    if (cwd) void refreshDirectory(cwd);
+  }, [cwd, refreshDirectory]);
+
+  // A transfer can complete after the upload picker or transfer dialog closes.
+  useEffect(() => {
+    if (!connected) return;
+    let disposed = false;
+    let timer: number | undefined;
+    const folders = new Set<string>();
+    const unlisten = listen<TransferTask>(TRANSFER_EVENT, ({ payload }) => {
+      if (disposed || payload.session_id !== sessionId ||
+          payload.kind !== "upload" || payload.state !== "completed") return;
+      folders.add(parentOf(payload.target));
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        refreshChanged(folders);
+        folders.clear();
+      }, 120);
+    });
+    void unlisten.catch(() => undefined);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      void unlisten.then(stop => stop()).catch(() => undefined);
+    };
+  }, [connected, refreshChanged, sessionId]);
 
   const [deleteTarget, setDeleteTarget] = useState<RemoteFileEntry | null>(null);
   /** 永久删除（跳过回收站）：必须由用户显式选择，绝不作为删除的回退。 */
@@ -638,13 +488,13 @@ function RemoteFilePanelImpl({
         return false;
       }
       setRenaming(null);
-      // 改名后把选中落到新名字上：刷新是静默的，选中项不能丢。
       const parent = parentOf(entry.path);
-      setSelected(parent === "/" ? `/${trimmed}` : `${parent}/${trimmed}`);
-      runAndRefresh(() => opsApi.sftpRename(sessionId, entry.path, trimmed));
+      void opsApi.sftpRename(sessionId, entry.path, trimmed)
+        .then(path => refreshDirectory(parent, path))
+        .catch(cause => pushErrorToast(cause, { title: t("Operation failed"), persist: false }));
       return true;
     },
-    [runAndRefresh, sessionId, setNotice],
+    [refreshDirectory, sessionId, setNotice, t],
   );
 
   const copyEntry = (entry: RemoteFileEntry) => {
@@ -656,6 +506,7 @@ function RemoteFilePanelImpl({
     const extension = dot > 0 ? entry.name.slice(dot) : "";
     const suggested = `${t("{{name}} - Copy", { name: stem })}${extension}`;
     setNameDialog({
+      directory: parentOf(entry.path),
       title: "Create a copy",
       label: "Copy name",
       initial: suggested,
@@ -668,6 +519,7 @@ function RemoteFilePanelImpl({
   const createFolder = () => {
     if (!cwd || blockedByInspection()) return;
     setNameDialog({
+      directory: cwd,
       title: "New folder",
       label: "Folder name",
       initial: t("New folder"),
@@ -680,6 +532,7 @@ function RemoteFilePanelImpl({
   const createFile = () => {
     if (!cwd || blockedByInspection()) return;
     setNameDialog({
+      directory: cwd,
       title: "New file",
       label: "File name",
       initial: t("New file.txt"),
@@ -724,8 +577,8 @@ function RemoteFilePanelImpl({
   // Directory-size queue (max 2 concurrent) — logic lives in the hook.
   // 错误回调必须引用稳定：useDirSizeQueue 的监听器注册 effect 依赖它。
   const handleDirSizeError = useCallback((message: string) => {
-    setStatus({ state: "error", error: message });
-  }, []);
+    showNotice(message, "danger");
+  }, [showNotice]);
 
   const { computeDirSize, dropQueued, releaseStale, requireDirSize, listenerReady } =
     useDirSizeQueue(sessionId, handleDirSizeError);
@@ -777,15 +630,18 @@ function RemoteFilePanelImpl({
     for (const entry of entries) {
       if (entry.kind !== "directory") continue;
       if (scheduled >= AUTO_DIR_SIZE_LIMIT) break;
-      const cached = useDirSizeStore.getState().get(sessionId, entry.path);
-      if (hasUsableSize(cached)) continue;
+      const store = useDirSizeStore.getState();
+      // 刷新/文件操作刚把这个目录标脏：必须带 force 重算，否则后端会回放旧数字。
+      const stale = store.consumeStale(sessionId, entry.path);
+      const cached = store.get(sessionId, entry.path);
+      if (!stale && hasUsableSize(cached)) continue;
       // 排队中 / 计算中：已经占着名额，不重复提交。
-      if (cached && !cached.complete) {
+      if (!stale && cached && !cached.complete) {
         scheduled += 1;
         continue;
       }
       // 没有状态，或"结束了但没结果"：入队。退避中的不占名额。
-      if (computeDirSize(entry.path)) scheduled += 1;
+      if (computeDirSize(entry.path, stale)) scheduled += 1;
     }
   }, [
     connected,
@@ -1186,56 +1042,11 @@ function RemoteFilePanelImpl({
         </button>
       </div>
 
-      {/* 选中项的操作条：只在选中时出现，不挤占地址栏。 */}
-      {selectedEntry && (
-        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2 text-11">
-          <span className="min-w-0 flex-1 truncate text-fg-subtle" title={selectedEntry.path}>
-            {selectedEntry.name}
-          </span>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <PanelButton label="Open" icon={CornerDownLeft} onClick={() => openEntry(selectedEntry)} />
-            {selectedEntry.kind !== "directory" && (
-              <>
-                <PanelButton
-                  label="Preview"
-                  icon={Eye}
-                  onClick={() =>
-                    setPreview({
-                      path: selectedEntry.path,
-                      name: selectedEntry.name,
-                      size: selectedEntry.size,
-                    })
-                  }
-                />
-                <PanelButton
-                  label="Download to local"
-                  icon={Download}
-                  onClick={() => void downloadEntry(selectedEntry)}
-                />
-              </>
-            )}
-            <PanelButton
-              label="Rename"
-              icon={Pencil}
-              disabled={inspection}
-              onClick={() => renameEntry(selectedEntry)}
-            />
-            <PanelButton
-              label="Create a copy"
-              icon={Copy}
-              disabled={inspection}
-              onClick={() => copyEntry(selectedEntry)}
-            />
-            <PanelButton
-              label="Move to recycle bin"
-              icon={Trash2}
-              disabled={inspection}
-              onClick={() => removeEntry(selectedEntry)}
-              className="hover:text-danger"
-            />
-          </div>
-        </div>
-      )}
+      {/*
+       * 选中项的操作条已移除（用户裁决）：同一组动作右键菜单里全都有，
+       * 选中就把工具栏顶下去一行，反而让列表跟着"跳"。键盘（F2 / Delete /
+       * Enter）仍然作用于当前选中项。
+       */}
 
       {/* 提示固定在列表上方：列表滚到哪儿都看得见（地址栏输错路径要靠它）。 */}
       {notice && (
@@ -1390,7 +1201,7 @@ function RemoteFilePanelImpl({
           onSaved={() => {
             setNameDialog(null);
             // 新建 / 复制的文件直接出现在列表里，避免整块列表闪一次。
-            refreshSilently();
+            void refreshDirectory(nameDialog.directory);
           }}
         />
       )}
@@ -1405,7 +1216,7 @@ function RemoteFilePanelImpl({
             onClose={() => setEditor(null)}
             onSaved={() => {
               // 保存只改文件内容与 mtime，列表原地更新即可。
-              if (cwd) void load(cwd, { silent: true });
+              void refreshDirectory(parentOf(editor.path));
             }}
           />
         </Suspense>

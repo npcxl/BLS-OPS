@@ -63,6 +63,7 @@ export default {
 
   // -- 目录大小（utils.ts · 纯 TS 模块走 i18n.t） --
   Folder: "文件夹",
+  "Empty folder": "空文件夹",
   Queued: "排队中",
   "Queued…": "排队中…",
   "Computing…": "计算中…",

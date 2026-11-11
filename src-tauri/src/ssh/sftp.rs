@@ -17,7 +17,7 @@ use std::time::UNIX_EPOCH;
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
 use russh_sftp::client::{fs::DirEntry, SftpSession};
-use russh_sftp::protocol::{FileAttributes, FileType, StatusCode as SftpStatusCode};
+use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags, StatusCode as SftpStatusCode};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 
 use super::manager::SshSessionManager;
@@ -1136,7 +1136,7 @@ impl SshSessionManager {
         Ok(())
     }
 
-    /// 带取消的整文件上传：写 `<remote>.bls-part` → 完成 → 原子改名。
+    /// 带取消的整文件上传：写同目录唯一临时文件 → 完成 → 原子改名。
     ///
     /// 取消时**删掉临时文件**并把错误抛回去：目标名要么是完整内容，要么根本
     /// 不存在，绝不留下半截文件。
@@ -1152,7 +1152,10 @@ impl SshSessionManager {
         crate::safe::validate_abs_path(remote_path, "目标文件")?;
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
-        let part_path = format!("{remote_path}.bls-part");
+        let part_path = posix_join(
+            &parent_of(remote_path),
+            &format!(".bls-part-{}", uuid::Uuid::new_v4()),
+        );
         let total = tokio::fs::metadata(local_path)
             .await
             .map(|meta| meta.len())
@@ -1161,46 +1164,54 @@ impl SshSessionManager {
             .await
             .map_err(|error| anyhow!("无法读取本地文件：{error}"))?;
         let mut remote = sftp
-            .create(&part_path)
+            .open_with_flags(
+                &part_path,
+                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE,
+            )
             .await
             .map_err(|error| sftp_error(&part_path, error))?;
-        let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
-        let mut written: u64 = 0;
-        loop {
+        let result: Result<u64> = async {
+            let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
+            let mut written: u64 = 0;
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(anyhow!("已取消"));
+                }
+                let read = match local.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Err(anyhow!("读取本地文件失败：{error}"));
+                    }
+                };
+                if let Err(error) =
+                    tokio::io::AsyncWriteExt::write_all(&mut remote, &buffer[..read]).await
+                {
+                    return Err(anyhow!("上传失败：{error}"));
+                }
+                written += read as u64;
+                on_progress(written, total);
+            }
+            if let Err(error) = remote.shutdown().await {
+                return Err(anyhow!("上传未完成：{error}"));
+            }
             if cancel.load(Ordering::Relaxed) {
-                let _ = remote.shutdown().await;
-                let _ = sftp.remove_file(&part_path).await;
                 return Err(anyhow!("已取消"));
             }
-            let read = match local.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(error) => {
-                    let _ = sftp.remove_file(&part_path).await;
-                    return Err(anyhow!("读取本地文件失败（已清理临时文件）：{error}"));
-                }
-            };
-            if let Err(error) =
-                tokio::io::AsyncWriteExt::write_all(&mut remote, &buffer[..read]).await
-            {
-                let _ = sftp.remove_file(&part_path).await;
-                return Err(anyhow!("上传失败（已清理临时文件）：{error}"));
-            }
-            written += read as u64;
-            on_progress(written, total);
+            sftp.rename(&part_path, remote_path)
+                .await
+                .map_err(|error| sftp_error(remote_path, error))?;
+            Ok(written)
         }
-        if let Err(error) = remote.shutdown().await {
+        .await;
+        drop(remote);
+        if result.is_err() {
             let _ = sftp.remove_file(&part_path).await;
-            return Err(anyhow!("上传未完成（已清理临时文件）：{error}"));
         }
-        if let Err(error) = sftp.rename(&part_path, remote_path).await {
-            let _ = sftp.remove_file(&part_path).await;
-            return Err(sftp_error(remote_path, error));
-        }
-        Ok(written)
+        result
     }
 
-    /// 带取消的整文件下载：写 `<local>.bls-part` → 完成 → 原子改名。
+    /// 带取消的整文件下载：写同目录唯一临时文件 → 完成 → 原子改名。
     pub async fn download_to_path(
         &self,
         session_id: &str,
@@ -1225,51 +1236,55 @@ impl SshSessionManager {
             return Err(anyhow!("这是一个目录，暂不支持整目录下载任务"));
         }
 
-        let part = local_path.with_extension(format!(
-            "{}.bls-part",
-            local_path
-                .extension()
-                .map(|ext| ext.to_string_lossy().to_string())
-                .unwrap_or_default()
-        ));
-        let _ = tokio::fs::remove_file(&part).await;
+        let part = local_path.with_file_name(format!(".bls-part-{}", uuid::Uuid::new_v4()));
         let mut remote = sftp
             .open(&canonical)
             .await
             .map_err(|error| sftp_error(&canonical, error))?;
-        let mut local = tokio::fs::File::create(&part)
+        let mut local = tokio::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&part)
             .await
-            .map_err(|error| anyhow!("创建本地文件失败：{error}"))?;
+            .map_err(|error| anyhow!("创建本地临时文件失败：{error}"))?;
 
-        let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
-        let mut written: u64 = 0;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                let _ = local.shutdown().await;
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(anyhow!("已取消"));
-            }
-            let read = match tokio::io::AsyncReadExt::read(&mut remote, &mut buffer).await {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(error) => {
-                    let _ = tokio::fs::remove_file(&part).await;
-                    return Err(anyhow!("下载失败（已清理临时文件）：{error}"));
+        let written: Result<u64> = async {
+            let mut buffer = vec![0u8; UPLOAD_CHUNK_BYTES];
+            let mut written: u64 = 0;
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(anyhow!("已取消"));
                 }
-            };
-            if let Err(error) =
-                tokio::io::AsyncWriteExt::write_all(&mut local, &buffer[..read]).await
-            {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(anyhow!("写入本地文件失败（已清理临时文件）：{error}"));
+                let read = match tokio::io::AsyncReadExt::read(&mut remote, &mut buffer).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Err(anyhow!("下载失败：{error}"));
+                    }
+                };
+                if let Err(error) =
+                    tokio::io::AsyncWriteExt::write_all(&mut local, &buffer[..read]).await
+                {
+                    return Err(anyhow!("写入本地文件失败：{error}"));
+                }
+                written += read as u64;
+                on_progress(written, total);
             }
-            written += read as u64;
-            on_progress(written, total);
+            if let Err(error) = local.shutdown().await {
+                return Err(anyhow!("写入本地文件失败：{error}"));
+            }
+            Ok(written)
         }
-        if let Err(error) = local.shutdown().await {
-            let _ = tokio::fs::remove_file(&part).await;
-            return Err(anyhow!("写入本地文件失败（已清理临时文件）：{error}"));
-        }
+        .await;
+        // On Windows the handle must be closed before rename or cleanup.
+        drop(local);
+        let written = match written {
+            Ok(written) if !cancel.load(Ordering::Relaxed) => written,
+            result => {
+                let _ = tokio::fs::remove_file(&part).await;
+                return result.and_then(|_| Err(anyhow!("已取消")));
+            }
+        };
         if let Err(error) = tokio::fs::rename(&part, local_path).await {
             let _ = tokio::fs::remove_file(&part).await;
             return Err(anyhow!("无法替换目标文件：{error}"));

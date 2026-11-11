@@ -113,9 +113,10 @@ describe("FileRow size line", () => {
     expect(holder.textContent).not.toContain("Computing");
   });
 
-  it("renders an empty directory as 0 B", () => {
+  it("renders an empty directory as \"Empty folder\" instead of 0 B", () => {
+    // "0 B" 看起来像"没算 / 算错了"，尤其是刚删完文件的时候；明确说空目录。
     applyResult({ status: "completed", complete: true, calculatedAt: 200 });
-    expect(rowText(root, holder, entry())).toContain("0 B");
+    expect(rowText(root, holder, entry())).toContain("Empty folder");
   });
 
   it("does not claim 0 files when du reported bytes without a count", () => {

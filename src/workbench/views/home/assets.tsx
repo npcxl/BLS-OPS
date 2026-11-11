@@ -28,6 +28,7 @@ import type { DatabaseProfile } from "@/api/types/database";
 import type { ServerRecord } from "@/api/ops-api";
 import { engineMeta } from "@/workbench/views/database/db-engines";
 import { DbEngineIcon } from "@/workbench/views/database/DbEngineIcon";
+import { useEngineCatalog } from "@/workbench/views/database/useEngineCatalog";
 import { ListPanel, SectionHeading, SectionLink } from "./section";
 import { ServerHomeRow } from "./server-row";
 import type { ProjectAsset } from "./use-project-assets";
@@ -103,6 +104,12 @@ export function AssetsSection({
   onManageProjects,
 }: AssetsSectionProps) {
   const { t } = useTranslation();
+  /*
+   * 这里的资产列表要显示引擎名（MySQL / PostgreSQL …）。引擎目录只在数据库模块
+   * 里加载，首页不加载的话 `engineMeta()` 全部落到 UNKNOWN，五行连接都显示成
+   * "未知数据库"。开一个 hook 拉一次，加载完成后自动重渲染。
+   */
+  useEngineCatalog();
   const [tab, setTab] = useState<AssetTabId>("servers");
   const [query, setQuery] = useState("");
 
@@ -395,7 +402,10 @@ function DatabaseRow({
         {profile.name}
         <span className="ml-2 text-11 text-fg-subtle">{address}</span>
       </button>
-      <span className="hidden shrink-0 text-11 text-fg-subtle md:inline">{meta.label}</span>
+      {/* 目录还没回来 / 引擎 id 不认识时不硬编一个占位词，直接不显示。 */}
+      {meta.known && (
+        <span className="hidden shrink-0 text-11 text-fg-subtle md:inline">{meta.label}</span>
+      )}
       {connected === true ? (
         <span className="flex shrink-0 items-center gap-1 text-10 text-success">
           <span className="h-1 w-1 rounded-full bg-current" />

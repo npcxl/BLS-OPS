@@ -60,6 +60,14 @@ export function dirSizeSummary(result: DirectorySizeResult | undefined): string 
       return i18n.t("Computing…");
     case "completed":
     case "partial": {
+      /*
+       * 空目录：SFTP 不会报内容大小，这里算出 0 字节就说明里面确实什么都没有。
+       * 直接渲染 "0 B" 会让人以为"没算 / 算错了"（尤其是刚删完文件的时候），
+       * 用一句话说清楚。
+       */
+      if (result.status === "completed" && result.sizeBytes === 0 && result.fileCount === 0) {
+        return i18n.t("Empty folder");
+      }
       const parts = [formatSize(result.sizeBytes)];
       if (result.fileCount > 0) {
         parts.push(i18n.t("{{name}} files", { name: formatCount(result.fileCount) }));

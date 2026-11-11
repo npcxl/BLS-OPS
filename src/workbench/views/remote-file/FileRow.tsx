@@ -129,6 +129,15 @@ export const FileRow = memo(function FileRow({
       )}
       onClick={() => onSelect(entry)}
       onDoubleClick={() => onOpen(entry)}
+      /*
+       * 鼠标按下**不抢焦点**。
+       *
+       * `<button>` 获得焦点时浏览器会把元素滚进可视区：行只露出一半时点一下，
+       * 列表会"跳"一下，第二下双击就落到位移后的另一行上（用户反馈的
+       * 「选中后跳动、双击点到别的文件」）。这里阻止焦点转移，点击与双击照常；
+       * 键盘用户仍可用 Tab 聚焦（focus-visible 样式保留）。
+       */
+      onMouseDown={(event) => event.preventDefault()}
       onContextMenu={(event) => onContextMenu(event, entry)}
     >
       <EntryIcon entry={entry} />

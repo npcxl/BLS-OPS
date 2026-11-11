@@ -110,7 +110,9 @@ export function engineDescriptor(id: DbEngine | string): EngineDescriptor | null
 }
 
 const UNKNOWN: Omit<DbEngineMeta, "id"> = {
-  label: "未知数据库",
+  // 引擎目录还没加载完、或 id 完全不在目录里时的兜底。用中性英文而不是
+  // "未知数据库"：这条会被直接渲染到列表里，中文界面出现它反而像 bug。
+  label: "Unknown database",
   defaultPort: 0,
   transport: "network",
   supported: false,

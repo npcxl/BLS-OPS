@@ -19,6 +19,8 @@ import { DIRECTORY_SIZE_EVENT, type DirectorySizeResult } from "@/api/ops-api";
 interface DirSizeState {
   /** sessionId + "::" + path -> latest result. */
   results: Record<string, DirectorySizeResult>;
+  /** 需要强制重算的路径（key 与 results 一致）。 */
+  stale: Record<string, true>;
   /** Whether the global event listener is attached. */
   listening: boolean;
   /** Detaches the event listener (called on app teardown). */
@@ -32,6 +34,20 @@ interface DirSizeState {
   ensureListening: () => Promise<void>;
   /** Drops every cached result for a session (on disconnect). */
   forgetSession: (sessionId: string) => void;
+  /**
+   * Drops the cached size of `parent` and its direct children, and marks them
+   * stale so the next computation asks the backend for a **fresh** `du`
+   * (otherwise the backend's own cache would just replay the old number).
+   *
+   * 只清一层：一次刷新把整棵树的 `du` 全部重跑太重。
+   */
+  invalidateUnder: (sessionId: string, parent: string) => void;
+  /**
+   * Reads and clears the stale mark for a path.
+   *
+   * `true` 表示"这个目录刚被标脏，必须带 force 重算"。
+   */
+  consumeStale: (sessionId: string, path: string) => boolean;
 }
 
 /**
@@ -63,6 +79,7 @@ let listenerPromise: Promise<void> | null = null;
 
 export const useDirSizeStore = create<DirSizeState>()((set, get) => ({
   results: {},
+  stale: {},
   listening: false,
   unlisten: null,
 
@@ -117,4 +134,39 @@ export const useDirSizeStore = create<DirSizeState>()((set, get) => ({
       }
       return { results: next };
     }),
+
+  invalidateUnder: (sessionId, parent) =>
+    set((state) => {
+      const base = normalizeRemotePath(parent);
+      const prefix = base === "/" ? "/" : `${base}/`;
+      const next: Record<string, DirectorySizeResult> = {};
+      let stale: Record<string, true> | null = null;
+      let removed = 0;
+      for (const [key, value] of Object.entries(state.results)) {
+        if (value.sessionId !== sessionId) {
+          next[key] = value;
+          continue;
+        }
+        const path = normalizeRemotePath(value.path);
+        const directChild = path.startsWith(prefix) && !path.slice(prefix.length).includes("/");
+        if (path === base || directChild) {
+          removed += 1;
+          stale = { ...(stale ?? state.stale), [key]: true };
+          continue;
+        }
+        next[key] = value;
+      }
+      return removed > 0 ? { results: next, stale: stale ?? state.stale } : state;
+    }),
+
+  consumeStale: (sessionId, path) => {
+    const key = keyOf(sessionId, path);
+    if (!get().stale[key]) return false;
+    set((state) => {
+      const next = { ...state.stale };
+      delete next[key];
+      return { stale: next };
+    });
+    return true;
+  },
 }));

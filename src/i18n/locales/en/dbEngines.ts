@@ -6,6 +6,16 @@
  * 中文界面命中不到 key 时 i18next 原样返回中文原文 —— 所以这里只需补英文。
  */
 export default {
+  // -- 连接表单里按引擎变化的字段名与占位符 --
+  "数据库文件路径": "Database file path",
+  "服务名 / SID": "Service name / SID",
+  "数据库名": "Database name",
+  "例如 postgres": "e.g. postgres",
+  "例如 ORCLPDB1": "e.g. ORCLPDB1",
+  "例如 master": "e.g. master",
+  "留空 = db 0；cluster 模式忽略": "Empty = db 0; ignored in cluster mode",
+  "未知的数据库类型：请重新选择": "Unknown database type; pick another one",
+
   // -- 新建连接里可见的引擎（note）--
   "原生协议（mysql_async），支持 TLS、服务端取消、事务与 DDL":
     "Native protocol (mysql_async) with TLS, server-side cancel, transactions and DDL",

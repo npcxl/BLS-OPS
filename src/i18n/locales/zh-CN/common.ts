@@ -83,10 +83,10 @@ export default {
   RequiredField: "此项为必填项",
 
   // -- 时间 --
-  JustNow: "刚刚",
-  MinutesAgo: "{{count}} 分钟前",
-  HoursAgo: "{{count}} 小时前",
-  DaysAgo: "{{count}} 天前",
+  "Just now": "刚刚",
+  "{{count}} minutes ago": "{{count}} 分钟前",
+  "{{count}} hours ago": "{{count}} 小时前",
+  "{{count}} days ago": "{{count}} 天前",
   // formatUptime（lib/format.ts）的时长段
   "{{days}}d {{hours}}h": "{{days}} 天 {{hours}} 小时",
   "{{hours}}h {{minutes}}m": "{{hours}} 小时 {{minutes}} 分",

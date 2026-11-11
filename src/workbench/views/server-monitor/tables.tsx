@@ -1,9 +1,18 @@
 import { useTranslation } from "react-i18next";
+import { HardDrive } from "@/components/icons";
 import type { DiskMetrics, NetworkMetrics, ProcessInfo } from "@/api/ops-api";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatBytes, formatSpeed } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { usageTone } from "./MetricCard";
+
+/** 常见挂载点的用途说明：只映射**确定语义**的路径，其余留空，不猜。 */
+function mountHint(path: string, t: (key: string) => string): string | undefined {
+  if (path === "/") return t("系统根分区");
+  if (path === "/boot" || path === "/boot/efi") return t("引导分区");
+  if (path === "/home") return t("用户主目录");
+  return undefined;
+}
 
 export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
   const { t } = useTranslation();
@@ -29,32 +38,47 @@ export function DiskTable({ disks }: { disks: DiskMetrics[] }) {
             t("Avail"),
             t("Usage"),
           ].map((head) => (
-            <th key={head}>{head}</th>
+            <th key={head} className="whitespace-nowrap">
+              {head}
+            </th>
           ))}
         </tr>
       </thead>
       <tbody>
-        {disks.map((disk) => (
-          <tr key={`${disk.device}-${disk.mount_point}`} className="border-t border-line/70">
-            <td className="font-mono text-fg">{disk.mount_point}</td>
-            <td className="font-mono text-fg-muted">{disk.device}</td>
-            <td className="text-fg-muted">{disk.filesystem}</td>
-            <td className="text-fg-muted">{formatBytes(disk.total)}</td>
-            <td className="text-fg-muted">{formatBytes(disk.used)}</td>
-            <td className="text-fg-muted">{formatBytes(disk.available)}</td>
-            <td>
-              <div className="flex items-center gap-1.5">
-                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-3">
-                  <div
-                    className={cn("h-full rounded-full", usageTone(disk.usage_percent))}
-                    style={{ width: `${Math.min(100, Math.max(0, disk.usage_percent))}%` }}
-                  />
+        {disks.map((disk) => {
+          const hint = mountHint(disk.mount_point, t);
+          return (
+            <tr key={`${disk.device}-${disk.mount_point}`} className="border-t border-line/70">
+              <td className="whitespace-nowrap">
+                <div className="flex items-center gap-1.5">
+                  <HardDrive size={11} strokeWidth={1.75} className="shrink-0 text-fg-subtle" />
+                  <span className="font-mono text-fg">{disk.mount_point}</span>
+                  {hint && <span className="text-10 text-fg-subtle">({hint})</span>}
                 </div>
-                <span className="font-mono text-fg">{disk.usage_percent.toFixed(1)}%</span>
-              </div>
-            </td>
-          </tr>
-        ))}
+              </td>
+              <td className="whitespace-nowrap font-mono text-fg-muted">{disk.device}</td>
+              <td className="text-fg-muted">{disk.filesystem}</td>
+              <td className="whitespace-nowrap font-mono text-fg-muted">{formatBytes(disk.total)}</td>
+              <td className="whitespace-nowrap font-mono text-fg-muted">{formatBytes(disk.used)}</td>
+              <td className="whitespace-nowrap font-mono text-fg-muted">
+                {formatBytes(disk.available)}
+              </td>
+              <td>
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-surface-3">
+                    <div
+                      className={cn("h-full rounded-full", usageTone(disk.usage_percent))}
+                      style={{ width: `${Math.min(100, Math.max(0, disk.usage_percent))}%` }}
+                    />
+                  </div>
+                  <span className="w-11 shrink-0 text-right font-mono text-fg">
+                    {disk.usage_percent.toFixed(1)}%
+                  </span>
+                </div>
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

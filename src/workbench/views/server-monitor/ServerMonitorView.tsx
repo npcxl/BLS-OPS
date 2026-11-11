@@ -46,7 +46,7 @@ import { cn } from "@/lib/cn";
 import { formatBytes, formatSpeed, formatUptime } from "@/lib/format";
 import { sshClosedEvent } from "@/lib/events";
 import { TrendChart } from "./TrendChart";
-import { MetricCard } from "./MetricCard";
+import { MetricCard, usageMetricTone } from "./MetricCard";
 import { DiskTable, NetworkTable, ProcessTable } from "./tables";
 import { MonitorPicker } from "./MonitorPicker";
 import { isTabVisibleInPanes, usePageVisible } from "./hooks";
@@ -246,6 +246,14 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
     );
   }, [snapshot]);
 
+  /** 明细表底部：挂载设备数与容量聚合利用率（跨分区求和，仅作总览参考）。 */
+  const diskAggregate = useMemo(() => {
+    const list = snapshot?.disks ?? [];
+    const total = list.reduce((sum, disk) => sum + disk.total, 0);
+    const used = list.reduce((sum, disk) => sum + disk.used, 0);
+    return { count: list.length, percent: total > 0 ? (used / total) * 100 : 0 };
+  }, [snapshot]);
+
   useEffect(() => {
     if (!pollingEnabled) return;
 
@@ -407,15 +415,32 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
            * 1440 以内保持四列，再宽也不会继续摊开。
            */
           <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4">
-            {/* Metric cards */}
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            {/* Metric cards：小屏 1 列、中屏 2 列、宽屏 4 列 */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
                 icon={Cpu}
                 label={t("CPU usage")}
                 value={cpu ? cpu.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={cpu?.usage_percent}
-                detail={cpu ? t("{{count}} logical cores", { count: cpu.logical_cores }) : t("Waiting for data")}
+                tone={cpu ? usageMetricTone(cpu.usage_percent) : "accent"}
+                badge={
+                  cpu
+                    ? {
+                        text:
+                          cpu.usage_percent >= 85
+                            ? t("偏高")
+                            : cpu.usage_percent >= 70
+                              ? t("负载适中")
+                              : t("正常"),
+                        tone: usageMetricTone(cpu.usage_percent),
+                      }
+                    : undefined
+                }
+                detail={
+                  cpu ? t("{{count}} 个逻辑核心", { count: cpu.logical_cores }) : t("Waiting for data")
+                }
+                meta={cpu ? `load ${cpu.load_1.toFixed(2)}` : undefined}
               />
               <MetricCard
                 icon={MemoryStick}
@@ -423,17 +448,32 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 value={memory ? memory.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={memory?.usage_percent}
+                tone={memory ? usageMetricTone(memory.usage_percent) : "accent"}
+                badge={
+                  memory
+                    ? {
+                        text:
+                          memory.usage_percent >= 85
+                            ? t("偏高")
+                            : memory.usage_percent >= 70
+                              ? t("负载适中")
+                              : t("正常"),
+                        tone: usageMetricTone(memory.usage_percent),
+                      }
+                    : undefined
+                }
                 detail={
                   memory
-                    ? `${t("{{used}} / {{total}}", {
+                    ? t("{{used}} / {{total}}", {
                         used: formatBytes(memory.used),
                         total: formatBytes(memory.total),
-                      })}${
-                        memory.swap_total > 0
-                          ? t(" · swap {{size}}", { size: formatBytes(memory.swap_used) })
-                          : ""
-                      }`
+                      })
                     : t("Waiting for data")
+                }
+                meta={
+                  memory && memory.swap_total > 0
+                    ? `swap ${formatBytes(memory.swap_used)}`
+                    : undefined
                 }
               />
               <MetricCard
@@ -442,15 +482,42 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 value={fullestDisk ? fullestDisk.usage_percent.toFixed(1) : "—"}
                 unit="%"
                 percent={fullestDisk?.usage_percent}
+                tone={
+                  fullestDisk
+                    ? fullestDisk.usage_percent >= 92
+                      ? "danger"
+                      : fullestDisk.usage_percent >= 85
+                        ? "warning"
+                        : "accent"
+                    : "accent"
+                }
+                badge={
+                  fullestDisk
+                    ? {
+                        text:
+                          fullestDisk.usage_percent >= 92
+                            ? t("空间紧张")
+                            : fullestDisk.usage_percent >= 85
+                              ? t("接近阈值")
+                              : t("空间充裕"),
+                        tone:
+                          fullestDisk.usage_percent >= 92
+                            ? "danger"
+                            : fullestDisk.usage_percent >= 85
+                              ? "warning"
+                              : "accent",
+                      }
+                    : undefined
+                }
                 detail={
                   fullestDisk
-                    ? t("Highest: {{mount}} · {{count}} filesystems", {
-                        mount: fullestDisk.mount_point,
-                        count: snapshot?.disks.length ?? 0,
-                      })
+                    ? t("最高：{{mount}}", { mount: fullestDisk.mount_point })
                     : snapshot
                       ? t("No filesystems detected")
                       : t("Waiting for data")
+                }
+                meta={
+                  snapshot ? t("{{count}} 个文件系统", { count: snapshot.disks.length }) : undefined
                 }
               />
               <MetricCard
@@ -461,15 +528,34 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 percent={
                   cpu && cpu.logical_cores > 0 ? (cpu.load_1 / cpu.logical_cores) * 100 : undefined
                 }
+                tone="ai"
+                badge={
+                  cpu && cpu.logical_cores > 0
+                    ? {
+                        text:
+                          cpu.load_1 / cpu.logical_cores >= 1
+                            ? t("偏高")
+                            : cpu.load_1 / cpu.logical_cores >= 0.7
+                              ? t("负载适中")
+                              : t("轻度"),
+                        tone:
+                          cpu.load_1 / cpu.logical_cores >= 1
+                            ? "warning"
+                            : cpu.load_1 / cpu.logical_cores >= 0.7
+                              ? "success"
+                              : "ai",
+                      }
+                    : undefined
+                }
                 detail={
                   cpu
-                    ? t("5m {{five}} · 15m {{fifteen}} · {{count}} cores", {
+                    ? t("5 分钟 {{five}} · 15 分钟 {{fifteen}}", {
                         five: cpu.load_5.toFixed(2),
                         fifteen: cpu.load_15.toFixed(2),
-                        count: cpu.logical_cores,
                       })
                     : t("Waiting for data")
                 }
+                meta={cpu ? t("{{count}} 核", { count: cpu.logical_cores }) : undefined}
               />
             </div>
 
@@ -500,11 +586,16 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
             )}
 
             {/* Trends — 30 minutes */}
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <TrendChart
                 title={t("CPU usage")}
-                value={`${(cpu?.usage_percent ?? 0).toFixed(1)}%`}
-                detail={t("{{count}} samples", { count: entry?.history.length ?? 0 })}
+                value={(cpu?.usage_percent ?? 0).toFixed(1)}
+                unit="%"
+                badge={{
+                  text: t("{{count}} 个样本", { count: entry?.history.length ?? 0 }),
+                  tone: "accent",
+                }}
+                detail={t("峰值 {{value}}%", { value: (cpu?.usage_percent ?? 0).toFixed(1) })}
                 points={entry?.history ?? []}
                 pick={(point) => point.cpu}
                 max={100}
@@ -512,8 +603,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               />
               <TrendChart
                 title={t("Memory usage")}
-                value={`${(memory?.usage_percent ?? 0).toFixed(1)}%`}
-                detail={memory ? t("{{size}} available", { size: formatBytes(memory.available) }) : ""}
+                value={(memory?.usage_percent ?? 0).toFixed(1)}
+                unit="%"
+                badge={{ text: t("平稳"), tone: "success" }}
+                detail={memory ? t("可用 {{size}}", { size: formatBytes(memory.available) }) : ""}
                 points={entry?.history ?? []}
                 pick={(point) => point.memory}
                 max={100}
@@ -522,7 +615,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               <TrendChart
                 title={t("Download")}
                 value={formatSpeed(throughput.download)}
-                detail={t("All non-loopback interfaces")}
+                badge={{ text: t("入网流量"), tone: "ai" }}
+                detail={t("所有非回环网卡")}
                 points={entry?.history ?? []}
                 pick={(point) => point.download}
                 max={1}
@@ -531,7 +625,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               <TrendChart
                 title={t("Upload")}
                 value={formatSpeed(throughput.upload)}
-                detail={t("All non-loopback interfaces")}
+                badge={{ text: t("出网流量"), tone: "warning" }}
+                detail={t("所有非回环网卡")}
                 points={entry?.history ?? []}
                 pick={(point) => point.upload}
                 max={1}
@@ -569,6 +664,30 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 {detail === "disk" && <DiskTable disks={snapshot?.disks ?? []} />}
                 {detail === "network" && <NetworkTable network={snapshot?.network ?? []} />}
                 {detail === "process" && <ProcessTable processes={snapshot?.processes ?? []} />}
+              </div>
+              {/* 底部汇总：图例 + 聚合利用率 + 最后采集时间 */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-3 py-1.5 text-10 text-fg-subtle">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="flex items-center gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                    {t("空间健康")}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+                    {t("预警阈值 ≥85%")}
+                  </span>
+                  <span>
+                    {t("挂载设备 {{count}} · 聚合利用率 {{percent}}%", {
+                      count: diskAggregate.count,
+                      percent: diskAggregate.percent.toFixed(1),
+                    })}
+                  </span>
+                </div>
+                <span>
+                  {t("最后检查 {{time}}", {
+                    time: formatClock(entry?.lastUpdatedAt ?? null),
+                  })}
+                </span>
               </div>
             </div>
           </div>

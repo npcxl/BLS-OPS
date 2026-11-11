@@ -35,6 +35,33 @@ export default {
   "Up {{time}}": "已运行 {{time}}",
   "5m {{five}} · 15m {{fifteen}} · {{count}} cores":
     "5 分钟 {{five}} · 15 分钟 {{fifteen}} · {{count}} 核",
+  "5m {{five}} · 15m {{fifteen}}": "5 分钟 {{five}} · 15 分钟 {{fifteen}}",
+  "{{count}} cores": "{{count}} 核",
+  "{{count}} logical cores (legacy)": "{{count}} 个逻辑核心",
+  "Highest: {{mount}}": "最高：{{mount}}",
+  "{{count}} filesystems": "{{count}} 个文件系统",
+  "{{count}} devices · {{percent}}% aggregate": "挂载设备 {{count}} · 聚合利用率 {{percent}}%",
+  "Last checked {{time}}": "最后检查 {{time}}",
+  "Peak {{value}}%": "峰值 {{value}}%",
+
+  // -- 状态徽章 --
+  Normal: "正常",
+  Moderate: "负载适中",
+  High: "偏高",
+  Light: "轻度",
+  Comfortable: "空间充裕",
+  Tight: "空间紧张",
+  "Near limit": "接近阈值",
+  Steady: "平稳",
+  Inbound: "入网流量",
+  Outbound: "出网流量",
+  Healthy: "空间健康",
+  "Warning at ≥85%": "预警阈值 ≥85%",
+
+  // -- 磁盘用途 --
+  "System root": "系统根分区",
+  "Boot partition": "引导分区",
+  "Home directory": "用户主目录",
 
   // -- 趋势图 --
   "Last 30 minutes": "最近 30 分钟",

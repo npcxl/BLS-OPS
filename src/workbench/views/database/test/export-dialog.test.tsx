@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@/i18n";
+import "./zh-setup";
 import { ExportDialog } from "../ExportDialog";
 import { exportFileName } from "../export-formats";
 

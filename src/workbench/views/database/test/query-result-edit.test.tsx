@@ -1,4 +1,5 @@
 import "@/i18n";
+import "./zh-setup";
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";

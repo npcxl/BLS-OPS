@@ -323,10 +323,5 @@ describe("标签在 zh-CN 里有译文", () => {
     expect(missing.join("\n")).toBe("");
   });
 
-  it("zh-TW 同样有译文", async () => {
-    await i18n.changeLanguage("zh-TW");
-    const missing = missingLabels("zh-TW").split("\n").slice(1);
-    expect(missing.join("\n")).toBe("");
-    await i18n.changeLanguage("zh-CN");
-  });
+  // zh-TW 已随多语言精简移除，只保留中文（简体）与英文。
 });

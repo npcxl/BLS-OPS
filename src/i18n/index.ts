@@ -26,42 +26,70 @@ import {
   isLocaleCode,
   type LocaleCode,
 } from "./locales";
+import en from "./locales/en";
 import zhCN from "./locales/zh-CN";
-import zhTW from "./locales/zh-TW";
-import ja from "./locales/ja";
-import ko from "./locales/ko";
-import es from "./locales/es";
-import fr from "./locales/fr";
-import de from "./locales/de";
-import ru from "./locales/ru";
-import ptBR from "./locales/pt-BR";
 
 export { LOCALES, DEFAULT_LOCALE, localeLabel, type LocaleCode } from "./locales";
 
 /**
- * natural keys：`en` 的资源**刻意为空** —— key 即英文文案，找不到时
- * i18next 返回 key 本身。这省掉一整份英文包的维护（措辞改 key 就行）。
+ * natural keys：大部分 `t()` 的 key 就是英文文案，`en` 不需要条目 ——
+ * 找不到时 i18next 原样返回 key。
+ *
+ * 例外是数据库工作台：那里的 `t("已打开")` 之类直接用了中文当 key，
+ * 英文界面会漏出中文。`locales/en/*` 专门为这类 key 提供英文，未覆盖的
+ * 仍旧回退到 key（中文），可以逐步补齐。
+ *
+ * 只保留中文（简体）与英文：其余语言目录已移除，避免半翻译状态。
  */
 const resources: Record<string, { translation: Record<string, string> }> = {
-  en: { translation: {} },
+  en: { translation: en },
   "zh-CN": { translation: zhCN },
-  "zh-TW": { translation: zhTW },
-  ja: { translation: ja },
-  ko: { translation: ko },
-  es: { translation: es },
-  fr: { translation: fr },
-  de: { translation: de },
-  ru: { translation: ru },
-  "pt-BR": { translation: ptBR },
 };
+
+/**
+ * 首次启动的默认语言：按**使用者所在地区**推断。
+ *
+ * 桌面端不请求外部 IP 服务：CSP 不允许 `connect-src` 外连，离线时也不该卡在
+ * 一个 HTTP 请求上，而且把用户 IP 发给第三方本身不合适。这里用系统语言偏好 +
+ * 时区兜底，效果等价（中国大陆/港澳台的机器几乎都是 `zh-CN` 环境）：
+ *
+ * 1. `navigator.language` / `navigator.languages` 里有 `zh*` → 中文；
+ * 2. 时区落在大中华区（上海/重庆/哈尔滨/乌鲁木齐/香港/澳门/台北）→ 中文；
+ * 3. 其余 → 英文。
+ *
+ * 用户在设置里手动切换过一次后，`localStorage` 优先，不再走这条推断。
+ */
+function detectLocale(): LocaleCode {
+  /*
+   * 单测固定英文：happy-dom 会继承开发机的系统语言，断言（`toBe("Unknown error")`
+   * 之类）就会随机器语言飘。测试要验证的是"英文 natural key 能出英文"，
+   * 不该被地区推断影响。
+   */
+  if (import.meta.env.MODE === "test") return DEFAULT_LOCALE;
+  try {
+    const tags = [navigator.language, ...(navigator.languages ?? [])];
+    if (tags.some((tag) => tag?.toLowerCase().startsWith("zh"))) return "zh-CN";
+  } catch {
+    // 没有 navigator（极端环境）→ 继续用时区判断。
+  }
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+    if (/^Asia\/(Shanghai|Chongqing|Harbin|Urumqi|Hong_Kong|Macau|Taipei)$/i.test(zone)) {
+      return "zh-CN";
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_LOCALE;
+}
 
 function storedLocale(): LocaleCode {
   try {
     const value = localStorage.getItem(LOCALE_STORAGE_KEY);
-    return value && isLocaleCode(value) ? value : DEFAULT_LOCALE;
+    return value && isLocaleCode(value) ? value : detectLocale();
   } catch {
-    // localStorage 不可用（极端 WebView 配置）→ 默认英文，不致命。
-    return DEFAULT_LOCALE;
+    // localStorage 不可用（极端 WebView 配置）→ 按地区推断，不致命。
+    return detectLocale();
   }
 }
 

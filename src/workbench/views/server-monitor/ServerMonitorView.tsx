@@ -432,10 +432,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     ? {
                         text:
                           cpu.usage_percent >= 85
-                            ? t("偏高")
+                            ? t("High")
                             : cpu.usage_percent >= 70
-                              ? t("负载适中")
-                              : t("正常"),
+                              ? t("Moderate")
+                              : t("Normal"),
                         tone: usageMetricTone(cpu.usage_percent),
                       }
                     : undefined
@@ -457,10 +457,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     ? {
                         text:
                           memory.usage_percent >= 85
-                            ? t("偏高")
+                            ? t("High")
                             : memory.usage_percent >= 70
-                              ? t("负载适中")
-                              : t("正常"),
+                              ? t("Moderate")
+                              : t("Normal"),
                         tone: usageMetricTone(memory.usage_percent),
                       }
                     : undefined
@@ -499,10 +499,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     ? {
                         text:
                           fullestDisk.usage_percent >= 92
-                            ? t("空间紧张")
+                            ? t("Tight")
                             : fullestDisk.usage_percent >= 85
-                              ? t("接近阈值")
-                              : t("空间充裕"),
+                              ? t("Near limit")
+                              : t("Comfortable"),
                         tone:
                           fullestDisk.usage_percent >= 92
                             ? "danger"
@@ -537,10 +537,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     ? {
                         text:
                           cpu.load_1 / cpu.logical_cores >= 1
-                            ? t("偏高")
+                            ? t("High")
                             : cpu.load_1 / cpu.logical_cores >= 0.7
-                              ? t("负载适中")
-                              : t("轻度"),
+                              ? t("Moderate")
+                              : t("Light"),
                         tone:
                           cpu.load_1 / cpu.logical_cores >= 1
                             ? "warning"
@@ -609,7 +609,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 title={t("Memory usage")}
                 value={(memory?.usage_percent ?? 0).toFixed(1)}
                 unit="%"
-                badge={{ text: t("平稳"), tone: "success" }}
+                badge={{ text: t("Steady"), tone: "success" }}
                 detail={memory ? t("可用 {{size}}", { size: formatBytes(memory.available) }) : ""}
                 points={entry?.history ?? []}
                 pick={(point) => point.memory}
@@ -620,8 +620,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               <TrendChart
                 title={t("Download")}
                 value={formatSpeed(throughput.download)}
-                badge={{ text: t("入网流量"), tone: "ai" }}
-                detail={t("所有非回环网卡")}
+                badge={{ text: t("Inbound"), tone: "ai" }}
+                detail={t("All non-loopback interfaces")}
                 points={entry?.history ?? []}
                 pick={(point) => point.download}
                 max={1}
@@ -631,8 +631,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
               <TrendChart
                 title={t("Upload")}
                 value={formatSpeed(throughput.upload)}
-                badge={{ text: t("出网流量"), tone: "warning" }}
-                detail={t("所有非回环网卡")}
+                badge={{ text: t("Outbound"), tone: "warning" }}
+                detail={t("All non-loopback interfaces")}
                 points={entry?.history ?? []}
                 pick={(point) => point.upload}
                 max={1}
@@ -677,11 +677,11 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="flex items-center gap-1">
                     <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    {t("空间健康")}
+                    {t("Healthy")}
                   </span>
                   <span className="flex items-center gap-1">
                     <span className="h-1.5 w-1.5 rounded-full bg-warning" />
-                    {t("预警阈值 ≥85%")}
+                    {t("Warning at ≥85%")}
                   </span>
                   <span>
                     {t("挂载设备 {{count}} · 聚合利用率 {{percent}}%", {

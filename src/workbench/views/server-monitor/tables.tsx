@@ -8,9 +8,9 @@ import { usageTone } from "./MetricCard";
 
 /** 常见挂载点的用途说明：只映射**确定语义**的路径，其余留空，不猜。 */
 function mountHint(path: string, t: (key: string) => string): string | undefined {
-  if (path === "/") return t("系统根分区");
-  if (path === "/boot" || path === "/boot/efi") return t("引导分区");
-  if (path === "/home") return t("用户主目录");
+  if (path === "/") return t("System root");
+  if (path === "/boot" || path === "/boot/efi") return t("Boot partition");
+  if (path === "/home") return t("Home directory");
   return undefined;
 }
 

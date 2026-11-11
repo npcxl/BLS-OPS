@@ -1,9 +1,18 @@
-# BLS-OPS
+<div align="center">
 
-**SSH 优先的桌面运维工作台** —— 连上服务器之后，终端、监控、服务、文件、数据库都在同一个窗口里。
+<h1>Ops Workbench</h1>
+
+### BLS-OPS
+
+**SSH 优雅的桌面运维工作台** —— 连上服务器之后，终端、监控、服务、文件、数据库都在同一个窗口里。
+
 **An SSH-first desktop operations workbench** — terminal, monitoring, services, files and databases in one window.
 
-官网 [ops.xlcig.cn](https://ops.xlcig.cn) · 下载 [Releases](https://github.com/npcxl/BLS-OPS/releases) · [MIT](LICENSE)
+[官网 Website](https://ops.xlcig.cn) ·
+[下载 Download](https://github.com/npcxl/BLS-OPS/releases) ·
+[MIT](LICENSE)
+
+</div>
 
 ---
 

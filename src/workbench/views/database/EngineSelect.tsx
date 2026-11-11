@@ -64,7 +64,15 @@ export function EngineSelect({
       const below = window.innerHeight - rect.bottom - 14;
       const above = rect.top - 14;
       const up = below < 260 && above > below;
-      const width = Math.min(340, window.innerWidth - 24);
+      /*
+       * 宽度**跟随触发按钮**：以前固定 340px，按钮却有 600+，面板里每行
+       * 说明都被 "…" 截断，看起来像"下拉内容比下拉框窄了一大截"。
+       * 下限 340（再窄说明读不全），上限 640（再宽一行文字太长不好读）。
+       */
+      const width = Math.min(
+        Math.max(rect.width, 340),
+        Math.min(640, window.innerWidth - 24),
+      );
       setPosition({ left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)), width,
         maxHeight: Math.max(40, Math.min(380, up ? above : below)),
         ...(up ? { bottom: window.innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),

@@ -96,6 +96,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // 原始异常：横幅统一解析成 阶段 / 摘要 / 详情（终端里只写摘要一行）。
   const [error, setError] = useState<unknown | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
   /*
    * 文件面板默认**不展开**：终端宽度优先留给命令输出（日志/表格动辄 100+ 列）。
    * 需要时从工具栏或右键菜单打开，开关状态按机器记住 —— 上次收起就保持收起。
@@ -357,10 +358,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** 记历史 + `cd` 跟随 —— 任何来源的执行都要留下痕迹。 */
   const noteExecutedCommand = useCallback(
     (command: string) => {
-      // 快速连接（只有 quickTarget、没有 serverId）也要记：否则下次重连，
-      // 历史面板按 server_id 过滤时会一片空白。
+      // 快速连接用完整目标标识，区分同主机的不同端口和用户。
       void opsApi
-        .recordHistory(sessionId, tab.serverId ?? "", tab.title, command)
+        .recordHistory(sessionId, tab.serverId ?? "", tab.quickTarget ?? tab.title, command)
+        .then(() => setHistoryRevision((revision) => revision + 1))
         .catch(() => undefined);
       // `cd` 跟踪：目标由**终端自己的 cwd** 解析（`resolveCd`，与 shell 同语义，
       // 支持 ~ / - / 相对路径），先记为"待定"，等真实退出码确认。
@@ -1228,6 +1229,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           <CommandHistoryPanel
             sessionId={sessionId}
             serverId={tab.serverId}
+            quickTarget={tab.quickTarget}
+            revision={historyRevision}
             onPick={(command) => {
               noteExecutedCommand(command);
               executeTerminalCommand(command, "history");

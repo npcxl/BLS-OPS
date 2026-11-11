@@ -358,6 +358,7 @@ export const useDatabaseWorkbenchStore = create<WorkbenchDbState>()((set, get) =
         profileId,
         statementIndex: index,
         statement,
+        sourceSql: pagination?.baseSql ?? statement,
         queryId: started.query_id,
         onUpdate: (updater) =>
           set((state) => {
@@ -533,6 +534,7 @@ interface DrainArgs {
   profileId: string;
   statementIndex: number;
   statement: string;
+  sourceSql: string;
   queryId: string;
   onUpdate: (updater: (tab: DatabaseTabState) => DatabaseTabState) => void;
 }
@@ -573,8 +575,8 @@ async function drainQuery(args: DrainArgs): Promise<{
             key: payload.result_set_id,
             statementIndex: args.statementIndex,
             resultSetIndex: payload.index,
-            statement: payload.statement || args.statement,
-            sourceSql: args.statement,
+            statement: args.sourceSql === args.statement ? payload.statement || args.statement : args.sourceSql,
+            sourceSql: args.sourceSql,
             sessionId: args.sessionId,
             generation: args.generation,
             columns: payload.columns,

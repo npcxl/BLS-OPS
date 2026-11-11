@@ -54,6 +54,7 @@ import {
 import { formatSql } from "./sql-format";
 import { openDetachedSqlWindow } from "./detached-sql";
 import { completionDialect, createSqlCompletion } from "./sql-completion";
+import { selectPaginationMode } from "./query-edit-plan";
 import "./sql-completion.css";
 
 const EMPTY_DATABASES: DbDatabase[] = [];
@@ -62,25 +63,27 @@ const EMPTY_DATABASES: DbDatabase[] = [];
 const PAGE_SIZE = 1_000;
 
 /**
- * 只有**单条只读 SELECT / WITH** 才能安全地用外层 `LIMIT n OFFSET m` 分页。
+ * 只有单条只读 SELECT / WITH 才尝试 SQL 分页。
  *
  * 多语句、写操作、`FOR UPDATE`、`INTO OUTFILE` 都不能包进派生表；这些场景
  * 仍然一次性执行，靠展示预算兜底。
  */
-export function pageableSql(statements: string[]): string | null {
+export function pageableSql(statements: string[], engine?: string): string | null {
   if (statements.length !== 1) return null;
   const statement = statements[0].trim().replace(/;\s*$/, "");
   const bare = statement
     .replace(/^(?:\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)*/, "")
     .trim();
   if (!/^(select|with)\b/i.test(bare)) return null;
-  if (/\bfor\s+update\b|\binto\s+(outfile|dumpfile)\b/i.test(bare)) return null;
+  if (/\bfor\s+(?:update|no\s+key\s+update|share|key\s+share)\b|\block\s+in\s+share\s+mode\b|\binto\s+(?:outfile|dumpfile)\b/i.test(bare)) return null;
+  if (engine && selectPaginationMode(statement, engine) === "explicit") return null;
   return statement;
 }
 
-/** 外层分页：`SELECT * FROM (<原语句>) AS __ops_page LIMIT n OFFSET m`。 */
-export function wrapPageSql(baseSql: string, pageSize: number, offset: number): string {
+/** 无行数限制的单表查询直接分页，以保留列来源。 */
+export function wrapPageSql(baseSql: string, pageSize: number, offset: number, engine?: string): string {
   const bare = baseSql.trim().replace(/;\s*$/, "");
+  if (engine && selectPaginationMode(bare, engine) === "append") return `${bare}\nLIMIT ${pageSize} OFFSET ${offset}`;
   return `SELECT * FROM (${bare}) AS __ops_page LIMIT ${pageSize} OFFSET ${offset}`;
 }
 
@@ -111,6 +114,7 @@ export function SqlWorkspace({
   );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const [hasSelection, setHasSelection] = useState(false);
   const [editorHeight, setEditorHeight] = useState(236);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -288,8 +292,9 @@ export function SqlWorkspace({
       statements: string[],
       page?: { baseSql: string; pageSize: number; offset: number } | null,
     ) => {
-      if (!session) return;
-      if (useDatabaseWorkbenchStore.getState().tabs[tabId]?.pendingResultEdits) {
+      if (!session || running || cancelling || switchingDb) return;
+      const current = useDatabaseWorkbenchStore.getState().tabs[tabId];
+      if (current?.pendingResultEdits || current?.resultWriteInFlight) {
         setNotice(t("请先应用或还原结果修改，再重新运行查询"));return;
       }
       // 共享会话可能已被另一个查询页切库；执行前把当前页的库显式切回来。
@@ -315,7 +320,7 @@ export function SqlWorkspace({
           : null,
       });
     },
-    [contextDatabase, profile.id, runStatements, session, switchDatabase, tabId],
+    [cancelling, contextDatabase, profile.id, running, runStatements, session, switchDatabase, switchingDb, tabId],
   );
 
   /**
@@ -326,8 +331,9 @@ export function SqlWorkspace({
    */
   const execute = useCallback(
     async (scope: "auto" | "all" = "auto") => {
-      if (!session) return;
+      if (!session || running || cancelling || switchingDb) return;
       const view = viewRef.current;
+      const document = view?.state.doc.toString() ?? sqlText;
       const selection = view
         ? view.state
             .sliceDoc(
@@ -340,8 +346,8 @@ export function SqlWorkspace({
       // `all` 是显式的"执行整段脚本"，由 Ctrl+Shift+Enter 或"运行脚本"触发。
       const source =
         scope === "all"
-          ? sqlText
-          : selection || statementAtCursor(sqlText, view?.state.selection.main.head ?? 0, splitRules);
+          ? document
+          : selection || statementAtCursor(document, view?.state.selection.main.head ?? 0, splitRules);
       const parsed = splitSqlStatements(source, splitRules);
       if (parsed.warnings.length > 0) setNotice(parsed.warnings[0]);
       if (parsed.statements.length === 0) {
@@ -357,9 +363,9 @@ export function SqlWorkspace({
 
       // 单条只读 SELECT → 走分页（一页 1,000 行，翻页重新执行外层 LIMIT/OFFSET）；
       // 多语句/写操作保持原样，一次性执行完。
-      const baseSql = pageableSql(parsed.statements);
+      const baseSql = pageableSql(parsed.statements, profile.engine);
       if (baseSql) {
-        await runParsed([wrapPageSql(baseSql, PAGE_SIZE, 0)], {
+        await runParsed([wrapPageSql(baseSql, PAGE_SIZE, 0, profile.engine)], {
           baseSql,
           pageSize: PAGE_SIZE,
           offset: 0,
@@ -369,7 +375,7 @@ export function SqlWorkspace({
 
       await runParsed(parsed.statements);
     },
-    [runParsed, session, sqlText, t],
+    [cancelling, profile.engine, running, runParsed, session, splitRules, sqlText, switchingDb, t],
   );
 
   /** 结果区翻页：按 `LIMIT pageSize OFFSET offset` 重新执行原始语句。 */
@@ -377,13 +383,13 @@ export function SqlWorkspace({
     async (offset: number) => {
       const page = useDatabaseWorkbenchStore.getState().tabs[tabId]?.pagination;
       if (!page || !session || offset < 0) return;
-      await runParsed([wrapPageSql(page.baseSql, page.pageSize, offset)], {
+      await runParsed([wrapPageSql(page.baseSql, page.pageSize, offset, profile.engine)], {
         baseSql: page.baseSql,
         pageSize: page.pageSize,
         offset,
       });
     },
-    [runParsed, session, tabId],
+    [profile.engine, runParsed, session, tabId],
   );
 
   const handleClearResults = () => {
@@ -485,6 +491,17 @@ export function SqlWorkspace({
 
   const extensions = useMemo(
     () => [
+      EditorView.updateListener.of((update) => {
+        if (update.selectionSet || update.docChanged) {
+          const range = update.state.selection.main;
+          setHasSelection(!range.empty && Boolean(update.state.sliceDoc(range.from, range.to).trim()));
+        }
+      }),
+      EditorView.theme({
+        "&.cm-focused": { outline: "none" },
+        ".cm-content": { padding: "10px 0", lineHeight: "1.65" },
+        ".cm-line": { padding: "0 10px" },
+      }),
       sqlLanguage({
         // 方言决定关键字与类型名：PG 的 `SERIAL`、SQLite 的 `AUTOINCREMENT`
         // 必须跟着连接走，不能一律按 MySQL 提示。
@@ -495,7 +512,7 @@ export function SqlWorkspace({
         // override 会顶掉 lang-sql 自带的 schema/关键字源，避免同一个词出现两遍。
         override: [completionSource],
         activateOnTyping: true,
-        selectOnOpen: true,
+        selectOnOpen: false,
         icons: true,
         maxRenderedOptions: 80,
         optionClass: (item) => `sql-completion-option sql-completion-option--${item.type ?? "text"}`,
@@ -585,66 +602,6 @@ export function SqlWorkspace({
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col">
-      {/*
-       * 事务条：把"自动提交"与"手动事务"的当前状态放在最显眼处。
-       * 这里只做真实存在的动作 —— START TRANSACTION / COMMIT / ROLLBACK，
-       * 全部走同一条物理会话；不支持事务的引擎直接不显示，
-       * 而不是给一个点了会报错的开关。
-       */}
-      {transactionCapable && session && (
-        <PageNotice
-          tone={inTransaction ? "warning" : "neutral"}
-          action={
-            inTransaction ? (
-              <>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={txnBusy || running || cancelling}
-                  onClick={() => void runTxn("COMMIT", t("提交事务"))}
-                >
-                  {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                  {t("提交事务")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={txnBusy || running || cancelling}
-                  onClick={() => void runTxn("ROLLBACK", t("回滚事务"))}
-                >
-                  {t("回滚事务")}
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="ghost"
-                size="xs"
-                disabled={txnBusy || running || cancelling}
-                onClick={() => void runTxn("START TRANSACTION", t("开启事务"))}
-                title={t("开启后，本会话的语句要显式提交才生效")}
-              >
-                {txnBusy ? <Loader2 size={11} className="animate-spin" /> : null}
-                {t("开启事务")}
-              </Button>
-            )
-          }
-        >
-          <span className="font-medium">
-            {inTransaction
-              ? session?.transaction === "in_transaction_read_only"
-                ? t("手动事务（只读）")
-                : t("手动事务：未提交")
-              : t("自动提交")}
-          </span>
-          <span className="ml-2 text-10">
-            {inTransaction
-              ? t("本标签的语句已在事务里，关闭标签前必须选择提交或回滚。")
-              : transactionLimitedReason ??
-                t("每条语句单独提交。需要多条语句一起生效时，开启事务。")}
-          </span>
-        </PageNotice>
-      )}
-
       <div className="page-toolbar">
         <Select
           className="w-[140px]"
@@ -668,6 +625,52 @@ export function SqlWorkspace({
         />
         {switchingDb && (
           <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+        )}
+        <span className="mx-1 h-5 w-px bg-line" />
+        <Button
+          variant="primary"
+          size="xs"
+          disabled={!session || running || cancelling || switchingDb || !sqlText.trim()}
+          onClick={() => void execute("auto")}
+          title={t("运行选区或光标所在语句（Ctrl+Enter）")}
+        >
+          <Play size={12} />
+          {t(hasSelection ? "运行选区" : "运行当前语句")}
+        </Button>
+        <Button
+          variant="ghost"
+          size="xs"
+          disabled={!session || running || cancelling || switchingDb || !sqlText.trim()}
+          onClick={() => void execute("all")}
+          title={t("按顺序执行整段脚本（Ctrl+Shift+Enter）")}
+        >
+          {t("运行脚本")}
+        </Button>
+        {(running || cancelling) && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={cancelling || cancelBlocked}
+            onClick={() => void cancel(tabId)}
+            title={cancelBlocked
+              ? cancelReason ?? t("该引擎不支持取消查询")
+              : t("发送 KILL QUERY 并在服务器确认前不复用连接")}
+          >
+            {cancelling ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+            {cancelling ? t("取消中…") : t("停止")}
+          </Button>
+        )}
+        {transactionCapable && session && !inTransaction && (
+          <Button
+            variant="ghost"
+            size="xs"
+            disabled={txnBusy || running || cancelling || switchingDb}
+            onClick={() => void runTxn("START TRANSACTION", t("开启事务"))}
+            title={transactionLimitedReason ?? t("开启后，本会话的语句要显式提交才生效")}
+          >
+            {txnBusy && <Loader2 size={11} className="animate-spin" />}
+            {t("开启事务")}
+          </Button>
         )}
         <span className="mx-1 h-5 w-px bg-line" />
         <Button
@@ -707,25 +710,6 @@ export function SqlWorkspace({
           {t("格式化")}
         </Button>
         <span className="mx-1 h-5 w-px bg-line" />
-        <Button
-          variant="primary"
-          size="xs"
-          disabled={!session || running || cancelling || switchingDb}
-          onClick={() => void execute("auto")}
-          title={t("有选区运行选区，无选区运行全部（Ctrl+Enter）")}
-        >
-          <Play size={12} />
-          {t("运行")}
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          disabled={!session || running || cancelling || switchingDb || !sqlText.trim()}
-          onClick={() => void execute("all")}
-          title={t("按顺序执行整段脚本（Ctrl+Shift+Enter）")}
-        >
-          {t("运行脚本")}
-        </Button>
         {!detached && (
           <Button
             variant="ghost"
@@ -737,27 +721,6 @@ export function SqlWorkspace({
             <Maximize2 size={12} />
           </Button>
         )}
-        {(running || cancelling) && (
-          <Button
-            variant="ghost"
-            size="xs"
-            disabled={cancelling || cancelBlocked}
-            onClick={() => void cancel(tabId)}
-            title={
-              cancelBlocked
-                ? (cancelReason ?? t("该引擎不支持取消查询"))
-                : t("发送 KILL QUERY 并在服务器确认前不复用连接")
-            }
-          >
-            {cancelling ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <Square size={12} />
-            )}
-            {cancelling ? t("取消中…") : t("停止")}
-          </Button>
-        )}
-        <span className="mx-1 h-5 w-px bg-line" />
         {showResults && (
           <Button
             variant="ghost"
@@ -798,6 +761,27 @@ export function SqlWorkspace({
         )}
       </div>
 
+      {transactionCapable && session && inTransaction && (
+        <PageNotice tone="warning" action={
+          <>
+            <Button variant="ghost" size="xs" disabled={txnBusy || running || cancelling}
+              onClick={() => void runTxn("COMMIT", t("提交事务"))}>
+              {txnBusy && <Loader2 size={11} className="animate-spin" />}
+              {t("提交事务")}
+            </Button>
+            <Button variant="ghost" size="xs" disabled={txnBusy || running || cancelling}
+              onClick={() => void runTxn("ROLLBACK", t("回滚事务"))}>
+              {t("回滚事务")}
+            </Button>
+          </>
+        }>
+          <span className="font-medium">
+            {t(session.transaction === "in_transaction_read_only" ? "手动事务（只读）" : "手动事务：未提交")}
+          </span>
+          <span className="ml-2 text-10">{t("本标签的语句已在事务里，关闭标签前必须选择提交或回滚。")}</span>
+        </PageNotice>
+      )}
+
       {notice && (
         <div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/10 px-2 py-1 text-11 text-warning">
           <span className="min-w-0 flex-1">{notice}</span>
@@ -820,6 +804,7 @@ export function SqlWorkspace({
         )}
         style={showResults ? { height: editorHeight } : undefined}
         onKeyDownCapture={(event) => {
+          if (event.nativeEvent.isComposing) return;
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
@@ -841,6 +826,7 @@ export function SqlWorkspace({
         <CodeMirror
           className="absolute inset-0"
           value={sqlText}
+          placeholder={t("输入 SQL。Ctrl+Enter 运行当前语句，Ctrl+Shift+Enter 运行脚本。")}
           height="100%"
           theme={theme}
           extensions={extensions}

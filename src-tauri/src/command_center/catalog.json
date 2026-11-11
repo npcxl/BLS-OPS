@@ -1,0 +1,5259 @@
+[
+  {
+    "id": "docker.ps.all",
+    "executable": "docker",
+    "subcommand": "ps -a",
+    "title": "查看所有容器",
+    "description": "显示运行中和已停止的容器（结构化表格 + 原始输出）",
+    "category": "Container",
+    "scenarios": [
+      "部署检查",
+      "容器排障",
+      "查看停止容器"
+    ],
+    "aliases": [
+      "所有容器",
+      "容器列表",
+      "全部容器",
+      "容器状态"
+    ],
+    "syntax": "docker ps -a",
+    "output_adapter": "docker-container-table",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerPs"
+  },
+  {
+    "id": "docker.ps.running",
+    "executable": "docker",
+    "subcommand": "ps",
+    "title": "查看运行中的容器",
+    "description": "只显示当前运行中的容器",
+    "category": "Container",
+    "scenarios": [
+      "部署检查",
+      "容器排障"
+    ],
+    "aliases": [
+      "运行容器",
+      "容器运行状态"
+    ],
+    "syntax": "docker ps",
+    "output_adapter": "docker-container-table",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerPs"
+  },
+  {
+    "id": "docker.images",
+    "executable": "docker",
+    "subcommand": "images",
+    "title": "查看镜像列表",
+    "description": "列出本机全部镜像及大小",
+    "category": "Container",
+    "scenarios": [
+      "部署检查",
+      "镜像管理"
+    ],
+    "aliases": [
+      "镜像列表",
+      "本机镜像"
+    ],
+    "syntax": "docker images",
+    "output_adapter": "docker-image-table",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerImages"
+  },
+  {
+    "id": "docker.stats",
+    "executable": "docker",
+    "subcommand": "stats --no-stream",
+    "title": "查看容器资源占用",
+    "description": "每个容器一次性的 CPU / 内存 / 网络 / 磁盘用量快照",
+    "category": "Container",
+    "scenarios": [
+      "性能排查",
+      "资源占用"
+    ],
+    "aliases": [
+      "容器资源",
+      "容器 CPU",
+      "容器内存"
+    ],
+    "syntax": "docker stats --no-stream",
+    "output_adapter": "docker-stats-table",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerStats"
+  },
+  {
+    "id": "docker.logs",
+    "executable": "docker",
+    "subcommand": "logs --tail 200 <容器>",
+    "title": "查看容器日志",
+    "description": "取指定容器最近 200 行日志（原样返回）",
+    "category": "Container",
+    "scenarios": [
+      "容器排障",
+      "看日志"
+    ],
+    "aliases": [
+      "容器日志"
+    ],
+    "syntax": "docker logs --tail 200 <容器>",
+    "output_adapter": "log",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerLogs"
+  },
+  {
+    "id": "docker.inspect",
+    "executable": "docker",
+    "subcommand": "inspect <容器>",
+    "title": "查看容器完整配置",
+    "description": "容器的挂载、网络、环境变量名、Labels 等 JSON 详情",
+    "category": "Container",
+    "scenarios": [
+      "容器排障",
+      "查看配置"
+    ],
+    "aliases": [
+      "容器详情",
+      "容器配置"
+    ],
+    "syntax": "docker inspect <容器>",
+    "output_adapter": "json-viewer",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "DockerInspect"
+  },
+  {
+    "id": "docker.info",
+    "executable": "docker",
+    "subcommand": "info",
+    "title": "查看 Docker 引擎信息",
+    "description": "Docker 版本、存储驱动、运行时与资源总量（普通文本，按 [Section] 分块展示，适合人读）",
+    "category": "Container",
+    "scenarios": [
+      "部署检查"
+    ],
+    "aliases": [
+      "docker 版本",
+      "引擎信息",
+      "引擎概况"
+    ],
+    "syntax": "docker info",
+    "output_adapter": "docker-info",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.info.json",
+    "executable": "docker",
+    "subcommand": "info",
+    "title": "查看 Docker 引擎信息（JSON）",
+    "description": "docker info 的机器可读版本：字段完整、可复制进脚本；人读请用不带 --format 的普通文本版",
+    "category": "Container",
+    "scenarios": [
+      "部署检查",
+      "对接脚本"
+    ],
+    "aliases": [
+      "docker 信息 json",
+      "引擎信息 json",
+      "docker info json"
+    ],
+    "syntax": "docker info --format '{{json .}}'",
+    "output_adapter": "json-viewer",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "compose.ps",
+    "executable": "docker compose",
+    "subcommand": "ps",
+    "title": "查看 Compose 服务状态",
+    "description": "当前 Compose 项目里各服务的容器状态（需要项目目录）",
+    "category": "Container",
+    "scenarios": [
+      "部署检查",
+      "容器排障"
+    ],
+    "aliases": [
+      "compose 状态",
+      "编排状态"
+    ],
+    "syntax": "docker compose ps",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.logs",
+    "executable": "docker compose",
+    "subcommand": "logs -f <服务>",
+    "title": "跟随 Compose 服务日志",
+    "description": "按服务聚合日志并持续输出（需要项目目录）",
+    "category": "Container",
+    "scenarios": [
+      "看日志",
+      "容器排障"
+    ],
+    "aliases": [
+      "compose 日志"
+    ],
+    "syntax": "docker compose logs -f <服务>",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.config",
+    "executable": "docker compose",
+    "subcommand": "config",
+    "title": "校验并展开 Compose 配置",
+    "description": "把 compose.yml 合并环境变量后输出最终配置",
+    "category": "Container",
+    "scenarios": [
+      "部署检查"
+    ],
+    "aliases": [
+      "compose 配置"
+    ],
+    "syntax": "docker compose config",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.up",
+    "executable": "docker compose",
+    "subcommand": "up -d",
+    "title": "启动 Compose 服务",
+    "description": "以后台方式创建并启动 compose.yml 里的全部服务（部署工作流 P4.5 接管）",
+    "category": "Container",
+    "scenarios": [
+      "部署"
+    ],
+    "aliases": [
+      "启动服务",
+      "compose 启动"
+    ],
+    "syntax": "docker compose up -d",
+    "requires": [
+      "DockerCompose"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "compose.down",
+    "executable": "docker compose",
+    "subcommand": "down",
+    "title": "停止并移除 Compose 容器",
+    "description": "停止服务并删除容器与默认网络（不删卷；P4.5 部署工作流接管）",
+    "category": "Container",
+    "scenarios": [
+      "部署"
+    ],
+    "aliases": [
+      "停止服务",
+      "compose 停止"
+    ],
+    "syntax": "docker compose down",
+    "requires": [
+      "DockerCompose"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "compose.pull",
+    "executable": "docker compose",
+    "subcommand": "pull",
+    "title": "拉取 Compose 全部镜像",
+    "description": "按 compose.yml 拉取各服务镜像的最新版本（P4.5 接管）",
+    "category": "Container",
+    "scenarios": [
+      "部署"
+    ],
+    "aliases": [
+      "拉取镜像"
+    ],
+    "syntax": "docker compose pull",
+    "requires": [
+      "DockerCompose"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "container.start",
+    "executable": "docker",
+    "subcommand": "start <容器>",
+    "title": "启动容器",
+    "description": "启动一个已停止的容器",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "启动容器"
+    ],
+    "syntax": "docker start <容器>",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "ContainerStart",
+    "risk": "Medium"
+  },
+  {
+    "id": "container.stop",
+    "executable": "docker",
+    "subcommand": "stop <容器>",
+    "title": "停止容器",
+    "description": "优雅停止一个运行中的容器（10s 超时后 SIGKILL）",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "停止容器",
+      "停容器"
+    ],
+    "syntax": "docker stop <容器>",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "ContainerStop",
+    "risk": "Medium"
+  },
+  {
+    "id": "container.restart",
+    "executable": "docker",
+    "subcommand": "restart <容器>",
+    "title": "重启容器",
+    "description": "重启一个容器（保留容器配置）",
+    "category": "Container",
+    "scenarios": [
+      "容器运维",
+      "重启服务"
+    ],
+    "aliases": [
+      "重启容器"
+    ],
+    "syntax": "docker restart <容器>",
+    "requires": [
+      "Docker"
+    ],
+    "exec": "ContainerRestart",
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.status",
+    "executable": "systemctl",
+    "subcommand": "status <unit>",
+    "title": "查看服务状态",
+    "description": "服务的运行状态、内存占用与最近日志",
+    "category": "Service",
+    "scenarios": [
+      "服务排障",
+      "部署检查"
+    ],
+    "aliases": [
+      "服务状态"
+    ],
+    "syntax": "systemctl status <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ServiceStatus"
+  },
+  {
+    "id": "systemctl.list",
+    "executable": "systemctl",
+    "subcommand": "list-units --type=service",
+    "title": "列出全部服务",
+    "description": "机器上全部 systemd 服务及状态",
+    "category": "Service",
+    "scenarios": [
+      "部署检查",
+      "服务排障"
+    ],
+    "aliases": [
+      "服务列表",
+      "所有服务"
+    ],
+    "syntax": "systemctl list-units --type=service",
+    "output_adapter": "systemd-unit-table",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ListServices"
+  },
+  {
+    "id": "systemctl.show",
+    "executable": "systemctl",
+    "subcommand": "show <unit>",
+    "title": "查看服务属性",
+    "description": "WorkingDirectory / ExecStart / EnvironmentFiles 等机器可读属性",
+    "category": "Service",
+    "scenarios": [
+      "服务排障"
+    ],
+    "aliases": [
+      "服务属性"
+    ],
+    "syntax": "systemctl show <unit>",
+    "output_adapter": "key-value",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "SystemdShow"
+  },
+  {
+    "id": "systemctl.start",
+    "executable": "systemctl",
+    "subcommand": "start <unit>",
+    "title": "启动服务",
+    "description": "启动一个 systemd 服务",
+    "category": "Service",
+    "scenarios": [
+      "服务运维"
+    ],
+    "aliases": [
+      "启动服务"
+    ],
+    "syntax": "systemctl start <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ServiceStart",
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.stop",
+    "executable": "systemctl",
+    "subcommand": "stop <unit>",
+    "title": "停止服务",
+    "description": "停止一个 systemd 服务",
+    "category": "Service",
+    "scenarios": [
+      "服务运维"
+    ],
+    "aliases": [
+      "停止服务",
+      "停服务"
+    ],
+    "syntax": "systemctl stop <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ServiceStop",
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.restart",
+    "executable": "systemctl",
+    "subcommand": "restart <unit>",
+    "title": "重启服务",
+    "description": "重启一个 systemd 服务（生产服务请先看影响面）",
+    "category": "Service",
+    "scenarios": [
+      "服务运维",
+      "重启服务"
+    ],
+    "aliases": [
+      "重启服务"
+    ],
+    "syntax": "systemctl restart <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ServiceRestart",
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.reload",
+    "executable": "systemctl",
+    "subcommand": "reload <unit>",
+    "title": "重载服务配置",
+    "description": "让服务重读配置而不重启进程（需要服务支持 reload）",
+    "category": "Service",
+    "scenarios": [
+      "服务运维"
+    ],
+    "aliases": [
+      "重载配置"
+    ],
+    "syntax": "systemctl reload <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "ServiceReload",
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.enable",
+    "executable": "systemctl",
+    "subcommand": "enable <unit>",
+    "title": "设置开机自启",
+    "description": "把服务加入开机启动（创建启动链接）",
+    "category": "Service",
+    "scenarios": [
+      "服务运维"
+    ],
+    "aliases": [
+      "开机自启",
+      "自启动"
+    ],
+    "syntax": "systemctl enable <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "systemctl.disable",
+    "executable": "systemctl",
+    "subcommand": "disable <unit>",
+    "title": "取消开机自启",
+    "description": "把服务移出开机启动",
+    "category": "Service",
+    "scenarios": [
+      "服务运维"
+    ],
+    "aliases": [
+      "关闭自启"
+    ],
+    "syntax": "systemctl disable <unit>",
+    "requires": [
+      "Systemctl"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "journalctl.unit",
+    "executable": "journalctl",
+    "subcommand": "-u <unit> -n 200 --no-pager",
+    "title": "查看服务日志",
+    "description": "指定服务最近 200 条 journald 日志",
+    "category": "Service",
+    "scenarios": [
+      "看日志",
+      "服务排障"
+    ],
+    "aliases": [
+      "服务日志",
+      "journal 日志"
+    ],
+    "syntax": "journalctl -u <unit> -n 200 --no-pager",
+    "output_adapter": "journal-log-viewer",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "JournalUnit"
+  },
+  {
+    "id": "journalctl.errors",
+    "executable": "journalctl",
+    "subcommand": "-p err -n 200 --no-pager",
+    "title": "查看系统错误日志",
+    "description": "全系统最近 200 条 error 及以上级别日志",
+    "category": "Service",
+    "scenarios": [
+      "排障",
+      "看日志"
+    ],
+    "aliases": [
+      "错误日志",
+      "系统日志"
+    ],
+    "syntax": "journalctl -p err -n 200 --no-pager",
+    "output_adapter": "journal-log-viewer",
+    "requires": [
+      "Systemctl"
+    ],
+    "exec": "JournalSystem"
+  },
+  {
+    "id": "nginx.version",
+    "executable": "nginx",
+    "subcommand": "-v",
+    "title": "查看 Nginx 版本",
+    "description": "Nginx 版本号（含编译参数请用 nginx -V）",
+    "category": "Gateway",
+    "scenarios": [
+      "部署检查"
+    ],
+    "aliases": [
+      "nginx 版本"
+    ],
+    "syntax": "nginx -v",
+    "requires": [
+      "Nginx"
+    ],
+    "exec": "NginxVersion"
+  },
+  {
+    "id": "nginx.test",
+    "executable": "nginx",
+    "subcommand": "-t",
+    "title": "校验 Nginx 配置",
+    "description": "语法检查全部配置文件；reload 前必须先跑这一步",
+    "category": "Gateway",
+    "scenarios": [
+      "部署检查",
+      "网关排障"
+    ],
+    "aliases": [
+      "配置检查",
+      "nginx 校验"
+    ],
+    "syntax": "nginx -t",
+    "requires": [
+      "Nginx"
+    ],
+    "exec": "NginxTest"
+  },
+  {
+    "id": "nginx.effective",
+    "executable": "nginx",
+    "subcommand": "-T",
+    "title": "查看生效配置",
+    "description": "输出全部生效配置（含被 include 的站点文件）",
+    "category": "Gateway",
+    "scenarios": [
+      "网关排障"
+    ],
+    "aliases": [
+      "生效配置",
+      "nginx 配置"
+    ],
+    "syntax": "nginx -T",
+    "output_adapter": "nginx-config-tree",
+    "requires": [
+      "Nginx"
+    ],
+    "exec": "NginxEffectiveConfig"
+  },
+  {
+    "id": "nginx.reload",
+    "executable": "systemctl",
+    "subcommand": "reload nginx",
+    "title": "重载 Nginx 配置",
+    "description": "平滑重载配置（不中断连接）；应用内会先自动跑 nginx -t 再执行",
+    "category": "Gateway",
+    "scenarios": [
+      "网关运维"
+    ],
+    "aliases": [
+      "nginx 重载",
+      "reload nginx"
+    ],
+    "syntax": "nginx -t && systemctl reload nginx",
+    "requires": [
+      "Nginx"
+    ],
+    "exec": "NginxReload",
+    "risk": "Medium"
+  },
+  {
+    "id": "ps.cpu",
+    "executable": "ps",
+    "subcommand": "-eo pid,comm,etimes,pcpu,pmem --sort=-pcpu",
+    "title": "查看进程占用",
+    "description": "按 CPU 排序的进程表（只含可执行名，不含参数——避免泄露敏感值）",
+    "category": "Process",
+    "scenarios": [
+      "性能排查",
+      "进程排障"
+    ],
+    "aliases": [
+      "进程列表",
+      "CPU 占用",
+      "进程占用"
+    ],
+    "syntax": "ps -eo pid,comm,etimes,pcpu,pmem --sort=-pcpu",
+    "output_adapter": "process-table",
+    "exec": "ProcessList"
+  },
+  {
+    "id": "ss.listen",
+    "executable": "ss",
+    "subcommand": "-tlnp",
+    "title": "查看端口监听",
+    "description": "全部 TCP 监听端口与持有进程",
+    "category": "Process",
+    "scenarios": [
+      "端口排查",
+      "部署检查"
+    ],
+    "aliases": [
+      "端口占用",
+      "监听端口",
+      "端口列表"
+    ],
+    "syntax": "ss -tlnp",
+    "output_adapter": "port-listener-table",
+    "exec": "ListenSockets"
+  },
+  {
+    "id": "os.release",
+    "executable": "cat",
+    "subcommand": "/etc/os-release",
+    "title": "查看系统版本",
+    "description": "发行版名称与版本号",
+    "category": "System",
+    "scenarios": [
+      "环境检查",
+      "部署检查"
+    ],
+    "aliases": [
+      "系统版本",
+      "发行版"
+    ],
+    "syntax": "cat /etc/os-release",
+    "exec": "OsRelease"
+  },
+  {
+    "id": "uname.a",
+    "executable": "uname",
+    "subcommand": "-s",
+    "title": "查看内核类型",
+    "description": "内核名称（Linux 判定）与架构",
+    "category": "System",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "内核",
+      "系统信息"
+    ],
+    "syntax": "uname -s",
+    "exec": "Uname"
+  },
+  {
+    "id": "uptime",
+    "executable": "uptime",
+    "subcommand": "",
+    "title": "查看运行时长与负载",
+    "description": "当前时间、运行时长、登录用户数与 1/5/15 分钟负载",
+    "category": "System",
+    "scenarios": [
+      "环境检查",
+      "性能排查"
+    ],
+    "aliases": [
+      "负载",
+      "运行时长"
+    ],
+    "syntax": "uptime",
+    "output_adapter": "uptime-metrics",
+    "exec": "UptimeInfo"
+  },
+  {
+    "id": "free.m",
+    "executable": "free",
+    "subcommand": "-m",
+    "title": "查看内存用量",
+    "description": "物理内存与交换分区的总量 / 已用 / 空闲（MB）",
+    "category": "System",
+    "scenarios": [
+      "环境检查",
+      "性能排查"
+    ],
+    "aliases": [
+      "内存",
+      "内存占用"
+    ],
+    "syntax": "free -m",
+    "output_adapter": "free-metrics",
+    "exec": "MemoryInfo"
+  },
+  {
+    "id": "df.h",
+    "executable": "df",
+    "subcommand": "-hP",
+    "title": "查看磁盘用量",
+    "description": "各文件系统的容量 / 已用 / 挂载点（POSIX 格式）",
+    "category": "System",
+    "scenarios": [
+      "环境检查",
+      "磁盘排查"
+    ],
+    "aliases": [
+      "磁盘",
+      "磁盘空间",
+      "硬盘用量"
+    ],
+    "syntax": "df -hP",
+    "output_adapter": "disk-usage-table",
+    "exec": "DiskFree"
+  },
+  {
+    "id": "git.status",
+    "executable": "git",
+    "subcommand": "-C <路径> status",
+    "title": "查看仓库状态",
+    "description": "分支与工作区变更（porcelain v2 机器可读格式）",
+    "category": "Vcs",
+    "scenarios": [
+      "部署检查",
+      "发布前检查"
+    ],
+    "aliases": [
+      "git 状态",
+      "仓库状态",
+      "代码状态"
+    ],
+    "syntax": "git -C <路径> status --porcelain=v2 -b",
+    "requires": [
+      "Git"
+    ],
+    "exec": "GitStatus"
+  },
+  {
+    "id": "git.branch",
+    "executable": "git",
+    "subcommand": "-C <路径> branch",
+    "title": "查看分支",
+    "description": "本地分支列表与当前分支",
+    "category": "Vcs",
+    "scenarios": [
+      "发布前检查"
+    ],
+    "aliases": [
+      "分支列表"
+    ],
+    "syntax": "git -C <路径> branch",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.log",
+    "executable": "git",
+    "subcommand": "-C <路径> log --oneline -20",
+    "title": "查看提交历史",
+    "description": "最近 20 条提交",
+    "category": "Vcs",
+    "scenarios": [
+      "发布前检查"
+    ],
+    "aliases": [
+      "提交记录",
+      "git 日志"
+    ],
+    "syntax": "git -C <路径> log --oneline -20",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.remote",
+    "executable": "git",
+    "subcommand": "-C <路径> remote -v",
+    "title": "查看远端仓库",
+    "description": "fetch / push 远端地址",
+    "category": "Vcs",
+    "scenarios": [
+      "部署检查"
+    ],
+    "aliases": [
+      "远端",
+      "仓库地址"
+    ],
+    "syntax": "git -C <路径> remote -v",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.pull",
+    "executable": "git",
+    "subcommand": "-C <路径> pull",
+    "title": "拉取最新代码",
+    "description": "从远端拉取并合并当前分支（生产目录请先确认工作区干净）",
+    "category": "Vcs",
+    "scenarios": [
+      "部署"
+    ],
+    "aliases": [
+      "拉取代码",
+      "更新代码"
+    ],
+    "syntax": "git -C <路径> pull",
+    "requires": [
+      "Git"
+    ],
+    "risk": "Medium"
+  },
+  {
+    "id": "node.version",
+    "executable": "node",
+    "subcommand": "--version",
+    "title": "Node.js 版本",
+    "description": "服务器上 Node.js 的版本号",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "node 版本"
+    ],
+    "syntax": "node --version",
+    "requires": [
+      "Node"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "npm.version",
+    "executable": "npm",
+    "subcommand": "--version",
+    "title": "npm 版本",
+    "description": "npm 包管理器版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "npm 版本"
+    ],
+    "syntax": "npm --version",
+    "requires": [
+      "Npm"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "pnpm.version",
+    "executable": "pnpm",
+    "subcommand": "--version",
+    "title": "pnpm 版本",
+    "description": "pnpm 包管理器版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "pnpm 版本"
+    ],
+    "syntax": "pnpm --version",
+    "requires": [
+      "Pnpm"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "java.version",
+    "executable": "java",
+    "subcommand": "-version",
+    "title": "Java 版本",
+    "description": "JDK / JRE 版本信息",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "java 版本",
+      "jdk 版本"
+    ],
+    "syntax": "java -version",
+    "requires": [
+      "Java"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "mvn.version",
+    "executable": "mvn",
+    "subcommand": "--version",
+    "title": "Maven 版本",
+    "description": "Maven 构建工具版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "maven 版本"
+    ],
+    "syntax": "mvn --version",
+    "requires": [
+      "Maven"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "gradle.version",
+    "executable": "gradle",
+    "subcommand": "--version",
+    "title": "Gradle 版本",
+    "description": "Gradle 构建工具版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "gradle 版本"
+    ],
+    "syntax": "gradle --version",
+    "requires": [
+      "Gradle"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "python.version",
+    "executable": "python3",
+    "subcommand": "--version",
+    "title": "Python 版本",
+    "description": "Python 3 解释器版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "python 版本"
+    ],
+    "syntax": "python3 --version",
+    "requires": [
+      "Python"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "pip.version",
+    "executable": "pip3",
+    "subcommand": "--version",
+    "title": "pip 版本",
+    "description": "Python 包管理器 pip 的版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "pip 版本"
+    ],
+    "syntax": "pip3 --version",
+    "requires": [
+      "Pip"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "cargo.version",
+    "executable": "cargo",
+    "subcommand": "--version",
+    "title": "Cargo 版本",
+    "description": "Rust 包管理与构建工具版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "cargo 版本",
+      "rust 版本"
+    ],
+    "syntax": "cargo --version",
+    "requires": [
+      "Cargo"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "go.version",
+    "executable": "go",
+    "subcommand": "version",
+    "title": "Go 版本",
+    "description": "Go 工具链版本",
+    "category": "Vcs",
+    "scenarios": [
+      "环境检查"
+    ],
+    "aliases": [
+      "go 版本",
+      "golang 版本"
+    ],
+    "syntax": "go version",
+    "requires": [
+      "Go"
+    ],
+    "exec": "ToolVersion"
+  },
+  {
+    "id": "mysql.ping",
+    "executable": "mysqladmin",
+    "subcommand": "ping",
+    "title": "MySQL 存活检查",
+    "description": "通过 mysqladmin 探测 MySQL 是否响应（需要凭据，执行在 P4.4+ 开放）",
+    "category": "Database",
+    "scenarios": [
+      "数据库排障",
+      "健康检查"
+    ],
+    "aliases": [
+      "mysql 状态",
+      "mysql 存活"
+    ],
+    "syntax": "mysqladmin ping",
+    "requires": [
+      "Mysql"
+    ]
+  },
+  {
+    "id": "pg.ready",
+    "executable": "pg_isready",
+    "subcommand": "",
+    "title": "PostgreSQL 存活检查",
+    "description": "pg_isready 探测 PostgreSQL 是否接受连接",
+    "category": "Database",
+    "scenarios": [
+      "数据库排障",
+      "健康检查"
+    ],
+    "aliases": [
+      "postgres 状态",
+      "pg 状态"
+    ],
+    "syntax": "pg_isready",
+    "requires": [
+      "Psql"
+    ]
+  },
+  {
+    "id": "redis.ping",
+    "executable": "redis-cli",
+    "subcommand": "ping",
+    "title": "Redis 存活检查",
+    "description": "redis-cli PING 探测（本机套接字；远程/带密码在 P4.4+）",
+    "category": "Database",
+    "scenarios": [
+      "数据库排障",
+      "健康检查"
+    ],
+    "aliases": [
+      "redis 状态",
+      "redis 存活"
+    ],
+    "syntax": "redis-cli ping",
+    "requires": [
+      "Redis"
+    ]
+  },
+  {
+    "id": "base.pwd",
+    "executable": "pwd",
+    "subcommand": "",
+    "title": "显示当前目录",
+    "description": "打印当前工作目录的绝对路径",
+    "category": "System",
+    "scenarios": [
+      "目录导航",
+      "新手常用"
+    ],
+    "aliases": [
+      "当前目录",
+      "当前路径",
+      "我在哪"
+    ],
+    "syntax": "pwd"
+  },
+  {
+    "id": "base.ls",
+    "executable": "ls",
+    "subcommand": "-lah",
+    "title": "列出目录内容",
+    "description": "长格式显示（含隐藏文件、人类可读大小）",
+    "category": "System",
+    "scenarios": [
+      "目录导航",
+      "文件查看",
+      "新手常用"
+    ],
+    "aliases": [
+      "列目录",
+      "查看文件",
+      "目录列表",
+      "ll",
+      "ls -l",
+      "ls"
+    ],
+    "syntax": "ls -lah"
+  },
+  {
+    "id": "base.ll",
+    "executable": "ll",
+    "subcommand": "",
+    "title": "列出目录详情（ll）",
+    "description": "`ll` 是 `ls -alF` 的常用别名（多数发行版已配好）：长格式 + 隐藏文件 + 类型标记",
+    "category": "System",
+    "scenarios": [
+      "目录导航",
+      "新手常用",
+      "文件查看"
+    ],
+    "aliases": [
+      "ll",
+      "列目录",
+      "看目录",
+      "ls -l",
+      "查看文件列表"
+    ],
+    "syntax": "ll"
+  },
+  {
+    "id": "base.cd",
+    "executable": "cd",
+    "subcommand": "",
+    "title": "切换目录",
+    "description": "进入指定目录；不带参数回到家目录",
+    "category": "System",
+    "scenarios": [
+      "目录导航",
+      "新手常用"
+    ],
+    "aliases": [
+      "进入目录",
+      "切换路径"
+    ],
+    "syntax": "cd <路径>"
+  },
+  {
+    "id": "base.tree",
+    "executable": "tree",
+    "subcommand": "-L 2",
+    "title": "树状展示目录",
+    "description": "以树形显示目录结构（-L 控制层级）",
+    "category": "System",
+    "scenarios": [
+      "目录导航",
+      "项目结构"
+    ],
+    "aliases": [
+      "目录树",
+      "树形目录"
+    ],
+    "syntax": "tree -L 2"
+  },
+  {
+    "id": "base.touch",
+    "executable": "touch",
+    "subcommand": "",
+    "title": "创建空文件",
+    "description": "创建空文件或更新已有文件的时间戳",
+    "category": "System",
+    "scenarios": [
+      "文件操作",
+      "新手常用"
+    ],
+    "aliases": [
+      "新建文件",
+      "建空文件"
+    ],
+    "syntax": "touch <文件>"
+  },
+  {
+    "id": "base.mkdir",
+    "executable": "mkdir",
+    "subcommand": "-p",
+    "title": "创建目录",
+    "description": "-p 递归创建多级目录，已存在不报错",
+    "category": "System",
+    "scenarios": [
+      "文件操作",
+      "新手常用"
+    ],
+    "aliases": [
+      "新建文件夹",
+      "建目录"
+    ],
+    "syntax": "mkdir -p <路径>"
+  },
+  {
+    "id": "base.cp",
+    "executable": "cp",
+    "subcommand": "-a",
+    "title": "复制文件或目录",
+    "description": "-a 保留属性并递归复制目录",
+    "category": "System",
+    "scenarios": [
+      "文件操作",
+      "备份"
+    ],
+    "aliases": [
+      "拷贝文件",
+      "复制目录"
+    ],
+    "syntax": "cp -a <源> <目标>"
+  },
+  {
+    "id": "base.mv",
+    "executable": "mv",
+    "subcommand": "",
+    "title": "移动或重命名",
+    "description": "移动文件/目录，同目录下即重命名",
+    "category": "System",
+    "scenarios": [
+      "文件操作",
+      "重命名"
+    ],
+    "aliases": [
+      "移动文件",
+      "改名"
+    ],
+    "syntax": "mv <源> <目标>"
+  },
+  {
+    "id": "base.ln",
+    "executable": "ln",
+    "subcommand": "-s",
+    "title": "创建软链接",
+    "description": "-s 创建符号链接（常用于版本切换）",
+    "category": "System",
+    "scenarios": [
+      "文件操作",
+      "部署配置"
+    ],
+    "aliases": [
+      "软链接",
+      "符号链接",
+      "建链接"
+    ],
+    "syntax": "ln -s <源> <链接名>"
+  },
+  {
+    "id": "base.cat",
+    "executable": "cat",
+    "subcommand": "",
+    "title": "查看文件全部内容",
+    "description": "一次性输出整个文件（适合小文件）",
+    "category": "System",
+    "scenarios": [
+      "文件查看",
+      "新手常用"
+    ],
+    "aliases": [
+      "看文件",
+      "输出文件"
+    ],
+    "syntax": "cat <文件>"
+  },
+  {
+    "id": "base.less",
+    "executable": "less",
+    "subcommand": "",
+    "title": "分页查看文件",
+    "description": "可上下翻页查看大文件（q 退出，/ 搜索）",
+    "category": "System",
+    "scenarios": [
+      "文件查看",
+      "日志查看"
+    ],
+    "aliases": [
+      "翻页查看",
+      "分页看文件"
+    ],
+    "syntax": "less <文件>"
+  },
+  {
+    "id": "base.head",
+    "executable": "head",
+    "subcommand": "-n 50",
+    "title": "查看文件开头",
+    "description": "只看前 N 行（默认 10 行）",
+    "category": "System",
+    "scenarios": [
+      "文件查看",
+      "日志查看"
+    ],
+    "aliases": [
+      "前几行",
+      "文件开头"
+    ],
+    "syntax": "head -n 50 <文件>"
+  },
+  {
+    "id": "base.tail",
+    "executable": "tail",
+    "subcommand": "-n 100",
+    "title": "查看文件末尾",
+    "description": "只看最后 N 行；-f 可实时跟踪",
+    "category": "System",
+    "scenarios": [
+      "文件查看",
+      "日志查看"
+    ],
+    "aliases": [
+      "最后几行",
+      "文件末尾"
+    ],
+    "syntax": "tail -n 100 <文件>"
+  },
+  {
+    "id": "base.tail.follow",
+    "executable": "tail",
+    "subcommand": "-f",
+    "title": "实时跟踪日志",
+    "description": "持续输出文件新增内容（Ctrl+C 退出）",
+    "category": "System",
+    "scenarios": [
+      "日志查看",
+      "实时排障"
+    ],
+    "aliases": [
+      "实时日志",
+      "跟踪日志",
+      "tailf"
+    ],
+    "syntax": "tail -f <文件>"
+  },
+  {
+    "id": "base.find",
+    "executable": "find",
+    "subcommand": "-name",
+    "title": "按名字查找文件",
+    "description": "在目录下按名称递归查找文件",
+    "category": "System",
+    "scenarios": [
+      "文件查找",
+      "排障"
+    ],
+    "aliases": [
+      "查找文件",
+      "搜索文件"
+    ],
+    "syntax": "find <路径> -name <关键字>"
+  },
+  {
+    "id": "base.grep",
+    "executable": "grep",
+    "subcommand": "-rn",
+    "title": "递归搜索文本",
+    "description": "-r 递归目录、-n 显示行号",
+    "category": "System",
+    "scenarios": [
+      "日志排障",
+      "代码搜索"
+    ],
+    "aliases": [
+      "搜索内容",
+      "查找文本",
+      "过滤"
+    ],
+    "syntax": "grep -rn <关键字> <路径>"
+  },
+  {
+    "id": "base.grep.exclude",
+    "executable": "grep",
+    "subcommand": "--exclude-dir",
+    "title": "搜索时排除目录",
+    "description": "排除 node_modules 等噪音目录再搜索",
+    "category": "System",
+    "scenarios": [
+      "代码搜索",
+      "日志排障"
+    ],
+    "aliases": [
+      "排除目录搜索",
+      "忽略目录"
+    ],
+    "syntax": "grep -rn --exclude-dir=node_modules <关键字> <路径>"
+  },
+  {
+    "id": "base.awk",
+    "executable": "awk",
+    "subcommand": "'{print $1}'",
+    "title": "按列提取文本",
+    "description": "取某一列做统计（$1 第一列，$NF 最后一列）",
+    "category": "System",
+    "scenarios": [
+      "日志分析",
+      "文本处理"
+    ],
+    "aliases": [
+      "取列",
+      "按列统计"
+    ],
+    "syntax": "awk '{print $1}' <文件>"
+  },
+  {
+    "id": "base.sed",
+    "executable": "sed",
+    "subcommand": "-i",
+    "title": "批量替换文本",
+    "description": "-i 原地替换（建议先不加 -i 预览）",
+    "category": "System",
+    "scenarios": [
+      "配置修改",
+      "文本处理"
+    ],
+    "aliases": [
+      "替换文本",
+      "批量替换"
+    ],
+    "syntax": "sed -i 's/旧/新/g' <文件>"
+  },
+  {
+    "id": "base.sort.uniq",
+    "executable": "sort",
+    "subcommand": "| uniq -c",
+    "title": "排序并统计重复",
+    "description": "排序后统计每行出现次数（日志 IP/接口统计常用）",
+    "category": "System",
+    "scenarios": [
+      "日志分析",
+      "统计"
+    ],
+    "aliases": [
+      "统计重复",
+      "计数排序"
+    ],
+    "syntax": "sort <文件> | uniq -c | sort -nr"
+  },
+  {
+    "id": "base.du",
+    "executable": "du",
+    "subcommand": "-sh",
+    "title": "查看目录占用大小",
+    "description": "-s 只显示合计、-h 人类可读（排磁盘满的第一步）",
+    "category": "System",
+    "scenarios": [
+      "磁盘排障",
+      "空间分析"
+    ],
+    "aliases": [
+      "目录大小",
+      "占用空间",
+      "磁盘满"
+    ],
+    "syntax": "du -sh <路径>"
+  },
+  {
+    "id": "base.du.top",
+    "executable": "du",
+    "subcommand": "-h --max-depth=1",
+    "title": "找出最占空间的子目录",
+    "description": "只看下一级目录的大小，按大小排序取前几",
+    "category": "System",
+    "scenarios": [
+      "磁盘排障",
+      "空间分析"
+    ],
+    "aliases": [
+      "大目录",
+      "占用排行"
+    ],
+    "syntax": "du -h --max-depth=1 <路径> | sort -hr | head"
+  },
+  {
+    "id": "base.lsblk",
+    "executable": "lsblk",
+    "subcommand": "",
+    "title": "查看磁盘与分区",
+    "description": "列出块设备、挂载点与容量",
+    "category": "System",
+    "scenarios": [
+      "磁盘排障",
+      "硬件信息"
+    ],
+    "aliases": [
+      "磁盘列表",
+      "分区信息"
+    ],
+    "syntax": "lsblk",
+    "output_adapter": "lsblk-table"
+  },
+  {
+    "id": "base.mount",
+    "executable": "mount",
+    "subcommand": "| column -t",
+    "title": "查看挂载信息",
+    "description": "列出当前挂载的文件系统",
+    "category": "System",
+    "scenarios": [
+      "磁盘排障",
+      "挂载"
+    ],
+    "aliases": [
+      "挂载列表",
+      "已挂载"
+    ],
+    "syntax": "mount | column -t"
+  },
+  {
+    "id": "base.top",
+    "executable": "top",
+    "subcommand": "",
+    "title": "实时查看进程占用",
+    "description": "动态显示 CPU/内存占用最高的进程（q 退出）",
+    "category": "Process",
+    "scenarios": [
+      "性能排障",
+      "进程管理"
+    ],
+    "aliases": [
+      "进程占用",
+      "cpu 高",
+      "内存高"
+    ],
+    "syntax": "top"
+  },
+  {
+    "id": "base.htop",
+    "executable": "htop",
+    "subcommand": "",
+    "title": "增强版进程监视",
+    "description": "彩色交互、支持鼠标与树状视图（需安装）",
+    "category": "Process",
+    "scenarios": [
+      "性能排障",
+      "进程管理"
+    ],
+    "aliases": [
+      "进程监视",
+      "资源占用"
+    ],
+    "syntax": "htop"
+  },
+  {
+    "id": "base.pgrep",
+    "executable": "pgrep",
+    "subcommand": "-a",
+    "title": "按名字查进程",
+    "description": "-a 同时显示完整命令行",
+    "category": "Process",
+    "scenarios": [
+      "进程管理",
+      "排障"
+    ],
+    "aliases": [
+      "查进程",
+      "找进程"
+    ],
+    "syntax": "pgrep -a <名字>"
+  },
+  {
+    "id": "base.kill",
+    "executable": "kill",
+    "subcommand": "",
+    "title": "终止进程",
+    "description": "先发 TERM 优雅退出；无响应才用 -9 强制",
+    "category": "Process",
+    "scenarios": [
+      "进程管理",
+      "排障"
+    ],
+    "aliases": [
+      "杀进程",
+      "结束进程"
+    ],
+    "syntax": "kill <PID>"
+  },
+  {
+    "id": "base.pkill",
+    "executable": "pkill",
+    "subcommand": "-f",
+    "title": "按名字终止进程",
+    "description": "-f 匹配完整命令行（批量终止前先 pgrep 确认）",
+    "category": "Process",
+    "scenarios": [
+      "进程管理",
+      "排障"
+    ],
+    "aliases": [
+      "按名杀进程",
+      "批量终止"
+    ],
+    "syntax": "pkill -f <名字>"
+  },
+  {
+    "id": "base.ip.addr",
+    "executable": "ip",
+    "subcommand": "addr",
+    "title": "查看网卡与 IP",
+    "description": "显示所有网卡的 IP 地址（ifconfig 的现代替代）",
+    "category": "Process",
+    "scenarios": [
+      "网络排障",
+      "服务器信息"
+    ],
+    "aliases": [
+      "网卡",
+      "ip 地址",
+      "本机 ip"
+    ],
+    "syntax": "ip addr"
+  },
+  {
+    "id": "base.ping",
+    "executable": "ping",
+    "subcommand": "-c 4",
+    "title": "测试网络连通",
+    "description": "发 4 个包测试到目标主机的连通与延迟",
+    "category": "Process",
+    "scenarios": [
+      "网络排障",
+      "连通性"
+    ],
+    "aliases": [
+      "ping",
+      "测连通",
+      "网络通不通"
+    ],
+    "syntax": "ping -c 4 <主机>"
+  },
+  {
+    "id": "base.curl",
+    "executable": "curl",
+    "subcommand": "-I",
+    "title": "测试 HTTP 接口",
+    "description": "-I 只看响应头；-v 看完整握手过程",
+    "category": "Process",
+    "scenarios": [
+      "网络排障",
+      "接口调试"
+    ],
+    "aliases": [
+      "请求接口",
+      "http 测试",
+      "访问地址"
+    ],
+    "syntax": "curl -I <URL>"
+  },
+  {
+    "id": "base.wget",
+    "executable": "wget",
+    "subcommand": "",
+    "title": "下载文件",
+    "description": "从 URL 下载到当前目录（-O 指定文件名）",
+    "category": "Process",
+    "scenarios": [
+      "下载",
+      "部署"
+    ],
+    "aliases": [
+      "下载文件",
+      "拉取文件"
+    ],
+    "syntax": "wget <URL>"
+  },
+  {
+    "id": "base.dig",
+    "executable": "dig",
+    "subcommand": "",
+    "title": "查询 DNS 解析",
+    "description": "查看域名解析结果与 TTL（+short 只看 IP）",
+    "category": "Process",
+    "scenarios": [
+      "网络排障",
+      "域名"
+    ],
+    "aliases": [
+      "dns",
+      "解析域名",
+      "域名查询"
+    ],
+    "syntax": "dig <域名>"
+  },
+  {
+    "id": "base.traceroute",
+    "executable": "traceroute",
+    "subcommand": "",
+    "title": "追踪网络路径",
+    "description": "显示到目标主机经过的每一跳（定位网络断点）",
+    "category": "Process",
+    "scenarios": [
+      "网络排障",
+      "连通性"
+    ],
+    "aliases": [
+      "路由跟踪",
+      "tracert",
+      "网络路径"
+    ],
+    "syntax": "traceroute <主机>"
+  },
+  {
+    "id": "base.lsof.port",
+    "executable": "lsof",
+    "subcommand": "-i",
+    "title": "查看端口占用",
+    "description": "查某个端口被哪个进程占用（lsof -i:8080）",
+    "category": "Process",
+    "scenarios": [
+      "端口排障",
+      "进程管理"
+    ],
+    "aliases": [
+      "端口占用",
+      "谁占用端口"
+    ],
+    "syntax": "lsof -i:<端口>"
+  },
+  {
+    "id": "editor.vim",
+    "executable": "vim",
+    "subcommand": "",
+    "title": "用 vim 编辑文件",
+    "description": "i 进入编辑、Esc 退出编辑、:w 保存、:q 退出、:q! 放弃修改退出",
+    "category": "System",
+    "scenarios": [
+      "文件编辑",
+      "新手常用"
+    ],
+    "aliases": [
+      "vim",
+      "vi",
+      "编辑文件",
+      "改配置",
+      "打开文件编辑"
+    ],
+    "syntax": "vim <文件>"
+  },
+  {
+    "id": "editor.vim.readonly",
+    "executable": "vim",
+    "subcommand": "-R",
+    "title": "用 vim 只读查看文件",
+    "description": "-R 只读模式，避免误改线上配置（想强制保存需 :w!）",
+    "category": "System",
+    "scenarios": [
+      "文件编辑",
+      "安全查看"
+    ],
+    "aliases": [
+      "vim 只读",
+      "只读打开",
+      "安全看配置"
+    ],
+    "syntax": "vim -R <文件>"
+  },
+  {
+    "id": "editor.nano",
+    "executable": "nano",
+    "subcommand": "",
+    "title": "用 nano 编辑文件",
+    "description": "新手友好的编辑器：Ctrl+O 保存、Ctrl+X 退出（底部有快捷键提示）",
+    "category": "System",
+    "scenarios": [
+      "文件编辑",
+      "新手常用"
+    ],
+    "aliases": [
+      "nano",
+      "简单编辑器",
+      "编辑文件"
+    ],
+    "syntax": "nano <文件>"
+  },
+  {
+    "id": "base.history",
+    "executable": "history",
+    "subcommand": "| tail -n 50",
+    "title": "查看历史命令",
+    "description": "回顾自己执行过的命令（Ctrl+R 可反向搜索）",
+    "category": "System",
+    "scenarios": [
+      "终端常用",
+      "新手常用"
+    ],
+    "aliases": [
+      "历史命令",
+      "之前执行的命令",
+      "命令历史"
+    ],
+    "syntax": "history | tail -n 50"
+  },
+  {
+    "id": "base.clear",
+    "executable": "clear",
+    "subcommand": "",
+    "title": "清空屏幕",
+    "description": "清屏（Ctrl+L 等价）",
+    "category": "System",
+    "scenarios": [
+      "终端常用",
+      "新手常用"
+    ],
+    "aliases": [
+      "清屏",
+      "清空终端",
+      "cls"
+    ],
+    "syntax": "clear"
+  },
+  {
+    "id": "base.man",
+    "executable": "man",
+    "subcommand": "",
+    "title": "查看命令手册",
+    "description": "查看命令的官方说明与全部参数（q 退出）",
+    "category": "System",
+    "scenarios": [
+      "新手常用",
+      "查文档"
+    ],
+    "aliases": [
+      "命令帮助",
+      "手册",
+      "怎么用"
+    ],
+    "syntax": "man <命令>"
+  },
+  {
+    "id": "base.which",
+    "executable": "which",
+    "subcommand": "",
+    "title": "查找命令位置",
+    "description": "确认某个命令是否已安装、装在哪个路径",
+    "category": "System",
+    "scenarios": [
+      "环境检查",
+      "新手常用"
+    ],
+    "aliases": [
+      "命令在哪",
+      "是否安装",
+      "命令路径"
+    ],
+    "syntax": "which <命令>"
+  },
+  {
+    "id": "base.whoami",
+    "executable": "whoami",
+    "subcommand": "",
+    "title": "查看当前用户",
+    "description": "显示当前登录用户名（判断有没有权限的第一步）",
+    "category": "System",
+    "scenarios": [
+      "权限排障",
+      "新手常用"
+    ],
+    "aliases": [
+      "当前用户",
+      "我是谁"
+    ],
+    "syntax": "whoami"
+  },
+  {
+    "id": "base.id",
+    "executable": "id",
+    "subcommand": "",
+    "title": "查看用户与组",
+    "description": "显示 uid/gid 及所属用户组",
+    "category": "System",
+    "scenarios": [
+      "权限排障",
+      "用户管理"
+    ],
+    "aliases": [
+      "用户组",
+      "用户 id"
+    ],
+    "syntax": "id"
+  },
+  {
+    "id": "base.chmod",
+    "executable": "chmod",
+    "subcommand": "+x",
+    "title": "修改文件权限",
+    "description": "+x 加执行权限；755/644 是常见目录/文件权限",
+    "category": "System",
+    "scenarios": [
+      "权限排障",
+      "部署配置"
+    ],
+    "aliases": [
+      "改权限",
+      "加执行权限"
+    ],
+    "syntax": "chmod +x <文件>"
+  },
+  {
+    "id": "base.chown",
+    "executable": "chown",
+    "subcommand": "-R",
+    "title": "修改文件属主",
+    "description": "-R 递归修改（部署后修复目录归属常用）",
+    "category": "System",
+    "scenarios": [
+      "权限排障",
+      "部署配置"
+    ],
+    "aliases": [
+      "改属主",
+      "改所有者"
+    ],
+    "syntax": "chown -R <用户>:<组> <路径>"
+  },
+  {
+    "id": "base.sudo",
+    "executable": "sudo",
+    "subcommand": "",
+    "title": "以管理员身份执行",
+    "description": "临时提权执行命令（需要 sudo 权限）",
+    "category": "System",
+    "scenarios": [
+      "权限排障",
+      "新手常用"
+    ],
+    "aliases": [
+      "提权",
+      "管理员执行"
+    ],
+    "syntax": "sudo <命令>"
+  },
+  {
+    "id": "base.sudo.list",
+    "executable": "sudo",
+    "subcommand": "-l",
+    "title": "查看可用 sudo 权限",
+    "description": "列出当前用户被允许执行的 sudo 命令",
+    "category": "System",
+    "scenarios": [
+      "权限排障"
+    ],
+    "aliases": [
+      "sudo 权限",
+      "能执行什么"
+    ],
+    "syntax": "sudo -l"
+  },
+  {
+    "id": "base.tar.create",
+    "executable": "tar",
+    "subcommand": "-czf",
+    "title": "打包压缩目录",
+    "description": "czf = 创建 + gzip 压缩 + 指定文件名",
+    "category": "System",
+    "scenarios": [
+      "备份",
+      "部署"
+    ],
+    "aliases": [
+      "打包",
+      "压缩目录",
+      "打 tar 包"
+    ],
+    "syntax": "tar -czf <包名.tar.gz> <路径>"
+  },
+  {
+    "id": "base.tar.extract",
+    "executable": "tar",
+    "subcommand": "-xzf",
+    "title": "解压 tar.gz",
+    "description": "xzf = 解压 gzip 包；加 -C 指定解压目录",
+    "category": "System",
+    "scenarios": [
+      "部署",
+      "备份恢复"
+    ],
+    "aliases": [
+      "解压",
+      "解包",
+      "tar 解压"
+    ],
+    "syntax": "tar -xzf <包名.tar.gz> -C <目标目录>"
+  },
+  {
+    "id": "base.gzip",
+    "executable": "gzip",
+    "subcommand": "-k",
+    "title": "压缩单个文件",
+    "description": "-k 保留原文件（生成 .gz）",
+    "category": "System",
+    "scenarios": [
+      "备份",
+      "日志归档"
+    ],
+    "aliases": [
+      "压缩文件",
+      "gz 压缩"
+    ],
+    "syntax": "gzip -k <文件>"
+  },
+  {
+    "id": "base.zip",
+    "executable": "zip",
+    "subcommand": "-r",
+    "title": "打包成 zip",
+    "description": "-r 递归压缩目录",
+    "category": "System",
+    "scenarios": [
+      "备份",
+      "传输"
+    ],
+    "aliases": [
+      "zip 压缩",
+      "打 zip 包"
+    ],
+    "syntax": "zip -r <包名.zip> <路径>"
+  },
+  {
+    "id": "base.unzip",
+    "executable": "unzip",
+    "subcommand": "",
+    "title": "解压 zip",
+    "description": "加 -d 指定解压目录；-l 只看内容不解压",
+    "category": "System",
+    "scenarios": [
+      "部署",
+      "备份恢复"
+    ],
+    "aliases": [
+      "解压 zip",
+      "解 zip"
+    ],
+    "syntax": "unzip <包名.zip> -d <目标目录>"
+  },
+  {
+    "id": "pkg.apt.update",
+    "executable": "apt",
+    "subcommand": "update",
+    "title": "更新软件源索引（Debian/Ubuntu）",
+    "description": "装软件前先刷新包索引",
+    "category": "System",
+    "scenarios": [
+      "软件安装",
+      "环境准备"
+    ],
+    "aliases": [
+      "更新源",
+      "apt 更新",
+      "ubuntu 装软件"
+    ],
+    "syntax": "apt update"
+  },
+  {
+    "id": "pkg.apt.install",
+    "executable": "apt",
+    "subcommand": "install -y",
+    "title": "安装软件（Debian/Ubuntu）",
+    "description": "-y 自动确认；生产环境建议先不加 -y 看变更",
+    "category": "System",
+    "scenarios": [
+      "软件安装",
+      "环境准备"
+    ],
+    "aliases": [
+      "装软件",
+      "apt 安装",
+      "ubuntu 安装"
+    ],
+    "syntax": "apt install -y <包名>"
+  },
+  {
+    "id": "pkg.dnf.install",
+    "executable": "dnf",
+    "subcommand": "install -y",
+    "title": "安装软件（Fedora/RHEL 8+）",
+    "description": "新一代 RHEL 系包管理器（CentOS Stream/Rocky/Alma）",
+    "category": "System",
+    "scenarios": [
+      "软件安装",
+      "环境准备"
+    ],
+    "aliases": [
+      "dnf 安装",
+      "fedora 装软件",
+      "rocky 安装"
+    ],
+    "syntax": "dnf install -y <包名>"
+  },
+  {
+    "id": "pkg.yum.install",
+    "executable": "yum",
+    "subcommand": "install -y",
+    "title": "安装软件（CentOS 7）",
+    "description": "老版本 RHEL 系仍在广泛使用",
+    "category": "System",
+    "scenarios": [
+      "软件安装",
+      "环境准备"
+    ],
+    "aliases": [
+      "yum 安装",
+      "centos 装软件"
+    ],
+    "syntax": "yum install -y <包名>"
+  },
+  {
+    "id": "pkg.apk.install",
+    "executable": "apk",
+    "subcommand": "add",
+    "title": "安装软件（Alpine）",
+    "description": "Alpine 容器镜像里的包管理器",
+    "category": "System",
+    "scenarios": [
+      "软件安装",
+      "容器环境"
+    ],
+    "aliases": [
+      "apk 安装",
+      "alpine 装软件"
+    ],
+    "syntax": "apk add <包名>"
+  },
+  {
+    "id": "pkg.pacman.install",
+    "executable": "pacman",
+    "subcommand": "-S",
+    "title": "安装软件（Arch）",
+    "description": "Arch/Manjaro 的包管理器",
+    "category": "System",
+    "scenarios": [
+      "软件安装"
+    ],
+    "aliases": [
+      "pacman 安装",
+      "arch 装软件"
+    ],
+    "syntax": "pacman -S <包名>"
+  },
+  {
+    "id": "pkg.zypper.install",
+    "executable": "zypper",
+    "subcommand": "install",
+    "title": "安装软件（openSUSE）",
+    "description": "openSUSE/SLES 的包管理器",
+    "category": "System",
+    "scenarios": [
+      "软件安装"
+    ],
+    "aliases": [
+      "zypper 安装",
+      "suse 装软件"
+    ],
+    "syntax": "zypper install <包名>"
+  },
+  {
+    "id": "base.hostnamectl",
+    "executable": "hostnamectl",
+    "subcommand": "",
+    "title": "查看主机名与系统信息",
+    "description": "主机名、操作系统、内核、架构一览",
+    "category": "System",
+    "scenarios": [
+      "服务器信息",
+      "新手常用"
+    ],
+    "aliases": [
+      "主机名",
+      "系统信息"
+    ],
+    "syntax": "hostnamectl"
+  },
+  {
+    "id": "base.timedatectl",
+    "executable": "timedatectl",
+    "subcommand": "",
+    "title": "查看时间与时区",
+    "description": "排查日志时间对不上的第一步",
+    "category": "System",
+    "scenarios": [
+      "服务器信息",
+      "时间排障"
+    ],
+    "aliases": [
+      "时区",
+      "系统时间"
+    ],
+    "syntax": "timedatectl"
+  },
+  {
+    "id": "base.date",
+    "executable": "date",
+    "subcommand": "",
+    "title": "显示当前时间",
+    "description": "查看服务器当前日期时间",
+    "category": "System",
+    "scenarios": [
+      "服务器信息",
+      "时间排障"
+    ],
+    "aliases": [
+      "当前时间",
+      "几点了"
+    ],
+    "syntax": "date"
+  },
+  {
+    "id": "base.dmesg",
+    "executable": "dmesg",
+    "subcommand": "-T",
+    "title": "查看内核日志",
+    "description": "-T 显示可读时间；排查 OOM、磁盘、网卡故障",
+    "category": "System",
+    "scenarios": [
+      "内核排障",
+      "硬件排障"
+    ],
+    "aliases": [
+      "内核日志",
+      "启动日志",
+      "oom"
+    ],
+    "syntax": "dmesg -T | tail -n 50"
+  },
+  {
+    "id": "rabbitmq.status",
+    "executable": "rabbitmqctl",
+    "subcommand": "status",
+    "title": "RabbitMQ 状态",
+    "description": "节点与队列运行概况",
+    "category": "Database",
+    "scenarios": [
+      "数据库排障"
+    ],
+    "aliases": [
+      "rabbitmq 状态",
+      "mq 状态"
+    ],
+    "syntax": "rabbitmqctl status",
+    "requires": [
+      "Rabbitmq"
+    ]
+  },
+  {
+    "id": "system.cpu.info",
+    "executable": "lscpu",
+    "subcommand": "",
+    "title": "查看 CPU 架构",
+    "description": "查看核心数、线程数、NUMA 和指令集。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "CPU型号",
+      "处理器"
+    ],
+    "syntax": "lscpu"
+  },
+  {
+    "id": "system.cpu.count",
+    "executable": "nproc",
+    "subcommand": "",
+    "title": "查看可用 CPU 数",
+    "description": "显示当前进程可用的逻辑 CPU 数。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "CPU核数",
+      "线程数"
+    ],
+    "syntax": "nproc"
+  },
+  {
+    "id": "system.mem.info",
+    "executable": "cat",
+    "subcommand": "/proc/meminfo",
+    "title": "查看内存明细",
+    "description": "查看可用内存、缓存、交换空间和内核内存。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "内存明细",
+      "内存缓存"
+    ],
+    "syntax": "cat /proc/meminfo"
+  },
+  {
+    "id": "system.swap.list",
+    "executable": "swapon",
+    "subcommand": "--show",
+    "title": "查看交换空间",
+    "description": "列出启用的交换分区或文件、容量和使用量。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "swap",
+      "交换分区"
+    ],
+    "syntax": "swapon --show"
+  },
+  {
+    "id": "system.fs.inodes",
+    "executable": "df",
+    "subcommand": "-ih",
+    "title": "查看 inode 使用率",
+    "description": "定位磁盘仍有空间但无法创建文件的问题。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "inode",
+      "文件节点"
+    ],
+    "syntax": "df -ih"
+  },
+  {
+    "id": "system.fs.type",
+    "executable": "df",
+    "subcommand": "-hT",
+    "title": "查看文件系统类型和容量",
+    "description": "同时列出文件系统类型、空间和挂载点。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "磁盘分区",
+      "文件系统"
+    ],
+    "syntax": "df -hT"
+  },
+  {
+    "id": "system.fs.mounts",
+    "executable": "findmnt",
+    "subcommand": "",
+    "title": "查看挂载关系",
+    "description": "以树形查看挂载点、来源、类型与选项。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "挂载树",
+      "磁盘挂载"
+    ],
+    "syntax": "findmnt"
+  },
+  {
+    "id": "system.fs.path",
+    "executable": "findmnt",
+    "subcommand": "--target <路径>",
+    "title": "查询路径所在挂载",
+    "description": "确定某个目录由哪个设备和文件系统承载。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "路径挂载",
+      "所在磁盘"
+    ],
+    "syntax": "findmnt --target <路径>"
+  },
+  {
+    "id": "system.disk.uuid",
+    "executable": "lsblk",
+    "subcommand": "-f",
+    "title": "查看磁盘 UUID",
+    "description": "查看分区文件系统、标签、UUID 和挂载点。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "分区UUID",
+      "磁盘标签"
+    ],
+    "syntax": "lsblk -f"
+  },
+  {
+    "id": "system.disk.io",
+    "executable": "iostat",
+    "subcommand": "-xz 1 3",
+    "title": "查看磁盘 I/O",
+    "description": "采集三次扩展 I/O 指标，需安装 sysstat。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "磁盘延迟",
+      "IO瓶颈"
+    ],
+    "syntax": "iostat -xz 1 3"
+  },
+  {
+    "id": "system.vm.sample",
+    "executable": "vmstat",
+    "subcommand": "1 5",
+    "title": "采样系统资源",
+    "description": "采集五次进程、内存、交换、I/O 与 CPU 指标。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "资源采样",
+      "CPU等待"
+    ],
+    "syntax": "vmstat 1 5"
+  },
+  {
+    "id": "system.cpu.sample",
+    "executable": "mpstat",
+    "subcommand": "-P ALL 1 3",
+    "title": "查看每核 CPU 使用率",
+    "description": "采样各逻辑 CPU 的利用率，需安装 sysstat。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "每核CPU",
+      "CPU采样"
+    ],
+    "syntax": "mpstat -P ALL 1 3"
+  },
+  {
+    "id": "system.session.w",
+    "executable": "w",
+    "subcommand": "",
+    "title": "查看登录会话",
+    "description": "查看在线用户、会话来源和正在运行的命令。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "在线用户",
+      "登录来源"
+    ],
+    "syntax": "w"
+  },
+  {
+    "id": "system.session.last",
+    "executable": "last",
+    "subcommand": "-n 20",
+    "title": "查看近期登录",
+    "description": "读取最近二十条登录和重启记录。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "登录历史",
+      "重启记录"
+    ],
+    "syntax": "last -n 20"
+  },
+  {
+    "id": "system.reboot.time",
+    "executable": "who",
+    "subcommand": "-b",
+    "title": "查看上次启动时间",
+    "description": "读取系统最近一次启动的时间。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "开机时间",
+      "重启时间"
+    ],
+    "syntax": "who -b"
+  },
+  {
+    "id": "system.clock.hw",
+    "executable": "hwclock",
+    "subcommand": "--show",
+    "title": "查看硬件时钟",
+    "description": "读取硬件时钟，部分系统需要提升权限。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "RTC",
+      "硬件时间"
+    ],
+    "syntax": "hwclock --show"
+  },
+  {
+    "id": "system.file.stat",
+    "executable": "stat",
+    "subcommand": "-- <文件>",
+    "title": "查看文件元数据",
+    "description": "查看大小、权限、所有者和时间戳。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "文件权限",
+      "修改时间"
+    ],
+    "syntax": "stat -- <文件>"
+  },
+  {
+    "id": "system.file.type",
+    "executable": "file",
+    "subcommand": "-- <文件>",
+    "title": "识别文件类型",
+    "description": "按文件内容识别类型、编码或可执行格式。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "文件格式",
+      "文件编码"
+    ],
+    "syntax": "file -- <文件>"
+  },
+  {
+    "id": "system.file.lines",
+    "executable": "wc",
+    "subcommand": "-l -- <文件>",
+    "title": "统计文件行数",
+    "description": "统计文本中的换行数。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "行数统计",
+      "日志行数"
+    ],
+    "syntax": "wc -l -- <文件>"
+  },
+  {
+    "id": "system.file.sha256",
+    "executable": "sha256sum",
+    "subcommand": "-- <文件>",
+    "title": "计算 SHA-256",
+    "description": "为安装包或备份计算 SHA-256 校验值。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "哈希",
+      "文件校验"
+    ],
+    "syntax": "sha256sum -- <文件>"
+  },
+  {
+    "id": "system.file.diff",
+    "executable": "diff",
+    "subcommand": "-u -- <旧文件> <新文件>",
+    "title": "比较两个文件",
+    "description": "以统一差异格式查看配置变更。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "配置对比",
+      "文件差异"
+    ],
+    "syntax": "diff -u -- <旧文件> <新文件>"
+  },
+  {
+    "id": "system.file.large",
+    "executable": "find",
+    "subcommand": "<目录> -xdev -type f -size +100M -print",
+    "title": "查找大文件",
+    "description": "仅扫描当前文件系统，列出超过 100 MiB 的文件。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "大文件",
+      "磁盘满"
+    ],
+    "syntax": "find <目录> -xdev -type f -size +100M -print"
+  },
+  {
+    "id": "system.file.recent",
+    "executable": "find",
+    "subcommand": "<目录> -xdev -type f -mtime -1 -print",
+    "title": "查找近期改动文件",
+    "description": "列出最近一天内修改的文件。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "最近修改",
+      "变更排查"
+    ],
+    "syntax": "find <目录> -xdev -type f -mtime -1 -print"
+  },
+  {
+    "id": "system.archive.tarlist",
+    "executable": "tar",
+    "subcommand": "-tf <归档文件>",
+    "title": "查看 tar 内容",
+    "description": "列出归档条目，不解压文件。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "tar列表",
+      "压缩包内容"
+    ],
+    "syntax": "tar -tf <归档文件>"
+  },
+  {
+    "id": "system.archive.ziplist",
+    "executable": "unzip",
+    "subcommand": "-l <压缩包>",
+    "title": "查看 ZIP 内容",
+    "description": "显示 ZIP 内的文件名、大小和日期。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "zip列表",
+      "查看压缩包"
+    ],
+    "syntax": "unzip -l <压缩包>"
+  },
+  {
+    "id": "system.archive.gziptest",
+    "executable": "gzip",
+    "subcommand": "-t -- <文件.gz>",
+    "title": "校验 gzip 完整性",
+    "description": "检查压缩数据能否完整读取。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "gzip校验",
+      "压缩包检测"
+    ],
+    "syntax": "gzip -t -- <文件.gz>"
+  },
+  {
+    "id": "system.account.getent",
+    "executable": "getent",
+    "subcommand": "passwd <用户名>",
+    "title": "查询用户账户",
+    "description": "按系统名称服务配置查找指定账户。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "用户信息",
+      "系统账号"
+    ],
+    "syntax": "getent passwd <用户名>"
+  },
+  {
+    "id": "system.account.groups",
+    "executable": "groups",
+    "subcommand": "<用户名>",
+    "title": "查询用户组",
+    "description": "查看指定账户所属的用户组。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "用户组",
+      "权限排查"
+    ],
+    "syntax": "groups <用户名>"
+  },
+  {
+    "id": "system.cron.list",
+    "executable": "crontab",
+    "subcommand": "-l",
+    "title": "查看当前用户定时任务",
+    "description": "列出当前账户的 crontab。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "cron",
+      "计划任务"
+    ],
+    "syntax": "crontab -l"
+  },
+  {
+    "id": "system.pkg.dpkg",
+    "executable": "dpkg",
+    "subcommand": "-l",
+    "title": "查看 Debian 已安装软件包",
+    "description": "列出 dpkg 记录中的软件包和状态。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "Debian包",
+      "Ubuntu包"
+    ],
+    "syntax": "dpkg -l"
+  },
+  {
+    "id": "system.pkg.rpm",
+    "executable": "rpm",
+    "subcommand": "-qa",
+    "title": "查看 RPM 已安装软件包",
+    "description": "查询 RPM 数据库中的安装记录。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "RPM包",
+      "RHEL包"
+    ],
+    "syntax": "rpm -qa"
+  },
+  {
+    "id": "system.pkg.aptpolicy",
+    "executable": "apt-cache",
+    "subcommand": "policy <软件包>",
+    "title": "查看 APT 候选版本",
+    "description": "对比已安装版本、候选版本和软件源优先级。",
+    "category": "System",
+    "scenarios": [
+      "主机巡检"
+    ],
+    "aliases": [
+      "APT版本",
+      "软件源"
+    ],
+    "syntax": "apt-cache policy <软件包>"
+  },
+  {
+    "id": "process.memory.top",
+    "executable": "ps",
+    "subcommand": "-eo pid,user,%mem,rss,comm --sort=-rss",
+    "title": "按内存排序进程",
+    "description": "按 RSS 从高到低查看进程内存占用。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "内存大户",
+      "进程内存"
+    ],
+    "syntax": "ps -eo pid,user,%mem,rss,comm --sort=-rss"
+  },
+  {
+    "id": "process.tree",
+    "executable": "pstree",
+    "subcommand": "-p",
+    "title": "查看进程树",
+    "description": "显示父子进程关系和 PID。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "父子进程",
+      "进程关系"
+    ],
+    "syntax": "pstree -p"
+  },
+  {
+    "id": "process.pid.details",
+    "executable": "ps",
+    "subcommand": "-p <PID> -o pid,ppid,user,stat,etime,%cpu,%mem,comm",
+    "title": "查看指定进程",
+    "description": "查看父进程、状态、运行时间和资源用量。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "PID",
+      "进程详情"
+    ],
+    "syntax": "ps -p <PID> -o pid,ppid,user,stat,etime,%cpu,%mem,comm"
+  },
+  {
+    "id": "process.pid.files",
+    "executable": "lsof",
+    "subcommand": "-p <PID>",
+    "title": "查看进程打开的文件",
+    "description": "列出指定进程打开的文件、套接字等资源。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "文件描述符",
+      "打开文件"
+    ],
+    "syntax": "lsof -p <PID>"
+  },
+  {
+    "id": "process.deleted.files",
+    "executable": "lsof",
+    "subcommand": "+L1",
+    "title": "查看已删除但仍占空间的文件",
+    "description": "查找链接数小于一且仍由进程持有的文件。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "磁盘空间不释放",
+      "已删除文件"
+    ],
+    "syntax": "lsof +L1"
+  },
+  {
+    "id": "process.pid.io",
+    "executable": "pidstat",
+    "subcommand": "-d -p <PID> 1 3",
+    "title": "查看进程 I/O",
+    "description": "采样指定进程读写速率，需安装 sysstat。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "进程IO",
+      "磁盘读写"
+    ],
+    "syntax": "pidstat -d -p <PID> 1 3"
+  },
+  {
+    "id": "net.interfaces.brief",
+    "executable": "ip",
+    "subcommand": "-br addr",
+    "title": "查看网卡地址概览",
+    "description": "按网卡展示链路状态及 IP 地址。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "IP地址",
+      "网络接口"
+    ],
+    "syntax": "ip -br addr"
+  },
+  {
+    "id": "net.interfaces.stats",
+    "executable": "ip",
+    "subcommand": "-s link",
+    "title": "查看网卡流量和丢包",
+    "description": "显示收发字节、错误和丢弃计数。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "网卡丢包",
+      "网卡统计"
+    ],
+    "syntax": "ip -s link"
+  },
+  {
+    "id": "net.route.list",
+    "executable": "ip",
+    "subcommand": "route show",
+    "title": "查看 IPv4 路由",
+    "description": "列出网关、网卡和路由规则。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "路由表",
+      "默认网关"
+    ],
+    "syntax": "ip route show"
+  },
+  {
+    "id": "net.route.get",
+    "executable": "ip",
+    "subcommand": "route get <目标IP>",
+    "title": "查询目标 IP 的实际路由",
+    "description": "查看到目标地址使用的路由和源地址。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "路由选择",
+      "出口IP"
+    ],
+    "syntax": "ip route get <目标IP>"
+  },
+  {
+    "id": "net.route.ipv6",
+    "executable": "ip",
+    "subcommand": "-6 route show",
+    "title": "查看 IPv6 路由",
+    "description": "检查 IPv6 路由和默认网关。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "IPv6网关",
+      "IPv6路由"
+    ],
+    "syntax": "ip -6 route show"
+  },
+  {
+    "id": "net.neighbors",
+    "executable": "ip",
+    "subcommand": "neigh show",
+    "title": "查看邻居表",
+    "description": "检查 ARP 或 IPv6 邻居发现状态。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "ARP表",
+      "邻居缓存"
+    ],
+    "syntax": "ip neigh show"
+  },
+  {
+    "id": "net.sockets.summary",
+    "executable": "ss",
+    "subcommand": "-s",
+    "title": "查看套接字统计",
+    "description": "汇总 TCP、UDP 和其他套接字数量。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "连接数",
+      "套接字统计"
+    ],
+    "syntax": "ss -s"
+  },
+  {
+    "id": "net.sockets.tcp",
+    "executable": "ss",
+    "subcommand": "-tan state established",
+    "title": "查看已建立 TCP 连接",
+    "description": "列出处于 ESTABLISHED 的 TCP 套接字。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "TCP连接",
+      "已建立连接"
+    ],
+    "syntax": "ss -tan state established"
+  },
+  {
+    "id": "net.sockets.udp",
+    "executable": "ss",
+    "subcommand": "-lunp",
+    "title": "查看 UDP 监听端口",
+    "description": "查看 UDP 本地监听地址和关联进程。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "UDP端口",
+      "UDP监听"
+    ],
+    "syntax": "ss -lunp"
+  },
+  {
+    "id": "net.dns.resolve",
+    "executable": "getent",
+    "subcommand": "ahosts <域名>",
+    "title": "按系统规则解析域名",
+    "description": "按 NSS 配置查询名称对应的地址。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "系统DNS",
+      "域名解析"
+    ],
+    "syntax": "getent ahosts <域名>"
+  },
+  {
+    "id": "net.dns.a",
+    "executable": "dig",
+    "subcommand": "+short <域名> A",
+    "title": "查询 DNS A 记录",
+    "description": "简洁显示 IPv4 解析结果。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "A记录",
+      "DNS查询"
+    ],
+    "syntax": "dig +short <域名> A"
+  },
+  {
+    "id": "net.dns.aaaa",
+    "executable": "dig",
+    "subcommand": "+short <域名> AAAA",
+    "title": "查询 DNS AAAA 记录",
+    "description": "简洁显示 IPv6 解析结果。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "AAAA记录",
+      "IPv6解析"
+    ],
+    "syntax": "dig +short <域名> AAAA"
+  },
+  {
+    "id": "net.dns.txt",
+    "executable": "dig",
+    "subcommand": "+short <域名> TXT",
+    "title": "查询 DNS TXT 记录",
+    "description": "检查站点验证、SPF 等 TXT 记录。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "TXT记录",
+      "域名验证"
+    ],
+    "syntax": "dig +short <域名> TXT"
+  },
+  {
+    "id": "net.dns.ns",
+    "executable": "dig",
+    "subcommand": "+short <域名> NS",
+    "title": "查询域名权威服务器",
+    "description": "查找负责解析域名的 DNS 服务器。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "NS记录",
+      "权威DNS"
+    ],
+    "syntax": "dig +short <域名> NS"
+  },
+  {
+    "id": "net.http.headers",
+    "executable": "curl",
+    "subcommand": "-I --max-time 10 -- <URL>",
+    "title": "查看 HTTP 响应头",
+    "description": "发送有超时限制的 HEAD 请求，查看响应码和头部。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "HTTP状态",
+      "响应头"
+    ],
+    "syntax": "curl -I --max-time 10 -- <URL>"
+  },
+  {
+    "id": "net.http.redirect",
+    "executable": "curl",
+    "subcommand": "-IL --max-time 15 -- <URL>",
+    "title": "检查 HTTP 跳转链",
+    "description": "跟随重定向并打印各阶段的响应头。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "301跳转",
+      "重定向"
+    ],
+    "syntax": "curl -IL --max-time 15 -- <URL>"
+  },
+  {
+    "id": "net.tcp.check",
+    "executable": "nc",
+    "subcommand": "-vz -w 5 <主机> <端口>",
+    "title": "测试 TCP 端口连通性",
+    "description": "使用 netcat 进行短超时连接探测，选项依实现而异。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "TCP探活",
+      "端口通不通"
+    ],
+    "syntax": "nc -vz -w 5 <主机> <端口>"
+  },
+  {
+    "id": "net.firewall.nft",
+    "executable": "nft",
+    "subcommand": "list ruleset",
+    "title": "查看 nftables 防火墙",
+    "description": "列出规则集，通常需要管理员权限。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "nftables",
+      "防火墙规则"
+    ],
+    "syntax": "nft list ruleset"
+  },
+  {
+    "id": "net.firewall.ufw",
+    "executable": "ufw",
+    "subcommand": "status verbose",
+    "title": "查看 UFW 状态",
+    "description": "查看 UFW 默认策略、日志设置与规则。",
+    "category": "Process",
+    "scenarios": [
+      "网络与进程排障"
+    ],
+    "aliases": [
+      "UFW",
+      "防火墙状态"
+    ],
+    "syntax": "ufw status verbose"
+  },
+  {
+    "id": "systemctl.failed",
+    "executable": "systemctl",
+    "subcommand": "--failed --no-pager",
+    "title": "查看失败的单元",
+    "description": "列出 systemd 标记为失败的单元。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "服务失败",
+      "启动失败"
+    ],
+    "syntax": "systemctl --failed --no-pager",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.timers",
+    "executable": "systemctl",
+    "subcommand": "list-timers --all --no-pager",
+    "title": "查看 systemd 定时器",
+    "description": "检查定时器上次和下次触发时间。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "systemd定时任务",
+      "timer"
+    ],
+    "syntax": "systemctl list-timers --all --no-pager",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.unitfiles",
+    "executable": "systemctl",
+    "subcommand": "list-unit-files --type=service --no-pager",
+    "title": "查看服务自启状态",
+    "description": "列出服务单元文件和启用状态。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "开机自启",
+      "服务自启"
+    ],
+    "syntax": "systemctl list-unit-files --type=service --no-pager",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.cat",
+    "executable": "systemctl",
+    "subcommand": "cat -- <unit>",
+    "title": "查看服务配置",
+    "description": "展示服务的单元文件和覆盖片段。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "unit配置",
+      "服务定义"
+    ],
+    "syntax": "systemctl cat -- <unit>",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.dependencies",
+    "executable": "systemctl",
+    "subcommand": "list-dependencies --no-pager -- <unit>",
+    "title": "查看服务依赖",
+    "description": "按树形查看指定单元的依赖。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "服务依赖",
+      "单元依赖"
+    ],
+    "syntax": "systemctl list-dependencies --no-pager -- <unit>",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.active",
+    "executable": "systemctl",
+    "subcommand": "is-active -- <unit>",
+    "title": "检查服务是否运行",
+    "description": "输出指定单元的活跃状态。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "is-active",
+      "服务运行状态"
+    ],
+    "syntax": "systemctl is-active -- <unit>",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "systemctl.enabled",
+    "executable": "systemctl",
+    "subcommand": "is-enabled -- <unit>",
+    "title": "检查服务是否自启",
+    "description": "输出指定单元的启用状态。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "is-enabled",
+      "自启动"
+    ],
+    "syntax": "systemctl is-enabled -- <unit>",
+    "requires": [
+      "Systemctl"
+    ]
+  },
+  {
+    "id": "journalctl.boot.current",
+    "executable": "journalctl",
+    "subcommand": "-b -n 100 --no-pager",
+    "title": "查看本次启动日志",
+    "description": "显示本次启动最近一百行日志。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "开机日志",
+      "启动排障"
+    ],
+    "syntax": "journalctl -b -n 100 --no-pager"
+  },
+  {
+    "id": "journalctl.boot.previous",
+    "executable": "journalctl",
+    "subcommand": "-b -1 -n 100 --no-pager",
+    "title": "查看上一次启动日志",
+    "description": "读取上一轮启动的末尾日志，需保留历史日志。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "上次启动",
+      "重启排查"
+    ],
+    "syntax": "journalctl -b -1 -n 100 --no-pager"
+  },
+  {
+    "id": "journalctl.boot.list",
+    "executable": "journalctl",
+    "subcommand": "--list-boots --no-pager",
+    "title": "列出启动记录",
+    "description": "查看保留的启动编号、ID 和时间范围。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "启动历史",
+      "boot记录"
+    ],
+    "syntax": "journalctl --list-boots --no-pager"
+  },
+  {
+    "id": "journalctl.kernel",
+    "executable": "journalctl",
+    "subcommand": "-k -b -n 100 --no-pager",
+    "title": "查看本次内核日志",
+    "description": "筛选本次启动的内核消息。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "内核日志",
+      "驱动日志"
+    ],
+    "syntax": "journalctl -k -b -n 100 --no-pager"
+  },
+  {
+    "id": "journalctl.recent",
+    "executable": "journalctl",
+    "subcommand": "--since \"1 hour ago\" -n 200 --no-pager",
+    "title": "查看最近一小时日志",
+    "description": "按时间过滤并限制最多两百行。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "最近日志",
+      "一小时日志"
+    ],
+    "syntax": "journalctl --since \"1 hour ago\" -n 200 --no-pager"
+  },
+  {
+    "id": "journalctl.usage",
+    "executable": "journalctl",
+    "subcommand": "--disk-usage",
+    "title": "查看系统日志占用",
+    "description": "统计当前与归档 journal 的磁盘用量。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "日志磁盘",
+      "日志容量"
+    ],
+    "syntax": "journalctl --disk-usage"
+  },
+  {
+    "id": "systemd.boot.time",
+    "executable": "systemd-analyze",
+    "subcommand": "time",
+    "title": "查看系统启动耗时",
+    "description": "查看内核和用户空间的启动时间。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "启动耗时",
+      "开机慢"
+    ],
+    "syntax": "systemd-analyze time"
+  },
+  {
+    "id": "systemd.boot.blame",
+    "executable": "systemd-analyze",
+    "subcommand": "blame",
+    "title": "查看启动耗时排行",
+    "description": "按单元初始化耗时排序。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "启动排行",
+      "慢启动服务"
+    ],
+    "syntax": "systemd-analyze blame"
+  },
+  {
+    "id": "service.supervisor.status",
+    "executable": "supervisorctl",
+    "subcommand": "status",
+    "title": "查看 Supervisor 进程",
+    "description": "显示 Supervisor 管理的进程状态。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "Supervisor",
+      "进程守护"
+    ],
+    "syntax": "supervisorctl status",
+    "requires": [
+      "Supervisor"
+    ]
+  },
+  {
+    "id": "service.pm2.list",
+    "executable": "pm2",
+    "subcommand": "list",
+    "title": "查看 PM2 应用",
+    "description": "列出 PM2 应用状态、重启次数和资源占用。",
+    "category": "Service",
+    "scenarios": [
+      "服务与日志排障"
+    ],
+    "aliases": [
+      "PM2应用",
+      "Node进程"
+    ],
+    "syntax": "pm2 list",
+    "requires": [
+      "Pm2"
+    ]
+  },
+  {
+    "id": "docker.disk.usage",
+    "executable": "docker",
+    "subcommand": "system df",
+    "title": "查看 Docker 磁盘用量",
+    "description": "汇总镜像、容器、卷和构建缓存占用。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Docker磁盘",
+      "镜像占用"
+    ],
+    "syntax": "docker system df",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.network.list",
+    "executable": "docker",
+    "subcommand": "network ls",
+    "title": "列出 Docker 网络",
+    "description": "查看网络名称、驱动和范围。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "容器网络",
+      "Docker网络"
+    ],
+    "syntax": "docker network ls",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.network.details",
+    "executable": "docker",
+    "subcommand": "network inspect <网络>",
+    "title": "查看 Docker 网络详情",
+    "description": "检查子网、网关及所连接的容器。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "容器子网",
+      "网桥"
+    ],
+    "syntax": "docker network inspect <网络>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.volume.list",
+    "executable": "docker",
+    "subcommand": "volume ls",
+    "title": "列出 Docker 数据卷",
+    "description": "查看卷名称及卷驱动。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Docker数据卷",
+      "卷列表"
+    ],
+    "syntax": "docker volume ls",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.volume.details",
+    "executable": "docker",
+    "subcommand": "volume inspect <数据卷>",
+    "title": "查看 Docker 卷详情",
+    "description": "检查卷驱动、挂载路径与标签。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "卷路径",
+      "卷详情"
+    ],
+    "syntax": "docker volume inspect <数据卷>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.port.map",
+    "executable": "docker",
+    "subcommand": "port <container>",
+    "title": "查看容器端口映射",
+    "description": "列出容器端口和宿主机绑定地址。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "端口映射",
+      "容器端口"
+    ],
+    "syntax": "docker port <container>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.process.top",
+    "executable": "docker",
+    "subcommand": "top <container>",
+    "title": "查看容器内进程",
+    "description": "列出指定容器的运行进程。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "容器进程",
+      "Docker进程"
+    ],
+    "syntax": "docker top <container>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.image.history",
+    "executable": "docker",
+    "subcommand": "image history <镜像>",
+    "title": "查看镜像层历史",
+    "description": "查看各镜像层的构建指令和大小。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "镜像层",
+      "镜像构建"
+    ],
+    "syntax": "docker image history <镜像>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.image.details",
+    "executable": "docker",
+    "subcommand": "image inspect <镜像>",
+    "title": "查看镜像详情",
+    "description": "检查镜像 ID、入口命令、平台和标签。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "镜像详情",
+      "镜像入口"
+    ],
+    "syntax": "docker image inspect <镜像>",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.engine.version",
+    "executable": "docker",
+    "subcommand": "version",
+    "title": "查看 Docker 版本",
+    "description": "查看客户端和服务端的版本与 API 信息。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Docker版本",
+      "引擎版本"
+    ],
+    "syntax": "docker version",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "docker.context.list",
+    "executable": "docker",
+    "subcommand": "context ls",
+    "title": "查看 Docker 上下文",
+    "description": "显示当前上下文和可连接的引擎端点。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Docker上下文",
+      "远程引擎"
+    ],
+    "syntax": "docker context ls",
+    "requires": [
+      "Docker"
+    ]
+  },
+  {
+    "id": "compose.projects.list",
+    "executable": "docker",
+    "subcommand": "compose ls -a",
+    "title": "查看 Compose 项目",
+    "description": "列出 Compose 项目，包括已停止项目。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Compose项目",
+      "容器编排"
+    ],
+    "syntax": "docker compose ls -a",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.images.list",
+    "executable": "docker",
+    "subcommand": "compose images",
+    "title": "查看 Compose 使用的镜像",
+    "description": "在项目目录中查看各服务的镜像。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Compose镜像",
+      "服务镜像"
+    ],
+    "syntax": "docker compose images",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.process.top",
+    "executable": "docker",
+    "subcommand": "compose top",
+    "title": "查看 Compose 服务进程",
+    "description": "在项目目录中查看各服务容器的进程。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Compose进程",
+      "服务进程"
+    ],
+    "syntax": "docker compose top",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "compose.logs.recent",
+    "executable": "docker",
+    "subcommand": "compose logs --tail 100 <服务>",
+    "title": "查看 Compose 服务近期日志",
+    "description": "在项目目录中查看指定服务的最近日志。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Compose日志",
+      "容器日志"
+    ],
+    "syntax": "docker compose logs --tail 100 <服务>",
+    "requires": [
+      "DockerCompose"
+    ]
+  },
+  {
+    "id": "podman.container.list",
+    "executable": "podman",
+    "subcommand": "ps -a",
+    "title": "查看 Podman 容器",
+    "description": "查看运行中和停止的容器。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Podman容器",
+      "容器列表"
+    ],
+    "syntax": "podman ps -a",
+    "requires": [
+      "Podman"
+    ]
+  },
+  {
+    "id": "podman.image.list",
+    "executable": "podman",
+    "subcommand": "images",
+    "title": "查看 Podman 镜像",
+    "description": "查看本机 Podman 镜像和标签。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Podman镜像",
+      "镜像列表"
+    ],
+    "syntax": "podman images",
+    "requires": [
+      "Podman"
+    ]
+  },
+  {
+    "id": "kube.context.current",
+    "executable": "kubectl",
+    "subcommand": "config current-context",
+    "title": "查看当前 K8s 上下文",
+    "description": "确认命令目标集群对应的上下文。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "K8s上下文",
+      "当前集群"
+    ],
+    "syntax": "kubectl config current-context",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.context.list",
+    "executable": "kubectl",
+    "subcommand": "config get-contexts",
+    "title": "列出 K8s 上下文",
+    "description": "检查 kubeconfig 中的上下文、集群和命名空间。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Kubernetes上下文",
+      "集群列表"
+    ],
+    "syntax": "kubectl config get-contexts",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.nodes.list",
+    "executable": "kubectl",
+    "subcommand": "get nodes -o wide",
+    "title": "查看 K8s 节点",
+    "description": "查看节点状态、IP、系统和容器运行时。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "K8s节点",
+      "Kubernetes节点"
+    ],
+    "syntax": "kubectl get nodes -o wide",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.namespaces.list",
+    "executable": "kubectl",
+    "subcommand": "get namespaces",
+    "title": "查看 K8s 命名空间",
+    "description": "列出当前集群的命名空间。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "namespace",
+      "K8s命名空间"
+    ],
+    "syntax": "kubectl get namespaces",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pods.list",
+    "executable": "kubectl",
+    "subcommand": "get pods -A -o wide",
+    "title": "查看所有 K8s Pod",
+    "description": "查看各命名空间 Pod 的状态、IP 和所在节点。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "K8s Pod",
+      "Pod列表"
+    ],
+    "syntax": "kubectl get pods -A -o wide",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pod.details",
+    "executable": "kubectl",
+    "subcommand": "describe pod <Pod> -n <命名空间>",
+    "title": "查看 Pod 详情与事件",
+    "description": "检查状态、容器和调度事件。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Pod详情",
+      "Pod排障"
+    ],
+    "syntax": "kubectl describe pod <Pod> -n <命名空间>",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.deployments.list",
+    "executable": "kubectl",
+    "subcommand": "get deployments -A",
+    "title": "查看 K8s Deployment",
+    "description": "检查各工作负载的副本可用情况。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Deployment",
+      "K8s部署"
+    ],
+    "syntax": "kubectl get deployments -A",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.services.list",
+    "executable": "kubectl",
+    "subcommand": "get services -A",
+    "title": "查看 K8s Service",
+    "description": "检查服务类型、集群 IP、外部 IP 和端口。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Service",
+      "K8s服务"
+    ],
+    "syntax": "kubectl get services -A",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.ingresses.list",
+    "executable": "kubectl",
+    "subcommand": "get ingress -A",
+    "title": "查看 K8s Ingress",
+    "description": "核对域名、入口地址和端口。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Ingress",
+      "K8s网关"
+    ],
+    "syntax": "kubectl get ingress -A",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pvc.list",
+    "executable": "kubectl",
+    "subcommand": "get pvc -A",
+    "title": "查看 K8s 存储声明",
+    "description": "检查存储绑定、容量和存储类。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "PVC",
+      "K8s存储"
+    ],
+    "syntax": "kubectl get pvc -A",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.events.recent",
+    "executable": "kubectl",
+    "subcommand": "get events -A --sort-by=.metadata.creationTimestamp",
+    "title": "查看 K8s 事件",
+    "description": "按创建时间查看调度、拉镜像或探针失败。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "K8s事件",
+      "调度失败"
+    ],
+    "syntax": "kubectl get events -A --sort-by=.metadata.creationTimestamp",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pod.logs",
+    "executable": "kubectl",
+    "subcommand": "logs --tail=100 <Pod> -n <命名空间>",
+    "title": "查看 Pod 最近日志",
+    "description": "限制输出行数，多容器 Pod 可追加 -c。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Pod日志",
+      "K8s日志"
+    ],
+    "syntax": "kubectl logs --tail=100 <Pod> -n <命名空间>",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pod.logs.previous",
+    "executable": "kubectl",
+    "subcommand": "logs --previous --tail=100 <Pod> -n <命名空间>",
+    "title": "查看上一容器实例日志",
+    "description": "排查已重启容器的异常退出。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "容器重启",
+      "CrashLoopBackOff"
+    ],
+    "syntax": "kubectl logs --previous --tail=100 <Pod> -n <命名空间>",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.nodes.metrics",
+    "executable": "kubectl",
+    "subcommand": "top nodes",
+    "title": "查看 K8s 节点资源",
+    "description": "读取节点 CPU 和内存指标，依赖 Metrics API。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "K8s CPU",
+      "节点内存"
+    ],
+    "syntax": "kubectl top nodes",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.pods.metrics",
+    "executable": "kubectl",
+    "subcommand": "top pods -A",
+    "title": "查看 Pod 资源",
+    "description": "读取各命名空间 Pod 的 CPU 和内存指标。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Pod CPU",
+      "Pod内存"
+    ],
+    "syntax": "kubectl top pods -A",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "kube.rollout.check",
+    "executable": "kubectl",
+    "subcommand": "rollout status deployment/<部署名> -n <命名空间> --watch=false",
+    "title": "查看 K8s 发布进度",
+    "description": "读取当前 Deployment 发布状态。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "滚动发布",
+      "发布进度"
+    ],
+    "syntax": "kubectl rollout status deployment/<部署名> -n <命名空间> --watch=false",
+    "requires": [
+      "Kubectl"
+    ]
+  },
+  {
+    "id": "helm.releases.list",
+    "executable": "helm",
+    "subcommand": "list -A",
+    "title": "查看 Helm 发布列表",
+    "description": "列出命名空间中的 Helm release。",
+    "category": "Container",
+    "scenarios": [
+      "容器与集群巡检"
+    ],
+    "aliases": [
+      "Helm发布",
+      "Chart部署"
+    ],
+    "syntax": "helm list -A",
+    "requires": [
+      "Helm"
+    ]
+  },
+  {
+    "id": "nginx.build.options",
+    "executable": "nginx",
+    "subcommand": "-V",
+    "title": "查看 Nginx 编译选项",
+    "description": "查看版本、编译参数和内置模块。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "Nginx模块",
+      "Nginx编译参数"
+    ],
+    "syntax": "nginx -V",
+    "requires": [
+      "Nginx"
+    ]
+  },
+  {
+    "id": "nginx.access.recent",
+    "executable": "tail",
+    "subcommand": "-n 100 /var/log/nginx/access.log",
+    "title": "查看 Nginx 访问日志",
+    "description": "读取常见默认位置的最近一百行访问日志。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "访问日志",
+      "access.log"
+    ],
+    "syntax": "tail -n 100 /var/log/nginx/access.log"
+  },
+  {
+    "id": "nginx.errors.recent",
+    "executable": "tail",
+    "subcommand": "-n 100 /var/log/nginx/error.log",
+    "title": "查看 Nginx 错误日志",
+    "description": "读取常见默认位置的最近一百行错误日志。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "Nginx报错",
+      "error.log"
+    ],
+    "syntax": "tail -n 100 /var/log/nginx/error.log"
+  },
+  {
+    "id": "apache.config.test",
+    "executable": "apachectl",
+    "subcommand": "configtest",
+    "title": "检查 Apache 配置",
+    "description": "执行 Apache 配置语法检查。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "Apache校验",
+      "httpd配置"
+    ],
+    "syntax": "apachectl configtest"
+  },
+  {
+    "id": "tls.cert.local",
+    "executable": "openssl",
+    "subcommand": "x509 -in <证书路径> -noout -subject -issuer -dates",
+    "title": "查看证书有效期",
+    "description": "读取本地证书的主体、签发者与有效期。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "SSL证书",
+      "证书到期"
+    ],
+    "syntax": "openssl x509 -in <证书路径> -noout -subject -issuer -dates"
+  },
+  {
+    "id": "tls.cert.fingerprint",
+    "executable": "openssl",
+    "subcommand": "x509 -in <证书路径> -noout -fingerprint -sha256",
+    "title": "查看证书指纹",
+    "description": "计算本地证书的 SHA-256 指纹。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "证书指纹",
+      "SSL指纹"
+    ],
+    "syntax": "openssl x509 -in <证书路径> -noout -fingerprint -sha256"
+  },
+  {
+    "id": "tls.certbot.list",
+    "executable": "certbot",
+    "subcommand": "certificates",
+    "title": "查看 Certbot 证书",
+    "description": "列出 Certbot 管理的域名、路径与到期时间。",
+    "category": "Gateway",
+    "scenarios": [
+      "网关与证书排障"
+    ],
+    "aliases": [
+      "Let's Encrypt",
+      "Certbot"
+    ],
+    "syntax": "certbot certificates"
+  },
+  {
+    "id": "git.diff.worktree",
+    "executable": "git",
+    "subcommand": "diff --stat",
+    "title": "查看未暂存改动摘要",
+    "description": "按文件列出工作树改动行数。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "Git变更",
+      "未暂存"
+    ],
+    "syntax": "git diff --stat",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.diff.index",
+    "executable": "git",
+    "subcommand": "diff --cached --stat",
+    "title": "查看已暂存改动摘要",
+    "description": "列出即将提交的文件改动。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "暂存区",
+      "待提交"
+    ],
+    "syntax": "git diff --cached --stat",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.show.head",
+    "executable": "git",
+    "subcommand": "show --stat --oneline HEAD",
+    "title": "查看当前提交摘要",
+    "description": "显示 HEAD 的提交标题和文件改动。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "当前提交",
+      "HEAD"
+    ],
+    "syntax": "git show --stat --oneline HEAD",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.branch.current",
+    "executable": "git",
+    "subcommand": "branch --show-current",
+    "title": "查看当前 Git 分支",
+    "description": "输出当前分支名，分离 HEAD 时为空。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "当前分支",
+      "Git分支"
+    ],
+    "syntax": "git branch --show-current",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.branch.all",
+    "executable": "git",
+    "subcommand": "branch -avv",
+    "title": "查看本地与远端分支",
+    "description": "同时查看分支最后提交和跟踪状态。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "远程分支",
+      "分支跟踪"
+    ],
+    "syntax": "git branch -avv",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.tag.recent",
+    "executable": "git",
+    "subcommand": "tag --sort=-creatordate",
+    "title": "按时间查看 Git 标签",
+    "description": "按标签创建时间倒序列出本地标签。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "Git标签",
+      "版本标签"
+    ],
+    "syntax": "git tag --sort=-creatordate",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.revision.short",
+    "executable": "git",
+    "subcommand": "rev-parse --short HEAD",
+    "title": "查看短提交 ID",
+    "description": "获取当前代码版本的短提交哈希。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "部署版本",
+      "提交哈希"
+    ],
+    "syntax": "git rev-parse --short HEAD",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "git.reflog.recent",
+    "executable": "git",
+    "subcommand": "reflog -n 15",
+    "title": "查看 Git 引用历史",
+    "description": "查看本地 HEAD 最近的移动记录。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "Git历史",
+      "reflog"
+    ],
+    "syntax": "git reflog -n 15",
+    "requires": [
+      "Git"
+    ]
+  },
+  {
+    "id": "npm.dependencies.top",
+    "executable": "npm",
+    "subcommand": "ls --depth=0",
+    "title": "查看项目直接依赖",
+    "description": "列出当前 npm 项目的顶层依赖。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "npm依赖",
+      "Node依赖"
+    ],
+    "syntax": "npm ls --depth=0",
+    "requires": [
+      "Npm"
+    ]
+  },
+  {
+    "id": "python.packages.list",
+    "executable": "python3",
+    "subcommand": "-m pip list",
+    "title": "查看 Python 已装包",
+    "description": "列出当前 Python 环境的已安装包。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "pip包",
+      "Python依赖"
+    ],
+    "syntax": "python3 -m pip list",
+    "requires": [
+      "Python"
+    ]
+  },
+  {
+    "id": "rust.toolchain.version",
+    "executable": "rustc",
+    "subcommand": "--version",
+    "title": "查看 Rust 编译器版本",
+    "description": "输出当前 rustc 的版本。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "Rust版本",
+      "rustc"
+    ],
+    "syntax": "rustc --version",
+    "requires": [
+      "Rustc"
+    ]
+  },
+  {
+    "id": "dotnet.sdk.list",
+    "executable": "dotnet",
+    "subcommand": "--list-sdks",
+    "title": "查看 .NET SDK 列表",
+    "description": "列出已安装的 SDK 与路径。",
+    "category": "Vcs",
+    "scenarios": [
+      "代码与部署检查"
+    ],
+    "aliases": [
+      "dotnet SDK",
+      "NET版本"
+    ],
+    "syntax": "dotnet --list-sdks",
+    "requires": [
+      "Dotnet"
+    ]
+  },
+  {
+    "id": "db.mysql.client.version",
+    "executable": "mysql",
+    "subcommand": "--version",
+    "title": "查看 MySQL 客户端版本",
+    "description": "确认本地 MySQL 或 MariaDB 客户端版本。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "MySQL版本",
+      "MariaDB版本"
+    ],
+    "syntax": "mysql --version",
+    "requires": [
+      "Mysql"
+    ]
+  },
+  {
+    "id": "db.mysql.status",
+    "executable": "mysqladmin",
+    "subcommand": "status",
+    "title": "查看 MySQL 运行摘要",
+    "description": "使用现有客户端凭据查看连接数、运行时间等。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "MySQL状态",
+      "数据库连接数"
+    ],
+    "syntax": "mysqladmin status",
+    "requires": [
+      "Mysql"
+    ]
+  },
+  {
+    "id": "db.mysql.processlist",
+    "executable": "mysqladmin",
+    "subcommand": "processlist",
+    "title": "查看 MySQL 会话",
+    "description": "查看当前凭据可见的会话和查询状态。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "MySQL会话",
+      "慢查询排查"
+    ],
+    "syntax": "mysqladmin processlist",
+    "requires": [
+      "Mysql"
+    ]
+  },
+  {
+    "id": "db.postgres.client.version",
+    "executable": "psql",
+    "subcommand": "--version",
+    "title": "查看 PostgreSQL 客户端版本",
+    "description": "确认本地 psql 的版本。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "PG版本",
+      "PostgreSQL版本"
+    ],
+    "syntax": "psql --version",
+    "requires": [
+      "Psql"
+    ]
+  },
+  {
+    "id": "db.postgres.ready.remote",
+    "executable": "pg_isready",
+    "subcommand": "-h <主机> -p <端口> -t 5",
+    "title": "检查 PostgreSQL 是否接收连接",
+    "description": "检查指定主机与端口的服务响应。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "PostgreSQL连通性",
+      "PG探活"
+    ],
+    "syntax": "pg_isready -h <主机> -p <端口> -t 5",
+    "requires": [
+      "Psql"
+    ]
+  },
+  {
+    "id": "db.redis.info.memory",
+    "executable": "redis-cli",
+    "subcommand": "INFO memory",
+    "title": "查看 Redis 内存",
+    "description": "查看 Redis 的内存用量与碎片率，需已有连接权限。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "Redis内存",
+      "碎片率"
+    ],
+    "syntax": "redis-cli INFO memory",
+    "requires": [
+      "Redis"
+    ]
+  },
+  {
+    "id": "db.redis.info.replication",
+    "executable": "redis-cli",
+    "subcommand": "INFO replication",
+    "title": "查看 Redis 复制状态",
+    "description": "检查实例角色和复制链路。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "Redis主从",
+      "复制状态"
+    ],
+    "syntax": "redis-cli INFO replication",
+    "requires": [
+      "Redis"
+    ]
+  },
+  {
+    "id": "db.redis.info.stats",
+    "executable": "redis-cli",
+    "subcommand": "INFO stats",
+    "title": "查看 Redis 运行统计",
+    "description": "查看命中率所需计数、连接和请求统计。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "Redis统计",
+      "缓存命中"
+    ],
+    "syntax": "redis-cli INFO stats",
+    "requires": [
+      "Redis"
+    ]
+  },
+  {
+    "id": "db.redis.dbsize",
+    "executable": "redis-cli",
+    "subcommand": "DBSIZE",
+    "title": "查看 Redis 键数量",
+    "description": "统计当前选中数据库的键数。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "Redis键数",
+      "缓存数量"
+    ],
+    "syntax": "redis-cli DBSIZE",
+    "requires": [
+      "Redis"
+    ]
+  },
+  {
+    "id": "db.sqlite.version",
+    "executable": "sqlite3",
+    "subcommand": "--version",
+    "title": "查看 SQLite 版本",
+    "description": "查看 sqlite3 CLI 的版本。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "SQLite版本",
+      "嵌入式数据库"
+    ],
+    "syntax": "sqlite3 --version"
+  },
+  {
+    "id": "db.sqlite.tables",
+    "executable": "sqlite3",
+    "subcommand": "-readonly <数据库文件> .tables",
+    "title": "列出 SQLite 表",
+    "description": "以只读模式打开文件并列出表。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "SQLite表",
+      "本地数据库"
+    ],
+    "syntax": "sqlite3 -readonly <数据库文件> .tables"
+  },
+  {
+    "id": "db.mongo.client.version",
+    "executable": "mongosh",
+    "subcommand": "--version",
+    "title": "查看 MongoDB Shell 版本",
+    "description": "确认本地 mongosh 版本。",
+    "category": "Database",
+    "scenarios": [
+      "数据库巡检"
+    ],
+    "aliases": [
+      "MongoDB版本",
+      "mongosh"
+    ],
+    "syntax": "mongosh --version"
+  },
+  {
+    "id": "transfer.scp.send",
+    "executable": "scp",
+    "subcommand": "-P <SSH端口> <源文件> <用户>@<主机>:<目标路径>",
+    "title": "通过 SCP 发送文件",
+    "description": "从当前机器上传到远端，检查目标路径是否已有同名文件。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "SCP上传",
+      "服务器传文件"
+    ],
+    "syntax": "scp -P <SSH端口> <源文件> <用户>@<主机>:<目标路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "transfer.scp.receive",
+    "executable": "scp",
+    "subcommand": "-P <SSH端口> <用户>@<主机>:<源路径> <本地路径>",
+    "title": "通过 SCP 接收文件",
+    "description": "从远端复制到当前机器，注意本地同名文件。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "SCP下载",
+      "远程文件复制"
+    ],
+    "syntax": "scp -P <SSH端口> <用户>@<主机>:<源路径> <本地路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "transfer.rsync.preview",
+    "executable": "rsync",
+    "subcommand": "-avn -- <源路径> <目标路径>",
+    "title": "预览 rsync 同步",
+    "description": "显示将传输的文件，不写入目标。源目录末尾斜杠表示同步目录内容。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "rsync预演",
+      "同步预览"
+    ],
+    "syntax": "rsync -avn -- <源路径> <目标路径>"
+  },
+  {
+    "id": "transfer.rsync.send",
+    "executable": "rsync",
+    "subcommand": "-av --progress -- <源路径> <用户>@<主机>:<目标路径>",
+    "title": "增量同步到远端",
+    "description": "经 SSH 同步文件并显示进度，可能覆盖目标同名文件。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "rsync上传",
+      "增量传输"
+    ],
+    "syntax": "rsync -av --progress -- <源路径> <用户>@<主机>:<目标路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "transfer.rsync.receive",
+    "executable": "rsync",
+    "subcommand": "-av --progress -- <用户>@<主机>:<源路径> <目标路径>",
+    "title": "从远端增量同步",
+    "description": "经 SSH 将远端文件同步到当前机器。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "rsync下载",
+      "增量备份"
+    ],
+    "syntax": "rsync -av --progress -- <用户>@<主机>:<源路径> <目标路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "transfer.sftp.connect",
+    "executable": "sftp",
+    "subcommand": "-P <SSH端口> <用户>@<主机>",
+    "title": "打开 SFTP 会话",
+    "description": "启动交互式 SFTP 客户端，可在会话中使用 get 和 put。",
+    "category": "System",
+    "scenarios": [
+      "文件传输"
+    ],
+    "aliases": [
+      "SFTP连接",
+      "交互传输"
+    ],
+    "syntax": "sftp -P <SSH端口> <用户>@<主机>"
+  },
+  {
+    "id": "docker.exec.shell",
+    "executable": "docker",
+    "subcommand": "exec -it <container> sh",
+    "title": "进入运行中的容器",
+    "description": "在容器中打开交互式 sh。精简镜像可能没有 shell。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "进入容器",
+      "Docker shell"
+    ],
+    "syntax": "docker exec -it <container> sh",
+    "risk": "Medium"
+  },
+  {
+    "id": "docker.exec.command",
+    "executable": "docker",
+    "subcommand": "exec <container> <命令>",
+    "title": "在容器中执行命令",
+    "description": "在运行中的容器内执行指定命令，影响取决于命令内容。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "容器执行",
+      "docker exec"
+    ],
+    "syntax": "docker exec <container> <命令>",
+    "risk": "Medium"
+  },
+  {
+    "id": "docker.copy.from",
+    "executable": "docker",
+    "subcommand": "cp <container>:<容器路径> <宿主机路径>",
+    "title": "从容器复制文件",
+    "description": "将容器内文件复制到当前宿主机，检查目标是否会被覆盖。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "Docker导出文件",
+      "复制出容器"
+    ],
+    "syntax": "docker cp <container>:<容器路径> <宿主机路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "docker.copy.to",
+    "executable": "docker",
+    "subcommand": "cp <宿主机路径> <container>:<容器路径>",
+    "title": "复制文件到容器",
+    "description": "将宿主机文件写入容器文件系统，检查目标是否会被覆盖。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "Docker上传文件",
+      "复制进容器"
+    ],
+    "syntax": "docker cp <宿主机路径> <container>:<容器路径>",
+    "risk": "Medium"
+  },
+  {
+    "id": "docker.image.pull",
+    "executable": "docker",
+    "subcommand": "pull <镜像:标签>",
+    "title": "拉取指定镜像",
+    "description": "下载指定标签的镜像到本地镜像缓存。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "拉镜像",
+      "下载镜像"
+    ],
+    "syntax": "docker pull <镜像:标签>",
+    "risk": "Medium"
+  },
+  {
+    "id": "docker.image.build",
+    "executable": "docker",
+    "subcommand": "build -t <镜像:标签> <构建目录>",
+    "title": "构建 Docker 镜像",
+    "description": "使用指定目录作为构建上下文，并为结果设置标签。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "Docker构建",
+      "镜像打包"
+    ],
+    "syntax": "docker build -t <镜像:标签> <构建目录>",
+    "risk": "Medium"
+  },
+  {
+    "id": "compose.restart.service",
+    "executable": "docker",
+    "subcommand": "compose restart <服务>",
+    "title": "重启指定 Compose 服务",
+    "description": "在项目目录中重启服务，可能短时中断，配置修改需要重新创建容器才能应用。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "Compose重启",
+      "重启容器服务"
+    ],
+    "syntax": "docker compose restart <服务>",
+    "risk": "Medium"
+  },
+  {
+    "id": "compose.exec.shell",
+    "executable": "docker",
+    "subcommand": "compose exec <服务> sh",
+    "title": "进入 Compose 服务容器",
+    "description": "在项目目录中打开运行中服务容器的交互式 shell。",
+    "category": "Container",
+    "scenarios": [
+      "容器运维"
+    ],
+    "aliases": [
+      "Compose shell",
+      "进入服务容器"
+    ],
+    "syntax": "docker compose exec <服务> sh",
+    "risk": "Medium"
+  },
+  {
+    "id": "journalctl.unit.follow",
+    "executable": "journalctl",
+    "subcommand": "-u <unit> -n 50 -f --no-pager",
+    "title": "实时跟随指定服务日志",
+    "description": "先显示最近五十行，再持续显示新增日志，按 Ctrl+C 退出。",
+    "category": "Service",
+    "scenarios": [
+      "实时日志"
+    ],
+    "aliases": [
+      "实时服务日志",
+      "跟随日志"
+    ],
+    "syntax": "journalctl -u <unit> -n 50 -f --no-pager"
+  },
+  {
+    "id": "journalctl.unit.range",
+    "executable": "journalctl",
+    "subcommand": "-u <unit> --since \"<开始时间>\" --until \"<结束时间>\" --no-pager",
+    "title": "按时间范围查服务日志",
+    "description": "例如使用 YYYY-MM-DD HH:MM:SS 格式，按服务器本地时区解释。",
+    "category": "Service",
+    "scenarios": [
+      "实时日志"
+    ],
+    "aliases": [
+      "按时间查日志",
+      "服务日志时间段"
+    ],
+    "syntax": "journalctl -u <unit> --since \"<开始时间>\" --until \"<结束时间>\" --no-pager"
+  },
+  {
+    "id": "journalctl.unit.boot",
+    "executable": "journalctl",
+    "subcommand": "-u <unit> -b -n 100 --no-pager",
+    "title": "查看本次启动的服务日志",
+    "description": "查看指定服务在本次系统启动后的最近一百行日志。",
+    "category": "Service",
+    "scenarios": [
+      "实时日志"
+    ],
+    "aliases": [
+      "服务启动日志",
+      "本次开机服务日志"
+    ],
+    "syntax": "journalctl -u <unit> -b -n 100 --no-pager"
+  },
+  {
+    "id": "journalctl.unit.errors",
+    "executable": "journalctl",
+    "subcommand": "-u <unit> -p err -n 100 --no-pager",
+    "title": "筛选指定服务的错误日志",
+    "description": "查询指定服务错误及更高优先级的近期日志。",
+    "category": "Service",
+    "scenarios": [
+      "实时日志"
+    ],
+    "aliases": [
+      "服务报错",
+      "错误日志筛选"
+    ],
+    "syntax": "journalctl -u <unit> -p err -n 100 --no-pager"
+  },
+  {
+    "id": "git.fetch.remote",
+    "executable": "git",
+    "subcommand": "fetch <远程名>",
+    "title": "抓取远端分支更新",
+    "description": "更新远端跟踪引用，保留当前工作树。",
+    "category": "Vcs",
+    "scenarios": [
+      "Git 部署"
+    ],
+    "aliases": [
+      "更新远端引用",
+      "Git fetch"
+    ],
+    "syntax": "git fetch <远程名>",
+    "risk": "Medium"
+  },
+  {
+    "id": "git.clone.repo",
+    "executable": "git",
+    "subcommand": "clone <仓库URL> <目标目录>",
+    "title": "克隆 Git 仓库",
+    "description": "把远程仓库复制到当前机器的指定目录。",
+    "category": "Vcs",
+    "scenarios": [
+      "Git 部署"
+    ],
+    "aliases": [
+      "Git克隆",
+      "拉取代码"
+    ],
+    "syntax": "git clone <仓库URL> <目标目录>",
+    "risk": "Medium"
+  },
+  {
+    "id": "git.switch.branch",
+    "executable": "git",
+    "subcommand": "switch <分支>",
+    "title": "切换 Git 分支",
+    "description": "将当前工作树切到指定分支，先检查未提交改动。",
+    "category": "Vcs",
+    "scenarios": [
+      "Git 部署"
+    ],
+    "aliases": [
+      "切换分支",
+      "Git switch"
+    ],
+    "syntax": "git switch <分支>",
+    "risk": "Medium"
+  },
+  {
+    "id": "git.switch.new",
+    "executable": "git",
+    "subcommand": "switch -c <新分支>",
+    "title": "创建并切换分支",
+    "description": "从当前提交创建新分支并切换工作树。",
+    "category": "Vcs",
+    "scenarios": [
+      "Git 部署"
+    ],
+    "aliases": [
+      "新建分支",
+      "创建分支"
+    ],
+    "syntax": "git switch -c <新分支>",
+    "risk": "Medium"
+  },
+  {
+    "id": "tls.cert.remote",
+    "executable": "openssl",
+    "subcommand": "s_client -connect <域名>:443 -servername <域名> </dev/null | openssl x509 -noout -subject -issuer -dates",
+    "title": "查看线上 HTTPS 证书有效期",
+    "description": "使用 SNI 读取服务器提供的证书，显示主体、签发者和生效到期时间。",
+    "category": "Gateway",
+    "scenarios": [
+      "证书检查"
+    ],
+    "aliases": [
+      "线上证书",
+      "HTTPS到期"
+    ],
+    "syntax": "openssl s_client -connect <域名>:443 -servername <域名> </dev/null | openssl x509 -noout -subject -issuer -dates"
+  },
+  {
+    "id": "tls.cert.verify",
+    "executable": "openssl",
+    "subcommand": "s_client -connect <域名>:443 -servername <域名> -verify_hostname <域名> -verify_return_error </dev/null",
+    "title": "验证线上 TLS 证书",
+    "description": "检查域名匹配和证书链，验证失败时返回错误。",
+    "category": "Gateway",
+    "scenarios": [
+      "证书检查"
+    ],
+    "aliases": [
+      "TLS握手",
+      "证书链验证"
+    ],
+    "syntax": "openssl s_client -connect <域名>:443 -servername <域名> -verify_hostname <域名> -verify_return_error </dev/null"
+  },
+  {
+    "id": "net.firewalld.state",
+    "executable": "firewall-cmd",
+    "subcommand": "--state",
+    "title": "查看 firewalld 状态",
+    "description": "检查 firewalld 服务是否正在运行。",
+    "category": "Process",
+    "scenarios": [
+      "防火墙巡检"
+    ],
+    "aliases": [
+      "防火墙运行状态",
+      "firewalld"
+    ],
+    "syntax": "firewall-cmd --state"
+  },
+  {
+    "id": "net.firewalld.zones",
+    "executable": "firewall-cmd",
+    "subcommand": "--get-active-zones",
+    "title": "查看活跃防火墙区域",
+    "description": "显示绑定网卡或来源地址的活跃区域。",
+    "category": "Process",
+    "scenarios": [
+      "防火墙巡检"
+    ],
+    "aliases": [
+      "防火墙区域",
+      "zone"
+    ],
+    "syntax": "firewall-cmd --get-active-zones"
+  },
+  {
+    "id": "net.firewalld.rules",
+    "executable": "firewall-cmd",
+    "subcommand": "--zone=<区域> --list-all",
+    "title": "查看指定区域的防火墙规则",
+    "description": "列出区域当前开放的服务、端口和丰富规则。",
+    "category": "Process",
+    "scenarios": [
+      "防火墙巡检"
+    ],
+    "aliases": [
+      "开放端口",
+      "防火墙规则"
+    ],
+    "syntax": "firewall-cmd --zone=<区域> --list-all"
+  },
+  {
+    "id": "db.mysql.dump",
+    "executable": "mysqldump",
+    "subcommand": "-u <用户> -p --single-transaction --result-file=<备份文件> <数据库>",
+    "title": "备份 MySQL 数据库",
+    "description": "交互提示密码，将逻辑备份写入指定文件。事务一致性选项适用于 InnoDB。",
+    "category": "Database",
+    "scenarios": [
+      "数据库备份"
+    ],
+    "aliases": [
+      "mysqldump",
+      "MySQL备份"
+    ],
+    "syntax": "mysqldump -u <用户> -p --single-transaction --result-file=<备份文件> <数据库>",
+    "risk": "Medium"
+  },
+  {
+    "id": "db.postgres.dump",
+    "executable": "pg_dump",
+    "subcommand": "-U <用户> -Fc -f <备份文件> <数据库>",
+    "title": "备份 PostgreSQL 数据库",
+    "description": "创建可供 pg_restore 读取的自定义格式备份。",
+    "category": "Database",
+    "scenarios": [
+      "数据库备份"
+    ],
+    "aliases": [
+      "pg_dump",
+      "PostgreSQL备份"
+    ],
+    "syntax": "pg_dump -U <用户> -Fc -f <备份文件> <数据库>",
+    "risk": "Medium"
+  },
+  {
+    "id": "db.postgres.backup.list",
+    "executable": "pg_restore",
+    "subcommand": "--list <备份文件>",
+    "title": "查看 PostgreSQL 备份目录",
+    "description": "列出归档对象和数据条目，不连接数据库。",
+    "category": "Database",
+    "scenarios": [
+      "数据库备份"
+    ],
+    "aliases": [
+      "pg_restore列表",
+      "备份检查"
+    ],
+    "syntax": "pg_restore --list <备份文件>"
+  },
+  {
+    "id": "db.sqlite.backup",
+    "executable": "sqlite3",
+    "subcommand": "-readonly <数据库文件> \".backup '<备份文件>'\"",
+    "title": "备份 SQLite 数据库",
+    "description": "以只读方式打开源数据库，通过 SQLite 备份命令写出副本。",
+    "category": "Database",
+    "scenarios": [
+      "数据库备份"
+    ],
+    "aliases": [
+      "SQLite备份",
+      "数据库副本"
+    ],
+    "syntax": "sqlite3 -readonly <数据库文件> \".backup '<备份文件>'\"",
+    "risk": "Medium"
+  }
+]

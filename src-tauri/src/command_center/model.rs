@@ -115,8 +115,7 @@ impl CommandCategory {
 
 /// 一条命令知识（P4.1 数据规范）。
 ///
-/// 生命周期：编译期内置（[`crate::command_center::builtin_catalog`]）→
-/// 启动时 seed 进 SQLite + FTS5（`db::command_knowledge`）→ 检索/执行。
+/// `catalog.json` 在编译时生成静态目录，由检索和执行共用。
 #[derive(Debug, Clone)]
 pub struct CommandKnowledge {
     /// 稳定 ID：`docker.ps.all` / `systemctl.restart` / `nginx.test`。

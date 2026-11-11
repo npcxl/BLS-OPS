@@ -9,34 +9,39 @@ import { opsApi } from "@/api/ops-api";
 export function CommandHistoryPanel({
   sessionId,
   serverId,
+  quickTarget,
+  revision = 0,
   onPick,
 }: {
   sessionId: string;
   serverId?: string;
+  /** 快速连接的完整目标：用户名、主机和端口。 */
+  quickTarget?: string;
+  /** 每记录一条新命令就 +1，让面板重新加载（否则刚敲的命令要重开面板才出现）。 */
+  revision?: number;
   onPick: (command: string) => void;
 }) {
   const { t } = useTranslation();
   const [items, setItems] = useState<{ id: string; command: string; timestamp: number }[]>([]);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
-    void opsApi
-      .listHistory(500)
-      .then((rows) =>
-        setItems(
-          rows
-            // 有 serverId 时按「本会话 + 同服务器」过滤；快速连接没有 serverId，
-            // 过滤只会把历史全部挡掉，这里直接展示最近的记录。
-            .filter(
-              (row) =>
-                !serverId ||
-                row.session_id === sessionId ||
-                row.server_id === serverId,
-            )
-            .map((row) => ({ id: row.id, command: row.command, timestamp: row.timestamp })),
-        ),
-      )
-      .catch(() => setItems([]));
-  }, [serverId, sessionId]);
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void opsApi.listHistory(500, { sessionId, serverId, quickTarget, query }).then(
+        (rows) => {
+          if (active) setItems(rows);
+        },
+        () => {
+          if (active) setItems([]);
+        },
+      );
+    }, 120);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [quickTarget, query, revision, serverId, sessionId]);
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-l border-line bg-surface-1">
@@ -44,9 +49,21 @@ export function CommandHistoryPanel({
         {t("Command History")}
         <span>{items.length}</span>
       </div>
+      <div className="shrink-0 px-2.5 py-2">
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label={t("Search command history")}
+          placeholder={t("Search command history")}
+          className="w-full rounded border border-line bg-surface-2 px-2 py-1 text-11 text-fg"
+        />
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 ? (
-          <p className="px-2.5 py-2 text-11 text-fg-subtle">{t("Commands run in this terminal are recorded here")}</p>
+          <p className="px-2.5 py-2 text-11 text-fg-subtle">
+            {t(query.trim() ? "No matching commands." : "Commands run in this terminal are recorded here")}
+          </p>
         ) : (
           items.map((item) => (
             <button

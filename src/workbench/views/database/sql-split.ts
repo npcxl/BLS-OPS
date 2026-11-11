@@ -213,14 +213,17 @@ export function statementAtCursor(
   if (statements.length === 0) return "";
   if (statements.length === 1) return statements[0];
 
-  // 用分号位置近似：找到光标之前最后一个顶层分号所属的语句。
+  // 语句之间的空白归到上一条，开头的空白归到第一条。
   let offset = 0;
+  let previous = statements[0];
   for (const statement of statements) {
     const start = sql.indexOf(statement, offset);
     if (start < 0) continue;
     const end = start + statement.length;
-    if (cursor >= start && cursor <= end + 1) return statement;
+    if (cursor < start) return previous;
+    if (cursor <= end) return statement;
+    previous = statement;
     offset = end;
   }
-  return statements[statements.length - 1];
+  return previous;
 }

@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{CommandKnowledge, CommandSearchHit, RiskLevel};
+use super::model::{CommandKnowledge, CommandSearchHit};
 use crate::db;
 
 /// 检索上下文：收藏集 + 使用统计。
@@ -181,8 +181,11 @@ fn score_entry(entry: &PreparedEntry<'_>, q: &str, ctx: &SearchContext) -> Optio
         1000.0
     } else if entry.aliases.iter().any(|alias| alias == q) {
         900.0
-    } else if entry.display == q || entry.executable == q {
+    } else if entry.display == q {
         850.0
+    } else if entry.executable == q {
+        // With many subcommands, prefer short commands over long flag variants.
+        850.0 - (entry.display.len() as f64 * 0.5).min(50.0)
     } else if entry.display.starts_with(q) || entry.executable.starts_with(q) {
         // 前缀补全是输入提示的主路径（`docker p` → docker ps）。
         700.0 - entry.display.len() as f64 * 0.5
@@ -196,9 +199,11 @@ fn score_entry(entry: &PreparedEntry<'_>, q: &str, ctx: &SearchContext) -> Optio
         300.0
     } else if entry.syntax.contains(q) {
         250.0
-    } else if is_subsequence(q, &entry.display) || is_subsequence(q, &entry.id) {
-        // `dps` → docker ps；`dpsa` → docker ps -a。
-        150.0
+    } else if is_subsequence(q, &entry.display) {
+        // `dps` should favor `docker ps` over longer coincidental matches.
+        150.0 - (entry.display.len() as f64 * 0.5).min(50.0)
+    } else if is_subsequence(q, &entry.id) {
+        95.0
     } else {
         return None;
     };

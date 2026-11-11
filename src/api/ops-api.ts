@@ -572,7 +572,8 @@ export const opsApi = {
 
   recordHistory: (sessionId: string, serverId: string, serverName: string, command: string) =>
     invoke<void>("history_record", { sessionId, serverId, serverName, command }),
-  listHistory: (limit = 100) => invoke<CommandHistoryRecord[]>("history_list", { limit }),
+  listHistory: (limit = 100, filter?: { sessionId?: string; serverId?: string; quickTarget?: string; query?: string }) =>
+    invoke<CommandHistoryRecord[]>("history_list", { limit, filter }),
   listAuditLogs: (limit = 100) => invoke<AuditLogRecord[]>("audit_log_list", { limit }),
 
   sshConnect: (args: {

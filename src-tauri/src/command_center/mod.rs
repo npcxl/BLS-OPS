@@ -31,9 +31,7 @@ pub use model::{
     KnowledgeExec, Mutability, RiskLevel,
 };
 
-use crate::safe::ProbeTool;
-
-/// 编译期内置知识库（首批，P4.1）。
+/// 从 `catalog.json` 编译生成的内置知识库。
 pub fn builtin_catalog() -> &'static [CommandKnowledge] {
     catalog::CATALOG
 }

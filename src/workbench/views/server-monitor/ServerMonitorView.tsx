@@ -325,7 +325,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
           <Select
             size="xs"
             className="w-[74px]"
-            ariaLabel={t("采集间隔")}
+            ariaLabel={t("Interval")}
             value={String(intervalMs)}
             onChange={(value) => setIntervalMs(tab.id, Number(value))}
             options={MONITOR_INTERVALS.map((option) => ({
@@ -441,7 +441,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     : undefined
                 }
                 detail={
-                  cpu ? t("{{count}} 个逻辑核心", { count: cpu.logical_cores }) : t("Waiting for data")
+                  cpu ? t("{{count}} logical cores", { count: cpu.logical_cores }) : t("Waiting for data")
                 }
                 meta={cpu ? `load ${cpu.load_1.toFixed(2)}` : undefined}
               />
@@ -514,13 +514,13 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 }
                 detail={
                   fullestDisk
-                    ? t("最高：{{mount}}", { mount: fullestDisk.mount_point })
+                    ? t("Highest: {{mount}}", { mount: fullestDisk.mount_point })
                     : snapshot
                       ? t("No filesystems detected")
                       : t("Waiting for data")
                 }
                 meta={
-                  snapshot ? t("{{count}} 个文件系统", { count: snapshot.disks.length }) : undefined
+                  snapshot ? t("{{count}} filesystems", { count: snapshot.disks.length }) : undefined
                 }
               />
               <MetricCard
@@ -552,13 +552,13 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 }
                 detail={
                   cpu
-                    ? t("5 分钟 {{five}} · 15 分钟 {{fifteen}}", {
+                    ? t("5m {{five}} · 15m {{fifteen}}", {
                         five: cpu.load_5.toFixed(2),
                         fifteen: cpu.load_15.toFixed(2),
                       })
                     : t("Waiting for data")
                 }
-                meta={cpu ? t("{{count}} 核", { count: cpu.logical_cores }) : undefined}
+                meta={cpu ? t("{{count}} cores", { count: cpu.logical_cores }) : undefined}
               />
             </div>
 
@@ -595,10 +595,10 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 value={(cpu?.usage_percent ?? 0).toFixed(1)}
                 unit="%"
                 badge={{
-                  text: t("{{count}} 个样本", { count: entry?.history.length ?? 0 }),
+                  text: t("{{count}} samples", { count: entry?.history.length ?? 0 }),
                   tone: "accent",
                 }}
-                detail={t("峰值 {{value}}%", { value: (cpu?.usage_percent ?? 0).toFixed(1) })}
+                detail={t("Peak {{value}}%", { value: (cpu?.usage_percent ?? 0).toFixed(1) })}
                 points={entry?.history ?? []}
                 pick={(point) => point.cpu}
                 max={100}
@@ -610,7 +610,7 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 value={(memory?.usage_percent ?? 0).toFixed(1)}
                 unit="%"
                 badge={{ text: t("Steady"), tone: "success" }}
-                detail={memory ? t("可用 {{size}}", { size: formatBytes(memory.available) }) : ""}
+                detail={memory ? t("{{size}} available", { size: formatBytes(memory.available) }) : ""}
                 points={entry?.history ?? []}
                 pick={(point) => point.memory}
                 max={100}
@@ -684,14 +684,14 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                     {t("Warning at ≥85%")}
                   </span>
                   <span>
-                    {t("挂载设备 {{count}} · 聚合利用率 {{percent}}%", {
+                    {t("{{count}} devices · {{percent}}% aggregate", {
                       count: diskAggregate.count,
                       percent: diskAggregate.percent.toFixed(1),
                     })}
                   </span>
                 </div>
                 <span>
-                  {t("最后检查 {{time}}", {
+                  {t("Last checked {{time}}", {
                     time: formatClock(entry?.lastUpdatedAt ?? null),
                   })}
                 </span>

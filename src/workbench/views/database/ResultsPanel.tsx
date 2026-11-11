@@ -7,7 +7,7 @@
  *   错误条直接显示在网格上方，不必切到消息页。
  *
  * 交互：Excel 式行列选择、复制（TSV/CSV/JSON）、双击查看完整（已接收）值。
- * 单表且完整主键可验证时复用表修改流程；其余查询明确只读。
+ * 单表且完整定位键可验证时复用表修改流程；其余查询明确只读。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";

@@ -128,7 +128,7 @@ export function TerminalSuggest({
         <div ref={listRef} className="max-h-[180px] overflow-y-auto py-0.5">
           {items.map((item, index) => {
             const Icon = ICONS[item.icon];
-            const risk = item.command?.risk;
+            const risk = item.hit?.risk ?? item.command?.risk;
             return (
               <button
                 key={`${item.source}:${item.label}:${index}`}

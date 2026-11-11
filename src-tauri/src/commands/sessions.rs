@@ -71,10 +71,15 @@ pub fn history_record(
 pub fn history_list(
     state: State<'_, AppState>,
     limit: Option<i64>,
+    filter: Option<db::CommandHistoryFilter>,
 ) -> OpsResult<Vec<db::CommandHistoryRecord>> {
     let conn = open_db(&state)?;
-    db::list_command_history(&conn, limit.unwrap_or(100).clamp(1, 500))
-        .map_err(|error| local_error(error).retryable())
+    db::list_command_history(
+        &conn,
+        limit.unwrap_or(100).clamp(1, 500),
+        &filter.unwrap_or_default(),
+    )
+    .map_err(|error| local_error(error).retryable())
 }
 
 #[tauri::command]

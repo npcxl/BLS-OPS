@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbSessionInfo, ProfileRuntimeStatus } from "@/api/types/database";
+// 这个用例断言中文错误消息，显式切到 zh-CN（测试环境的默认语言是英文）。
+import "@/workbench/views/database/test/zh-setup";
 
 const api = vi.hoisted(() => ({
   connect: vi.fn(), disconnect: vi.fn(), profileClose: vi.fn(),

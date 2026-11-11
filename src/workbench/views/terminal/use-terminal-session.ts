@@ -12,23 +12,12 @@ import { invalidateServiceCache } from "./completion/providers/service";
 import { invalidateProcessCache } from "./completion/providers/process";
 import { invalidateEnvironmentCache } from "./use-server-environment";
 import type { CommandBoundaryParser } from "./command-boundary";
-import type { CommandSource, SubmitMode } from "./command-plan";
 import type { RemoteCwdTracker } from "./remote-cwd";
 import { isCommandNotFoundOutput } from "./terminal-output-clean";
 import { writeOutputParts } from "./terminal-output-pipeline";
 import type { Phase } from "./terminal-phase";
 import { terminalTheme } from "./theme";
 import type { RenderOutcome, TerminalCommandCoordinator } from "./TerminalCommandCoordinator";
-
-/** 终端里"记历史 + 提交命令"的入口（由 `TerminalView` 提供，ref 里读最新值）。 */
-export interface TerminalCommandEntry {
-  note: (command: string) => void;
-  submit: (
-    command: string,
-    source: CommandSource,
-    options?: { prefix?: string; mode?: SubmitMode },
-  ) => void;
-}
 
 /**
  * 会话 hook 需要的一切外部依赖。
@@ -41,12 +30,12 @@ export interface TerminalSessionHost {
   terminalRef: RefObject<Terminal | null>;
   fitRef: RefObject<FitAddon | null>;
   lineEditorRef: RefObject<LineEditor | null>;
-  commandEntryRef: RefObject<TerminalCommandEntry>;
+  noteCommand: (command: string) => void;
+  sendInput: (data: string) => void;
   boundaryParserRef: RefObject<CommandBoundaryParser | null>;
   cwdTrackerRef: RefObject<RemoteCwdTracker | null>;
   coordinatorRef: RefObject<TerminalCommandCoordinator | null>;
   captureMarkerRef: RefObject<{ marker: IMarker } | null>;
-  cwdProbeTimerRef: RefObject<number | null>;
   keyHandlerRef: RefObject<(event: KeyboardEvent) => boolean>;
   sessionId: string;
   hasTarget: boolean;
@@ -97,6 +86,15 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     const instance = new Terminal({
       convertEol: true,
       cursorBlink: true,
+      /*
+       * **细竖线光标，不要方块**。
+       *
+       * xterm 默认 `cursorStyle: "block"`：方块会**整格盖住脚下的字符**，
+       * 盖住空格时用户看到的就是"我按了空格，光标还贴在 cd 后面" —— 其实
+       * 空格已经进命令行、只是被光标挡住了。竖线不遮字符，空格一按就能看见。
+       */
+      cursorStyle: "bar",
+      cursorWidth: 2,
       fontFamily: terminalFont || undefined,
       fontSize: 13,
       lineHeight: 1.25,
@@ -133,26 +131,16 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       const alternate = instance.buffer.active.type !== "normal";
       host.setInAlternate(alternate);
 
-      // Recover whole commands from the raw stream; arrow keys, Ctrl+C, pastes
-      // and line continuations are handled by the editor.
-      const commands = host.lineEditorRef.current?.feed(data) ?? [];
+      // Forward first. History and completion only observe the byte stream.
+      host.sendInput(data);
       if (alternate) {
-        void opsApi.sshInput(sessionId, data).catch(() => undefined);
+        host.lineEditorRef.current?.reset();
+        host.setDraft("");
         return;
       }
-      // 粘贴多条命令时每条都记历史，但只捕获最后一条（它才会真正产生结果）。
-      for (const command of commands) host.commandEntryRef.current.note(command);
-      const submitted = commands[commands.length - 1];
-      if (submitted) {
-        // 唯一提交入口：命令文本就是靠 `data` 一个字符一个字符"敲"进终端的，
-        // 所以按键数据必须原样发出（prefix），提交入口只追加受控标记。
-        host.commandEntryRef.current.submit(submitted, "input", { prefix: data });
-      } else {
-        void opsApi.sshInput(sessionId, data).catch(() => undefined);
-      }
-      // A submitted line (or Ctrl+C, which the editor abandons) clears the
-      // draft, which in turn hides the suggestion layer.
-      host.setDraft(commands.length > 0 ? "" : (host.lineEditorRef.current?.current ?? ""));
+      const editor = host.lineEditorRef.current;
+      for (const command of editor?.feed(data) ?? []) host.noteCommand(command);
+      host.setDraft(editor?.canComplete ? editor.current : "");
       // 输入会移动光标 → 重算提示面板锚点。
       host.updateSuggestAnchor();
     });
@@ -377,7 +365,6 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       invalidateProcessCache();
       invalidateEnvironmentCache(sessionId);
       host.cwdTrackerRef.current?.forget(sessionId);
-      if (host.cwdProbeTimerRef.current !== null) window.clearTimeout(host.cwdProbeTimerRef.current);
       instance.dispose();
       host.terminalRef.current = null;
       host.fitRef.current = null;

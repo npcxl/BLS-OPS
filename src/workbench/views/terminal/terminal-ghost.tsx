@@ -27,7 +27,8 @@ export function TerminalGhost({
       aria-hidden
       className="pointer-events-none absolute z-20 flex select-none items-center whitespace-pre"
       style={{
-        left: anchor.x,
+        // 与光标留 1px：光标是竖线时也不和 ghost 的第一笔贴在一起。
+        left: anchor.x + 1,
         top: anchor.y - rowHeight,
         height: rowHeight,
         fontFamily: terminal?.options.fontFamily,

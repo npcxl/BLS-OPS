@@ -19,11 +19,11 @@ import {
 } from "./TerminalCommandCoordinator";
 
 export interface TerminalResultsHost {
-  sessionId: string;
   terminalRef: RefObject<Terminal | null>;
   boundaryParserRef: RefObject<CommandBoundaryParser | null>;
   /** 参数类可见提示（如"还有未替换的参数"）—— 绝不静默失败。 */
   setParamHint: (value: string | null) => void;
+  sendInput: (data: string) => void;
 }
 
 /**
@@ -45,7 +45,7 @@ export interface TerminalResultsHost {
  * ```
  */
 export function useTerminalResults(host: TerminalResultsHost) {
-  const { sessionId, terminalRef, boundaryParserRef, setParamHint } = host;
+  const { terminalRef, boundaryParserRef, setParamHint, sendInput } = host;
   const { t } = useTranslation();
 
   /**
@@ -208,11 +208,9 @@ export function useTerminalResults(host: TerminalResultsHost) {
       // `line-ready` 依赖调用方把回车一起发出来；没有（如 Ctrl+C 放弃行）
       // 就补一个，否则命令不会被提交。
       const needsSubmit = mode === "line-ready" && prefix.length > 0 && !/[\r\n]$/.test(prefix);
-      void opsApi
-        .sshInput(sessionId, prefix + (needsSubmit ? "\r" : "") + plan.write)
-        .catch(() => undefined);
+      sendInput(prefix + (needsSubmit ? "\r" : "") + plan.write);
     },
-    [boundaryParserRef, releaseCaptureMarker, sessionId, setParamHint, t, terminalRef],
+    [applyBlocks, boundaryParserRef, releaseCaptureMarker, sendInput, setParamHint, t, terminalRef],
   );
 
   return {

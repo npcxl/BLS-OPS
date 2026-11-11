@@ -30,7 +30,6 @@ const ABORT_CODES = new Set([
  * than corrupting the buffer.
  */
 const CTRL_KEYS: Record<number, (line: string) => string> = {
-  0x01: () => "", // Ctrl+A
   0x15: () => "", // Ctrl+U — clear line
   0x17: (line) => line.replace(/\S*\s*$/, ""), // Ctrl+W — delete last word
 };
@@ -39,7 +38,7 @@ const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
 /** CSI: ESC [ params final-byte */
-const CSI = /^\x1b\[[0-9;]*[A-Za-z~]/;
+const CSI = /^\x1b\[[0-?]*[ -/]*[@-~]/;
 
 /** Guards against buffering forever on a malformed sequence. */
 const MAX_ESCAPE_LENGTH = 32;
@@ -73,10 +72,15 @@ export class LineEditor {
   private pending = "";
   private inPaste = false;
   private paste = "";
+  private tracking = true;
 
   /** The line currently being typed. */
   get current(): string {
-    return this.line;
+    return this.tracking ? this.line : "";
+  }
+
+  get canComplete(): boolean {
+    return this.tracking && !this.inPaste && !/[\r\n]/.test(this.line);
   }
 
   /**
@@ -89,7 +93,7 @@ export class LineEditor {
    * desynchronise completion and corrupt the command.
    */
   get cursor(): number {
-    return this.line.length;
+    return this.current.length;
   }
 
   /** Drops the in-progress line (after submit, Ctrl+C, or a lost focus). */
@@ -98,6 +102,7 @@ export class LineEditor {
     this.pending = "";
     this.inPaste = false;
     this.paste = "";
+    this.tracking = true;
   }
 
   /**
@@ -120,22 +125,23 @@ export class LineEditor {
           this.pending = sequence;
           return completed;
         }
-        i += matched.length - this.pending.length;
+        i += Math.max(0, matched.length - this.pending.length);
         this.pending = "";
+        this.handleEscape(matched);
         continue;
       }
 
       // Bracketed paste: everything up to the end marker is literal text.
       if (this.inPaste) {
-        const end = data.indexOf(PASTE_END, i);
+        const chunk = this.paste + data.slice(i);
+        const end = chunk.indexOf(PASTE_END);
         if (end === -1) {
-          this.paste += data.slice(i);
+          this.paste = chunk;
           return completed;
         }
-        this.paste += data.slice(i, end);
-        i = end + PASTE_END.length;
+        i += end + PASTE_END.length - this.paste.length;
         this.inPaste = false;
-        completed.push(...this.consumeText(this.paste));
+        if (this.tracking) this.line += chunk.slice(0, end).replace(/\r\n?/g, "\n");
         this.paste = "";
         continue;
       }
@@ -154,7 +160,7 @@ export class LineEditor {
           this.pending = data.slice(i);
           return completed;
         }
-        // Escape sequences never contribute text.
+        this.handleEscape(matched);
         i += matched.length;
         continue;
       }
@@ -165,11 +171,13 @@ export class LineEditor {
       if (char === "\r" || char === "\n") {
         completed.push(...this.submit());
       } else if (char === "\x7f" || char === "\b") {
-        this.line = this.line.slice(0, -1);
+        this.line = this.line.replace(/.$/su, "");
       } else {
         const code = char.charCodeAt(0);
         if (ABORT_CODES.has(code)) {
-          this.line = "";
+          this.reset();
+        } else if (code === 0x01 || code === 0x02 || code === 0x12 || code === 0x0e || code === 0x10 || code === 0x09) {
+          this.tracking = false;
         } else if (CTRL_KEYS[code]) {
           this.line = CTRL_KEYS[code](this.line);
         } else if (code >= 0x20 || char === "\t") {
@@ -183,25 +191,26 @@ export class LineEditor {
   }
 
   /**
-   * Appends a chunk of literal text, splitting it on newlines.
-   *
-   * A multi-line paste is executed line by line by the shell, so each newline
-   * completes a command.
+   * The shell owns history and cursor edits. Once a sequence may have changed
+   * them, suppress client completions until the next submission or interrupt.
    */
-  private consumeText(chunk: string): string[] {
-    const completed: string[] = [];
-    const parts = chunk.split(/\r\n|\r|\n/);
-    parts.forEach((part, index) => {
-      this.line += part;
-      if (index < parts.length - 1) completed.push(...this.submit());
-    });
-    return completed;
+  private handleEscape(sequence: string): void {
+    if (sequence === PASTE_START) {
+      this.inPaste = true;
+      this.paste = "";
+    } else if (sequence !== PASTE_END) {
+      this.tracking = false;
+    }
   }
 
   /**
    * Commits the pending line, unless the shell is still waiting for more input.
    */
   private submit(): string[] {
+    if (!this.tracking) {
+      this.reset();
+      return [];
+    }
     const line = this.line;
 
     // Continuation: keep accumulating and drop the trailing backslash so the

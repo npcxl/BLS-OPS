@@ -42,18 +42,33 @@ describe("LineEditor", () => {
     expect(editor.cursor).toBe(0);
     editor.feed("docker ps");
     expect(editor.cursor).toBe("docker ps".length);
-    // Arrow keys are escape sequences: they move the *remote* cursor, which we
-    // cannot observe, so the tracked position deliberately stays at the end.
-    editor.feed("\x1b[D");
-    expect(editor.cursor).toBe("docker ps".length);
+    expect(editor.canComplete).toBe(true);
   });
 
-  it("a multi-line paste runs each terminated line and keeps the last one pending", () => {
+  it("stops tracking once the remote cursor may have moved", () => {
     const editor = new LineEditor();
-    // Mirrors the shell: a trailing line without a newline is NOT executed —
-    // it stays on the prompt waiting for the user to press Enter.
+    editor.feed("docker ps");
+    // Arrow keys move the *remote* cursor, which we cannot observe: completing
+    // against a stale buffer would splice the suggestion into the wrong place,
+    // so tracking is dropped until the next submit / reset.
+    editor.feed("\x1b[D");
+    expect(editor.current).toBe("");
+    expect(editor.cursor).toBe(0);
+    expect(editor.canComplete).toBe(false);
+    // Submitting then records nothing rather than a half-known command.
+    expect(editor.feed("\r")).toEqual([]);
+  });
+
+  it("a paste is literal text: no line is submitted behind the user's back", () => {
+    const editor = new LineEditor();
+    // Bracketed paste: the line breaks are the user's text, not Enter presses.
+    // The old behaviour executed every terminated line immediately — pasting
+    // a copied block ran half of it on the server.
     const completed = editor.feed("\x1b[200~ls -la\rpwd\x1b[201~");
-    expect(completed).toEqual(["ls -la"]);
-    expect(editor.current).toBe("pwd");
+    expect(completed).toEqual([]);
+    expect(editor.current).toBe("ls -la\npwd");
+    expect(editor.canComplete).toBe(false);
+    // Only the user's own Enter submits it, as one block.
+    expect(editor.feed("\r")).toEqual(["ls -la\npwd"]);
   });
 });

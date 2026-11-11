@@ -451,6 +451,29 @@ function oneEditApart(input: string, candidate: string): boolean {
   return edits + (a.length - i) + (b.length - j) <= 1;
 }
 
+/**
+ * 缩写匹配：把输入当作候选的**子序列**（`dc` → `docker`、`dkl` → `docker`）。
+ *
+ * 首字符必须相同 —— 否则 `kk` 之类也能命中一堆命令，噪音比帮助大。
+ * 返回值是"跳过字符数"（越小越连续），用于排序。
+ */
+function subsequenceScore(input: string, candidate: string): number | null {
+  const a = input.toLowerCase();
+  const b = candidate.toLowerCase();
+  if (!a || !b || a[0] !== b[0]) return null;
+  let cursor = 0;
+  let gaps = 0;
+  let previous = -1;
+  for (const char of a) {
+    const found = b.indexOf(char, cursor);
+    if (found === -1) return null;
+    if (previous >= 0) gaps += found - previous - 1;
+    previous = found;
+    cursor = found + 1;
+  }
+  return gaps;
+}
+
 export function createCommandProvider(): CompletionProvider {
   return {
     id: "command",
@@ -463,12 +486,13 @@ export function createCommandProvider(): CompletionProvider {
       /*
        * **必须在这里就能命中候选**：`providerFor` 只取第一个 matches 的提供器，
        * 若对任意命令词都返回 true，知识库（真正的兜底）永远轮不到 —— 敲一个
-       * 表里没有的命令就只剩空候选。前缀或一步纠错命中才接管。
+       * 表里没有的命令就只剩空候选。前缀 / 缩写 / 一步纠错命中才接管。
        */
       return COMMANDS.some(
         (command) =>
           command.name.toLowerCase().startsWith(prefix.toLowerCase()) ||
-          oneEditApart(prefix, command.name),
+          oneEditApart(prefix, command.name) ||
+          subsequenceScore(prefix, command.name) !== null,
       );
     },
     async complete(ctx: CompletionContext, parsed: ParsedLine): Promise<CompletionResult> {
@@ -479,15 +503,31 @@ export function createCommandProvider(): CompletionProvider {
       const exact = COMMANDS.filter((command) =>
         command.name.toLowerCase().startsWith(prefix.toLowerCase()),
       );
-      // 没有前缀命中时才做拼写纠错：`unizp` → `unzip`。
-      const fuzzy =
+      /*
+       * 缩写：`dc` → `docker`、`unz` → `unzip`（前缀已经覆盖）、`dl` → `docker`/`dd`…
+       * 按"跳过的字符数"升序 —— 越连续越可能，排在前面的按 1 就选到。
+       */
+      const abbrev =
         exact.length > 0
+          ? []
+          : COMMANDS.map((command) => ({
+              command,
+              gaps: subsequenceScore(prefix, command.name),
+            }))
+              .filter((entry): entry is { command: (typeof COMMANDS)[number]; gaps: number } =>
+                entry.gaps !== null,
+              )
+              .sort((a, b) => a.gaps - b.gaps || a.command.name.length - b.command.name.length)
+              .map((entry) => entry.command);
+      // 前两种都没有命中时才做拼写纠错：`unizp` → `unzip`。
+      const fuzzy =
+        exact.length > 0 || abbrev.length > 0
           ? []
           : COMMANDS.filter((command) => oneEditApart(prefix, command.name));
 
       // 命令表里可能同名重复（同类命令分在不同小节），去重后再截断。
       const seen = new Set<string>();
-      const ranked = [...exact, ...fuzzy]
+      const ranked = [...exact, ...abbrev, ...fuzzy]
         .filter((command) => {
           if (seen.has(command.name)) return false;
           seen.add(command.name);

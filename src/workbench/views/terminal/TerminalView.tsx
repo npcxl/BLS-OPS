@@ -41,7 +41,7 @@ import { TerminalErrorBanner } from "./terminal-error-banner";
 import { TerminalToolbar } from "./terminal-toolbar";
 import { useSshKeepalive } from "./use-ssh-keepalive";
 import { useTerminalMenu } from "./use-terminal-menu";
-import { useTerminalSession, type TerminalCommandEntry } from "./use-terminal-session";
+import { useTerminalSession } from "./use-terminal-session";
 import { useTerminalResults } from "./use-terminal-results";
 import {
   ghostTextFor,
@@ -53,7 +53,7 @@ import { TerminalGhost } from "./terminal-ghost";
 import { parseLine } from "./completion/path-input";
 import { useTerminalCompletion } from "./use-terminal-completion";
 import { useServerEnvironment } from "./use-server-environment";
-import { RemoteCwdTracker, CWD_PROBE_LINE, CWD_PROBE_TIMEOUT_MS } from "./remote-cwd";
+import { RemoteCwdTracker } from "./remote-cwd";
 import { invalidateDirectoryCache } from "./completion/remote-listing";
 import { invalidateDockerCache } from "./completion/providers/docker-resource";
 import { invalidateServiceCache } from "./completion/providers/service";
@@ -136,11 +136,14 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   /** Ctrl+Space 可临时关闭提示（有人就是不喜欢）。 */
   const [suggestOpen, setSuggestOpen] = useState(true);
   /**
-   * 建议面板是否展开（统一补全状态机，见 `terminal-suggest.ts`）：
-   * **默认收起 —— 只显示行内 ghost；Tab / ArrowDown 后才展开完整面板**。
-   * 用户继续编辑（draft 变化且不是程序性填入）→ 立即回到收起态。
+   * 建议面板是否展开（统一补全状态机，见 `terminal-suggest.ts`）。
+   *
+   * **输入法式：默认展开** —— 敲 `doc` 立刻列出候选（每行带 1-9 序号，
+   * 数字键直接选）。以前默认收起、要按 Tab 才出面板，用户明确否掉了：
+   * "像输入法那样，不选也不影响我"。Esc / ← 仍然只收起面板、不动行内容；
+   * 继续输入会重新展开。
    */
-  const [suggestExpanded, setSuggestExpanded] = useState(false);
+  const [suggestExpanded, setSuggestExpanded] = useState(true);
   /**
    * 程序性草稿标记：`applySuggestion` / 参数选择器写入的行**不算用户编辑**
    * （否则 Tab 填入后 draft 变化会立刻把刚展开的面板又收回去）。draft 每次
@@ -242,18 +245,23 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   // 补全统一走 `CompletionProvider`：知识库、远程目录（cd）、Docker 资源、
   // 服务、进程、环境生成的命令都是同一个 `CompletionItem`。
-  // 空输入（含纯空白）不检索也不提示（用户裁决：保持输入区干净）。
+  /*
+   * 空输入（含纯空白）不检索也不提示（用户裁决：保持输入区干净）。
+   *
+   * 注意这里**不排除"行尾空格"**：`cd ` 之后按 Tab 仍要能补目录（那是显式
+   * 请求）。自动弹出由渲染层挡掉 —— 见 `suggestPanelVisible`。
+   */
   const suggestionsEnabled =
     phase === "connected" && !inAlternate && suggestOpen && draft.trim().length > 0;
 
-  // 展开态的手动编辑 → 回到收起态（ghost）。程序性填入（Tab/选择器写行）
-  // 通过 `programmaticDraftRef` 豁免，否则刚展开的面板会被自己收回去。
+  // 继续输入 = 重新展开候选条（输入法式）。程序性填入（Tab/选择器写行）
+  // 通过 `programmaticDraftRef` 豁免，不重复触发。
   useEffect(() => {
     if (programmaticDraftRef.current !== null) {
       if (draft === programmaticDraftRef.current) return;
       programmaticDraftRef.current = null;
     }
-    setSuggestExpanded(false);
+    setSuggestExpanded(true);
   }, [draft]);
 
   /**
@@ -266,8 +274,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   if (!cwdTrackerRef.current) cwdTrackerRef.current = new RemoteCwdTracker();
   const [cwd, setCwd] = useState<string | null>(null);
   const [remoteHome, setRemoteHome] = useState<string | null>(null);
-  const cwdProbeTimerRef = useRef<number | null>(null);
-  const cwdProbedRef = useRef(false);
 
   /** 服务器运行环境（Nginx 在宿主机 / Docker / Compose）：连接后异步探测一次。 */
   const { environment, refresh: refreshEnvironment } = useServerEnvironment(
@@ -376,39 +382,27 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     [sessionId, tab.quickTarget, tab.serverId, tab.title],
   );
 
+  // Serialize frontend IPC writes before they reach the SSH channel.
+  const inputQueue = useRef({ tail: Promise.resolve() });
+  useEffect(() => () => { inputQueue.current = { tail: Promise.resolve() }; }, [sessionId]);
+  const sendInput = useCallback((data: string) => {
+    const queue = inputQueue.current;
+    queue.tail = queue.tail.then(async () => {
+      if (queue !== inputQueue.current) return;
+      await opsApi.sshInput(sessionId, data);
+    }).catch(() => {
+      if (queue === inputQueue.current) setParamHint(t("Terminal input could not be sent"));
+    });
+  }, [sessionId, t]);
+
   // 命令提交入口 + 命令块（悬浮复制）全部归 `use-terminal-results.ts`。
   const results = useTerminalResults({
-    sessionId,
     terminalRef,
     boundaryParserRef,
     setParamHint,
+    sendInput,
   });
   const executeTerminalCommand = results.execute;
-
-  /**
-   * 受控 pwd 探测：前两条来源（OSC 7 / 跟踪的 cd）都没答案时才用。
-   *
-   * 让 shell 自己用 OSC 7 把 cwd 报回来（不是我们解析提示符）；整行作为
-   * 注入行交给边界解析器剔除回显 → 终端里不留可见文字，也不生成结果 Tab。
-   * 每个会话最多同时一次，超时后允许下次重试（但绝不循环重试）。
-   */
-  const requestCwdProbe = useCallback(() => {
-    const tracker = cwdTrackerRef.current;
-    if (!tracker || cwdProbedRef.current) return;
-    if (!tracker.needsProbe(sessionId)) return;
-    cwdProbedRef.current = true;
-    boundaryParserRef.current?.expect([CWD_PROBE_LINE]);
-    void opsApi
-      .sshInput(sessionId, `${CWD_PROBE_LINE}\r`)
-      .catch(() => undefined)
-      .finally(() => {
-        if (cwdProbeTimerRef.current !== null) window.clearTimeout(cwdProbeTimerRef.current);
-        cwdProbeTimerRef.current = window.setTimeout(() => {
-          // 超时没等到 OSC 7：放开一次重试机会（用户下次输入 cd 时再探）。
-          cwdProbedRef.current = false;
-        }, CWD_PROBE_TIMEOUT_MS);
-      });
-  }, [sessionId]);
 
   /**
    * 从项目卡片右键「在命令面板中打开」进来时，连上后在 shell 里切到目标目录。
@@ -439,34 +433,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }, [phase, sessionId, tab.initialPath]);
 
   /**
-   * 受控 pwd 探测的时机。
-   *
-   * **只在命令行是空的时候发**：探测行是写进当前输入行的，用户已经敲了
-   * `cd opt` 再发就会变成 `cd opt printf …` —— 那是在破坏他正在输入的
-   * 命令，宁可不知道 cwd 也不能这么干。
-   *
-   * 因此时机是"连接成功后"与"每次命令行被清空/提交之后"（此时 shell 停在
-   * 干净的提示符上）。探测本身只输出 OSC 7，不留可见文字。
-   */
-  useEffect(() => {
-    if (phase !== "connected") return;
-    if (draft !== "") return;
-    // 连接刚建立时 shell 可能还没画出第一个提示符，稍等一下再问。
-    const timer = window.setTimeout(requestCwdProbe, 800);
-    return () => window.clearTimeout(timer);
-  }, [draft, phase, requestCwdProbe]);
-
-  /**
-   * 终端实例只创建一次，它的 `onData` 闭包会一直持有首帧的函数。用 ref
-   * 让它每次都能拿到**最新**的提交入口（否则切服务器后记历史会记错标题）。
-   */
-  const commandEntryRef = useRef<TerminalCommandEntry>({
-    note: noteExecutedCommand,
-    submit: executeTerminalCommand,
-  });
-  commandEntryRef.current = { note: noteExecutedCommand, submit: executeTerminalCommand };
-
-  /**
    * 把一段文本写进远程 shell 的当前行。
    *
    * 这里是"未解析占位符绝不进 shell"的**最后一道拦截**：`<unit>` 之类
@@ -483,40 +449,30 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         );
         return false;
       }
-      void opsApi.sshInput(sessionId, text).catch(() => undefined);
+      sendInput(text);
       return true;
     },
-    [sessionId, t],
+    [sendInput, t],
   );
 
-  /**
-   * 粘贴剪贴板文本到当前命令行。
-   *
-   * - 换行统一成 `\r`：Shell 只认 `\r` 作为"执行"，直接送 `\n` 会在多行
-   *   文本里粘出一堆没提交的 `^J`；用户从网页复制的命令常带 `\n`。
-   * - **同一个 `writeToShell` 出口**（与手打、补全、参数填入一致）：占位符
-   *   拦截照常生效 —— 粘贴一段带 `<unit>` 的命令绝不会直送 shell。
-   * - 行编辑器同步 feed：粘贴后 ghost/补全状态与真实命令行一致（不然下一次
-   *   补全会拿旧行算差集）。
-   * - 空剪贴板/读取失败**不静默**：给出可见提示（粘贴"什么也没发生"是最
-   *   让人困惑的状态）。
-   */
+  const [pendingPaste, setPendingPaste] = useState<string | null>(null);
   const pasteIntoTerminal = useCallback(async () => {
-    const raw = await readText();
-    if (raw === null) {
+    const terminal = terminalRef.current;
+    const queue = inputQueue.current;
+    const text = await readText();
+    if (terminal !== terminalRef.current || queue !== inputQueue.current) return;
+    if (text === null) {
       setParamHint(t("Paste failed — the clipboard could not be read"));
       return;
     }
-    if (raw === "") return;
-    const text = raw.replace(/\r?\n/g, "\r");
-    if (!writeToShell(text)) return;
-    lineEditorRef.current?.feed(text);
-    const next = lineEditorRef.current?.current ?? "";
-    programmaticDraftRef.current = next;
-    setDraft(next);
-    updateSuggestAnchor();
+    if (!text || !terminal) return;
+    if (/[\r\n]/.test(text) && !terminal.modes.bracketedPasteMode) {
+      setPendingPaste(text);
+      return;
+    }
+    terminal.paste(text);
     refocusTerminal();
-  }, [t, updateSuggestAnchor, writeToShell]);
+  }, [refocusTerminal, t]);
 
   /** 知识库候选（含占位符 → 二级选择器）。见下方 `applySuggestion`。 */
   const applyKnowledgeHit = useCallback(
@@ -624,23 +580,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   );
 
   /**
-   * 把当前行**当作回车提交**（走唯一入口 `executeTerminalCommand`）。
-   *
-   * 用于"候选与命令行一致、回车被建议面板接受"的场景：此时用户按回车的
-   * 意图就是执行，不该被吞掉。
-   */
-  const submitCurrentLine = useCallback(() => {
-    const editor = lineEditorRef.current;
-    const command = editor?.current.trim() ?? "";
-    if (!command) return;
-    // 与真实回车一致：`feed("\r")` 提交并清空行编辑器。
-    editor?.feed("\r");
-    setDraft("");
-    noteExecutedCommand(command);
-    executeTerminalCommand(command, "input", { prefix: "\r" });
-  }, [executeTerminalCommand, noteExecutedCommand]);
-
-  /**
    * **执行**候选（区别于 `applySuggestion` 的"只填入不执行"）：补全剩余
    * 字符后**立刻提交**，走唯一入口 `executeTerminalCommand`（→ 标记 → 捕获
    * → 渲染快照 → 结果 Tab）。
@@ -745,6 +684,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   // to be refreshed after every render to see the current suggestions/draft.
   useEffect(() => {
     keyHandlerRef.current = (event) => {
+      if (event.isComposing || event.keyCode === 229) return false;
+      /*
+       * 空格**永远**原样发给 shell。
+       *
+       * 补全的 insertText 常带前导空格（裸 `cd` → `" ops/"`），ghost 也画在
+       * 光标处 —— 一旦补全链路把空格当成"接受候选"，shell 收不到空格、屏幕上
+       * 光标不动，而本地 LineEditor 却把空格记进了行里（用户看到的就是
+       * "按空格没反应，其实已经空了"）。这里在最前面放行，任何补全分支都碰不到它。
+       */
+      if (event.key === " ") return false;
+      if (event.code === "Space" && !event.ctrlKey) return false;
       // Ctrl+C / Ctrl+V：终端里这两个键有双重身份，必须按"有没有选区"分流。
       //
       // - Ctrl+C **有选中** → 复制（用户刚从回滚缓冲里选了东西，此时他要的
@@ -779,6 +729,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         void pasteIntoTerminal();
         return true;
       }
+      if (terminalRef.current?.buffer.active.type !== "normal") return false;
       if (event.ctrlKey && event.code === "Space") {
         // 二级选择器打开时先关它（它有自己的 window 级监听）。
         if (paramPicker) setParamPicker(null);
@@ -787,8 +738,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       }
       // Ctrl+Enter：补全候选并**立即执行**（走唯一提交入口 → 结果 Tab）。
       if (event.ctrlKey && (event.key === "Enter" || event.code === "Enter")) {
-        const hit = suggestions.items[suggestions.activeIndex];
-        if (!hit) return false;
+        const hit = suggestPanelVisible ? suggestions.items[suggestions.activeIndex] : suggestions.items[0];
+        if (!hit || paramPickerRef || !suggestOpen || !lineEditorRef.current?.canComplete) return false;
         event.preventDefault();
         runSuggestion(hit);
         return true;
@@ -796,7 +747,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       // 二级选择器打开期间：按键交给它（window 捕获阶段），本层不参与，
       // 否则 ↑↓/Enter 会被两层各处理一次。
       if (paramPickerRef) return false;
-      if (event.isComposing || event.keyCode === 229) return false;
+      if (!suggestOpen || !lineEditorRef.current?.canComplete || event.altKey || event.ctrlKey || event.metaKey) return false;
       // 统一补全状态机（见 terminal-suggest.ts）：
       // collapsed（ghost 态）—— Tab/↓ 接受第一条并展开；**Enter 原样提交
       // 用户敲的行**（提示不替用户改命令，用户裁决 2026-09-24）；Esc = 清行。
@@ -806,7 +757,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       const { items, activeIndex, setActiveIndex } = suggestions;
       const action = resolveTerminalCompleteKey(
         { key: event.key, isComposing: event.isComposing },
-        { expanded: suggestExpanded, hasItems: items.length > 0 },
+        { expanded: suggestExpanded, hasItems: items.length > 0, itemCount: items.length },
       );
       switch (action.type) {
         case "none":
@@ -826,13 +777,22 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           if (!first) return true;
           const outcome = applySuggestion(first);
           if (outcome === "noop") {
-            // 候选与行内一致 → 这次按键是执行意图，不能吞掉。
-            submitCurrentLine();
             setSuggestExpanded(false);
           } else if (outcome === "filled") {
             setSuggestExpanded(true);
           }
           // blocked：参数选择器已打开 / 主体已填（手填参数）→ 不展开面板。
+          refocusTerminal();
+          return true;
+        }
+        case "accept-index": {
+          // 输入法式：数字键 1-9 直接选第 N 条，把正在敲的前缀替换掉。
+          // 不按数字就什么都不发生 —— 候选只是建议，不会替用户改命令。
+          event.preventDefault();
+          const hit = items[action.index];
+          if (!hit) return true;
+          const outcome = applySuggestion(hit);
+          if (outcome === "noop" || outcome === "blocked") setSuggestExpanded(false);
           refocusTerminal();
           return true;
         }
@@ -843,7 +803,6 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
           if (!hit) return true;
           const outcome = applySuggestion(hit);
           if (outcome === "noop") {
-            submitCurrentLine();
             setSuggestExpanded(false);
           } else if (outcome === "blocked") {
             setSuggestExpanded(false);
@@ -889,19 +848,43 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   // 面板是**真正**渲染出来的条件（与下方 JSX 保持一致）：
   // 统一状态机 —— 只有 expanded（Tab/ArrowDown 之后）才允许出现完整面板。
+  /*
+   * **没有候选就不弹面板**。
+   *
+   * 以前 notice（"没有匹配的远程目录" / "cwd 未知"）也会把面板顶出来：
+   * 自动展开之后，它变成打字过程中一直挡在命令上的空提示条 —— 用户的原话是
+   * "我书写完应该不要提示这个"。说明文字只在**有候选**时作为底栏出现。
+   */
+  /*
+   * **行尾是空格时自动提示一律不弹**（用户裁决 2026-11-11）。
+   *
+   * 空格没有可见字形，面板/ghost 贴着光标一弹，看起来就是"按空格卡住、
+   * 光标不动"，其实空格已经在命令行里。输入参数时也不需要命令名候选。
+   * 想看参数候选仍然可以按 Tab（那是显式请求，走 `suggestExpanded`）。
+   */
+  const autoPopoverAllowed = !draft.endsWith(" ");
   const suggestPanelVisible =
     suggestionsEnabled &&
     suggestExpanded &&
+    autoPopoverAllowed &&
     !paramPicker &&
-    (suggestions.items.length > 0 || Boolean(suggestions.notice));
+    suggestions.items.length > 0;
 
   // 行内 ghost（收起态）：第一条候选的剩余部分 + Tab 徽标。
-  // 裸 `cd` 的 ghost 自带前导空格（insertText 里已含）。
   const parsed = parseLine(draft, draft.length);
   const ghostPrefix = parsed && parsed.index > 0 ? parsed.prefix : null;
-  const ghostText = suggestionsEnabled
-    ? ghostTextFor(suggestions.items[0], draft, ghostPrefix)
-    : "";
+  /*
+   * **行尾是空格时不画 ghost**。
+   *
+   * 空格本身没有可见字形，ghost 又从光标位置起笔：两者叠在一起时用户看到的是
+   * "我按了空格，屏幕上什么都没有，光标还贴在 cd 后面" —— 其实空格已经在行里，
+   * 只是被紧贴光标的提示占住了视觉位置（用户原话："好像被提示给挡住了"）。
+   * 正在输入参数时本来也不需要 ghost，直接不画最干净。
+   */
+  const ghostText =
+    suggestionsEnabled && !draft.endsWith(" ")
+      ? ghostTextFor(suggestions.items[0], draft, ghostPrefix)
+      : "";
   const ghostVisible = suggestionsEnabled && !suggestExpanded && !paramPicker && ghostText !== "";
 
   /**
@@ -969,6 +952,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
     connectingRef.current = true;
+    inputQueue.current = { tail: Promise.resolve() };
+    lineEditorRef.current?.reset();
+    setDraft("");
+    setPendingPaste(null);
     setPhase("connecting");
     setError(null);
 
@@ -1010,7 +997,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         // 终端里不留这行乱码（与受控 pwd 探测同一机制）。
         if (readCompactPrompt()) {
           boundaryParserRef.current?.expect([COMPACT_PROMPT_LINE]);
-          void opsApi.sshInput(sessionId, COMPACT_PROMPT_INPUT).catch(() => undefined);
+          sendInput(COMPACT_PROMPT_INPUT);
         }
         // 登录目录：cwd 的兜底答案（`cd ~`、以及还没探测到时用它）。
         // 只信 SFTP 的 canonicalize 结果 —— 绝不从提示符文本猜。
@@ -1073,6 +1060,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   }, [
     raiseChallenge,
     register,
+    sendInput,
     sessionId,
     setStatus,
     t,
@@ -1094,12 +1082,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     terminalRef,
     fitRef,
     lineEditorRef,
-    commandEntryRef,
+    noteCommand: noteExecutedCommand,
+    sendInput,
     boundaryParserRef,
     cwdTrackerRef,
     coordinatorRef: results.coordinatorRef,
     captureMarkerRef: results.captureMarkerRef,
-    cwdProbeTimerRef,
     keyHandlerRef,
     sessionId,
     hasTarget,
@@ -1282,6 +1270,21 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
             自动消失，不会把终端或结果面板撑大。 */}
         <CopyNotice status={copyStatus} />
       </div>
+
+      {pendingPaste !== null && (
+        <ConfirmDialog
+          open
+          title={t("Paste multiple lines?")}
+          description={t("This terminal may execute pasted lines immediately.")}
+          confirmLabel={t("Paste")}
+          onConfirm={() => {
+            terminalRef.current?.paste(pendingPaste);
+            setPendingPaste(null);
+            refocusTerminal();
+          }}
+          onCancel={() => setPendingPaste(null)}
+        />
+      )}
 
       {results.runConfirm && (
         <ConfirmDialog

@@ -17,6 +17,9 @@ export default {
   "Copy": "复制",
   "Paste": "粘贴",
   "Paste failed — the clipboard could not be read": "粘贴失败——无法读取剪贴板",
+  "Terminal input could not be sent": "终端输入发送失败",
+  "Paste multiple lines?": "粘贴多行文本？",
+  "This terminal may execute pasted lines immediately.": "当前终端可能会立即执行粘贴的命令。",
   "Split Vertically": "垂直分栏",
   "Split Horizontally": "水平分栏",
   "Clear Screen": "清空屏幕",
@@ -59,6 +62,11 @@ export default {
     "↑↓ 选择 · → 或 Enter 填入 · ← 或 Esc 关闭（不动已填入的内容）· 再按 Enter 执行",
   "↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run · ▶ / Ctrl+Enter to run directly":
     "↑↓ 选择 · → 或 Enter 填入 · ← 或 Esc 关闭（不动已填入的内容）· 再按 Enter 执行 · ▶ / Ctrl+Enter 直接执行",
+  // 输入法式候选条（数字键直接选）
+  "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close":
+    "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭",
+  "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close · ▶ / Ctrl+Enter to run":
+    "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭 · ▶ / Ctrl+Enter 直接执行",
 
   // —— ParamPicker：参数取值选择器 ——
   "Select service unit": "选择服务单元",

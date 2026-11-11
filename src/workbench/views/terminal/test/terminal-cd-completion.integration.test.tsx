@@ -196,7 +196,9 @@ describe("cd remote-directory completion (integration)", () => {
     // 插入文本必须自带前导空格（`cd` 后面还没有空格）。
     expect(latest.inserts.every((text) => text.startsWith(" "))).toBe(true);
     // ghost 前自动包含必要的空格（用户裁决：裸 cd 的 ghost = " fd/"）。
-    expect(latest.ghost).toBe(" fd/");
+    // 前导空格不再画进 ghost：光标位置本身表达那个空格，画出来只会让人
+    // 以为"按了空格没反应"（空格与背景同色）。
+    expect(latest.ghost).toBe("fd/");
   });
 
   it("`cd ` (space typed) lists /dev without doubling the space", async () => {

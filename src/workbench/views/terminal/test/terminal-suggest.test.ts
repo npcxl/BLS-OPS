@@ -198,8 +198,8 @@ describe("行内 ghost 文本（第一条候选的剩余部分）", () => {
     expect(ghostTextFor({ insertText: "docker ps -a" }, "docker p", "p")).toBe("s -a");
   });
 
-  it("裸 cd：整条显示（自带前导空格 —— ghost 前自动含空格）", () => {
-    expect(ghostTextFor({ insertText: " ops/" }, "cd", "cd")).toBe(" ops/");
+  it("裸 cd：只显示目录名，前导空格不画（否则按了空格像没反应）", () => {
+    expect(ghostTextFor({ insertText: " ops/" }, "cd", "cd")).toBe("ops/");
   });
 
   it("空输入或无候选 → 空串（不显示 ghost）", () => {

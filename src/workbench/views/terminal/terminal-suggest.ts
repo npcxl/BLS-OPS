@@ -125,15 +125,24 @@ export type TerminalCompleteAction =
   | { type: "accept-first" }
   | { type: "accept-active" }
   | { type: "run-active" }
+  /**
+   * 按数字键直接选第 N 条（输入法式交互，1-9）。
+   *
+   * 只在**面板已经展开、且候选足够多**时接管：否则用户想输入 `docker logs 1`
+   * 里的数字会被吃掉。
+   */
+  | { type: "accept-index"; index: number }
   /** 收起面板但不碰行内容（expanded 态下 Esc / ←）。 */
   | { type: "collapse" }
   | { type: "clear-line" };
 
 export interface TerminalCompleteState {
-  /** 面板是否已展开（Tab/ArrowDown 之后）。 */
+  /** 面板是否已展开（输入法式：有候选就展开，Esc 才收起）。 */
   expanded: boolean;
   /** 是否有候选（决定 collapsed 的 Tab/↓ 是否接管）。 */
   hasItems: boolean;
+  /** 候选条数：数字键只接受真实存在的序号。 */
+  itemCount?: number;
 }
 
 export function resolveTerminalCompleteKey(
@@ -143,6 +152,12 @@ export function resolveTerminalCompleteKey(
   if (event.isComposing) return { type: "none" };
 
   if (state.expanded) {
+    // 输入法式：面板可见时 1-9 直接选第 N 条（`doc` + 2 → 第二条）。
+    if (/^[1-9]$/.test(event.key)) {
+      const index = Number(event.key) - 1;
+      const count = state.itemCount ?? 0;
+      return index < count ? { type: "accept-index", index } : { type: "none" };
+    }
     switch (event.key) {
       // 收起面板，**行内容不动**：Tab 填入第一条后按 Esc 只是想关掉剩下的
       // 候选，把刚填进来的命令一起清掉是灾难（用户裁决 2026-09-28）。
@@ -208,9 +223,20 @@ export function ghostTextFor(
   const insert = item.insertText;
   if (!insert) return "";
   if (!line.trim()) return "";
-  if (parsedPrefix && parsedPrefix.length > 0 && insert.startsWith(parsedPrefix)) {
-    return insert.slice(parsedPrefix.length);
-  }
-  if (insert.startsWith(line)) return insert.slice(line.length);
-  return insert;
+  const tail = (() => {
+    if (parsedPrefix && parsedPrefix.length > 0 && insert.startsWith(parsedPrefix)) {
+      return insert.slice(parsedPrefix.length);
+    }
+    if (insert.startsWith(line)) return insert.slice(line.length);
+    return insert;
+  })();
+  /*
+   * **前导空白不画**。
+   *
+   * 候选的 insertText 常带前导空格（裸 `cd` → `" ops/"`，补完命令名接参数）。
+   * 直接画在光标处时，那个空格和背景没区别，用户按了空格却"看不到任何变化"
+   * —— 看起来像键没生效，其实行里已经有空格了。把它去掉：光标位置本身就能
+   * 表达"这里有个空格"。
+   */
+  return tail.replace(/^\s+/, "");
 }

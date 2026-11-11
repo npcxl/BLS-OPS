@@ -110,8 +110,9 @@ export function TerminalSuggest({
     node?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  // 没有任何候选、也没有要说的话 → 不显示面板（避免闪一个空框）。
-  if ((items.length === 0 && !notice) || !anchor) return null;
+  // 没有候选 → 不显示面板。只有 notice 时也不弹：自动展开之后那就是一条
+  // 一直挡在命令上的空提示（"No matching remote directories"），纯噪音。
+  if (items.length === 0 || !anchor) return null;
 
   return (
     <div
@@ -145,6 +146,13 @@ export function TerminalSuggest({
                   index === activeIndex ? "bg-accent/12" : "hover:bg-surface-hover",
                 )}
               >
+                {/*
+                 * 输入法式序号：面板可见时按 1-9 直接选这一条。
+                 * 前 9 条才有数字，第 10 条起留空 —— 不编一个用不了的键。
+                 */}
+                <span className="w-3 shrink-0 text-center text-9 tabular-nums text-fg-subtle">
+                  {index < 9 ? index + 1 : ""}
+                </span>
                 <Icon size={12} className="shrink-0 text-fg-subtle" />
                 <code className="shrink-0 font-mono text-11 text-fg">
                   <Highlighted text={item.label} highlight={item.highlight} />
@@ -190,9 +198,9 @@ export function TerminalSuggest({
             {t(notice)}
           </span>
         ) : onRun ? (
-          t("↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run · ▶ / Ctrl+Enter to run directly")
+          t("1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close · ▶ / Ctrl+Enter to run")
         ) : (
-          t("↑↓ select · → or Enter to fill · ← or Esc to close · Enter again to run")
+          t("1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close")
         )}
       </div>
     </div>

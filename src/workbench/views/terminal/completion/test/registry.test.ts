@@ -109,8 +109,14 @@ describe("provider routing", () => {
     expect(providerFor(parseLine("kill ", 5), providers)?.id).toBe("process");
   });
 
-  it("routes a bare command word to the knowledge provider", () => {
-    expect(providerFor(parseLine("sys", 3), providers)?.id).toBe("knowledge");
+  it("命令词先由命令名 provider 接管，知识库只做兜底", () => {
+    // `sys` 应该先补成 `systemctl`（命令名），而不是先给一条长模板。
+    expect(providerFor(parseLine("sys", 3), providers)?.id).toBe("command");
+  });
+
+  it("命令名没有命中时才轮到知识库", () => {
+    // `kubectl` 在内置命令表里，`zzz` 不在 —— 后者退回知识库（检索无结果即空）。
+    expect(providerFor(parseLine("zzz", 3), providers)?.id).toBe("knowledge");
   });
 
   it("routes `nginx` to the environment provider when an environment is known", () => {

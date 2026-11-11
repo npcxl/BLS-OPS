@@ -15,6 +15,7 @@ import { createServiceProvider } from "./providers/service";
 import { createProcessProvider } from "./providers/process";
 import { createRemoteDirectoryProvider } from "./providers/remote-directory";
 import { createFileProvider } from "./providers/file";
+import { createCommandProvider } from "./providers/command";
 import { createKnowledgeProvider } from "./providers/knowledge";
 import type {
   CompletionContext,
@@ -28,7 +29,12 @@ function empty(requestKey: string, notice?: string): CompletionResult {
   return { items: [], notice, requestKey };
 }
 
-/** 默认提供器顺序：环境 → Docker → 服务 → 进程 → cd 目录 → 文件 → 知识库。 */
+/**
+ * 默认提供器顺序：环境 → Docker → 服务 → 进程 → cd 目录 → 文件 → 命令名 → 知识库。
+ *
+ * 命令名放在知识库之前：知识库是"用例模板"（`docker ps -a` 整条），
+ * 敲 `unz` 时用户要的是 `unzip` 这个**命令**，不是一条长模板。
+ */
 export function defaultProviders(): CompletionProvider[] {
   return [
     createEnvironmentProvider(),
@@ -37,6 +43,7 @@ export function defaultProviders(): CompletionProvider[] {
     createProcessProvider(),
     createRemoteDirectoryProvider(),
     createFileProvider(),
+    createCommandProvider(),
     createKnowledgeProvider(),
   ];
 }

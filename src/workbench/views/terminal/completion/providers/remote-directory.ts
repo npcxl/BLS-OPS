@@ -62,7 +62,15 @@ export function createRemoteDirectoryProvider(
         parsed.tokens.length === 1 &&
         parsed.token !== null &&
         ctx.cursor >= parsed.token.end;
-      const input = analyzePathInput(bareCd ? "" : parsed.prefix, ctx.cwd, ctx.home);
+      /*
+       * cwd 未知（Shell Integration 还没报回 OSC 7）时**退回家目录/根目录**：
+       * 用户敲 `cd ` 要的是"当前能去哪"，此时给"unknown, cannot complete"
+       * 等于把补全关掉。退到 home 至少能列出常见目录，比空着有用。
+       */
+      const base = ctx.cwd ?? ctx.home ?? "/";
+      // `home` 保持原值：`cd ~/` 在 home 未知时必须继续报 needsHome，
+      // 绝不能把 `/` 当成家目录（那是编出来的路径）。
+      const input = analyzePathInput(bareCd ? "" : parsed.prefix, base, ctx.home);
       const requestKey = `cd:${bareCd ? "<bare>" : input?.dir ?? "?"}:${input?.partial ?? ""}`;
 
       if (!input) {

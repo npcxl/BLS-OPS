@@ -193,12 +193,13 @@ describe("cd completion", () => {
     expect(result.notice).toBe("No matching remote directories");
   });
 
-  it("says so when the cwd is unknown — never falls back to the local filesystem", async () => {
+  it("cwd 未知时退回家目录，而不是完全不给候选", async () => {
     const io = lister();
     const result = await complete("cd ", io.list, { cwd: null });
-    expect(io.calls).toEqual([]);
-    expect(result.items).toHaveLength(0);
-    expect(result.notice).toContain("Remote working directory is unknown");
+    // 退到 home（不是本地文件系统，也不编造路径）：`cd ` 至少要能列出常见目录。
+    expect(io.calls).toEqual(["/root"]);
+    expect(result.items.map((item) => item.label)).toContain("opt");
+    expect(result.notice).toBeUndefined();
   });
 
   it("asks for the home directory instead of inventing one", async () => {
@@ -297,11 +298,11 @@ describe("bare cd (no space yet)", () => {
     expect(result.items.every((item) => item.type === "directory")).toBe(true);
   });
 
-  it("says the cwd is unknown for a bare cd too (never guesses)", async () => {
+  it("裸 cd 在 cwd 未知时同样退回家目录", async () => {
     const io = lister();
     const result = await complete("cd", io.list, { cwd: null });
-    expect(io.calls).toEqual([]);
-    expect(result.notice).toContain("Remote working directory is unknown");
+    expect(io.calls).toEqual(["/root"]);
+    expect(result.items.length).toBeGreaterThan(0);
   });
 });
 

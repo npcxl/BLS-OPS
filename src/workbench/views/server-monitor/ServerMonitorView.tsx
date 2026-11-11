@@ -51,6 +51,9 @@ import { DiskTable, NetworkTable, ProcessTable } from "./tables";
 import { MonitorPicker } from "./MonitorPicker";
 import { isTabVisibleInPanes, usePageVisible } from "./hooks";
 
+/** tooltip 的百分比格式：模块级常量，避免每次渲染换引用导致图表重设 option。 */
+const percentText = (value: number) => `${value.toFixed(1)}%`;
+
 function formatClock(timestamp: number | null): string {
   if (!timestamp) return i18n.t("Not collected yet");
   return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false });
@@ -599,7 +602,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 points={entry?.history ?? []}
                 pick={(point) => point.cpu}
                 max={100}
-                tone="text-accent"
+                tone="accent"
+                format={percentText}
               />
               <TrendChart
                 title={t("Memory usage")}
@@ -610,7 +614,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 points={entry?.history ?? []}
                 pick={(point) => point.memory}
                 max={100}
-                tone="text-success"
+                tone="success"
+                format={percentText}
               />
               <TrendChart
                 title={t("Download")}
@@ -620,7 +625,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 points={entry?.history ?? []}
                 pick={(point) => point.download}
                 max={1}
-                tone="text-ai"
+                tone="ai"
+                format={formatSpeed}
               />
               <TrendChart
                 title={t("Upload")}
@@ -630,7 +636,8 @@ export function ServerMonitorView({ tab }: { tab: WorkspaceTab }) {
                 points={entry?.history ?? []}
                 pick={(point) => point.upload}
                 max={1}
-                tone="text-warning"
+                tone="warning"
+                format={formatSpeed}
               />
             </div>
 

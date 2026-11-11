@@ -32,6 +32,8 @@ export type CompletionSource =
   | "docker"
   | "service"
   | "process"
+  /** 命令名补全（内置命令表 + 一步拼写纠错）。 */
+  | "command"
   | "remote-directory"
   | "file"
   | "knowledge";

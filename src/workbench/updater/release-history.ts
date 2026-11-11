@@ -16,6 +16,9 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.26", date: "2026-11-11", title: "修复监控趋势图崩溃", changes: [
+    { kind: "fix", title: "监控图表", text: "修复 0.1.25 打不开趋势图的问题：渐变色用了 CSS Color 4 的 rgb(r g b / a) 写法，CanvasGradient 只认传统 rgba(r, g, b, a)，渲染时抛 addColorStop 异常、整块图表中断。现在统一输出 rgba()。" },
+  ] },
   { version: "0.1.25", date: "2026-11-11", title: "SQL 补全体验修复", changes: [
     { kind: "fix", title: "补全候选", text: "输入第二个字母不再突然空白：以前 CodeMirror 复用第一次的 200 条结果做过滤，表多时关键字排在后面，一过滤就没了；现在每次输入都重新计算候选。" },
     { kind: "fix", title: "选中态", text: "补全面板选中行只保留淡背景（去掉整行蓝底与左侧色条），匹配字符改用下划线标示，不会再被同色背景吞掉首字母。" },

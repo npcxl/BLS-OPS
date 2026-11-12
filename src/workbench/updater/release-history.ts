@@ -16,6 +16,10 @@ export interface ReleaseHistoryEntry {
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.29", date: "2026-11-12", title: "命令块配色与文件大小修复", changes: [
+    { kind: "fix", title: "命令块误标红", text: "修复「上一条命令报错会把下一条的正常输出整片标红」：命令与结果的配对改为按本次提交的块 id，不再取「最后一个未完成块」；错误块的红色也收窄到命令行与其下紧邻的一行，正常输出不再被染红。" },
+    { kind: "fix", title: "文件大小", text: "/proc、/sys、/dev 下的内核虚拟文件不再显示大小（/proc/kcore 恒为 128 TiB、设备节点为 0），改为 —；真实文件的大小显示不变。" },
+  ] },
   { version: "0.1.28", date: "2026-11-11", title: "终端对话式输入与命令块", changes: [
     { kind: "feature", title: "对话式输入", text: "终端下方新增独立输入条（弧形 CurvedInput：文字、光标、发送键都沿弧线走），Enter 或点按钮发送，上方的终端变成纯输出区。中文输入法、光标遮挡、行重绘这些在裸终端里难以避免的问题一次性绕开。" },
     { kind: "feature", title: "命令补全", text: "输入命令词时弹出候选（内置 300+ 命令，前缀与缩写都行：doc → docker、dc → docker），1-9 或 Tab 直接选、↑↓ 移动、Esc 关闭；不选则原样执行，输入法组合期间不拦截。" },

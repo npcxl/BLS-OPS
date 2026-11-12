@@ -3,10 +3,10 @@ import { CornerDownLeft } from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import type { RemoteFileEntry } from "@/api/ops-api";
 import { cn } from "@/lib/cn";
-import { formatSize, formatTime } from "@/lib/format";
+import { formatTime } from "@/lib/format";
 import { useDirSizeStore } from "@/stores/dir-size-store";
 import { EntryIcon } from "./EntryIcon";
-import { dirSizeSummary } from "./utils";
+import { dirSizeSummary, fileSizeLabel } from "./utils";
 
 /**
  * 就地重命名（像资源管理器那样在行内改名，而不是弹窗）。
@@ -155,7 +155,7 @@ export const FileRow = memo(function FileRow({
         <span className="block truncate text-10 text-fg-subtle">
           {entry.kind === "directory"
             ? dirSizeSummary(dirSize)
-            : `${formatSize(entry.size)} · ${formatTime(entry.modified_at)}`}
+            : `${fileSizeLabel(entry)} · ${formatTime(entry.modified_at)}`}
         </span>
       </span>
       {entry.kind === "directory" && (

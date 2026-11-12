@@ -1,7 +1,33 @@
-import type { DirectorySizeResult } from "@/api/ops-api";
+import type { DirectorySizeResult, RemoteFileEntry } from "@/api/ops-api";
 import { formatCount, formatSize } from "@/lib/format";
 import { fileKind } from "@/lib/file-kind";
 import { i18n } from "@/i18n";
+
+/**
+ * 内核虚拟文件系统的挂载点。
+ *
+ * 这些路径下的"文件"由内核合成，`stat` 报的 size 是**虚拟地址空间**而不是
+ * 真实内容：`/proc/kcore` 恒为 128 TiB（2^47），`/dev` 下的设备节点是 0。
+ * 直接显示会让人以为服务器上有 128TB 文件 —— 列表里改为 `—`。
+ */
+const VIRTUAL_FS_PREFIXES = ["/proc", "/sys", "/dev"];
+
+function isVirtualFsPath(path: string): boolean {
+  return VIRTUAL_FS_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  );
+}
+
+/**
+ * 文件行的大小文案。
+ *
+ * 虚拟文件系统下的条目返回 `—`（不是 0 B，也不是 128 TB）：它们没有可比较的
+ * 磁盘占用，写一个数字只会误导。
+ */
+export function fileSizeLabel(entry: RemoteFileEntry): string {
+  if (isVirtualFsPath(entry.path)) return "—";
+  return formatSize(entry.size);
+}
 
 /** Pure POSIX path ops — remote paths never follow the local OS's rules. */
 export function parentOf(path: string): string {

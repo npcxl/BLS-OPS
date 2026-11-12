@@ -93,10 +93,20 @@ export function finishBlock(
   exitCode: number | null,
   endMarker: BlockMarker | null,
   renderedText: string | null,
+  /**
+   * 只封口**这一次提交**的块。
+   *
+   * 不传时退化为"最后一个未完成块"（历史行为）。必须传：`command not found`
+   * 这类情况下界面会连续提交下一条命令，而旧块的边界标记可能迟到 —— 靠
+   * "最后一个未完成"会把**下一条正常命令**的输出和退出码圈进旧块，表现就是
+   * `docker ps -a` 的输出被整片标红（用户反馈的问题）。
+   */
+  id?: string,
 ): BlocksMutation {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index];
     if (block.finished) continue;
+    if (id !== undefined && block.id !== id) continue;
     const next = blocks.slice();
     next[index] = { ...block, endMarker, exitCode, renderedText, finished: true };
     return { blocks: next, evicted: [] };

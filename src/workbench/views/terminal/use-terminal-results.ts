@@ -128,6 +128,8 @@ export function useTerminalResults(host: TerminalResultsHost) {
    */
   const stripesRef = useRef<IDecoration[]>([]);
   const stripeSeqRef = useRef(0);
+  /** 本次提交对应的命令块 id（结果回来时只封口它）。 */
+  const pendingBlockIdRef = useRef<string | null>(null);
   const stripeBlock = useCallback((terminal: Terminal | null, block: CommandBlock) => {
     if (!terminal) return;
     /*
@@ -141,7 +143,21 @@ export function useTerminalResults(host: TerminalResultsHost) {
       const start = block.startMarker.line;
       const end = block.endMarker?.line ?? start;
       if (start < 0 || end < 0) return;
-      const height = Math.max(1, Math.abs(end - start) + 1);
+      const span = Math.abs(end - start) + 1;
+      /*
+       * **失败块只染命令行 + 紧邻的一行**，不整块铺红。
+       *
+       * 原因：命令与结果的配对依赖 OSC 133 的 D 标记。`command not found`
+       * 这类情况下标记偶尔会迟到/错位，让"下一条正常命令"继承到上一条的
+       * 退出码 —— 一旦整块铺红，`docker ps -a` 的输出会被整片标红，看起来
+       * 像它失败了（用户反馈的正是这个）。
+       *
+       * 错误信息本来就紧跟在命令行下面一行，红两行足够定位；正常块仍铺满。
+       */
+      const failed = isFailedBlock(block);
+      const height = failed ? Math.min(span, 2) : span;
+      // 正常块跨度异常大（跨了几百行）说明 marker 错配，宁可不画。
+      if (!failed && span > 500) return;
       const decoration = terminal.registerDecoration({
         // CommandBlock 存的是 marker 的结构子集，实际就是同一枚 IMarker。
         marker: block.startMarker as unknown as IMarker,
@@ -150,7 +166,7 @@ export function useTerminalResults(host: TerminalResultsHost) {
         layer: "bottom",
       });
       if (!decoration) return;
-      const tone = isFailedBlock(block)
+      const tone = failed
         ? "stripe-error"
         : stripeSeqRef.current++ % 2 === 0
           ? "stripe-a"
@@ -186,7 +202,9 @@ export function useTerminalResults(host: TerminalResultsHost) {
           result.boundary.exitCode,
           endMarker,
           result.renderedText,
+          pendingBlockIdRef.current ?? undefined,
         );
+        pendingBlockIdRef.current = null;
         applyBlocks(mutation);
         // 整块条纹（命令 + 输出）；失败块用红色，不再是 hover 才看得见。
         const finished = mutation.blocks[mutation.blocks.length - 1];
@@ -262,10 +280,18 @@ export function useTerminalResults(host: TerminalResultsHost) {
             const blockMarker = instance.registerMarker(0);
             if (blockMarker) {
               blockIdRef.current += 1;
-              applyBlocks(beginBlock(blocksRef.current, `block-${blockIdRef.current}`, trimmed, blockMarker));
+              const blockId = `block-${blockIdRef.current}`;
+              // 记下本次提交的块 id：结果回来时只封口这一块，绝不把下一条
+              // 命令的输出圈进上一条（`command not found` 之后最容易错配）。
+              pendingBlockIdRef.current = blockId;
+              applyBlocks(beginBlock(blocksRef.current, blockId, trimmed, blockMarker));
             }
           }
         }
+      } else {
+        // 不捕获（交互式 / 空命令）：不要留下上一条的块 id，否则它的结果回来时
+        // 会封口一个不该封口的块。
+        pendingBlockIdRef.current = null;
       }
       const prefix = options?.prefix ?? "";
       if (!prefix && !plan.write) return;

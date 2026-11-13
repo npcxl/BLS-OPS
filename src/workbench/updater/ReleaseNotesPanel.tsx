@@ -8,7 +8,7 @@ import { formatBytes } from "@/lib/format";
 import { UPDATE_ERROR_MESSAGES } from "@/lib/updater/errors";
 import { useGuardedUpdate } from "./use-guarded-update";
 import { UpdateRestartDialog } from "./UpdateRestartDialog";
-import { releaseHistory } from "./release-history";
+import { pickText, releaseHistory } from "./release-history";
 import { MacSegmentedControl } from "@/components/ui/mac-controls";
 import { version as bundledVersion } from "../../../package.json";
 import "./release-notes.css";
@@ -16,6 +16,11 @@ import "./release-notes.css";
 /** Published history shares the existing Settings scroll region and updater. */
 export function ReleaseNotesPanel() {
   const { t, i18n } = useTranslation();
+  /**
+   * 更新日志是随包发布的静态数据（不走 i18n 资源表）：条目自带中英两份，
+   * 这里按当前界面语言挑一份，英文缺省时回退中文。
+   */
+  const english = i18n.language.toLowerCase().startsWith("en");
   const offered = useUpdaterStore(s => s.release);
   const phase = useUpdaterStore(s => s.phase);
   const progress = useUpdaterStore(s => s.progress);
@@ -102,12 +107,13 @@ export function ReleaseNotesPanel() {
             className={"release-notes-body release-notes-version" + (entry.version === releaseHistory[0].version && !remoteOnly ? " release-notes-version--latest" : "")}>
             <header className="release-notes-version-header">
               <span className="release-notes-version-tag">v{entry.version}</span>
-              <h2>{entry.title}</h2>
+              <h2>{pickText(entry.title, entry.titleEn, english)}</h2>
               {entry.upcoming && <span className="text-11 text-fg-subtle">{t("Upcoming release")}</span>}
               <time dateTime={entry.date}>{entry.date}</time>
             </header>
             <ul>{entry.changes.map((change, index) => <li key={index}>
-              <strong>{change.title}：</strong>{change.text}
+              <strong>{pickText(change.title, change.titleEn, english)}{english ? ": " : "："}</strong>
+              {pickText(change.text, change.textEn, english)}
             </li>)}</ul>
           </article>)}
         </div>

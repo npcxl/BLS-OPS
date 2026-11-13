@@ -7,15 +7,48 @@
  * date is the planned release date.
  * Source: https://github.com/npcxl/BLS-OPS/releases
  */
+/** 一条更新项。英文缺省时回退中文（见 `pickText`）。 */
+export interface ReleaseChange {
+  kind: "feature" | "fix";
+  title: string;
+  text: string;
+  /** 英文标题；不填则英文界面显示 `title`。 */
+  titleEn?: string;
+  /** 英文说明；不填则英文界面显示 `text`。 */
+  textEn?: string;
+}
+
 export interface ReleaseHistoryEntry {
   version: string;
   date: string;
   title: string;
+  /** 英文标题；不填则英文界面显示 `title`。 */
+  titleEn?: string;
   upcoming?: boolean;
-  changes: { kind: "feature" | "fix"; title: string; text: string }[];
+  changes: ReleaseChange[];
+}
+
+/**
+ * 按界面语言取文案。
+ *
+ * 更新日志是随应用一起发布的**静态数据**，不走 `i18n` 资源表（那会变成几十个
+ * 无意义的 key）。英文缺省时回退中文，避免英文界面出现空白条目。
+ */
+export function pickText(zh: string, en: string | undefined, english: boolean): string {
+  return english && en ? en : zh;
 }
 
 export const releaseHistory: ReleaseHistoryEntry[] = [
+  { version: "0.1.30", date: "2026-11-13", title: "终端输入栏候选与选区", titleEn: "Candidate bar and selection in the terminal input", changes: [
+    { kind: "feature", title: "横向候选栏", titleEn: "Inline suggestion bar", text: "输入栏上方出现微软输入法式的候选条：贴着弧线上的光标，横排 3–5 条、首选轻高亮、末尾标「Tab 补全」。靠近右边界向左收、底部空间不足翻到上方，绝对定位不占布局，出现和消失都不会让终端跳动。", textEn: "A Microsoft-IME-style strip appears under the curved caret: 3–5 candidates, the first one lightly highlighted, \"Tab to fill\" at the end. It flips above the caret when there is no room below and shifts left near the right edge. Absolutely positioned, so the terminal never jumps when it appears or disappears." },
+    { kind: "feature", title: "本地优先的补全", titleEn: "Local-first completion", text: "命令名、子命令、当前服务器历史都在内存里同步算好，输入那一刻就有（`doc` → docker、`docker ` → ps/logs/exec）；目录、容器、服务名异步补进来。命令库里没有、但执行过的命令从该服务器历史召回，标「历史」。", textEn: "Command names, subcommands and this server's history are computed in memory and show up on the keystroke (doc → docker, docker + space → ps/logs/exec). Directories, containers and services are filled in asynchronously. Commands that are not in the catalog but have been run on this server are recalled from its history and labelled \"history\"." },
+    { kind: "feature", title: "选区高亮", titleEn: "Selection highlight", text: "按原生 input 的选区在弧线上画高亮条，选中文字提亮：Ctrl+A 覆盖全部可见文字，Shift+方向键 只高亮对应字符；高亮跟随长命令横向滚动，并裁在文字区内不会盖住发送按钮。", textEn: "Drawn from the native input selection: Ctrl+A covers everything visible, Shift+Arrow highlights just those characters. The highlight follows horizontal scrolling and is clipped to the text area, so it never covers the Send button." },
+    { kind: "fix", title: "空格不再和提示打架", titleEn: "Space no longer fights the popup", text: "按编辑位置判断：行尾或命令中间插入空格都只多一个空格，上一轮候选与灰字同时收起、也不会被 Tab 选中；连续空格不弹窗；继续输入 `l` 立刻给出 `logs`。Ctrl+Space 可主动查看当前位置的候选（子命令 / 路径 / 容器）。", textEn: "Judged by edit position: pressing space at the end of the line or in the middle of a command only inserts a space, hides the previous candidates and ghost text, and Tab can no longer pick them. Consecutive spaces stay quiet; typing l brings logs back immediately. Ctrl+Space shows candidates for the current position (subcommands / paths / containers)." },
+    { kind: "fix", title: "Esc 收起后不再自动弹出", titleEn: "Esc stays closed", text: "按 Esc 收起候选后，即使远程目录 / 容器结果晚到也不会重新弹出浮层或灰字；此时 Tab 恢复浏览器正常的焦点导航，不会填进屏幕上看不到的东西。", textEn: "After Esc, late remote results will not reopen the popup or the ghost text; Tab falls back to normal focus navigation instead of filling in something you cannot see." },
+    { kind: "fix", title: "候选选不中", titleEn: "Candidates that could not be clicked", text: "候选改用稳定 ID 记录选中项，并用 mousedown 直接填入（不再依赖 click）——之前异步结果插到前面时按钮会重挂载，点击落空、Tab 也可能填进屏幕外那条。数字键 1–6 直接选，`=` / `-` 翻页。", textEn: "The selected item is tracked by a stable ID and applied on mousedown instead of click, so async results reordering the list can no longer swallow the click. 1–6 pick a candidate, = and - page through them." },
+    { kind: "fix", title: "Ctrl+C 复制", titleEn: "Ctrl+C copies", text: "输入框里有选区时 Ctrl+C 复制所选文字并保留命令；没有选区才清空草稿。中断命令改为右下角的显式按钮，误触不会打断服务器上的进程。", textEn: "With a selection it copies the selected text and keeps the command; without one it clears the draft. Interrupting a running command is now an explicit button, so a stray Ctrl+C cannot kill a process on the server." },
+    { kind: "fix", title: "数据库与文件面板", titleEn: "Database and file panel", text: "数据库工作项标题的「对象」改为走翻译（英文显示 Object）；切换表格时右侧 DDL 自动跟随；表头筛选加了明确的「应用筛选」按钮。文件面板：`/proc`、`/sys`、`/dev` 下的虚拟文件不再显示 128 TB，改为 —。", textEn: "The \"对象\" tab title is translated (Object in English), the DDL panel follows the current table, and the table filter has an explicit Apply button. Virtual files under /proc, /sys and /dev no longer show 128 TB — they show a dash." },
+  ] },
   { version: "0.1.29", date: "2026-11-12", title: "命令块配色与文件大小修复", changes: [
     { kind: "fix", title: "命令块误标红", text: "修复「上一条命令报错会把下一条的正常输出整片标红」：命令与结果的配对改为按本次提交的块 id，不再取「最后一个未完成块」；错误块的红色也收窄到命令行与其下紧邻的一行，正常输出不再被染红。" },
     { kind: "fix", title: "文件大小", text: "/proc、/sys、/dev 下的内核虚拟文件不再显示大小（/proc/kcore 恒为 128 TiB、设备节点为 0），改为 —；真实文件的大小显示不变。" },

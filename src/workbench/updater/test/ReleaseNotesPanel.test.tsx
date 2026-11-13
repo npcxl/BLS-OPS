@@ -65,10 +65,10 @@ describe("release notes and shared updater", () => {
   it("shows published history offline without inventing an available update", async () => {
     await render();
     expect(document.body.textContent).not.toContain("Example release notes");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(22);
-    expect(holder.querySelector(".release-notes-version-tag")?.textContent).toBe("v0.1.29");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(23);
+    expect(holder.querySelector(".release-notes-version-tag")?.textContent).toBe("v0.1.30");
     expect(holder.textContent).not.toContain("Upcoming release");
-    expect(holder.textContent).toContain("22 published releases");
+    expect(holder.textContent).toContain("23 published releases");
     expect(document.body.textContent).toContain("v0.1.17");
     expect(document.body.textContent).not.toContain("v0.1.14");
     expect(holder.querySelector(".release-notes-heading")).toBeNull();
@@ -94,15 +94,15 @@ describe("release notes and shared updater", () => {
     expect(holder.textContent).toContain("外部下载链接修复");
     expect(holder.textContent).not.toContain("新增对象浏览");
     await choose("All versions");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(22);
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(23);
   });
 
   it("marks the prepared notes published when release metadata confirms the version", async () => {
-    metadata.read.mockResolvedValue({...release, version:"0.1.29"});
+    metadata.read.mockResolvedValue({...release, version:"0.1.30"});
     await render();
     expect(holder.textContent).not.toContain("Upcoming release");
-    expect(holder.textContent).toContain("22 published releases");
-    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(22);
+    expect(holder.textContent).toContain("23 published releases");
+    expect(holder.querySelectorAll(".release-notes-version")).toHaveLength(23);
     expect(button("Download and install")).toBeUndefined();
   });
 

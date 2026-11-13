@@ -36,7 +36,9 @@ export type CompletionSource =
   | "command"
   | "remote-directory"
   | "file"
-  | "knowledge";
+  | "knowledge"
+  /** 当前服务器执行过的历史命令（命令库外的也能召回）。 */
+  | "history";
 
 /** 候选项的语义类型（决定图标与后续处理）。 */
 export type CompletionItemType =

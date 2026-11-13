@@ -65,6 +65,15 @@ export default {
   // 输入法式候选条（数字键直接选）
   "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close":
     "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭",
+  history: "历史",
+  "Type a command, Enter to run · Tab to complete · Ctrl+Space for the list":
+    "输入命令，回车执行 · Tab 补全 · Ctrl+Space 展开列表",
+  "↑↓ to pick · Tab to fill · Esc to close": "↑↓ 选择 · Tab 填入 · Esc 关闭",
+  "1-6 pick · = / - page · Tab to fill · Esc to close":
+    "1-6 选择 · = / - 翻页 · Tab 填入 · Esc 关闭",
+  "Tab to fill": "Tab 补全",
+  "Tab fills the suggestion · Enter runs it · ↑↓ for history":
+    "Tab 补全首选 · 回车执行 · ↑↓ 翻历史",
   "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close · ▶ / Ctrl+Enter to run":
     "1-9 直接选 · ↑↓ 选择 · → 或 Tab 填入 · ← 或 Esc 关闭 · ▶ / Ctrl+Enter 直接执行",
   "Reading candidates…": "正在读取候选…",
@@ -85,6 +94,7 @@ export default {
   "Terminal command": "终端命令",
   "{{count}} commands in history · ↑↓ to recall": "历史 {{count}} 条 · ↑↓ 翻看",
   "Ctrl+C interrupts": "Ctrl+C 中断",
+  Interrupt: "中断",
 
   // —— ParamPicker：参数取值选择器 ——
   "Select service unit": "选择服务单元",

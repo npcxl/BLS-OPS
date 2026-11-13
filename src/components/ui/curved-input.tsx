@@ -213,6 +213,28 @@ export interface CurvedInputProps {
   disabled?: boolean;
   /** 挂载后自动聚焦隐藏 input（对话式输入条需要一打开就能打字）。 */
   autoFocus?: boolean;
+  /**
+   * 首选补全里**尚未输入**的部分，用灰字画在光标之后（行内 ghost）。
+   * 空串不画。
+   */
+  ghost?: string;
+  /** 光标位置变化（供补全按光标所在片段计算）。 */
+  onCaretChange?: (caret: number) => void;
+  /**
+   * 光标在**弧线上**的实际像素位置（相对本组件根元素，y 取光标下沿）。
+   * 补全候选栏靠它贴在光标正下方，而不是贴在输入框某个固定角落。
+   */
+  onCaretPosition?: (position: { x: number; y: number } | null) => void;
+  /** 输入法组词/选字状态变化（组词期间要隐藏自带候选栏）。 */
+  onComposingChange?: (composing: boolean) => void;
+  /**
+   * 选区变化（`selectionStart` / `selectionEnd`）。
+   *
+   * 以原生 input 的选区为准：Ctrl+C 在有选区时复制、弧形高亮按这个范围画。
+   */
+  onSelectionChange?: (range: { start: number; end: number }) => void;
+  /** 程序性移动光标（补全后把光标停在插入内容之后）。 */
+  caretRequest?: { index: number; nonce: number } | null;
 }
 
 export function CurvedInput({
@@ -247,6 +269,12 @@ export function CurvedInput({
   style,
   disabled = false,
   autoFocus = false,
+  ghost = "",
+  onCaretChange,
+  onCaretPosition,
+  onComposingChange,
+  onSelectionChange,
+  caretRequest = null,
 }: CurvedInputProps) {
   const uid = useId().replace(/:/g, "");
   const layoutPathId = `ci-text-${uid}`;
@@ -265,19 +293,39 @@ export function CurvedInput({
   const [caretIndex, setCaretIndex] = useState(defaultValue.length);
   const [focused, setFocused] = useState(false);
   const [caretU, setCaretU] = useState(0);
+  /** 光标处的弧长（px），ghost 的 `startOffset` 用它。 */
+  const [caretLen, setCaretLen] = useState(0);
+  /** 选区换算到弧线上的长度区间（px），用于画高亮条与提亮选中文字。 */
+  const [selLen, setSelLen] = useState({ start: 0, end: 0 });
   const [scrollLen, setScrollLen] = useState(0);
   const [btnTextW, setBtnTextW] = useState(0);
   const [, setFontTick] = useState(0);
   /**
-   * 全选（Ctrl+A）时给整个输入框一层高亮。
+   * 原生 input 的选区（字符下标）。
    *
-   * 真实文字是 SVG 画的，隐藏 input 的 `::selection` 根本看不见 —— 不额外
-   * 提示的话，用户按了 Ctrl+A 完全不知道自己选中了什么。
+   * 高亮与「选中文字提亮」都以它为准：全选 = `0..length`，Shift+方向键 是
+   * 任意区间。真实文字是 SVG 画的，隐藏 input 的 `::selection` 根本看不见，
+   * 所以这里自己换算成弧线长度来画（见下方 layout effect）。
    */
-  const [selectAll, setSelectAll] = useState(false);
+  const [selection, setSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
 
   const val = value !== undefined ? value : innerValue;
   const display = type === "password" ? "•".repeat(val.length) : val;
+
+  /*
+   * 主题切换时要**重新读一遍 token**。
+   *
+   * 这些颜色是 `getComputedStyle` 读出来的字符串，不是活的 CSS 变量：只在
+   * 首次渲染算一次的话，亮色启动、切到夜间后输入框还是白的（用户反馈的
+   * "夜间模式这个输入框是白的"）。监听 `data-theme` 变化重算。
+   */
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => {
+    const target = document.documentElement;
+    const observer = new MutationObserver(() => setThemeTick((tick) => tick + 1));
+    observer.observe(target, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    return () => observer.disconnect();
+  }, []);
 
   // 主题跟随应用 token（亮/暗都一致），props 仍可覆盖。
   const palette = useMemo<ThemePalette>(
@@ -290,7 +338,9 @@ export function CurvedInput({
       buttonTextColor: buttonTextColor ?? "#ffffff",
       shadowColor: shadowColor ?? "#0f172a",
     }),
-    [backgroundColor, textColor, placeholderColor, borderColor, buttonColor, buttonTextColor, shadowColor],
+    // themeTick 只是触发器：主题变了就重读上表。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [backgroundColor, textColor, placeholderColor, borderColor, buttonColor, buttonTextColor, shadowColor, themeTick],
   );
 
   const bgColor = palette.backgroundColor;
@@ -375,6 +425,59 @@ export function CurvedInput({
       setScrollLen(next);
     }
     setCaretU(layout.textStartU + (caretLen - next) * geom.uPerLen);
+    setCaretLen(caretLen);
+
+    /*
+     * 选区 → 弧线长度。
+     *
+     * `getSubStringLength` 给出的是**沿弧线的路径长度**，正好和 textPath 的
+     * 坐标一致；高亮条与提亮文字都用这两个值定位。等值时不更新，避免每帧
+     * 造新对象触发重渲染。
+     */
+    let selStartLen = 0;
+    let selEndLen = 0;
+    if (textEl && selection.end > selection.start) {
+      try {
+        selStartLen = selection.start > 0 ? textEl.getSubStringLength(0, selection.start) : 0;
+        selEndLen = textEl.getSubStringLength(0, selection.end);
+      } catch {
+        selStartLen = 0;
+        selEndLen = 0;
+      }
+    }
+    setSelLen((current) =>
+      Math.abs(current.start - selStartLen) < 0.5 && Math.abs(current.end - selEndLen) < 0.5
+        ? current
+        : { start: selStartLen, end: selEndLen },
+    );
+
+    /*
+     * 把**光标线段的实际下端点**换算成视口坐标（px）。
+     *
+     * 不能拿"弧线中线 + 半个控件高度"近似 —— 绘制时那条线是 `caretH` 高、
+     * 绕 `(caretX, caretY)` 旋转的 `<line>`，它的下端点才是视觉上的光标底：
+     *
+     *   bottom = (caretX, caretY) + rotate(angle) · (0, +caretH/2)
+     *
+     * 再按 `getBoundingClientRect` 的比例把 SVG 逻辑坐标换成屏幕像素（窗口
+     * 缩放时 viewBox 与元素宽度不一致）。返回的是**视口坐标**，候选栏用
+     * `position: fixed` 定位，完全不受输入框宽度影响。
+     */
+    const svg = svgRef.current;
+    if (svg && geom && layout) {
+      const u = layout.textStartU + (caretLen - next) * geom.uPerLen;
+      const [px, py] = geom.point(u, 0);
+      const caretH = Math.min(geom.T * 0.58, fontSize * 1.45);
+      const rad = (geom.angleAt(u) * Math.PI) / 180;
+      const bottomX = px - (caretH / 2) * Math.sin(rad);
+      const bottomY = py + (caretH / 2) * Math.cos(rad);
+      const svgRect = svg.getBoundingClientRect();
+      const scale = geom.W > 0 ? svgRect.width / geom.W : 1;
+      onCaretPosition?.({
+        x: svgRect.left + bottomX * scale,
+        y: svgRect.top + bottomY * scale,
+      });
+    }
   });
 
   const commitValue = (v: string) => {
@@ -384,13 +487,38 @@ export function CurvedInput({
 
   /** 选区是否覆盖了全部内容（0..length）。 */
   const syncSelection = (target: HTMLInputElement) => {
-    setCaretIndex(target.selectionStart ?? target.value.length);
-    setSelectAll(
-      target.value.length > 0 &&
-        target.selectionStart === 0 &&
-        target.selectionEnd === target.value.length,
-    );
+    const caret = target.selectionStart ?? target.value.length;
+    const start = target.selectionStart ?? caret;
+    const end = target.selectionEnd ?? caret;
+    setCaretIndex(caret);
+    onCaretChange?.(caret);
+    // 以原生 input 的选区为准：高亮范围、Ctrl+C 复制都读这一份。
+    setSelection({ start, end });
+    onSelectionChange?.({ start, end });
+
   };
+
+  /*
+   * 程序性移动光标（补全后停在插入内容之后）。
+   *
+   * 受控文本更新后浏览器会把光标放到末尾，中间位置的补全会把光标甩到行尾；
+   * 用 nonce 保证只在"我们请求的那一次"应用，不干扰用户正常输入。
+   */
+  const lastCaretNonce = useRef(0);
+  useLayoutEffect(() => {
+    if (!caretRequest || caretRequest.nonce === lastCaretNonce.current) return;
+    lastCaretNonce.current = caretRequest.nonce;
+    const input = inputRef.current;
+    if (!input) return;
+    try {
+      input.focus();
+      input.setSelectionRange(caretRequest.index, caretRequest.index);
+      setCaretIndex(caretRequest.index);
+      onCaretChange?.(caretRequest.index);
+    } catch {
+      /* 某些 input 类型不支持 setSelectionRange */
+    }
+  }, [caretRequest, onCaretChange]);
 
   const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     commitValue(e.target.value);
@@ -507,8 +635,31 @@ export function CurvedInput({
           strokeWidth={borderWidth + 6}
         />
         <path d={bandPath} fill={bgColor} stroke={strokeColor} strokeWidth={borderWidth} />
-        {/* 全选高亮：盖在底色上、文字下（SVG 的 selection 背景不可见）。 */}
-        {selectAll && <path d={bandPath} fill={accentColor} opacity={0.22} pointerEvents="none" />}
+        {/*
+         * 选区高亮条：沿弧线画一条粗线，范围来自原生 input 的
+         * selectionStart/selectionEnd。
+         *
+         * - 用 `clipPath` 裁在文字显示区内 —— 不会盖住右侧「发送」按钮；
+         * - 两端用 `butt` 而不是圆头，局部选中时边界正好切在字符上；
+         * - 坐标已扣掉 `scrollLen`，长命令横向滚动时跟着文字走。
+         */}
+        {selLen.end > selLen.start && (
+          <g clipPath={`url(#${clipId})`} pointerEvents="none">
+            <path
+              d={bentLinePath(
+                geom,
+                layout.textStartU + (selLen.start - scrollLen) * geom.uPerLen,
+                layout.textStartU + (selLen.end - scrollLen) * geom.uPerLen,
+                0,
+              )}
+              fill="none"
+              stroke={accentColor}
+              strokeOpacity={0.32}
+              strokeWidth={fontSize * 1.5}
+              strokeLinecap="butt"
+            />
+          </g>
+        )}
 
         <path id={layoutPathId} d={layoutPath} fill="none" />
 
@@ -535,6 +686,45 @@ export function CurvedInput({
           >
             <textPath href={`#${layoutPathId}`}>{display}</textPath>
           </text>
+          {/*
+           * 行内 ghost：首选中尚未输入的部分，灰字画在光标之后的弧线上。
+           * `startOffset` 用光标处的弧长（已扣掉滚动偏移），与文字同一条路径。
+           */}
+          {/*
+           * 选中文字提亮：把选区那段单独再画一遍，用高对比色盖在暗色高亮条
+           * 上。textPath 是一整条，没法给某几个字符换色，只能叠加。
+           */}
+          {selLen.end > selLen.start && (
+            <text
+              style={{ fontSize: `${fontSize}px`, fontWeight: 500 }}
+              fill={btnFgColor}
+              xmlSpace="preserve"
+              aria-hidden="true"
+            >
+              <textPath
+                href={`#${layoutPathId}`}
+                startOffset={`${Math.max(0, selLen.start - scrollLen)}px`}
+              >
+                {display.slice(selection.start, selection.end)}
+              </textPath>
+            </text>
+          )}
+          {ghost && display && (
+            <text
+              style={{ fontSize: `${fontSize}px`, fontWeight: 500 }}
+              fill={phColor}
+              opacity={0.85}
+              xmlSpace="preserve"
+              aria-hidden="true"
+            >
+              <textPath
+                href={`#${layoutPathId}`}
+                startOffset={`${Math.max(0, caretLen - scrollLen)}px`}
+              >
+                {ghost}
+              </textPath>
+            </text>
+          )}
           {!display && placeholder && (
             <text
               style={{ fontSize: `${fontSize}px`, fontWeight: 500 }}
@@ -639,6 +829,21 @@ export function CurvedInput({
         onChange={handleInputChange}
         onSelect={handleSelect}
         onKeyUp={handleSelect}
+        /*
+         * Ctrl/Cmd+A 直接置位，不等 `select` 事件：部分组合键下 select 事件
+         * 不会在 keydown 阶段同步触发，用户会看到"全选了但没有任何反馈"。
+         */
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+
+          }
+        }}
+        /*
+         * 输入法组词/选字期间要把状态报上去：应用自己的候选栏必须让位给
+         * 系统候选，否则两条候选栏叠在一起，回车还会执行半成品命令。
+         */
+        onCompositionStart={() => onComposingChange?.(true)}
+        onCompositionEnd={() => onComposingChange?.(false)}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         aria-label={ariaLabel || placeholder || "Curved input"}

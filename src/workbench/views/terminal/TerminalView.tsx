@@ -107,8 +107,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   useEffect(() => {
     let cancelled = false;
+    /*
+     * **按当前服务器**取历史：补全要贴合"这台机器"的习惯。
+     * 有已保存服务器 ID 用它；快速连接没有 ID，用目标（user@host:port）；
+     * 两者都没有才退化为按会话。
+     */
+    const filter = tab.serverId
+      ? { serverId: tab.serverId }
+      : tab.quickTarget
+        ? { quickTarget: tab.quickTarget }
+        : { sessionId };
     void opsApi
-      .listHistory(60)
+      .listHistory(60, filter)
       .then((rows) => {
         if (!cancelled) setCommandHistory(rows.map((row) => row.command));
       })
@@ -116,7 +126,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     return () => {
       cancelled = true;
     };
-  }, [historyRevision, sessionId]);
+  }, [historyRevision, sessionId, tab.quickTarget, tab.serverId]);
   /*
    * 文件面板默认**不展开**：终端宽度优先留给命令输出（日志/表格动辄 100+ 列）。
    * 需要时从工具栏或右键菜单打开，开关状态按机器记住 —— 上次收起就保持收起。
@@ -1350,6 +1360,10 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
        * 捕获、结果面板、历史记录都与终端里敲命令完全一致。
        */}
       <TerminalComposer
+        sessionId={sessionId}
+        cwd={cwd}
+        home={remoteHome}
+        environment={environment}
         disabled={phase !== "connected"}
         interactive={inAlternate}
         history={commandHistory}

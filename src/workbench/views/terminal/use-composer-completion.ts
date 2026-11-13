@@ -60,6 +60,69 @@ export function mergeUnique(primary: ComposerItem[], extra: ComposerItem[]): Com
 }
 
 /**
+ * 使用统计：按**命令 + 子命令**分别计数，而不是都算到首词头上。
+ *
+ * 每条历史记录会同时给它的 1~2 个词前缀各记一次：
+ * `docker logs nginx` → `docker` +1、`docker logs` +1。
+ * 这样 `docker logs` 和 `docker ps` 是两条独立记录 —— 前者常用了，
+ * `docker ` 之后的 `logs` 会排到前面，而 `ps` 不会跟着被抬高。
+ */
+export function usageStats(history: string[]): {
+  counts: Map<string, number>;
+  /** 越小越近（历史数组是新的在前）。 */
+  recency: Map<string, number>;
+} {
+  const counts = new Map<string, number>();
+  const recency = new Map<string, number>();
+  history.forEach((command, index) => {
+    const tokens = command.trim().split(/\s+/).slice(0, 2);
+    for (let n = 1; n <= tokens.length; n += 1) {
+      const key = tokens.slice(0, n).join(" ").toLowerCase();
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (!recency.has(key)) recency.set(key, index);
+    }
+  });
+  return { counts, recency };
+}
+
+/**
+ * 候选排序：**上下文优先，使用习惯加权**。
+ *
+ * 1. `priority` 高者在前（提供器已经按输入匹配度 / 参数位置排过）；
+ * 2. 同优先级里按**使用次数**（×10）加**最近使用**（越近分越高）排序；
+ * 3. 都没用过 → 保持命令库默认顺序（`sort` 是稳定的，返回 0 即可）。
+ */
+export function rankByUsage(
+  items: ComposerItem[],
+  history: string[],
+  command: string | null,
+): ComposerItem[] {
+  if (history.length === 0) return items;
+  const { counts, recency } = usageStats(history);
+  const keyOf = (item: ComposerItem): string => {
+    // 子命令（`docker ` 之后的 logs）用「命令 + 子命令」作为键。
+    const isSubcommand =
+      command !== null &&
+      item.source === "command" &&
+      !item.fromHistory &&
+      item.label.toLowerCase() !== command.toLowerCase();
+    return (isSubcommand ? `${command} ${item.label}` : item.label).toLowerCase();
+  };
+  const weight = (item: ComposerItem): number => {
+    const key = keyOf(item);
+    const used = (counts.get(key) ?? 0) * 10;
+    const recent = recency.has(key) ? Math.max(0, 100 - (recency.get(key) ?? 0)) : 0;
+    return used + recent;
+  };
+  return [...items].sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    const diff = weight(b) - weight(a);
+    return diff !== 0 ? diff : 0;
+  });
+}
+
+/**
  * 用历史给命令名候选加权：越近执行过的越靠前。
  *
  * 只调整**已经命中上下文**的候选顺序，不凭空造候选。
@@ -292,6 +355,12 @@ export function useComposerCompletion({
   const [loading, setLoading] = useState(false);
   const seqRef = useRef(0);
 
+  /** 当前命令行的首词：把子命令的使用记录挂到「命令 + 子命令」名下。 */
+  const command = useMemo(
+    () => parseLine(text, caret).tokens[0]?.value?.trim().toLowerCase() ?? null,
+    [caret, text],
+  );
+
   /**
    * 本地候选：**同步**计算，输入那一刻就有。
    *
@@ -299,10 +368,10 @@ export function useComposerCompletion({
    */
   const immediate = useMemo(() => {
     if (!enabled) return [];
-    const subcommands = localSubcommandItems(text, caret);
-    const commands = rankByHistory(localCommandItems(text, caret), history);
+    const subcommands = rankByUsage(localSubcommandItems(text, caret), history, command);
+    const commands = rankByUsage(localCommandItems(text, caret), history, command);
     return mergeUnique(historyItems(text, caret, history), [...subcommands, ...commands]);
-  }, [caret, enabled, history, text]);
+  }, [caret, command, enabled, history, text]);
 
   useEffect(() => {
     if (!enabled) {
@@ -327,7 +396,11 @@ export function useComposerCompletion({
           // 迟到的响应：用户又敲了字 / 换了服务器 → 整批丢弃。
           if (seq !== seqRef.current) return;
           setRemote({
-            items: rankByHistory(result.items.filter((item) => !item.disabled), history),
+            items: rankByUsage(
+              result.items.filter((item) => !item.disabled),
+              history,
+              command,
+            ),
             snapshot: request,
           });
           setLoading(false);

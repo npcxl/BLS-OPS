@@ -4,7 +4,13 @@ import { describe, expect, it } from "vitest";
 import "@/i18n";
 
 import { replaceSegment, resolveComposerKey } from "../composer-keys";
-import { historyItems, rankByHistory, snapshotMatches, type ComposerItem } from "../use-composer-completion";
+import {
+  historyItems,
+  rankByHistory,
+  rankByUsage,
+  snapshotMatches,
+  type ComposerItem,
+} from "../use-composer-completion";
 import { parseLine } from "../completion/path-input";
 
 /**
@@ -121,6 +127,36 @@ describe("历史候选", () => {
       ["systemctl restart nginx", "docker ps"],
     );
     expect(ranked[0]?.label).toBe("systemctl");
+  });
+});
+
+describe("按使用习惯排序（命令 + 子命令分别统计）", () => {
+  const sub = (label: string) => item({ label, insertText: `${label} `, priority: 2 });
+
+  it("区分 docker logs 与 docker ps：logs 用得多就排前面", () => {
+    const history = ["docker logs nginx", "docker logs api", "docker ps"];
+    const ranked = rankByUsage([sub("ps"), sub("logs")], history, "docker");
+    expect(ranked[0]?.label).toBe("logs");
+    expect(ranked[1]?.label).toBe("ps");
+  });
+
+  it("只统计到两个词：`docker ps` 不会把 `docker logs` 也抬起来", () => {
+    // 只有 ps 用过；logs 的权重要保持 0，顺序按默认。
+    const history = ["docker ps", "docker ps -a", "docker ps"];
+    const ranked = rankByUsage([sub("logs"), sub("ps")], history, "docker");
+    expect(ranked[0]?.label).toBe("ps");
+  });
+
+  it("首次使用（该服务器没有历史）沿用命令库默认顺序", () => {
+    const ranked = rankByUsage([sub("ps"), sub("logs")], [], "docker");
+    expect(ranked.map((entry) => entry.label)).toEqual(["ps", "logs"]);
+  });
+
+  it("两台服务器的历史互不影响：一台常用 logs，另一台常用 ps", () => {
+    const web = ["docker logs nginx", "docker logs api"];
+    const db = ["docker ps", "docker ps -a", "docker ps --format x"];
+    expect(rankByUsage([sub("ps"), sub("logs")], web, "docker")[0]?.label).toBe("logs");
+    expect(rankByUsage([sub("ps"), sub("logs")], db, "docker")[0]?.label).toBe("ps");
   });
 });
 

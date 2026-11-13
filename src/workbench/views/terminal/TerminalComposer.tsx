@@ -108,14 +108,48 @@ export function TerminalComposer({
    * 渲染、键盘 ↑↓、数字 1-6、Tab 全部只看这一份切片；第 0 页还会把用户
    * 已选定那条**提回列表**，避免异步结果插到前面把高亮项挤出去。
    */
+  /**
+   * **屏幕槽位**：编号 → 候选 id。
+   *
+   * 远程结果回来重新排序时编号不能换人 —— 编号 2 必须还是用户刚才看到的
+   * 第 2 条（否则"按 2 填入看到的那条"就失效）。这里记住每个槽位的 id，
+   * 重排后按 id 找回，找不到才用新候选补位。
+   */
+  const [slots, setSlots] = useState<string[]>([]);
+
+  useEffect(() => {
+    // 翻页直接按顺序切片，不维护槽位（回第 0 页时再重建）。
+    if (page > 0) return;
+    const byId = new Map(items.map((item) => [idOf(item), item]));
+    const next: ComposerItem[] = [];
+    const used = new Set<string>();
+    for (const id of slots) {
+      const item = byId.get(id);
+      if (item && !used.has(id)) {
+        next.push(item);
+        used.add(id);
+      }
+    }
+    for (const item of items) {
+      if (next.length >= PAGE_SIZE) break;
+      const id = idOf(item);
+      if (used.has(id)) continue;
+      next.push(item);
+      used.add(id);
+    }
+    const nextIds = next.slice(0, PAGE_SIZE).map(idOf);
+    // 只有真的变了才写回，避免 effect ↔ state 来回触发。
+    if (nextIds.join("|") !== slots.join("|")) setSlots(nextIds);
+  }, [idOf, items, page, slots]);
+
   const visible = useMemo(() => {
     if (page > 0) return items.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-    const head = items.slice(0, PAGE_SIZE);
-    if (!selectedId) return head;
-    const pinned = items.find((item) => idOf(item) === selectedId);
-    if (!pinned || head.includes(pinned)) return head;
-    return [pinned, ...items.filter((item) => item !== pinned).slice(0, PAGE_SIZE - 1)];
-  }, [idOf, items, page, selectedId]);
+    const byId = new Map(items.map((item) => [idOf(item), item]));
+    const ordered = slots
+      .map((id) => byId.get(id))
+      .filter((item): item is ComposerItem => Boolean(item));
+    return ordered.length > 0 ? ordered.slice(0, PAGE_SIZE) : items.slice(0, PAGE_SIZE);
+  }, [idOf, items, page, slots]);
 
   /**
    * 当前高亮项：**由 `selectedId` 在可见列表里反查下标**。
@@ -422,7 +456,9 @@ export function TerminalComposer({
               if (next >= pageCount) return 0;
               return next;
             });
+            // 换页 = 换一批编号，槽位与选中一起作废。
             setSelectedId(null);
+            setSlots([]);
             return;
           }
         }
@@ -503,8 +539,9 @@ export function TerminalComposer({
           value={text}
           onChange={(next) => {
             setText(next);
-            // 输入变了：之前选中的候选与页码都作废，从第一页重新开始。
+            // 输入变了：选中项、槽位与页码都作废，候选集重新编号。
             setSelectedId(null);
+            setSlots([]);
             setPage(0);
             setForceOpen(false);
             /*

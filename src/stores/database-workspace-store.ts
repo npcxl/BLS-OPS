@@ -16,6 +16,7 @@
  *   下一次单击替换它；开始编辑（有草稿/待提交/运行中）时自动升级为常驻。
  */
 import { create } from "zustand";
+import { i18n } from "@/i18n";
 
 export type WorkItemKind = "table" | "query" | "structure" | "objects";
 
@@ -380,7 +381,8 @@ export const useDatabaseWorkspaceStore = create<WorkspaceState>()((set, get) => 
           connectionName,
           database,
           objectName: database,
-          title: `${database} · 对象`,
+          // 走 i18n：以前硬编码中文，英文界面这里会漏出「对象」。
+        title: `${database} · ${i18n.t("对象")}`,
           pinned: false,
           preview: false,
           order: nextOrder(state.items),

@@ -25,6 +25,7 @@ import {
   ArrowDown,
   ArrowUp,
   Ban,
+  Check,
   ChevronLeft,
   ChevronRight,
   CircleDashed,
@@ -1860,14 +1861,20 @@ export function TableBrowser({
               }}
               placeholder={t("值（参数绑定）")}
             />
+            {/*
+             * 必须是**看得见的确认按钮**：以前是个 ghost 文字链接，用户填完
+             * `user_name = admin` 以为已经生效，实际上什么都没发生。
+             * 值非空时用主色描边，提示"这一步需要点"。
+             */}
             <Button
               className="shrink-0"
-              variant="ghost"
+              variant={draftFilter.value ? "secondary" : "ghost"}
               size="xs"
               disabled={!draftFilter.column}
               onClick={addFilter}
             >
-              {t("添加筛选")}
+              <Check size={11} />
+              {t("应用筛选")}
             </Button>
 
             {filters.map((filter, index) => (

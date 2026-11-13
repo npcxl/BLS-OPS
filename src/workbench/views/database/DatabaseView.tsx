@@ -137,6 +137,7 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
   const rightPanel = useDatabaseWorkspaceStore((state) => state.rightPanel);
   const ddl = useDatabaseWorkspaceStore((state) => state.ddl);
   const hideDdl = useDatabaseWorkspaceStore((state) => state.hideDdl);
+  const showDdl = useDatabaseWorkspaceStore((state) => state.showDdl);
   const connectionInfo = useDatabaseWorkspaceStore(
     (state) => state.connectionInfo,
   );
@@ -315,6 +316,30 @@ function ConnectionWorkspace({ tab }: { tab: WorkspaceTab }) {
       hideFieldCard();
     }
   }, [activeWorkItem, fieldCard, hideFieldCard]);
+
+  /**
+   * DDL 面板跟着**当前表**走。
+   *
+   * 以前面板打开后切换工作项，右侧仍是上一张表的 DDL —— 用户得再点一次
+   * "DDL" 才会更新，很容易照着旧定义改新表。现在只要面板开着且当前项是表，
+   * 就同步到它的目标。
+   */
+  useEffect(() => {
+    if (rightPanel !== "ddl" || !ddl || !activeWorkItem) return;
+    if (activeWorkItem.kind !== "table" || !activeWorkItem.database) return;
+    if (
+      ddl.profileId === activeWorkItem.profileId &&
+      ddl.database === activeWorkItem.database &&
+      ddl.table === activeWorkItem.objectName
+    ) {
+      return;
+    }
+    showDdl({
+      profileId: activeWorkItem.profileId,
+      database: activeWorkItem.database,
+      table: activeWorkItem.objectName,
+    });
+  }, [activeWorkItem, ddl, rightPanel, showDdl]);
 
   const requestClose = (item: WorkItem) => {
     if (useDatabaseWorkbenchStore.getState().tabs[item.id]?.resultWriteInFlight) {

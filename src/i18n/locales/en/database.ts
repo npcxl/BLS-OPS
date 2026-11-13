@@ -289,6 +289,7 @@ export default {
   "包含": "Contains",
   "开头是": "Starts with",
   "添加筛选": "Add filter",
+  "应用筛选": "Apply filter",
   "值（参数绑定）": "Value (bound parameter)",
   "移除筛选": "Remove filter",
   "待提交 {{count}} 项": "{{count}} pending",

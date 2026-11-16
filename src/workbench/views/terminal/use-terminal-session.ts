@@ -143,6 +143,14 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     const applyInteractive = (value: boolean) => {
       instance.options.disableStdin = !value;
       instance.options.cursorBlink = value;
+      /*
+       * **纯输出模式下隐藏 xterm 光标**。
+       *
+       * 键盘这时在底部输入条，但终端最后一行仍画着一个光标 —— 看起来"这里
+       * 能打字"，实际按下去毫无反应（用户反馈的"上面的命令还能有光标，虽然
+       * 输入不了"）。光标只在真正接管键盘时（vim/top）才出现。
+       */
+      instance.element?.classList.toggle("xterm-output-only", !value);
       if (value) instance.focus();
     };
     applyInteractive(hostRef.current.interactive);
@@ -187,9 +195,8 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       const alternate = instance.buffer.active.type !== "normal";
       if (alternate === hostRef.current.interactive) return;
       hostRef.current.setInAlternate(alternate);
-      instance.options.disableStdin = !alternate;
-      instance.options.cursorBlink = alternate;
-      if (alternate) instance.focus();
+      // 进出全屏程序时统一走同一个开关：键盘归属 + 光标显隐一起切。
+      applyInteractive(alternate);
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -435,6 +442,8 @@ export function useTerminalSession(host: TerminalSessionHost): void {
     if (!instance) return;
     instance.options.disableStdin = !interactive;
     instance.options.cursorBlink = interactive;
+    // 键盘不归终端时把光标也藏起来，避免"看着能打字"。
+    instance.element?.classList.toggle("xterm-output-only", !interactive);
     if (interactive) instance.focus();
   }, [interactive]);
 }

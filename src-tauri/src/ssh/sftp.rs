@@ -886,13 +886,23 @@ impl SshSessionManager {
 
     /// Overwrites a remote text file (the editor's save action).
     pub async fn sftp_write_file(&self, session_id: &str, path: &str, content: &str) -> Result<()> {
+        self.sftp_write_bytes(session_id, path, content.as_bytes())
+            .await
+    }
+
+    /// 写入任意字节：图片、字体、`.jar`、`.zip` 这类**二进制附件**。
+    ///
+    /// 与文本写入走同一条原子写路径（临时文件 + 重命名），所以中途失败不会
+    /// 留下半个文件。附件在 WebView 里没有本地路径（`sftp_upload` 依赖路径），
+    /// 因此内容以字节形式直接写过去。
+    pub async fn sftp_write_bytes(&self, session_id: &str, path: &str, bytes: &[u8]) -> Result<()> {
         let session = self.get(session_id).await?;
         let sftp = session.sftp_client().await?;
         let canonical = sftp
             .canonicalize(path)
             .await
             .map_err(|error| sftp_error(path, error))?;
-        atomic_write(&sftp, &canonical, content.as_bytes()).await
+        atomic_write(&sftp, &canonical, bytes).await
     }
 
     /// Reads any remote file as raw bytes for the in-app preview.

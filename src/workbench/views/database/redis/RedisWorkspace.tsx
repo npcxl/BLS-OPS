@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/context-menu";
 import { CopyNotice, useCopyFeedback } from "@/components/ui/copy-feedback";
 import { pushToast } from "@/components/ui/toast";
+import { pushDesktopNotification } from "@/desktop-notification/bridge";
 import { copyText } from "@/lib/clipboard";
 import { databaseApi } from "@/api/ops-api";
 import type {
@@ -300,6 +301,16 @@ export function RedisWorkspace({ profile }: { profile: DatabaseProfile }) {
       setPayload(null);
     }
     pushToast(t("已删除 {{count}} 个键", { count: keys.length }), "success");
+    // 批量删除可能跑在用户切走之后：同一条连接只留最新一次结果。
+    pushDesktopNotification({
+      id: `redis-delete-${profile.id}`,
+      tone: "success",
+      source: "Redis",
+      time: "刚刚",
+      title: t("已删除 {{count}} 个键", { count: keys.length }),
+      durationMs: 6000,
+      action: { kind: "none" },
+    });
     scan.rescan();
   }, [deleteTargets, detailKey, profile.id, scan, selection, t]);
 

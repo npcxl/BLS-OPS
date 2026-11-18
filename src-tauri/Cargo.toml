@@ -79,10 +79,12 @@ flate2 = "1"
 #   因此不需要下载新的 crate 树。
 
 reqwest = { version = "0.13", default-features = false, features = [
-    "json",
-    "charset",
-    "http2",
-    "default-tls",
+  "json",
+  "charset",
+  "http2",
+  "default-tls",
+  # 流式对话要逐块读响应体（`bytes_stream`）。
+  "stream",
 ] }
 
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
@@ -117,6 +119,9 @@ rand = "0.10"
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"
 windows-version = "0.1"
+# Windows Graphics Capture：通知窗口的实时桌面纹理。静态截图无法跟随桌面
+# 变化，WGC 的 monitor 会话可以持续出帧，按窗口矩形裁剪后喂给 GlassSurface。
+windows-capture = "2.0.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(mobile)'] }

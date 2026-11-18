@@ -20,6 +20,17 @@ export const sshStderrEvent = (sessionId: string) => `ssh-stderr-${sessionId}`;
 /** Emitted when the transport for a session drops. Payload: `string` reason. */
 export const sshClosedEvent = (sessionId: string) => `ssh-closed-${sessionId}`;
 
+/**
+ * 右栏手动终端的 PTY 通道输出。Payload: `string`。
+ *
+ * 和 `sshOutputEvent` 分开：手动终端是**另一条** shell 通道，输出绝不能
+ * 混进主终端的画面。
+ */
+export const sshShellOutputEvent = (shellId: string) => `ssh-shell-output-${shellId}`;
+
+/** 手动终端通道关闭。Payload: `string`。 */
+export const sshShellClosedEvent = (shellId: string) => `ssh-shell-closed-${shellId}`;
+
 /** A service action ran; subscribers re-read the unit list. Payload: `string`. */
 export const servicesChangedEvent = (sessionId: string) => `services-changed-${sessionId}`;
 
@@ -57,5 +68,13 @@ export const aiReviewEvent = (proposalId: string) =>
   `deployment-proposal-ai-review-${proposalId}`;
 
 export const deploymentRunEvent = (environmentId: string) => `deployment-run-env-${environmentId}`;
+
+/**
+ * 超能 Agent 的步骤事件。Payload: `AgentEvent`（见 `@/api/types/agent`）。
+ *
+ * 一个全局事件名，靠 payload 里的 `taskId` 分派 —— 前端只更新**同一张任务卡**，
+ * 不会因为并发任务而把步骤拼错卡。Rust 侧 `agent::runner::AGENT_EVENT` 与此一致。
+ */
+export const AGENT_EVENT = "agent-event";
 
 export { DIRECTORY_SIZE_EVENT } from "@/api/ops-api";

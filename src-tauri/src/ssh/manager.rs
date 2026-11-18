@@ -14,7 +14,7 @@ use tokio::sync::{watch, Mutex};
 use super::decoder::SessionEncoding;
 use super::handshake::{connect_hop, HopResult};
 use super::model::{ConnectOutcome, ConnectTarget, ExecOutput};
-use super::session::SshSession;
+use super::session::{ExecChunk, SshSession};
 
 /// Registry of live sessions — interactive shells and non-interactive
 /// (monitoring) connections alike.
@@ -192,6 +192,21 @@ impl SshSessionManager {
     ) -> Result<ExecOutput> {
         let session = self.get(session_id).await?;
         session.exec(command, timeout).await
+    }
+
+    /// Runs one command and hands each newly read chunk to `sink` as it arrives.
+    ///
+    /// The return value is still the complete result; `sink` is for live display
+    /// only (the Agent panel shows long commands while they are still running).
+    pub async fn exec_stream(
+        &self,
+        session_id: &str,
+        command: &str,
+        timeout: Duration,
+        sink: tokio::sync::mpsc::UnboundedSender<ExecChunk>,
+    ) -> Result<ExecOutput> {
+        let session = self.get(session_id).await?;
+        session.exec_stream(command, timeout, sink).await
     }
 
     /// Explicit keepalive, on top of russh's built-in timer.

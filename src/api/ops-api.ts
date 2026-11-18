@@ -9,6 +9,12 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
+import type { ExtremeTaskFilter, ExtremeTaskRecord } from "@/api/types/extreme";
+import type { LogEvent, LogStartRequest } from "@/api/types/panel";
+import type {
+  AgentSnapshot,
+  AgentStartRequest,
+} from "@/api/types/agent";
 
 import type {
   BrowseRequest,
@@ -202,6 +208,17 @@ export {
   type SessionRecord,
   type SessionStats,
 } from "@/api/types/sessions";
+export {
+  type AgentApproval,
+  type AgentEvent,
+  type AgentEventKind,
+  type AgentRunStatus,
+  type AgentSnapshot,
+  type AgentStartRequest,
+  type AgentStep,
+  type AgentStepState,
+  type AgentToolRisk,
+} from "@/api/types/agent";
 export { parseSshTarget, type SshConnectResult } from "@/api/types/ssh";
 export type { VscodeOpenResult } from "@/api/types/vscode";
 export {
@@ -616,6 +633,18 @@ export const opsApi = {
     }),
   sshInput: (sessionId: string, data: string) => invoke<void>("ssh_input", { sessionId, data }),
   /**
+   * 一次性执行一条命令（独立 exec channel），拿到 stdout / stderr / 退出码。
+   *
+   * 与 `sshInput` 的区别：不经过交互式 shell，不污染终端画面，也不需要提示符
+   * 标记解析。超能模式的只读预检与部署步骤用它。输出超过上限时 `truncated`
+   * 为真 —— 调用方必须把这个告诉用户，不能把半截输出当完整结果。
+   */
+  sshExec: (sessionId: string, command: string, timeoutMs = 15_000) =>
+    invoke<{ stdout: string; stderr: string; exit_code: number | null; truncated: boolean }>(
+      "ssh_exec",
+      { sessionId, command, timeoutMs },
+    ),
+  /**
    * 在已连接的交互终端里 `cd` 到某个绝对目录，返回后端实际写入的那一行。
    *
    * 命令串由后端拼（`validate_abs_path` + `shell_quote`），前端只给路径；
@@ -636,6 +665,23 @@ export const opsApi = {
     invoke<TerminalEncoding | null>("ssh_get_encoding", { sessionId }),
   sshStatus: (sessionId: string) => invoke<boolean>("ssh_status", { sessionId }),
   sshDisconnect: (sessionId: string) => invoke<void>("ssh_disconnect", { sessionId }),
+
+  /*
+   * 右栏手动终端：在**同一连接**上开一条独立的 PTY shell。
+   *
+   * 不是 `sshExec`：`cd` 会延续、有提示符、支持交互式命令；也不影响主终端
+   * 的 shell 通道，两边输出互不串。
+   */
+  sshShellOpen: (sessionId: string, shellId: string, cols: number, rows: number) =>
+    invoke<void>("ssh_shell_open", { sessionId, shellId, cols, rows }),
+  sshShellInput: (shellId: string, data: string) =>
+    invoke<void>("ssh_shell_input", { shellId, data }),
+  sshShellResize: (shellId: string, cols: number, rows: number) =>
+    invoke<void>("ssh_shell_resize", { shellId, cols, rows }),
+  sshShellClose: (shellId: string) => invoke<void>("ssh_shell_close", { shellId }),
+  /** 读手动终端最近输出（给 AI 做上下文）。 */
+  sshShellTail: (shellId: string, lines?: number) =>
+    invoke<string>("ssh_shell_tail", { shellId, lines: lines ?? null }),
 
   // SFTP — remote file browsing + management over the live session. Each
   // session owns its own SFTP client, so tabs never share directory state.
@@ -674,6 +720,14 @@ export const opsApi = {
   /** Overwrites a remote text file (editor save). */
   sftpWriteFile: (sessionId: string, path: string, content: string) =>
     invoke<void>("sftp_write_file", { sessionId, path, content }),
+  /**
+   * 写入二进制文件（图片 / 字体 / jar / 归档）。
+   *
+   * WebView 里的 `File` 没有本地路径，`sftpUpload` 的路径通道用不上，所以内容
+   * 以 base64 走 IPC。后端解码后走同一条原子写路径（临时文件 + 重命名）。
+   */
+  sftpWriteBytes: (sessionId: string, path: string, contentBase64: string) =>
+    invoke<void>("sftp_write_bytes", { sessionId, path, contentBase64 }),
   /**
    * 编辑器保存：带版本校验。`expected` 与远程当前内容不一致时后端**不写**，
    * 返回 `conflict` 与当前版本，由用户决定重新加载 / 另存 / 覆盖。
@@ -1181,6 +1235,111 @@ export const opsApi = {
   aiProviderSetDefault: (id: string) => invoke<void>("ai_provider_set_default", { id }),
   /** 连接测试：只回状态 / 耗时 / 脱敏错误。 */
   aiProviderTest: (id: string) => invoke<AiProviderTestResult>("ai_provider_test", { id }),
+  /**
+   * 超能模式的对话入口：走**默认** AI 提供方（Key 由后端从钥匙串读）。
+   *
+   * 只回正文与模型名，不做任何执行动作；未配置 / 认证失败 / 超时都会以
+   * 可读错误抛回（`未配置 AI 模型` / `认证失败` / `请求超时`）。
+   */
+  aiChat: (
+    messages: { role: "system" | "user" | "assistant"; content: string }[],
+    taskId: string,
+  ) => invoke<{ content: string; model: string }>("ai_chat", { messages, taskId }),
+  /** 取消进行中的对话：让后端真的断开请求，而不是只丢掉界面上的结果。 */
+  /**
+   * **流式**对话：后端每收到一段就 `emit("ai-chat-delta", { taskId, delta })`，
+   * 调用方需要自己监听该事件并按 `taskId` 过滤。返回值是完整正文，用于兜底
+   * 覆盖（防止网络抖动丢块）。
+   */
+  aiChatStream: (
+    messages: { role: "system" | "user" | "assistant"; content: string }[],
+    taskId: string,
+  ) => invoke<{ content: string; model: string }>("ai_chat_stream", { messages, taskId }),
+  /**
+   * **带工具循环**的对话：模型可以提出只读检查，后端校验参数后在绑定会话上
+   * 执行，把结构化的输出回给模型继续判断（最多 4 轮）。
+   *
+   * 返回里 `tools` 是每一步实际执行的命令与输出 —— 界面展开看证据，
+   * 也用来证明"确实查过"而不是模型自己编的。
+   */
+  aiAgent: (
+    messages: { role: "system" | "user" | "assistant"; content: string }[],
+    taskId: string,
+    sessionId: string,
+    maxRounds = 4,
+  ) =>
+    invoke<{
+      content: string;
+      model: string;
+      hitRoundLimit: boolean;
+      tools: {
+        tool: string;
+        args: Record<string, unknown>;
+        command: string;
+        exitCode: number | null;
+        output: string;
+        truncated: boolean;
+        elapsedMs: number;
+      }[];
+    }>("ai_chat_agent", { messages, taskId, sessionId, maxRounds }),
+  /**
+   * 超能 Agent：**循环在 Rust 侧**跑，这里立刻返回初始快照。
+   *
+   * 之后通过 `agent-event` 事件看进度，用 `aiAgentSnapshot`（重进 / 轮询）
+   * 恢复卡片，用 `aiAgentApprove` 对写 / 危险操作表态。
+   */
+  /**
+   * 实时日志：独立于问答任务的 SSH 长连接。
+   *
+   * 返回时流已经建好，但内容通过 `onEvent` 陆续到达；`extreme_log_stop` 会
+   * **杀掉远端进程**（不是只关界面）。同一 `streamId` 只能有一条。
+   */
+  extremeLogStart: (request: LogStartRequest, onEvent: (event: LogEvent) => void) =>
+    invoke<void>("extreme_log_start", {
+      request,
+      onEvent: new Channel<LogEvent>(onEvent),
+    }),
+  extremeLogStop: (streamId: string) => invoke<void>("extreme_log_stop", { streamId }),
+  /**
+   * 右栏开关时调整外框：普通窗口向外扩一个右栏宽度，收起时只撤回自己加的那段。
+   *
+   * 最大化 / 全屏 / 右侧空间不足时返回 `widened: false`，界面改为内部分栏。
+   */
+  extremePanelWiden: (panelWidth: number, open: boolean) =>
+    invoke<{ widened: boolean; added: number; reason?: string | null }>(
+      "extreme_panel_widen",
+      { panelWidth, open },
+    ),
+  aiAgentRun: (request: AgentStartRequest) =>
+    invoke<AgentSnapshot>("agent_start", { request }),
+  aiAgentSnapshot: (taskId: string) =>
+    invoke<AgentSnapshot | null>("agent_snapshot", { taskId }),
+  aiAgentApprove: (taskId: string, callId: string, allow: boolean) =>
+    invoke<boolean>("agent_approve", { taskId, callId, allow }),
+  /** 停止：当前命令跑完再停（与 `aiChatCancel` 同一套取消令牌）。 */
+  aiAgentCancel: (taskId: string) => invoke<boolean>("agent_cancel", { taskId }),
+  aiChatCancel: (taskId: string) => invoke<boolean>("ai_chat_cancel", { taskId }),
+  /**
+   * 超能模式的**任务历史**：每次部署落一条，重启后还能查。
+   *
+   * 只存任务（步骤 + 每步真实输出 + 结果），不存对话内容。
+   */
+  extremeTaskSave: (task: ExtremeTaskRecord) => invoke<void>("extreme_task_save", { task }),
+  /** 任务历史：按类型 / 状态 / 服务器筛选（不传即全部），新的在前。 */
+  extremeTaskList: (filter: ExtremeTaskFilter = {}) =>
+    invoke<ExtremeTaskRecord[]>("extreme_task_list", {
+      limit: filter.limit ?? 50,
+      kind: filter.kind ?? null,
+      status: filter.status ?? null,
+      server: filter.server ?? null,
+      serverId: filter.serverId ?? null,
+      workspaceId: filter.workspaceId ?? null,
+    }),
+  /** 改名（空串 = 恢复显示执行摘要）。 */
+  extremeTaskRename: (id: string, name: string) =>
+    invoke<void>("extreme_task_rename", { id, name }),
+  /** 删除一条历史；执行中 / 等待确认的任务返回 false（拒绝删除）。 */
+  extremeTaskDelete: (id: string) => invoke<boolean>("extreme_task_delete", { id }),
 
   // -- P5.5 用户知识库 -------------------------------------------------------
   deploymentKnowledgeList: (

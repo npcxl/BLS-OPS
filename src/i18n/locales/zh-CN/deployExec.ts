@@ -176,8 +176,8 @@ export default {
   "Provider type": "提供方类型",
   "OpenAI compatible": "OpenAI 兼容",
   "Base URL": "Base URL",
-  "For example https://api.example.com/v1; a self-hosted gateway usually allows plain HTTP on the local network.":
-    "例如 https://api.example.com/v1；自建网关通常在内网使用明文 HTTP。",
+  "Format: https://<host>/v1. Keep the provider’s API prefix. The app adds /chat/completions or /models automatically.":
+    "填写格式为 https://<域名>/v1，路径前缀以提供方为准。应用会自动追加 /chat/completions 或 /models。",
   "API Key": "API Key",
   "Leave empty to keep the saved key. Keys are only written to the system credential manager.":
     "留空表示保留已保存的密钥；密钥只会写入系统凭据管理器。",

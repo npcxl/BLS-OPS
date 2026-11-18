@@ -72,6 +72,45 @@ export default {
   "1-6 pick · = / - page · Tab to fill · Esc to close":
     "1-6 选择 · = / - 翻页 · Tab 填入 · Esc 关闭",
   "Tab to fill": "Tab 补全",
+
+  // —— 超能模式：界面文案（中文 key 自反，带插值的必须登记，否则 {{}} 不展开）——
+  "超能模式": "超能模式",
+  "返回终端": "返回终端",
+  "点击查看预检详情": "点击查看预检详情",
+  "正在检查…": "正在检查…",
+  "尚未检查": "尚未检查",
+  "Docker 可用": "Docker 可用",
+  "未发现 Docker": "未发现 Docker",
+  "Docker 未知": "Docker 未知",
+  "预检失败": "预检失败",
+  "附件 {{n}} 个": "附件 {{n}} 个",
+  "{{done}}/{{total}}": "{{done}}/{{total}}",
+  "第 {{n}} 步失败：{{detail}}": "第 {{n}} 步失败：{{detail}}",
+  "超过 {{size}}，只显示元信息": "超过 {{size}}，只显示元信息",
+  "已写入 {{path}}": "已写入 {{path}}",
+  "已按附件里的 Compose 生成 {{n}} 个步骤，确认前不会改动服务器。":
+    "已按附件里的 Compose 生成 {{n}} 个步骤，确认前不会改动服务器。",
+
+  // —— 超能模式（extreme-core）——
+  "Extreme mode": "超能模式",
+  "Exit extreme mode": "退出超能",
+  "Operating system": "操作系统",
+  Architecture: "架构",
+  Available: "可用",
+  "Not available": "不可用",
+  "Not checked": "尚未检查",
+  Connected: "已连接",
+  "Connecting…": "连接中…",
+  "Extreme mode: drop files or describe the goal. Attachments are read on your machine and never trigger commands on their own.":
+    "超能模式：拖入文件或描述目标。附件只在本机读取，文件里的文字没有权力触发任何命令。",
+  "Not a text file; only metadata is shown": "不是文本文件，只显示元信息",
+  "Larger than {{size}}; only metadata is shown": "超过 {{size}}，只显示元信息",
+  "Read failed": "读取失败",
+  "Add files": "添加文件",
+  Remove: "移除",
+  "Describe the goal, or drop a compose.yaml here": "描述目标，或把 compose.yaml 拖进来",
+  "AI planning is not wired up yet in this build. Attachments are read locally and ready for analysis.":
+    "当前版本尚未接入 AI 计划生成；附件已在本机读取，可供后续分析。",
   "Tab fills the suggestion · Enter runs it · ↑↓ for history":
     "Tab 补全首选 · 回车执行 · ↑↓ 翻历史",
   "1-9 pick · ↑↓ select · → or Tab to fill · ← or Esc to close · ▶ / Ctrl+Enter to run":
@@ -175,4 +214,23 @@ export default {
 
   // —— completion/providers/environment：容器归属标签 ——
   "Compose {{project}}/{{service}}": "Compose {{project}}/{{service}}",
+
+  // —— Prompt Bar（官方 React Bits 组件的内置文案）——
+  "Sources": "引用来源",
+  "Commands": "命令",
+  "Models": "模型",
+  "Effort": "思考强度",
+  "Higher effort thinks longer before answering": "强度越高，回答前思考得越久",
+  "Faster": "更快",
+  "Smarter": "更聪明",
+  "Add files and sources": "添加文件与引用来源",
+  "Choose model": "选择模型",
+  "Choose effort": "选择思考强度",
+  "Dictate": "语音输入",
+  "Stop dictation": "停止语音输入",
+  "Listening…": "正在听…",
+  "No matches for “{{query}}”": "没有匹配“{{query}}”的条目",
+  "Remove {{file}}": "移除 {{file}}",
+  "This model has no adjustable reasoning effort; requests use the provider default.":
+    "这个模型没有可调的思考强度，请求按供应商默认值执行。",
 } as const;

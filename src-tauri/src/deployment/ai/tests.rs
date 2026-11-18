@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 
+use super::capability::*;
 use super::model::*;
 use super::provider::{parse_suggestion, AiAdvisor, OpenAiCompatibleAdvisor};
 use super::url::{validate_base_url, BaseUrlPolicy};
@@ -175,6 +176,21 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     // 仓库没有 tokio 的 dev-dependency；tauri 的 async_runtime 已经提供了
     // 运行时，测试直接复用它。
     tauri::async_runtime::block_on(future)
+}
+
+#[test]
+fn extreme_chat_accepts_plain_text_without_requesting_json_mode() {
+    let server = MockServer::spawn(vec![Reply::Json(200, chat_body("你好，我是极核助手。"))]);
+    let advisor = advisor(&server, "test-key");
+    let messages = vec![serde_json::json!({"role": "user", "content": "你是谁"})];
+    let result = block_on(advisor.chat(messages, &AiCancel::new())).expect("chat reply");
+    assert_eq!(result, "你好，我是极核助手。");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
+    let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+    assert!(body.get("response_format").is_none());
+    assert_eq!(body["messages"][0]["content"], "你是谁");
 }
 
 /// 跑一次复核并**取出结果**（测试里的取消令牌始终"未取消"）。
@@ -580,6 +596,160 @@ fn review_reports_the_real_number_of_attempts() {
     assert!(outcome.result.is_ok(), "第二次应当成功");
     assert_eq!(outcome.attempts, 2, "应当报告真实的请求次数");
     assert_eq!(server.requests().len(), 2);
+}
+
+// -- 模型能力 ----------------------------------------------------------------
+
+#[test]
+fn deepseek_capability_maps_efforts_and_context() {
+    let capability = model_capability("deepseek-chat");
+    assert_eq!(capability.context_window, DEEPSEEK_CONTEXT_WINDOW);
+    // 菜单里就是这三档：300K / 600K / 1M。
+    assert_eq!(
+        capability.budgets,
+        &[300 * 1024, 600 * 1024, 1024 * 1024][..]
+    );
+    assert_eq!(capability.efforts, &["low", "high", "max"][..]);
+    assert_eq!(
+        resolve_effort("deepseek-chat", Some("max")).as_deref(),
+        Some("max")
+    );
+    // 不支持的档位不替用户"猜一个"。
+    assert_eq!(resolve_effort("deepseek-chat", Some("medium")), None);
+    // MAX = 当前模型最高档：只支持到 high 的模型就发 high。
+    assert_eq!(
+        resolve_effort("o3-mini", Some("max")).as_deref(),
+        Some("high")
+    );
+    // 认不出模型：不传 reasoning_effort。
+    assert_eq!(resolve_effort("qwen-max", Some("high")), None);
+    // 预算档位也由能力表给出；未知模型没有档位。
+    assert_eq!(
+        context_budget_options("deepseek-reasoner"),
+        vec![300 * 1024, 600 * 1024, 1024 * 1024]
+    );
+    assert!(context_budget_options("qwen-max").is_empty());
+    // 档位不能超过窗口，否则菜单能选、请求必然 400。
+    assert!(DEEPSEEK_CONTEXT_BUDGETS
+        .iter()
+        .all(|budget| *budget <= DEEPSEEK_CONTEXT_WINDOW));
+}
+
+#[test]
+fn context_budget_stays_inside_the_model_window() {
+    let auto = auto_input_tokens("deepseek-chat");
+    assert_eq!(
+        auto,
+        DEEPSEEK_CONTEXT_WINDOW as usize - DEEPSEEK_CONTEXT_WINDOW as usize / 5
+    );
+    assert_eq!(context_budget_tokens("deepseek-chat", None), auto);
+    // 声明过的档位原样生效：菜单写 1M，请求就带 1M。
+    assert_eq!(
+        context_budget_tokens("deepseek-chat", Some(300 * 1024)),
+        300 * 1024
+    );
+    assert_eq!(
+        context_budget_tokens("deepseek-chat", Some(600 * 1024)),
+        600 * 1024
+    );
+    assert_eq!(
+        context_budget_tokens("deepseek-chat", Some(1024 * 1024)),
+        1024 * 1024
+    );
+    // 不在档位表里的值收敛到自动预算以内，避免超出窗口。
+    assert_eq!(
+        context_budget_tokens("deepseek-chat", Some(2_000_000)),
+        auto
+    );
+    assert_eq!(
+        context_budget_tokens("deepseek-chat", Some(64 * 1024)),
+        64 * 1024
+    );
+    // 未知模型按保守预算，绝不按用户选择放大。
+    assert_eq!(
+        context_budget_tokens("qwen-max", Some(200_000)),
+        FALLBACK_INPUT_TOKENS
+    );
+}
+
+// -- 思考强度与工具对话 ------------------------------------------------------
+
+/// 一段 SSE：每个事件以 `data:` 开头，最后是 `[DONE]`。
+fn sse(events: &[&str]) -> String {
+    let mut body = String::new();
+    for event in events {
+        body.push_str("data: ");
+        body.push_str(event);
+        body.push_str("\n\n");
+    }
+    body.push_str("data: [DONE]\n\n");
+    body
+}
+
+fn tool_round_reply(body: String) -> Reply {
+    Reply::Raw {
+        status: 200,
+        headers: Vec::new(),
+        body,
+    }
+}
+
+#[test]
+fn tool_round_sends_reasoning_effort_and_returns_reasoning_content() {
+    let server = MockServer::spawn(vec![tool_round_reply(sse(&[
+        r#"{"choices":[{"delta":{"reasoning_content":"先看一下"}}]}"#,
+        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"run_shell","arguments":"{\"command\":\"uname -a\"}"}}]}}]}"#,
+    ]))]);
+    let advisor = advisor(&server, "test-key");
+    let messages = vec![serde_json::json!({"role": "user", "content": "看看机器"})];
+    let tools = serde_json::json!([{"type": "function", "function": {"name": "run_shell"}}]);
+    let reply = block_on(advisor.chat_with_tools_stream(
+        messages,
+        tools,
+        &AiCancel::new(),
+        Some(512),
+        Some("high"),
+        |_| {},
+    ))
+    .expect("tool reply");
+
+    assert_eq!(reply.tool_calls.len(), 1);
+    // DeepSeek 带工具的下一轮必须把思考内容原样带回。
+    assert_eq!(reply.message["reasoning_content"], "先看一下");
+
+    let requests = server.requests();
+    let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
+    let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+    assert_eq!(body["reasoning_effort"], "high");
+    assert!(
+        body.get("temperature").is_none(),
+        "思考模式不能同时发 temperature"
+    );
+}
+
+#[test]
+fn default_effort_keeps_temperature_and_omits_reasoning_effort() {
+    let server = MockServer::spawn(vec![tool_round_reply(sse(&[
+        r#"{"choices":[{"delta":{"content":"机器正常。"}}]}"#,
+    ]))]);
+    let advisor = advisor(&server, "test-key");
+    let messages = vec![serde_json::json!({"role": "user", "content": "还好吗"})];
+    let tools = serde_json::json!([]);
+    let _ = block_on(advisor.chat_with_tools_stream(
+        messages,
+        tools,
+        &AiCancel::new(),
+        Some(512),
+        None,
+        |_| {},
+    ))
+    .expect("reply");
+
+    let requests = server.requests();
+    let (_, body) = requests[0].split_once("\r\n\r\n").expect("request body");
+    let body: serde_json::Value = serde_json::from_str(body).expect("JSON body");
+    assert!(body.get("reasoning_effort").is_none());
+    assert_eq!(body["temperature"], 0.2);
 }
 
 #[test]

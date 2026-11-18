@@ -220,6 +220,29 @@ pub async fn sftp_upload(
     Ok(uploaded)
 }
 
+/// 写入二进制文件（图片 / 字体 / jar / 归档）。
+///
+/// 内容以 base64 传进来：WebView 里的 `File` 没有本地路径，`sftp_upload`
+/// 的路径通道用不上。base64 让 IPC 体积增加约 1/3，单个附件足够；超大文件
+/// 仍应走 `sftp_upload`。
+#[tauri::command]
+pub async fn sftp_write_bytes(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    content_base64: String,
+) -> OpsResult<()> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|_| "附件的二进制内容无法解码（base64 无效）".to_string())?;
+    state
+        .ssh
+        .sftp_write_bytes(&session_id, &path, &bytes)
+        .await
+        .map_err(|error| OpsError::from_stage("sftp", error))
+}
+
 #[tauri::command]
 pub async fn sftp_remove(
     state: State<'_, AppState>,

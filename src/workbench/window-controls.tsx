@@ -11,6 +11,21 @@ import { WINDOW_ICONS } from "@/lib/icons/window-icons";
  * decorations there (see `src-tauri/tauri.macos.conf.json`), so the traffic
  * lights stay real system controls.
  */
+/**
+ * 安全地拿窗口句柄。
+ *
+ * jsdom（组件测试）与浏览器预览里没有 Tauri 运行时，`getCurrentWindow()` 会
+ * 在内部访问 `__TAURI_INTERNALS__` 时抛错。超能顶栏复用了这组按钮 —— 拿不到
+ * 窗口就静默跳过，不能让整页跟着崩。
+ */
+function currentWindow(): ReturnType<typeof getCurrentWindow> | null {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+}
+
 export function WindowControls() {
   const maximized = useIsMaximized();
   const { t } = useTranslation();
@@ -20,18 +35,18 @@ export function WindowControls() {
       <CaptionButton
         label={t("Minimize")}
         icon={WINDOW_ICONS.minimize}
-        onClick={() => void getCurrentWindow().minimize()}
+        onClick={() => void currentWindow()?.minimize()}
       />
       <CaptionButton
         label={maximized ? t("Restore") : t("Maximize")}
         icon={maximized ? WINDOW_ICONS.restore : WINDOW_ICONS.maximize}
-        onClick={() => void getCurrentWindow().toggleMaximize()}
+        onClick={() => void currentWindow()?.toggleMaximize()}
       />
       <CaptionButton
         label={t("Close window")}
         icon={WINDOW_ICONS.close}
         danger
-        onClick={() => void getCurrentWindow().close()}
+        onClick={() => void currentWindow()?.close()}
       />
     </div>
   );
@@ -76,7 +91,8 @@ function useIsMaximized(): boolean {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    const win = getCurrentWindow();
+    const win = currentWindow();
+    if (!win) return undefined;
     let alive = true;
     let unlisten: (() => void) | undefined;
 

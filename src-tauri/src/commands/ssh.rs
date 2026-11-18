@@ -317,6 +317,79 @@ pub async fn ssh_input(
 /// `cd <参数>`），多一个 `--` 会让它把参数解析成相对路径。
 ///
 /// 返回实际写入的那一行，前端据此登记 cwd 跟踪（文件面板才会跟）。
+/// 一次性执行一条命令（独立 exec channel），返回 stdout / stderr / 退出码。
+///
+/// 极核模式的只读预检、DNS/SSL 检查与部署步骤都靠它：
+/// 走独立通道，不污染交互终端，也不依赖提示符标记解析。
+/// 超时由调用方给（默认 15s，上限 120s），输出超过上限时 `truncated` 为真。
+/// 在已连接的会话上开一个独立 PTY shell（右栏「手动终端」用）。
+#[tauri::command]
+pub async fn ssh_shell_open(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    shell_id: String,
+    cols: Option<u32>,
+    rows: Option<u32>,
+) -> OpsResult<()> {
+    let session = state
+        .ssh
+        .get(&session_id)
+        .await
+        .map_err(|error| OpsError::from_stage("ssh", error.to_string()))?;
+    crate::ssh::shell::open(
+        &app,
+        &session,
+        &shell_id,
+        cols.unwrap_or(100).clamp(20, 300),
+        rows.unwrap_or(30).clamp(5, 200),
+    )
+    .await
+    .map_err(|error| OpsError::from_stage("ssh", error.to_string()))
+}
+
+#[tauri::command]
+pub async fn ssh_shell_input(shell_id: String, data: String) -> OpsResult<()> {
+    crate::ssh::shell::input(&shell_id, data.as_bytes())
+        .await
+        .map_err(|error| OpsError::from_stage("ssh", error.to_string()))
+}
+
+#[tauri::command]
+pub async fn ssh_shell_resize(shell_id: String, cols: u32, rows: u32) -> OpsResult<()> {
+    crate::ssh::shell::resize(&shell_id, cols.clamp(20, 300), rows.clamp(5, 200))
+        .await
+        .map_err(|error| OpsError::from_stage("ssh", error.to_string()))
+}
+
+#[tauri::command]
+pub async fn ssh_shell_close(shell_id: String) -> OpsResult<()> {
+    crate::ssh::shell::close(&shell_id).await;
+    Ok(())
+}
+
+/// 读手动终端最近若干行（含命令回显与输出），给 AI / 前端做上下文。
+#[tauri::command]
+pub async fn ssh_shell_tail(shell_id: String, lines: Option<usize>) -> OpsResult<String> {
+    Ok(crate::ssh::shell::tail(&shell_id, lines.unwrap_or(200)).await)
+}
+
+#[tauri::command]
+pub async fn ssh_exec(
+    state: State<'_, AppState>,
+    session_id: String,
+    command: String,
+    timeout_ms: Option<u64>,
+) -> OpsResult<crate::ssh::ExecOutput> {
+    let timeout =
+        std::time::Duration::from_millis(timeout_ms.unwrap_or(15_000).clamp(1_000, 120_000));
+    state
+        .ssh
+        .exec(&session_id, &command, timeout)
+        .await
+        .map_err(|error| OpsError::from_stage("ssh", error))
+}
+
 #[tauri::command]
 pub async fn ssh_cd(
     state: State<'_, AppState>,

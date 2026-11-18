@@ -24,7 +24,7 @@ pub const KIND_SYMLINK: &str = "symlink";
 pub const KIND_OTHER: &str = "other";
 
 /// Result of one non-interactive command run over a short-lived exec channel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExecOutput {
     pub stdout: String,
     pub stderr: String,

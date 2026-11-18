@@ -4,6 +4,8 @@
 //! re-exports below keep every path `commands::server_list`-style working, so
 //! `lib.rs`'s `invoke_handler` list is untouched by this refactor.
 
+mod agent;
+mod ai_agent;
 mod ai_provider;
 mod app;
 mod backup;
@@ -20,6 +22,8 @@ mod deployment_run;
 mod deployment_session;
 mod editor_sync;
 mod environment;
+mod extreme;
+mod extreme_log;
 mod gateway;
 mod known_hosts;
 mod monitor;
@@ -34,7 +38,10 @@ mod system;
 mod transfer;
 mod trash;
 mod vscode;
+mod window_panel;
 
+pub use agent::*;
+pub use ai_agent::*;
 pub use ai_provider::*;
 pub use app::*;
 pub use backup::*;
@@ -51,6 +58,8 @@ pub use deployment_run::*;
 pub use deployment_session::*;
 pub use editor_sync::*;
 pub use environment::*;
+pub use extreme::*;
+pub use extreme_log::*;
 pub use gateway::*;
 pub use known_hosts::*;
 pub use monitor::*;
@@ -65,6 +74,7 @@ pub use system::*;
 pub use transfer::*;
 pub use trash::*;
 pub use vscode::*;
+pub use window_panel::*;
 
 use rusqlite::Connection;
 

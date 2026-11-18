@@ -25,6 +25,8 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use crate::desktop_surface::set_geometry;
+
 /// 菜单窗口的 label；主窗口与来源窗口永远不能叫这个名字。
 pub const MENU_LABEL: &str = "context-menu";
 
@@ -239,69 +241,6 @@ fn hide_menu(window: &WebviewWindow) -> Result<(), String> {
     {
         window.hide().map_err(|error| error.to_string())
     }
-}
-
-/// 尺寸 + 位置 + 首次显示，**一次**原生调用提交。
-///
-/// 之前是 `set_size` 再 `set_position` 两次调用：两次 SetWindowPos 之间会有
-/// 一帧"新尺寸 + 旧位置"，靠近屏幕底部/右侧时那一帧就是用户看到的抖动。
-/// 这里合并成单个 `SetWindowPos`，并且把 `SWP_SHOWWINDOW` 一并带上，
-/// 保证窗口第一次出现在屏幕上时几何已经是最终值（不先显示后翻转）。
-#[cfg(target_os = "windows")]
-fn set_geometry(
-    window: &WebviewWindow,
-    rect: ((i32, i32), (u32, u32)),
-    show: bool,
-) -> Result<(), String> {
-    use std::ffi::c_void;
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetWindowPos(
-            hwnd: *mut c_void,
-            after: *mut c_void,
-            x: i32,
-            y: i32,
-            cx: i32,
-            cy: i32,
-            flags: u32,
-        ) -> i32;
-    }
-    const SWP_NOZORDER: u32 = 0x0004;
-    const SWP_NOACTIVATE: u32 = 0x0010;
-    const SWP_SHOWWINDOW: u32 = 0x0040;
-
-    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as usize;
-    let ((x, y), (width, height)) = rect;
-    let flags = SWP_NOZORDER | SWP_NOACTIVATE | if show { SWP_SHOWWINDOW } else { 0 };
-    window
-        .run_on_main_thread(move || {
-            // HWND 属于本应用的复用菜单窗口；只在该窗口的 UI 线程改几何。
-            unsafe {
-                SetWindowPos(
-                    hwnd as *mut c_void,
-                    std::ptr::null_mut(),
-                    x,
-                    y,
-                    width as i32,
-                    height as i32,
-                    flags,
-                );
-            }
-        })
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn set_geometry(
-    window: &WebviewWindow,
-    rect: ((i32, i32), (u32, u32)),
-    show: bool,
-) -> Result<(), String> {
-    window
-        .set_size(tauri::PhysicalSize::new(rect.1 .0, rect.1 .1))
-        .and_then(|_| window.set_position(tauri::PhysicalPosition::new(rect.0 .0, rect.0 .1)))
-        .and_then(|_| if show { window.show() } else { Ok(()) })
-        .map_err(|error| error.to_string())
 }
 
 /// 把事件送到来源窗口。

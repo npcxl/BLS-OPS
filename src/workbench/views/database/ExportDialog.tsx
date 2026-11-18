@@ -16,6 +16,7 @@ import { MacSwitch } from "@/components/ui/mac-controls";
 import { EXPORT_FORMATS, exportFileName } from "./export-formats";
 import "./export-dialog.css";
 import { pushToast } from "@/components/ui/toast";
+import { pushDesktopNotification } from "@/desktop-notification/bridge";
 import { databaseApi } from "@/api/ops-api";
 import type {
   BrowseFilter,
@@ -163,8 +164,29 @@ export function ExportDialog({
                   t("导出完成：{{rows}} 行", { rows: final.rows.toLocaleString() }),
                   "success",
                 );
+                // 导出是长任务：用户多半已经切走了，桌面通知负责告诉他结果。
+                pushDesktopNotification({
+                  id: `export-${started.export_id}`,
+                  tone: "success",
+                  source: "数据导出",
+                  time: "刚刚",
+                  title: t("导出完成：{{rows}} 行", { rows: final.rows.toLocaleString() }),
+                  body: final.path ?? undefined,
+                  durationMs: 8000,
+                  action: { kind: "none" },
+                });
               } else if (final.state === "failed") {
                 pushToast(final.error?.message ?? t("导出失败"), "error");
+                pushDesktopNotification({
+                  id: `export-${started.export_id}`,
+                  tone: "danger",
+                  source: "数据导出",
+                  time: "刚刚",
+                  title: t("导出失败"),
+                  body: final.error?.message,
+                  durationMs: 8000,
+                  action: { kind: "none" },
+                });
               }
             }
           } catch (failure) {

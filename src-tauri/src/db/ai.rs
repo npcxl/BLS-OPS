@@ -65,16 +65,41 @@ pub fn get_provider(conn: &Connection, id: &str) -> Result<Option<AiProviderConf
     }
 }
 
-/// 当前应当使用的提供方：**启用 + 设为默认**的那一个。
+/// 当前应当使用的提供方。
+///
+/// 顺序：
+/// 1. **启用 + 设为默认**的那一个（正常路径）；
+/// 2. 没有明确默认时，退一步用**最近更新的启用项**。
+///
+/// 第 2 条是为了"只配了一个模型、但没点『设为默认』"的情况：以前这里直接返回
+/// `None`，极核里就会一直说"还没有配置 AI 模型"，用户以为配置没生效。
 pub fn default_provider(conn: &Connection) -> Result<Option<AiProviderConfig>> {
     let mut statement = conn.prepare(
         "SELECT * FROM ai_providers WHERE enabled = 1 AND is_default = 1
          ORDER BY updated_at DESC LIMIT 1",
     )?;
     let mut rows = statement.query_map([], provider_from_row)?;
+    if let Some(row) = rows.next() {
+        return Ok(Some(row?));
+    }
+    let mut fallback = conn
+        .prepare("SELECT * FROM ai_providers WHERE enabled = 1 ORDER BY updated_at DESC LIMIT 1")?;
+    let mut rows = fallback.query_map([], provider_from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),
+    }
+}
+
+/// 这次运行该用哪个提供方。
+///
+/// * 指定了 `id` → **只认它**，且必须仍然启用（停用的不能偷偷回落到默认，
+///   否则用户会以为换了模型、实际还是原来那个）；
+/// * 没指定 → 走 [`default_provider`]（默认 → 最近更新的启用项）。
+pub fn provider_for(conn: &Connection, id: Option<&str>) -> Result<Option<AiProviderConfig>> {
+    match id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => Ok(get_provider(conn, id)?.filter(|config| config.enabled)),
+        None => default_provider(conn),
     }
 }
 
@@ -296,6 +321,42 @@ mod tests {
         assert_eq!(default.id, "p2");
         let p1 = get_provider(&conn, "p1").unwrap().unwrap();
         assert!(!p1.is_default, "p1 不该还是默认");
+    }
+
+    #[test]
+    fn a_chosen_provider_wins_over_the_default() {
+        let conn = test_db();
+        upsert_provider(&conn, &provider("p1", "A")).unwrap();
+        upsert_provider(&conn, &provider("p2", "B")).unwrap();
+        set_default_provider(&conn, "p1").unwrap();
+
+        let picked = provider_for(&conn, Some("p2"))
+            .unwrap()
+            .expect("应当选中 p2");
+        assert_eq!(picked.id, "p2");
+
+        // 不指定就走默认。
+        let fallback = provider_for(&conn, None).unwrap().expect("应当回落到默认");
+        assert_eq!(fallback.id, "p1");
+    }
+
+    #[test]
+    fn a_disabled_or_missing_choice_never_falls_back_silently() {
+        let conn = test_db();
+        let mut paused = provider("p1", "A");
+        paused.enabled = false;
+        upsert_provider(&conn, &paused).unwrap();
+        upsert_provider(&conn, &provider("p2", "B")).unwrap();
+        set_default_provider(&conn, "p2").unwrap();
+
+        // 停用的不能"偷偷用默认"——否则用户以为换了模型，实际还是原来那个。
+        assert!(provider_for(&conn, Some("p1")).unwrap().is_none());
+        assert!(provider_for(&conn, Some("missing")).unwrap().is_none());
+        // 空字符串按"没指定"处理。
+        let fallback = provider_for(&conn, Some("  "))
+            .unwrap()
+            .expect("空值应当回落");
+        assert_eq!(fallback.id, "p2");
     }
 
     #[test]

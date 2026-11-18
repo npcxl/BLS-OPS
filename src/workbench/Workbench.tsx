@@ -16,6 +16,9 @@ import { Workspace } from "./Workspace";
 import { HostKeyDialog } from "./host-key-dialog";
 import { CommandPalette, type PaletteAction } from "./command-palette";
 import { ToastHost } from "@/components/ui/toast";
+import { prepareDesktopNotificationWindows } from "@/desktop-notification/bridge";
+import { ensureNotificationActivation } from "@/desktop-notification/activate";
+import { ensureCollapseNotice } from "@/desktop-notification/notify";
 import type { WorkspaceTabType } from "./types";
 
 /** The P3 management modules, as command-palette entries. label/description 存 i18n key。 */
@@ -68,6 +71,16 @@ export function Workbench() {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  // 桌面通知的窗口池是固定大小的（同时最多 3 条）：启动后先建好（隐藏），
+  // 第一条通知不用等 WebView 冷启动。浏览器预览下这个方法直接跳过。
+  useEffect(() => {
+    prepareDesktopNotificationWindows();
+    // 点击通知的动作（安装更新 / 回到超能菜单）由主窗口统一执行。
+    ensureNotificationActivation();
+    // 收起窗口（最小化 / 关到托盘）时，如果还有任务在跑就提醒一句。
+    ensureCollapseNotice();
+  }, []);
 
   /**
    * 关闭数据库标签时清理它拥有的资源：

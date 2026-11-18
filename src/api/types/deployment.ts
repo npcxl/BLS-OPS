@@ -653,6 +653,12 @@ export interface AiProviderView {
   allow_insecure_http: boolean;
   timeout_seconds: number;
   max_output_tokens: number;
+  /** 上下文窗口（tokens）；`0` = 未知（界面只给「自动」）。 */
+  context_window: number;
+  /** 可选的输入预算档位（升序，如 `[307200, 614400, 1048576]`）。空 = 只有「自动」。 */
+  context_budgets: number[];
+  /** 支持的思考强度档位（升序，如 `["low", "high", "max"]`）。空 = 不支持。 */
+  reasoning_efforts: string[];
   created_at: number;
   updated_at: number;
 }

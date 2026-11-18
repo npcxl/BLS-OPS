@@ -26,11 +26,15 @@ mod model;
 mod paths;
 mod session;
 mod sftp;
+/// 右栏手动终端：在现有连接上开独立 PTY 通道。
+pub(crate) mod shell;
 pub mod utf8_stream;
 
 pub use decoder::{OutputDecoder, SessionEncoding};
 pub use host_key::{evaluate_host_key, HostKeyVerdict};
 pub use manager::SshSessionManager;
+// 命令的实时输出分片（Agent 面板边跑边显示用）。
+pub(crate) use session::ExecChunk;
 // 数据库模块的 SSH 隧道要复用同一条握手路径（含 ProxyJump 与主机指纹校验），
 // 而不是另写一套 `russh` 客户端。只暴露给 crate 内部。
 pub(crate) use handshake::{connect_hop, HopConnection, HopResult};

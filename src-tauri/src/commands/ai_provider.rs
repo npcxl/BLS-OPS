@@ -94,14 +94,32 @@ pub async fn ai_provider_save(
         return Err(invalid("模型名不能为空"));
     }
 
+    /*
+     * **第一个提供方自动启用并设为默认**。
+     *
+     * 以前 `enabled` / `is_default` 完全由表单决定，而表单里这两个开关不显眼：
+     * 用户填完 URL / 模型 / Key 保存后，库里是 `enabled=0, is_default=0` ——
+     * `default_provider()` 取不到，极核就一直说"还没有配置 AI 模型"（配置看起来
+     * 没生效）。现在首个提供方直接可用，不需要再找一遍"设为默认"。
+     */
+    let is_first = existing.is_none()
+        && conn
+            .query_row("SELECT COUNT(*) FROM ai_providers", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(store_error)?
+            == 0;
+    let enabled = request.enabled || is_first;
+    let is_default = request.is_default || is_first;
+
     let mut config = match existing {
         Some(existing) => AiProviderConfig {
             name: request.name.clone(),
             provider_kind: request.provider_kind,
             base_url,
             model: request.model.clone(),
-            enabled: request.enabled,
-            is_default: request.is_default,
+            enabled,
+            is_default,
             allow_insecure_http: request.allow_insecure_http,
             timeout_seconds: request.timeout_seconds,
             max_output_tokens: request.max_output_tokens,
@@ -115,8 +133,8 @@ pub async fn ai_provider_save(
             base_url,
             model: request.model.clone(),
             api_key_ref: None,
-            enabled: request.enabled,
-            is_default: request.is_default,
+            enabled,
+            is_default,
             allow_insecure_http: request.allow_insecure_http,
             timeout_seconds: request.timeout_seconds,
             max_output_tokens: request.max_output_tokens,
@@ -244,4 +262,119 @@ pub async fn ai_provider_test(
         ),
     );
     Ok(result)
+}
+
+/// 一轮对话消息（只带角色与文本，前端不可能传别的）。
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AiChatReply {
+    /// 模型答复正文。
+    pub content: String,
+    /// **实际使用的模型名**（界面要显示出来，用户才知道是谁在回答）。
+    pub model: String,
+}
+
+/// 极核模式的对话入口：读**默认**提供方 → 钥匙串取 Key → 一次 OpenAI 兼容调用。
+///
+/// 刻意不做的事：
+/// * 不落库、不写审计 —— 问答内容属于用户与模型之间的事；
+/// * 不解析命令、不产生任何执行动作 —— 计划仍由确定性引擎生成并经用户确认；
+/// * 不把 Key、请求头或原始响应带回前端。
+#[tauri::command]
+pub async fn ai_chat(
+    state: State<'_, AppState>,
+    task_id: String,
+    messages: Vec<ChatTurn>,
+) -> OpsResult<AiChatReply> {
+    let config = {
+        let conn = state.db.open().map_err(store_error)?;
+        db::default_provider(&conn)
+            .map_err(store_error)?
+            .ok_or_else(|| "还没有配置 AI 模型".to_string())?
+    };
+    let model = config.model.clone();
+    let api_key = crate::keyring::read_secret(&config.keyring_account())
+        .map_err(|_| "这个提供方还没有保存可用的 API Key".to_string())?;
+    let advisor =
+        OpenAiCompatibleAdvisor::new(config, api_key).map_err(|error| error.user_message())?;
+    let payload: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|turn| serde_json::json!({ "role": turn.role, "content": turn.content }))
+        .collect();
+    /*
+     * **真实取消**：把令牌登记到与部署复核共用的注册表里。
+     *
+     * 前端点「停止」时调 `ai_chat_cancel(task_id)`，`post_chat` 在等待响应的
+     * 循环里看到取消就断开 —— 后端不再继续读响应、也不再计费到超时。
+     * 只丢弃前端状态、让请求在后台跑完，是假取消。
+     */
+    let cancel = state.ai_reviews.register(&task_id);
+    let content = advisor
+        .chat(payload, &cancel)
+        .await
+        .map_err(|error| error.user_message())?;
+    Ok(AiChatReply { content, model })
+}
+
+/// **流式**对话：模型每吐出一段就发一次 `ai-chat-delta` 事件。
+///
+/// 事件负载：`{ taskId, delta }`。前端按 `taskId` 过滤，避免两台服务器同时
+/// 在回答时把文字拼到同一个气泡里。取消仍然走 `ai_chat_cancel`。
+#[tauri::command]
+pub async fn ai_chat_stream(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    task_id: String,
+    messages: Vec<ChatTurn>,
+) -> OpsResult<AiChatReply> {
+    let config = {
+        let conn = state.db.open().map_err(store_error)?;
+        db::default_provider(&conn)
+            .map_err(store_error)?
+            .ok_or_else(|| "还没有配置 AI 模型".to_string())?
+    };
+    let model = config.model.clone();
+    let api_key = crate::keyring::read_secret(&config.keyring_account())
+        .map_err(|_| "这个提供方还没有保存可用的 API Key".to_string())?;
+    let advisor =
+        OpenAiCompatibleAdvisor::new(config, api_key).map_err(|error| error.user_message())?;
+    let payload: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|turn| serde_json::json!({ "role": turn.role, "content": turn.content }))
+        .collect();
+    let cancel = state.ai_reviews.register(&task_id);
+    // Tauri 2 的事件发射是 trait 方法，需要显式引入。
+    use tauri::Emitter as _;
+    let channel = task_id.clone();
+    let outcome = advisor
+        .chat_stream(payload, &cancel, move |delta| {
+            let _ = app.emit(
+                "ai-chat-delta",
+                serde_json::json!({ "taskId": channel.as_str(), "delta": delta }),
+            );
+        })
+        .await;
+    /*
+     * **结束后必须注销**。
+     *
+     * 成功、失败、被取消都会走到这里；不注销的话登记表会随着每次提问一直
+     * 长下去（`AiReviewRegistry::forget` 的注释也特意写了这一条）。
+     * 先取结果再注销，避免 `?` 提前返回把它跳过。
+     */
+    state.ai_reviews.forget(&task_id);
+    let content = outcome.map_err(|error| error.user_message())?;
+    Ok(AiChatReply { content, model })
+}
+
+/// 取消一次进行中的对话请求。
+///
+/// 返回 `true` 表示请求当时还在跑并被置位；`false` 表示已经结束了。
+#[tauri::command]
+pub async fn ai_chat_cancel(state: State<'_, AppState>, task_id: String) -> OpsResult<bool> {
+    Ok(state.ai_reviews.cancel(&task_id))
 }

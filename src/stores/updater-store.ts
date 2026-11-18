@@ -14,6 +14,7 @@ import type {
   UpdateRelease,
   UpdateStage,
 } from "@/api/types/updater";
+import { pushDesktopNotification } from "@/desktop-notification/bridge";
 import { classifyUpdateError } from "@/lib/updater/errors";
 import { collectRestartBlockers, type RestartBlocker } from "@/lib/updater/restart-guard";
 import {
@@ -208,6 +209,19 @@ export const useUpdaterStore = create<UpdaterState>()((set, get) => ({
           lastCheckedAt: now,
           // The banner is the non-blocking channel for *automatic* findings.
           bannerVisible: !manual,
+        });
+
+        // 桌面通知：应用在后台时也能看到；点一下直接开始下载安装。
+        // 同一版本重复检查由通知的 id 去重（复用原窗口，不会叠两条）。
+        pushDesktopNotification({
+          id: `update-${release.version}`,
+          tone: "info",
+          source: "更新",
+          time: "刚刚",
+          title: `发现新版本 v${release.version}`,
+          body: "点击通知立即下载并安装，应用会在完成后提示重启。",
+          durationMs: 0,
+          action: { kind: "update" },
         });
       } catch (cause) {
         const error = classifyUpdateError(cause, "check");

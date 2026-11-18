@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-notification",
+  "description": "Desktop notification windows: each slot may listen for its own payload and nothing else.",
+  "windows": ["desktop-notification-*"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

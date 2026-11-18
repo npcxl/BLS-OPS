@@ -1,4 +1,14 @@
-import { Columns2, Eraser, FolderOpen, History, PlugZap, RefreshCw, Rows2, Unplug } from "@/components/icons";
+import {
+  Columns2,
+  Eraser,
+  FolderOpen,
+  History,
+  PlugZap,
+  RefreshCw,
+  Rows2,
+  SquareTerminal,
+  Unplug,
+} from "@/components/icons";
 import { useTranslation } from "react-i18next";
 import { PageToolbar, PageToolbarDivider } from "@/workbench/page-layout";
 import { ToolbarIcon } from "./ToolbarIcon";
@@ -15,6 +25,9 @@ export interface TerminalToolbarProps {
   onRefreshEnvironment: () => void;
   onDisconnect: () => void;
   onReconnect: () => void;
+  /** 超能模式开关状态（绑定当前 SSH 会话的 AI 工作区）。 */
+  extreme?: boolean;
+  onToggleExtreme?: () => void;
 }
 
 /**
@@ -34,6 +47,8 @@ export function TerminalToolbar({
   onRefreshEnvironment,
   onDisconnect,
   onReconnect,
+  extreme = false,
+  onToggleExtreme,
 }: TerminalToolbarProps) {
   const { t } = useTranslation();
 
@@ -51,6 +66,14 @@ export function TerminalToolbar({
         icon={RefreshCw}
         disabled={phase !== "connected"}
         onClick={onRefreshEnvironment}
+      />
+      {/* 超能模式：把当前服务器切到 AI 对话与部署工作区（未连接禁用）。 */}
+      <ToolbarIcon
+        label={t("超能模式")}
+        icon={SquareTerminal}
+        active={extreme}
+        disabled={phase !== "connected"}
+        onClick={() => onToggleExtreme?.()}
       />
       <PageToolbarDivider />
       {phase === "connected" ? (

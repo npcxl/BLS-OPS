@@ -12,6 +12,7 @@ import databaseErrors from "./databaseErrors";
 import databaseUi from "./databaseUi";
 import databaseWorkspace from "./databaseWorkspace";
 import dbEngines from "./dbEngines";
+import extreme from "./extreme";
 import redis from "./redis";
 import workbenchUi from "./workbenchUi";
 
@@ -22,6 +23,7 @@ export default {
   ...databaseUi,
   ...databaseErrors,
   ...dbEngines,
+  ...extreme,
   ...redis,
   ...workbenchUi,
 } as const;

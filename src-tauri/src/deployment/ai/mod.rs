@@ -21,17 +21,24 @@
 //! 输入是方案摘要，输出是结构化批注（会被逐条校验），**仅此而已**。
 //! 通用 AI 模块的开关（`AI_MODULE_ENABLED`）保持关闭 —— 部署复核不属于它。
 
+pub mod capability;
 pub mod model;
 pub mod provider;
 pub mod url;
 
+pub use capability::{
+    auto_input_tokens, context_budget_options, context_budget_tokens, model_capability,
+    resolve_effort, ModelCapability,
+};
 pub use model::{
     AiCancel, AiDraftOutcome, AiProviderConfig, AiProviderError, AiProviderKind,
     AiProviderSaveRequest, AiProviderTestResult, AiProviderView, AiRequestBudget, AiReviewOutcome,
     AiReviewRegistry, AiReviewTask, AiTaskStatus, AI_PROVIDER_SCHEMA_VERSION,
     DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_TIMEOUT_SECONDS, KEYRING_ACCOUNT_PREFIX,
 };
-pub use provider::{parse_suggestion, AiAdvisor, OpenAiCompatibleAdvisor};
+pub use provider::{
+    parse_suggestion, AiAdvisor, NativeToolCall, OpenAiCompatibleAdvisor, ToolReply,
+};
 pub use url::{validate_base_url, BaseUrlPolicy};
 
 #[cfg(test)]

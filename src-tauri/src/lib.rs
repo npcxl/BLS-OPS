@@ -1,3 +1,5 @@
+/// 超能模式的服务器操作 Agent（工具协议、风险分级、多轮循环）。
+pub mod agent;
 /// 整机配置备份 / 恢复（服务器、分组、凭据元数据、指纹、项目、设置）。
 pub mod backup;
 /// First/second-layer server capability recognition — the P3 pipeline start.
@@ -21,6 +23,10 @@ pub mod deployment_adapter;
 pub mod deployment_collector;
 /// 桌面级右键菜单：独立透明窗口、屏幕定位与动作路由。
 pub mod desktop_menu;
+/// 桌面右下角通知：一条通知一个独立窗口，固定窗口池 + 队列 + 右下角堆叠。
+mod desktop_notification;
+/// 桌面浮窗（菜单 / 通知）共用的原生窗口几何操作。
+mod desktop_surface;
 /// On-demand directory-size calculation (SFTP `du` / recursive walk).
 pub mod dirsize;
 /// Container and image management over the live session (P3-1.3).
@@ -39,6 +45,8 @@ mod keyring;
 pub mod monitor;
 /// Nginx site and configuration management (P3-1.4).
 pub mod nginx;
+/// Windows Graphics Capture：给通知窗口持续提供背后的实时画面。
+mod notification_capture;
 /// 命令层统一错误（stage / message / detail / retryable），前端 `toAppError` 直接消费。
 pub mod ops_error;
 pub mod output_adapter;
@@ -69,7 +77,7 @@ pub mod window_material;
 /// 只在后端做判定，React 只展示结果。纯逻辑，零 I/O。
 pub mod workload_class;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -138,9 +146,19 @@ pub fn run() {
             if window.label() != desktop_menu::MENU_LABEL {
                 desktop_menu::on_source_event(window.app_handle(), window.label(), event);
             }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    // 收起前通知前端：有后台任务在跑时要弹一条桌面提醒。
+                    let _ = window.emit("app:collapsed", ());
+                    let _ = window.hide();
+                }
+                tauri::WindowEvent::Resized(_) => {
+                    if window.is_minimized().unwrap_or(false) {
+                        let _ = window.emit("app:collapsed", ());
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -162,6 +180,17 @@ pub fn run() {
             desktop_menu::desktop_menu_cancel,
             desktop_menu::desktop_menu_blur,
             desktop_menu::desktop_menu_key,
+            // 桌面右下角通知（每条一个独立窗口，固定窗口池 + 队列）
+            desktop_notification::desktop_notification_prepare,
+            desktop_notification::desktop_notification_push,
+            desktop_notification::desktop_notification_pending,
+            desktop_notification::desktop_notification_present,
+            desktop_notification::desktop_notification_set_motion,
+            desktop_notification::desktop_notification_activate,
+            desktop_notification::desktop_notification_decide,
+            desktop_notification::desktop_notification_frame,
+            desktop_notification::desktop_notification_debug_texture,
+            desktop_notification::desktop_notification_dismiss,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）
@@ -205,8 +234,15 @@ pub fn run() {
             commands::ssh_connect,
             commands::ssh_connect_monitor,
             commands::ssh_input,
+            commands::ssh_exec,
             commands::ssh_cd,
             commands::ssh_resize,
+            // 右栏手动终端：现有连接上的独立 PTY 通道
+            commands::ssh_shell_open,
+            commands::ssh_shell_input,
+            commands::ssh_shell_resize,
+            commands::ssh_shell_close,
+            commands::ssh_shell_tail,
             commands::ssh_set_encoding,
             commands::ssh_get_encoding,
             commands::ssh_keepalive,
@@ -227,6 +263,8 @@ pub fn run() {
             commands::sftp_stat,
             commands::sftp_close,
             commands::sftp_upload,
+            commands::sftp_write_file,
+            commands::sftp_write_bytes,
             commands::sftp_remove,
             commands::sftp_rename,
             commands::sftp_copy,
@@ -395,6 +433,24 @@ pub fn run() {
             commands::ai_provider_delete,
             commands::ai_provider_set_default,
             commands::ai_provider_test,
+            commands::ai_chat,
+            commands::ai_chat_stream,
+            commands::ai_chat_agent,
+            commands::ai_chat_cancel,
+            // 超能 Agent：多轮循环跑在 Rust 侧，前端只收事件与审批
+            commands::agent_start,
+            commands::agent_snapshot,
+            commands::agent_approve,
+            commands::agent_cancel,
+            commands::extreme_task_save,
+            // ---- 极核：实时日志（独立于问答任务的 SSH 长连接） ----
+            commands::extreme_log_start,
+            commands::extreme_log_stop,
+            commands::extreme_panel_widen,
+            commands::extreme_pick_workspace_folders,
+            commands::extreme_task_list,
+            commands::extreme_task_rename,
+            commands::extreme_task_delete,
             // ---- P5.5 用户知识库 ----
             commands::deployment_knowledge_list,
             commands::deployment_knowledge_get,

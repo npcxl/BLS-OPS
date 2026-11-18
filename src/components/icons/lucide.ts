@@ -51,6 +51,7 @@ export {
   Pin,
   PinOff,
   Plus,
+  Quote,
   Replace,
   ReplaceAll,
   Rows2,

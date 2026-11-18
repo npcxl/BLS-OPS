@@ -57,7 +57,13 @@ impl AppDb {
 
 /// Current schema version. Bump it whenever `migrate()` gains a new step so an
 /// already-created database is upgraded in place instead of silently drifting.
-pub const SCHEMA_VERSION: u32 = 18;
+///
+/// v19 建 `extreme_tasks`，v20 补索引，v21 / v22 分别加 `kind` 与 `name`，
+/// v23 补 `server_id` / `workspace_id`（任务归属），v24 补 `goal` / `risk`
+/// （类型按用户目标判断，风险单独记录）。
+/// 这个常量还决定 `init()` 要不要在迁移前自动备份旧库 —— 落后于真实迁移步数
+/// 时，v18 的库会**跳过**那次备份直接升上来。
+pub const SCHEMA_VERSION: u32 = 24;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -1193,6 +1199,114 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
         conn.pragma_update(None, "user_version", 18u32)?;
     }
+    if version < 19 {
+        /*
+         * 老库的 `ai_providers` 是 v13 建的，只有前 8 列；`allow_insecure_http`
+         * / `timeout_seconds` / `max_output_tokens` 是后来加进建表语句的。
+         * `CREATE TABLE IF NOT EXISTS` 不会修改已存在的表 —— 于是保存模型时
+         * SQLite 直接报 `table ai_providers has no column named
+         * allow_insecure_http`，AI 配置根本存不进去。
+         *
+         * 幂等补齐；没配过 AI 的库可能根本没有这张表，先确认再 ALTER。
+         */
+        let has_ai: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ai_providers'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_ai > 0 {
+            add_column(
+                &conn,
+                "ai_providers",
+                "allow_insecure_http",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            add_column(
+                &conn,
+                "ai_providers",
+                "timeout_seconds",
+                "INTEGER NOT NULL DEFAULT 30",
+            )?;
+            add_column(
+                &conn,
+                "ai_providers",
+                "max_output_tokens",
+                "INTEGER NOT NULL DEFAULT 1200",
+            )?;
+        }
+        conn.pragma_update(None, "user_version", 19u32)?;
+    }
+    if version < 20 {
+        /*
+         * 极核模式的**任务历史**：每次部署落一条，重启后还能查。
+         *
+         * `plan_json` 存完整步骤（含每步 stdout / stderr / 退出码），这样
+         * 历史详情能恢复当时真实输出，而不是只留一句"失败"。
+         */
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS extreme_tasks (
+                id TEXT PRIMARY KEY,
+                server TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_extreme_tasks_created
+                ON extreme_tasks (created_at DESC);",
+        )?;
+        conn.pragma_update(None, "user_version", 20u32)?;
+    }
+    if version < 21 {
+        /*
+         * 任务历史要按**类型**筛选，v20 只有"部署"一种（写死在前端），
+         * 于是补一列 kind。老记录一律回填 `deploy` —— 那时确实只有部署。
+         *
+         * 不建额外索引：历史页一次最多 200 行、且始终带 created_at 排序，
+         * 已有 idx_extreme_tasks_created 足够；多出来的索引只会拖慢写入。
+         */
+        conn.execute_batch(
+            "ALTER TABLE extreme_tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'deploy';",
+        )?;
+        conn.pragma_update(None, "user_version", 21u32)?;
+    }
+    if version < 22 {
+        /*
+         * 任务可以被用户改名。`name` 与 `summary` 分开存：`summary` 是执行器
+         * 每步覆盖的真实结论，改名不能被执行过程冲掉；未命名时前端显示 summary。
+         */
+        conn.execute_batch("ALTER TABLE extreme_tasks ADD COLUMN name TEXT NOT NULL DEFAULT '';")?;
+        conn.pragma_update(None, "user_version", 22u32)?;
+    }
+    if version < 23 {
+        /*
+         * 任务归属：一条任务属于**哪条对话**（workspace）与**哪台服务器配置**
+         * （server id）。同名服务器 / 同地址不同账号靠 `server_id` 区分。
+         *
+         * 两列都可空，且**不回填**：旧记录只有服务器展示名，无法证明属于哪台配
+         * 置 —— 宁可留成未关联（前端显示"未关联"），也不能猜一台绑上去。
+         */
+        add_column(conn, "extreme_tasks", "server_id", "TEXT")?;
+        add_column(conn, "extreme_tasks", "workspace_id", "TEXT")?;
+        conn.pragma_update(None, "user_version", 23u32)?;
+    }
+    if version < 24 {
+        /*
+         * 任务类型改由**用户目标**判断，风险单独一列：两者不再互相推导。
+         *
+         * 旧记录没有 goal，回填空串（历史里仍可看，类型沿用 v21 的 kind，不猜）；
+         * risk 回填 `read`，下次保存时会被真实步骤覆盖。
+         */
+        add_column(conn, "extreme_tasks", "goal", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(
+            conn,
+            "extreme_tasks",
+            "risk",
+            "TEXT NOT NULL DEFAULT 'read'",
+        )?;
+        conn.pragma_update(None, "user_version", 24u32)?;
+    }
     Ok(())
 }
 
@@ -1330,10 +1444,11 @@ mod tests {
             .expect("read legacy");
         assert_eq!(legacy.as_deref(), Some("/data/app.db"));
 
+        // 这个用例关心的是 v18 的回填，不是"停在 18"：迁移会一路升到最新版。
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version");
-        assert_eq!(version, 18);
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
     }
 
     #[test]

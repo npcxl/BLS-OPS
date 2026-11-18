@@ -30,6 +30,18 @@ pub const KEYRING_ACCOUNT_PREFIX: &str = "ai-provider:";
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
     #[default]
+    /*
+     * **serde 的拼法必须与 `as_str()` 一致**。
+     *
+     * `rename_all = "snake_case"` 会把 `OpenAiCompatible` 拆成
+     * `open_ai_compatible`，而数据库写入和前端提交用的都是
+     * `openai_compatible` —— 保存模型时反序列化直接报
+     * `unknown variant 'openai_compatible', expected 'open_ai_compatible'`，
+     * 导致**根本存不了 AI 配置**。
+     *
+     * `alias` 保留旧拼法：已经在库里写过 `open_ai_compatible` 的配置仍能读。
+     */
+    #[serde(rename = "openai_compatible", alias = "open_ai_compatible")]
     OpenAiCompatible,
 }
 
@@ -172,12 +184,23 @@ pub struct AiProviderView {
     pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
+    /// 上下文窗口（tokens）；`0` = 未知（界面只给「自动」）。
+    #[serde(default)]
+    pub context_window: u32,
+    /// 可选的输入预算档位（tokens，升序）；空 = 界面只给「自动」。
+    #[serde(default)]
+    pub context_budgets: Vec<u32>,
+    /// 支持的思考强度档位（升序）；空 = 不支持该参数。
+    #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl AiProviderView {
     pub fn from_config(config: &AiProviderConfig, has_api_key: bool) -> Self {
+        // 能力跟着**模型名**走：同一份提供方配置换模型后，界面与请求一起变。
+        let capability = super::capability::model_capability(&config.model);
         Self {
             id: config.id.clone(),
             name: config.name.clone(),
@@ -190,6 +213,13 @@ impl AiProviderView {
             allow_insecure_http: config.allow_insecure_http,
             timeout_seconds: config.timeout_seconds,
             max_output_tokens: config.max_output_tokens,
+            context_window: capability.context_window,
+            context_budgets: capability.budgets.to_vec(),
+            reasoning_efforts: capability
+                .efforts
+                .iter()
+                .map(|effort| (*effort).to_string())
+                .collect(),
             created_at: config.created_at,
             updated_at: config.updated_at,
         }

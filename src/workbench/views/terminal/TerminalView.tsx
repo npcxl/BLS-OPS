@@ -10,6 +10,7 @@ import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { opsApi, RISK_META } from "@/api/ops-api";
 import { formatErrorForCopy, toAppError } from "@/lib/app-error";
 import { useDomainStore } from "@/stores/domain-store";
+import { pushDesktopNotification } from "@/desktop-notification/bridge";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
@@ -50,6 +51,7 @@ import {
   type SuggestAnchor,
 } from "./terminal-suggest";
 import { TerminalGhost } from "./terminal-ghost";
+import { useExtremeStore } from "@/stores/extreme-store";
 import { TerminalComposer } from "./TerminalComposer";
 import { parseLine } from "./completion/path-input";
 import { useTerminalCompletion } from "./use-terminal-completion";
@@ -92,6 +94,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   if (!fallbackSessionRef.current) fallbackSessionRef.current = crypto.randomUUID();
   const sessionId = tab.sessionId ?? fallbackSessionRef.current;
   const connectingRef = useRef(false);
+  const connectedHostRef = useRef<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   // 原始异常：横幅统一解析成 阶段 / 摘要 / 详情（终端里只写摘要一行）。
@@ -286,6 +289,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
    * 此时任何提示都是噪音，且"当前行"也不再是 shell 命令行。
    */
   const [inAlternate, setInAlternate] = useState(false);
+
   // 键盘归属：全屏程序 → 终端；其余 → 底部输入条。
   focusTargetRef.current = inAlternate ? "terminal" : "composer";
 
@@ -1056,6 +1060,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       });
 
       if (result.status === "connected") {
+        connectedHostRef.current = result.host;
         const elapsed = Math.round(performance.now() - startedAt);
         setPhase("connected");
         setStatus(sessionId, "connected", { connectMs: elapsed, connectedAt: Date.now() });
@@ -1186,8 +1191,20 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setError(message);
       setStatus(sessionId, "closed", { error: message });
       terminalRef.current?.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+      // 断线是"窗口在后台最需要外部提醒"的事件：同一个 session 用同一 id，
+      // 反复探测到断线只会复用这条通知，不会叠一摞。
+      pushDesktopNotification({
+        id: `ssh-closed-${sessionId}`,
+        tone: "danger",
+        source: "SSH 会话",
+        time: "刚刚",
+        title: tab.title ? `与 ${tab.title} 的连接已断开` : "SSH 连接已断开",
+        body: message,
+        durationMs: 8000,
+        action: { kind: "none" },
+      });
     },
-    [sessionId, setStatus],
+    [sessionId, setStatus, tab.title],
   );
 
   /** 主动断开（工具栏按钮与右键菜单共用同一条路径）。 */
@@ -1195,7 +1212,9 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     void opsApi.sshDisconnect(sessionId).catch(() => undefined);
     setPhase("closed");
     setStatus(sessionId, "closed");
-  }, [sessionId, setStatus]);
+    // 极核里这台服务器进入"未连接"：正在看的对话只读，旧对话仍可查看。
+    if (tab.serverId) useExtremeStore.getState().markDisconnected(tab.serverId);
+  }, [sessionId, setStatus, tab.serverId]);
 
   // 只在真的连着的时候探测：服务端可能早就关了，UI 不能继续显示"活着"。
   useSshKeepalive({ phase, sessionId, onLost: handleConnectionLost });
@@ -1247,6 +1266,29 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         onRefreshEnvironment={refreshEnvironmentCaches}
         onDisconnect={disconnect}
         onReconnect={() => void connect()}
+        onToggleExtreme={() => {
+          const server = servers.find((entry) => entry.id === tab.serverId);
+          /*
+           * 传的是**四个标识里最稳的两个**：`serverId`（服务器配置）与
+           * `sessionId`（这次连接）。名字和地址只用于展示与同名消歧，不当身份
+           * —— 服务器改名 / 同名 / 同地址不同账号都不会串会话。
+           */
+          const detail = server
+            ? `${server.username}@${server.host}:${server.port}`
+            : connectedHostRef.current ?? null;
+          /*
+           * 快速连接（没有保存成服务器）的 tab 上没有 `serverId`，以前退回
+           * `tab.id` —— 每次开新标签都是新 id，历史永远匹配不上，看起来就是
+           * "每次打开都多一条新对话"。这里用**连接目标**当稳定身份。
+           */
+          const stableId =
+            server?.id ??
+            tab.serverId ??
+            (tab.quickTarget ? `quick:${tab.quickTarget}` : tab.id);
+          useExtremeStore
+            .getState()
+            .enter(stableId, server?.name ?? tab.title, sessionId, detail);
+        }}
       />
 
       {/* 巡检模式提示条：只读状态必须显眼，否则用户会以为保存失败是 bug。 */}

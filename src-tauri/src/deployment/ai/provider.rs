@@ -37,6 +37,33 @@ use crate::deployment::proposal::ai::{
 };
 use crate::deployment::proposal::model::AiRejectionKind;
 
+/// 流式响应里**正在拼接**的一次工具调用（参数按片段到达）。
+#[derive(Debug, Clone, Default)]
+struct StreamToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// 模型通过 `tools` 原生发起的一次函数调用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeToolCall {
+    pub id: String,
+    pub name: String,
+    /// 原始 JSON 字符串（与文本协议的 `body` 同一形态，便于共用解析）。
+    pub arguments: String,
+}
+
+/// 一次带工具的原生答复。
+#[derive(Debug, Clone)]
+pub struct ToolReply {
+    /// 模型正文（可能为空：纯工具调用轮次）。
+    pub content: String,
+    /// 原样的 assistant 消息：带 `tool_calls` 回灌时必须一字不改。
+    pub message: serde_json::Value,
+    pub tool_calls: Vec<NativeToolCall>,
+}
+
 use super::model::{
     AiCancel, AiDraftOutcome, AiProviderConfig, AiProviderError, AiProviderKind,
     AiProviderTestResult, AiRequestBudget, AiReviewOutcome,
@@ -137,6 +164,565 @@ impl OpenAiCompatibleAdvisor {
 
     pub fn budget(&self) -> AiRequestBudget {
         self.budget
+    }
+
+    /// **流式**对话：模型每吐出一段，就通过 `on_delta` 交给调用方。
+    ///
+    /// 与 `chat` 的区别只在读取方式：整段返回要等到最后一个 token，界面上
+    /// 就是"点了发送、然后干等"；流式让文字边生成边出现，也更容易判断模型
+    /// 是不是在胡说。取消同样生效（每块检查一次令牌）。
+    pub async fn chat_stream<F>(
+        &self,
+        messages: Vec<serde_json::Value>,
+        cancel: &AiCancel,
+        mut on_delta: F,
+    ) -> Result<String, AiProviderError>
+    where
+        F: FnMut(&str),
+    {
+        use futures_util::StreamExt as _;
+
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": true,
+            "temperature": 0.2,
+        });
+        let target = url::completions_url(&self.config.base_url);
+
+        /*
+         * **等待响应也要能被取消**。
+         *
+         * `send()` 在服务端迟迟不回包时可能挂到总超时，用户点了「停止」却要
+         * 干等到那一刻。用 `select!` 让取消令牌直接打断这次等待。
+         */
+        let requested = self
+            .client
+            .post(target)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(AiProviderError::Cancelled),
+            result = requested => result.map_err(|error| {
+                if error.is_timeout() {
+                    AiProviderError::Timeout
+                } else {
+                    AiProviderError::Network(error.to_string())
+                }
+            })?,
+        };
+
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = response.bytes().await.unwrap_or_default();
+            // 走同一套脱敏：不要把服务端原始响应整段带回界面。
+            return Err(self.status_error(status, &bytes, None));
+        }
+
+        let mut stream = response.bytes_stream();
+        /*
+         * **按字节累积，只在换行边界解码**。
+         *
+         * 之前每块都独立 `from_utf8_lossy`：一个中文汉字占 3 字节，正好被切在
+         * 两块里时会各自解出 U+FFFD，界面上就是"锟斤拷"。改成先攒字节、找到
+         * `\n` 再整行解码，跨块的半个字符自然就拼回去了。
+         */
+        let mut pending: Vec<u8> = Vec::new();
+        let mut full = String::new();
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel.cancelled() => return Err(AiProviderError::Cancelled),
+                next = stream.next() => next,
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            let bytes = chunk.map_err(|error| AiProviderError::Network(error.to_string()))?;
+            pending.extend_from_slice(&bytes);
+            while let Some(position) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=position).collect();
+                if let Some(delta) = Self::parse_sse_line(&line, status, &mut full)? {
+                    on_delta(&delta);
+                }
+            }
+        }
+        // 结尾可能没有换行：最后一段也要处理，否则尾字会被吞掉。
+        if !pending.is_empty() {
+            if let Some(delta) = Self::parse_sse_line(&pending, status, &mut full)? {
+                on_delta(&delta);
+            }
+        }
+
+        /*
+         * **空回复当失败**。
+         *
+         * 供应商返回 200 但没有任何 content（配额耗尽、内容被拦截、`delta`
+         * 结构异常）时，以前会 `Ok("")`，界面表现为"转了半天什么都没出现"。
+         */
+        if full.trim().is_empty() {
+            return Err(AiProviderError::Http {
+                status,
+                detail: "模型返回了空回复（没有正文内容）".to_string(),
+            });
+        }
+        Ok(full)
+    }
+
+    /// 解一行 SSE：返回本次新增的正文片段（没有正文就返回 `None`）。
+    ///
+    /// `[DONE]` 与 `error` 事件在这里统一处理：前者表示正常结束，后者要把
+    /// 供应商给的原因带回界面，而不是静默跳过。
+    fn parse_sse_line(
+        line: &[u8],
+        status: u16,
+        full: &mut String,
+    ) -> Result<Option<String>, AiProviderError> {
+        // 只有整行都到齐了才解码，中文不会在中间被切断。
+        let text = String::from_utf8_lossy(line);
+        let text = text.trim();
+        let Some(data) = text.strip_prefix("data:") else {
+            return Ok(None);
+        };
+        let data = data.trim();
+        if data.is_empty() {
+            return Ok(None);
+        }
+        if data == "[DONE]" {
+            return Ok(None);
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            return Ok(None);
+        };
+        // 供应商的错误事件（限流、内容审核、上下文超限…）。
+        if let Some(error) = value.get("error") {
+            let detail = error
+                .get("message")
+                .and_then(|message| message.as_str())
+                .unwrap_or("模型返回了错误事件");
+            return Err(AiProviderError::Http {
+                status,
+                detail: detail.to_string(),
+            });
+        }
+        let Some(delta) = value["choices"][0]["delta"]["content"].as_str() else {
+            return Ok(None);
+        };
+        if delta.is_empty() {
+            return Ok(None);
+        }
+        full.push_str(delta);
+        Ok(Some(delta.to_string()))
+    }
+
+    /// 通用对话（极核模式的问答）。
+    ///
+    /// 与部署复核共用同一套超时 / 重试 / 取消 / 预算，区别只有两点：
+    /// * 输出是**纯文本**，不做 JSON 严格校验（问答不需要结构化）；
+    /// * 不做语义合并 —— 结果只回给界面，**不产生任何可执行动作**。
+    ///
+    /// 密钥仍只在内存里（构造时传入，用完即弃），日志不记请求头。
+    pub async fn chat(
+        &self,
+        messages: Vec<serde_json::Value>,
+        cancel: &AiCancel,
+    ) -> Result<String, AiProviderError> {
+        self.chat_limited(messages, cancel, None).await
+    }
+
+    /// 与 [`Self::chat`] 相同，但可以指定单次输出上限。
+    ///
+    /// Agent 的工具调用结果是一段 JSON（`write_file` 的正文可能几 KB），按
+    /// 默认 1200 tokens 容易被截断成"参数不是合法 JSON"；调用方在工具循环里
+    /// 给一个更宽的上限，仍然被 `MAX_MAX_OUTPUT_TOKENS` 封顶。
+    pub async fn chat_limited(
+        &self,
+        messages: Vec<serde_json::Value>,
+        cancel: &AiCancel,
+        max_output_tokens: Option<u32>,
+    ) -> Result<String, AiProviderError> {
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": false,
+            "temperature": 0.2,
+        });
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let max_tokens = max_output_tokens
+            .map(|value| {
+                value.clamp(
+                    super::model::MIN_MAX_OUTPUT_TOKENS,
+                    super::model::MAX_MAX_OUTPUT_TOKENS,
+                )
+            })
+            .unwrap_or(self.config.max_output_tokens.max(256));
+        let (status, bytes, _) = self
+            .post_chat(&body, max_tokens, false, None, cancel, &attempts)
+            .await?;
+        if !(200..300).contains(&status) {
+            return Err(self.status_error(status, &bytes, None));
+        }
+        let payload: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| AiProviderError::Http {
+                status,
+                detail: format!("响应不是合法 JSON：{error}"),
+            })?;
+        let content = payload["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| AiProviderError::Http {
+                status,
+                detail: "响应里没有可用的 content".to_string(),
+            })?;
+        Ok(content.to_string())
+    }
+
+    /// 一次带**标准 function calling** 的对话（Agent 用）。
+    ///
+    /// 与 [`Self::chat_limited`] 的区别只有两点：
+    /// * 请求里带 `tools` + `tool_choice: auto`；
+    /// * 返回完整的 assistant 消息（含 `tool_calls`，必须原样回灌，否则后面的
+    ///   `role: tool` 消息对不上，接口会直接 400）。
+    ///
+    /// 为什么不再只靠提示词约定 `<tool>` 文本：模型有自己的工具调用标记
+    /// （`<|DSL| … invoke name="run_shell">` 之类），它不按我们的格式写，整段就
+    /// 变成"普通回答"，循环里 0 次工具调用 —— 界面看起来就是"完成了 0 步"。
+    pub async fn chat_with_tools(
+        &self,
+        messages: Vec<serde_json::Value>,
+        tools: serde_json::Value,
+        cancel: &AiCancel,
+        max_output_tokens: Option<u32>,
+    ) -> Result<ToolReply, AiProviderError> {
+        let fallback = messages.clone();
+        let body = serde_json::json!({ "messages": messages });
+        let extra = serde_json::json!({ "tools": tools, "tool_choice": "auto" });
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let max_tokens = max_output_tokens
+            .map(|value| {
+                value.clamp(
+                    super::model::MIN_MAX_OUTPUT_TOKENS,
+                    super::model::MAX_MAX_OUTPUT_TOKENS,
+                )
+            })
+            .unwrap_or(self.config.max_output_tokens.max(256));
+        let (status, bytes, _) = match self
+            .post_chat(&body, max_tokens, false, Some(&extra), cancel, &attempts)
+            .await
+        {
+            Ok(result) => result,
+            // 网关不认识 `tools` / `tool_choice`：退回纯文本协议，别让整条任务失败。
+            Err(AiProviderError::Http {
+                status: 400 | 422, ..
+            }) => {
+                let content = self
+                    .chat_limited(fallback, cancel, max_output_tokens)
+                    .await?;
+                return Ok(ToolReply {
+                    message: serde_json::json!({ "role": "assistant", "content": content }),
+                    content,
+                    tool_calls: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if !(200..300).contains(&status) {
+            return Err(self.status_error(status, &bytes, None));
+        }
+        let payload: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| AiProviderError::Http {
+                status,
+                detail: format!("响应不是合法 JSON：{error}"),
+            })?;
+        let message = payload["choices"][0]["message"].clone();
+        if !message.is_object() {
+            return Err(AiProviderError::Http {
+                status,
+                detail: "响应里没有 message".to_string(),
+            });
+        }
+        let content = message["content"].as_str().unwrap_or("").trim().to_string();
+        let mut tool_calls = Vec::new();
+        if let Some(list) = message["tool_calls"].as_array() {
+            for (index, call) in list.iter().enumerate() {
+                let name = call["function"]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                // 有的网关把 arguments 给成对象而不是字符串，两种都收。
+                let arguments = match &call["function"]["arguments"] {
+                    serde_json::Value::String(text) => text.clone(),
+                    value if value.is_object() => value.to_string(),
+                    _ => "{}".to_string(),
+                };
+                let id = call["id"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("call-{index}"));
+                tool_calls.push(NativeToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+        Ok(ToolReply {
+            content,
+            message,
+            tool_calls,
+        })
+    }
+
+    /// **流式**的工具对话：正文边生成边回调，工具调用在结束时汇总。
+    ///
+    /// 与 [`Self::chat_with_tools`] 的区别只在读取方式。Agent 的答复要一边生成
+    /// 一边上屏 —— 非流式时界面是"转圈半天、然后整段文字突然涌出来"。
+    pub async fn chat_with_tools_stream<F>(
+        &self,
+        messages: Vec<serde_json::Value>,
+        tools: serde_json::Value,
+        cancel: &AiCancel,
+        max_output_tokens: Option<u32>,
+        // 已经按模型能力解析过的档位（`low` / `high` / `max`…）；`None` = 供应商默认。
+        reasoning_effort: Option<&str>,
+        mut on_delta: F,
+    ) -> Result<ToolReply, AiProviderError>
+    where
+        F: FnMut(&str),
+    {
+        use futures_util::StreamExt as _;
+
+        let fallback = messages.clone();
+        let max_tokens = max_output_tokens
+            .map(|value| {
+                value.clamp(
+                    super::model::MIN_MAX_OUTPUT_TOKENS,
+                    super::model::MAX_MAX_OUTPUT_TOKENS,
+                )
+            })
+            .unwrap_or(self.config.max_output_tokens.max(256));
+        let body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": true,
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        });
+        /*
+         * 思考模式下 `temperature` 不被支持：OpenAI 推理模型会直接 400，
+         * DeepSeek 会忽略它。**明确选了档位才去掉** —— 默认档保持原来的 0.2。
+         */
+        let body = match reasoning_effort.filter(|effort| !effort.trim().is_empty()) {
+            Some(effort) => {
+                let mut body = body;
+                body["reasoning_effort"] = serde_json::json!(effort);
+                if let Some(fields) = body.as_object_mut() {
+                    fields.remove("temperature");
+                }
+                body
+            }
+            None => body,
+        };
+        let target = url::completions_url(&self.config.base_url);
+
+        let requested = self
+            .client
+            .post(target)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send();
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(AiProviderError::Cancelled),
+            result = requested => result.map_err(|error| {
+                if error.is_timeout() {
+                    AiProviderError::Timeout
+                } else {
+                    AiProviderError::Network(error.to_string())
+                }
+            })?,
+        };
+
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = response.bytes().await.unwrap_or_default();
+            // 网关不支持 `tools` / 流式工具：退回纯文本，别让整条任务失败。
+            if matches!(status, 400 | 422) {
+                let content = self
+                    .chat_limited(fallback, cancel, max_output_tokens)
+                    .await?;
+                return Ok(ToolReply {
+                    message: serde_json::json!({ "role": "assistant", "content": content }),
+                    content,
+                    tool_calls: Vec::new(),
+                });
+            }
+            return Err(self.status_error(status, &bytes, None));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut full = String::new();
+        /*
+         * **思考内容必须留着**：DeepSeek 带工具的下一轮要求 assistant 消息里
+         * 原样带回 `reasoning_content`，否则会回 400。它不上屏（用户看正文），
+         * 只随 `ToolReply.message` 一起回灌。
+         */
+        let mut reasoning = String::new();
+        let mut calls: std::collections::BTreeMap<usize, StreamToolCall> =
+            std::collections::BTreeMap::new();
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel.cancelled() => return Err(AiProviderError::Cancelled),
+                next = stream.next() => next,
+            };
+            let Some(chunk) = chunk else { break };
+            let bytes = chunk.map_err(|error| AiProviderError::Network(error.to_string()))?;
+            pending.extend_from_slice(&bytes);
+            while let Some(position) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=position).collect();
+                if let Some(delta) =
+                    Self::parse_stream_event(&line, status, &mut full, &mut reasoning, &mut calls)?
+                {
+                    on_delta(&delta);
+                }
+            }
+        }
+        if !pending.is_empty() {
+            if let Some(delta) =
+                Self::parse_stream_event(&pending, status, &mut full, &mut reasoning, &mut calls)?
+            {
+                on_delta(&delta);
+            }
+        }
+
+        let mut native = Vec::new();
+        let mut tool_calls = Vec::new();
+        for (index, call) in calls {
+            if call.name.trim().is_empty() {
+                continue;
+            }
+            let id = if call.id.trim().is_empty() {
+                format!("call-{index}")
+            } else {
+                call.id
+            };
+            let arguments = if call.arguments.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                call.arguments
+            };
+            native.push(serde_json::json!({
+                "id": id,
+                "type": "function",
+                "function": { "name": call.name, "arguments": arguments },
+            }));
+            tool_calls.push(NativeToolCall {
+                id,
+                name: call.name,
+                arguments,
+            });
+        }
+
+        /*
+         * **空回复当失败**：供应商返回 200 但既没有正文也没有工具调用时，以前
+         * 会 `Ok("")`，界面表现为"转了半天什么都没出现"。
+         */
+        if full.trim().is_empty() && tool_calls.is_empty() {
+            return Err(AiProviderError::Http {
+                status,
+                detail: "模型返回了空回复（没有正文内容）".to_string(),
+            });
+        }
+
+        let has_tools = !native.is_empty();
+        let mut message = if has_tools {
+            serde_json::json!({ "role": "assistant", "content": full, "tool_calls": native })
+        } else {
+            serde_json::json!({ "role": "assistant", "content": full })
+        };
+        /*
+         * 只有**带工具调用**的轮次才需要把思考内容回灌：纯正文轮已经结束，
+         * 再传反而可能被供应商判成"非法字段"。
+         */
+        if has_tools && !reasoning.trim().is_empty() {
+            message["reasoning_content"] = serde_json::json!(reasoning);
+        }
+        Ok(ToolReply {
+            message,
+            content: full.trim().to_string(),
+            tool_calls,
+        })
+    }
+
+    /// 解一行**流式工具对话**的 SSE：返回本次新增正文，同时累积 `tool_calls`
+    /// 与思考内容（`reasoning_content`）。
+    fn parse_stream_event(
+        line: &[u8],
+        status: u16,
+        full: &mut String,
+        reasoning: &mut String,
+        calls: &mut std::collections::BTreeMap<usize, StreamToolCall>,
+    ) -> Result<Option<String>, AiProviderError> {
+        let text = String::from_utf8_lossy(line);
+        let text = text.trim();
+        let Some(data) = text.strip_prefix("data:") else {
+            return Ok(None);
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            return Ok(None);
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+            // 心跳 / 非 JSON 行：跳过，别把整轮请求判死。
+            return Ok(None);
+        };
+        if value.get("error").is_some() {
+            return Err(AiProviderError::Http {
+                status,
+                detail: format!("模型流式响应报错：{}", value["error"]),
+            });
+        }
+        let delta = &value["choices"][0]["delta"];
+        // 思考内容不回调给界面（那里只显示正文），但必须完整留在 message 里。
+        if let Some(thought) = delta["reasoning_content"].as_str() {
+            reasoning.push_str(thought);
+        }
+        if let Some(items) = delta["tool_calls"].as_array() {
+            for item in items {
+                let index = item["index"].as_u64().unwrap_or(0) as usize;
+                let entry = calls.entry(index).or_default();
+                if let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) {
+                    entry.id = id.to_string();
+                }
+                if let Some(name) = item["function"]["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                {
+                    entry.name.push_str(name);
+                }
+                if let Some(args) = item["function"]["arguments"].as_str() {
+                    entry.arguments.push_str(args);
+                }
+            }
+        }
+        if let Some(content) = delta["content"].as_str() {
+            if !content.is_empty() {
+                full.push_str(content);
+                return Ok(Some(content.to_string()));
+            }
+        }
+        Ok(None)
     }
 
     /// 连接测试：一次**最小的**真实请求。
@@ -255,7 +841,9 @@ impl OpenAiCompatibleAdvisor {
             "max_tokens": 8,
             "stream": false,
         });
-        let (status, bytes, _) = self.post_chat(&body, 4, cancel, attempts).await?;
+        let (status, bytes, _) = self
+            .post_chat(&body, 4, true, None, cancel, attempts)
+            .await?;
         if (200..300).contains(&status) {
             Ok(())
         } else {
@@ -273,6 +861,8 @@ impl OpenAiCompatibleAdvisor {
         &self,
         body: &serde_json::Value,
         max_tokens: u32,
+        strict_json: bool,
+        extra: Option<&serde_json::Value>,
         cancel: &AiCancel,
         attempts: &std::sync::atomic::AtomicU32,
     ) -> Result<(u16, Vec<u8>, u32), AiProviderError> {
@@ -288,7 +878,7 @@ impl OpenAiCompatibleAdvisor {
             attempts.store(attempt, std::sync::atomic::Ordering::Relaxed);
             let message = body["messages"].clone();
             let response = self
-                .send_once(&target, max_tokens, &message, true, cancel)
+                .send_once(&target, max_tokens, &message, strict_json, extra, cancel)
                 .await?;
             let status = response.status().as_u16();
             let retry_after = retry_after_seconds(&response);
@@ -297,9 +887,9 @@ impl OpenAiCompatibleAdvisor {
                 return Ok((status, bytes, attempt));
             }
             // 明确说"不认识 response_format"时，去掉它再试一次。
-            if status == 400 && mentions_response_format(&bytes) {
+            if strict_json && status == 400 && mentions_response_format(&bytes) {
                 let retry = self
-                    .send_once(&target, max_tokens, &message, false, cancel)
+                    .send_once(&target, max_tokens, &message, false, extra, cancel)
                     .await?;
                 let retry_status = retry.status().as_u16();
                 let retry_bytes = self.read_limited(retry).await?;
@@ -332,6 +922,7 @@ impl OpenAiCompatibleAdvisor {
         max_tokens: u32,
         messages: &serde_json::Value,
         strict_json: bool,
+        extra: Option<&serde_json::Value>,
         cancel: &AiCancel,
     ) -> Result<reqwest::Response, AiProviderError> {
         let mut payload = serde_json::json!({
@@ -344,6 +935,14 @@ impl OpenAiCompatibleAdvisor {
         if strict_json {
             // 要求结构化输出；不支持它的网关会被识别并去掉它重试一次。
             payload["response_format"] = serde_json::json!({"type": "json_object"});
+        }
+        // 额外字段（目前只有 Agent 的 `tools` / `tool_choice`）。
+        if let Some(extra) = extra {
+            if let Some(fields) = extra.as_object() {
+                for (key, value) in fields {
+                    payload[key] = value.clone();
+                }
+            }
         }
         let request = self
             .client
@@ -462,7 +1061,14 @@ impl OpenAiCompatibleAdvisor {
             ],
         });
         let (_, bytes, _) = self
-            .post_chat(&body, self.budget.max_output_tokens, cancel, attempts)
+            .post_chat(
+                &body,
+                self.budget.max_output_tokens,
+                true,
+                None,
+                cancel,
+                attempts,
+            )
             .await?;
 
         // 答复到手、还没解析时也可能被取消 —— 此时不该再往下走。
@@ -504,7 +1110,14 @@ impl OpenAiCompatibleAdvisor {
             ],
         });
         let (_, bytes, _) = self
-            .post_chat(&body, self.budget.max_output_tokens, cancel, attempts)
+            .post_chat(
+                &body,
+                self.budget.max_output_tokens,
+                true,
+                None,
+                cancel,
+                attempts,
+            )
             .await?;
         // 答复到手、还没解析时也可能被取消。
         if cancel.is_cancelled() {
@@ -806,4 +1419,50 @@ fn elapsed_ms(started: Instant) -> i64 {
 /// 供测试复用：把"像密钥的东西"打掉的行为直接可测。
 pub fn redact_for_tests(text: &str) -> String {
     redact_key_like(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 整行中文解码：SSE 累积到换行后才解，汉字不会被切成两半。
+    #[test]
+    fn sse_line_decodes_whole_chinese_text() {
+        let mut full = String::new();
+        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"你好，世界\"}}]}\n".as_bytes();
+        let delta = OpenAiCompatibleAdvisor::parse_sse_line(line, 200, &mut full).expect("可解析");
+        assert_eq!(delta.as_deref(), Some("你好，世界"));
+        assert_eq!(full, "你好，世界");
+    }
+
+    /// 供应商的错误事件要带回原因，不能静默当成"没有正文"。
+    #[test]
+    fn sse_line_reports_provider_errors() {
+        let mut full = String::new();
+        let line = "data: {\"error\":{\"message\":\"context length exceeded\"}}".as_bytes();
+        let error = OpenAiCompatibleAdvisor::parse_sse_line(line, 200, &mut full)
+            .expect_err("错误事件应当失败");
+        assert!(error.user_message().contains("context length exceeded"));
+    }
+
+    /// `[DONE]`、注释行、非 `data:` 行都不产生正文。
+    #[test]
+    fn sse_line_ignores_done_and_noise() {
+        let mut full = String::new();
+        for line in [
+            &b"data: [DONE]"[..],
+            &b": keep-alive"[..],
+            &b"event: message"[..],
+            &b"data: "[..],
+        ] {
+            let delta =
+                OpenAiCompatibleAdvisor::parse_sse_line(line, 200, &mut full).expect("可解析");
+            assert!(
+                delta.is_none(),
+                "不应产生正文: {}",
+                String::from_utf8_lossy(line)
+            );
+        }
+        assert!(full.is_empty());
+    }
 }

@@ -23,6 +23,16 @@ use super::model::{ExecOutput, SFTP_SUBSYSTEM};
 pub(crate) type SessionWriter = ChannelWriteHalf<client::Msg>;
 use russh::ChannelWriteHalf;
 
+/// 一条正在跑的命令的实时输出片段。
+///
+/// 只用于"边跑边看"：真正的结果仍然由 [`SshSession::exec`] 一次性返回，
+/// 界面在结束时用完整值校准，不会因为分片丢内容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExecChunk {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+}
+
 /// One live session.
 ///
 /// The writer sits behind its own lock: slow or stuck I/O on one session must
@@ -107,6 +117,28 @@ impl SshSession {
     /// returning. The whole call is bounded by `timeout` and is cancelled the
     /// moment the session is disconnected.
     pub(crate) async fn exec(&self, command: &str, timeout: Duration) -> Result<ExecOutput> {
+        self.exec_inner(command, timeout, None).await
+    }
+
+    /// 与 [`Self::exec`] 相同，但把读到的每一段**实时**送给 `sink`。
+    ///
+    /// 返回值仍是完整结果：调用方拿它落库 / 算退出码；`sink` 只负责"边跑边显示"。
+    /// 这样 `docker compose up` 跑三分钟时，界面不会一直白着。
+    pub(crate) async fn exec_stream(
+        &self,
+        command: &str,
+        timeout: Duration,
+        sink: tokio::sync::mpsc::UnboundedSender<ExecChunk>,
+    ) -> Result<ExecOutput> {
+        self.exec_inner(command, timeout, Some(sink)).await
+    }
+
+    async fn exec_inner(
+        &self,
+        command: &str,
+        timeout: Duration,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<ExecChunk>>,
+    ) -> Result<ExecOutput> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut closed = self.closed.subscribe();
 
@@ -162,22 +194,28 @@ impl SshSession {
                 };
                 match message {
                     ChannelMsg::Data { data } => {
+                        // 实时转发**不受结果缓冲上限约束**：日志流要一直跟着
+                        // 远端输出，8 MiB 只是 `ssh_exec` 返回值的内存上限。
+                        if let Some(sink) = &sink {
+                            let _ = sink.send(ExecChunk::Stdout(data.to_vec()));
+                        }
                         let room =
                             crate::ssh::model::MAX_EXEC_OUTPUT_BYTES.saturating_sub(stdout.len());
                         if data.len() > room {
                             truncated = true;
                         }
-                        let take = room.min(data.len());
-                        stdout.extend_from_slice(&data[..take]);
+                        stdout.extend_from_slice(&data[..room.min(data.len())]);
                     }
                     ChannelMsg::ExtendedData { data, .. } => {
+                        if let Some(sink) = &sink {
+                            let _ = sink.send(ExecChunk::Stderr(data.to_vec()));
+                        }
                         let room =
                             crate::ssh::model::MAX_EXEC_OUTPUT_BYTES.saturating_sub(stderr.len());
                         if data.len() > room {
                             truncated = true;
                         }
-                        let take = room.min(data.len());
-                        stderr.extend_from_slice(&data[..take]);
+                        stderr.extend_from_slice(&data[..room.min(data.len())]);
                     }
                     ChannelMsg::ExitStatus { exit_status } => exit_code = Some(exit_status),
                     // OpenSSH sends exit-status before eof, so eof after a

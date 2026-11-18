@@ -34,6 +34,8 @@ pub struct AppState {
     pub env_locks: EnvironmentLocks,
     /// P5.5 AI 复核任务（取消位；任务状态本身在数据库里）。
     pub ai_reviews: AiReviewRegistry,
+    /// 超能 Agent 的运行中任务（循环跑在这里，不随 WebView 卸载而中断）。
+    pub agents: crate::agent::AgentRegistry,
     /// 命令检索的收藏/使用快照：避免每次按键都开库查两张表。
     pub command_search: crate::command_center::CommandSearchCache,
     /// 文件传输任务中心（上传 / 下载队列，内存态 + 可取消）。
@@ -59,6 +61,7 @@ impl AppState {
             runs: RunRegistry::default(),
             env_locks: EnvironmentLocks::default(),
             ai_reviews: AiReviewRegistry::default(),
+            agents: crate::agent::AgentRegistry::default(),
             command_search: crate::command_center::CommandSearchCache::default(),
             transfers: Arc::new(crate::transfer::TransferCenter::new()),
             database: DatabaseManager::default(),

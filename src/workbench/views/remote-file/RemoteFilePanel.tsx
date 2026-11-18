@@ -26,6 +26,7 @@ import {
   Server as ServerIcon,
   Pencil,
   RefreshCw,
+  Sparkles,
   Trash2,
   Upload,
 } from "@/components/icons";
@@ -123,6 +124,18 @@ export interface RemoteFilePanelProps {
    * 入口一步到位。`nonce` 变化即触发（同一个路径可能被重复请求）。
    */
   reveal?: { nonce: number; path: string };
+  /**
+   * 右键「添加到对话」：把这一行交给上层（超能模式会把它挂成远程附件）。
+   * 普通终端不传，菜单里就没有这一项。
+   */
+  onAddToChat?: (entry: RemoteFileEntry) => void;
+  /**
+   * 嵌入模式：由父容器（如极核右栏）负责宽度与拖拽。
+   *
+   * 此时面板铺满父容器、隐藏自己的拖拽手柄和身份条，避免父栏已经拖宽、
+   * 内部却还停在 320px 露出空白；独立使用时行为不变。
+   */
+  embedded?: boolean;
   onClose: () => void;
 }
 
@@ -141,6 +154,8 @@ function RemoteFilePanelImpl({
   follow,
   initialPath,
   reveal,
+  onAddToChat,
+  embedded = false,
   onClose,
 }: RemoteFilePanelProps) {
   const { t } = useTranslation();
@@ -731,7 +746,9 @@ function RemoteFilePanelImpl({
       });
       if (cancelled) handler();
       else unlisten = handler;
-    })();
+    })().catch(() => {
+      // 非 Tauri 环境 / 平台不支持拖放：只是没有拖入能力，不该冒未处理异常。
+    });
 
     return () => {
       cancelled = true;
@@ -795,6 +812,15 @@ function RemoteFilePanelImpl({
     const items: import("@/components/ui/context-menu").ContextMenuItem[] = [
       { id: "open", label: t("Open"), icon: CornerDownLeft, onSelect: () => openEntry(entry) },
     ];
+    // 超能模式的入口：把服务器文件挂到对话里（AI 按绝对路径读写）。
+    if (onAddToChat) {
+      items.push({
+        id: "add-to-chat",
+        label: t("添加到对话"),
+        icon: Sparkles,
+        onSelect: () => onAddToChat(entry),
+      });
+    }
     if (!isDir) {
       items.push(
         {
@@ -957,21 +983,28 @@ function RemoteFilePanelImpl({
   return (
     <aside
       ref={panelRef}
-      className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-line bg-surface-1"
-      style={{ width }}
+      className={
+        embedded
+          ? "relative flex h-full min-h-0 w-full min-w-0 flex-1 flex-col bg-surface-1"
+          : "relative flex h-full min-h-0 shrink-0 flex-col border-l border-line bg-surface-1"
+      }
+      style={embedded ? undefined : { width }}
       aria-label={t("Remote files")}
     >
-      {/* Drag handle */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={t("Drag to resize")}
-        className="page-resizer absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize hover:bg-accent/40"
-        onPointerDown={startDrag}
-      />
+      {/* 宽度由父栏统一管：嵌入时不画自己的拖拽手柄。 */}
+      {!embedded && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("Drag to resize")}
+          className="page-resizer absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize hover:bg-accent/40"
+          onPointerDown={startDrag}
+        />
+      )}
 
       {/* 身份条：服务器与环境始终可见 —— 路径再像，也不能搞错在哪台机器上。 */}
-      {server && (
+      {/* 嵌入时顶部已经有一处服务器名，不再重复。 */}
+      {!embedded && server && (
         <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-line bg-surface-2/40 px-2 text-10">
           <ServerIcon size={11} className="shrink-0 text-fg-subtle" />
           <span

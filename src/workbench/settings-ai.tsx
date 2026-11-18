@@ -374,7 +374,7 @@ function AiProviderForm({
 
         <Field
           label={t("Base URL")}
-          hint={t("For example https://api.example.com/v1; a self-hosted gateway usually allows plain HTTP on the local network.")}
+          hint={t("Format: https://<host>/v1. Keep the provider’s API prefix. The app adds /chat/completions or /models automatically.")}
         >
           <input
             className={fieldClass}

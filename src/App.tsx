@@ -3,6 +3,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SplashScreen } from "@/components/ui/SplashScreen";
 import { useTrayLabels } from "@/hooks/use-tray-labels";
 import { Workbench } from "@/workbench/Workbench";
+import { ExtremeCoreView } from "@/workbench/views/terminal/extreme-core/ExtremeCoreView";
 import { DetachedSqlWindow } from "@/workbench/views/database/DetachedSqlWindow";
 import { isDetachedSqlWindow } from "@/workbench/views/database/detached-sql";
 
@@ -29,6 +30,12 @@ function MainApp() {
     <ErrorBoundary>
       {splash && <SplashScreen onFinished={() => setSplash(false)} />}
       <Workbench />
+      {/*
+       * 超能模式是**应用级工作台**：整窗覆盖在 Workbench 之上，而不是塞进
+       * 某个标签页里。底层 Workbench 保持挂载 —— SSH 会话、滚动位置、草稿
+       * 都还在，退出后原样回来。
+       */}
+      <ExtremeCoreView />
     </ErrorBoundary>
   );
 }

@@ -1,0 +1,592 @@
+/*
+ * 超能自己是深色，但**不改全局主题**。
+ *
+ * 这里把深色 token 重新定义在 `.extreme-core` 子树内：`text-fg`、`bg-surface-2`、
+ * `border-line` 这些类在超能里拿到的是深色值，外层（普通终端、设置页）仍然
+ * 跟随用户自己的主题偏好，窗口材质也不动。
+ *
+ * 值取自 `tokens.css` 的 `[data-theme="dark"]`，两边保持一致。
+ */
+/*
+ * **选择器必须压过 `:root[data-theme="…"]`**。
+ *
+ * `tokens.css` 里主题变量定义在 `:root[data-theme="light"]` 上（特异性 0,2,0），
+ * 而 `.extreme-core` 只有 0,1,0 —— 浅色主题下超能里的 `--surface-2` 仍然解析成
+ * 浅色值，于是"深色工作台里出现一条浅灰输入框"。
+ * `:root[data-theme="…"] .extreme-core` 是 0,3,0，稳赢。
+ */
+/*
+ * **跟随应用主题**（浅色 / 深色都支持）。
+ *
+ * 这里**不覆盖任何 token**：`--surface-*`、`--fg`、`--line` 全部继承外层
+ * `:root[data-theme]`，用户在设置里切换主题时超能跟着变，和其他页面一致。
+ * 之前那套 `!important` 深色覆盖已经删掉。
+ */
+.extreme-core {
+  background: rgb(var(--app));
+  isolation: isolate;
+}
+
+.extreme-core[data-welcome="false"] .extreme-core-main {
+  background: rgb(var(--content));
+}
+
+.extreme-core[data-welcome="false"] .extreme-core-header {
+  background: rgb(var(--app));
+}
+
+.extreme-core[data-welcome="false"] :is(.extreme-core-task-rail, .extreme-core-remote-rail) {
+  background: rgb(var(--surface-1));
+}
+
+.extreme-core-background {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 背景再压暗一档：它只该"从空白处透出来"，不该比正文更抢眼。 */
+  opacity: .2;
+  transition: opacity 220ms ease;
+}
+
+.extreme-core-background > div {
+  position: absolute;
+  inset: 0;
+}
+
+.extreme-core-background::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 0% 78%, #704ee062, transparent 46%),
+    radial-gradient(ellipse at 100% 90%, #4c61d061, transparent 48%),
+    radial-gradient(ellipse at 76% 94%, #257eaa38, transparent 44%);
+}
+
+.extreme-core-background::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background-image: radial-gradient(circle, rgb(195 205 235 / .19) .7px, transparent 1px);
+  background-size: 16px 16px;
+  mask-image: linear-gradient(#000, #0008 76%, transparent);
+}
+
+/*
+ * **浅色主题下的背景装饰**。
+ *
+ * 上面那组光晕（`#704ee0` / `#4c61d0`）与浅点阵是给深色底的：放到近白
+ * 背景上会变成一块突兀的紫斑、点阵也几乎看不见。这里换成更淡的冷色光晕
+ * 与偏深的点阵，背景仍然只从空白处透出来。
+ */
+/*
+ * 浅色主题：**不再叠额外的光晕与点阵**。
+ *
+ * 浅色背景用的是 BG Studio 里调好的那套（白底 + `#a855f7` 紫色点阵 +
+ * "OPS WORK" 镂空字）。再叠一层冷色光晕与灰点会把它糊成一片，反而看不清
+ * 原本的图形。深色仍保留下面那组紫/靛蓝光晕。
+ */
+:root[data-theme="light"] .extreme-core-background::before,
+:root[data-theme="light"] .extreme-core-background::after {
+  display: none;
+}
+
+.extreme-core[data-welcome="true"] .extreme-core-background { opacity: 1; }
+/* 与主窗口标题栏同高（36px）：窗口按钮贴边、整条是拖拽区。 */
+/* 顶栏高度由 `page-toolbar` 决定，不再单独覆盖。 */
+/*
+ * 正文列宽与输入框**同一把尺子**（880）。
+ *
+ * 以前正文 800、输入框 880：两边各自居中，中间差出来的 80px 在右栏打开后
+ * 特别明显 —— 输入框比气泡宽出一截、还不与气泡对齐，看着像两块没对齐的板。
+ */
+.extreme-core-column { max-width: 880px; }
+
+.extreme-core-chat-layout {
+  container: extreme-chat / inline-size;
+}
+
+.extreme-core-chat {
+  padding-inline: 1rem;
+}
+
+.extreme-core-timeline {
+  display: none;
+}
+
+@media (min-width: 1180px) {
+  @container extreme-chat (min-width: 360px) {
+    /* 正文和时间轴共用内边距，32px 的刻度栏始终落在聊天列内。 */
+    .extreme-core-chat,
+    .extreme-core-timeline {
+      padding-inline: 2rem;
+    }
+
+    .extreme-core-timeline {
+      display: block;
+    }
+  }
+}
+
+.extreme-core[data-welcome="true"] .extreme-core-main {
+  align-items: center;
+  overflow-y: auto;
+  padding: clamp(24px, 14vh, 140px) 20px 28px;
+}
+
+.extreme-core-intro {
+  width: 100%;
+  max-width: 840px;
+  text-align: center;
+  margin-bottom: clamp(20px, 5vh, 62px);
+}
+
+.extreme-core-intro h1 {
+  /* 跟随主题：浅色下是深字、深色下是浅字，不再写死近白。 */
+  color: rgb(var(--fg));
+  /*
+   * 之前是 `clamp(36px, 6.5vw, 92px)`：在 1000px 宽下就到 65px，标题直接
+   * 压到背景点阵上、把输入区挤下去。收到 40px 上限，同时把过紧的字距放宽。
+   */
+  font-size: clamp(24px, 3.2vw, 40px);
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
+
+.extreme-core-intro p {
+  margin-top: 12px;
+  color: rgb(var(--fg-muted));
+  font-size: clamp(13px, 1.2vw, 15px);
+  text-wrap: balance;
+}
+
+/*
+ * 消息行：**只负责排版方向与间距**，气泡外观交给内层的 LiquidGlass。
+ *
+ * 之前这里是 `display: flex`（行向）+ user 侧再加 border / background /
+ * padding —— 换玻璃气泡后变成"CSS 一层、玻璃一层"的双层框，还会把
+ * Tailwind 的 `flex-col` / `items-end` 覆盖掉，于是整页错位。
+ */
+.extreme-core-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+  padding: 0;
+}
+
+.extreme-core-message[data-role="user"] {
+  margin-left: auto;
+  width: fit-content;
+  max-width: 92%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/*
+ * 按钮与提示条的配色**全部交回组件**（`Button` / `StatusNotice` 各自的
+ * token），这里不再写死深色 —— 之前那几条 `!important` 在浅色主题下会把
+ * 提示条压成深底 + 深字，反而看不见。
+ */
+
+/* Keep the reply, task card, and message metadata visually distinct. */
+.extreme-core-messages { display: flex; flex-direction: column; gap: 22px; }
+.extreme-core-message { max-width: 100%; overflow-wrap: anywhere; }
+.extreme-core-message-user {
+  max-width: min(86%, 40rem);
+  padding: 9px 13px;
+  border-radius: 16px 16px 5px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.extreme-core-message-reply {
+  width: 100%;
+  padding: 2px 0;
+}
+.extreme-core-agent-activity {
+  align-self: stretch;
+  min-width: 0;
+  color: rgb(var(--fg-muted));
+}
+.extreme-core-agent-activity .extreme-core-agent-activity-header {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: transparent;
+}
+.extreme-core-agent-activity-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 9px;
+  text-align: start;
+  font-size: 12px;
+}
+.extreme-core-agent-activity-toggle:focus-visible {
+  outline: 1px solid rgb(var(--accent));
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+.extreme-core-agent-activity .extreme-core-agent-activity-body {
+  margin: 3px 0 0 8px;
+  padding: 0;
+  border-inline-start: 1px solid rgb(var(--line));
+  background: transparent;
+}
+.extreme-core-agent-activity-summary {
+  padding: 5px 12px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+/*
+ * 「执行结果」：平台动作（上传 / 生成计划 / 执行）的回执。
+ *
+ * 挂在操作链**下方**，和链一样是窄条：一个动作一行，目录可点开右栏。
+ * 以前这些内容是 assistant 气泡，看着像模型说的话，还会占掉整行宽度。
+ */
+.extreme-core-reports {
+  margin: 6px 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid rgb(var(--line) / .8);
+  border-radius: 8px;
+  background: rgb(var(--surface-1) / .6);
+}
+.extreme-core-reports-title {
+  margin-bottom: 4px;
+  color: rgb(var(--fg-subtle));
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+.extreme-core-report {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.extreme-core-report + .extreme-core-report {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed rgb(var(--line) / .7);
+}
+.extreme-core-report-path {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--accent));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.extreme-core-report-path:hover { opacity: .8; }
+.extreme-core-report-detail {
+  margin-top: 3px;
+  max-height: 96px;
+  overflow: auto;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgb(var(--surface-2) / .8);
+  color: rgb(var(--fg-muted));
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extreme-core-message-notice {
+  padding: 4px 10px;
+  border-inline-start: 2px solid rgb(var(--line-strong));
+}
+.extreme-core-message-meta { min-height: 23px; }
+.extreme-core-reply-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(var(--fg-muted));
+  font-size: 13px;
+}
+.extreme-core-reply-wait > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgb(var(--accent));
+}
+.extreme-core-markdown {
+  min-width: 0;
+  color: rgb(var(--fg));
+  font-size: 14px;
+  line-height: 1.75;
+}
+.extreme-core-message-notice .extreme-core-markdown {
+  color: rgb(var(--fg-muted));
+  font-size: 13px;
+  line-height: 1.6;
+}
+.extreme-core-markdown > :first-child { margin-block-start: 0; }
+.extreme-core-markdown > :last-child { margin-block-end: 0; }
+.extreme-core-markdown p { margin-block: .7em; }
+.extreme-core-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin-block: 1.05em .35em;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.extreme-core-markdown h1 { font-size: 20px; }
+.extreme-core-markdown h2 { font-size: 17px; }
+.extreme-core-markdown h3 { font-size: 15px; }
+.extreme-core-markdown strong { font-weight: 650; }
+.extreme-core-markdown :is(ul, ol) { margin-block: .65em; padding-inline-start: 1.5em; }
+.extreme-core-markdown ul { list-style: disc; }
+.extreme-core-markdown ol { list-style: decimal; }
+.extreme-core-markdown li { margin-block: .24em; padding-inline-start: .12em; }
+.extreme-core-markdown li > :is(p, ul, ol) { margin-block: .3em; }
+.extreme-core-markdown code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgb(var(--surface-3));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em;
+}
+.extreme-core-reply-code {
+  position: relative;
+  min-width: 0;
+  margin-block: .9em;
+  padding-block-start: 29px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 9px;
+  background: rgb(var(--surface-2));
+}
+.extreme-core-reply-copy {
+  position: absolute;
+  inset: 4px 6px auto auto;
+  display: grid;
+  width: 24px;
+  height: 23px;
+  place-items: center;
+  border-radius: 5px;
+  color: rgb(var(--fg-muted));
+}
+.extreme-core-reply-copy:hover, .extreme-core-reply-copy:focus-visible {
+  background: rgb(var(--surface-hover));
+  color: rgb(var(--fg));
+}
+.extreme-core-markdown pre {
+  margin: 0;
+  padding: 9px 12px 11px;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+.extreme-core-markdown pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.extreme-core-markdown blockquote {
+  margin-block: .75em;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid rgb(var(--line-strong));
+  color: rgb(var(--fg-muted));
+}
+.extreme-core-markdown a {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.extreme-core-reply-table {
+  max-width: 100%;
+  margin-block: .9em;
+  overflow-x: auto;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+}
+.extreme-core-markdown table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.extreme-core-markdown :is(th, td) {
+  min-width: 6em;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgb(var(--line));
+  text-align: start;
+  vertical-align: top;
+}
+.extreme-core-markdown th { background: rgb(var(--surface-2)); font-weight: 650; }
+.extreme-core-markdown tbody tr:last-child td { border-bottom: 0; }
+.extreme-core-markdown hr { margin-block: 1em; border: 0; border-top: 1px solid rgb(var(--line)); }
+
+@media (max-width: 700px) {
+  .extreme-core-messages { gap: 17px; }
+}
+
+.extreme-core-composer-wrap { width: 100%; padding: 8px 16px 16px; }
+.extreme-core[data-welcome="true"] .extreme-core-composer-wrap { padding: 0; }
+
+/* 外层只负责定位，Prompt Bar 绘制输入区的轮廓。 */
+.extreme-core-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.extreme-core[data-welcome="true"] .extreme-core-composer {
+  gap: 10px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.extreme-core-input { width: 100%; min-height: 44px; max-height: 180px; resize: vertical; padding: 5px 4px; color: rgb(var(--fg)); background: transparent; font-size: 14px; outline: none; }
+.extreme-core-input::placeholder { color: rgb(var(--fg-muted)); }
+.extreme-core[data-welcome="true"] .extreme-core-input { min-height: 105px; font-size: clamp(15px, 2vw, 20px); }
+
+.extreme-core-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.extreme-core-attachments li { display: inline-flex; max-width: 100%; align-items: center; border-radius: 999px; border: 1px solid rgb(var(--line-strong)); background: rgb(var(--surface-2)); }
+.extreme-core-attachments button { display: inline-flex; min-width: 0; align-items: center; gap: 6px; padding: 5px 8px; font-size: 12px; }
+.extreme-core-attachments button svg { flex-shrink: 0; }
+
+@media (max-width: 820px) {
+  /*
+ * 右栏改用 `PageInspector` 的布局（并列、`border-l`、`surface-1`）。
+ *
+ * 之前这里把它写成了**绝对定位的抽屉**：`position: absolute` + 32px 黑色阴影，
+ * 和项目里其他页面的检查器完全不是一套东西。
+ */
+}
+
+@media (max-height: 650px) {
+  .extreme-core[data-welcome="true"] .extreme-core-main { padding-top: 20px; }
+  .extreme-core-intro { margin-bottom: 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core-background { transition: none; }
+}
+
+/* ---------------- 输入区：官方 Prompt Bar ---------------- */
+/*
+ * 输入框就是 React Bits 的 Prompt Bar（`components/ui/prompt-bar.tsx`）。
+ *
+ * 组件自己画面板、菜单、按钮，颜色由 props 传 token；这里只补两件项目皮肤：
+ * 1. 面板一圈发丝描边 + 轻微投影（组件本身没有边框）；
+ * 2. 聚焦时描边换成主色。
+ *
+ * 内层面板带 `role="presentation"`，用直接子选择器定位，不碰官方结构。
+ */
+.extreme-core-prompt-bar > [role="presentation"] {
+  box-shadow:
+    0 0 0 1px rgb(var(--line) / .6),
+    0 2px 8px rgb(0 0 0 / .06);
+  transition: box-shadow .16s ease;
+}
+
+.extreme-core-prompt-bar:focus-within > [role="presentation"] {
+  box-shadow:
+    0 0 0 1px rgb(var(--accent) / .45),
+    0 2px 8px rgb(0 0 0 / .06);
+}
+
+/* 正文与占位符跟着主题走（官方默认用的是 `--pb-ink`，这里已换成 token）。 */
+.extreme-core-prompt-bar textarea {
+  caret-color: rgb(var(--accent));
+}
+
+.extreme-core-prompt-bar textarea::placeholder {
+  color: rgb(var(--fg-subtle));
+}
+
+/*
+ * 气泡下的操作条（antd X `Actions`）。
+ *
+ * 默认是 24px 高、14px 图标，垫在 12px 正文下面显得笨重；这里收成 20px 的
+ * 小按钮，颜色跟着 token 走，浅色 / 深色都不用另写一套。
+ */
+.extreme-core-actions .ant-actions-item {
+  height: 20px;
+  padding-inline: 3px;
+  color: rgb(var(--fg-subtle));
+}
+
+.extreme-core-actions .ant-actions-item:hover {
+  color: rgb(var(--fg));
+  background: rgb(var(--surface-hover));
+}
+
+.extreme-core[data-welcome="true"] .extreme-core-frosted {
+  background: linear-gradient(180deg, rgb(255 255 255 / .055), rgb(255 255 255 / .028));
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / .08),
+    inset 0 -1px 0 rgb(255 255 255 / .03);
+}
+
+.extreme-core-remote-files > :first-child {
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  flex: 1;
+  background-color: transparent;
+}
+
+/*
+ * 会话左栏宽度：展开 216 / 收起 48（只留图标）。
+ *
+ * 宽度写在 CSS 里而不是 utility：窄屏那条 `@media` 需要能和收起态共存，
+ * 靠 `[data-collapsed]` 提高特异性比在每个断点里再补一套类更稳。
+ */
+.extreme-core-task-rail {
+  width: 216px;
+  transition: width 160ms ease;
+}
+
+.extreme-core-task-rail[data-collapsed="true"] {
+  width: 48px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core-task-rail { transition: none; }
+}
+
+@media (max-width: 960px) {
+  .extreme-core-task-rail { width: 168px; }
+  .extreme-core-remote-rail {
+    position: absolute;
+    z-index: 15;
+    inset: 0 0 0 auto;
+    width: min(340px, calc(100% - 168px));
+  }
+}
+
+/* 工具行左侧的「+」：圆形描边按钮 */
+.extreme-core-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgb(var(--fg) / .12);
+  background: rgb(var(--fg) / .04);
+  color: rgb(var(--fg-muted));
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+
+.extreme-core-add-btn:hover {
+  border-color: rgb(var(--fg) / .2);
+  background: rgb(var(--fg) / .09);
+  color: rgb(var(--fg));
+}
+
+/* 发送/停止沿用 Sender 自带的圆形主色按钮（ArrowUp / Loading→停止）。 */

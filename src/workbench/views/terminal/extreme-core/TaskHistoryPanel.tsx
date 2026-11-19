@@ -11,6 +11,7 @@ import { opsApi } from "@/api/ops-api";
 import type { ExtremeTaskRecord } from "@/api/types/extreme";
 import { cn } from "@/lib/cn";
 import { useExtremeStore } from "@/stores/extreme-store";
+import { Select } from "@/components/ui/select";
 import { TaskCardView } from "./TaskCardView";
 import type { TaskArtifact } from "./task-view";
 import { cardFromRecord, filterHistory, mergeHistory } from "./task-view";
@@ -57,12 +58,15 @@ export function TaskHistoryPanel({
   onClose,
   onPreview,
   onOpenWorkspace,
+  onOpenTask,
 }: {
   open: boolean;
   onClose: () => void;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
   /** 用记录里的 workspaceId 打开原对话（父级负责关面板）。 */
   onOpenWorkspace: (workspaceId: string) => void;
+  /** 打开原对话并**跳到发起这条任务的那条消息**（父级负责滚动与右栏定位）。 */
+  onOpenTask?: (workspaceId: string, taskId: string) => void;
 }) {
   const { t } = useTranslation();
   const layer = useOverlayLayer(open, "history");
@@ -224,19 +228,19 @@ export function TaskHistoryPanel({
             </button>
           ))}
           {servers.length > 0 && (
-            <select
-              aria-label={t("服务器")}
+            <Select
+              variant="menu"
+              className="ml-auto w-[168px]"
+              size="sm"
               value={server}
-              onChange={(event) => setServer(event.target.value)}
-              className="ml-auto rounded-[6px] border border-line bg-surface-1 px-2 py-1 text-11"
-            >
-              <option value="all">{t("全部服务器")}</option>
-              {servers.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
+              ariaLabel={t("服务器")}
+              testId="history-server-filter"
+              onChange={setServer}
+              options={[
+                { value: "all", label: t("全部服务器") },
+                ...servers.map((item) => ({ value: item, label: item })),
+              ]}
+            />
           )}
         </div>
 
@@ -318,7 +322,10 @@ export function TaskHistoryPanel({
                       className="gap-1"
                       disabled={!canOpenWorkspace}
                       title={canOpenWorkspace ? undefined : t("原对话已删除")}
-                      onClick={() => onOpenWorkspace(detail.workspaceId!)}
+                      onClick={() => {
+                        if (onOpenTask) onOpenTask(detail.workspaceId!, detail.id);
+                        else onOpenWorkspace(detail.workspaceId!);
+                      }}
                     >
                       <ArrowRight size={12} />
                       {t("打开原对话")}

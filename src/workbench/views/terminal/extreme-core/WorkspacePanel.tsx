@@ -1,8 +1,21 @@
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronsLeft, FileUp, FolderOpen, ListOrdered, Maximize2, SquareTerminal, X } from "@/components/icons";
+import {
+  ChevronsLeft,
+  FileDiff,
+  FileText,
+  FileUp,
+  FolderOpen,
+  Globe,
+  ListOrdered,
+  Maximize2,
+  SquareTerminal,
+  X,
+} from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import type { IconComponent } from "@/components/icons";
 import { PaneTabBar, type PaneTab } from "@/components/ui/pane-tab-bar";
+import { ToolbarIcon } from "@/workbench/views/terminal/ToolbarIcon";
 import { RunPlanPanel } from "./RunPlanPanel";
 import { attachmentReadState } from "./attachments";
 import type { RunRecord } from "./run-plan";
@@ -30,9 +43,7 @@ import type {
 /**
  * 右栏：**跟随当前会话的工作区**。
  *
- * 四个固定标签（远程文件｜终端｜附件｜计划），切标签只换内容；顶部固定着
- * 服务器名、展开视图 / 返回分栏、收起。标签外观与数据库标签条一致（共用
- * `PaneTabBar`），但**不引入数据库的任何状态**。
+ * 第一行是服务器与视图控制，第二行用 `PaneTabBar` 容纳可关闭的标签和固定快捷入口。
  *
  * 文件与终端内容由页面注入（它们需要 SSH、任务与预览状态）；附件与计划在
  * 这里渲染，因为它们只用会话里的数据。
@@ -44,16 +55,25 @@ export function WorkspacePanel({
   width,
   overlay = false,
   tab,
+  tabs,
   terminalTab,
   onTabChange,
+  onCloseTab,
   onTerminalTabChange,
   onWidthChange,
+  onOuterDragStart,
+  onDraggingChange,
   onCollapse,
   onExpand,
   onRestore,
+  onAddTerminalOutput,
   files,
   output,
   manual,
+  logs,
+  changes,
+  pendingChanges = 0,
+  browser,
   attachments,
   selectedIds,
   onSelectedChange,
@@ -66,6 +86,7 @@ export function WorkspacePanel({
   plan,
   onFocusStep,
   outputCount,
+  logLive = false,
 }: {
   sessionId: string | null;
   serverName: string;
@@ -79,16 +100,37 @@ export function WorkspacePanel({
    */
   overlay?: boolean;
   tab: WorkspacePane;
+  /** 这条对话**已打开**的标签（浏览器式，可关闭）。 */
+  tabs: WorkspacePane[];
   terminalTab: TerminalPane;
   onTabChange: (tab: WorkspacePane) => void;
+  /** 关掉一个标签；最后一个由页面收起右栏。 */
+  onCloseTab: (tab: WorkspacePane) => void;
   onTerminalTabChange: (tab: TerminalPane) => void;
-  onWidthChange: (width: number) => void;
+  /** 拖动中的中间帧先不落盘（`persist: false`），松手时才写一次。 */
+  onWidthChange: (width: number, persist?: boolean) => void;
+  /** 右缘向外拖：由页面负责扩窗与右栏宽度（见 `pane-outer-drag.ts`）。 */
+  onOuterDragStart: (event: React.PointerEvent<HTMLElement>) => void;
+  /** 内拖 / 外扩开始或结束：浏览器子视图据此临时隐藏。 */
+  onDraggingChange: (dragging: boolean) => void;
   onCollapse: () => void;
   onExpand: () => void;
   onRestore: () => void;
+  /**
+   * 「加入本次对话」：把真实终端的最近输出加进这次发送的材料。
+   *
+   * 「仅本条 / 自选」不再自动附带终端输出，想看就自己加。
+   */
+  onAddTerminalOutput?: () => void;
   files: ReactNode;
   output: ReactNode;
   manual: ReactNode;
+  logs: ReactNode;
+  /** 文件变更审阅：统一 Diff + 文件树（按当前对话与运行归属）。 */
+  changes: ReactNode;
+  /** 待确认的变更数量：标签上的角标。 */
+  pendingChanges?: number;
+  browser: ReactNode;
   attachments: ExtremeAttachment[];
   /** 勾选 = 用于本次发送；状态由页面持有（输入区要显示数量）。 */
   selectedIds: string[];
@@ -103,11 +145,42 @@ export function WorkspacePanel({
   plan?: RunRecord | null;
   onFocusStep: (step: PaneStep) => void;
   outputCount: number;
-  logCount?: number;
+  /** 日志标签是否正在监听（只影响标签上的状态点）。 */
+  logLive?: boolean;
 }) {
   const { t } = useTranslation();
   const asideRef = useRef<HTMLElement>(null);
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const dragRef = useRef<{
+    startX: number;
+    startWidth: number;
+    latest: number;
+    frame: number | null;
+  } | null>(null);
+  /** 当前这段拖拽的解绑函数：卸载 / 重新按下时先清掉。 */
+  const dragCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanup.current?.(), []);
+
+  /**
+   * 展开视图的宽度：和分栏宽度分开记。
+   *
+   * 展开后默认还是一块宽面板，但左缘可以继续拖 —— 用户不该被 960 卡死。
+   * 分栏宽度存 store（跨会话），展开宽度只影响本次展开，切回分栏不受影响。
+   */
+  const [expandedWidth, setExpandedWidth] = useState(() =>
+    Math.min(960, Math.max(560, window.innerWidth - 160)),
+  );
+  const currentWidth = view === "expanded" ? expandedWidth : width;
+
+  const applyWidth = (next: number, persist: boolean) => {
+    if (view === "expanded") {
+      const max = Math.max(560, window.innerWidth - 96);
+      setExpandedWidth(Math.min(Math.max(next, 560), max));
+      return;
+    }
+    // 分栏只保底 300；上限由页面用“扣除任务栏后的可用宽度 - 聊天下限”
+    // 这一套约束统一计算，避免拖动与渲染各算一套。
+    onWidthChange(Math.max(300, next), persist);
+  };
 
   const toggle = (id: string) =>
     onSelectedChange(
@@ -116,10 +189,13 @@ export function WorkspacePanel({
         : [...selectedIds, id],
     );
 
-  const tabs: PaneTab[] = [
-    { id: "files", label: t("远程文件"), icon: FolderOpen },
-    {
-      id: "terminal",
+  /** 标签的固定信息；打开列表由页面按当前对话传入。 */
+  const meta: Record<
+    WorkspacePane,
+    { label: string; icon: IconComponent; badge?: ReactNode }
+  > = {
+    files: { label: t("远程文件"), icon: FolderOpen },
+    terminal: {
       label: t("终端"),
       icon: SquareTerminal,
       badge:
@@ -129,8 +205,15 @@ export function WorkspacePanel({
           </span>
         ) : undefined,
     },
-    {
-      id: "attachments",
+    logs: {
+      label: t("实时日志"),
+      icon: FileText,
+      // 只在监听中点亮：一眼看出后台还在收。
+      badge: logLive ? (
+        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" />
+      ) : undefined,
+    },
+    attachments: {
       label: t("附件"),
       icon: FileUp,
       badge:
@@ -140,8 +223,7 @@ export function WorkspacePanel({
           </span>
         ) : undefined,
     },
-    {
-      id: "plan",
+    plan: {
       label: t("计划"),
       icon: ListOrdered,
       badge:
@@ -151,25 +233,103 @@ export function WorkspacePanel({
           </span>
         ) : undefined,
     },
-  ];
+    changes: {
+      label: t("文件变更"),
+      icon: FileDiff,
+      // 只有"待确认"才需要计数：已经执行完的不该一直挂着角标。
+      badge:
+        pendingChanges > 0 ? (
+          <span className="shrink-0 rounded-[4px] bg-warning/15 px-1 text-[10px] leading-4 text-warning">
+            {pendingChanges}
+          </span>
+        ) : undefined,
+    },
+    browser: { label: t("浏览器"), icon: Globe },
+  };
+  const items: PaneTab[] = tabs.map((id) => ({
+    id,
+    label: meta[id].label,
+    icon: meta[id].icon,
+    badge: meta[id].badge,
+    onClose: () => onCloseTab(id),
+  }));
+  // 当前标签可能刚被关掉：渲染时退到第一个已打开的标签。
+  const activeTab: WorkspacePane = tabs.includes(tab) ? tab : tabs[0] ?? tab;
 
-  /** 拖动左边缘调宽度：向左拖 = 变宽。 */
-  const onHandleDown = (event: React.PointerEvent) => {
-    if (view === "expanded") return;
+  /**
+   * 拖动左边缘调宽度：向左拖 = 变宽。
+   *
+   * 移动期间**按帧**上报（`persist: false`，只改内存里的宽度），松手才落盘
+   * 一次 —— 以前每个 `pointermove` 都写一遍 localStorage（序列化整份面板
+   * 状态），拖动时的卡顿就来自这里。`pointercancel` 与组件卸载都会解绑监听，
+   * 不会留下继续改宽度的野回调。
+   */
+  const onHandleDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    dragRef.current = { startX: event.clientX, startWidth: width };
-    const move = (moveEvent: PointerEvent) => {
-      const start = dragRef.current;
-      if (!start) return;
-      onWidthChange(start.startWidth - (moveEvent.clientX - start.startX));
+    const drag = {
+      startX: event.clientX,
+      startWidth: currentWidth,
+      latest: currentWidth,
+      frame: null as number | null,
     };
-    const up = () => {
-      dragRef.current = null;
+    dragRef.current = drag;
+    // 原生浏览器的子 WebView 会盖住指针 / 不跟随 DOM 重排：拖动期间先收起。
+    onDraggingChange(true);
+    // 上一段拖拽没收到 pointerup（少见）：先把它的监听解掉。
+    dragCleanup.current?.();
+
+    const flush = () => {
+      drag.frame = null;
+      if (dragRef.current !== drag) return;
+      applyWidth(drag.latest, false);
+    };
+    const move = (moveEvent: PointerEvent) => {
+      if (dragRef.current !== drag) return;
+      /*
+       * 展开面板是居中的：宽度增加 Δ，左右各外扩 Δ/2，手柄才会停在光标下，
+       * 所以这里乘 2；分栏是右对齐的，1:1 即可。
+       */
+      const factor = view === "expanded" ? 2 : 1;
+      drag.latest = drag.startWidth - (moveEvent.clientX - drag.startX) * factor;
+      // 同一帧里的多次 pointermove 只上报一次。
+      if (drag.frame === null) drag.frame = requestAnimationFrame(flush);
+    };
+    const detach = () => {
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    const finish = () => {
+      if (dragRef.current !== drag) return;
+      dragRef.current = null;
+      if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+      detach();
+      dragCleanup.current = null;
+      // 松手才保存最终值：中间帧只更新界面。
+      applyWidth(drag.latest, true);
+      onDraggingChange(false);
+    };
+    dragCleanup.current = () => {
+      detach();
+      if (drag.frame !== null) cancelAnimationFrame(drag.frame);
+      if (dragRef.current === drag) dragRef.current = null;
+      onDraggingChange(false);
     };
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
+
+  /** 方向键调宽（分隔线可聚焦）：左 = 变宽，与拖动同一个方向。 */
+  const onHandleKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 64 : 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      applyWidth(currentWidth + step, true);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      applyWidth(currentWidth - step, true);
+    }
   };
 
   return (
@@ -181,8 +341,8 @@ export function WorkspacePanel({
       className={cn(
         "extreme-core-frosted relative flex min-h-0 flex-col overflow-hidden",
         /*
-         * 展开视图：不再让面板铺满整个内容区，而是**中间一块 960 的宽面板**，
-         * 四周是压暗的聊天（聊天仍挂载、状态不丢）。窗口窄于 960 时自然铺满。
+         * 展开视图：中间一块宽面板，四周是压暗的聊天（聊天仍挂载、状态不丢）。
+         * 宽度不再写死：左缘手柄可以继续拖，窗口变窄时由 max-w-full 兜底。
          */
         view === "expanded"
           ? "absolute inset-0 z-30 bg-black/25 backdrop-blur-[2px]"
@@ -192,27 +352,99 @@ export function WorkspacePanel({
       )}
       style={view === "expanded" ? undefined : { width }}
     >
-      {view === "split" && !overlay && (
+      {view === "split" && (
         <div
           role="separator"
           aria-orientation="vertical"
           aria-label={t("拖动调整右栏宽度")}
+          aria-valuenow={Math.round(width)}
+          aria-valuemin={300}
+          aria-valuemax={Math.max(300, window.innerWidth - 96)}
+          tabIndex={0}
+          title={t("拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）")}
           onPointerDown={onHandleDown}
-          className="absolute inset-y-0 left-0 z-10 w-1 cursor-col-resize hover:bg-accent/40"
-        />
+          onKeyDown={onHandleKey}
+          className="group absolute inset-y-0 left-0 z-10 w-3 touch-none cursor-col-resize focus-visible:outline-none"
+        >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
+          />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
+          >
+            ↔
+          </span>
+        </div>
+      )}
+      {view === "split" && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("向外拖宽右栏")}
+          aria-valuenow={Math.round(width)}
+          aria-valuemin={300}
+          aria-valuemax={Math.max(300, window.innerWidth - 96)}
+          tabIndex={0}
+          title={t("向右拖动：窗口和右栏一起变宽，聊天区保持宽度；最大化时在窗口内加宽")}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            onOuterDragStart(event);
+          }}
+          className="group absolute inset-y-0 right-0 z-20 w-3 touch-none cursor-ew-resize focus-visible:outline-none"
+        >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
+          />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
+          >
+            ↔
+          </span>
+        </div>
       )}
 
       {/*
-       * 展开时这里是真正的面板（限宽 960）；分栏 / 浮层时 `contents`，
-       * 让原有子节点继续直接参与 aside 的 flex 布局，结构不变。
+       * 展开时这里是真正的面板；分栏 / 浮层时 `contents`，让原有子节点继续
+       * 直接参与 aside 的 flex 布局，结构不变。
        */}
       <div
         className={cn(
           view === "expanded"
-            ? "mx-auto flex h-full w-full max-w-[960px] flex-col border-x border-line/70 bg-surface-1 shadow-[0_10px_40px_rgb(0_0_0/0.18)]"
+            ? "relative mx-auto flex h-full w-full max-w-full flex-col border-x border-line/70 bg-surface-1 shadow-[0_10px_40px_rgb(0_0_0/0.18)]"
             : "contents",
         )}
+        style={view === "expanded" ? { width: expandedWidth } : undefined}
       >
+      {view === "expanded" && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("拖动调整右栏宽度")}
+          aria-valuenow={Math.round(expandedWidth)}
+          aria-valuemin={560}
+          aria-valuemax={Math.max(560, window.innerWidth - 96)}
+          tabIndex={0}
+          title={t("拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）")}
+          onPointerDown={onHandleDown}
+          onKeyDown={onHandleKey}
+          className="group absolute inset-y-0 left-0 z-20 w-3 touch-none cursor-col-resize focus-visible:outline-none"
+        >
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
+          />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
+          >
+            ↔
+          </span>
+        </div>
+      )}
       {/* 顶部：服务器名 + 展开 / 收起。 */}
       <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1.5 px-2">
         <span className="min-w-0 flex-1 truncate text-12 text-fg-muted" title={serverName}>
@@ -238,12 +470,20 @@ export function WorkspacePanel({
         </Button>
       </div>
 
-      <div className="px-2">
+      <div className="extreme-core-pane-tabs px-2">
         <PaneTabBar
-          tabs={tabs}
-          value={tab}
+          tabs={items}
+          value={activeTab}
           onChange={(id) => onTabChange(id as WorkspacePane)}
           ariaLabel={t("会话工作区标签")}
+          trailing={
+            <div role="toolbar" aria-label={t("远程工作区")} className="flex shrink-0 items-center border-l border-divider/70 pl-1">
+              <ToolbarIcon label={t("远程文件")} icon={FolderOpen} onClick={() => onTabChange("files")} />
+              <ToolbarIcon label={t("服务器终端")} icon={SquareTerminal} onClick={() => onTabChange("terminal")} />
+              <ToolbarIcon label={t("日志")} icon={FileText} onClick={() => onTabChange("logs")} />
+              <ToolbarIcon label={t("文件变更")} icon={FileDiff} onClick={() => onTabChange("changes")} />
+            </div>
+          }
         />
       </div>
 
@@ -257,11 +497,11 @@ export function WorkspacePanel({
       )}
 
       {/* `min-w-0 overflow-hidden`：长路径 / 长文件名只能在自己的区域截断，不能撑宽右栏。 */}
-      {tab === "files" && (
+      {activeTab === "files" && (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{files}</div>
       )}
 
-      {tab === "terminal" && (
+      {activeTab === "terminal" && (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="px-2 pt-1.5">
             <PaneTabBar
@@ -275,6 +515,22 @@ export function WorkspacePanel({
               ariaLabel={t("终端内容")}
             />
           </div>
+          {/*
+           * 真实终端的输出**不自动进请求**（只有「当前会话」范围才会自动带），
+           * 想看就点这里加入：加完在输入框上方能看到这条材料。
+           */}
+          {terminalTab === "manual" && onAddTerminalOutput && (
+            <div className="flex justify-end px-2 pt-1">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={onAddTerminalOutput}
+                title={t("把真实终端的最近输出加进这次发送")}
+              >
+                <FileUp size={12} /> {t("加入本次对话")}
+              </Button>
+            </div>
+          )}
           <div className="flex min-h-0 flex-1 flex-col pt-1">
             {terminalTab === "output" && output}
             {terminalTab === "manual" && manual}
@@ -282,7 +538,25 @@ export function WorkspacePanel({
         </div>
       )}
 
-      {tab === "attachments" && (
+      {activeTab === "logs" && (
+        <div className="flex min-h-0 flex-1 flex-col">{logs}</div>
+      )}
+
+      {/*
+       * 文件变更：正文用统一 Diff，右侧是服务器目录树。
+       * `min-w-0 overflow-hidden` 保证长路径只在正文里换行，不撑宽右栏。
+       */}
+      {activeTab === "changes" && (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{changes}</div>
+      )}
+
+      {activeTab === "browser" && (
+        // 留出两边手柄的 10px：原生子 WebView 会盖住同位置的主 WebView 元素，
+        // 不留缝的话右缘外拖 / 左缘内拖在浏览器标签下点不到。
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col px-3">{browser}</div>
+      )}
+
+      {activeTab === "attachments" && (
         <div className="flex min-h-0 flex-1 flex-col">
           {attachments.length === 0 ? (
             <p className="px-3 py-2 text-11 text-fg-subtle">
@@ -380,11 +654,11 @@ export function WorkspacePanel({
         </div>
       )}
 
-      {tab === "plan" && plan && (
+      {activeTab === "plan" && plan && (
         <RunPlanPanel record={plan} onFocusStep={(step) => onFocusStep(step as PaneStep)} />
       )}
 
-      {tab === "plan" && !plan && (
+      {activeTab === "plan" && !plan && (
         <div className="flex min-h-0 flex-1 flex-col">
           <p className="px-3 py-1.5 text-11 text-fg-muted">{runLabel}</p>
           {steps.length === 0 ? (

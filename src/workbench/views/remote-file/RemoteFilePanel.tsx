@@ -136,6 +136,8 @@ export interface RemoteFilePanelProps {
    * 内部却还停在 320px 露出空白；独立使用时行为不变。
    */
   embedded?: boolean;
+  /** 当前目录变化（上层按对话记住，右栏重新打开时恢复）。 */
+  onPathChange?: (path: string) => void;
   onClose: () => void;
 }
 
@@ -156,6 +158,7 @@ function RemoteFilePanelImpl({
   reveal,
   onAddToChat,
   embedded = false,
+  onPathChange,
   onClose,
 }: RemoteFilePanelProps) {
   const { t } = useTranslation();
@@ -222,6 +225,10 @@ function RemoteFilePanelImpl({
   }, []);
   const { cwd, entries, status, run: load, refresh: refreshDirectory, refreshChanged } =
     useRemoteDirectory(sessionId, connected, initialPath, onListed);
+  // 只上报已落地的目录，不跟随输入中的地址栏草稿。
+  useEffect(() => {
+    if (cwd) onPathChange?.(cwd);
+  }, [cwd, onPathChange]);
   const selectedEntry = entries.find((entry) => entry.path === selected) ?? null;
 
   /**

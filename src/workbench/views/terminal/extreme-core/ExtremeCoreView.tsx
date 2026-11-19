@@ -24,11 +24,16 @@ import {
   type ExtremeAttachment,
   type ExtremeMessage,
   type SentAttachment,
+  type TerminalPane,
+  type WorkspacePane,
 } from "@/stores/extreme-store";
+import { useDomainStore } from "@/stores/domain-store";
+import { enterExtremeForServer } from "./enter-extreme";
 import FilePreviewModal, { type PreviewSource } from "@/workbench/views/preview/FilePreviewModal";
 import { base64ToBytes } from "@/lib/preview/base64";
 import { ComposerPanel } from "./ComposerPanel";
 import { DeployPlanPanel } from "./DeployPlanPanel";
+import { FileChangesPane } from "./FileChangesPane";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { ManualTerminal } from "./ManualTerminal";
 import {
@@ -64,18 +69,25 @@ const DEFAULT_CHAT_PREFS = {
   providerId: null,
 };
 import { TaskHistoryPanel } from "./TaskHistoryPanel";
+import { BrowserPane } from "./BrowserPane";
+import { LogsPane } from "./LogsPane";
+import { activeLogFor, useLogStreamStore } from "./log-stream-store";
 import {
   blockedWorkspaces,
   cardFromPlan,
+  cardFromRecord,
   riskOfSteps,
   statusForRecord,
   statusOf,
   type TaskArtifact,
   type TaskCardModel,
 } from "./task-view";
-import { hideApprovalNotification, installApprovalNotifications, syncApprovalNotification } from "@/desktop-notification/approval";
+import { hideApprovalNotification, installApprovalNotifications, syncApprovalNotifications } from "@/desktop-notification/approval";
+import { notifyTaskOutcome } from "@/desktop-notification/task";
 import { AgentApprovalCard, type ApprovalPhase } from "./AgentApprovalCard";
 import { MessageTimeline } from "./MessageTimeline";
+import { beginPaneOuterDrag } from "./pane-outer-drag";
+import { paneLayout } from "./pane-layout";
 import { cardFromAgent, mergeAgentStep } from "./agent-steps";
 import {
   forgetAgentWait,
@@ -99,6 +111,21 @@ import {
   remoteAttachmentId,
 } from "./attachments";
 import { createStreamFilter, parseActions, visibleStream, type StreamFilter } from "./chat-actions";
+import { createScopeTracker, type RequestScope, type ScopeTracker } from "./request-scope";
+import {
+  checkScope,
+  explainBlocker,
+  planValidFor,
+  scopeForeground,
+  type ActionScope,
+  type ScopeWorld,
+} from "./action-scope";
+import {
+  nextSend,
+  queuedSend as newQueuedSend,
+  sendsFor,
+  type QueuedSend,
+} from "./send-queue";
 import { shouldBackfillPrefix, terminalReplyText } from "./reply-authority";
 import { useChatScroll } from "./use-chat-scroll";
 import {
@@ -118,12 +145,15 @@ import {
   outputInstruction,
   pickedLines,
   renderManifest,
+  shouldAttachTerminalTail,
+  terminalTailBlock,
 } from "./chat-context";
 import {
   effectiveProvider,
   effortParam,
   modelKey,
   normalizeEfforts,
+  type ModelSelection,
   type ProviderChoice,
 } from "./model-choice";
 import { buildDeployPlan, verifyPassed, type DeployStep } from "./deploy-plan";
@@ -265,6 +295,53 @@ function focusComposerEnd(): void {
  * 日志（默认收起，让对话有足够宽度）。状态在 `useExtremeStore` 里，所以退出
  * Work或切服务器时，任务与对话都还在。
  */
+/**
+ * 一条待确认的操作 + 它自己的阶段。
+ *
+ * 键是 `taskId:callId`：`callId` 只在一次运行内唯一（`call-0-0` 会重复），
+ * 少了 taskId 两条任务的确认会抢同一格。
+ */
+interface ApprovalEntry {
+  approval: AgentApproval;
+  phase: ApprovalPhase;
+  /** `phase === "failed"` 的原因（请求没送到后端）。 */
+  failure: string | null;
+  /** 已表态：卡片收起，但结果还要留给桌面通知。 */
+  closed: boolean;
+}
+
+const approvalKeyOf = (taskId: string, callId: string) => `${taskId}:${callId}`;
+
+/**
+ * 一个执行动作的结果。
+ *
+ * `receipt` 是给模型的**真实回执**；`paused` = 这一步因为归属失效停住了
+ * （原因已经写回原对话），整条动作链到此为止。
+ */
+interface ActionResult {
+  receipt: string;
+  paused?: boolean;
+}
+
+function CommandOutput({ task }: { task?: TaskCardModel }) {
+  const { t } = useTranslation();
+  const { ref, follow } = useChatScroll(true);
+  const steps = task?.steps;
+  useEffect(() => follow(), [steps, follow]);
+
+  return (
+    <div ref={ref} tabIndex={0} className="min-h-0 flex-1 overflow-auto [overflow-anchor:none]">
+      {steps?.length ? (
+        <pre className="whitespace-pre-wrap px-2 py-1 font-mono text-10 text-fg-muted">
+          {steps.map((step) => `$ ${step.command ?? step.title}\n${step.stdout ?? ""}${step.stderr ?? ""}`).join("\n")}
+        </pre>
+      ) : (
+        <p className="px-3 py-2 text-11 text-fg-subtle">{t("还没有命令输出")}</p>
+      )}
+    </div>
+  );
+}
+
 export function ExtremeCoreView() {
   const { t } = useTranslation();
   const active = useExtremeStore((state) => state.active);
@@ -294,6 +371,30 @@ export function ExtremeCoreView() {
     setSelectedAttachmentIds([]);
   }, [workspaceId]);
   const [workspaceTarget, setWorkspaceTarget] = useState<WorkspaceTarget | null>(null);
+  /** 任务历史「打开原对话」的落点：切过去后滚到发起这条任务的消息。 */
+  const [historyFocus, setHistoryFocus] = useState<{
+    workspaceId: string;
+    taskId: string;
+  } | null>(null);
+  /**
+   * 任务执行中发送一句话时走哪条路：
+   * * `steer` —— **补充给当前任务**，下一步开始前生效（默认）；
+   * * `queue` —— **完成后发送**，进入这条对话的队列，等它空闲后按顺序发。
+   */
+  const [sendWhileRunning, setSendWhileRunning] = useState<"steer" | "queue">("steer");
+  /**
+   * 「完成后发送」的队列（store 里按对话分桶）。
+   *
+   * 只显示**当前这条对话**的项；派发在后台按对话各自进行，切走也照常发。
+   */
+  const queuedSends = useExtremeStore((state) => state.queuedSends);
+  const queueSend = useExtremeStore((state) => state.queueSend);
+  const dropSend = useExtremeStore((state) => state.dropSend);
+  const failSend = useExtremeStore((state) => state.failSend);
+  const retrySend = useExtremeStore((state) => state.retrySend);
+  const patchWorkspaceContext = useExtremeStore((state) => state.patchWorkspaceContext);
+  const connections = useExtremeStore((state) => state.connections);
+  const currentQueue = useMemo(() => sendsFor(queuedSends, workspaceId), [queuedSends, workspaceId]);
   const attachments = useExtremeStore((state) => state.attachments);
   /**
    * 本次发送要带上的附件 = **右栏勾选的那几个**（按勾选顺序，重复只算一次）。
@@ -337,16 +438,28 @@ export function ExtremeCoreView() {
 
   const panelTarget = useExtremeStore((state) => state.panelTarget);
   const openPanel = useExtremeStore((state) => state.openPanel);
-  /** 统一右栏：四个固定标签 + 收起 / 分栏 / 展开。 */
+  /** 统一右栏：已打开标签 + 收起 / 分栏 / 展开。 */
   const paneTab = useExtremeStore((state) => state.paneTab);
+  const paneLists = useExtremeStore((state) => state.paneLists);
+  const closePane = useExtremeStore((state) => state.closePane);
   const paneView = useExtremeStore((state) => state.paneView);
   const paneWidth = useExtremeStore((state) => state.paneWidth);
   const terminalPane = useExtremeStore((state) => state.terminalPane);
+  const browserByWorkspace = useExtremeStore((state) => state.browserByWorkspace);
+  const setBrowserUrl = useExtremeStore((state) => state.setBrowserUrl);
+  const logSourceByWorkspace = useExtremeStore((state) => state.logSourceByWorkspace);
+  const setLogSource = useExtremeStore((state) => state.setLogSource);
+  const setRemotePath = useExtremeStore((state) => state.setRemotePath);
+  /** 文件变更摘要：事件与右栏查询都写进 store（正文按需加载）。 */
+  const fileChanges = useExtremeStore((state) => state.fileChanges);
+  const mergeFileChange = useExtremeStore((state) => state.mergeFileChange);
+  const logStream = useLogStreamStore((state) => activeLogFor(state, workspaceId));
   /** 输入框底栏：上下文范围 / 输出形态 / 自选材料（按会话记忆）。 */
   const chatPrefs = useExtremeStore((state) => state.chatPrefs);
   const setContextMode = useExtremeStore((state) => state.setContextMode);
   const setOutputStyle = useExtremeStore((state) => state.setOutputStyle);
   const removePicked = useExtremeStore((state) => state.removePicked);
+  const addPicked = useExtremeStore((state) => state.addPicked);
   const setProviderId = useExtremeStore((state) => state.setProviderId);
   /** 按模型记住的上下文预算与思考强度（跨会话）。 */
   const modelSettings = useExtremeStore((state) => state.modelSettings);
@@ -374,6 +487,9 @@ export function ExtremeCoreView() {
               contextWindow: item.context_window ?? 0,
               budgets: item.context_budgets ?? [],
               efforts: normalizeEfforts(item.reasoning_efforts),
+              // 内置表与用户声明都没覆盖到这个模型：界面必须说明，
+              // 否则「只有默认 / 只有自动」会被当成 bug。
+              capabilityKnown: item.capability_known ?? true,
             })),
         );
       } catch {
@@ -387,9 +503,19 @@ export function ExtremeCoreView() {
   const setPaneTab = useExtremeStore((state) => state.setPaneTab);
   const setPaneView = useExtremeStore((state) => state.setPaneView);
   const setPaneWidth = useExtremeStore((state) => state.setPaneWidth);
+  const setPaneDragging = useExtremeStore((state) => state.setPaneDragging);
   const setTerminalPane = useExtremeStore((state) => state.setTerminalPane);
   const openPane = useExtremeStore((state) => state.openPane);
-  const paneShown = paneView !== "hidden";
+  // 欢迎页（没有对话）不显示右栏；持久化的 split / expanded 只对正式对话生效。
+  const paneShown = paneView !== "hidden" && Boolean(workspaceId);
+  /** 「文件变更」标签上的角标：只数**当前对话**里还没放行的那些。 */
+  const pendingChangeCount = useMemo(
+    () =>
+      Object.values(fileChanges).filter(
+        (change) => change.workspaceId === workspaceId && change.status === "proposed",
+      ).length,
+    [fileChanges, workspaceId],
+  );
   /**
    * 打开右栏的某个标签：顶栏按钮、输入区 ＋、AI 打开文件/日志、附件进来、
    * 上传完成都走它。
@@ -399,11 +525,49 @@ export function ExtremeCoreView() {
    * 容器自己算（见下面的 `paneFit` / `paneOverlay`）。
    */
   const openPaneTab = useCallback(
-    (tab: "files" | "terminal" | "attachments" | "plan", terminal?: "output" | "manual") => {
+    (tab: WorkspacePane, terminal?: TerminalPane) => {
       openPane(tab, terminal);
     },
     [openPane],
   );
+  /**
+   * 「查看变更 / 查看实际变更」的定位目标。
+   *
+   * `nonce` 让"同一个文件再点一次"也能重新滚过去：只比较 taskId / changeId 时
+   * 第二次点击不会触发 effect。打开的是右栏标签，**不会**产生第二张审批卡。
+   */
+  const [changeFocus, setChangeFocus] = useState<{
+    taskId: string;
+    changeId?: string;
+    nonce: number;
+  } | null>(null);
+  const openChanges = useCallback(
+    (taskId: string, changeId?: string) => {
+      setChangeFocus({ taskId, changeId, nonce: Date.now() });
+      openPaneTab("changes");
+    },
+    [openPaneTab],
+  );
+  // 换对话：聊天里点开的定位目标属于上一条对话，不能带过去。
+  useEffect(() => {
+    setChangeFocus(null);
+  }, [workspaceId]);
+  /** 外拖实际加宽了多少：收起右栏时只回收这一段（用户手动改过窗口就不动）。 */
+  const paneOuterWidenRef = useRef<{ baseWindow: number; added: number } | null>(null);
+  /**
+   * 收起右栏：只回收**这次外拖实际加出来**的窗口宽度。
+   *
+   * 用户后来手动拉过窗口（当前宽度对不上）就保留他的尺寸；内拖产生的宽度
+   * 不在窗口上，不收。
+   */
+  const collapsePane = useCallback(() => {
+    const widened = paneOuterWidenRef.current;
+    paneOuterWidenRef.current = null;
+    setPaneView("hidden");
+    if (!widened || widened.added <= 0) return;
+    if (Math.abs(window.innerWidth - (widened.baseWindow + widened.added)) > 3) return;
+    void opsApi.extremePanelResize(widened.baseWindow, true).catch(() => undefined);
+  }, [setPaneView]);
   /**
    * 右栏开关 = 会话工作区的显隐。
    *
@@ -411,8 +575,9 @@ export function ExtremeCoreView() {
    * 标签。
    */
   const togglePane = useCallback(() => {
-    setPaneView(paneShown ? "hidden" : "split");
-  }, [paneShown, setPaneView]);
+    if (paneShown) collapsePane();
+    else setPaneView("split");
+  }, [collapsePane, paneShown, setPaneView]);
   /*
    * 右栏宽度：**在窗口内自适应**。
    *
@@ -440,16 +605,15 @@ export function ExtremeCoreView() {
     if (railRef.current) observer.observe(railRef.current);
     return () => observer.disconnect();
   }, []);
-  /** 聊天区最少留这么宽；右栏最窄 300（与 store 的拖拽下限一致）。 */
-  const CHAT_MIN = 520;
-  const PANE_MIN = 300;
-  /** 分栏放不下 → 右栏浮起来（盖住聊天，聊天保持原宽度）。 */
-  const paneOverlay = roomWidth > 0 && roomWidth < PANE_MIN + CHAT_MIN;
-  /** 分栏时右栏最多能有多宽（给聊天留够 CHAT_MIN）。 */
-  const paneRoom = roomWidth > 0 ? Math.max(PANE_MIN, roomWidth - CHAT_MIN) : paneWidth;
-  const paneFit = paneOverlay
-    ? Math.min(paneWidth, Math.max(280, roomWidth - 80))
-    : Math.min(paneWidth, paneRoom);
+  /**
+   * `paneWidth` = 用户首选宽度（持久化）；
+   * `paneFit` = 当前窗口实际能显示出来的宽度（临时压缩，不写回 store）。
+   *
+   * 约束集中在 `paneLayout`：聊天最少 320，右栏最少 300，放不下切浮层。
+   */
+  const layout = paneLayout(paneWidth, roomWidth);
+  const paneOverlay = layout.overlay;
+  const paneFit = layout.actual;
   const executing = useExtremeStore((state) => state.executing);
   const setExecutingFor = useExtremeStore((state) => state.setExecutingFor);
 
@@ -457,6 +621,8 @@ export function ExtremeCoreView() {
   const pushMessage = useExtremeStore((state) => state.pushMessage);
   const setMessages = useExtremeStore((state) => state.setMessages);
   const setAttachments = useExtremeStore((state) => state.setAttachments);
+  /** 按**对话**回写附件：后台动作（上传完成）不能写进当前镜像。 */
+  const setAttachmentsIn = useExtremeStore((state) => state.setAttachmentsIn);
   const setPlan = useExtremeStore((state) => state.setPlan);
   const setPlanSession = useExtremeStore((state) => state.setPlanSession);
   const updatePlan = useExtremeStore((state) => state.updatePlan);
@@ -490,6 +656,14 @@ export function ExtremeCoreView() {
   );
   const [asking, setAsking] = useState(false);
   /**
+   * 每结束一次运行就 +1，用来唤醒「完成后发送」的派发。
+   *
+   * `inFlightRef` 是 ref，清掉它不会触发重渲染 —— 而 `setAsking(false)` 可能
+   * 在终态事件里就已经发生了，effect 再跑时 inFlight 还在，于是那条对话的
+   * 队列就永远卡住。这个计数器保证"结束之后一定会再判断一次"。
+   */
+  const [runEpoch, setRunEpoch] = useState(0);
+  /**
    * 任务级用量：按 taskId 存在 store 里（并落盘）。
    *
    * 不从组件 state 走：切会话、退出再进都要能按当前任务取回来，任务结束后
@@ -497,6 +671,7 @@ export function ExtremeCoreView() {
    */
   const taskUsage = useExtremeStore((state) => state.taskUsage);
   const setTaskUsage = useExtremeStore((state) => state.setTaskUsage);
+  const unread = useExtremeStore((state) => state.unread);
   const historyError = useExtremeStore((state) => state.historyError);
   const dismissHistoryError = useExtremeStore((state) => state.dismissHistoryError);
   /**
@@ -506,6 +681,39 @@ export function ExtremeCoreView() {
    * 按 taskId 记而不是一个布尔：A 在停止时切到 B，B 不该跟着显示"正在停止"。
    */
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(() => new Set());
+  /**
+   * 停止已发出、后端迟迟没有确认的 taskId。
+   *
+   * 只在这种时候才出现「强制结束」：正常停止的几秒里不该让用户误点，把一个
+   * 其实能正常收尾的任务硬砍掉。
+   */
+  const [stopOverdueId, setStopOverdueId] = useState<string | null>(null);
+  /**
+   * 每条运行进入"正在停止"的时刻。
+   *
+   * 后端可能因为一条长命令迟迟不确认；超过 8 秒就把「强制结束」摆出来，用户
+   * 不必无限重试。用 ref + 一个全局 interval（而不是每个任务一个 setTimeout）：
+   * 切走 / 卸载时不会留下孤儿定时器。
+   */
+  const stoppingSinceRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    for (const id of [...stoppingSinceRef.current.keys()]) {
+      if (!stoppingIds.has(id)) stoppingSinceRef.current.delete(id);
+    }
+    if (stoppingIds.size === 0) return undefined;
+    const now = Date.now();
+    for (const id of stoppingIds) {
+      if (!stoppingSinceRef.current.has(id)) stoppingSinceRef.current.set(id, now);
+    }
+    const timer = window.setInterval(() => {
+      const at = Date.now();
+      const overdue = [...stoppingIds].find(
+        (id) => at - (stoppingSinceRef.current.get(id) ?? at) > 8000,
+      );
+      if (overdue) setStopOverdueId((current) => current ?? overdue);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [stoppingIds]);
   /**
    * 部署计划已请求停止、当前步骤还没跑完。
    *
@@ -521,12 +729,63 @@ export function ExtremeCoreView() {
    * 有歧义的日志来源（Docker 的 nginx 与 systemd 的 nginx 同时存在）。
    *
    * 只问一句；用户回答里点到哪个就开哪个，点不清就再问一次。
+   *
+   * **带归属**：候选是 A 问出来的，B 里的一句短回复（"1" / "n"）不能被当成
+   * 在回答 A —— 同一台服务器上的两条对话共用连接，光看 `sessionId` 分不出。
    */
-  const [logChoices, setLogChoices] = useState<LogSource[] | null>(null);
+  const [logChoices, setLogChoices] = useState<
+    { scope: RequestScope; choices: LogSource[] } | null
+  >(null);
+  /**
+   * 异步探测（日志来源 / 面板目标）的归属号：只有发起它的那条对话、那次连接
+   * 还在前台时，结果才允许落界面。
+   */
+  const scopeTracker = useRef<ScopeTracker | null>(null);
+  if (!scopeTracker.current) scopeTracker.current = createScopeTracker();
+  /**
+   * 后台对话的待打开面板：探测完成时它不在前台，就记下来，**切回去再开**。
+   *
+   * 结果归发起的对话（消息也写回它自己那条），既不丢掉、也不弹到别人脸上。
+   */
+  const pendingPanelRef = useRef<Map<string, PanelRequest & { scope: RequestScope }> | null>(null);
+  if (!pendingPanelRef.current) pendingPanelRef.current = new Map();
   /** 事件丢失 / 快照超时：这次运行的进度不明，需要重新核对。 */
   const [staleTaskId, setStaleTask] = useState<string | null>(null);
   const staleTask = staleTaskId && tasks[staleTaskId]?.workspaceId === workspaceId ? staleTaskId : null;
   const [askError, setAskError] = useState<string | null>(null);
+  /**
+   * 右栏外缘外拖：窗口向右长，新增宽度全部给右栏。
+   *
+   * 内拖仍走 `onWidthChange`（受聊天最小宽度约束）；外拖用绝对窗口目标，
+   * 由 Rust 按显示器工作区夹紧。没有外扩空间 / 最大化时退化成窗口内分栏。
+   */
+  const onPaneOuterDragStart = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      if (paneView !== "split") return;
+      paneOuterWidenRef.current = null;
+      const basePane = paneFit;
+      beginPaneOuterDrag(event, {
+        basePaneWidth: basePane,
+        onPaneWidth: (next, persist) => {
+          /*
+           * 首选宽度 > 当前实际：说明窗口缩小把右栏压过，保留首选，让窗口
+           * 变宽时自然恢复；否则把这次外拖的新宽度记成新的首选。
+           */
+          const preferred = useExtremeStore.getState().paneWidth;
+          const nextPreferred = preferred > basePane + 1 ? Math.max(preferred, next) : next;
+          setPaneWidth(nextPreferred, { persist });
+        },
+        onDraggingChange: setPaneDragging,
+        onCommitted: (info) => {
+          paneOuterWidenRef.current = info.added > 0 ? info : null;
+        },
+        onError: (cause) => setAskError(toAppError(cause).message),
+      });
+    },
+    [paneFit, paneView, setAskError, setPaneDragging, setPaneWidth],
+  );
+  // 拖到一半被卸载（退出超能 / 换会话）：别把"正在拖"留给浏览器隐藏逻辑。
+  useEffect(() => () => setPaneDragging(false), [setPaneDragging]);
   const [retryMessage, setRetryMessage] = useState<ExtremeMessage | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   /** 统一文件预览：本地附件 / 服务器文件共用一个浮层。 */
@@ -548,39 +807,32 @@ export function ExtremeCoreView() {
     return () => window.removeEventListener("resize", update);
   }, []);
   /**
-   * 挂起中的写 / 危险操作。
+   * 挂起中的写 / 危险操作，按 `taskId + callId` **逐条**管理。
    *
-   * 命令还没发出去 —— 用户在这里点「允许执行」之前，服务器上什么都不会变。
+   * 以前只有一个槽位：B 的审批一到就把 A 的覆盖掉，窗口收起时也只能选出一条。
+   * 现在每条自带阶段（待确认 / 提交中 / 已允许 / 已拒绝 / 未送达），互不覆盖。
    */
-  const [pendingApproval, setApproval] = useState<AgentApproval | null>(null);
-  const approval = pendingApproval && tasks[pendingApproval.taskId]?.workspaceId === workspaceId
-    ? pendingApproval
-    : null;
-  /** 提交确认：防连点（同一条 callId 只能表态一次）。 */
-  const [approvalBusy, setApprovalBusy] = useState(false);
-  /**
-   * 这条审批的处理结果。
-   *
-   * 确认条不立刻消失：允许后原地显示「已允许 · 正在执行」，拒绝后显示
-   * 「已拒绝 · 此步骤未执行」，等用户下一次开口（或任务结束）再折成一行
-   * 历史记录 —— 点了按钮却什么都没留下，比不问还糟。
-   */
-  const [approvalOutcome, setApprovalOutcome] = useState<{
-    taskId: string;
-    callId: string;
-    allow: boolean;
-    phase: Exclude<ApprovalPhase, "pending">;
-    failure?: string | null;
-  } | null>(null);
-  const approvalOutcomeRef = useRef<typeof approvalOutcome>(null);
-  /** 已经折进历史的 callId：事件重放时不能写第二条。 */
-  const foldedApprovals = useRef<Set<string>>(new Set());
-  /** 已经表过态、卡片要收起的确认（callId）。与 `approvalOutcome` 分开：结果还要给通知用。 */
-  const [approvalClosed, setApprovalClosed] = useState<string | null>(null);
-  /** 通知按钮与确认条按钮共用同一个入口（避免两份状态）。 */
-  const decideApprovalRef = useRef<(allow: boolean, callId?: string) => Promise<void>>(
-    async () => undefined,
+  const [approvalEntries, setApprovalEntries] = useState<Record<string, ApprovalEntry>>({});
+  /** 同步副本：通知按钮与连点判断都读它（不等 React 重渲染）。 */
+  const approvalEntriesRef = useRef<Record<string, ApprovalEntry>>(approvalEntries);
+  approvalEntriesRef.current = approvalEntries;
+  /** 当前对话要显示的确认条（按步骤顺序，逐条渲染）。 */
+  const currentApprovals = useMemo(
+    () =>
+      Object.values(approvalEntries)
+        .filter(
+          (entry) =>
+            !entry.closed && tasks[entry.approval.taskId]?.workspaceId === workspaceId,
+        )
+        .sort((a, b) => a.approval.stepIndex - b.approval.stepIndex),
+    [approvalEntries, tasks, workspaceId],
   );
+  /** 第一条当前审批：滚动定位与组合区高度判断都看它。 */
+  const approval = currentApprovals[0]?.approval ?? null;
+  /** 通知按钮与确认条按钮共用同一个入口（避免两份状态）。 */
+  const decideApprovalRef = useRef<
+    (allow: boolean, callId: string, taskId: string) => Promise<void>
+  >(async () => undefined);
   /**
    * 当前是否深色主题。
    *
@@ -618,7 +870,13 @@ export function ExtremeCoreView() {
   const [remoteRoot, setRemoteRoot] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   /** 用户点了「取消任务」：执行循环在下一步之前看到它就停下。 */
-  const stopRef = useRef(false);
+  /**
+   * 哪些**部署任务**被要求停止（按 taskId）。
+   *
+   * 以前是一个全局布尔：A 在停止时启动 B 会把它清掉，停止 A 也可能影响 B。
+   * 现在停止指令跟着任务走，跨对话互不干扰。
+   */
+  const stopTasksRef = useRef<Set<string>>(new Set());
   /**
    * 本次计划的稳定 id：写入本地库时作为主键。
    *
@@ -634,6 +892,8 @@ export function ExtremeCoreView() {
    * 备份信息冲掉。
    */
   const agentStepsRef = useRef<Map<string, AgentStep[]>>(new Map());
+  /** 快照恢复出来的终态只补卡片：不要当成本次运行"刚刚完成"发通知。 */
+  const suppressTerminalNotifyRef = useRef(false);
   /** 历史落库的防抖定时器（每步都写会在快命令上刷爆 SQLite）。 */
   const agentSaveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   /** cwd 变化 → 右侧文件面板跟随。 */
@@ -691,27 +951,177 @@ export function ExtremeCoreView() {
     // 附件只影响 needBytes，不必因每次拖入而重跑探测。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, preflight?.home, sessionId]);
-  const askSeqRef = useRef(0);
+  /**
+   * 每条对话各自的请求版本。
+   *
+   * 以前是全工作台一个计数器：B 一发请求就把 A 的版本号顶掉，A 虽然还能收
+   * 正文，但上传 / 计划这类"前端接力"会以为自己过期了而被丢弃。版本号必须
+   * 限定在所属对话内。
+   */
+  const askSeqRef = useRef<Record<string, number>>({});
+
+  /* --------------------------------------------------------------------- *
+   * 归属核对：每一步动作之前都要问一次"这条对话还在吗、连接还是那条吗"
+   * --------------------------------------------------------------------- */
+
+  /** 从 store 现读"当前世界"：不用渲染闭包，闭包可能是切走之前的。 */
+  const scopeWorld = useCallback((): ScopeWorld => {
+    const state = useExtremeStore.getState();
+    return {
+      workspaceId: state.workspaceId,
+      sessionId: state.sessionId,
+      workspaces: state.workspaces.map((entry) => ({
+        id: entry.id,
+        serverId: entry.serverId,
+      })),
+      connections: state.connections,
+    };
+  }, []);
+
+  /** 这一步还能不能继续；不能就返回一句要写回原对话的原因。 */
+  const scopeBlocked = useCallback(
+    (scope: ActionScope): string | null => {
+      const check = checkScope(scope, scopeWorld());
+      return check.ok ? null : explainBlocker(check.reason, t);
+    },
+    [scopeWorld, t],
+  );
+
+  /** 快照所属对话是否就在眼前（只有这时才允许动右栏 / 焦点 / 草稿）。 */
+  const scopeIsForeground = useCallback(
+    (scope: ActionScope) => scopeForeground(scope, scopeWorld()),
+    [scopeWorld],
+  );
+
+  /** 归属失效：暂停这一步，并在**原对话**里说明原因（绝不借用前台连接）。 */
+  const pauseAction = useCallback(
+    (scope: ActionScope, reason: string) => {
+      pushMessageTo(scope.workspaceId, {
+        id: `msg-${crypto.randomUUID()}`,
+        role: "assistant",
+        local: true,
+        text: t("这一步没有继续：{{reason}}", { reason }),
+      });
+    },
+    [pushMessageTo, t],
+  );
+
+  /**
+   * 按钮入口的归属快照：就是"此刻界面上这条对话"。
+   *
+   * 与 `ask` 里的那份同构，只是数据现取；模型动作链始终用发起时的快照。
+   */
+  const currentScope = useCallback((): ActionScope => {
+    const state = useExtremeStore.getState();
+    const owner = state.workspaceId ?? "";
+    return {
+      workspaceId: owner,
+      serverId: state.serverId,
+      server: state.server ?? "",
+      sessionId: state.sessionId ?? "",
+      requestId: askSeqRef.current[owner] ?? 0,
+      home: preflight?.home ?? null,
+      permission,
+      preflight,
+      envChecks,
+      attachments,
+      prefs: { context: chatPrefs.context, output: chatPrefs.output, picked: chatPrefs.picked },
+      focusId,
+      selectedAttachmentIds,
+      plan,
+      planSession,
+      planTaskId: planTaskIdRef.current ?? state.planTaskId,
+      candidates,
+      remoteRoot,
+    };
+  }, [
+    attachments,
+    candidates,
+    chatPrefs.context,
+    chatPrefs.output,
+    chatPrefs.picked,
+    envChecks,
+    focusId,
+    permission,
+    plan,
+    planSession,
+    preflight,
+    remoteRoot,
+    selectedAttachmentIds,
+  ]);
+
+  /* --------------------------------------------------------------------- *
+   * 审批：按 taskId + callId 逐条保存，互不覆盖
+   * --------------------------------------------------------------------- */
+
+  const setApprovalEntry = useCallback((next: AgentApproval) => {
+    const key = approvalKeyOf(next.taskId, next.callId);
+    setApprovalEntries((current) => ({
+      ...current,
+      [key]: { approval: next, phase: "pending", failure: null, closed: false },
+    }));
+  }, []);
+
+  const updateApprovalEntry = useCallback(
+    (key: string, patch: Partial<ApprovalEntry>) => {
+      setApprovalEntries((current) => {
+        const entry = current[key];
+        if (!entry) return current;
+        return { ...current, [key]: { ...entry, ...patch } };
+      });
+    },
+    [],
+  );
+
+  /** 撤下 / 结算某些审批（按任务或按单条）。 */
+  const dropApprovals = useCallback(
+    (match: (entry: ApprovalEntry) => boolean) => {
+      setApprovalEntries((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const [key, entry] of Object.entries(current)) {
+          if (!match(entry)) continue;
+          delete next[key];
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    },
+    [],
+  );
+
+  /** 用户开口时收掉"已表态"的卡片（结果已经折成一行历史记录）。 */
+  const dropClosedApprovals = useCallback(() => {
+    dropApprovals((entry) => entry.closed);
+  }, [dropApprovals]);
+
   /**
    * 聊天动作的执行入口。
+   *
    * 执行器（上传 / 生成计划 / 跑计划）都定义在 `ask` 之后，`const` 不提升，
    * 直接在 `ask` 里引用会撞 TDZ。用 ref 把它们挂上来：`ask` 拿到的永远是
    * **当前**这一轮的实现，也顺带避免把这些函数塞进依赖数组。
+   *
+   * 每个执行器都**必须**接收发起时的归属快照（`scope`）：后台继续跑的时候，
+   * 附件、连接、计划都从快照取，而不是从"现在前台是谁"取。
    */
   const execRef = useRef<{
     /**
      * 每个执行器都返回**给模型的回执**（真实结果，不是"已请求"）。
      *
      * 回执由 `feedToolReport` 交给模型；用户看到的是任务下面的「执行结果」。
+     * `paused` = 归属失效（断连 / 换服务器 / 计划过期），动作链到此为止。
      */
-    upload: (taskId?: string) => Promise<string>;
-    plan: (service?: string, originMessageId?: string) => Promise<string>;
-    start: (taskId?: string) => Promise<string>;
+    upload: (scope: ActionScope, taskId?: string) => Promise<ActionResult>;
+    plan: (scope: ActionScope, service?: string, originMessageId?: string) => Promise<ActionResult>;
+    start: (scope: ActionScope, taskId?: string) => Promise<ActionResult>;
     /** 把长驻监听命令写进右侧真实终端。 */
-    terminal: (command: string) => Promise<string>;
+    terminal: (scope: ActionScope, command: string) => Promise<ActionResult>;
   } | null>(null);
   /** 进行中请求的取消令牌（`ai_chat_cancel` 用它让后端断开）。 */
   const taskIdRef = useRef<string | null>(null);
+  /** 每条任务启动时锁定的模型 / 强度 / 预算；续跑与后台切换都只认它。 */
+  const taskSelectionsRef = useRef<Map<string, ModelSelection>>(new Map());
   /**
    * **用户明确确认过**的计划（按 taskId）。
    *
@@ -795,6 +1205,10 @@ export function ExtremeCoreView() {
             risk: riskOfSteps(card.steps),
             summary: card.result,
             planJson: JSON.stringify(card.steps),
+            // 终态结论与当前目录：恢复执行时要用；执行中的保存不能把它们冲掉，
+            // 后端用 CASE 保留旧值。
+            outcomeJson: card.outcome ? JSON.stringify(card.outcome) : "",
+            cwd: card.cwd ?? "",
             createdAt: card.createdAt,
           })
           .catch(() => undefined);
@@ -967,15 +1381,51 @@ export function ExtremeCoreView() {
    * 会重新订阅，执行中的步骤可能漏掉。
    */
   const applyAgentEvent = (payload: AgentEvent, snapshot?: AgentSnapshot) => {
+    const done =
+      payload.kind === "finished" || payload.kind === "failed" || payload.kind === "cancelled";
     const found = locateTask(payload.taskId);
-    if (!found) return;
+    if (!found) {
+      /*
+       * 归属不明（消息被清理 / 卡片已经不在）时**也要收尾**。
+       *
+       * 「正在停止」与 asking 只认终态事件：以前这里直接 return，事件一丢
+       * 界面就永远停在"正在停止"，既发不出去也停不下来。
+       */
+      if (done) {
+        setStoppingIds((current) => {
+          if (!current.has(payload.taskId)) return current;
+          const next = new Set(current);
+          next.delete(payload.taskId);
+          return next;
+        });
+        setStopOverdueId((current) => (current === payload.taskId ? null : current));
+        setStaleTask((current) => (current === payload.taskId ? null : current));
+        dropApprovals((entry) => entry.approval.taskId === payload.taskId);
+        notifyAgentFinished(snapshotFromEvent(payload));
+        if (taskIdRef.current === payload.taskId) {
+          setAsking(false);
+          taskIdRef.current = null;
+        }
+        const orphan = useExtremeStore.getState().tasks[payload.taskId];
+        if (orphan && (orphan.status === "running" || orphan.status === "confirming")) {
+          upsertTask({
+            ...orphan,
+            status:
+              payload.kind === "finished" ? "done" : payload.kind === "failed" ? "failed" : "cancelled",
+            result: payload.kind === "cancelled" ? t("已停止。") : orphan.result,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+      return;
+    }
     const { existing, ownerId, owner, isCurrent, reply } = found;
 
     const steps = snapshot?.steps ?? mergeAgentStep(agentStepsRef.current.get(payload.taskId) ?? [], payload);
     agentStepsRef.current.set(payload.taskId, steps);
 
-    if (payload.kind === "approval_required" && isCurrent) {
-      setApproval({
+    if (payload.kind === "approval_required") {
+      const next: AgentApproval = {
         taskId: payload.taskId,
         callId: payload.callId ?? "",
         stepIndex: payload.stepIndex ?? 0,
@@ -989,16 +1439,54 @@ export function ExtremeCoreView() {
         impact: payload.impact ?? null,
         backupPath: payload.backupPath ?? null,
         rollback: payload.rollback ?? null,
+        // 拟修改的真实 Diff 在右栏「文件变更」里：卡片只带这个标识。
+        changeId: payload.changeId ?? null,
         cwd: payload.cwd ?? existing?.cwd ?? "",
         deadline: payload.deadline,
-      });
+      };
+      /*
+       * **逐条**登记：当前对话的卡片与后台对话的卡片并存，后到的不覆盖先到的。
+       * 窗口收起时通知由同一个状态派生，所以两处永远一致。
+       */
+      if (next.callId) {
+        const key = approvalKeyOf(next.taskId, next.callId);
+        const known = approvalEntriesRef.current[key];
+        // 已经处理过 / 已撤回的，重复事件不能把它挂回来。
+        if (!known) {
+          /*
+           * 同一步骤换了 callId = 确认前文件被外部改过，后端按当前内容生成了
+           * 新预览：旧卡已经没有等待者，必须撤掉，不能同时给两张"允许"。
+           */
+          dropApprovals(
+            (entry) =>
+              entry.approval.taskId === next.taskId &&
+              entry.approval.stepIndex === next.stepIndex &&
+              entry.approval.callId !== next.callId,
+          );
+          setApprovalEntry(next);
+        }
+      }
     }
-    const terminal =
-      payload.kind === "finished" || payload.kind === "failed" || payload.kind === "cancelled";
+    if (payload.kind === "approval_withdrawn") {
+      const key = approvalKeyOf(payload.taskId, payload.callId ?? "");
+      dropApprovals((entry) => approvalKeyOf(entry.approval.taskId, entry.approval.callId) === key);
+      if (isCurrent) {
+        /*
+         * 用户补了一句要求，后台撤回了待确认操作：确认条必须立刻收起，
+         * 否则用户还可能点「允许」，而它已经不会再执行。
+         */
+        setNotice(t("已收到新的要求，撤回了这条待确认操作。"));
+      }
+    }
+    if (payload.kind === "steer_applied" && isCurrent && payload.content) {
+      setNotice(t("已更新当前任务：下一步开始前生效。"));
+    }
+    const terminal = done;
     if (terminal) {
-      // 任务结束：已处理的确认折成一行记录；还没处理的直接收起（不再需要表态）。
-      if (pendingApproval?.taskId === payload.taskId) settleApproval(true);
+      // 任务结束：它名下还没处理的审批一起收起（不再需要表态）。
+      dropApprovals((entry) => entry.approval.taskId === payload.taskId);
       setStaleTask((current) => (current === payload.taskId ? null : current));
+      setStopOverdueId((current) => (current === payload.taskId ? null : current));
       notifyAgentFinished(snapshotFromEvent(payload));
       /*
        * 重进后接回来的任务没有 `ask()` 在等它：这里负责收尾。
@@ -1039,7 +1527,27 @@ export function ExtremeCoreView() {
               : "finished";
         const text = terminalReplyText(kind, authoritative, reply.text, t("已停止。"));
         if (text) {
-          patchMessageIn(ownerId, reply.id, { text, model: payload.model ?? reply.model });
+          /*
+           * **失败 / 停止也要在气泡上留痕**：用户已经看到的那半段正文不删，
+           * 只标清"回复中断 + 原因"，并给重试入口（切走再回来仍然在）。
+           */
+          const hadText = Boolean(reply.text.trim());
+          patchMessageIn(ownerId, reply.id, {
+            text,
+            model: payload.model ?? reply.model,
+            interrupted:
+              kind === "failed"
+                ? "failed"
+                : kind === "cancelled" && hadText
+                  ? "cancelled"
+                  : null,
+            interruptReason:
+              kind === "failed"
+                ? payload.message?.trim() || t("执行失败")
+                : kind === "cancelled" && hadText
+                  ? t("已停止：上面是停止前已经生成的内容。")
+                  : null,
+          });
         }
       }
     }
@@ -1053,7 +1561,9 @@ export function ExtremeCoreView() {
             ? "cancelled"
             : payload.kind === "approval_required"
               ? "waiting"
-              : existing?.status ?? "running";
+              : payload.kind === "approval_withdrawn"
+                ? "running"
+                : existing?.status ?? "running";
 
     const card = cardFromAgent({
       taskId: payload.taskId,
@@ -1067,10 +1577,27 @@ export function ExtremeCoreView() {
       status,
       error: payload.kind === "failed" ? payload.message : undefined,
       cwd: payload.cwd ?? existing?.cwd,
+      // 终态验证结论：由后端按真实步骤判定，前端只展示。
+      outcome: payload.outcome ?? null,
       existing,
       t,
     });
     upsertTask(card);
+    /*
+     * 只有**实时第一次进入终态**才提醒；历史恢复、快照校对、重复事件都不发。
+     * 是否真的弹由 `notifyTaskOutcome` 检查主窗口是否已最小化 / 隐藏到托盘。
+     */
+    const alreadyTerminal =
+      existing?.status === "done" ||
+      existing?.status === "failed" ||
+      existing?.status === "cancelled";
+    if (
+      (payload.kind === "finished" || payload.kind === "failed") &&
+      !alreadyTerminal &&
+      !suppressTerminalNotifyRef.current
+    ) {
+      void notifyTaskOutcome(card);
+    }
     saveAgentTask(
       card,
       terminal || payload.kind === "tool_finished" || payload.kind === "approval_required",
@@ -1102,6 +1629,32 @@ export function ExtremeCoreView() {
   );
   agentEventHandler.current = (payload, snapshot) => {
     if (!payload?.taskId) return;
+    /*
+     * 文件变更：**只更新记录**，不抢前台右栏。
+     *
+     * 摘要按 changeId 存进 store（事件带的是标识与增删行数，不带正文）；
+     * 后台对话的变更同样落库，用户切回去时面板自然能看到。
+     */
+    if (payload.kind === "file_change") {
+      const change = payload.change;
+      if (change) {
+        mergeFileChange(change);
+        /*
+         * 预览作废只对**当前对话**提示一句：确认卡会换成新的一版，用户得知道
+         * 为什么又要确认一次。后台对话不打断当前输入。
+         */
+        if (
+          change.status === "stale" &&
+          change.workspaceId &&
+          change.workspaceId === useExtremeStore.getState().workspaceId
+        ) {
+          setNotice(
+            t("原文件在确认前被外部修改：旧预览已作废，已按当前内容生成新的预览，请重新确认。"),
+          );
+        }
+      }
+      return;
+    }
     const context = snapshot?.context ?? payload.context;
     if (context && locateTask(payload.taskId)) setTaskUsage(payload.taskId, context);
     if (payload.kind === "context_usage") return;
@@ -1119,20 +1672,27 @@ export function ExtremeCoreView() {
     applyAgentEvent(payload, snapshot);
   };
 
-  const applyTerminalSnapshot = useCallback((snapshot: AgentSnapshot) => {
+  const applyTerminalSnapshot = useCallback((snapshot: AgentSnapshot, notify = false) => {
     const kind =
       snapshot.status === "success" ? "finished" :
       snapshot.status === "failed" ? "failed" :
       snapshot.status === "cancelled" ? "cancelled" : null;
     if (!kind) return false;
-    agentEventHandler.current({
-      taskId: snapshot.taskId,
-      kind,
-      model: snapshot.model,
-      content: snapshot.content,
-      message: snapshot.error ?? undefined,
-      cwd: snapshot.cwd,
-    }, snapshot);
+    // 恢复 / 校对出来的终态只补卡片与气泡，不当成"刚刚完成"发桌面通知。
+    suppressTerminalNotifyRef.current = !notify;
+    try {
+      agentEventHandler.current({
+        taskId: snapshot.taskId,
+        kind,
+        model: snapshot.model,
+        content: snapshot.content,
+        message: snapshot.error ?? undefined,
+        cwd: snapshot.cwd,
+        outcome: snapshot.outcome ?? null,
+      }, snapshot);
+    } finally {
+      suppressTerminalNotifyRef.current = false;
+    }
     return true;
   }, []);
 
@@ -1145,6 +1705,59 @@ export function ExtremeCoreView() {
     );
     return () => unlisten?.();
   }, [saveAgentTask, t, upsertTask]);
+
+  /**
+   * 重开应用后，把**这条对话里被引用过的任务卡**从历史装回来。
+   *
+   * 任务句柄只在内存里，重启后聊天里就只剩下一句"已完成 / 已停止"的旧回复；
+   * 加载检查点卡片（步骤 + 结论 + 已中断状态）之后，「继续执行」才有地方点。
+   * 实时任务优先：store 里已有的卡片不覆盖。
+   */
+  useEffect(() => {
+    if (!workspaceId) return;
+    let cancelled = false;
+    void opsApi
+      .extremeTaskList({ workspaceId, limit: 50 })
+      .then((records) => {
+        if (cancelled || !Array.isArray(records)) return;
+        const state = useExtremeStore.getState();
+        if (state.workspaceId !== workspaceId) return;
+        const referenced = new Set(
+          state.messages.map((message) => message.taskId).filter(Boolean) as string[],
+        );
+        for (const record of records) {
+          if (!referenced.has(record.id) || state.tasks[record.id]) continue;
+          /*
+           * 老记录可能没有 `goal`（早期版本只存摘要）：用发起它的那句用户原话
+           * 补上，卡片才不会只显示"服务器 · 自动化"这种用户看不懂的标题。
+           */
+          const origin = state.messages.find((message) => message.taskId === record.id);
+          upsertTask(cardFromRecord(record, origin?.text ?? "", origin?.id));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [upsertTask, workspaceId]);
+
+  /**
+   * 任务历史「打开原对话」：切过去后滚到**发起这条任务的那条消息**，
+   * 同时把右栏切到执行输出，用户不用再从长对话里自己找。
+   */
+  useEffect(() => {
+    if (!historyFocus || historyFocus.workspaceId !== workspaceId) return;
+    const message = messages.find((item) => item.taskId === historyFocus.taskId);
+    if (!message) return;
+    openPaneTab("terminal", "output");
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`extreme-message-${message.id}`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 120);
+    setHistoryFocus(null);
+    return () => window.clearTimeout(timer);
+  }, [historyFocus, messages, openPaneTab, workspaceId]);
 
   /*
    * 增量缓冲的生命周期：切对话 / 卸载时收尾。
@@ -1218,16 +1831,19 @@ export function ExtremeCoreView() {
     setRemoteRoot(null);
     setCandidates(null);
     setProbing(false);
-    stopRef.current = false;
     setPlanStopping(false);
+    setStopOverdueId(null);
     planTaskIdRef.current = null;
-    // Agent 的目录、原始步骤与待确认都只属于上一台：留着会对着错服务器操作。
+    // Agent 的目录与原始步骤只属于上一台：留着会对着错服务器操作。
     agentCwdRef.current = null;
     agentStepsRef.current.clear();
-    setApproval(null);
-    setApprovalOutcome(null);
-    approvalOutcomeRef.current = null;
-    setApprovalBusy(false);
+    /*
+     * **待确认不能跟着会话清空。**
+     *
+     * 审批按 taskId + callId 归各自对话：切到另一台服务器时，A 那条任务还在
+     * 等确认，清掉就等于把它的审批弄丢了（窗口收起后连通知也没了）。真实
+     * 失效由 `approval_withdrawn` / 任务终态 / 后端拒绝来收。
+     */
   }, [sessionId]);
 
   /**
@@ -1257,6 +1873,16 @@ export function ExtremeCoreView() {
     ).reverse();
     for (const taskId of taskIds.slice(0, 6)) {
       if (reattached.has(taskId)) continue;
+      /*
+       * **本组件里刚发起的运行不参与收敛。**
+       *
+       * 启动瞬间的快照可能还没带上这次连接（`sessionId` 为空 / 是旧的），
+       * 拿它判"连接已更换"会把正在跑的任务误标成已中断，后续增量全被丢掉。
+       */
+      if (taskIdRef.current === taskId || inFlightRef.current.has(state.workspaceId ?? "")) {
+        reattached.add(taskId);
+        continue;
+      }
       const known = state.tasks[taskId];
       // 这次会话里已经跑完的卡不必再问；还在跑的要问（可能已推进了）。
       if (known && known.status !== "running" && known.status !== "confirming") {
@@ -1267,19 +1893,45 @@ export function ExtremeCoreView() {
       void (async () => {
         try {
           const snapshot = await opsApi.aiAgentSnapshot(taskId);
+          const latest = useExtremeStore.getState();
+          if (latest.sessionId !== sessionAtFetch || latest.workspaceId !== state.workspaceId) return;
+          const existing = latest.tasks[taskId];
+          const owner = latest.messages.find((message) => message.taskId === taskId);
+          /**
+           * 把还停在"执行中"的卡片收敛成「已中断」。
+           *
+           * 这是僵尸任务唯一的出口：不收敛的话那张卡会一直占着 `busy`，
+           * 用户既发不出去也停不下来，界面上只剩一句"执行中"。
+           */
+          const markInterrupted = (reason: string) => {
+            if (existing && (existing.status === "running" || existing.status === "confirming")) {
+              upsertTask({
+                ...existing,
+                status: "interrupted",
+                result: reason,
+                updatedAt: Date.now(),
+              });
+            }
+            if (taskIdRef.current === taskId) {
+              setAsking(false);
+              taskIdRef.current = null;
+            }
+          };
           if (!snapshot) {
+            // 后端没有这条运行（应用重启 / 记录已清理）：不会再有终态事件。
+            markInterrupted(t("上次运行已中断：后端没有这次运行的记录。"));
             reattached.delete(taskId);
             return;
           }
-          const latest = useExtremeStore.getState();
-          if (latest.sessionId !== sessionAtFetch || latest.workspaceId !== state.workspaceId) return;
-          if (snapshot.sessionId && snapshot.sessionId !== sessionAtFetch) return;
+          if (snapshot.sessionId && snapshot.sessionId !== sessionAtFetch) {
+            // 运行绑在另一条 SSH 连接上：当前会话不可能继续它。
+            markInterrupted(t("连接已经更换，这次运行不会继续；需要时可「继续执行」。"));
+            return;
+          }
           setTaskUsage(snapshot.taskId, snapshot.context ?? null);
 
           const steps = snapshot.steps ?? [];
           agentStepsRef.current.set(taskId, steps);
-          const owner = latest.messages.find((message) => message.taskId === taskId);
-          const existing = latest.tasks[taskId];
           const card = cardFromAgent({
             taskId,
             server: snapshot.server || latest.server || "",
@@ -1288,11 +1940,14 @@ export function ExtremeCoreView() {
             workspaceId: latest.workspaceId,
             serverId: latest.serverId,
             originMessageId: existing?.originMessageId ?? owner?.id,
-            goal: existing?.goal ?? "",
+            // 卡片标题只有"服务器 · 自动化"时，用户不知道在跑什么：优先用
+            // 快照里的目标，其次用发起这条任务的那句原话。
+            goal: existing?.goal || snapshot.context?.goal || owner?.text.trim() || "",
             steps,
             status: snapshot.status,
             error: snapshot.status === "failed" ? snapshot.error : undefined,
             cwd: snapshot.cwd,
+            outcome: snapshot.outcome ?? null,
             existing,
             t,
           });
@@ -1340,9 +1995,15 @@ export function ExtremeCoreView() {
               streamFilters.current.delete(taskId);
             }
           }
+          /*
+           * 只恢复**真实仍在等确认**的那一条。
+           *
+           * 历史里已经处理完 / 已超时的审批 `pendingApproval` 为空，不会在这里
+           * 被重新挂回来，也就不会在窗口收起时补发通知。
+           */
           const pending = snapshot.pendingApproval;
           if (pending) {
-            setApproval({
+            setApprovalEntry({
               taskId,
               callId: pending.callId,
               stepIndex: pending.stepIndex,
@@ -1356,6 +2017,7 @@ export function ExtremeCoreView() {
               impact: pending.impact ?? null,
               backupPath: pending.backupPath ?? null,
               rollback: pending.rollback ?? null,
+              changeId: pending.changeId ?? null,
               cwd: pending.cwd || snapshot.cwd,
               deadline: pending.deadline,
             });
@@ -1394,11 +2056,11 @@ export function ExtremeCoreView() {
     setAskError(null);
     setRetryMessage(null);
     setNotice(null);
-    setApproval(null);
-    setApprovalOutcome(null);
-    approvalOutcomeRef.current = null;
-    setApprovalBusy(false);
-    setWorkspaceTarget(null);
+    // 「停止没有确认」也只属于上一个对话：切走后不该跟着出现。
+    setStopOverdueId(null);
+    // 待确认按对话归属（见上）：切走不清理，切回来按 workspaceId 过滤显示。
+    const savedPath = workspaceId ? state.remotePathByWorkspace[workspaceId] : undefined;
+    setWorkspaceTarget(savedPath && sessionId ? { kind: "directory", path: savedPath, sessionId } : null);
     /*
      * 「谁在跑、停止按钮指向谁」是**按对话**的：A 在后台跑时切到 B，
      * B 不该显示停止，也不该把 A 的 taskId 当成自己的取消目标。
@@ -1446,8 +2108,12 @@ export function ExtremeCoreView() {
     messages.length > 0 ? messages[messages.length - 1].text.length : 0;
 
   useEffect(() => {
+    if (!active) return;
+    const saved = workspaceId ? scrollPositionsRef.current.get(workspaceId) : undefined;
     stickToBottom.current = true;
-  }, [active, workspaceId]);
+    if (saved !== undefined) restoreScroll(saved);
+    else followBottom();
+  }, [active, workspaceId, stickToBottom, followBottom, restoreScroll]);
 
   /*
    * 内容变了 → 跟着滚（用户翻过历史就不动）。
@@ -1457,22 +2123,9 @@ export function ExtremeCoreView() {
    */
   useEffect(() => {
     if (!active) return undefined;
-    /*
-     * 切回旧对话：优先恢复上次读到的地方。
-     *
-     * 必须挡在"贴底"之前 —— 两个逻辑都在切会话时排 rAF，贴底后跑会把刚恢复
-     * 的位置顶掉，用户翻到一半的历史就又被拉到底部。
-     */
-    const saved = workspaceId ? scrollPositionsRef.current.get(workspaceId) : undefined;
-    if (saved !== undefined && workspaceId) {
-      // 只还原一次：之后流式输出不该把用户按在这个位置，滚到底再交回自动跟随。
-      scrollPositionsRef.current.delete(workspaceId);
-      const frame = requestAnimationFrame(() => restoreScroll(saved));
-      return () => cancelAnimationFrame(frame);
-    }
     followBottom();
     return undefined;
-  }, [active, workspaceId, lastTextLength, messages.length, plan?.length, followBottom, restoreScroll]);
+  }, [active, lastTextLength, messages.length, plan?.length, followBottom]);
 
   /** 读一个文件成工作区条目（文本读内容，二进制读 base64）。 */
   const readFile = useCallback(
@@ -1529,8 +2182,26 @@ export function ExtremeCoreView() {
   const collectDropped = useCallback((transfer: DataTransfer) => collectDroppedEntries(transfer), []);
 
 
-  /** 组装发给模型的消息：角色 + 预检摘要 + **附件清单** + 文本内容（有上限）+ 最近 6 轮。 */
-  const buildMessages = (message: ExtremeMessage) => {
+  /**
+   * 组装发给模型的消息：角色 + 预检摘要 + **附件清单** + 文本内容 + 整段历史。
+   *
+   * 所有"这次发送用了什么"都从 `scope` 取：发起之后用户改选、切对话、
+   * 甚至换服务器，这一轮请求仍然是发起那一刻的内容。
+   */
+  const buildMessages = (
+    message: ExtremeMessage,
+    scope: ActionScope,
+    history: ExtremeMessage[],
+  ) => {
+    // 快照别名：函数体读的都是发起时的值，不是"现在前台是谁"。
+    const permission = scope.permission;
+    const preflight = scope.preflight;
+    const attachments = scope.attachments;
+    const chatPrefs = scope.prefs;
+    const focusId = scope.focusId;
+    const selectedAttachmentIds = scope.selectedAttachmentIds;
+    const candidates = scope.candidates;
+    const envChecks = scope.envChecks;
     const lines: string[] = [
       "你是 BLS-OPS 的运维助手，绑定当前这台服务器。",
       "**回答尽量短**：先给结论或下一步动作，再给必要依据；一句话能说清就别写成一段。",
@@ -1757,32 +2428,42 @@ export function ExtremeCoreView() {
      */
     const style = outputInstruction(chatPrefs.output);
     if (style) lines.push(`\n${style}`);
-    if (chatPrefs.context === "picked") {
-      /*
-       * 「自选」= 右栏「附件」里勾选的 + 手工加入的材料（远程路径、命令输出、
-       * 计划步骤）。两者按 id 去重，避免同一份文件出现两次。
-       */
+    /*
+     * **显式材料在任何范围下都生效**：用户自己「加入本次对话」的东西（远程
+     * 路径、命令输出、计划步骤）不该因为切到「仅本条 / 自选 / 当前会话」而
+     * 被悄悄丢掉 —— 那是他自己选的。
+     *
+     * 「自选」另外把右栏勾选的附件折算成材料，并在一份都没有时明确说明
+     * "别猜"，而不是静默退回全量历史。
+     */
+    if (chatPrefs.context === "picked" || chatPrefs.picked.length > 0) {
       const chosen = new Map(chatPrefs.picked.map((item) => [item.id, item]));
-      for (const item of attachments) {
-        if (!selectedAttachmentIds.includes(item.id) || chosen.has(item.id)) continue;
-        chosen.set(item.id, {
-          kind: "attachment",
-          id: item.id,
-          label: item.name,
-          detail: item.remotePath ?? item.path ?? item.name,
-        });
+      if (chatPrefs.context === "picked") {
+        for (const item of attachments) {
+          if (!selectedAttachmentIds.includes(item.id) || chosen.has(item.id)) continue;
+          chosen.set(item.id, {
+            kind: "attachment",
+            id: item.id,
+            label: item.name,
+            detail: item.remotePath ?? item.path ?? item.name,
+          });
+        }
       }
       const materials = pickedLines([...chosen.values()]);
       lines.push(`\n${materials.length > 0 ? materials.join("\n") : missingPickedHint()}`);
     }
-    const history = historyFor(
+    /*
+     * **整段任务对话**都带上：按条数截断（原来是 6 条）会让长任务只剩最近
+     * 两三轮，模型看不到前面的结论，界面上的"上下文"也失真。超出模型窗口
+     * 的部分由 Rust 侧按 token 预算裁剪，那里才有真实的窗口大小。
+     */
+    const previous = historyFor(
       chatPrefs.context,
-      messages.filter((turn) => turn.id !== message.id),
-      6,
+      history.filter((turn) => turn.id !== message.id),
     ).map((turn) => ({ role: turn.role, content: turn.text }));
     return [
       { role: "system" as const, content: lines.join("\n") },
-      ...history,
+      ...previous,
       { role: "user" as const, content: message.text },
       /*
        * 「执行结果」（上传 / 计划 / 执行）作为**最后一轮输入**交给模型。
@@ -1866,62 +2547,122 @@ export function ExtremeCoreView() {
    * `journal:nginx` 在一台用 Docker 跑 nginx 的机器上会永远空着 —— 与其打开
    * 一个空面板，不如回一句"这台机器上没有 systemd 的 nginx"。
    */
-  /** 扫描这台机器上的日志来源，按用户这句话挑一个（歧义时只问一句）。 */
+  /**
+   * 扫描这台机器上的日志来源，按用户这句话挑一个（歧义时只问一句）。
+   *
+   * `workspaceAt` / `sessionAt` 由调用方给出（发起这次运行的那条对话与连接），
+   * 不用渲染闭包里的值 —— 响应回来时闭包可能已经是另一条对话了。
+   */
   const openLogFromIntent = useCallback(
-    async (text: string): Promise<{ opened: boolean; question?: string }> => {
-      if (!sessionId) return { opened: false };
+    async (
+      text: string,
+      workspaceAt: string,
+      sessionAt: string,
+    ): Promise<{ opened: boolean; question?: string; deferred?: boolean }> => {
+      if (!sessionAt) return { opened: false };
+      const tracker = scopeTracker.current!;
+      const request = tracker.begin(workspaceAt, sessionAt);
       const scan = await opsApi
-        .sshExec(sessionId, discoveryCommand(), 10_000)
+        .sshExec(sessionAt, discoveryCommand(), 10_000)
         .catch(() => null);
-      // 探测期间切了会话：结果只对发起它的那台机器有效，不能打开到当前会话。
-      if (useExtremeStore.getState().sessionId !== sessionId) {
-        return { opened: false };
-      }
+      /*
+       * 探测期间可能：切了对话 / 重连换了连接 / 这条对话又发了一次请求。
+       *
+       * 结果**归发起的对话**：还在前台就直接开；不在前台就记下来，切回去
+       * 再开 —— 既不打开另一条对话的右栏，也不把已经查到的结果丢掉。
+       */
+      const now = useExtremeStore.getState();
+      const current = tracker.accept(request, {
+        workspaceId: now.workspaceId,
+        sessionId: now.sessionId,
+      });
       const candidates = scan ? parseCandidates(scan.stdout) : [];
       const { pick, choices } = pickLogSource(candidates, text);
       if (pick) {
-        openPanel({ tab: "logs", source: pick, sessionId });
-        return { opened: true };
+        const panelRequest: PanelRequest = { tab: "logs", source: pick, sessionId: sessionAt };
+        if (current) {
+          openPanel(panelRequest);
+          return { opened: true };
+        }
+        pendingPanelRef.current!.set(workspaceAt, { ...panelRequest, scope: request });
+        return { opened: false, deferred: true };
       }
       if (choices.length > 1) {
-        setLogChoices(choices);
+        // 候选连同归属一起存：只有发起它的那条对话能回答。
+        setLogChoices({ scope: request, choices });
         return { opened: false, question: ambiguityQuestion(choices) };
       }
       return { opened: false };
     },
-    [openPanel, sessionId],
+    [openPanel],
   );
 
+  /**
+   * 按模型的 `[[panel:…]]` 打开右栏。
+   *
+   * `workspaceAt` / `sessionAt` 是**发起这次运行的那条对话与连接**：探测期间
+   * 用户可能已经切走，结果只允许回到它自己那条对话（否则 A 的日志会弹到
+   * B 的脸上）。
+   */
   const openPanelFromAction = useCallback(
-    async (request: PanelRequest): Promise<string> => {
+    async (request: PanelRequest, workspaceAt: string, sessionAt: string): Promise<string> => {
+      const tracker = scopeTracker.current!;
+      const scope = tracker.begin(workspaceAt, sessionAt);
+      const stillMine = () => {
+        const now = useExtremeStore.getState();
+        return tracker.accept(scope, { workspaceId: now.workspaceId, sessionId: now.sessionId });
+      };
       if (request.tab !== "output") {
         const command = panelProbeCommand(request);
         if (command) {
-          if (!sessionId) return t("这条对话没有可用连接，先重新连接服务器。");
-          const probe = await opsApi.sshExec(sessionId, command, 8000).catch(() => null);
+          if (!sessionAt) return t("这条对话没有可用连接，先重新连接服务器。");
+          const probe = await opsApi.sshExec(sessionAt, command, 8000).catch(() => null);
           if (!probe || !probeSucceeded(request, probe.stdout)) {
+            // 目标不存在是**结果**：写回发起它的那条对话（不在前台也照样告知）。
             return t("这台服务器上没有找到 {{what}}：换个来源再试，或者先让我查一下它怎么跑的。", {
               what: panelTitle(request),
             });
           }
         }
       }
+      const panelRequest: PanelRequest = { ...request, sessionId: sessionAt };
+      if (!stillMine()) {
+        // 已经切走：记在它自己那条对话名下，切回去再打开，不弹到别人脸上。
+        pendingPanelRef.current!.set(workspaceAt, { ...panelRequest, scope });
+        return "";
+      }
       /*
        * 「远程文件」：AI 指了路径，右栏就得**真的展开**到文件标签 ——
        * 只写 workspaceTarget 而不展开，用户看到的还是收起的右栏。
        */
       if (request.tab === "files") {
-        if (!request.path || !sessionId) return "";
-        setWorkspaceTarget({ kind: "directory", path: request.path, sessionId });
+        if (!request.path || !sessionAt) return "";
+        setWorkspaceTarget({ kind: "directory", path: request.path, sessionId: sessionAt });
         openPaneTab("files");
         return "";
       }
       // 「命令输出」不传 taskId：面板按**当前对话最新那次执行**展示。
-      openPanel({ ...request });
+      openPanel(panelRequest);
       return t("已打开 {{what}}", { what: panelTitle(request) });
     },
-    [openPaneTab, openPanel, sessionId, t],
+    [openPaneTab, openPanel, t],
   );
+
+  /** 从当前 workspace 的设置读一份模型快照（非输入区路径用）。 */
+  const selectionFromStore = useCallback((): ModelSelection => {
+    const state = useExtremeStore.getState();
+    const provider = effectiveProvider(providers, state.chatPrefs.providerId);
+    const modelName = provider?.model ?? model ?? "";
+    const setting =
+      state.modelSettings[modelKey(provider?.id ?? state.chatPrefs.providerId, modelName)] ??
+      DEFAULT_MODEL_SETTING;
+    return {
+      providerId: provider?.id ?? state.chatPrefs.providerId,
+      model: modelName,
+      effort: setting.effort,
+      contextBudget: setting.budget,
+    };
+  }, [model, providers]);
 
   const ask = async (
     input?: string | ExtremeMessage,
@@ -1933,8 +2674,34 @@ export function ExtremeCoreView() {
      * 续跑是同一件事的下一步，卡片 / 操作链 / 执行结果都必须还是那一条；
      * 新起一个 id 会让上传结果挂在一张已经没人看的卡下面。
      */
-    options?: { taskId?: string },
-  ) => {
+    options?: {
+      taskId?: string;
+      selection?: ModelSelection;
+      /** 队列派发：目标对话 / 附件 / 模型都来自入队那一刻的快照。 */
+      queued?: QueuedSend;
+      /** 动作续跑：明确回到发起它的那条对话（可能已在后台）。 */
+      workspaceId?: string;
+      /**
+       * 消息已经落进对话（受理成功）。
+       *
+       * 队列派发用它**立刻出队**：请求会跑很久，等 `ask` 返回才出队的话，
+       * 界面上会一直挂着"待发送"。
+       */
+      onAccepted?: () => void;
+    },
+  ): Promise<boolean> => {
+    const queued = options?.queued;
+    /*
+     * **点击发送那一刻**的快照：必须在任何 await 之前取。
+     *
+     * 之后等终端输出 / 附件、切到 B、改模型都不再读 store；续跑按 taskId
+     * 复用第一次的快照，运行中的任务因此始终使用启动时的模型。
+     */
+    const selectionAtRequest =
+      queued?.selection ??
+      options?.selection ??
+      (options?.taskId ? taskSelectionsRef.current.get(options.taskId) : undefined) ??
+      selectionFromStore();
     /*
      * **新消息 vs 重试**，两者行为不同：
      * * 无参 / 字符串 —— 用户在输入框里发的**新消息**：要 push 气泡并清空草稿；
@@ -1942,40 +2709,65 @@ export function ExtremeCoreView() {
      *   动草稿。
      */
     const isNew = input === undefined || typeof input === "string";
+    /**
+     * 用户主动发起的交互（表态 / 补要求 / 重试 / 排队）。
+     *
+     * 队列派发**不算**：它可能在 B 的前台替 A 发送，绝不能命中"当前审批"
+     * 这类只属于前台对话的分支。
+     */
+    const interactive = isNew && !queued;
     /*
      * 欢迎态（这台服务器还没有任何对话）发出第一条消息时才落记录。
      * 先建再发，后面的气泡 / 任务卡才有 workspace 可挂。
      */
-    if (isNew && depth === 0) {
+    if (interactive && depth === 0) {
       const id = useExtremeStore.getState().ensureWorkspace();
-      if (!id) return;
+      if (!id) return false;
     }
     const text = (typeof input === "string" ? input : input?.text ?? draft).trim();
     // 空文本静默是合理的；未连接却静默丢弃违反"静默丢弃比报错更糟"。
-    if (!text) return;
-    if (!sessionId) {
+    if (!text) return false;
+    /*
+     * 这次请求发给哪条对话 / 哪条连接。
+     *
+     * 队列派发时**不读渲染闭包**：目标对话自己的服务器连接才是唯一合法目标；
+     * 拿不到就保留队列项并说明原因。
+     */
+    const stateBefore = useExtremeStore.getState();
+    const explicitOwner = queued?.workspaceId ?? options?.workspaceId;
+    const workspaceAtRequest = explicitOwner ?? stateBefore.workspaceId ?? "";
+    const entryBefore = stateBefore.workspaces.find((entry) => entry.id === workspaceAtRequest);
+    const sessionAtRequest = explicitOwner
+      ? (entryBefore?.serverId
+          ? stateBefore.connections[entryBefore.serverId]?.sessionId ?? ""
+          : stateBefore.workspaceId === workspaceAtRequest
+            ? stateBefore.sessionId ?? ""
+            : "")
+      : sessionId;
+    if (!sessionAtRequest) {
+      if (queued) failSend(queued.id, t("这条对话的服务器未连接：重新连接后才能发送。"));
       setNotice(t("服务器未连接：重新连接后才能发送。"));
-      return;
+      return false;
     }
     /*
      * `asking` 只在**用户主动发起**时拦：动作执行完要自动续问一轮，那一轮
      * 是自己触发的，不该被上一次请求的 loading 状态挡住。
      */
     /*
-     * 已经处理过的确认（已允许 / 已拒绝）在用户开口时折成一行历史记录。
+     * 已经处理过的确认（已允许 / 已拒绝）在用户开口时收起。
      *
      * **还没处理的绝不能收起**：用户这句话可能就是在补充条件（"先确认备份
      * 存在"），确认条得留在原地等后端。
      */
-    if (isNew && approvalOutcomeRef.current) settleApproval();
+    if (interactive) dropClosedApprovals();
     /*
      * 两阶段停止的中间态：停止还没被后端确认。
      *
      * 消息不受理、草稿留着，并明确说明正在发生什么 —— 静默丢弃比报错更糟。
      */
-    if (isNew && asking && stopping) {
+    if (interactive && asking && stopping) {
       setNotice(t("正在停止当前任务：停止完成后这条消息才能发送。"));
-      return;
+      return false;
     }
     /*
      * 这条**对话**是否真在跑。
@@ -1984,32 +2776,62 @@ export function ExtremeCoreView() {
      * * `inFlightRef`（同步，连点两下时第二次也读得到）；
      * * 这条对话里有没有 running / waiting 的任务（重进接回来的任务没有 ask 在飞）。
      */
-    const askWorkspace = useExtremeStore.getState().workspaceId ?? "";
-    const runningHere = Object.values(useExtremeStore.getState().tasks).some(
+    const askWorkspace = workspaceAtRequest;
+    const runningTask = Object.values(stateBefore.tasks).find(
       (task) =>
         task.workspaceId === askWorkspace &&
         (task.status === "running" || task.status === "confirming"),
     );
+    const runningHere = Boolean(runningTask);
     const busy = depth === 0 && (inFlightRef.current.has(askWorkspace) || runningHere);
-    if (isNew && executing && isStopIntent(text)) {
+    /**
+     * 把这句话按**入队那一刻**的选择存进当前对话的队列。
+     *
+     * 只清文字：勾选的附件仍留在右栏，取消排队后可以连同文字一起恢复成草稿。
+     */
+    const enqueueHere = () => {
+      queueSend(
+        newQueuedSend({
+          workspaceId: askWorkspace,
+          text,
+          attachments: composerAttachments.map((item) => ({
+            id: item.id,
+            name: item.name,
+            size: item.size,
+            path: item.path,
+            remotePath: item.remotePath,
+          })),
+          selection: selectionAtRequest,
+          context: chatPrefs.context,
+          output: chatPrefs.output,
+          picked: chatPrefs.picked,
+        }),
+      );
+      setDraft("");
+      // 排队卡已经把内容和状态说全了；清掉上一条残留提示。
+      setNotice(null);
+    };
+    if (interactive && executing && isStopIntent(text)) {
       pushUserMessage(text);
-      stopRef.current = true;
+      const currentPlanTask =
+        planTaskIdRef.current ?? useExtremeStore.getState().planTaskId;
+      if (currentPlanTask) stopTasksRef.current.add(currentPlanTask);
       pushMessage({
         id: `msg-${crypto.randomUUID()}`,
         role: "assistant",
         local: true,
         text: t("正在停止。当前步骤结束后不会运行后续步骤。"),
       });
-      return;
+      return true;
     }
     /*
      * 执行中回「停」：Agent 循环在 Rust 侧，必须**通知后端**停下来
      * （当前命令跑完再停）；只清界面状态等于让它继续在服务器上跑。
      */
-    if (isNew && asking && isStopIntent(text)) {
+    if (interactive && asking && isStopIntent(text)) {
       pushUserMessage(text);
       void cancelAsk();
-      return;
+      return true;
     }
     /*
      * **有待确认的写操作**：用户这句话可能是在表态，而不是在提新任务。
@@ -2018,7 +2840,7 @@ export function ExtremeCoreView() {
      * 新起一次运行；「会影响什么」只用卡片上的事实回答 —— 比重新问模型更快、
      * 也不会和正在等确认的这一步抢同一台机器。其余内容照常往下走。
      */
-    if (isNew && approval) {
+    if (interactive && approval) {
       const decision = approvalIntent(text);
       if (decision) {
         pushUserMessage(text);
@@ -2029,25 +2851,67 @@ export function ExtremeCoreView() {
             local: true,
             text: explainApproval(approval, t),
           });
-          return;
+          return true;
         }
-        await decideApproval(decision === "allow");
-        return;
+        await decideApprovalById(decision === "allow", approval.callId, approval.taskId);
+        return true;
       }
-      setNotice(t("这一步正在等待确认。要修改要求，可以先拒绝当前操作，再发送这条消息。"));
-      return;
+      /*
+       * 「完成后发送」：用户选的是排队，**不能**顺手撤回审批。
+       *
+       * 撤回只属于「补充给当前任务」—— 那是明确要改这一步；排队只是"等它
+       * 结束再发"，把审批撤掉会让正在等确认的任务白等。
+       */
+      if (sendWhileRunning === "queue") {
+        enqueueHere();
+        return true;
+      }
+      /*
+       * 不是表态、而是在补充条件：**就地撤回**这条待确认操作，把要求交给
+       * 正在跑的任务重新评估。用户只需要说一遍，不必先拒绝再重发。
+       */
+      const bubble = pushUserMessage(text);
+      try {
+        const accepted = await opsApi.aiAgentSteer(approval.taskId, text);
+        if (!accepted) {
+          patchMessage(bubble.id, {
+            deliveryError: t("这条任务已经结束：请重新发送。"),
+          });
+          setNotice(t("这条任务已经结束：请重新发送。"));
+          return true;
+        }
+        // 确认条不在这里卸载：等后台的 `approval_withdrawn` 事件到达再收，
+        // 桌面通知才有机会把"已撤回"推给用户。
+        setNotice(t("已收到补充要求：撤回待确认操作，按新要求重新评估。"));
+      } catch (cause) {
+        const reason = toAppError(cause).message;
+        // 没送达：原文字放回输入框，气泡上标出来，用户可以直接重发。
+        patchMessage(bubble.id, { deliveryError: reason });
+        setDraft(text);
+        setAskError(reason);
+      }
+      return true;
     }
     /*
      * 上一条在问"要看哪个日志"：用户这句话点到哪个候选就开哪个。
-     * 点不清就照常走问答（不硬猜一个来源打开）。
+     *
+     * 候选**只属于问出它的那条对话**：同一台服务器上的两条对话共用连接，
+     * B 里一句 "1" / "n" 不能被当成在回答 A。不是自己那条就完全不碰，
+     * 让这句话照常走问答。
      */
-    if (isNew && logChoices) {
-      const chosen = matchChoice(text, logChoices);
+    if (interactive && logChoices) {
+      const here = useExtremeStore.getState();
+      const tracker = scopeTracker.current!;
+      const mine = tracker.accept(logChoices.scope, {
+        workspaceId: here.workspaceId,
+        sessionId: here.sessionId,
+      });
+      const chosen = mine ? matchChoice(text, logChoices.choices) : null;
       if (chosen) {
         pushUserMessage(text);
         setLogChoices(null);
-        openPanel({ tab: "logs", source: chosen, sessionId });
-        return;
+        openPanel({ tab: "logs", source: chosen, sessionId: logChoices.scope.sessionId });
+        return true;
       }
     }
     /*
@@ -2056,12 +2920,12 @@ export function ExtremeCoreView() {
      * 无论是否受理，用户说的这句话都**立刻上屏并清空输入框** —— 之前这条路径
      * 直接 `ask(旧消息)`，界面上什么都不出现，看起来像"没发出去"。
      */
-    if (isNew && isRetryIntent(text)) {
+    if (interactive && isRetryIntent(text)) {
       // 部署任务在跑也算"仍在执行"：重试会和它抢同一台机器。
       if (busy || executing) {
         // 不受理就不重复显示这句话（第一条已经上屏了），只说明为什么没动。
         setNotice(t("任务仍在执行：等它结束或点「停止」后再重试。"));
-        return;
+        return true;
       }
       const bubble = pushUserMessage(text);
       inFlightRef.current.add(askWorkspace);
@@ -2070,14 +2934,14 @@ export function ExtremeCoreView() {
         if (source) {
           // 用**原请求**的消息重放：目标与上下文不变，也不再显示原提问。
           await ask(source.message, depth + 1, { of: source.card, bubble });
-          return;
+          return true;
         }
         // 没有失败的 Agent 任务：退回"上一次部署计划失败"的那条路。
         if (!executing && planTaskIdRef.current && plan?.some((step) => step.state === "failed")) {
           // 「重试」是用户自己下的指令，等价于确认了这一版计划。
           userConfirmedPlansRef.current.add(planTaskIdRef.current);
-          await runPlan(planTaskIdRef.current);
-          return;
+          await runPlan(planTaskIdRef.current, currentScope());
+          return true;
         }
         pushMessage({
           id: `msg-${crypto.randomUUID()}`,
@@ -2088,22 +2952,119 @@ export function ExtremeCoreView() {
       } finally {
         inFlightRef.current.delete(askWorkspace);
       }
-      return;
+      return true;
     }
     /*
-     * 已经有任务在跑：不发第二条、也不假装受理；草稿留着，等结束后再发。
+     * 已经有任务在跑：不新开一条，而是作为**补充要求**交给正在跑的任务。
+     *
+     * 后端在下一步开始前把它交给模型；正在等确认的那一步会先撤回，避免用户
+     * 说了"只查容器里的"、旧写操作却照样执行。任务刚好结束（拿不到任务）时
+     * 明确让用户重发，不静默吞掉。
      */
-    if (busy) {
-      setNotice(t("任务仍在执行：等它结束或点「停止」后再发送。"));
-      return;
+    if (interactive && busy) {
+      if (!runningTask) {
+        setNotice(t("任务仍在执行：等它结束或点「停止」后再发送。"));
+        return false;
+      }
+      /*
+       * **僵尸任务检测**：卡片说还在跑，但后端已经没有这条运行（WebView
+       * 重载 / 进程重启 / 循环异常退出）。这时 steer 一定失败，用户看到的
+       * 是"永远发不出去"。先问一次快照：拿不到 / 已是终态就收敛卡片，
+       * 这句话按**新任务**照常发送。
+       */
+      let alive = await opsApi.aiAgentSnapshot(runningTask.id).catch(() => null);
+      if (!alive) {
+        // 刚启动 / 注册尚未落定的极短窗口：再确认一次，避免误判成僵尸。
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        alive = await opsApi.aiAgentSnapshot(runningTask.id).catch(() => null);
+      }
+      const zombie =
+        !alive ||
+        alive.status === "success" ||
+        alive.status === "failed" ||
+        alive.status === "cancelled";
+      if (!zombie) {
+        /*
+         * 「完成后发送」：进这条对话的队列，等它空闲后按顺序发。
+         * 入队时已锁定模型 / 附件 / 范围，之后改选不影响这一条。
+         */
+        if (sendWhileRunning === "queue") {
+          enqueueHere();
+          return true;
+        }
+        const runningStep = runningTask.steps.find((step) => step.state === "running");
+        const bubble = pushUserMessage(text);
+        try {
+          const accepted = await opsApi.aiAgentSteer(runningTask.id, text);
+          if (!accepted) {
+            const reason = t("这条任务已经结束：请重新发送。");
+            patchMessage(bubble.id, { deliveryError: reason });
+            setNotice(reason);
+            return true;
+          }
+          // 只有后端**接受之后**才说"已更新当前任务"。
+          setNotice(
+            runningStep
+              ? t("已更新当前任务：下一步开始前生效。当前正在执行：{{step}}", {
+                  step: runningStep.title,
+                })
+              : t("已更新当前任务：下一步开始前生效。"),
+          );
+        } catch (cause) {
+          const reason = toAppError(cause).message;
+          patchMessage(bubble.id, { deliveryError: reason });
+          // 保留原文字：放回输入框，用户可以直接重发。
+          setDraft(text);
+          setAskError(reason);
+        }
+        return true;
+      }
+      // 后端已经没有这条运行：收敛卡片，这句话继续往下走成一次**新任务**。
+      if (alive) applyTerminalSnapshot(alive);
+      else settleStoppedLocally(runningTask.id, t("后端已经没有这条运行。"));
+      setNotice(t("上一条运行已经结束：这句话按新任务发送。"));
     }
     /*
-     * 本次发送的附件**快照**：在清空勾选之前定下来。
+     * 本次发送的附件：**队列项按入队时的快照**，其余按当前勾选。
      *
      * 之后改选、移除附件、切服务器都不会影响这一条 —— 气泡显示与模型请求
      * 都读这份快照，不再回读"此刻勾着什么"的易变状态。
      */
-    const sentAttachments: SentAttachment[] = composerAttachments.map((item) => ({
+    const ownedAttachments = queued
+      ? stateBefore.workspaceId === queued.workspaceId
+        ? stateBefore.attachments
+        : entryBefore?.context?.attachments ?? []
+      : attachments;
+    /**
+     * 这次消息**带上**的附件（勾选的那几个）。
+     *
+     * 动作链用的是**整条对话的附件**（上传 / 计划要看全部材料），两者分开：
+     * `outgoing` 只决定气泡与清单，`attachmentsAtRequest` 是执行器的输入。
+     */
+    const outgoing: ExtremeAttachment[] = queued
+      ? queued.attachments.map(
+          (snap) =>
+            ownedAttachments.find((item) => item.id === snap.id) ?? {
+              id: snap.id,
+              name: snap.name,
+              size: snap.size,
+              path: snap.path,
+              remotePath: snap.remotePath,
+              state: "ready" as const,
+            },
+        )
+      : composerAttachments;
+    /*
+     * 整条对话的附件快照。队列项里选中的附件即使已经被移出会话，也补回清单：
+     * 入队时定下的材料不能因为后来删掉就静默消失。
+     */
+    const attachmentsAtRequest: ExtremeAttachment[] = queued
+      ? [
+          ...ownedAttachments,
+          ...outgoing.filter((item) => !ownedAttachments.some((live) => live.id === item.id)),
+        ]
+      : attachments;
+    const sentAttachments: SentAttachment[] = outgoing.map((item) => ({
       id: item.id,
       name: item.name,
       size: item.size,
@@ -2121,36 +3082,82 @@ export function ExtremeCoreView() {
             attachmentSnapshot: sentAttachments,
           }
         : message;
+    // 版本号按对话递增：B 的请求不会让 A 的后续动作失效。
+    const requestId = (askSeqRef.current[workspaceAtRequest] =
+      (askSeqRef.current[workspaceAtRequest] ?? 0) + 1);
+    /**
+     * 这次发送的**归属快照**。
+     *
+     * 队列派发用它入队时定下的附件 / 范围 / 计划；用户直接发送则用当前这一
+     * 刻的镜像。之后所有动作都从这里取值，**不再读渲染闭包**。
+     */
+    const scopeAtRequest: ActionScope = {
+      workspaceId: workspaceAtRequest,
+      serverId: entryBefore?.serverId ?? serverId,
+      server: entryBefore?.server ?? server ?? "",
+      sessionId: sessionAtRequest,
+      requestId,
+      home: preflight?.home ?? null,
+      permission,
+      preflight,
+      envChecks,
+      attachments: attachmentsAtRequest,
+      prefs: queued
+        ? { context: queued.context, output: queued.output, picked: queued.picked }
+        : { context: chatPrefs.context, output: chatPrefs.output, picked: chatPrefs.picked },
+      focusId: queued ? null : focusId,
+      selectedAttachmentIds: queued
+        ? queued.attachments.map((item) => item.id)
+        : selectedAttachmentIds,
+      plan: queued ? null : plan,
+      planSession: queued ? null : planSession,
+      planTaskId: queued
+        ? entryBefore?.context?.planTaskId ?? null
+        : planTaskIdRef.current ?? useExtremeStore.getState().planTaskId,
+      candidates: queued ? null : candidates,
+      remoteRoot,
+    };
+    /** 这条对话正显示在眼前：只有此时才允许动草稿 / 滚动 / 输入状态。 */
+    const foregroundHere = () => scopeForeground(scopeAtRequest, scopeWorld());
+    const ownerMessages = queued
+      ? stateBefore.workspaceId === workspaceAtRequest
+        ? stateBefore.messages
+        : entryBefore?.messages ?? []
+      : messages;
     /*
      * **先路由，再决定要不要请求模型**。
      *
      * 「开始吧 / 继续」这类短句不是提问，而是在推进已有任务：唯一可继续的 →
      * 直接执行，或原地生成它缺的那版计划；多个候选 → 让用户指明，绝不新起
-     * 任务；其余情况照旧走问答。只在用户**新发**消息时路由。
+     * 任务；其余情况照旧走问答。只在用户**新发**消息时路由（排队派发也算）。
      */
     if (isNew) {
-      const state = useExtremeStore.getState();
-      const taskIds = new Set(state.messages.map((message) => message.taskId));
-      const visibleTasks = Object.fromEntries(Object.entries(state.tasks).filter(([id]) => taskIds.has(id)));
-      const route = routeIntent(text, contextsOfTasks(visibleTasks, sessionId));
+      const taskIds = new Set(ownerMessages.map((message) => message.taskId));
+      const visibleTasks = Object.fromEntries(
+        Object.entries(stateBefore.tasks).filter(([id]) => taskIds.has(id)),
+      );
+      const route = routeIntent(text, contextsOfTasks(visibleTasks, sessionAtRequest));
       if (route.kind !== "chat") {
         const message = withSnapshot({
           id: `msg-${crypto.randomUUID()}`,
           role: "user" as const,
           text,
         });
-        pushMessage(message);
-        setDraft("");
-        // 焦点文件只对**这一条消息**有效，发完就清。
-        setFocusId(null);
-        // 消息已受理：这次勾选消费掉（附件已经写进气泡快照）。
-        setSelectedAttachmentIds([]);
-        setAskError(null);
-        setRetryMessage(null);
+        pushMessageTo(workspaceAtRequest, message);
+        options?.onAccepted?.();
+        if (foregroundHere()) {
+          setDraft("");
+          // 焦点文件只对**这一条消息**有效，发完就清。
+          setFocusId(null);
+          // 消息已受理：这次勾选消费掉（附件已经写进气泡快照）。
+          setSelectedAttachmentIds([]);
+          setAskError(null);
+          setRetryMessage(null);
+        }
         if (route.kind === "choose") {
           const cards = useExtremeStore.getState().tasks;
           const list = route.taskIds.map((id) => cards[id]?.title ?? id).join("、");
-          pushMessage({
+          pushMessageTo(workspaceAtRequest, {
             id: `msg-${crypto.randomUUID()}`,
             role: "assistant",
             local: true,
@@ -2159,15 +3166,16 @@ export function ExtremeCoreView() {
               list,
             }),
           });
-          return;
+          return true;
         }
         if (route.action === "run") {
           // 用户说了「开始吧」= 明确确认这版计划，执行入口才放行。
           userConfirmedPlansRef.current.add(route.taskId);
-          await runPlan(route.taskId);
+          await runPlan(route.taskId, scopeAtRequest);
+        } else {
+          await generatePlan(scopeAtRequest, { originMessageId: message.id, taskId: route.taskId });
         }
-        else await generatePlan({ originMessageId: message.id, taskId: route.taskId });
-        return;
+        return true;
       }
     }
     const userMessage: ExtremeMessage =
@@ -2175,52 +3183,61 @@ export function ExtremeCoreView() {
         ? withSnapshot({ id: `msg-${crypto.randomUUID()}`, role: "user", text })
         : input;
     if (isNew) {
-      stickToBottom.current = true;
       /*
        * 随这条消息发出的附件**归属到这条消息**：输入区随即可清空，
        * 气泡上仍能看到名字、大小与"已上传"状态；会话里的附件列表不动
        * （模型上下文、部署计划与右栏树还要用）。
        */
-      pushMessage(userMessage);
-      setDraft("");
-      // 焦点文件只对**这一条消息**有效，发完就清；右栏的勾选同样消费掉。
-      setFocusId(null);
-      // 消息已受理：这次勾选消费掉（附件已经在气泡快照里）。
-      setSelectedAttachmentIds([]);
+      pushMessageTo(workspaceAtRequest, userMessage);
+      // 受理点：队列项从这里起就该消失（失败由 return false 走另一条路）。
+      options?.onAccepted?.();
+      if (foregroundHere()) {
+        stickToBottom.current = true;
+        setDraft("");
+        // 焦点文件只对**这一条消息**有效，发完就清；右栏的勾选同样消费掉。
+        setFocusId(null);
+        // 消息已受理：这次勾选消费掉（附件已经在气泡快照里）。
+        setSelectedAttachmentIds([]);
+      }
     }
-    setAskError(null);
-    setRetryMessage(null);
-    setAsking(true);
-    const requestId = (askSeqRef.current += 1);
+    if (foregroundHere()) {
+      setAskError(null);
+      setRetryMessage(null);
+      setAsking(true);
+    }
     /**
      * 本次请求的 taskId：既是取消令牌，也是任务卡与历史记录的主键。
      *
      * 每次请求独立 —— 步骤 index 从 0 开始，复用 id 会把上一次的步骤覆盖掉。
      */
-    const taskId = options?.taskId ?? `task-${requestId}-${Date.now()}`;
-    taskIdRef.current = taskId;
+    const taskId =
+      options?.taskId ?? `task-${requestId}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    /*
+     * `taskIdRef` 是**前台**那条运行的指针（停止键、asking 收尾都读它）。
+     * 后台 / 队列派发的请求不能覆盖它：否则 B 的终态事件会因为 `taskIdRef`
+     * 指向 A 而收不掉 `asking`，B 的队列就永远等在那里。
+     */
+    if (useExtremeStore.getState().workspaceId === workspaceAtRequest) {
+      taskIdRef.current = taskId;
+    }
+    // 归属快照补上 taskId：之后每一步的回写都按它定位。
+    scopeAtRequest.taskId = taskId;
+    taskSelectionsRef.current.set(taskId, selectionAtRequest);
     {
       // 快照：之后用户改选不会篡改这条运行记录。
-      const prefs = useExtremeStore.getState().chatPrefs;
       runMetaRef.current = {
         taskId,
-        context: prefs.context,
-        output: prefs.output,
-        providerId: prefs.providerId,
+        context: scopeAtRequest.prefs.context,
+        output: scopeAtRequest.prefs.output,
+        providerId: selectionAtRequest.providerId,
       };
     }
-    /** 发起时的会话：回答只能落回这一台。 */
-    const sessionAtRequest = sessionId;
-    /**
-     * 发起时的**对话**：所有回写都按它落库。
-     *
-     * 中途切到 B 时镜像已经是 B 的，直接 `patchMessage` 会把 A 的回答写进 B。
-     */
-    const workspaceAtRequest = useExtremeStore.getState().workspaceId ?? "";
     if (depth === 0) inFlightRef.current.add(workspaceAtRequest);
+    /** 这次运行仍然有效（没有被同一对话里更新的一次请求取代）。 */
+    const stillCurrent = () => requestId === askSeqRef.current[workspaceAtRequest];
+    /** 这次运行既有效、又正好在前台（只有这时才允许动界面）。 */
     const belongsHere = () =>
-      requestId === askSeqRef.current &&
-      useExtremeStore.getState().workspaceId === workspaceAtRequest;
+      stillCurrent() && useExtremeStore.getState().workspaceId === workspaceAtRequest;
     // 占位消息：流式文字直接追加到这里，用户一发送就能看到文字在长。
     const assistantId = `msg-${crypto.randomUUID()}`;
     streamingReplies.current.set(taskId, assistantId);
@@ -2244,11 +3261,11 @@ export function ExtremeCoreView() {
       agentCwdRef.current = cwd;
       const startedCard = cardFromAgent({
         taskId,
-        server: server ?? "",
+        server: scopeAtRequest.server,
         sessionId: sessionAtRequest,
         // 归属：这条卡片属于发起它的那条对话。
         workspaceId: workspaceAtRequest,
-        serverId,
+        serverId: scopeAtRequest.serverId,
         // 重试挂在**「重试」这句话**下面，而不是把原提问再挂一次。
         originMessageId: (retry?.bubble ?? userMessage).id,
         goal: retry?.of?.goal || text,
@@ -2294,52 +3311,53 @@ export function ExtremeCoreView() {
       const promptMessage = retry
         ? { ...userMessage, retryNote: retryNoteFor(retry.of) }
         : userMessage;
-      // 把用户右侧真实终端的最近输出带给模型：他刚跑的命令与返回，
-      // 不用在聊天里再复述一遍。
-      const terminalTail = workspaceId ? await manualShellTail(workspaceId, 120) : "";
-      const messages = buildMessages(promptMessage);
-      if (terminalTail.trim()) {
-        messages.unshift({
-          role: "system",
-          content:
-            "用户右侧「真实终端」的最近输出（可能是他刚执行过的命令与返回，供参考；" +
-            `不要重复已经完成的命令）：\n\`\`\`\n${terminalTail.trim()}\n\`\`\``,
-        });
-      }
       /*
-       * 思考强度与上下文预算在**启动时**定下来：后端整轮沿用，中途改设置只
-       * 影响下一条消息。MAX 已经由模型菜单收敛成模型支持的最高档。
+       * 真实终端的最近输出：**只属于「当前会话」范围**。
+       *
+       * 「仅本条 / 自选」不再自动附带 —— 用户只问一句话时，模型不该凭空
+       * 知道他刚才在终端里跑了什么；要带就由他自己「加入本次对话」（那份
+       * 材料在 `buildMessages` 里走同一条路径）。
        */
+      const terminalTail =
+        shouldAttachTerminalTail(scopeAtRequest.prefs.context, scopeAtRequest.prefs.picked) &&
+        workspaceAtRequest
+          ? await manualShellTail(workspaceAtRequest, 120)
+          : "";
+      const messages = buildMessages(promptMessage, scopeAtRequest, ownerMessages);
+      const tailBlock = terminalTailBlock(terminalTail);
+      if (tailBlock) messages.unshift({ role: "system", content: tailBlock });
       /*
-       * 读**当前** store，不用渲染闭包：Prompt Bar 里的模型/强度是在发送那一刻
-       * 才写进 store 的，闭包里拿到的还是上一次的值。
+       * 模型 / 强度 / 预算**全部来自点击发送时的快照**：这里已经经过了
+       * 终端输出等 await，绝不能再读 store（那时可能已经切到 B 或改了模型）。
+       * 后端整轮沿用这份选择；MAX 已由菜单收敛成模型支持的最高档。
        */
-      const providerAtRequest = useExtremeStore.getState().chatPrefs.providerId;
-      const activeProvider = effectiveProvider(providers, providerAtRequest);
-      const activeModelName = activeProvider?.model ?? model ?? "";
-      const modelSetting =
-        useExtremeStore.getState().modelSettings[
-          modelKey(activeProvider?.id ?? providerAtRequest, activeModelName)
-        ] ?? DEFAULT_MODEL_SETTING;
+      const activeProvider = effectiveProvider(providers, selectionAtRequest.providerId);
+      const requestBudget =
+        selectionAtRequest.contextBudget &&
+        (activeProvider?.budgets ?? []).includes(selectionAtRequest.contextBudget)
+          ? selectionAtRequest.contextBudget
+          : null;
 
       await opsApi.aiAgentRun({
         taskId,
         sessionId: sessionAtRequest,
-        server: server ?? "",
+        server: scopeAtRequest.server,
+        // 文件变更按**发起它的对话 / 服务器**归属：切换对话时不会串。
+        serverId: scopeAtRequest.serverId ?? null,
+        workspaceId: scopeAtRequest.workspaceId,
         cwd,
         messages,
         // 锁定界面显示的提供方，确保档位和上下文预算发给该模型。
-        providerId: activeProvider?.id ?? providerAtRequest,
+        providerId: activeProvider?.id ?? selectionAtRequest.providerId,
         // 模型不支持的档位发 null（不猜、不硬塞）。
-        reasoningEffort: effortParam(modelSetting.effort, activeProvider?.efforts ?? []),
-        contextBudget:
-          modelSetting.budget &&
-          (activeProvider?.budgets ?? []).includes(modelSetting.budget)
-            ? modelSetting.budget
-            : null,
-        allowSudo: permission === "full",
+        reasoningEffort: effortParam(
+          selectionAtRequest.effort,
+          activeProvider?.efforts ?? [],
+        ),
+        contextBudget: requestBudget,
+        allowSudo: scopeAtRequest.permission === "full",
         // 完全权限 = 修改范围内不再确认；只查询范围由后端拦下写操作。
-        autoApproveWrites: permission === "full",
+        autoApproveWrites: scopeAtRequest.permission === "full",
         // 续跑同一个 taskId：后端从已知累计继续加，不把之前几轮清零。
         carryUsage: useExtremeStore.getState().taskUsage[taskId]?.cumulative ?? null,
       });
@@ -2350,7 +3368,7 @@ export function ExtremeCoreView() {
          * 标成"状态待核对"，让用户能重新核对或停止。
          */
         setStaleTask(taskId);
-        return;
+        return true;
       }
       // 终态快照里带着最终用量：这是这条任务最后一次归账。
       setTaskUsage(taskId, snapshot.context ?? null);
@@ -2372,7 +3390,8 @@ export function ExtremeCoreView() {
       }
       const currentTask = useExtremeStore.getState().tasks[taskId];
       if (currentTask?.status === "running" || currentTask?.status === "confirming") {
-        applyTerminalSnapshot(snapshot);
+        // 这次是真跑完（事件可能晚到）：允许在窗口收起时提醒一次。
+        applyTerminalSnapshot(snapshot, true);
       }
 
       const visibleReply = stripPanelAction(parseActions(snapshot.content).clean);
@@ -2382,21 +3401,22 @@ export function ExtremeCoreView() {
           text: visibleReply || t("已停止。"),
           model: snapshot.model || undefined,
           local: !visibleReply,
+          // 已经流出一半正文：标清"停止前的内容"，回来时不会以为回复完整。
+          interrupted: visibleReply ? "cancelled" : null,
+          interruptReason: visibleReply ? t("已停止：上面是停止前已经生成的内容。") : null,
         });
-        return;
+        return true;
       }
       if (snapshot.status === "failed") {
         throw new Error(snapshot.error?.trim() || t("执行失败"));
       }
-      // 期间换了对话：这条回答仍写回它自己那条（`patchMessageIn` 按归属落库）。
-      if (!belongsHere()) {
-        // 已不在当前界面：结论写回原对话即可，不必继续动当前 UI。
-        patchMessageIn(workspaceAtRequest, currentReplyId(), {
-          text: visibleReply,
-          model: snapshot.model || undefined,
-        });
-        return;
-      }
+      /*
+       * 期间换了对话：结论仍写回它自己那条，**后续动作也照常推进**。
+       *
+       * 动作链只认 `scopeAtRequest`：附件、连接、计划都是发起那一刻的，
+       * 只有"动界面"的部分才按前台判断。
+       */
+      const visibleHere = belongsHere();
       const reply = { content: snapshot.content, model: snapshot.model, tools: [] };
       /*
        * **解析动作标记**：模型不再让用户"去点某个按钮"，而是在回复里说明
@@ -2409,8 +3429,9 @@ export function ExtremeCoreView() {
        * 先探测目标是否真实存在，再把这句话从气泡里剥掉（只留人话）。
        */
       const panelRequest = parsePanelAction(reply.content);
-      if (panelRequest && belongsHere()) {
-        const notice = await openPanelFromAction(panelRequest);
+      if (panelRequest && stillCurrent()) {
+        // 归属：这次运行的对话与连接。切走了就记在它自己名下，回来再开。
+        const notice = await openPanelFromAction(panelRequest, workspaceAtRequest, sessionAtRequest);
         if (notice) {
           pushMessageTo(workspaceAtRequest, {
             id: `msg-${crypto.randomUUID()}`,
@@ -2420,7 +3441,7 @@ export function ExtremeCoreView() {
           });
         }
       } else if (
-        belongsHere() &&
+        stillCurrent() &&
         isNew &&
         depth === 0 &&
         !text.startsWith("【") &&
@@ -2430,7 +3451,7 @@ export function ExtremeCoreView() {
          * 模型没给面板动作，但用户的话明确是在要日志：**自己去服务器上找**，
          * 找到唯一来源就打开，多个就只问一句。
          */
-        const resolved = await openLogFromIntent(text);
+        const resolved = await openLogFromIntent(text, workspaceAtRequest, sessionAtRequest);
         if (resolved.question) {
           pushMessageTo(workspaceAtRequest, {
             id: `msg-${crypto.randomUUID()}`,
@@ -2452,7 +3473,7 @@ export function ExtremeCoreView() {
         model: reply.model,
         tools: reply.tools,
       });
-      setModel(reply.model);
+      if (visibleHere) setModel(reply.model);
 
       /*
        * 动作链最多两跳：执行 → 把**真实回执**交给模型 → 它继续说明或收尾。
@@ -2460,30 +3481,37 @@ export function ExtremeCoreView() {
        * 回执走 `feedToolReport`，而不是 `ask("...")`：后者是"用户又发了一句"，
        * 会 push 一条用户气泡、清空草稿、把会话标题改成回执 —— 那正是之前的
        * bug（工具结果被渲染成蓝色气泡）。
+       *
+       * 执行器只认 `scopeAtRequest`（附件 / 连接 / 计划都是发起时的）：
+       * A 切到后台也继续跑，不会拿 B 的状态去替 A 上传。
        */
       if (actions.length > 0 && depth < 2) {
         const receipts: string[] = [];
         for (const action of actions) {
-          if (!belongsHere()) break;
           const runner = execRef.current;
           if (!runner) break;
+          let result: ActionResult;
           if (action.kind === "upload") {
-            receipts.push(await runner.upload(taskId));
+            result = await runner.upload(scopeAtRequest, taskId);
           } else if (action.kind === "plan") {
             // 用这条回复的 id 当来源：任务卡就挂在这段答复下面。
-            receipts.push(await runner.plan(action.service, currentReplyId()));
+            result = await runner.plan(scopeAtRequest, action.service, currentReplyId());
           } else if (action.kind === "start") {
-            receipts.push(await runner.start(taskId));
-          } else if (action.kind === "terminal") {
-            receipts.push(await runner.terminal(action.command));
+            result = await runner.start(scopeAtRequest, taskId);
+          } else {
+            result = await runner.terminal(scopeAtRequest, action.command);
           }
+          receipts.push(result.receipt);
+          // 归属失效：这一步已暂停并把原因写回原对话，后面的动作不能抢跑。
+          if (result.paused) break;
         }
         const real = receipts.filter((line) => line.trim().length > 0);
-        if (real.length > 0 && belongsHere()) {
+        if (real.length > 0) {
           // 用**实际返回**作为下一轮输入，模型据此继续或收尾。
-          await feedToolReport(userMessage, real.join("\n"), depth + 1, taskId);
+          await feedToolReport(scopeAtRequest, userMessage, real.join("\n"), depth + 1, taskId);
         }
       }
+      return true;
     } catch (cause) {
       const error = toAppError(cause);
       /*
@@ -2501,11 +3529,43 @@ export function ExtremeCoreView() {
         upsertTask(failed);
         saveAgentTask(failed, true);
       }
-      // 失败时移除空占位，错误条与已发出的用户消息都保留。
-      removeMessageIn(workspaceAtRequest, currentReplyId());
-      if (!belongsHere()) return;
-      setAskError(error.detail ? `${error.message} · ${error.detail}` : error.message);
-      setRetryMessage(userMessage);
+      const reason = error.detail ? `${error.message} · ${error.detail}` : error.message;
+      /*
+       * **只移除空占位**。
+       *
+       * 用户可能已经看到一半正文：把它删掉等于"回答凭空消失"。保留正文、
+       * 标成「回复中断」，并给出重试入口；切走再回来仍然是这个状态。
+       */
+      const replyId = currentReplyId();
+      const latest = useExtremeStore.getState();
+      const ownerMessages =
+        latest.workspaceId === workspaceAtRequest
+          ? latest.messages
+          : latest.workspaces.find((entry) => entry.id === workspaceAtRequest)?.messages ?? [];
+      const reply = ownerMessages.find((message) => message.id === replyId);
+      if (reply && reply.text.trim()) {
+        patchMessageIn(workspaceAtRequest, replyId, {
+          interrupted: "failed",
+          interruptReason: reason,
+        });
+      } else {
+        removeMessageIn(workspaceAtRequest, replyId);
+        // 后台失败：把原因写回原对话，切回来能看见发生了什么。
+        if (!belongsHere()) {
+          pushMessageTo(workspaceAtRequest, {
+            id: `msg-${crypto.randomUUID()}`,
+            role: "assistant",
+            local: true,
+            text: t("这次没有开始：{{reason}}", { reason }),
+          });
+        }
+      }
+      if (belongsHere()) {
+        setAskError(reason);
+        setRetryMessage(userMessage);
+      }
+      // 用户消息已经发出去、失败原因也已落库：队列项不需要再重投。
+      return true;
     } finally {
       /*
        * **只清自己那一条**。
@@ -2520,7 +3580,11 @@ export function ExtremeCoreView() {
       textBuffers.current.delete(taskId);
       // 请求已结束（失败 / 取消 / 已收尾）：不再留着轮询快照的定时器。
       forgetAgentWait(taskId);
-      if (depth === 0) inFlightRef.current.delete(workspaceAtRequest);
+      if (depth === 0) {
+        inFlightRef.current.delete(workspaceAtRequest);
+        // 唤醒「完成后发送」：这条对话的队列现在可以继续了。
+        setRunEpoch((value) => value + 1);
+      }
       if (belongsHere() && taskIdRef.current === taskId) {
         setAsking(false);
         taskIdRef.current = null;
@@ -2529,13 +3593,66 @@ export function ExtremeCoreView() {
   };
 
   /**
+   * 「完成后发送」的派发。
+   *
+   * 放在 effect 里而不是终态事件里：事件只更新 store，等 React 把 `tasks` /
+   * `asking` 渲染成空闲态再发，新任务才不会立刻被判成"仍在执行"。
+   *
+   * **按对话各自判断**：A 在跑时 B 的队列照样能发；用户切到别处也继续。
+   */
+  const askRef = useRef<typeof ask | null>(null);
+  askRef.current = ask;
+  /** 已经派发出去、还在走的队列项：effect 重跑也不能重复提交。 */
+  const dispatchingRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!active) return;
+    const state = useExtremeStore.getState();
+    const owners = [...new Set(state.queuedSends.map((item) => item.workspaceId))];
+    for (const owner of owners) {
+      const item = nextSend(state.queuedSends, owner);
+      if (!item || dispatchingRef.current.has(item.id)) continue;
+      const busy = Object.values(state.tasks).some(
+        (task) =>
+          task.workspaceId === owner &&
+          (task.status === "running" ||
+            task.status === "confirming" ||
+            task.status === "waiting"),
+      );
+      // 跑着的对话先等它自己结束；`inFlightRef` 覆盖"ask 在飞但卡片还没落"的窗口。
+      if (busy || inFlightRef.current.has(owner)) continue;
+      if (state.workspaceId === owner && asking) continue;
+      dispatchingRef.current.add(item.id);
+      void (async () => {
+        try {
+          const accepted = await askRef.current?.(item.text, 0, undefined, {
+            queued: item,
+            // 一受理就出队：之后的等待属于任务本身，不再是"待发送"。
+            onAccepted: () => dropSend(item.id),
+          });
+          if (accepted) return;
+          /*
+           * 没受理（断连 / 这条对话已经不可用）：**保留**队列项并写明原因。
+           * 静默丢掉等于用户排的那句话凭空消失。
+           */
+          failSend(item.id, t("这条消息没有发出：检查连接后可以重试。"));
+        } finally {
+          dispatchingRef.current.delete(item.id);
+        }
+      })();
+    }
+  }, [active, asking, queuedSends, runEpoch, tasks, connections, dropSend, failSend, t]);
+
+  /**
    * **工具执行结果 → 模型**（独立入口，和"用户发消息"分开）。
    *
    * 只把回执接在同一轮请求后面，让模型继续处理：不 push 用户气泡、不动草稿、
    * 不改会话标题、不跑意图路由。传**消息对象**而不是字符串，`ask` 里"新消息"
    * 分支（push / 清草稿 / 标题）自然不会命中。
+   *
+   * `scope` 保证续跑仍然落在**发起它的那条对话与连接**上（A 在后台也一样）。
    */
   const feedToolReport = async (
+    scope: ActionScope,
     source: ExtremeMessage,
     report: string,
     depth: number,
@@ -2543,7 +3660,10 @@ export function ExtremeCoreView() {
   ): Promise<void> => {
     if (!report.trim()) return;
     // 复用同一个 taskId：回执、卡片、操作链都还是那一件事。
-    await ask({ ...source, toolReport: report }, depth, undefined, { taskId });
+    await ask({ ...source, toolReport: report }, depth, undefined, {
+      taskId,
+      workspaceId: scope.workspaceId,
+    });
   };
 
   /**
@@ -2553,37 +3673,128 @@ export function ExtremeCoreView() {
    * `askSeqRef` 丢弃。取消后草稿与已发出的消息都保留。
    */
   /**
+   * 后端已经没有这条运行（应用重启 / 记录清理 / 循环异常退出）。
+   *
+   * 不会再有终态事件到达，界面**必须自己收敛**，否则会永远停在"执行中"或
+   * "正在停止"：发不出去，也停不下来。
+   */
+  const settleStoppedLocally = useCallback(
+    (taskId: string, reason?: string) => {
+      setStoppingIds((current) => {
+        if (!current.has(taskId)) return current;
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
+      setStopOverdueId((current) => (current === taskId ? null : current));
+      applyTerminalSnapshot(
+        {
+          taskId,
+          status: "cancelled",
+          model: "",
+          content: "",
+          error: reason ?? null,
+          cwd: "",
+          server: "",
+          sessionId: "",
+          steps: [],
+          updatedAt: Date.now(),
+        },
+        false,
+      );
+    },
+    [applyTerminalSnapshot],
+  );
+
+  /**
    * 停止（协作式，两阶段）。
    *
    * 第一阶段只发取消请示；界面显示"正在停止"，**等后端终态事件**才变"已停止"。
-   * `taskIdRef` 先留着：终态事件要凭它把这条运行的 asking / stopping 一起收掉。
+   * 停止请求是幂等的，重复点击只会再问一次后端 —— 以前这里用 `stopping` 拦，
+   * 用户看到的是"点了没反应"。
    */
   const cancelAsk = async () => {
     const state = useExtremeStore.getState();
     const taskId = staleTask ?? taskIdRef.current ?? activeTask?.id;
     const task = taskId ? state.tasks[taskId] : undefined;
-    if (!taskId || !task || task.workspaceId !== state.workspaceId || stoppingIds.has(taskId)) return;
-    if (task.status !== "running" && task.status !== "confirming") return;
+    if (!taskId) return;
+    // 归属别的对话 / 已经结束：没有可停的运行，把界面残留收干净即可。
+    if (!task) {
+      settleStoppedLocally(taskId);
+      return;
+    }
+    if (task.workspaceId !== state.workspaceId) return;
+    if (task.status !== "running" && task.status !== "confirming") {
+      settleStoppedLocally(taskId);
+      return;
+    }
     taskIdRef.current = taskId;
     setStoppingIds((current) => new Set(current).add(taskId));
+    setStopOverdueId(null);
     setAskError(null);
     setNotice(null);
     try {
-      if (await opsApi.aiChatCancel(taskId)) return;
-      const snapshot = await opsApi.aiAgentSnapshot(taskId);
-      if (snapshot && applyTerminalSnapshot(snapshot)) return;
+      /*
+       * 先走与后端共用的取消令牌（`ai_chat_cancel`）：**它返回成功才是"已送达"**。
+       * 没送达就不能进入"正在停止"，否则又是一个停不下来的状态。
+       */
+      const accepted = await opsApi.aiChatCancel(taskId);
+      if (!accepted) {
+        // 没有令牌时再看是否还有 Agent 句柄：两条路都关掉才算真的没有。
+        const agentAccepted = await opsApi.aiAgentCancel(taskId).catch(() => false);
+        if (!agentAccepted) {
+          settleStoppedLocally(taskId, t("后端已经没有这条运行。"));
+          setNotice(t("这次运行已经不在后端：已按「已停止」收尾。"));
+          return;
+        }
+      }
     } catch {
-      // 保留任务状态，允许用户重新停止。
-    }
-    setStoppingIds((current) => {
-      const next = new Set(current);
-      next.delete(taskId);
-      return next;
-    });
-    const latest = useExtremeStore.getState();
-    const status = latest.tasks[taskId]?.status;
-    if (latest.workspaceId === state.workspaceId && (status === "running" || status === "confirming")) {
+      // 没送达：撤回"正在停止"，保留任务状态，允许用户重新点。
+      setStoppingIds((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
       setNotice(t("停止请求未能确认，任务可能仍在运行。可以再次尝试停止。"));
+      return;
+    }
+    /*
+     * 送达了：先查一次快照。后端已经没有这条运行（应用重启 / 记录清理）时
+     * 不会再有终态事件，必须当场收敛，不能等一个永远不来的事件。
+     */
+    try {
+      const snapshot = await opsApi.aiAgentSnapshot(taskId);
+      if (!snapshot) {
+        settleStoppedLocally(taskId, t("后端已经没有这条运行。"));
+        setNotice(t("这次运行已经不在后端：已按「已停止」收尾。"));
+        return;
+      }
+      if (applyTerminalSnapshot(snapshot, true)) return;
+    } catch {
+      // 查询失败不影响等待：事件仍是主通道，后台仍会推终态。
+    }
+    // 还在跑（例如一条命令要跑完才停）：保持"正在停止"，超时后由界面给出
+    // 「强制结束」（见 `stoppingSinceRef` 的定时检查）。
+  };
+
+  /**
+   * 强制结束：用户明确选择不再等后端确认。
+   *
+   * 只停止跟踪，撤回不了已经发到服务器上的命令 —— 提示必须把这一点说清。
+   */
+  const forceStop = async () => {
+    const taskId = stopOverdueId ?? staleTask ?? taskIdRef.current ?? activeTask?.id;
+    if (!taskId) return;
+    setNotice(null);
+    try {
+      const snapshot = await opsApi.aiAgentAbandon(taskId);
+      if (snapshot) applyTerminalSnapshot(snapshot, false);
+      else settleStoppedLocally(taskId, t("后端已经没有这条运行。"));
+      setNotice(
+        t("已强制结束这次运行：后端不再跟踪它。已经发到服务器上的命令可能仍在执行，请先核对。"),
+      );
+    } catch (cause) {
+      setNotice(toAppError(cause).message);
     }
   };
 
@@ -2619,42 +3830,36 @@ export function ExtremeCoreView() {
   );
 
   /**
-   * 对挂起中的写 / 危险操作表态。
+   * 对**指定**那条挂起中的写 / 危险操作表态。
+   *
+   * 按 `taskId + callId` 定位，所以：
+   * * 通知里点 A 的处理完，B 的仍然在；
+   * * 重复点同一条不会重复提交（`sending` / `closed` 直接忽略）。
    *
    * 拒绝也要回后端：模型拿到"用户拒绝"后换方案，而不是一直等在那里。
    */
-  const decideApproval = useCallback(
-    async (allow: boolean, callId?: string) => {
-      const current = approval;
-      if (!current || approvalBusy) return;
-      // 通知里点的是"那一条"：不是当前这条就不处理（防止跨会话误批）。
-      if (callId && callId !== current.callId) return;
-      const ownerId = useExtremeStore.getState().workspaceId;
-      // 没有当前对话就没有"回执放到哪"这回事（正常流程不会发生）。
+  const decideApprovalById = useCallback(
+    async (allow: boolean, callId: string, taskId: string) => {
+      const key = approvalKeyOf(taskId, callId);
+      const entry = approvalEntriesRef.current[key];
+      if (!entry) return;
+      // 已经在提交 / 已表态：通知与卡片重复点击都挡在这里。
+      if (entry.phase === "sending" || entry.closed) return;
+      const ownerId =
+        useExtremeStore.getState().tasks[taskId]?.workspaceId ?? useExtremeStore.getState().workspaceId;
       if (!ownerId) return;
-      const stillHere = () => useExtremeStore.getState().workspaceId === ownerId;
-      setApprovalBusy(true);
-      const base = {
-        taskId: current.taskId,
-        callId: current.callId,
-        allow,
-        phase: "sending" as const,
-        failure: null,
-      };
-      approvalOutcomeRef.current = base;
-      setApprovalOutcome(base);
+      updateApprovalEntry(key, { phase: "sending", failure: null });
       try {
-        const accepted = await opsApi.aiAgentApprove(current.taskId, current.callId, allow);
-        if (!stillHere()) return;
+        const accepted = await opsApi.aiAgentApprove(taskId, callId, allow);
         if (!accepted) {
           /*
            * 后端明确说"没有这个等待者"：这一步已经结束/超时，按钮留着也没用。
            * 这不是"没送达"，重试也不会成功，所以直接收起并说明。
            */
-          approvalOutcomeRef.current = null;
-          setApprovalOutcome(null);
-          setApproval((value) => (value?.callId === current.callId ? null : value));
-          setNotice(t("这一步已经结束或超时，确认没有生效。"));
+          dropApprovals((item) => approvalKeyOf(item.approval.taskId, item.approval.callId) === key);
+          if (useExtremeStore.getState().workspaceId === ownerId) {
+            setNotice(t("这一步已经结束或超时，确认没有生效。"));
+          }
           return;
         }
         /*
@@ -2662,13 +3867,12 @@ export function ExtremeCoreView() {
          * 操作折成一行历史记录（"已允许执行：… · 正在执行"），进度看任务卡与
          * 右栏「计划」；执行失败由执行器事件回写，不靠这条横幅。
          */
-        foldedApprovals.current.add(current.callId);
         const what =
-          current.summary?.trim() ||
-          current.command.split("\n")[0]?.trim() ||
-          current.path ||
+          entry.approval.summary?.trim() ||
+          entry.approval.command.split("\n")[0]?.trim() ||
+          entry.approval.path ||
           "";
-        pushMessage({
+        pushMessageTo(ownerId, {
           id: `msg-${crypto.randomUUID()}`,
           role: "assistant",
           local: true,
@@ -2677,85 +3881,29 @@ export function ExtremeCoreView() {
           }`,
         });
         // 回执留在原位；后续正文另起一条回复，结论才会写在回执下面。
-        startReplyAfterApproval(current.taskId, ownerId);
+        startReplyAfterApproval(taskId, ownerId);
         /*
          * 后端收下了决定：把结果状态从"正在提交"推进到最终态。
          *
          * 通知窗口靠它把那条推送更新成"已拒绝 · 此步骤未执行"；停在
          * `sending` 的话通知会一直显示"正在提交…"，用户不知道到底生效了没有。
          */
-        const settled = {
-          ...base,
-          phase: allow ? ("allowed" as const) : ("denied" as const),
-        };
-        approvalOutcomeRef.current = settled;
-        setApprovalOutcome(settled);
-        /*
-         * 只收起**卡片**，保留 `approvalOutcome`：通知窗口还要用它把那条推送
-         * 更新成"已拒绝 · 此步骤未执行"。卡片与结果状态分开，各管各的。
-         */
-        setApprovalClosed(current.callId);
+        updateApprovalEntry(key, {
+          phase: allow ? "allowed" : "denied",
+          closed: true,
+          failure: null,
+        });
       } catch (cause) {
         /*
          * **请求没送到后端**：这一步仍在等确认。保留按钮，把原因写在条上，
          * 用户可以直接再点一次。
          */
-        if (!stillHere()) return;
-        const failed = {
-          ...base,
-          phase: "failed" as const,
-          failure: toAppError(cause).message,
-        };
-        approvalOutcomeRef.current = failed;
-        setApprovalOutcome(failed);
-      } finally {
-        if (stillHere()) setApprovalBusy(false);
+        updateApprovalEntry(key, { phase: "failed", failure: toAppError(cause).message });
       }
     },
-    [approval, approvalBusy, pushMessage, setNotice, startReplyAfterApproval, t],
+    [dropApprovals, pushMessageTo, setNotice, startReplyAfterApproval, t, updateApprovalEntry],
   );
-  decideApprovalRef.current = decideApproval;
-
-  /**
-   * 把已处理的确认**折成一行历史记录**，并收起内联条。
-   *
-   * 用户气泡只放他自己说的话；"已允许 / 已拒绝"是操作记录，作为一条本机提示
-   * 留在对话里，后续回看时还能对上计划里的那一步。
-   */
-  const settleApproval = useCallback((force = false) => {
-    const outcome = approvalOutcomeRef.current;
-    /*
-     * 还在提交 / 没送达：不能因为"下一条消息"把卡片提前收起 —— 用户会以为
-     * 已经处理完了，实际后端还在等。任务终态由调用方传 `force`。
-     */
-    if (!force && outcome && outcome.phase !== "allowed" && outcome.phase !== "denied") return;
-    const current = pendingApproval;
-    const sameOne = outcome && current && outcome.callId === current.callId;
-    if (sameOne && !foldedApprovals.current.has(outcome.callId)) {
-      foldedApprovals.current.add(outcome.callId);
-      const step = useExtremeStore
-        .getState()
-        .tasks[outcome.taskId]?.steps.find((item) => item.id === `agent-${current.stepIndex}`);
-      const detail = outcome.allow
-        ? step?.state === "success"
-          ? t("已完成")
-          : step?.state === "failed"
-            ? t("执行失败")
-            : t("正在执行")
-        : t("此步骤未执行");
-      const what =
-        current.summary?.trim() || current.command.split("\n")[0]?.trim() || current.path || "";
-      pushMessage({
-        id: `msg-${crypto.randomUUID()}`,
-        role: "assistant",
-        local: true,
-        text: `${outcome.allow ? t("已允许执行") : t("已拒绝执行")}：${what} · ${detail}`,
-      });
-    }
-    approvalOutcomeRef.current = null;
-    setApprovalOutcome(null);
-    setApproval((value) => (sameOne ? null : value));
-  }, [pendingApproval, pushMessage, t]);
+  decideApprovalRef.current = decideApprovalById;
 
   /**
    * 「状态待核对」时重新问一次后端。
@@ -2792,6 +3940,7 @@ export function ExtremeCoreView() {
           status: snapshot.status,
           error: snapshot.status === "failed" ? snapshot.error : undefined,
           cwd: snapshot.cwd,
+          outcome: snapshot.outcome ?? null,
           existing,
           t,
         });
@@ -2808,16 +3957,113 @@ export function ExtremeCoreView() {
         }
       }
     },
-    [applyTerminalSnapshot, saveAgentTask, setNotice, t, upsertTask],
+    [applyTerminalSnapshot, saveAgentTask, selectionFromStore, setNotice, t, upsertTask],
+  );
+
+  /**
+   * 从检查点恢复一条被中断 / 失败的任务。
+   *
+   * 后端会先让模型只读核对已完成的步骤，再从第一条未完成处继续；这里只负责
+   * 用**当前会话**与当前模型设置重新启动，并把事件接回同一张任务卡。
+   */
+  const resumeTask = useCallback(
+    async (task: TaskCardModel) => {
+      if (!sessionId) {
+        setNotice(t("服务器未连接：重新连接后才能恢复任务。"));
+        return;
+      }
+      if (asking) {
+        setNotice(t("任务仍在执行：等它结束或点「停止」后再恢复。"));
+        return;
+      }
+      pushMessage({
+        id: `msg-${crypto.randomUUID()}`,
+        role: "assistant",
+        local: true,
+        text: t("从检查点继续：先只读核对已完成的步骤，再继续未完成的部分。"),
+      });
+      setAsking(true);
+      taskIdRef.current = task.id;
+      const workspaceAtRequest = useExtremeStore.getState().workspaceId ?? "";
+      if (workspaceAtRequest) inFlightRef.current.add(workspaceAtRequest);
+      const startedAt = Date.now();
+      const finished = waitForAgentRun(task.id, {
+        since: startedAt,
+        onSnapshot: (snap) => {
+          if (snap.context) setTaskUsage(snap.taskId, snap.context);
+        },
+      });
+      try {
+        // 这条任务启动时锁过设置就沿用；没有则用当前 workspace 的设置。
+        const selection = taskSelectionsRef.current.get(task.id) ?? selectionFromStore();
+        taskSelectionsRef.current.set(task.id, selection);
+        const activeProvider = effectiveProvider(providers, selection.providerId);
+        const resumeBudget =
+          selection.contextBudget &&
+          (activeProvider?.budgets ?? []).includes(selection.contextBudget)
+            ? selection.contextBudget
+            : null;
+        await opsApi.aiAgentResume({
+          taskId: task.id,
+          // 重连后的会话：记录里的那个 session 只用于关联。
+          sessionId,
+          // 继续执行时的新变更仍挂回原来那条对话 / 服务器。
+          serverId: task.serverId ?? serverId ?? null,
+          workspaceId: task.workspaceId ?? workspaceId,
+          providerId: activeProvider?.id ?? selection.providerId,
+          reasoningEffort: effortParam(selection.effort, activeProvider?.efforts ?? []),
+          contextBudget: resumeBudget,
+          allowSudo: permission === "full",
+          autoApproveWrites: permission === "full",
+        });
+        const snapshot = await finished;
+        if (!snapshot) {
+          // 事件丢了不代表任务失败：标成待核对，不假装完成。
+          setStaleTask(task.id);
+          return;
+        }
+        setTaskUsage(task.id, snapshot.context ?? null);
+      } catch (cause) {
+        setNotice(toAppError(cause).message);
+      } finally {
+        forgetAgentWait(task.id);
+        if (workspaceAtRequest) {
+          inFlightRef.current.delete(workspaceAtRequest);
+          setRunEpoch((value) => value + 1);
+        }
+        if (useExtremeStore.getState().workspaceId === workspaceAtRequest) setAsking(false);
+        if (taskIdRef.current === task.id) taskIdRef.current = null;
+      }
+    },
+    [
+      asking,
+      effectiveProvider,
+      model,
+      permission,
+      providers,
+      pushMessage,
+      sessionId,
+      setNotice,
+      setStaleTask,
+      setTaskUsage,
+      t,
+    ],
   );
 
   /** 按钮触发的用户动作：补一条消息，卡片才有"发起它的那句话"可挂。 */
-  const pushUserMessage = useCallback((text: string): ExtremeMessage => {
+  const pushUserMessageTo = useCallback((workspaceId: string, text: string): ExtremeMessage => {
     const message: ExtremeMessage = { id: `msg-${crypto.randomUUID()}`, role: "user", text };
-    useExtremeStore.getState().pushMessage(message);
-    setDraft("");
+    if (!workspaceId) return message;
+    useExtremeStore.getState().pushMessageTo(workspaceId, message);
+    // 只有原对话在前台时才动输入框。
+    if (useExtremeStore.getState().workspaceId === workspaceId) setDraft("");
     return message;
   }, []);
+  const pushUserMessage = useCallback(
+    (text: string): ExtremeMessage =>
+      pushUserMessageTo(useExtremeStore.getState().workspaceId ?? "", text),
+    [pushUserMessageTo],
+  );
 
   /**
    * 落一版计划。
@@ -2829,6 +4075,7 @@ export function ExtremeCoreView() {
    */
   const commitPlan = useCallback(
     (
+      scope: ActionScope,
       context: TaskContext,
       planKind: PlanKind | null,
       built: { steps: DeployStep[]; result: string },
@@ -2839,10 +4086,11 @@ export function ExtremeCoreView() {
           ? withPlan(context, planKind)
           : { ...context, phase: "confirming" }
         : { ...context, phase: "waiting" };
+      const ownerMessages =
+        useExtremeStore.getState().workspaces.find((entry) => entry.id === scope.workspaceId)
+          ?.messages ?? [];
       const goal =
-        useExtremeStore
-          .getState()
-          .messages.find((message) => message.id === planned.originMessageId)?.text ??
+        ownerMessages.find((message) => message.id === planned.originMessageId)?.text ??
         planned.verifiedTarget?.root ??
         t("按附件生成部署计划");
       upsertTask(
@@ -2851,6 +4099,9 @@ export function ExtremeCoreView() {
           plan: built.steps,
           server: planned.server,
           sessionId: planned.sessionId,
+          // 归属：计划属于发起它的那条对话，切走也不会挂到别人身上。
+          workspaceId: scope.workspaceId,
+          serverId: scope.serverId,
           originMessageId: planned.originMessageId,
           goal,
           status: ready ? "confirming" : "waiting",
@@ -2858,19 +4109,34 @@ export function ExtremeCoreView() {
         }),
       );
       // 与卡片写入同处：任务只挂在发起它的那条消息下面。
-      patchMessage(planned.originMessageId, { taskId: planned.taskId });
+      patchMessageIn(scope.workspaceId, planned.originMessageId, { taskId: planned.taskId });
       // 生成计划也是"平台替用户做的一步"：同样留一行执行结果（不另发气泡）。
       upsertReport(planned.taskId, planReport(t, { result: built.result, ready }));
       // 新计划（或重算过的计划）一律视为"未确认"：上一次的同意不能顺延。
       userConfirmedPlansRef.current.delete(planned.taskId);
-      planTaskIdRef.current = planned.taskId;
-      useExtremeStore.setState({ planTaskId: planned.taskId });
-      setPlan(ready ? built.steps : null);
-      setPlanSession(ready ? planned.sessionId : null);
+      // 快照跟着更新：同一轮里的 `[[start]]` 要用这版计划。
+      scope.plan = ready ? built.steps : null;
+      scope.planSession = ready ? planned.sessionId : null;
+      scope.planTaskId = planned.taskId;
+      if (scopeIsForeground(scope)) {
+        planTaskIdRef.current = planned.taskId;
+        useExtremeStore.setState({ planTaskId: planned.taskId });
+        setPlan(ready ? built.steps : null);
+        setPlanSession(ready ? planned.sessionId : null);
+        if (ready) {
+          // 计划就是右栏「计划」标签的内容：生成后直接展开给人看。
+          openPaneTab("plan");
+        }
+      } else {
+        // 后台生成：写回它自己那条，切回来就能看到这版计划。
+        patchWorkspaceContext(scope.workspaceId, {
+          plan: ready ? built.steps : null,
+          planSession: ready ? planned.sessionId : null,
+          planTaskId: planned.taskId,
+        });
+      }
       if (ready) {
-        // 计划就是右栏「计划」标签的内容：生成后直接展开给人看。
-        openPaneTab("plan");
-        pushMessage({
+        pushMessageTo(scope.workspaceId, {
           id: `msg-${crypto.randomUUID()}`,
           role: "assistant",
           local: true,
@@ -2883,8 +4149,10 @@ export function ExtremeCoreView() {
     },
     [
       openPaneTab,
-      patchMessage,
-      pushMessage,
+      patchMessageIn,
+      patchWorkspaceContext,
+      pushMessageTo,
+      scopeIsForeground,
       setPlan,
       setPlanSession,
       t,
@@ -2901,8 +4169,12 @@ export function ExtremeCoreView() {
    * 检查」，而不是硬编一套 Compose 步骤。
    */
   const generatePlan = useCallback(
-    async (input: { originMessageId: string; taskId?: string }) => {
-      if (!sessionId) return;
+    async (scope: ActionScope, input: { originMessageId: string; taskId?: string }) => {
+      const blocked = scopeBlocked(scope);
+      if (blocked) {
+        pauseAction(scope, blocked);
+        return;
+      }
       /*
        * 同一个任务再来一次（「开始吧」/ 卡片上的「重新检查」）时沿用**原来那条**
        * 消息：卡片的归属不变，不会在两句消息下面各渲染一次。
@@ -2913,26 +4185,30 @@ export function ExtremeCoreView() {
       const context = createTaskContext({
         taskId: input.taskId ?? `task-${Date.now()}`,
         originMessageId: existing?.originMessageId ?? input.originMessageId,
-        server: server ?? t("未绑定服务器"),
-        sessionId,
-        attachmentIds: attachments.map((item) => item.id),
+        server: scope.server || t("未绑定服务器"),
+        sessionId: scope.sessionId,
+        attachmentIds: scope.attachments.map((item) => item.id),
       });
-      const zip = attachments.find(
+      const zip = scope.attachments.find(
         (item) =>
           /\.zip$/i.test(item.name) &&
           Boolean(item.remotePath) &&
           (item.uploadState === "uploaded" || item.uploadState === "deployed"),
       );
       // 没有 ZIP 在服务器上时这个探测帮不上忙：不必为一次点击去打扰服务器。
-      const staticTarget = zip?.remotePath ? await detectStaticSite(sessionId) : null;
-      // 探测期间换了服务器：这版计划属于上一台，不能落到这一台的 store 上。
-      if (useExtremeStore.getState().sessionId !== sessionId) return;
+      const staticTarget = zip?.remotePath ? await detectStaticSite(scope.sessionId) : null;
+      // 探测期间归属失效（换服务器 / 断连）：这版计划不能落到别处。
+      const blockedAfterProbe = scopeBlocked(scope);
+      if (blockedAfterProbe) {
+        pauseAction(scope, blockedAfterProbe);
+        return;
+      }
       const facts: PlanFacts = {
         staticSiteOnServer: staticTarget !== null,
         distZipOnServer: Boolean(zip?.remotePath),
         // 「服务器上已有 Compose 项目」只由「更新现有服务」入口确认（那里选定了服务）。
         composeProjectOnServer: false,
-        composeInAttachments: attachments.some((item) =>
+        composeInAttachments: scope.attachments.some((item) =>
           /(^|\/)(docker-)?compose\.ya?ml$/i.test(item.path ?? item.name),
         ),
       };
@@ -2940,7 +4216,7 @@ export function ExtremeCoreView() {
 
       if (kind === "static-update" && staticTarget?.root && zip?.remotePath) {
         // 已定位到 Nginx 静态站点：替换文件即可，**不重启共享 Nginx**。
-        commitPlan({ ...context, verifiedTarget: staticTarget }, "static-update", {
+        commitPlan(scope, { ...context, verifiedTarget: staticTarget }, "static-update", {
           steps: buildStaticUpdatePlan({ root: staticTarget.root, zipPath: zip.remotePath }),
           result: t("静态站点更新：{{root}}（不重启共享 Nginx）", { root: staticTarget.root }),
         });
@@ -2948,8 +4224,8 @@ export function ExtremeCoreView() {
       }
 
       if (kind === "compose-create") {
-        const built = buildDeployPlan(attachments);
-        commitPlan(context, "compose-create", {
+        const built = buildDeployPlan(scope.attachments);
+        commitPlan(scope, context, "compose-create", {
           steps: built.plan,
           result: built.blocked ?? t("等待确认后执行"),
         });
@@ -2957,29 +4233,29 @@ export function ExtremeCoreView() {
       }
 
       const reason = !zip ? t("服务器上还没有 ZIP") : t("没有在服务器上定位到静态站点");
-      commitPlan(context, null, {
+      commitPlan(scope, context, null, {
         steps: [],
         result: t("等待补充信息：{{reason}}", { reason }),
       });
     },
-    [attachments, commitPlan, server, sessionId, t],
+    [commitPlan, pauseAction, scopeBlocked, t],
   );
 
-  const resolveRemotePath = (path: string): string | null => {
+  const resolveRemotePath = (path: string, home: string | null): string | null => {
     if (!path.startsWith("~/")) return path;
-    const home = preflight?.home ?? null;
     return home ? `${home}/${path.slice(2)}` : null;
   };
 
   const runStep = useCallback(
     async (
+      scope: ActionScope,
       step: DeployStep,
     ): Promise<{ ok: boolean; detail: string; stdout: string; stderr: string; exitCode: number | null }> => {
-      if (!sessionId) {
+      if (!scope.sessionId) {
         return { ok: false, detail: t("会话已断开"), stdout: "", stderr: "", exitCode: null };
       }
       if (step.kind === "upload") {
-        const target = step.remotePath ? resolveRemotePath(step.remotePath) : null;
+        const target = step.remotePath ? resolveRemotePath(step.remotePath, scope.home) : null;
         if (!target) {
           return {
             ok: false,
@@ -3010,7 +4286,7 @@ export function ExtremeCoreView() {
           };
         }
         const dir = target.slice(0, target.lastIndexOf("/"));
-        const mkdir = await opsApi.sshExec(sessionId, `mkdir -p '${dir.replace(/'/g, `'\\''`)}'`, 15_000);
+        const mkdir = await opsApi.sshExec(scope.sessionId, `mkdir -p '${dir.replace(/'/g, `'\\''`)}'`, 15_000);
         if (mkdir.exit_code !== 0) {
           return {
             ok: false,
@@ -3029,14 +4305,14 @@ export function ExtremeCoreView() {
          */
         const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
         const exists = await opsApi.sshExec(
-          sessionId,
+          scope.sessionId,
           `test -e ${quote(target)} && echo yes || echo no`,
           10_000,
         );
         if (exists.stdout.trim() === "yes") {
           const backup = `${target}.bak-${Date.now()}`;
           const copy = await opsApi.sshExec(
-            sessionId,
+            scope.sessionId,
             `cp -a ${quote(target)} ${quote(backup)}`,
             30_000,
           );
@@ -3067,13 +4343,13 @@ export function ExtremeCoreView() {
         let copied = false;
         if (step.sourcePath) {
           const probe = await opsApi.sshExec(
-            sessionId,
+            scope.sessionId,
             `test -e ${quote(step.sourcePath)} && echo yes || echo no`,
             8_000,
           );
           if (probe.stdout.trim() === "yes") {
             const copy = await opsApi.sshExec(
-              sessionId,
+              scope.sessionId,
               `cp -a ${quote(step.sourcePath)} ${quote(target)}`,
               60_000,
             );
@@ -3093,9 +4369,9 @@ export function ExtremeCoreView() {
         if (!copied) {
           if (step.data) {
             // 二进制（图片/字体/jar/归档）走 base64 通道。
-            await opsApi.sftpWriteBytes(sessionId, target, step.data);
+            await opsApi.sftpWriteBytes(scope.sessionId, target, step.data);
           } else if (typeof step.text === "string") {
-            await opsApi.sftpWriteFile(sessionId, target, step.text);
+            await opsApi.sftpWriteFile(scope.sessionId, target, step.text);
           } else {
             return {
               ok: false,
@@ -3110,22 +4386,20 @@ export function ExtremeCoreView() {
          * 上传成功才回填服务器路径：附件 chip 会显示 ✓，后续对话也能准确说
          * "这个文件已经在服务器上"，而不是一直标着"仅本机附件"。
          */
-        // 切到别的服务器后，附件列表已经是另一台的了：别把 A 的路径写到 B 上。
-        if (useExtremeStore.getState().sessionId === sessionId) {
-          setAttachments((current) =>
-            current.map((entry) =>
-              target.endsWith(`/${entry.path ?? entry.name}`)
-                ? {
-                    ...entry,
-                    remotePath: target,
-                    remoteError: undefined,
-                    // 已经复制到目标目录：状态推到"已部署"，界面能看出这一步走完了。
-                    uploadState: "deployed",
-                  }
-                : entry,
-            ),
-          );
-        }
+        // 回写**发起这条计划的那条对话**，不写当前镜像（可能已经切走）。
+        setAttachmentsIn(scope.workspaceId, (current) =>
+          current.map((entry) =>
+            target.endsWith(`/${entry.path ?? entry.name}`)
+              ? {
+                  ...entry,
+                  remotePath: target,
+                  remoteError: undefined,
+                  // 已经复制到目标目录：状态推到"已部署"，界面能看出这一步走完了。
+                  uploadState: "deployed",
+                }
+              : entry,
+          ),
+        );
         return {
           ok: true,
           detail: t("已写入 {{path}}", { path: target }),
@@ -3137,7 +4411,7 @@ export function ExtremeCoreView() {
       if (!step.command) {
         return { ok: false, detail: t("步骤缺少命令"), stdout: "", stderr: "", exitCode: null };
       }
-      const result = await opsApi.sshExec(sessionId, step.command, 120_000);
+      const result = await opsApi.sshExec(scope.sessionId, step.command, 120_000);
       if (step.kind === "verify") {
         /*
          * 静态站点计划用 HTTP 码验证（`curl -w '%{http_code}'`），Compose 计划
@@ -3164,7 +4438,7 @@ export function ExtremeCoreView() {
         exitCode: result.exit_code,
       };
     },
-    [preflight?.home, sessionId, setAttachments, t],
+    [setAttachmentsIn, t],
   );
 
   /**
@@ -3173,14 +4447,38 @@ export function ExtremeCoreView() {
    * 进度、卡片与历史都绑在**发起时的会话**上：中途切到别的服务器，步骤结果
    * 仍写回这张卡与历史，但不会再改另一台上的计划、通知与执行标记。
    */
-  const runPlan = async (targetId?: string) => {
-    const planAtStart = plan;
-    const sessionAtStart = sessionId;
-    const serverAtStart = server;
-    /** 这次执行属于**哪条对话**：中途切走，进度也要写回这一条。 */
-    const workspaceAtStart = workspaceId;
-    const serverIdAtStart = serverId;
-    if (!planAtStart || !sessionAtStart || executing) return;
+  const runPlan = async (targetId?: string, scopeIn?: ActionScope) => {
+    /** 归属与数据全部来自快照（`[[start]]` 接力时可能已经在后台）。 */
+    const scope = scopeIn ?? currentScope();
+    const planAtStart = scope.plan;
+    const sessionAtStart = scope.sessionId;
+    const serverAtStart = scope.server;
+    const workspaceAtStart = scope.workspaceId;
+    const serverIdAtStart = scope.serverId;
+    const foreground = () => scopeIsForeground(scope);
+    const notify = (message: string) => {
+      if (foreground()) setNotice(message);
+      else pushMessageTo(workspaceAtStart, {
+        id: `msg-${crypto.randomUUID()}`,
+        role: "assistant",
+        local: true,
+        text: message,
+      });
+    };
+    /**
+     * 这条**对话**的部署是否已经在跑。
+     *
+     * `executing` 是前台镜像：后台对话的计划不能因为另一台正在跑就被拒绝，
+     * 也不能因为前台空闲就重复执行。
+     */
+    const planRunning = () => {
+      const state = useExtremeStore.getState();
+      if (state.workspaceId === scope.workspaceId) return state.executing;
+      return Boolean(
+        state.workspaces.find((entry) => entry.id === scope.workspaceId)?.context?.executing,
+      );
+    };
+    if (!planAtStart || !sessionAtStart || planRunning()) return;
     /*
      * **执行必须先有用户的明确表态**。
      *
@@ -3189,44 +4487,74 @@ export function ExtremeCoreView() {
      */
     const approved = targetId ? userConfirmedPlansRef.current.has(targetId) : false;
     if (!approved) {
-      setNotice(t("这一步还没得到你的确认：回复「开始吧」我再执行。"));
+      notify(t("这一步还没得到你的确认：回复「开始吧」我再执行。"));
       return;
     }
-    // 执行前重新核对：任务永远发给生成它的那台服务器。
-    if (planSession !== sessionAtStart) {
-      setNotice(t("会话已变化，计划已失效。请重新生成计划。"));
+    /*
+     * 执行前重新核对归属：连接断了 / 换了服务器就停下来，把原因写回原对话。
+     * 绝不拿当前前台的连接把这条计划发出去。
+     */
+    const blocked = scopeBlocked(scope);
+    if (blocked) {
+      pauseAction(scope, blocked);
       return;
     }
-    if (!preflight?.home && planAtStart.some((step) => step.remotePath?.startsWith("~/"))) {
-      setNotice(t("还没有取到家目录，先等待预检完成。"));
+    // 计划与连接必须仍是同一版：重新生成 / 重连之后旧计划失效。
+    if (!planValidFor(scope) || scope.planSession !== sessionAtStart) {
+      notify(t("会话已变化，计划已失效。请重新生成计划。"));
       return;
     }
-    if (targetId && planTaskIdRef.current && planTaskIdRef.current !== targetId) {
-      setNotice(t("这条任务属于上一次计划，请重新生成计划后再执行。"));
+    if (!scope.home && planAtStart.some((step) => step.remotePath?.startsWith("~/"))) {
+      notify(t("还没有取到家目录，先等待预检完成。"));
       return;
     }
-    const taskId = targetId ?? planTaskIdRef.current ?? `task-${Date.now()}`;
-    planTaskIdRef.current = taskId;
-    useExtremeStore.setState({ planTaskId: taskId });
+    if (targetId && scope.planTaskId && scope.planTaskId !== targetId) {
+      notify(t("这条任务属于上一次计划，请重新生成计划后再执行。"));
+      return;
+    }
+    const taskId = targetId ?? scope.planTaskId ?? `task-${Date.now()}`;
+    scope.planTaskId = taskId;
+    if (foreground()) {
+      planTaskIdRef.current = taskId;
+      useExtremeStore.setState({ planTaskId: taskId });
+    } else {
+      patchWorkspaceContext(workspaceAtStart, { planTaskId: taskId });
+    }
     const originMessageId = useExtremeStore.getState().tasks[taskId]?.originMessageId;
     /** 本地步骤副本：切服务器后 store 里的 `plan` 已经是另一台的计划了。 */
     const steps: DeployStep[] = planAtStart.map((step) => ({ ...step }));
-    const belongsHere = () => useExtremeStore.getState().sessionId === sessionAtStart;
     const syncProgress = () => {
-      if (!belongsHere()) return;
-      updatePlan(() => steps.map((step) => ({ ...step })));
+      const progress = steps.map((step) => ({ ...step }));
+      if (foreground()) {
+        updatePlan(() => progress.map((step) => ({ ...step })));
+      } else {
+        // 后台推进也要写回它自己那条：切回来能接着看。
+        patchWorkspaceContext(workspaceAtStart, { plan: progress });
+      }
+      /*
+       * 任务卡按 taskId 更新（全局安全）：切到别的对话后，左栏与历史仍能看到
+       * 这条部署在推进，不必等切回来才刷新。
+       */
+      const card = useExtremeStore.getState().tasks[taskId];
+      if (card) {
+        upsertTask({ ...card, steps: progress, updatedAt: Date.now() });
+      }
     };
 
     if (workspaceAtStart) setExecutingFor(workspaceAtStart, true);
-    // 执行期间用户要看的就是滚动输出：直接展开右栏的「终端 › 执行输出」。
-    openPaneTab("terminal", "output");
-    setNotice(null);
-    stopRef.current = false;
+    if (foreground()) {
+      // 执行期间用户要看的就是滚动输出：直接展开右栏的「终端 › 执行输出」。
+      openPaneTab("terminal", "output");
+      setNotice(null);
+    }
+    // 同一个 taskId 重新执行：清掉上一轮留下的停止标记，只影响这一条任务。
+    stopTasksRef.current.delete(taskId);
     /** 删掉服务器上的临时目录（完成 / 取消 / 中止时都调）。 */
     const dropRemote = () => {
-      const root = remoteRoot;
+      const root = scope.remoteRoot;
       if (!root) return;
-      if (belongsHere()) setRemoteRoot(null);
+      scope.remoteRoot = null;
+      if (foreground()) setRemoteRoot(null);
       void opsApi.sshExec(sessionAtStart, `rm -rf -- ${shellQuote(root)}`, 30_000).catch(() => undefined);
     };
     /**
@@ -3239,20 +4567,21 @@ export function ExtremeCoreView() {
       const snapshot = steps.map((step) => ({ ...step }));
       // 类型固定为部署；用户目标与风险按本次任务单独记，历史里不靠步骤反推分类。
       const goal = useExtremeStore.getState().tasks[taskId]?.goal ?? "";
-      upsertTask(
-        cardFromPlan({
-          id: taskId,
-          plan: snapshot,
-          server: serverAtStart ?? "unknown",
-          sessionId: sessionAtStart,
-          workspaceId: workspaceAtStart,
-          serverId: serverIdAtStart,
-          originMessageId,
-          goal,
-          status: statusOf(status),
-          result: summary,
-        }),
-      );
+      const card = cardFromPlan({
+        id: taskId,
+        plan: snapshot,
+        server: serverAtStart ?? "unknown",
+        sessionId: sessionAtStart,
+        workspaceId: workspaceAtStart,
+        serverId: serverIdAtStart,
+        originMessageId,
+        goal,
+        status: statusOf(status),
+        result: summary,
+      });
+      upsertTask(card);
+      // 部署循环的终态也是实时结果；窗口收起时才提醒一次。
+      if (status === "success" || status === "failed") void notifyTaskOutcome(card);
       void opsApi
         .extremeTaskSave({
           id: taskId,
@@ -3278,11 +4607,26 @@ export function ExtremeCoreView() {
 
     for (let index = 0; index < steps.length; index += 1) {
       // 用户点了「取消任务」：停在当前进度，清掉临时文件，历史里记为中止。
-      if (stopRef.current) {
+      if (stopTasksRef.current.has(taskId)) {
+        stopTasksRef.current.delete(taskId);
         if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
         dropRemote();
         persistTask("cancelled", t("任务已中止"));
-        if (belongsHere()) setNotice(t("任务已中止：服务器上的临时文件已清理。"));
+        notify(t("任务已中止：服务器上的临时文件已清理。"));
+        return;
+      }
+      /*
+       * **每一步执行前核对归属**：原连接断了 / 换了服务器就停在这一步。
+       * 后面的步骤不能借用当前前台的连接继续跑。
+       */
+      const blockedStep = scopeBlocked(scope);
+      if (blockedStep) {
+        steps[index] = { ...steps[index], state: "failed", stderr: blockedStep, exitCode: null };
+        syncProgress();
+        persistTask("failed", blockedStep);
+        if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
+        pauseAction(scope, blockedStep);
+        stopTasksRef.current.delete(taskId);
         return;
       }
       const step = steps[index];
@@ -3290,7 +4634,7 @@ export function ExtremeCoreView() {
       steps[index] = { ...step, state: "running" };
       syncProgress();
       try {
-        const outcome = await runStep(step);
+        const outcome = await runStep(scope, step);
         steps[index] = {
           ...step,
           state: outcome.ok ? "success" : "failed",
@@ -3302,10 +4646,9 @@ export function ExtremeCoreView() {
         if (!outcome.ok) {
           // 失败也落历史：用户下次回来能看到卡在第几步、真实报错是什么。
           persistTask("failed", t("第 {{n}} 步失败：{{detail}}", { n: index + 1, detail: outcome.detail }));
-          if (belongsHere()) {
-            setNotice(t("第 {{n}} 步失败：{{detail}}", { n: index + 1, detail: outcome.detail }));
-          }
+          notify(t("第 {{n}} 步失败：{{detail}}", { n: index + 1, detail: outcome.detail }));
           if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
+          stopTasksRef.current.delete(taskId);
           return;
         }
         // 关键节点落库：每步成功都覆盖同一条记录，历史面板据此实时推进。
@@ -3320,17 +4663,17 @@ export function ExtremeCoreView() {
         syncProgress();
         const reason = cause instanceof Error ? cause.message : t("执行失败");
         persistTask("failed", reason);
-        if (belongsHere()) setNotice(reason);
+        notify(reason);
         if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
+        stopTasksRef.current.delete(taskId);
         return;
       }
     }
     if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
-    if (belongsHere()) {
-      setNotice(t("部署完成：全部步骤通过。"));
-      // 部署成功 = 文件已经就位，临时副本没有继续存在的理由。
-      dropRemote();
-    }
+    stopTasksRef.current.delete(taskId);
+    // 部署成功 = 文件已经就位，临时副本没有继续存在的理由。
+    dropRemote();
+    notify(t("部署完成：全部步骤通过。"));
     persistTask("success", t("全部步骤通过"));
   };
 
@@ -3448,7 +4791,12 @@ export function ExtremeCoreView() {
     runState === "waiting" ||
     runState === "stopping" ||
     runState === "stale";
-  /** 已发出停止、还在等确认：按钮留着，但不再重复提交。 */
+  /**
+   * 已发出停止、还在等确认。
+   *
+   * 按钮仍可点：停止请求是幂等的，再点一次能重新问后端；禁用只会让用户觉得
+   * "点了没反应"，也正是僵尸任务看起来停不下来的原因之一。
+   */
   const stopPending = stopping || planStopping;
   /**
    * 点「停止」：按"现在在跑什么"分派。
@@ -3459,12 +4807,14 @@ export function ExtremeCoreView() {
   const stopRun = () => {
     if (executing) {
       if (planStopping) return;
-      stopRef.current = true;
+      const currentPlanTask =
+        planTaskIdRef.current ?? useExtremeStore.getState().planTaskId;
+      if (currentPlanTask) stopTasksRef.current.add(currentPlanTask);
       setPlanStopping(true);
       setNotice(t("正在停止。当前步骤结束后不会运行后续步骤。"));
       return;
     }
-    if (stopPending) return;
+    // 已经在等停止：再发一次（幂等），让用户看到"有反应"。
     void cancelAsk();
   };
   /**
@@ -3483,7 +4833,14 @@ export function ExtremeCoreView() {
     }
     // 停止等待期把"在等什么"一起说清：只说"正在停止"会被当成卡死。
     if (stopping) return stoppingDetail ? `${t("正在停止…")} ${stoppingDetail}` : t("正在停止…");
-    return runState === "idle" ? "" : runStateLabel(runState, t);
+    if (runState === "idle") return "";
+    /*
+     * 带上这一句"在做什么"：重进接回来的卡片标题往往只是"服务器 · 自动化"，
+     * 只显示"执行中"等于告诉用户有任务、却不知道是什么任务。
+     */
+    const summary = activeTask?.result?.trim() || activeTask?.goal.trim() || "";
+    const label = runStateLabel(runState, t);
+    return summary ? `${label} · ${summary}` : label;
   })();
 
   /**
@@ -3549,49 +4906,61 @@ export function ExtremeCoreView() {
     return { ...base, headline: headlineFor(base) };
   }, [activeTask, messages, runState, approval, providers, t]);
 
-  /* 确认条：处理结果只看**这一条**（换了审批不能把上一条的结果带过来）。 */
-  const approvalOutcomeForBar =
-    approval && approvalOutcome?.callId === approval.callId ? approvalOutcome : null;
-  const approvalPhase: ApprovalPhase = approvalOutcomeForBar?.phase ?? "pending";
-  const approvalStep = approval
-    ? tasks[approval.taskId]?.steps.find((step) => step.id === `agent-${approval.stepIndex}`)
-    : undefined;
+  /**
+   * 从左侧「待确认」点进来：定位到具体审批卡。
+   *
+   * 只在每条审批第一次出现时滚一次，不跟用户抢滚动（之后手动滚动不会被拉回）。
+   * 键用 `taskId:callId`：同一任务的第二条审批也要能定位。
+   */
+  const scrolledApprovals = useRef<Set<string>>(new Set());
+  const firstApprovalKey = approval ? approvalKeyOf(approval.taskId, approval.callId) : null;
+  useEffect(() => {
+    if (!approval || !firstApprovalKey) return;
+    if (scrolledApprovals.current.has(firstApprovalKey)) return;
+    scrolledApprovals.current.add(firstApprovalKey);
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`[data-approval-key="${firstApprovalKey}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }, [approval, firstApprovalKey]);
 
   /*
    * 审批 → 桌面通知。
    *
-   * 只有应用收起时才真的弹（判断在 `syncApprovalNotification` 里）；这里只把
-   * 当前状态同步过去 —— 点通知按钮与点确认条走的是同一个 `decideApproval`，
-   * 所以两边永远显示同一件事。
+   * **每条都在**：A、B 同时等确认时各自一条通知，处理 A 不会顺手把 B 的
+   * 通知撤掉；卡片与通知共享同一个状态，任一端处理完另一端同步更新。
+   * 只有主窗口收起时才真的弹（判断在 `syncApprovalNotifications` 里）。
    */
   useEffect(() => {
-    if (!approval) {
-      syncApprovalNotification(null, t);
-      return;
-    }
-    syncApprovalNotification(
-      {
-        callId: approval.callId,
+    syncApprovalNotifications(
+      Object.values(approvalEntries).map((entry) => ({
+        taskId: entry.approval.taskId,
+        callId: entry.approval.callId,
         operation:
-          approval.summary?.trim() ||
-          approval.command.split("\n")[0]?.trim() ||
-          approval.path ||
+          entry.approval.summary?.trim() ||
+          entry.approval.command.split("\n")[0]?.trim() ||
+          entry.approval.path ||
           "",
-        server: approval.server,
-        impact: approval.impact?.trim() || t("影响未知：这一步会改动服务器上的内容。"),
-        risk: approval.risk === "danger" ? "danger" : "write",
-        phase: approvalPhase,
-        failure: approvalOutcomeForBar?.failure ?? null,
-      },
+        server: entry.approval.server,
+        impact:
+          entry.approval.impact?.trim() || t("影响未知：这一步会改动服务器上的内容。"),
+        risk: entry.approval.risk === "danger" ? "danger" : "write",
+        phase: entry.phase,
+        failure: entry.failure,
+      })),
       t,
     );
-  }, [approval, approvalPhase, approvalOutcomeForBar?.failure, t]);
+  }, [approvalEntries, t]);
 
+  /** 通知按钮路由：按 taskId + callId 找到那一条，与卡片走同一个入口。 */
   useEffect(
     () =>
       installApprovalNotifications(
         {
-          decide: (callId, allow) => decideApprovalRef.current(allow, callId),
+          decide: (taskId, callId, allow) => {
+            void decideApprovalRef.current(allow, callId, taskId);
+          },
           open: () => {
             // 回来时确认条就在眼前：通知先收起，避免两处同时可点。
             hideApprovalNotification();
@@ -3613,6 +4982,40 @@ export function ExtremeCoreView() {
     [workspaces],
   );
 
+  /** 左栏只标"需要关注"的状态：待确认 / 失败；其余靠标题与未读点。 */
+  const attentionById = useMemo(() => {
+    const out: Record<string, "waiting" | "failed"> = {};
+    /*
+     * **真实仍在等确认的审批**优先：它可能来自后台对话（任务卡状态还没刷新），
+     * 左栏必须能点回去处理。点开只是切对话，不动当前输入焦点。
+     */
+    for (const entry of Object.values(approvalEntries)) {
+      if (entry.closed) continue;
+      // 卡片不在内存（重进）时按"哪条对话引用了这个 taskId"认归属。
+      const owner =
+        tasks[entry.approval.taskId]?.workspaceId ??
+        workspaces.find((item) =>
+          item.messages.some((message) => message.taskId === entry.approval.taskId),
+        )?.id;
+      if (owner) out[owner] = "waiting";
+    }
+    for (const task of Object.values(tasks)) {
+      if (!task.workspaceId) continue;
+      if (task.status === "confirming" || task.status === "waiting") {
+        out[task.workspaceId] = "waiting";
+      } else if (
+        task.status === "failed" &&
+        out[task.workspaceId] !== "waiting" &&
+        // 失败标记跟未读同生命周期：点开看过后就消失，不永久挂在左栏。
+        unread[task.workspaceId]
+      ) {
+        out[task.workspaceId] = "failed";
+      }
+    }
+    return out;
+  }, [approvalEntries, tasks, unread]);
+  const unreadIds = useMemo(() => new Set(Object.keys(unread)), [unread]);
+
   /**
    * 切会话时恢复它自己记住的标签。
    *
@@ -3621,11 +5024,53 @@ export function ExtremeCoreView() {
   useEffect(() => {
     const state = useExtremeStore.getState();
     const key = state.workspaceId ?? "";
+    if (!key) return;
     const nextPane = state.paneByWorkspace[key] ?? "files";
     // 输入偏好也按会话恢复：A 用「自选 + 简洁结论」，切到 B 不该沿用。
     const prefs = state.chatPrefsByWorkspace[key] ?? DEFAULT_CHAT_PREFS;
-    useExtremeStore.setState({ paneTab: nextPane, chatPrefs: prefs });
+    useExtremeStore.setState({
+      paneTab: nextPane,
+      // 老数据只有"当前标签"：补成已打开列表，避免标签栏空着。
+      paneLists: {
+        ...state.paneLists,
+        [key]: state.paneLists[key]?.length ? state.paneLists[key] : [nextPane],
+      },
+      paneMru: {
+        ...state.paneMru,
+        [key]: state.paneMru[key]?.length ? state.paneMru[key] : [nextPane],
+      },
+      chatPrefs: prefs,
+    });
   }, [workspaceId]);
+
+  /**
+   * 切回某条对话时，把它在后台等着的面板打开。
+   *
+   * A 在看日志时切到 B：A 的探测结果**归 A**（消息已经写回它那条），右栏等
+   * 用户回到 A 再展开 —— 既不弹到 B 脸上，也不把查到的结果丢在路上。
+   */
+  useEffect(() => {
+    if (!workspaceId) return;
+    const pending = pendingPanelRef.current!;
+    const request = pending.get(workspaceId);
+    if (!request) return;
+    pending.delete(workspaceId);
+    const now = useExtremeStore.getState();
+    // 连接换了：旧来源不能打开（那是上一台机器/上一次连接的日志）。
+    if (request.scope.sessionId !== now.sessionId) return;
+    const { scope: _scope, ...panelRequest } = request;
+    if (panelRequest.tab === "files") {
+      if (!panelRequest.path) return;
+      setWorkspaceTarget({
+        kind: "directory",
+        path: panelRequest.path,
+        sessionId: request.scope.sessionId,
+      });
+      openPaneTab("files");
+      return;
+    }
+    openPanel(panelRequest);
+  }, [workspaceId, openPanel, openPaneTab, setWorkspaceTarget]);
 
   /**
    * 左栏当前对话的标题。
@@ -3674,13 +5119,48 @@ export function ExtremeCoreView() {
     return ids;
   }, [tasks, workspaceId, executing]);
 
-  /** 消息里的路径 / 任务产物目录：设定目标并**展开**右栏的文件标签。 */
+  const targetRequest = useRef(0);
   const openWorkspaceTarget = useCallback(
-    (target: WorkspaceTarget) => {
-      setWorkspaceTarget(target);
-      openPaneTab("files");
+    async (target: WorkspaceTarget): Promise<boolean> => {
+      const request = ++targetRequest.current;
+      const state = useExtremeStore.getState();
+      const owner = state.workspaceId;
+      if (!owner) return false;
+      if (target.kind === "website") {
+        setBrowserUrl(owner, target.url);
+        openPaneTab("browser");
+        return true;
+      }
+      const session = state.sessionId;
+      if (!session || (target.serverId ? target.serverId !== state.serverId : target.sessionId !== session)) {
+        setNotice(t("服务器未连接：重新连接后才能打开这个文件。"));
+        return false;
+      }
+      const stillHere = () => {
+        const current = useExtremeStore.getState();
+        return targetRequest.current === request && current.workspaceId === owner && current.sessionId === session;
+      };
+      try {
+        const entry = await opsApi.sftpStat(session, target.path);
+        if (!stillHere()) return true;
+        if (entry.kind !== "directory" && entry.kind !== "file") return false;
+        setWorkspaceTarget((previous) => ({
+          ...target,
+          path: entry.path,
+          sessionId: session,
+          revealNonce: previous?.kind === "directory" && previous.path === entry.path
+            ? (previous.revealNonce ?? 1) + 1
+            : 1,
+        }));
+        openPaneTab("files");
+        return true;
+      } catch (cause) {
+        if (!stillHere()) return true;
+        setNotice(toAppError(cause).message);
+        return false;
+      }
     },
-    [openPaneTab],
+    [openPaneTab, setBrowserUrl, t],
   );
 
   /** 回退：只退出Work，SSH 会话、滚动位置与草稿都由底层终端自己保留。 */
@@ -3688,6 +5168,27 @@ export function ExtremeCoreView() {
     exit();
     requestAnimationFrame(() => {
       document.querySelector<HTMLElement>("[data-terminal-composer]")?.focus();
+    });
+  };
+
+  /**
+   * 重新连接：超能自己的会话断了（或从首页进入后连接失效）时用。
+   *
+   * 走与首页 / 右键菜单同一条入口：复用已连接的会话，否则重新握手。
+   * 对话本身不动，只换绑新连接。
+   */
+  const reconnect = () => {
+    const state = useExtremeStore.getState();
+    const target = state.serverId
+      ? useDomainStore.getState().servers.find((item) => item.id === state.serverId)
+      : undefined;
+    if (!target) {
+      setNotice(t("这台服务器已经不在服务器列表里：无法自动重连，请从服务器列表重新进入。"));
+      return;
+    }
+    void enterExtremeForServer(target, {
+      workspaceId: state.workspaceId ?? undefined,
+      reconnect: true,
     });
   };
 
@@ -3799,6 +5300,31 @@ export function ExtremeCoreView() {
   }, []);
 
   /**
+   * 右栏「加入本次对话」：把真实终端的最近输出**显式**加进这次发送的材料。
+   *
+   * 自动附带只在「当前会话」范围里发生；「仅本条 / 自选」要看输出就自己加
+   * —— 加完在输入框上方能看到这条材料，发送前就知道模型会收到什么。
+   */
+  const addTerminalOutput = useCallback(async () => {
+    if (!workspaceId) return;
+    const tail = (await manualShellTail(workspaceId, 120)).trim();
+    if (!tail) {
+      setNotice(t("右侧真实终端还没有输出可以加入。"));
+      return;
+    }
+    addPicked([
+      {
+        kind: "output",
+        // 同一条对话重复加入时按 id 去重：只留最新那份。
+        id: `terminal:${workspaceId}`,
+        label: t("真实终端最近 {{n}} 行", { n: tail.split("\n").length }),
+        detail: tail,
+      },
+    ]);
+    setNotice(t("已加入本次对话：{{n}} 行终端输出。", { n: tail.split("\n").length }));
+  }, [addPicked, setNotice, t, workspaceId]);
+
+  /**
    * 右键「添加到对话」：把**服务器上的文件**挂成附件，并选中本次发送。
    *
    * * **会话 + 远程路径**是身份：同一个文件反复右键 = 反复选中，不再新建一份，
@@ -3824,6 +5350,8 @@ export function ExtremeCoreView() {
       setSelectedAttachmentIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       setNotice(null);
       if (entry.kind === "directory") return;
+      // 已经读到正文（文本 / 二进制）就不再重读；上次没读到的，这次再试。
+      if (existing?.binary || typeof existing?.text === "string") return;
       /**
        * 回写**发起时那条对话**：读文件要等网络，中途切到别的服务器时镜像
        * 已经换人 —— 直接写镜像会把 A 的文件塞进 B。
@@ -3839,7 +5367,13 @@ export function ExtremeCoreView() {
           /(json|xml|yaml|javascript|typescript|sql|x-sh|x-python|csv)/i.test(file.mime);
         if (!textLike) {
           // 二进制：只报元信息，路径仍然可用。
-          patch((item) => ({ ...item, state: "ready", binary: true, size: file.size }));
+          patch((item) => ({
+            ...item,
+            state: "ready",
+            binary: true,
+            error: undefined,
+            size: file.size,
+          }));
           return;
         }
         const text = new TextDecoder("utf-8").decode(Uint8Array.from(base64ToBytes(file.data)));
@@ -3847,6 +5381,7 @@ export function ExtremeCoreView() {
           ...item,
           state: "ready",
           binary: false,
+          error: undefined,
           text: file.truncated ? `${text}\n…（已截断）` : text,
           size: file.size,
         }));
@@ -3873,30 +5408,38 @@ export function ExtremeCoreView() {
    * 读不到；一个几百文件的站点也没法把全文都塞进上下文。落到服务器上之后，
    * 平台可以按路径 `head` 任意文件，部署时也能直接就地复制。
    */
-  const uploadToServer = useCallback(async (taskId?: string): Promise<string> => {
-    if (!sessionId || uploading) return "";
+  const uploadToServer = useCallback(async (scope: ActionScope, taskId?: string): Promise<ActionResult> => {
+    /*
+     * **先核对归属**：原对话没了 / 连接断了 / 重连换了会话，就停在这里。
+     * 绝不拿当前前台对话的连接顶替 —— 那会把 A 的文件传到 B 的机器上。
+     */
+    const blocked = scopeBlocked(scope);
+    if (blocked) {
+      pauseAction(scope, blocked);
+      return { receipt: t("这一步已暂停：{{reason}}", { reason: blocked }), paused: true };
+    }
+    if (uploading) return { receipt: "" };
     // 服务器上的文件（右键添加）本来就在服务器上，不参与"上传到临时目录"。
-    const ready = attachments.filter(
+    const ready = scope.attachments.filter(
       (item) => item.state === "ready" && item.uploadState !== "uploaded",
     );
     if (ready.length === 0) {
-      setNotice(t("没有可上传的附件。"));
-      return t("没有需要上传的附件：已经在服务器上了。");
+      if (scopeIsForeground(scope)) setNotice(t("没有可上传的附件。"));
+      return { receipt: t("没有需要上传的附件：已经在服务器上了。") };
     }
     setUploading(true);
-    setNotice(null);
+    if (scopeIsForeground(scope)) setNotice(null);
     /**
-     * 上传属于**发起时那条对话**：中途切到 B，结果也必须写回 A，
-     * 更不能让 B 的右栏跟着跳到 A 的临时目录。
+     * 上传属于**发起时那条对话**：结果写回它自己，右栏也只在它在前台时动。
      */
-    const workspaceAtStart = useExtremeStore.getState().workspaceId;
-    const stillHere = () => useExtremeStore.getState().workspaceId === workspaceAtStart;
-    const root = `${preflight?.home ?? "/tmp"}/.bls-ops/extreme-${workspaceId ?? sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
+    const workspaceAtStart = scope.workspaceId;
+    const stillHere = () => scopeIsForeground(scope);
+    const root = `${scope.home ?? "/tmp"}/.bls-ops/extreme-${workspaceAtStart || scope.sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
     const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
     // 先占一行「已请求」：文件多、网慢时用户能立刻看到这一步在做什么。
     if (taskId) upsertReport(taskId, requestedUploadReport(t, { count: ready.length, root }));
     try {
-      const mk = await opsApi.sshExec(sessionId, `mkdir -p ${quote(root)}`, 20_000);
+      const mk = await opsApi.sshExec(scope.sessionId, `mkdir -p ${quote(root)}`, 20_000);
       if (mk.exit_code !== 0) throw new Error(mk.stderr || t("创建临时目录失败"));
       let written = 0;
       let reused = 0;
@@ -3914,7 +5457,7 @@ export function ExtremeCoreView() {
          */
         if (item.uploadState === "uploaded" && item.remotePath) {
           const probe = await opsApi.sshExec(
-            sessionId,
+            scope.sessionId,
             `test -e ${quote(item.remotePath)} && echo yes || echo no`,
             8_000,
           );
@@ -3924,52 +5467,49 @@ export function ExtremeCoreView() {
           }
         }
 
-        if (stillHere()) {
-          setAttachments((current) =>
-            current.map((entry) =>
-              entry.id === item.id
-                ? { ...entry, uploadState: "uploading", remoteError: undefined }
-                : entry,
-            ),
-          );
-        }
+        // 写回**原对话**的附件：切到 B 时镜像已经是 B 的，直接写会串。
+        setAttachmentsIn(workspaceAtStart, (current) =>
+          current.map((entry) =>
+            entry.id === item.id
+              ? { ...entry, uploadState: "uploading", remoteError: undefined }
+              : entry,
+          ),
+        );
         try {
           const dir = target.slice(0, target.lastIndexOf("/"));
           // 子目录按需创建：`dist/static/css/…` 这种层级要一级级补。
-          const mkdir = await opsApi.sshExec(sessionId, `mkdir -p ${quote(dir)}`, 15_000);
+          const mkdir = await opsApi.sshExec(scope.sessionId, `mkdir -p ${quote(dir)}`, 15_000);
           if (mkdir.exit_code !== 0) throw new Error(mkdir.stderr.trim() || t("创建目录失败"));
           if (item.binary && item.data) {
-            await opsApi.sftpWriteBytes(sessionId, target, item.data);
+            await opsApi.sftpWriteBytes(scope.sessionId, target, item.data);
           } else if (typeof item.text === "string") {
-            await opsApi.sftpWriteFile(sessionId, target, item.text);
+            await opsApi.sftpWriteFile(scope.sessionId, target, item.text);
           } else {
             throw new Error(t("没有可写入的内容"));
           }
           written += 1;
-          if (stillHere()) {
-            setAttachments((current) =>
-              current.map((entry) =>
-                entry.id === item.id
-                  ? { ...entry, remotePath: target, uploadState: "uploaded", remoteError: undefined }
-                  : entry,
-              ),
-            );
-          }
+          setAttachmentsIn(workspaceAtStart, (current) =>
+            current.map((entry) =>
+              entry.id === item.id
+                ? { ...entry, remotePath: target, uploadState: "uploaded", remoteError: undefined }
+                : entry,
+            ),
+          );
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           // 具体到"哪个文件、为什么"——只报一句"上传失败"等于没信息。
           failures.push(`${relative}：${reason}`);
-          if (stillHere()) {
-            setAttachments((current) =>
-              current.map((entry) =>
-                entry.id === item.id
-                  ? { ...entry, uploadState: "local", remoteError: reason }
-                  : entry,
-              ),
-            );
-          }
+          setAttachmentsIn(workspaceAtStart, (current) =>
+            current.map((entry) =>
+              entry.id === item.id
+                ? { ...entry, uploadState: "local", remoteError: reason }
+                : entry,
+            ),
+          );
         }
       }
+      // 临时目录跟着快照走：同一轮里的「执行计划」要用它清理旧副本。
+      scope.remoteRoot = root;
       if (stillHere()) {
         setRemoteRoot(root);
         // 传完要让用户看到服务器上那份：右侧文件标签直接展开到临时目录。
@@ -3984,17 +5524,15 @@ export function ExtremeCoreView() {
       }
       const receipt = uploadReceipt(t, { written, reused, failures, root });
       if (!taskId) {
-        // 没有归属任务（首屏直接点上传）：只能落在对话里。
-        const message = {
+        // 没有归属任务（首屏直接点上传）：只能落在**原来那条**对话里。
+        pushMessageTo(workspaceAtStart, {
           id: `msg-${crypto.randomUUID()}`,
           role: "assistant" as const,
           local: true,
           text: receipt,
-        };
-        if (workspaceAtStart) pushMessageTo(workspaceAtStart, message);
-        else pushMessage(message);
+        });
       }
-      return receipt;
+      return { receipt };
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : t("上传失败");
       // 失败原因写进那一行结果（步骤自己说清楚），不再另发通知条。
@@ -4007,23 +5545,21 @@ export function ExtremeCoreView() {
       } else if (stillHere()) {
         setNotice(reason);
       }
-      return t("上传失败：{{reason}}", { reason });
+      return { receipt: t("上传失败：{{reason}}", { reason }) };
     } finally {
       setUploading(false);
     }
   }, [
-    attachments,
     openPaneTab,
-    preflight?.home,
-    pushMessage,
+    pauseAction,
     pushMessageTo,
-    sessionId,
-    setAttachments,
+    scopeBlocked,
+    scopeIsForeground,
+    setAttachmentsIn,
     setNotice,
     t,
     uploading,
     upsertReport,
-    workspaceId,
   ]);
 
   /**
@@ -4032,41 +5568,49 @@ export function ExtremeCoreView() {
    * 只用 `docker ps` 与 `docker inspect`，不写任何东西。探测失败（没装 Docker、
    * 没权限）直接把真实 stderr 抛给用户，不要笼统地说"探测失败"。
    */
-  const probeServices = useCallback(async (): Promise<ServiceCandidate[]> => {
-    if (!sessionId || probing) return [];
-    setProbing(true);
-    setNotice(null);
+  const probeServices = useCallback(async (scope: ActionScope): Promise<ServiceCandidate[]> => {
+    const blocked = scopeBlocked(scope);
+    if (blocked) {
+      pauseAction(scope, blocked);
+      return [];
+    }
+    if (probing) return [];
+    if (scopeIsForeground(scope)) setProbing(true);
+    if (scopeIsForeground(scope)) setNotice(null);
     try {
       const ps = await opsApi.sshExec(
-        sessionId,
+        scope.sessionId,
         `docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'`,
         20_000,
       );
       if (ps.exit_code !== 0) throw new Error(ps.stderr.trim() || t("docker ps 失败"));
       const services = parseDockerPs(ps.stdout);
       if (services.length === 0) {
-        setNotice(t("这台机器上没有正在运行的容器。"));
+        if (scopeIsForeground(scope)) setNotice(t("这台机器上没有正在运行的容器。"));
         return [];
       }
       // 逐个补挂载：替换哪个目录取决于容器的 bind mount，不能靠猜。
       for (const service of services) {
         const inspect = await opsApi.sshExec(
-          sessionId,
+          scope.sessionId,
           `docker inspect --format '{{json .Mounts}}' '${service.name.replace(/'/g, `'\\''`)}'`,
           20_000,
         );
         if (inspect.exit_code === 0) service.mounts = parseInspectMounts(inspect.stdout);
       }
-      setCandidates(services);
+      scope.candidates = services;
+      if (scopeIsForeground(scope)) setCandidates(services);
       // 返回结果：聊天里的 `[[plan]]` 要立刻拿到候选，不能等下一次渲染的 state。
       return services;
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : t("探测失败"));
+      if (scopeIsForeground(scope)) {
+        setNotice(cause instanceof Error ? cause.message : t("探测失败"));
+      }
       return [];
     } finally {
-      setProbing(false);
+      if (scopeIsForeground(scope)) setProbing(false);
     }
-  }, [probing, sessionId, setNotice, t]);
+  }, [pauseAction, probing, scopeBlocked, scopeIsForeground, setNotice, t]);
 
   /**
    * 选定服务 → 生成**更新计划**（校验 → 备份 → 解压 → 替换 → 重启 → 验证 → 清理）。
@@ -4076,8 +5620,8 @@ export function ExtremeCoreView() {
    * 信息」，不再弹一句指向按钮的黄条。
    */
   const planUpdate = useCallback(
-    (service: ServiceCandidate, originMessageId?: string) => {
-      const zip = attachments.find(
+    (scope: ActionScope, service: ServiceCandidate, originMessageId?: string) => {
+      const zip = scope.attachments.find(
         (item) => item.uploadState === "uploaded" && /\.zip$/i.test(item.name) && item.remotePath,
       );
       const deployDir = pickDeployDirs(service)[0];
@@ -4090,13 +5634,14 @@ export function ExtremeCoreView() {
       };
       const kind = selectPlanKind(facts);
       const origin =
-        originMessageId ?? pushUserMessage(t("更新现有服务：{{name}}", { name: service.name })).id;
+        originMessageId ??
+        pushUserMessageTo(scope.workspaceId, t("更新现有服务：{{name}}", { name: service.name })).id;
       const context = createTaskContext({
         taskId: `task-${Date.now()}`,
         originMessageId: origin,
-        server: server ?? "unknown",
-        sessionId: sessionId ?? "",
-        attachmentIds: attachments.map((item) => item.id),
+        server: scope.server || "unknown",
+        sessionId: scope.sessionId,
+        attachmentIds: scope.attachments.map((item) => item.id),
         verifiedTarget: {
           kind: "compose-project",
           service: service.name,
@@ -4104,18 +5649,18 @@ export function ExtremeCoreView() {
           evidence: `docker ps/inspect：${service.name}（${service.image || t("未知镜像")}）`,
         },
       });
-      setCandidates(null);
+      if (scopeIsForeground(scope)) setCandidates(null);
       if (kind !== "compose-update" || !zip?.remotePath || !deployDir) {
         const reason = !zip?.remotePath
           ? t("服务器上还没有 ZIP")
           : t("这个容器没有可写的挂载目录");
-        commitPlan(context, null, {
+        commitPlan(scope, context, null, {
           steps: [],
           result: t("等待补充信息：{{reason}}", { reason }),
         });
         return;
       }
-      commitPlan(context, "compose-update", {
+      commitPlan(scope, context, "compose-update", {
         steps: buildUpdatePlan({ service, zipPath: zip.remotePath, deployDir }),
         result: t("更新 {{name}}：备份 {{dir}} → 解压 → 替换 → 重启 → 验证", {
           name: service.name,
@@ -4123,7 +5668,7 @@ export function ExtremeCoreView() {
         }),
       });
     },
-    [attachments, commitPlan, pushUserMessage, server, sessionId, t],
+    [commitPlan, pushUserMessageTo, scopeIsForeground, t],
   );
 
   /**
@@ -4143,8 +5688,9 @@ export function ExtremeCoreView() {
       return;
     }
     const message = pushUserMessage(t("用这些附件生成部署计划"));
-    void generatePlan({ originMessageId: message.id });
-  }, [attachments.length, generatePlan, pushMessage, pushUserMessage, t]);
+    // 按钮入口：这一次点击的对话与连接就是归属。
+    void generatePlan(currentScope(), { originMessageId: message.id });
+  }, [attachments.length, currentScope, generatePlan, pushMessage, pushUserMessage, t]);
 
   /**
    * 编辑自己发过的那句：原文回填输入框，替换掉当前草稿。
@@ -4168,6 +5714,52 @@ export function ExtremeCoreView() {
       focusComposerEnd();
     },
     [draft, setDraft, setNotice, t],
+  );
+
+  /**
+   * 「重试」入口在**中断的那条回复**旁边：用同一个原问题重跑。
+   *
+   * 复用原任务卡（`retry.of`），不会每次重试都多出一张卡。
+   */
+  const retryInterrupted = useCallback(
+    (assistant: ExtremeMessage) => {
+      const state = useExtremeStore.getState();
+      const list = state.messages;
+      const at = list.findIndex((item) => item.id === assistant.id);
+      if (at < 0) return;
+      const source = [...list.slice(0, at)].reverse().find((item) => item.role === "user");
+      if (!source) return;
+      const running = Object.values(state.tasks).some(
+        (task) =>
+          task.workspaceId === state.workspaceId &&
+          (task.status === "running" || task.status === "confirming"),
+      );
+      if (running) {
+        setNotice(t("任务仍在执行：等它结束或点「停止」后再重试。"));
+        return;
+      }
+      const card = assistant.taskId ? state.tasks[assistant.taskId] : undefined;
+      // 重新发起前收掉旧标记：否则会看到两个"回复中断"。
+      if (state.workspaceId) {
+        patchMessageIn(state.workspaceId, assistant.id, {
+          interrupted: null,
+          interruptReason: null,
+        });
+      }
+      void ask(source, 0, { of: card, bubble: source });
+    },
+    [ask, patchMessageIn, setNotice, t],
+  );
+
+  /** 没送达的那句话：原文放回输入框（连同已有草稿），用户直接重发。 */
+  const resendMessage = useCallback(
+    (message: ExtremeMessage) => {
+      const owner = useExtremeStore.getState().workspaceId;
+      if (owner) patchMessageIn(owner, message.id, { deliveryError: null });
+      setDraft(draft.trim() ? `${draft}\n${message.text}` : message.text);
+      focusComposerEnd();
+    },
+    [draft, patchMessageIn, setDraft],
   );
 
   /**
@@ -4221,25 +5813,32 @@ export function ExtremeCoreView() {
    * 每次渲染重新赋值，`ask` 里拿到的就是最新的闭包。
    */
   execRef.current = {
-    upload: async (taskId) => uploadToServer(taskId),
-    plan: async (service, originMessageId) => {
+    upload: async (scope, taskId) => uploadToServer(scope, taskId),
+    plan: async (scope, service, originMessageId) => {
       if (service) {
         /*
          * 指定了服务就**先探测再匹配**：候选只存在于这一轮渲染的 state 里，
-         * 模型发起 `[[plan:x]]` 时通常还没探测过。
+         * 模型发起 `[[plan:x]]` 时通常还没探测过。探测走**发起时那条连接**。
          */
-        const list = candidates && candidates.length > 0 ? candidates : await probeServices();
+        const list =
+          scope.candidates && scope.candidates.length > 0
+            ? scope.candidates
+            : await probeServices(scope);
         const chosen = list.find((item) => item.name === service);
         if (!chosen) {
-          return t("没有找到容器 {{name}}：先说清要更新哪个服务，我再列一遍在跑的容器。", {
-            name: service,
-          });
+          return {
+            receipt: t("没有找到容器 {{name}}：先说清要更新哪个服务，我再列一遍在跑的容器。", {
+              name: service,
+            }),
+          };
         }
         // 卡片挂在**那条回复**下面：模型发起的就是任务来源，不另造一条用户消息。
-        planUpdate(chosen, originMessageId);
-        return t("已生成 {{name}} 的更新计划（备份 → 解压 → 替换 → 重启 → 验证）。", {
-          name: chosen.name,
-        });
+        planUpdate(scope, chosen, originMessageId);
+        return {
+          receipt: t("已生成 {{name}} 的更新计划（备份 → 解压 → 替换 → 重启 → 验证）。", {
+            name: chosen.name,
+          }),
+        };
       }
       /*
        * 没有来源消息时补一条**本机提示**，绝不能补用户消息：那等于凭空多出一
@@ -4253,54 +5852,67 @@ export function ExtremeCoreView() {
           local: true,
           text: t("已按你的要求生成部署计划。"),
         };
-        pushMessage(notice);
+        pushMessageTo(scope.workspaceId, notice);
         origin = notice.id;
       }
-      await generatePlan({ originMessageId: origin });
-      return t("已生成部署计划。");
+      await generatePlan(scope, { originMessageId: origin });
+      return { receipt: t("已生成部署计划。") };
     },
-    terminal: async (command) => {
-      const workspace = useExtremeStore.getState().workspaceId ?? "";
+    terminal: async (scope, command) => {
+      const blocked = scopeBlocked(scope);
+      if (blocked) {
+        pauseAction(scope, blocked);
+        return { receipt: t("这一步已暂停：{{reason}}", { reason: blocked }), paused: true };
+      }
       /*
        * 面板收着时 `ManualTerminal` 还没挂载、PTY 也不存在，直接发命令会失败。
-       * 先展开真实终端并建好通道，用户看到的是命令自己跑起来，而不是
-       * "你先手动打开终端再来找我"。
+       * 先建好通道，用户看到的是命令自己跑起来，而不是"你先手动打开终端"。
        */
-      openPaneTab("terminal", "manual");
-      if (workspace && sessionId) await ensureManualShell(workspace, sessionId);
-      const sent = await manualShellSend(workspace, command);
+      if (scopeIsForeground(scope)) openPaneTab("terminal", "manual");
+      await ensureManualShell(scope.workspaceId, scope.sessionId);
+      const sent = await manualShellSend(scope.workspaceId, command);
       if (!sent) {
-        return t("右侧真实终端打不开：这条会话的终端通道没有起来，重连服务器再试。");
+        return {
+          receipt: t("右侧真实终端打不开：这条会话的终端通道没有起来，重连服务器再试。"),
+        };
       }
-      const tail = await manualShellTail(workspace, 40);
-      return t("已在右侧真实终端开始监听：{{command}}\n最近输出：\n{{tail}}", {
-        command,
-        tail: tail || t("（暂时没有输出，日志一有内容就会出现在终端里）"),
-      });
+      const tail = await manualShellTail(scope.workspaceId, 40);
+      return {
+        receipt: t("已在右侧真实终端开始监听：{{command}}\n最近输出：\n{{tail}}", {
+          command,
+          tail: tail || t("（暂时没有输出，日志一有内容就会出现在终端里）"),
+        }),
+      };
     },
-    start: async (taskId) => {
-      const steps = useExtremeStore.getState().plan ?? [];
-      if (steps.length === 0) return t("还没有可执行的计划，先说明要做什么。");
-      const planTask = planTaskIdRef.current;
+    start: async (scope, taskId) => {
+      const steps = scope.plan ?? [];
+      if (steps.length === 0) return { receipt: t("还没有可执行的计划，先说明要做什么。") };
+      const planTask = scope.planTaskId;
       /*
        * **模型只能"建议开始"**：`[[start]]` 不是用户的同意。没有用户表态就
        * 直接执行，等于让模型自己按了执行键 —— 这里把话退回给模型，让它去请
        * 用户回复「开始吧」。
        */
       if (!planTask || !userConfirmedPlansRef.current.has(planTask)) {
-        return t(
-          "计划还没有得到用户确认：请用一句话请用户回复「开始吧」，不要假设已经执行。",
-        );
+        return {
+          receipt: t(
+            "计划还没有得到用户确认：请用一句话请用户回复「开始吧」，不要假设已经执行。",
+          ),
+        };
       }
-      await runPlan(planTask);
+      await runPlan(planTask, scope);
       /*
        * 回执按**执行完的真实状态**拼：任务卡与「执行结果」用的是同一份数据，
        * 模型看到的就是用户看到的。
        */
-      const done = useExtremeStore.getState().plan ?? steps;
+      const done = steps.map((step) => ({ ...step }));
       const report = runReport(t, done);
       if (taskId) upsertReport(taskId, report);
-      return report.detail ? `${report.title}\n${report.detail}` : report.title;
+      return {
+        receipt: report.detail ? `${report.title}\n${report.detail}` : report.title,
+        // 归属在跑的过程中断了：`runPlan` 已把原因写回原对话。
+        paused: scopeBlocked(scope) !== null,
+      };
     },
   };
 
@@ -4397,8 +6009,7 @@ export function ExtremeCoreView() {
         mac={mac}
         onBack={back}
         paneShown={paneShown}
-        onOpenTerminal={() => openPaneTab("terminal", "output")}
-        onTogglePane={togglePane}
+        onOpenPane={togglePane}
         onOpenHistory={() => setHistoryOpen(true)}
       />
 
@@ -4421,6 +6032,8 @@ export function ExtremeCoreView() {
             onDelete={removeWorkspace}
             blockedIds={blockedIds}
             runningIds={runningIds}
+            attentionById={attentionById}
+            unreadIds={unreadIds}
             outputStyle={chatPrefs.output}
             onOutputStyleChange={setOutputStyle}
             hasContext={hasContext}
@@ -4469,7 +6082,7 @@ export function ExtremeCoreView() {
           {candidates && (
             <ServiceCandidates
               candidates={candidates}
-              onPick={planUpdate}
+              onPick={(service) => planUpdate(currentScope(), service)}
               onDismiss={() => setCandidates(null)}
             />
           )}
@@ -4481,7 +6094,7 @@ export function ExtremeCoreView() {
               attachmentCount={attachments.length}
               remoteRoot={remoteRoot}
               uploading={uploading}
-              onUpload={() => void uploadToServer()}
+              onUpload={() => void uploadToServer(currentScope())}
               onGeneratePlan={planFromComposer}
               onImportFolders={(folders, added) => {
                 addFolders(folders);
@@ -4497,8 +6110,9 @@ export function ExtremeCoreView() {
           <div className="extreme-core-chat-layout relative flex min-h-0 flex-1">
           <div
             ref={scrollRef}
+            tabIndex={0}
             className={cn(
-              "extreme-core-chat min-h-0 min-w-0 flex-1 overflow-y-auto py-5",
+              "extreme-core-chat min-h-0 min-w-0 flex-1 overflow-y-auto py-5 [overflow-anchor:none]",
               welcome && "hidden",
             )}
           >
@@ -4512,8 +6126,12 @@ export function ExtremeCoreView() {
               onPreview={openArtifact}
               sessionId={sessionId ?? undefined}
               onOpenWorkspaceTarget={openWorkspaceTarget}
+              onResumeTask={(task) => void resumeTask(task)}
+              onOpenChanges={(task) => openChanges(task.id)}
               onQuote={quoteMessage}
               onEdit={editMessage}
+              onRetryMessage={retryInterrupted}
+              onResendMessage={resendMessage}
             />
 
               {/* 部署过程：面板只读步骤与状态，执行循环与取消标记留在页面。 */}
@@ -4565,23 +6183,53 @@ export function ExtremeCoreView() {
           )}
 
           {/*
-           * 确认条：表过态之后**从界面上消失**（用户明确要求），但组件仍挂着 ——
-           * 它内部还负责把桌面通知从"待确认"更新成"已拒绝 · 此步骤未执行"，
-           * 卸载就再也推不出结果了。所以是隐藏，不是删掉。
+           * 确认条：**当前对话的每一条**都排在输入框上方（按步骤顺序）。
+           * 别的对话的审批不出现在这里，只在左栏标「待确认」+ 桌面通知。
            */}
-          {approval && (
-            <div hidden={approval.callId === approvalClosed}>
+          {currentApprovals.map((entry) => (
+            <div key={approvalKeyOf(entry.approval.taskId, entry.approval.callId)}>
               <AgentApprovalCard
-                approval={approval}
-                phase={approvalPhase}
-                failure={approvalOutcomeForBar?.failure ?? null}
-                stepState={approvalStep?.state ?? null}
-                onDecide={(allow) => void decideApproval(allow)}
+                approval={entry.approval}
+                goal={tasks[entry.approval.taskId]?.goal}
+                phase={entry.phase}
+                failure={entry.failure}
+                stepState={
+                  tasks[entry.approval.taskId]?.steps.find(
+                    (step) => step.id === `agent-${entry.approval.stepIndex}`,
+                  )?.state ?? null
+                }
+                onDecide={(allow) =>
+                  void decideApprovalById(allow, entry.approval.callId, entry.approval.taskId)
+                }
                 onOpenOutput={() => {
                   // 「查看输出」：右栏切到终端 › 执行输出 —— 这条命令就在那一列里。
                   openPaneTab("terminal", "output");
                 }}
+                // 「查看变更」只做定位：允许 / 拒绝仍然只走这张卡。
+                onOpenChanges={
+                  entry.approval.changeId
+                    ? () => openChanges(entry.approval.taskId, entry.approval.changeId ?? undefined)
+                    : undefined
+                }
               />
+            </div>
+          ))}
+
+          {/*
+           * 这一段是连接状态：超能的命令都绑在一条 SSH 会话上，会话没了就必须
+           * 明确说明并给出重连入口 —— 否则用户只会看到"发不出去"。
+           */}
+          {!sessionId && (
+            <div
+              role="status"
+              className="mx-auto mb-1 flex w-full max-w-[880px] flex-wrap items-center gap-2 rounded-md border border-danger/40 bg-danger/10 px-3 py-1.5 text-11 text-danger"
+            >
+              <span className="min-w-0 flex-1">
+                {t("服务器未连接：发送与执行都不可用。")}
+              </span>
+              <Button size="xs" variant="ghost" onClick={reconnect}>
+                {t("重新连接")}
+              </Button>
             </div>
           )}
 
@@ -4603,6 +6251,25 @@ export function ExtremeCoreView() {
               >
                 ×
               </button>
+            </div>
+          )}
+
+          {/*
+           * 停止迟迟没有后端确认：把「强制结束」摆出来。
+           *
+           * 只在同一个对话里显示；用户切走时它不该跟着出现在别人的界面上。
+           */}
+          {stopOverdueId && stopOverdueId === activeTask?.id && (
+            <div
+              role="status"
+              className="mx-auto mb-1 flex w-full max-w-[880px] flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-11 text-warning"
+            >
+              <span className="min-w-0 flex-1">
+                {t("停止还没有被后端确认：可以再点一次停止，或强制结束这次运行。")}
+              </span>
+              <Button size="xs" variant="ghost" onClick={() => void forceStop()}>
+                {t("强制结束")}
+              </Button>
             </div>
           )}
 
@@ -4639,10 +6306,100 @@ export function ExtremeCoreView() {
             )
           )}
 
+          {/*
+           * 执行中发送方式：默认「补充给当前任务」（下一步生效），也可以排队到
+           * 任务结束后再发。做成行内切换而不是弹窗：连续补要求时不用每次确认。
+           */}
+          {asking && (
+            <div className="mx-auto mb-1 flex w-full max-w-[880px] flex-wrap items-center justify-end gap-1 px-1 text-10 text-fg-subtle">
+              <span className="mr-1">{t("执行中发送")}</span>
+              {(["steer", "queue"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={sendWhileRunning === mode}
+                  onClick={() => setSendWhileRunning(mode)}
+                  className={cn(
+                    "rounded-full px-2 py-0.5 transition-colors",
+                    sendWhileRunning === mode
+                      ? "bg-accent/15 text-accent"
+                      : "hover:bg-surface-hover hover:text-fg",
+                  )}
+                >
+                  {mode === "steer" ? t("补充给当前任务") : t("完成后发送")}
+                </button>
+              ))}
+            </div>
+          )}
+          {/*
+           * 队列：**只显示这条对话的**，按提交顺序。
+           *
+           * 取消会把原文放回草稿（不丢字）；失败的那条保留并写明原因，
+           * 用户可以直接重试，不会被静默丢弃。
+           */}
+          {currentQueue.length > 0 && (
+            <ul
+              className="mx-auto mb-1 flex w-full max-w-[880px] flex-col gap-1"
+              aria-label={t("待发送队列")}
+              data-testid="extreme-send-queue"
+            >
+              {currentQueue.map((item, index) => (
+                <li
+                  key={item.id}
+                  data-queue-id={item.id}
+                  className={cn(
+                    "flex items-start gap-2 rounded-md border px-3 py-1.5 text-11",
+                    item.error
+                      ? "border-danger/40 bg-danger/10 text-danger"
+                      : "border-line/70 bg-surface-2 text-fg-muted",
+                  )}
+                >
+                  <span className="shrink-0 tabular-nums text-fg-subtle">{index + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate" title={item.text}>
+                      {item.text}
+                    </span>
+                    <span className="mt-0.5 block text-10 text-fg-subtle">
+                      {[
+                        item.selection.model || t("默认模型"),
+                        item.attachments.length > 0
+                          ? t("{{n}} 个附件", { n: item.attachments.length })
+                          : null,
+                        item.error,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </span>
+                  </span>
+                  {item.error && (
+                    <button
+                      type="button"
+                      className="shrink-0 text-fg-muted underline underline-offset-2 hover:text-fg"
+                      onClick={() => retrySend(item.id)}
+                    >
+                      {t("重试")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="shrink-0 text-fg-subtle hover:text-fg"
+                    onClick={() => {
+                      dropSend(item.id);
+                      // 取消不丢字：原文放回输入框，附件勾选也还在。
+                      setDraft(draft.trim() ? `${draft}\n${item.text}` : item.text);
+                    }}
+                  >
+                    {t("取消")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
           <ComposerPanel
             draft={draft}
             onDraftChange={setDraft}
-            onSend={(text) => void ask(text)}
+            onSend={(text, selection) => void ask(text, 0, undefined, { selection })}
             onCancel={stopRun}
             busy={canStop}
             onOpenAttachments={() => openPaneTab("attachments")}
@@ -4694,19 +6451,72 @@ export function ExtremeCoreView() {
             width={paneFit}
             overlay={paneOverlay}
             tab={paneTab}
+            tabs={paneLists[workspaceId ?? ""] ?? [paneTab]}
             terminalTab={terminalPane}
             onTabChange={setPaneTab}
+            onCloseTab={closePane}
             onTerminalTabChange={setTerminalPane}
+            logLive={logStream?.status === "connecting" || logStream?.status === "live"}
+            logs={
+              workspaceId ? (
+                <LogsPane
+                  key={workspaceId}
+                  workspaceId={workspaceId}
+                  serverId={serverId}
+                  sessionId={sessionId}
+                  source={logSourceByWorkspace[workspaceId] ?? logStream?.source ?? null}
+                  onChoose={(source) => {
+                    setLogSource(workspaceId, source);
+                    openPaneTab("logs");
+                  }}
+                />
+              ) : null
+            }
+            browser={
+              workspaceId ? (
+                <BrowserPane
+                  key={workspaceId}
+                  workspaceId={workspaceId}
+                  url={browserByWorkspace[workspaceId] ?? null}
+                  onUrlChange={(url) => setBrowserUrl(workspaceId, url)}
+                />
+              ) : null
+            }
+            /*
+             * 文件变更：key 按对话重建 —— 切换对话时不会残留上一条的正文 /
+             * 筛选 / 滚动位置（阅读状态本身按对话存在 store 里）。
+             */
+            changes={
+              <FileChangesPane
+                key={workspaceId ?? "none"}
+                workspaceId={workspaceId}
+                serverName={server ?? ""}
+                sessionId={sessionId}
+                focus={changeFocus}
+                onOpenRemotePath={(path) => {
+                  setWorkspaceTarget({
+                    kind: "directory",
+                    path: path.slice(0, path.lastIndexOf("/")) || "/",
+                    sessionId: sessionId ?? "",
+                  });
+                  openPaneTab("files");
+                }}
+              />
+            }
+            pendingChanges={pendingChangeCount}
             // 拖到"聊天只剩 520"为止；再往里拖没有意义，宽度也存不下。
-            onWidthChange={(next) => setPaneWidth(Math.min(next, paneRoom))}
-            onCollapse={() => setPaneView("hidden")}
+            onWidthChange={(next, persist) => setPaneWidth(next, { persist })}
+            onOuterDragStart={onPaneOuterDragStart}
+            onDraggingChange={setPaneDragging}
+            onCollapse={collapsePane}
+            onAddTerminalOutput={() => void addTerminalOutput()}
             onExpand={() => setPaneView("expanded")}
             onRestore={() => setPaneView("split")}
             attachments={attachments}
             selectedIds={selectedAttachmentIds}
             onSelectedChange={setSelectedAttachmentIds}
             onPreviewAttachment={(id) => handleAttachmentPreview({ uid: id })}
-            onRetryAttachment={() => void uploadToServer()}
+            onRetryAttachment={() => void uploadToServer(currentScope())}
             onRemoveAttachment={(id) => handleAttachmentRemove({ uid: id })}
             onOpenRemotePath={(path) => {
               setWorkspaceTarget({
@@ -4736,7 +6546,7 @@ export function ExtremeCoreView() {
                     : null)
                 }
                 onReset={() => setWorkspaceTarget(null)}
-                onClose={() => setPaneView("hidden")}
+                onClose={collapsePane}
                 attachments={attachments}
                 preview={preview}
                 follow={
@@ -4750,24 +6560,16 @@ export function ExtremeCoreView() {
                 onRemove={handleRemoveAttachment}
                 onAddToChat={handleAddToChat}
                 onAddRemoteToChat={handleAddRemoteToChat}
+                onPathChange={(path) => {
+                  if (workspaceId) setRemotePath(workspaceId, path);
+                }}
                 onError={(cause) => setAskError(toAppError(cause).message)}
               />
             }
 
             manual={<ManualTerminal workspaceId={workspaceId} sessionId={sessionId} />}
             output={
-              activeTask && activeTask.steps.length > 0 ? (
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-2 py-1 font-mono text-10 text-fg-muted">
-                  {activeTask.steps
-                    .map(
-                      (step) =>
-                        `$ ${step.command ?? step.title}\n${step.stdout ?? ""}${step.stderr ?? ""}`,
-                    )
-                    .join("\n")}
-                </pre>
-              ) : (
-                <p className="px-3 py-2 text-11 text-fg-subtle">{t("还没有命令输出")}</p>
-              )
+              <CommandOutput key={activeTask?.id ?? workspaceId} task={activeTask} />
             }
           />
         )}
@@ -4785,6 +6587,12 @@ export function ExtremeCoreView() {
         onOpenWorkspace={(id) => {
           setHistoryOpen(false);
           openWorkspace(id);
+        }}
+        onOpenTask={(id, taskId) => {
+          setHistoryOpen(false);
+          openWorkspace(id);
+          // 切过去之后 effect 再滚到消息：这里只记下目标。
+          setHistoryFocus({ workspaceId: id, taskId });
         }}
       />
       {filePreview && (

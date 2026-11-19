@@ -8,6 +8,8 @@
 
 use serde::Serialize;
 
+use super::changes::FileChangeSummary;
+
 /// 回灌给模型的单条结果上限（保留**尾部**：报错与结论通常在最后）。
 pub const MODEL_OUTPUT_LIMIT: usize = 32 * 1024;
 
@@ -64,6 +66,47 @@ impl ToolRisk {
     }
 }
 
+/// 任务结论的验证等级。
+///
+/// **不再用"模型回了句话"当成功**：部署 / 排障的结论必须能指回服务器上
+/// 真实发生过的步骤。前端据此显示「已验证 / 部分完成 / 需要补充信息」。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOutcome {
+    /// `verified` / `partial` / `needs_info`。
+    pub level: String,
+    /// 一句话说明为什么是这个等级。
+    pub reason: String,
+    /// 支撑结论的证据（命令 / 路径 + 步骤序号），最多几条。
+    pub evidence: Vec<String>,
+}
+
+impl AgentOutcome {
+    pub fn verified(reason: impl Into<String>, evidence: Vec<String>) -> Self {
+        Self {
+            level: "verified".to_string(),
+            reason: reason.into(),
+            evidence,
+        }
+    }
+
+    pub fn partial(reason: impl Into<String>, evidence: Vec<String>) -> Self {
+        Self {
+            level: "partial".to_string(),
+            reason: reason.into(),
+            evidence,
+        }
+    }
+
+    pub fn needs_info(reason: impl Into<String>, evidence: Vec<String>) -> Self {
+        Self {
+            level: "needs_info".to_string(),
+            reason: reason.into(),
+            evidence,
+        }
+    }
+}
+
 /// 一条已解析、已定级的工具调用。
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -116,6 +159,10 @@ pub struct AgentStep {
     pub rollback: Option<String>,
     /// 危险操作的影响说明（确认框里展示）。
     pub impact: Option<String>,
+    /// 这条步骤对应的**文件变更记录**（只有 `write_file` 会带）。
+    ///
+    /// 只是一个标识：正文 Diff 按需从变更注册表取，不塞进步骤事件。
+    pub change_id: Option<String>,
     pub elapsed_ms: u64,
 }
 
@@ -168,6 +215,12 @@ pub struct AgentEvent {
     pub rollback: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impact: Option<String>,
+    /// 文件变更记录的标识（审批卡与执行结果据此打开 Diff）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_id: Option<String>,
+    /// 变更摘要（`file_change` 事件带；正文不在这里）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<FileChangeSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +228,9 @@ pub struct AgentEvent {
     /// 当前任务已计算的上下文与累计用量。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<super::state::ContextUsage>,
+    /// 终态时的验证结论（只有 `finished` 且执行过步骤时带）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AgentOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,9 +263,12 @@ impl AgentEvent {
             backup_path: None,
             rollback: None,
             impact: None,
+            change_id: None,
+            change: None,
             content: None,
             model: None,
             context: None,
+            outcome: None,
             message: None,
             elapsed_ms: None,
             deadline: None,
@@ -253,6 +312,7 @@ impl AgentEvent {
             backup_path: step.backup_path.clone(),
             rollback: step.rollback.clone(),
             impact: step.impact.clone(),
+            change_id: step.change_id.clone(),
             elapsed_ms: Some(step.elapsed_ms),
             ..Self::new(task_id, kind)
         }
@@ -286,6 +346,9 @@ pub struct PendingApproval {
     pub backup_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback: Option<String>,
+    /// 待确认预览的变更记录标识：确认卡据此打开「查看变更」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_id: Option<String>,
     pub cwd: String,
     /// 等待确认的截止时刻（毫秒时间戳，= 挂起时刻 + APPROVAL_SECONDS）。
     /// 界面倒计时以它为准：重进恢复的确认卡可能只剩几秒，不能重新起算。

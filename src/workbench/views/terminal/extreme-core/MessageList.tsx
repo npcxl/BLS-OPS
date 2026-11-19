@@ -24,6 +24,7 @@ import { EC } from "./theme";
 import { TaskCardView } from "./TaskCardView";
 import type { TaskArtifact, TaskCardModel } from "./task-view";
 import type { WorkspaceTarget } from "./RemoteWorkspacePanel";
+import { RemotePathLink, type OpenTarget } from "./RemotePathLink";
 
 /**
  * **已定稿**的那半段 Markdown。
@@ -34,22 +35,21 @@ import type { WorkspaceTarget } from "./RemoteWorkspacePanel";
  */
 const StableMarkdown = memo(function StableMarkdown({
   content,
-  sessionId,
   onOpen,
 }: {
   content: string;
   sessionId?: string;
-  onOpen?: (target: WorkspaceTarget) => void;
+  onOpen?: OpenTarget;
 }) {
   return (
     <XMarkdown
       className="extreme-core-markdown"
       content={content}
       streaming={false}
+      config={MARKDOWN_CONFIG}
       components={workspaceComponents}
       componentsProps={{
-        a: { sessionId, onOpen },
-        code: { sessionId, onOpen },
+        a: { onOpen },
       }}
       dompurifyConfig={MARKDOWN_SANITIZE}
     />
@@ -72,7 +72,7 @@ const MarkdownBody = memo(function MarkdownBody({
   content: string;
   streaming: boolean;
   sessionId?: string;
-  onOpen?: (target: WorkspaceTarget) => void;
+  onOpen?: OpenTarget;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   /**
@@ -142,6 +142,7 @@ const MarkdownBody = memo(function MarkdownBody({
         className="extreme-core-markdown"
         content={content}
         streaming={false}
+        config={MARKDOWN_CONFIG}
         components={workspaceComponents}
         componentsProps={{
           a: { sessionId, onOpen },
@@ -157,10 +158,27 @@ const MarkdownBody = memo(function MarkdownBody({
 const MemoAgentActivity = memo(AgentActivity);
 const MemoTaskCardView = memo(TaskCardView);
 
-function workspaceTarget(value: string, sessionId: string): WorkspaceTarget | null {
-  if (/^\/(?!\/)[^\u0000-\u001f]+$/.test(value) && !value.split("/").includes("..")) {
-    return { kind: "directory", path: value, sessionId };
-  }
+// GFM handles bare URLs. POSIX paths in prose also enter the same verified-link renderer.
+const plainPath = String.raw`/[a-zA-Z0-9._~+@%=-]+(?:/[a-zA-Z0-9._~+@%=-]+)*/?`;
+const pathStart = new RegExp(String.raw`(?<![\w/:])${plainPath}`);
+const pathToken = new RegExp(`^${plainPath}`);
+const MARKDOWN_CONFIG: ComponentProps<typeof XMarkdown>["config"] = {
+  gfm: true,
+  extensions: [{
+    name: "remotePath",
+    level: "inline",
+    start: (text) => pathStart.exec(text)?.index,
+    tokenizer(src) {
+      if (this.lexer.state.inLink) return undefined;
+      const raw = pathToken.exec(src)?.[0]?.replace(/[.]+$/, "");
+      if (!raw) return undefined;
+      return { type: "remotePath", raw, path: raw };
+    },
+    renderer: (token) => `<a href="${token.path}">${token.path}</a>`,
+  }],
+};
+
+function websiteTarget(value: string): WorkspaceTarget | null {
   try {
     const url = new URL(value);
     if ((url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password) {
@@ -179,24 +197,29 @@ type LinkProps = {
   block?: boolean;
   className?: string;
   sessionId?: string;
-  onOpen?: (target: WorkspaceTarget) => void;
+  onOpen?: OpenTarget;
 };
 
+function isRemotePath(path: string): boolean {
+  return /^\/(?!\/)[^\u0000-\u001f<>|]*$/.test(path) && !path.split("/").includes("..");
+}
+
 function WorkspaceLink({ href, children, sessionId, onOpen }: LinkProps) {
-  const target = href && sessionId ? workspaceTarget(href, sessionId) : null;
+  const target = href ? websiteTarget(href) : null;
+  if (href && sessionId && isRemotePath(href)) {
+    return <RemotePathLink path={href} sessionId={sessionId} onOpen={onOpen}>{children}</RemotePathLink>;
+  }
   return target && onOpen
     ? <a href={href} onClick={(event) => { event.preventDefault(); onOpen(target); }}>{children}</a>
     : <span>{children}</span>;
 }
 
 function LinkedCode({ children, block, className, sessionId, onOpen }: LinkProps) {
-  const target = !block && typeof children === "string" && sessionId
-    ? workspaceTarget(children, sessionId)
-    : null;
+  const path = !block && typeof children === "string" ? children.trim() : "";
   return (
     <code className={className}>
-      {target && onOpen ? (
-        <a href={children as string} onClick={(event) => { event.preventDefault(); onOpen(target); }}>{children}</a>
+      {path && sessionId && isRemotePath(path) ? (
+        <RemotePathLink path={path} sessionId={sessionId} onOpen={onOpen}>{children}</RemotePathLink>
       ) : children}
     </code>
   );
@@ -265,6 +288,7 @@ const MARKDOWN_SANITIZE = {
     "button",
   ],
   FORBID_ATTR: ["style", "onerror", "onload", "onclick", "onmouseover", "srcset"],
+  ADD_ATTR: ["data-block"],
   ALLOW_DATA_ATTR: false,
 };
 
@@ -283,8 +307,12 @@ const MessageRow = memo(function MessageRow({
   sessionId,
   onPreview,
   onOpenWorkspaceTarget,
+  onResumeTask,
+  onOpenChanges,
   onQuote,
   onEdit,
+  onRetryMessage,
+  onResendMessage,
 }: {
   message: ExtremeMessage;
   attachmentById: Map<string, ExtremeAttachment>;
@@ -292,9 +320,16 @@ const MessageRow = memo(function MessageRow({
   task?: TaskCardModel;
   sessionId?: string;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
-  onOpenWorkspaceTarget?: (target: WorkspaceTarget) => void;
+  onOpenWorkspaceTarget?: OpenTarget;
+  onResumeTask?: (task: TaskCardModel) => void;
+  /** 「查看实际变更」：在右栏打开这次运行的文件变更。 */
+  onOpenChanges?: (task: TaskCardModel) => void;
   onQuote?: (message: ExtremeMessage) => void;
   onEdit?: (message: ExtremeMessage) => void;
+  /** 回复中断：用原问题重新跑一次。 */
+  onRetryMessage?: (message: ExtremeMessage) => void;
+  /** 用户消息没送达：把原文放回输入框。 */
+  onResendMessage?: (message: ExtremeMessage) => void;
 }) {
   const { t } = useTranslation();
   const mine = message.role === "user";
@@ -422,15 +457,11 @@ const MessageRow = memo(function MessageRow({
         </div>
       ) : (
         <div
+          id={`extreme-message-${message.id}`}
           className={cn(
             "extreme-core-message min-w-0",
             mine ? "extreme-core-message-user" : message.local ? "extreme-core-message-notice" : "extreme-core-message-reply",
           )}
-          style={
-            mine
-              ? { background: EC.accent, color: "#ffffff" }
-                : undefined
-          }
         >
           {mine ? (
             message.text
@@ -441,6 +472,53 @@ const MessageRow = memo(function MessageRow({
               sessionId={sessionId}
               onOpen={onOpenWorkspaceTarget}
             />
+          )}
+        </div>
+      )}
+      {/*
+       * 回复中断：正文保留在上面，这里只补一行**状态与重试入口**。
+       *
+       * 用户可能已经看完一大半内容，把气泡删掉等于"回答凭空消失"；切走再
+       * 回来这一行也还在（它写在消息上，不是临时状态）。
+       */}
+      {!mine && message.interrupted && (
+        <div
+          data-testid="extreme-message-interrupted"
+          data-interrupted={message.interrupted}
+          className="flex max-w-[78%] flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-11 text-warning"
+        >
+          <span className="min-w-0">
+            {message.interrupted === "cancelled" ? t("已停止") : t("回复中断")}
+            {message.interruptReason ? `：${message.interruptReason}` : ""}
+          </span>
+          {message.interrupted !== "cancelled" && onRetryMessage && (
+            <button
+              type="button"
+              className="shrink-0 underline underline-offset-2 hover:text-fg"
+              onClick={() => onRetryMessage(message)}
+            >
+              {t("重试")}
+            </button>
+          )}
+        </div>
+      )}
+      {/* 自己那句没送到后端：正文还在，旁边给出重发入口（不静默丢弃）。 */}
+      {mine && message.deliveryError && (
+        <div
+          data-testid="extreme-message-undelivered"
+          className="flex max-w-[78%] flex-wrap items-center gap-2 rounded-md border border-danger/40 bg-danger/10 px-2 py-1 text-11 text-danger"
+        >
+          <span className="min-w-0">
+            {t("没有送达")}：{message.deliveryError}
+          </span>
+          {onResendMessage && (
+            <button
+              type="button"
+              className="shrink-0 underline underline-offset-2 hover:text-fg"
+              onClick={() => onResendMessage(message)}
+            >
+              {t("重发")}
+            </button>
           )}
         </div>
       )}
@@ -463,8 +541,20 @@ const MessageRow = memo(function MessageRow({
       </div>}
       {task && (
         isAgentActivity(task)
-          ? <MemoAgentActivity task={task} onPreview={onPreview} onOpenTarget={onOpenWorkspaceTarget} />
-          : <div className="w-full max-w-[560px]"><MemoTaskCardView task={task} onPreview={onPreview} /></div>
+          ? (
+            <MemoAgentActivity
+              task={task}
+              onPreview={onPreview}
+              onOpenTarget={onOpenWorkspaceTarget}
+              onResume={onResumeTask}
+              onOpenChanges={onOpenChanges}
+            />
+          )
+          : (
+            <div className="w-full max-w-[560px]">
+              <MemoTaskCardView task={task} onPreview={onPreview} onResume={onResumeTask} />
+            </div>
+          )
       )}
     </div>
   );
@@ -488,8 +578,12 @@ export const MessageList = memo(function MessageList({
   onPreview,
   sessionId,
   onOpenWorkspaceTarget,
+  onResumeTask,
+  onOpenChanges,
   onQuote,
   onEdit,
+  onRetryMessage,
+  onResendMessage,
 }: {
   messages: ExtremeMessage[];
   asking: boolean;
@@ -499,11 +593,19 @@ export const MessageList = memo(function MessageList({
   tasks?: Record<string, TaskCardModel>;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
   sessionId?: string;
-  onOpenWorkspaceTarget?: (target: WorkspaceTarget) => void;
+  onOpenWorkspaceTarget?: OpenTarget;
+  /** 从检查点恢复中断 / 失败的任务。 */
+  onResumeTask?: (task: TaskCardModel) => void;
+  /** 「查看实际变更」：在右栏打开这次运行的文件变更。 */
+  onOpenChanges?: (task: TaskCardModel) => void;
   /** 引用这条回复：把原文带进输入框，接着问。 */
   onQuote?: (message: ExtremeMessage) => void;
   /** 编辑自己发过的那句：把原文回填输入框重写。 */
   onEdit?: (message: ExtremeMessage) => void;
+  /** 回复中断：用原问题重新跑一次。 */
+  onRetryMessage?: (message: ExtremeMessage) => void;
+  /** 用户消息没送达：把原文放回输入框。 */
+  onResendMessage?: (message: ExtremeMessage) => void;
 }) {
   const { t } = useTranslation();
   const attachmentById = useMemo(
@@ -514,8 +616,26 @@ export const MessageList = memo(function MessageList({
    * 父组件的回调有的是 `useCallback`，有的依赖草稿（每敲一个字就换一份）。
    * 这里统一转成稳定引用，否则 `MessageRow` 的 memo 永远命中不了。
    */
-  const handlers = useRef({ onPreview, onOpenWorkspaceTarget, onQuote, onEdit });
-  handlers.current = { onPreview, onOpenWorkspaceTarget, onQuote, onEdit };
+  const handlers = useRef({
+    onPreview,
+    onOpenWorkspaceTarget,
+    onResumeTask,
+    onOpenChanges,
+    onQuote,
+    onEdit,
+    onRetryMessage,
+    onResendMessage,
+  });
+  handlers.current = {
+    onPreview,
+    onOpenWorkspaceTarget,
+    onResumeTask,
+    onOpenChanges,
+    onQuote,
+    onEdit,
+    onRetryMessage,
+    onResendMessage,
+  };
   const preview = useCallback(
     (artifact: TaskArtifact, id: string) => handlers.current.onPreview?.(artifact, id),
     [],
@@ -524,8 +644,24 @@ export const MessageList = memo(function MessageList({
     (target: WorkspaceTarget) => handlers.current.onOpenWorkspaceTarget?.(target),
     [],
   );
+  const resumeTask = useCallback(
+    (task: TaskCardModel) => handlers.current.onResumeTask?.(task),
+    [],
+  );
+  const openChanges = useCallback(
+    (task: TaskCardModel) => handlers.current.onOpenChanges?.(task),
+    [],
+  );
   const quote = useCallback((message: ExtremeMessage) => handlers.current.onQuote?.(message), []);
   const edit = useCallback((message: ExtremeMessage) => handlers.current.onEdit?.(message), []);
+  const retry = useCallback(
+    (message: ExtremeMessage) => handlers.current.onRetryMessage?.(message),
+    [],
+  );
+  const resend = useCallback(
+    (message: ExtremeMessage) => handlers.current.onResendMessage?.(message),
+    [],
+  );
 
   const linked = new Set(messages.map((message) => message.taskId).filter(Boolean) as string[]);
   /**
@@ -567,18 +703,30 @@ export const MessageList = memo(function MessageList({
               sessionId={sessionId}
               onPreview={preview}
               onOpenWorkspaceTarget={openTarget}
+              onResumeTask={resumeTask}
+              onOpenChanges={openChanges}
               onQuote={quote}
               onEdit={edit}
+              onRetryMessage={retry}
+              onResendMessage={resend}
             />
           );
         })}
         {orphans.map((task) => isAgentActivity(task) ? (
-          <MemoAgentActivity key={task.id} task={task} onPreview={preview} onOpenTarget={openTarget} />
+          <MemoAgentActivity
+            key={task.id}
+            task={task}
+            onPreview={preview}
+            onOpenTarget={openTarget}
+            onResume={resumeTask}
+            onOpenChanges={openChanges}
+          />
         ) : (
           <div key={task.id} className="max-w-[560px]">
             <MemoTaskCardView
               task={task}
               onPreview={preview}
+              onResume={resumeTask}
             />
           </div>
         ))}

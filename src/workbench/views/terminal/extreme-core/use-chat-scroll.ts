@@ -14,16 +14,7 @@ import { useCallback, useEffect, useRef, type RefObject } from "react";
 /** 用户自己滚到距底这么多像素以内，算"回到最新"（只在用户滚动时判定）。 */
 const NEAR_BOTTOM = 24;
 
-/** 会让视图移动的按键：按下即视为用户接管。 */
-const SCROLL_KEYS = new Set([
-  "PageUp",
-  "PageDown",
-  "Home",
-  "End",
-  "ArrowUp",
-  "ArrowDown",
-  " ",
-]);
+const UP_KEYS = new Set(["PageUp", "Home", "ArrowUp"]);
 
 export interface ChatScroll {
   /** 挂到滚动容器上。 */
@@ -39,22 +30,15 @@ export interface ChatScroll {
 export function useChatScroll(enabled: boolean): ChatScroll {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  /** 这一次 `scrollTop` 是代码写的，不是用户滚的。 */
-  const programmatic = useRef(false);
+  const previousTop = useRef(0);
   const frame = useRef<number | null>(null);
 
   const writeTop = useCallback((top: number) => {
     const node = ref.current;
-    if (!node || Math.abs(node.scrollTop - top) < 1) return;
-    programmatic.current = true;
-    node.scrollTo({ top });
-    /*
-     * 位置没变时不会有 `scroll` 事件（上面的判断已经挡掉），但浏览器也可能
-     * 把事件排在下一帧：这里兜底清一次标志，免得下一次真实滚动被吞掉。
-     */
-    requestAnimationFrame(() => {
-      programmatic.current = false;
-    });
+    if (!node) return;
+    const next = Math.max(0, Math.min(top, node.scrollHeight - node.clientHeight));
+    if (Math.abs(node.scrollTop - next) >= 1) node.scrollTop = next;
+    previousTop.current = node.scrollTop;
   }, []);
 
   const follow = useCallback(() => {
@@ -79,6 +63,7 @@ export function useChatScroll(enabled: boolean): ChatScroll {
     if (!enabled) return undefined;
     const node = ref.current;
     if (!node) return undefined;
+    previousTop.current = node.scrollTop;
 
     /** 用户主动离开底部：立刻停止跟随（不等到下一次 `scroll`）。 */
     const release = () => {
@@ -88,24 +73,32 @@ export function useChatScroll(enabled: boolean): ChatScroll {
       // 往上滚才是"我要看历史"；往下滚交给 `scroll` 判到没到底。
       if (event.deltaY < 0) release();
     };
-    const onTouchMove = () => release();
+    let touchY: number | undefined;
+    const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY; };
+    const onTouchMove = (event: TouchEvent) => {
+      const next = event.touches[0]?.clientY;
+      if (next !== undefined && touchY !== undefined && next > touchY) release();
+      touchY = next;
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (SCROLL_KEYS.has(event.key)) release();
+      if (event.target === node && (UP_KEYS.has(event.key) || (event.key === " " && event.shiftKey))) {
+        release();
+      }
     };
     /*
      * `scroll` 只做一件事：用户自己滚回底部时恢复跟随。
      * 代码写的那些位置（贴底、还原阅读位置）在这里被认出来并跳过。
      */
     const onScroll = () => {
-      if (programmatic.current) {
-        programmatic.current = false;
-        return;
-      }
+      const movedUp = node.scrollTop < previousTop.current - 1;
+      previousTop.current = node.scrollTop;
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
-      stick.current = gap < NEAR_BOTTOM;
+      if (gap < NEAR_BOTTOM) stick.current = true;
+      else if (movedUp) release();
     };
 
     node.addEventListener("wheel", onWheel, { passive: true });
+    node.addEventListener("touchstart", onTouchStart, { passive: true });
     node.addEventListener("touchmove", onTouchMove, { passive: true });
     node.addEventListener("keydown", onKeyDown);
     node.addEventListener("scroll", onScroll, { passive: true });
@@ -128,6 +121,7 @@ export function useChatScroll(enabled: boolean): ChatScroll {
 
     return () => {
       node.removeEventListener("wheel", onWheel);
+      node.removeEventListener("touchstart", onTouchStart);
       node.removeEventListener("touchmove", onTouchMove);
       node.removeEventListener("keydown", onKeyDown);
       node.removeEventListener("scroll", onScroll);

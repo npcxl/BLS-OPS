@@ -5,7 +5,13 @@
  *
  * 只有**应用已经收起**（最小化 / 收进托盘 / 页面不可见）**且**有操作在等确认
  * 时才推这条通知。先出现确认条、随后收起应用也会补发一次（`sync` 里记着当前
- * 那条，收起时直接重推）。
+ * 那几条，收起时直接重推）。
+ *
+ * # 多条并存
+ *
+ * A、B 两条对话可能同时等确认。这里按 `taskId|callId` 分别记一条，各自推、
+ * 各自收：处理 A 不会把 B 的通知撤掉。主窗口每次把**完整的待确认列表**同步
+ * 过来，不在列表里的才收起。
  *
  * # 两处同步
  *
@@ -21,15 +27,22 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
+  clearExtremeNotifications,
   dismissDesktopNotification,
   pushDesktopNotification,
   type DesktopNotificationPayload,
 } from "@/desktop-notification/bridge";
+import { isWindowHidden, setCollapsed } from "@/desktop-notification/visibility";
 
 export type ApprovalNoticePhase = "pending" | "sending" | "allowed" | "denied" | "failed";
 
 export interface ApprovalNotice {
-  /** 审批的唯一标识（后端 `callId`）：同一条审批只占一个通知槽。 */
+  /**
+   * 所属运行。`callId` 只在一次运行内唯一（`call-0-0` 会重复），
+   * 通知 id 必须带 taskId，否则两条任务的确认会抢同一个槽。
+   */
+  taskId: string;
+  /** 本次运行里的审批标识。 */
   callId: string;
   /** 一句话操作，例如「重载 Nginx」。 */
   operation: string;
@@ -44,7 +57,7 @@ export interface ApprovalNotice {
 
 interface ApprovalHandlers {
   /** 与点确认条走同一个流程：`allow` 为真表示允许本次。 */
-  decide: (callId: string, allow: boolean) => void | Promise<void>;
+  decide: (taskId: string, callId: string, allow: boolean) => void | Promise<void>;
   /** 点通知正文：把主窗口叫回前台。 */
   open: () => void;
 }
@@ -54,18 +67,14 @@ const ID_PREFIX = "extreme-approval-";
 const RESOLVED_MS = 4000;
 
 let handlers: ApprovalHandlers | null = null;
-let current: ApprovalNotice | null = null;
-/** 当前显示在通知里的那条 id（`null` = 当前没有我们的通知）。 */
-let shownId: string | null = null;
-let collapsed = false;
+/** 当前**所有**待确认 / 刚处理的通知（id → 内容）。 */
+let current = new Map<string, ApprovalNotice>();
+/** 已经推给原生层的 id（`null` 语义由空 Map 表达）。 */
+let shown = new Set<string>();
 let installed = false;
 
-function notificationId(callId: string): string {
-  return `${ID_PREFIX}${callId}`;
-}
-
-function isHidden(): boolean {
-  return collapsed || document.hidden;
+function notificationId(taskId: string, callId: string): string {
+  return `${ID_PREFIX}${encodeURIComponent(taskId)}|${encodeURIComponent(callId)}`;
 }
 
 function serverLine(notice: ApprovalNotice): string {
@@ -143,56 +152,68 @@ function compose(
   }
 }
 
-function push(
-  notice: ApprovalNotice,
-  t: (key: string, options?: Record<string, unknown>) => string,
-): void {
-  const id = notificationId(notice.callId);
-  shownId = id;
-  pushDesktopNotification({ id, ...compose(notice, t) });
+/** 收起所有已显示的通知（应用回到前台时用）。 */
+function dismissShown(): void {
+  for (const id of shown) dismissDesktopNotification(id);
+  shown = new Set();
+}
+
+/** 收起所有当前显示的通知；审批本身仍留着，下次收起还能补发。 */
+export function hideApprovalNotification(): void {
+  dismissShown();
+}
+
+/** 通知 id → (taskId, callId)；格式不对返回 null。 */
+function parseNotificationId(id: string): { taskId: string; callId: string } | null {
+  if (!id.startsWith(ID_PREFIX)) return null;
+  const [taskId, callId] = id.slice(ID_PREFIX.length).split("|");
+  if (!taskId || !callId) return null;
+  return { taskId: decodeURIComponent(taskId), callId: decodeURIComponent(callId) };
 }
 
 /**
- * 把当前审批状态同步到通知。
+ * 把**整份**待确认列表同步到通知。
  *
- * 应用在前台时**不推**（确认条就在输入框上方）；已经推过的会被收起 ——
- * 同一个审批不该同时出现两处"可以点"的按钮。
+ * 应用在前台时**不推**（确认条就在输入框上方）；已经推过的会被收起。
+ * 不在列表里的（已撤回 / 任务结束）逐条 dismiss —— 同一条重复推送只替换内容，
+ * 不会新开窗口。
+ */
+export function syncApprovalNotifications(
+  notices: ApprovalNotice[],
+  t: (key: string, options?: Record<string, unknown>) => string,
+): void {
+  if (!installed) return;
+  const wanted = new Map<string, ApprovalNotice>();
+  for (const notice of notices) wanted.set(notificationId(notice.taskId, notice.callId), notice);
+  current = wanted;
+
+  // 已经不在列表里的：立刻收起（撤回 / 任务结束）。
+  for (const id of [...shown]) {
+    if (wanted.has(id)) continue;
+    dismissDesktopNotification(id);
+    shown.delete(id);
+  }
+
+  if (!isWindowHidden()) {
+    // 前台：确认条在眼前，通知不该同时可点。
+    dismissShown();
+    return;
+  }
+
+  for (const [id, notice] of wanted) {
+    shown.add(id);
+    pushDesktopNotification({ id, ...compose(notice, t) });
+  }
+}
+
+/**
+ * 单条版本（兼容旧调用 / 单测）：语义与"只有这一条待确认"一致。
  */
 export function syncApprovalNotification(
   notice: ApprovalNotice | null,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): void {
-  if (!installed) return;
-  current = notice;
-
-  if (!notice) {
-    if (shownId) {
-      dismissDesktopNotification(shownId);
-      shownId = null;
-    }
-    return;
-  }
-
-  if (!isHidden()) {
-    if (shownId) {
-      dismissDesktopNotification(shownId);
-      shownId = null;
-    }
-    return;
-  }
-
-  push(notice, t);
-}
-
-/**
- * 收起正在显示的那条通知（应用回到前台时用）。
- *
- * 只关通知，**不动** `current`：下次再收起应用时还要能补发。
- */
-export function hideApprovalNotification(): void {
-  if (!shownId) return;
-  dismissDesktopNotification(shownId);
-  shownId = null;
+  syncApprovalNotifications(notice ? [notice] : [], t);
 }
 
 /** 把主窗口叫回前台（点通知正文时）。 */
@@ -220,24 +241,35 @@ export function installApprovalNotifications(
   if (installed) return () => undefined;
   installed = true;
 
+  // 启动先把上一轮遗留的超能通知（含还在排队的）清掉：历史任务不该在此时补发。
+  clearExtremeNotifications();
+  shown = new Set();
+
   const disposers: (() => void)[] = [];
 
   void listen("app:collapsed", () => {
-    collapsed = true;
-    // 先有确认条、后收起：补发一次。
-    if (current) push(current, t);
+    setCollapsed(true);
+    // 先有确认条、后收起：**每一条**都补发一次。
+    for (const [id, notice] of current) {
+      shown.add(id);
+      pushDesktopNotification({ id, ...compose(notice, t) });
+    }
   })
     .then((unlisten) => disposers.push(unlisten))
     .catch(() => undefined);
 
   const onVisibility = () => {
     if (!document.hidden) {
-      collapsed = false;
-      // 回到前台：确认条已经在眼前了。
-      hideApprovalNotification();
+      setCollapsed(false);
+      // 回到前台：确认条已经在眼前了；排队的旧结果也不再补弹。
+      dismissShown();
+      clearExtremeNotifications();
       return;
     }
-    if (current) push(current, t);
+    for (const [id, notice] of current) {
+      shown.add(id);
+      pushDesktopNotification({ id, ...compose(notice, t) });
+    }
   };
   document.addEventListener("visibilitychange", onVisibility);
   disposers.push(() => document.removeEventListener("visibilitychange", onVisibility));
@@ -247,10 +279,13 @@ export function installApprovalNotifications(
     "desktop-notification:decide",
     (event) => {
       const { id, key } = event.payload ?? {};
-      if (!id?.startsWith(ID_PREFIX)) return;
-      const callId = id.slice(ID_PREFIX.length);
-      if (!current || current.callId !== callId) return;
-      void handlers?.decide(callId, key === "allow");
+      const parsed = id ? parseNotificationId(id) : null;
+      if (!parsed || !id) return;
+      // 只处理**当前仍在列表里**的那一条：过期 / 已处理的通知点了不动。
+      const notice = current.get(id);
+      if (!notice) return;
+      if (notice.taskId !== parsed.taskId || notice.callId !== parsed.callId) return;
+      void handlers?.decide(parsed.taskId, parsed.callId, key === "allow");
     },
   )
     .then((unlisten) => disposers.push(unlisten))
@@ -261,7 +296,8 @@ export function installApprovalNotifications(
     const id = event.payload?.id;
     if (!id?.startsWith(ID_PREFIX)) return;
     // 窗口被叫回来了：后续状态直接在确认条上更新，不再往通知里推。
-    collapsed = false;
+    setCollapsed(false);
+    clearExtremeNotifications();
     handlers?.open();
     void revealMainWindow();
   })
@@ -270,8 +306,10 @@ export function installApprovalNotifications(
 
   // 用户自己把窗口点回前台（没走通知）时同样算"不再收起"。
   const onFocus = () => {
-    collapsed = false;
-    hideApprovalNotification();
+    setCollapsed(false);
+    dismissShown();
+    // 主窗口回来了：超能任务 / 审批通知（包括队列）一并撤下。
+    clearExtremeNotifications();
   };
   window.addEventListener("focus", onFocus);
   disposers.push(() => window.removeEventListener("focus", onFocus));
@@ -279,6 +317,10 @@ export function installApprovalNotifications(
   return () => {
     handlers = null;
     installed = false;
+    current = new Map();
+    shown = new Set();
+    // 卸载后没有监听再把状态翻回来：别把"收起"留给下一次进入。
+    setCollapsed(false);
     for (const dispose of disposers) dispose();
   };
 }

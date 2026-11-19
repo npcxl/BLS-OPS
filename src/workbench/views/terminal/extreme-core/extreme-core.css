@@ -1,30 +1,52 @@
-/*
- * 超能自己是深色，但**不改全局主题**。
- *
- * 这里把深色 token 重新定义在 `.extreme-core` 子树内：`text-fg`、`bg-surface-2`、
- * `border-line` 这些类在超能里拿到的是深色值，外层（普通终端、设置页）仍然
- * 跟随用户自己的主题偏好，窗口材质也不动。
- *
- * 值取自 `tokens.css` 的 `[data-theme="dark"]`，两边保持一致。
- */
-/*
- * **选择器必须压过 `:root[data-theme="…"]`**。
- *
- * `tokens.css` 里主题变量定义在 `:root[data-theme="light"]` 上（特异性 0,2,0），
- * 而 `.extreme-core` 只有 0,1,0 —— 浅色主题下超能里的 `--surface-2` 仍然解析成
- * 浅色值，于是"深色工作台里出现一条浅灰输入框"。
- * `:root[data-theme="…"] .extreme-core` 是 0,3,0，稳赢。
- */
-/*
- * **跟随应用主题**（浅色 / 深色都支持）。
- *
- * 这里**不覆盖任何 token**：`--surface-*`、`--fg`、`--line` 全部继承外层
- * `:root[data-theme]`，用户在设置里切换主题时超能跟着变，和其他页面一致。
- * 之前那套 `!important` 深色覆盖已经删掉。
- */
 .extreme-core {
   background: rgb(var(--app));
   isolation: isolate;
+}
+
+/* 浅色对话工作台用中性纸面，品牌色留给操作与状态。 */
+:root[data-theme="light"] .extreme-core[data-welcome="false"] {
+  --app: 246 246 245;
+  --content: 255 255 255;
+  --shell: 246 246 245;
+  --surface-1: 250 250 249;
+  --surface-2: 255 255 255;
+  --surface-3: 242 242 241;
+  --surface-hover: 239 239 238;
+  --surface-active: 232 232 231;
+  --line: 225 225 223;
+  --line-strong: 193 193 189;
+  --divider: 228 228 226;
+  --fg: 29 30 31;
+  --fg-muted: 83 84 85;
+  --fg-subtle: 106 107 108;
+  --tab-hover: 239 239 238;
+  --tab-active: 232 232 231;
+  --extreme-user-bubble: rgb(239 239 238);
+  --extreme-user-text: rgb(var(--fg));
+  --extreme-composer-focus: rgb(var(--line-strong));
+
+  /* Tailwind 的颜色别名在根节点定义，在这里重新绑定到当前面板的变量。 */
+  --color-app: rgb(var(--app));
+  --color-content: rgb(var(--content));
+  --color-shell: rgb(var(--shell));
+  --color-surface-1: rgb(var(--surface-1));
+  --color-surface-2: rgb(var(--surface-2));
+  --color-surface-3: rgb(var(--surface-3));
+  --color-surface-hover: rgb(var(--surface-hover));
+  --color-surface-active: rgb(var(--surface-active));
+  --color-line: rgb(var(--line));
+  --color-line-strong: rgb(var(--line-strong));
+  --color-divider: rgb(var(--divider));
+  --color-fg: rgb(var(--fg));
+  --color-fg-muted: rgb(var(--fg-muted));
+  --color-fg-subtle: rgb(var(--fg-subtle));
+  --color-tab-hover: rgb(var(--tab-hover));
+  --color-tab-active: rgb(var(--tab-active));
+  color: rgb(var(--fg));
+}
+
+:root[data-theme="light"] .extreme-core[data-welcome="false"] .extreme-core-pane-tabs [data-tab-active="true"] > svg {
+  color: rgb(var(--fg));
 }
 
 .extreme-core[data-welcome="false"] .extreme-core-main {
@@ -36,6 +58,10 @@
 }
 
 .extreme-core[data-welcome="false"] :is(.extreme-core-task-rail, .extreme-core-remote-rail) {
+  background: rgb(var(--surface-1));
+}
+
+:root[data-theme="light"] .extreme-core[data-welcome="false"] [data-pane-view="split"] {
   background: rgb(var(--surface-1));
 }
 
@@ -197,8 +223,21 @@
 
 /* Keep the reply, task card, and message metadata visually distinct. */
 .extreme-core-messages { display: flex; flex-direction: column; gap: 22px; }
-.extreme-core-message { max-width: 100%; overflow-wrap: anywhere; }
+/*
+ * 气泡正文必须可选：`globals.css` 给 `body` 设了 `user-select: none`（桌面应用
+ * 不该被整体框选），例外只开给 input / textarea / [data-selectable] /
+ * contenteditable —— 消息区不在名单里，于是代码块有「复制」按钮、正文却
+ * 选不中，也没法 Ctrl+C。
+ */
+.extreme-core-message {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .extreme-core-message-user {
+  background: var(--extreme-user-bubble, rgb(var(--accent)));
+  color: var(--extreme-user-text, #fff);
   max-width: min(86%, 40rem);
   padding: 9px 13px;
   border-radius: 16px 16px 5px 16px;
@@ -282,13 +321,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgb(var(--accent));
+  color: rgb(var(--fg-muted));
   font-family: var(--font-mono);
   font-size: 10px;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.extreme-core-report-path:hover { opacity: .8; }
+.extreme-core-report-path a { color: rgb(var(--accent)); }
+.extreme-core-report-path a:hover { text-decoration: underline; }
 .extreme-core-report-detail {
   margin-top: 3px;
   max-height: 96px;
@@ -493,7 +533,7 @@
 
 .extreme-core-prompt-bar:focus-within > [role="presentation"] {
   box-shadow:
-    0 0 0 1px rgb(var(--accent) / .45),
+    0 0 0 1px var(--extreme-composer-focus, rgb(var(--accent) / .45)),
     0 2px 8px rgb(0 0 0 / .06);
 }
 
@@ -586,6 +626,80 @@
 .extreme-core-add-btn:hover {
   border-color: rgb(var(--fg) / .2);
   background: rgb(var(--fg) / .09);
+  color: rgb(var(--fg));
+}
+
+/* ---------------- 文件变更：统一 Diff ---------------- */
+/*
+ * 双列行号 + 增删底色。颜色全部走 token：深色下只叠一层透明底，
+ * 不出现整块亮色高光（和数据库工作台的 diff 保持一致的分寸）。
+ */
+.extreme-core-diff {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.extreme-core-diff-row {
+  display: grid;
+  grid-template-columns: 3.25rem 3.25rem 1rem minmax(0, 1fr);
+  align-items: start;
+}
+
+.extreme-core-diff-row[data-kind="add"] {
+  background: rgb(var(--success) / .1);
+}
+
+.extreme-core-diff-row[data-kind="del"] {
+  background: rgb(var(--danger) / .1);
+}
+
+.extreme-core-diff-no {
+  padding-inline-end: .4rem;
+  color: rgb(var(--fg-subtle));
+  text-align: end;
+  user-select: none;
+}
+
+.extreme-core-diff-sign {
+  color: rgb(var(--fg-subtle));
+  text-align: center;
+  user-select: none;
+}
+
+.extreme-core-diff-row[data-kind="add"] .extreme-core-diff-sign {
+  color: rgb(var(--success));
+}
+
+.extreme-core-diff-row[data-kind="del"] .extreme-core-diff-sign {
+  color: rgb(var(--danger));
+}
+
+.extreme-core-diff-text {
+  padding-inline-end: .6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.extreme-core-diff-hunk {
+  padding: 0 .5rem;
+  background: rgb(var(--surface-2) / .7);
+  color: rgb(var(--fg-subtle));
+}
+
+.extreme-core-diff-gap {
+  display: block;
+  width: 100%;
+  padding: .1rem .6rem;
+  background: rgb(var(--surface-2) / .45);
+  color: rgb(var(--fg-subtle));
+  font-size: 10px;
+  text-align: start;
+}
+
+.extreme-core-diff-gap:hover,
+.extreme-core-diff-gap:focus-visible {
+  background: rgb(var(--surface-hover));
   color: rgb(var(--fg));
 }
 

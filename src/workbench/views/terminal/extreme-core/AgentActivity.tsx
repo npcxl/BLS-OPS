@@ -1,13 +1,14 @@
 import { Think } from "@ant-design/x";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText } from "@/components/icons";
+import { FileDiff, FileText } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status";
+import { cn } from "@/lib/cn";
 import type { ExecutionReport, ReportStatus } from "./execution-report";
 import { reportStatusLabel } from "./execution-report";
 import { useExtremeStore } from "@/stores/extreme-store";
-import type { WorkspaceTarget } from "./RemoteWorkspacePanel";
+import { RemotePathLink, type OpenTarget } from "./RemotePathLink";
 import { TaskSteps } from "./TaskSteps";
 import type { TaskArtifact, TaskCardModel } from "./task-view";
 
@@ -36,11 +37,13 @@ const REPORT_TONE: Record<ReportStatus, "neutral" | "info" | "success" | "warnin
 function ExecutionResults({
   reports,
   sessionId,
+  serverId,
   onOpenTarget,
 }: {
   reports: ExecutionReport[];
   sessionId: string;
-  onOpenTarget?: (target: WorkspaceTarget) => void;
+  serverId?: string | null;
+  onOpenTarget?: OpenTarget;
 }) {
   const { t } = useTranslation();
   return (
@@ -52,16 +55,13 @@ function ExecutionResults({
             <div className="min-w-0 flex-1">
               <p className="break-words text-11 text-fg">{report.title}</p>
               {report.path && (
-                <button
-                  type="button"
-                  className="extreme-core-report-path"
-                  title={t("在右栏打开 {{path}}", { path: report.path })}
-                  onClick={() =>
-                    onOpenTarget?.({ kind: "directory", path: report.path!, sessionId })
-                  }
-                >
-                  {report.path}
-                </button>
+                <p className="extreme-core-report-path">
+                  {report.status === "success" || report.status === "partial" ? (
+                    <RemotePathLink path={report.path} sessionId={sessionId} serverId={serverId} onOpen={onOpenTarget}>
+                      {report.path}
+                    </RemotePathLink>
+                  ) : report.path}
+                </p>
               )}
               {report.detail && (
                 <pre className="extreme-core-report-detail">{report.detail}</pre>
@@ -81,11 +81,17 @@ export function AgentActivity({
   task,
   onPreview,
   onOpenTarget,
+  onResume,
+  onOpenChanges,
 }: {
   task: TaskCardModel;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
   /** 执行结果里的目录：点开右栏。 */
-  onOpenTarget?: (target: WorkspaceTarget) => void;
+  onOpenTarget?: OpenTarget;
+  /** 中断 / 失败的任务：从检查点继续。 */
+  onResume?: (task: TaskCardModel) => void;
+  /** 「查看实际变更」：在右栏打开这次运行的文件变更（回读后的 Diff）。 */
+  onOpenChanges?: (task: TaskCardModel) => void;
 }) {
   const { t } = useTranslation();
   /*
@@ -106,7 +112,7 @@ export function AgentActivity({
   if (!showAgentActivity(task)) {
     // 没有工具步骤、任务也结束了：只剩"执行结果"可能还有内容（例如上传）。
     return reports?.length ? (
-      <ExecutionResults reports={reports} sessionId={task.sessionId} onOpenTarget={onOpenTarget} />
+      <ExecutionResults reports={reports} sessionId={task.sessionId} serverId={task.serverId} onOpenTarget={onOpenTarget} />
     ) : null;
   }
 
@@ -116,9 +122,23 @@ export function AgentActivity({
       ? t("执行失败")
       : task.status === "cancelled"
         ? t("已停止")
-        : running
-          ? t(task.steps.length ? "正在使用工具" : "正在分析请求")
-          : t("处理过程");
+        : task.status === "interrupted"
+          ? t("已中断")
+          : running
+            ? t(task.steps.length ? "正在使用工具" : "正在分析请求")
+            : t("处理过程");
+  const outcomeTone =
+    task.outcome?.level === "verified"
+      ? "text-success"
+      : task.outcome?.level === "partial"
+        ? "text-warning"
+        : "text-fg-muted";
+  const outcomeLabel =
+    task.outcome?.level === "verified"
+      ? t("已验证")
+      : task.outcome?.level === "partial"
+        ? t("部分完成")
+        : t("需要补充信息");
 
   return (
     <>
@@ -155,9 +175,62 @@ export function AgentActivity({
           )}
         </div>
       </Think>
+      {(task.outcome ||
+        (onResume &&
+          (task.status === "interrupted" ||
+            (task.status === "failed" && task.steps.length > 0)))) && (
+        <div className="flex flex-wrap items-center gap-2 px-3 pb-1 text-11">
+          {task.outcome && (
+            <span className={cn(outcomeTone)} title={task.outcome.reason}>
+              {t("结论")}：{outcomeLabel}
+              {task.outcome.reason ? ` · ${task.outcome.reason}` : ""}
+            </span>
+          )}
+          {onResume &&
+            (task.status === "interrupted" ||
+              (task.status === "failed" && task.steps.length > 0)) && (
+              <Button variant="ghost" size="xs" className="gap-1 text-accent" onClick={() => onResume(task)}>
+                {t("继续执行")}
+              </Button>
+            )}
+        </div>
+      )}
       {reports && reports.length > 0 && (
-        <ExecutionResults reports={reports} sessionId={task.sessionId} onOpenTarget={onOpenTarget} />
+        <ExecutionResults reports={reports} sessionId={task.sessionId} serverId={task.serverId} onOpenTarget={onOpenTarget} />
+      )}
+      {/*
+       * 执行结束后的入口：**只定位到这次运行**，不会再生成一张可审批的卡片。
+       * 还在跑 / 等确认时由审批卡上的「查看变更」负责（那是"拟修改"）。
+       */}
+      {onOpenChanges && hasFileWrites(task) && settled(task) && (
+        <div className="px-3 pb-1">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="gap-1 text-accent"
+            title={t("打开右栏的文件变更：服务器实际回读的差异")}
+            onClick={() => onOpenChanges(task)}
+          >
+            <FileDiff size={12} />
+            {t("查看实际变更")}
+          </Button>
+        </div>
       )}
     </>
+  );
+}
+
+/** 这次运行里有没有 `write_file`（只有它会产生可审阅的文件变更）。 */
+function hasFileWrites(task: TaskCardModel): boolean {
+  return task.steps.some((step) => step.kind === "tool" && Boolean(step.remotePath));
+}
+
+/** 已经落定：运行中 / 等确认时不显示"实际变更"。 */
+function settled(task: TaskCardModel): boolean {
+  return (
+    task.status === "done" ||
+    task.status === "failed" ||
+    task.status === "cancelled" ||
+    task.status === "interrupted"
   );
 }

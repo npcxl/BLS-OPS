@@ -57,6 +57,35 @@ describe("任务卡视图模型", () => {
     expect(card.server).toBe("prod");
   });
 
+  it("库里的 running / waiting 是上次进程留下的：标成已中断并可恢复", () => {
+    const card = cardFromRecord(record({ status: "running" }));
+    expect(card.status).toBe("interrupted");
+    expect(card.result).toContain("核对");
+    expect(cardFromRecord(record({ status: "waiting" })).status).toBe("interrupted");
+    // 真正完成 / 失败 / 取消的记录保持原状态。
+    expect(cardFromRecord(record({ status: "success" })).status).toBe("done");
+    expect(cardFromRecord(record({ status: "failed" })).status).toBe("failed");
+  });
+
+  it("恢复验证结论：能解析就展示，坏数据不崩", () => {
+    const card = cardFromRecord(
+      record({
+        status: "failed",
+        outcomeJson: JSON.stringify({
+          level: "partial",
+          reason: "改动后没有只读验证",
+          evidence: ["#1 systemctl restart nginx"],
+        }),
+      }),
+    );
+    expect(card.outcome).toEqual({
+      level: "partial",
+      reason: "改动后没有只读验证",
+      evidence: ["#1 systemctl restart nginx"],
+    });
+    expect(cardFromRecord(record({ outcomeJson: "{broken" })).outcome).toBeNull();
+  });
+
   it("plan_json 坏掉时不崩，退化成空步骤", () => {
     const card = cardFromRecord(record({ planJson: "{not json" }));
     expect(card.steps).toEqual([]);

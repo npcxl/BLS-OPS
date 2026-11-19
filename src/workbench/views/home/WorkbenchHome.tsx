@@ -19,6 +19,7 @@ import {
   FileDescriptionIcon,
   PlugZap,
   Server as ServerIcon,
+  Sparkles,
   Stack3Icon,
   Terminal as TerminalIcon,
   WorldIcon,
@@ -26,6 +27,7 @@ import {
 import "./home.css";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { pushToast } from "@/components/ui/toast";
 import { PageScroll, PageSurface } from "@/workbench/page-layout";
 import type { DatabaseProfile } from "@/api/types/database";
 import type { ServerRecord } from "@/api/ops-api";
@@ -34,8 +36,15 @@ import { openNewServerTab } from "@/workbench/server-list/open-server-setup";
 import { useSessionStore } from "@/stores/session-store";
 import { useDatabaseStore } from "@/stores/database-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { useExtremeStore } from "@/stores/extreme-store";
 import { ServerForm } from "@/workbench/server-list";
+import {
+  enterExtremeForServer,
+  openExtremeWorkspace,
+} from "@/workbench/views/terminal/extreme-core/enter-extreme";
+import { displayTitle } from "@/workbench/views/terminal/extreme-core/workspace-history";
 import { AssetsSection } from "./assets";
+import { ExtremeRecentSection, type ExtremeRecentItem } from "./extreme-recent";
 import { FavoritesSection } from "./favorites";
 import { OverviewSection, type OverviewStat } from "./overview";
 import { QuickActions, type QuickAction } from "./quick-actions";
@@ -135,6 +144,54 @@ export function WorkbenchHome() {
     }
     return items;
   }, [databaseActivity.recent, profiles, connectionStates]);
+
+  /*
+   * 超能入口：最近对话取本地记录的前 5 条；「超能模式」按钮优先打开最近
+   * 那条，没有对话时落到最近使用的服务器，再没有就提示先加服务器。
+   */
+  const extremeWorkspaces = useExtremeStore((s) => s.workspaces);
+  const connectedServers = useMemo(() => {
+    const set = new Set<string>();
+    for (const session of Object.values(liveSessions)) {
+      if (session.status === "connected" && session.serverId) set.add(session.serverId);
+    }
+    return set;
+  }, [liveSessions]);
+
+  const extremeRecent = useMemo<ExtremeRecentItem[]>(
+    () =>
+      [...extremeWorkspaces]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 5)
+        .map((entry) => ({
+          id: entry.id,
+          title: displayTitle(entry),
+          server: entry.server,
+          detail: entry.host ?? "",
+          at: entry.updatedAt,
+          live: entry.serverId ? connectedServers.has(entry.serverId) : false,
+        })),
+    [connectedServers, extremeWorkspaces],
+  );
+
+  /** 「超能模式」按钮要绑的服务器：最近对话所属 > 最近连接过 > 第一台。 */
+  const extremeEntryServer = useMemo(() => {
+    const latest = [...extremeWorkspaces].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const serverId = latest?.serverId ?? recentServers[0]?.serverId ?? servers[0]?.id;
+    return servers.find((server) => server.id === serverId) ?? null;
+  }, [extremeWorkspaces, recentServers, servers]);
+
+  const openExtremeMode = () => {
+    if (extremeRecent[0]) {
+      openExtremeWorkspace(extremeRecent[0].id);
+      return;
+    }
+    if (extremeEntryServer) {
+      void enterExtremeForServer(extremeEntryServer);
+      return;
+    }
+    pushToast(t("还没有可用的服务器：先在服务器列表里添加一台，再进入超能模式。"), "info");
+  };
 
   const serversKnown = servers.length > 0 || (!domainLoading && !domainError);
   const projectsKnown = !projectAssets.loading && !projectAssets.failed;
@@ -258,7 +315,10 @@ export function WorkbenchHome() {
             <h1 className="page-title">{t("Workbench")}</h1>
             <p className="page-description">{t("Servers, databases and projects in one place")}</p>
             <div className="page-actions home-hero-actions">
-              <Button variant="contrast" size="sm" onClick={openQuickConnect}>
+              <Button variant="contrast" size="sm" onClick={openExtremeMode}>
+                <Sparkles size={14} />{t("超能模式")}
+              </Button>
+              <Button variant="outline" size="sm" onClick={openQuickConnect}>
                 <PlugZap size={14} />{t("Quick connect")}
               </Button>
               <Button variant="outline" size="sm" onClick={openNewConnectionTab}>
@@ -276,6 +336,17 @@ export function WorkbenchHome() {
         <section className="page-section">
           <SectionHeading title={t("Quick actions")} />
           <QuickActions actions={quickActions} />
+        </section>
+
+        <section className="page-section">
+          <ExtremeRecentSection
+            items={extremeRecent}
+            onOpen={(item) => {
+              if (!openExtremeWorkspace(item.id)) {
+                pushToast(t("这条对话已经不存在，可能已被删除。"), "info");
+              }
+            }}
+          />
         </section>
 
         <RecentSection

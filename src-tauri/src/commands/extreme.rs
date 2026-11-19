@@ -182,6 +182,12 @@ pub struct ExtremeTaskRecord {
     pub summary: String,
     /// 完整步骤的 JSON（含 stdout / stderr / 退出码）。
     pub plan_json: String,
+    /// 终态验证结论（JSON）；旧记录为空串。
+    #[serde(default)]
+    pub outcome_json: String,
+    /// 任务当前目录（恢复执行的起点）；旧记录为空。
+    #[serde(default)]
+    pub cwd: String,
     /// 毫秒时间戳。
     pub created_at: i64,
 }
@@ -195,8 +201,8 @@ fn db_error(error: impl ToString) -> OpsError {
 pub fn extreme_task_save(state: State<'_, AppState>, task: ExtremeTaskRecord) -> OpsResult<()> {
     let conn = state.db.open().map_err(db_error)?;
     conn.execute(
-        "INSERT INTO extreme_tasks (id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "INSERT INTO extreme_tasks (id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, outcome_json, cwd, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
            kind = excluded.kind,
            server = excluded.server,
@@ -207,7 +213,10 @@ pub fn extreme_task_save(state: State<'_, AppState>, task: ExtremeTaskRecord) ->
            goal = excluded.goal,
            risk = excluded.risk,
            summary = excluded.summary,
-           plan_json = excluded.plan_json",
+           plan_json = excluded.plan_json,
+           -- 结论/目录为空时保留上一次的：执行中的保存不能把终态结论冲掉。
+           outcome_json = CASE WHEN excluded.outcome_json = '' THEN extreme_tasks.outcome_json ELSE excluded.outcome_json END,
+           cwd = CASE WHEN excluded.cwd = '' THEN extreme_tasks.cwd ELSE excluded.cwd END",
         params![
             task.id,
             task.kind,
@@ -221,6 +230,8 @@ pub fn extreme_task_save(state: State<'_, AppState>, task: ExtremeTaskRecord) ->
             task.risk,
             task.summary,
             task.plan_json,
+            task.outcome_json,
+            task.cwd,
             task.created_at,
         ],
     )
@@ -244,7 +255,7 @@ pub fn extreme_task_list(
     let conn = state.db.open().map_err(db_error)?;
 
     let mut sql = String::from(
-        "SELECT id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, created_at FROM extreme_tasks",
+        "SELECT id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, outcome_json, cwd, created_at FROM extreme_tasks",
     );
     let mut clauses: Vec<String> = Vec::new();
     let mut args: Vec<Value> = Vec::new();
@@ -286,7 +297,9 @@ pub fn extreme_task_list(
                 risk: row.get(9)?,
                 summary: row.get(10)?,
                 plan_json: row.get(11)?,
-                created_at: row.get(12)?,
+                outcome_json: row.get(12)?,
+                cwd: row.get(13)?,
+                created_at: row.get(14)?,
             })
         })
         .map_err(db_error)?;
@@ -295,6 +308,43 @@ pub fn extreme_task_list(
         out.push(row.map_err(db_error)?);
     }
     Ok(out)
+}
+
+/// 读一条任务记录（恢复执行用；历史列表不暴露这个入口）。
+pub(crate) fn load_task_record(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<ExtremeTaskRecord>, String> {
+    let conn = state.db.open().map_err(|error| error.to_string())?;
+    let row = conn.query_row(
+        "SELECT id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, outcome_json, cwd, created_at
+         FROM extreme_tasks WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(ExtremeTaskRecord {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                server: row.get(2)?,
+                server_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                session_id: row.get(5)?,
+                status: row.get(6)?,
+                name: row.get(7)?,
+                goal: row.get(8)?,
+                risk: row.get(9)?,
+                summary: row.get(10)?,
+                plan_json: row.get(11)?,
+                outcome_json: row.get(12)?,
+                cwd: row.get(13)?,
+                created_at: row.get(14)?,
+            })
+        },
+    );
+    match row {
+        Ok(record) => Ok(Some(record)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// 给任务改名（空串 = 恢复显示执行摘要）。

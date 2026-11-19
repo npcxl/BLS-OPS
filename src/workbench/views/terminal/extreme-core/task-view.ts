@@ -5,6 +5,7 @@
  * plan_json」收敛成同一个 `TaskCardModel`，卡片、历史详情、任务 Tab 都渲染
  * 这一个东西，避免三处各写一套状态映射。
  */
+import type { AgentOutcome } from "@/api/types/agent";
 import type { ExtremeTaskRecord } from "@/api/types/extreme";
 import type { DeployStep } from "./deploy-plan";
 import type { TaskKind, TaskStatus } from "./task";
@@ -164,6 +165,8 @@ export interface TaskCardModel {
   steps: DeployStep[];
   /** 可预览的产物（服务器绝对路径）。 */
   artifacts: TaskArtifact[];
+  /** 终态验证结论：`verified` / `partial` / `needs_info`。 */
+  outcome?: AgentOutcome | null;
 }
 
 export function stepProgress(steps: DeployStep[]): { done: number; total: number; current?: DeployStep } {
@@ -181,6 +184,8 @@ export function stepProgress(steps: DeployStep[]): { done: number; total: number
 export function artifactsOf(steps: DeployStep[]): TaskArtifact[] {
   const out: TaskArtifact[] = [];
   for (const step of steps) {
+    // 只有**执行成功**的步骤才算"确认存在"；失败 / 未执行的路径不进入口。
+    if (step.state !== "success") continue;
     const path = step.remotePath;
     if (!path) continue;
     const name = path.split("/").filter(Boolean).pop() ?? path;
@@ -220,6 +225,23 @@ export function cardFromRecord(
   }
   const recordGoal = record.goal?.trim() ?? "";
   const kind = recordGoal ? kindOfGoal(recordGoal) : kindOf(record.kind);
+  /*
+   * 从库里读出来的 `running` / `waiting` 一定是**上次进程留下的**：任务句柄
+   * 只在内存里，进程退出就没有任何东西会再推进它。标成「已中断」，并允许
+   * 从检查点恢复；不能继续显示成"执行中"。
+   */
+  const interrupted = record.status === "running" || record.status === "waiting";
+  let outcome: AgentOutcome | null = null;
+  if (record.outcomeJson) {
+    try {
+      const parsed = JSON.parse(record.outcomeJson) as unknown;
+      if (parsed && typeof parsed === "object" && "level" in parsed) {
+        outcome = parsed as AgentOutcome;
+      }
+    } catch {
+      outcome = null;
+    }
+  }
   return {
     id: record.id,
     kind,
@@ -230,14 +252,18 @@ export function cardFromRecord(
     title: record.name?.trim() || recordGoal || titleOf(kind, record.server),
     originMessageId,
     goal: recordGoal || goal,
-    status: statusOf(record.status),
-    result: record.summary,
+    status: interrupted ? "interrupted" : statusOf(record.status),
+    result: interrupted
+      ? "上次运行已中断：最后一步是否生效需要先在服务器上核对。"
+      : record.summary,
     server: record.server,
     sessionId: record.sessionId,
+    cwd: record.cwd || undefined,
     createdAt: record.createdAt,
     updatedAt: record.createdAt,
     steps,
     artifacts: artifactsOf(steps),
+    outcome,
   };
 }
 

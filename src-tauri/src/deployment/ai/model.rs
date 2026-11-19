@@ -81,6 +81,15 @@ pub struct AiProviderConfig {
     pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
+    /// 用户声明的上下文窗口；`None` = 用内置表。
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    /// 用户声明的预算档位；`None` = 用内置表。
+    #[serde(default)]
+    pub context_budgets: Option<Vec<u32>>,
+    /// 用户声明的思考强度档位；`None` = 用内置表。
+    #[serde(default)]
+    pub reasoning_efforts: Option<Vec<String>>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -100,9 +109,22 @@ impl AiProviderConfig {
             allow_insecure_http: false,
             timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+            context_window: None,
+            context_budgets: None,
+            reasoning_efforts: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// 用户在设置里声明的能力（交给 [`super::capability::resolve_capability`]）。
+    pub fn capability_override(&self) -> Option<super::capability::CapabilityOverride> {
+        let overrides = super::capability::CapabilityOverride {
+            context_window: self.context_window,
+            budgets: self.context_budgets.clone(),
+            efforts: self.reasoning_efforts.clone(),
+        };
+        (!overrides.is_empty()).then_some(overrides)
     }
 
     /// 钥匙串账户名。**所有读写钥匙串的地方都必须用它**。
@@ -193,14 +215,23 @@ pub struct AiProviderView {
     /// 支持的思考强度档位（升序）；空 = 不支持该参数。
     #[serde(default)]
     pub reasoning_efforts: Vec<String>,
+    /// 能力是否**有依据**（内置表命中或用户已声明）。false = 界面提示"未登记"。
+    #[serde(default)]
+    pub capability_known: bool,
+    /// 是否包含用户声明（界面标注"自定义"）。
+    #[serde(default)]
+    pub capability_overridden: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl AiProviderView {
     pub fn from_config(config: &AiProviderConfig, has_api_key: bool) -> Self {
-        // 能力跟着**模型名**走：同一份提供方配置换模型后，界面与请求一起变。
-        let capability = super::capability::model_capability(&config.model);
+        // 能力跟着**模型名 + 用户声明**走：换模型、改声明后，界面与请求一起变。
+        let capability = super::capability::resolve_capability(
+            &config.model,
+            config.capability_override().as_ref(),
+        );
         Self {
             id: config.id.clone(),
             name: config.name.clone(),
@@ -214,12 +245,10 @@ impl AiProviderView {
             timeout_seconds: config.timeout_seconds,
             max_output_tokens: config.max_output_tokens,
             context_window: capability.context_window,
-            context_budgets: capability.budgets.to_vec(),
-            reasoning_efforts: capability
-                .efforts
-                .iter()
-                .map(|effort| (*effort).to_string())
-                .collect(),
+            context_budgets: capability.budgets.clone(),
+            reasoning_efforts: capability.efforts.clone(),
+            capability_known: capability.known,
+            capability_overridden: capability.overridden,
             created_at: config.created_at,
             updated_at: config.updated_at,
         }
@@ -247,6 +276,15 @@ pub struct AiProviderSaveRequest {
     pub allow_insecure_http: bool,
     pub timeout_seconds: u32,
     pub max_output_tokens: u32,
+    /// 用户声明的上下文窗口（`null` / 缺省 = 用内置表）。
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    /// 用户声明的预算档位（`null` / 缺省 = 用内置表）。
+    #[serde(default)]
+    pub context_budgets: Option<Vec<u32>>,
+    /// 用户声明的思考强度档位（`null` / 缺省 = 用内置表）。
+    #[serde(default)]
+    pub reasoning_efforts: Option<Vec<String>>,
 }
 
 /// 连接测试结果（人类可读，**不含密钥与原始响应**）。

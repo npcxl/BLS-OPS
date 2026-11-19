@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const bridge = vi.hoisted(() => ({
   push: vi.fn(),
   dismiss: vi.fn(),
+  clear: vi.fn(),
 }));
 
 vi.mock("@/desktop-notification/bridge", () => ({
   pushDesktopNotification: bridge.push,
   dismissDesktopNotification: bridge.dismiss,
+  clearExtremeNotifications: bridge.clear,
 }));
 
 /** 事件总线替身：测试自己触发 `app:collapsed` / 通知按钮。 */
@@ -49,6 +51,7 @@ import {
   hideApprovalNotification,
   installApprovalNotifications,
   syncApprovalNotification,
+  syncApprovalNotifications,
   type ApprovalNotice,
 } from "../approval";
 
@@ -59,6 +62,7 @@ const t = (key: string, options?: Record<string, unknown>) =>
   );
 
 const pending: ApprovalNotice = {
+  taskId: "task-1",
   callId: "call-1",
   operation: "重载 Nginx",
   server: "aliyun",
@@ -72,7 +76,7 @@ function setHidden(hidden: boolean) {
 }
 
 let dispose: () => void;
-let decide: (callId: string, allow: boolean) => void;
+let decide: (taskId: string, callId: string, allow: boolean) => void;
 
 beforeEach(() => {
   bridge.push.mockClear();
@@ -102,7 +106,7 @@ describe("审批通知", () => {
 
     expect(bridge.push).toHaveBeenCalledTimes(1);
     const payload = bridge.push.mock.calls[0][0];
-    expect(payload.id).toBe("extreme-approval-call-1");
+    expect(payload.id).toBe("extreme-approval-task-1|call-1");
     expect(payload.title).toContain("确认重载 Nginx");
     expect(payload.body).toContain("配置校验通过后重载");
     expect(payload.body).toContain("aliyun");
@@ -123,10 +127,10 @@ describe("审批通知", () => {
     setHidden(true);
     syncApprovalNotification(pending, t);
     channels.emit("desktop-notification:decide", {
-      id: "extreme-approval-call-1",
+      id: "extreme-approval-task-1|call-1",
       key: "deny",
     });
-    expect(decide).toHaveBeenCalledWith("call-1", false);
+    expect(decide).toHaveBeenCalledWith("task-1", "call-1", false);
   });
 
   it("别的通知 id 不会误触当前审批", () => {
@@ -162,7 +166,7 @@ describe("审批通知", () => {
     setHidden(true);
     syncApprovalNotification(pending, t);
     syncApprovalNotification(null, t);
-    expect(bridge.dismiss).toHaveBeenCalledWith("extreme-approval-call-1");
+    expect(bridge.dismiss).toHaveBeenCalledWith("extreme-approval-task-1|call-1");
   });
 
   it("回到前台：只关通知，审批本身还在（下次收起还能补发）", () => {
@@ -175,5 +179,65 @@ describe("审批通知", () => {
     setHidden(true);
     channels.emit("app:collapsed");
     expect(bridge.push).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * A、B 两条对话同时等确认：各自一条通知，处理 A 不影响 B。
+   * 以前只有一个全局槽位，后到的审批会覆盖先到的。
+   */
+  const other: ApprovalNotice = {
+    taskId: "task-2",
+    callId: "call-9",
+    operation: "重启服务",
+    server: "backup",
+    impact: "会短暂中断连接。",
+    risk: "danger",
+    phase: "pending",
+  };
+
+  it("A / B 同时待确认：两条通知都在，处理 A 不动 B", () => {
+    setHidden(true);
+    syncApprovalNotifications([pending, other], t);
+    expect(bridge.push).toHaveBeenCalledTimes(2);
+    const ids = bridge.push.mock.calls.map((call) => call[0].id);
+    expect(ids).toContain("extreme-approval-task-1|call-1");
+    expect(ids).toContain("extreme-approval-task-2|call-9");
+
+    // 处理 A：B 的通知仍在（没有被撤掉，也没有被覆盖）。
+    bridge.dismiss.mockClear();
+    syncApprovalNotifications([{ ...pending, phase: "denied" }, other], t);
+    expect(bridge.dismiss).not.toHaveBeenCalled();
+    const byId = new Map(bridge.push.mock.calls.map((call) => [call[0].id, call[0]]));
+    expect(byId.get("extreme-approval-task-1|call-1")?.title).toBe("已拒绝 · 此步骤未执行");
+    expect(byId.get("extreme-approval-task-2|call-9")?.title).toContain("确认重启服务");
+  });
+
+  it("按钮按 id 路由到对应那一条：A 的决定不会落到 B 上", () => {
+    setHidden(true);
+    syncApprovalNotifications([pending, other], t);
+
+    channels.emit("desktop-notification:decide", {
+      id: "extreme-approval-task-1|call-1",
+      key: "deny",
+    });
+    expect(decide).toHaveBeenCalledWith("task-1", "call-1", false);
+    expect(decide).not.toHaveBeenCalledWith("task-2", "call-9", expect.anything());
+
+    channels.emit("desktop-notification:decide", {
+      id: "extreme-approval-task-2|call-9",
+      key: "allow",
+    });
+    expect(decide).toHaveBeenCalledWith("task-2", "call-9", true);
+    expect(decide).toHaveBeenCalledTimes(2);
+  });
+
+  it("B 处理完撤下时，只收起 B 那一条", () => {
+    setHidden(true);
+    syncApprovalNotifications([pending, other], t);
+    bridge.dismiss.mockClear();
+    // A 仍在列表里，B 被撤下。
+    syncApprovalNotifications([pending], t);
+    expect(bridge.dismiss).toHaveBeenCalledWith("extreme-approval-task-2|call-9");
+    expect(bridge.dismiss).toHaveBeenCalledTimes(1);
   });
 });

@@ -73,11 +73,15 @@ export async function ensureManualShell(
   shells.set(workspaceId, entry);
 
   term.onData((data) => {
+    term.scrollToBottom();
     void opsApi.sshShellInput(shellId, data).catch(() => undefined);
   });
 
   const offOutput = await listen<string>(sshShellOutputEvent(shellId), (event) => {
-    term.write(event.payload);
+    const { baseY, viewportY } = term.buffer.active;
+    term.write(event.payload, () => {
+      if (viewportY === baseY && term.buffer.active.viewportY >= baseY) term.scrollToBottom();
+    });
   });
   const offClosed = await listen(sshShellClosedEvent(shellId), () => {
     term.write("\r\n[连接已关闭]\r\n");
@@ -98,7 +102,9 @@ export function attachManualShell(workspaceId: string, container: HTMLElement): 
   container.appendChild(entry.host);
 
   const sync = () => {
+    const { baseY, viewportY } = entry.term.buffer.active;
     entry.fit.fit();
+    if (viewportY === baseY) entry.term.scrollToBottom();
     void opsApi
       .sshShellResize(entry.shellId, entry.term.cols, entry.term.rows)
       .catch(() => undefined);
@@ -166,7 +172,12 @@ export async function manualShellSend(
 ): Promise<boolean> {
   const entry = shells.get(workspaceId);
   if (!entry) return false;
-  await opsApi.sshShellInput(entry.shellId, `${command}\n`).catch(() => undefined);
+  entry.term.scrollToBottom();
+  try {
+    await opsApi.sshShellInput(entry.shellId, `${command}\n`);
+  } catch {
+    return false;
+  }
   entry.term.focus();
   return true;
 }

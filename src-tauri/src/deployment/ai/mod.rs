@@ -27,8 +27,9 @@ pub mod provider;
 pub mod url;
 
 pub use capability::{
-    auto_input_tokens, context_budget_options, context_budget_tokens, model_capability,
-    resolve_effort, ModelCapability,
+    auto_input_tokens, context_budget_options, context_budget_tokens, context_budget_tokens_with,
+    model_capability, resolve_capability, resolve_effort, resolve_effort_with, Capability,
+    CapabilityOverride, ModelCapability,
 };
 pub use model::{
     AiCancel, AiDraftOutcome, AiProviderConfig, AiProviderError, AiProviderKind,

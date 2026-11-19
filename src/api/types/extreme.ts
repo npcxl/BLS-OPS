@@ -28,6 +28,10 @@ export interface ExtremeTaskRecord {
   risk?: "read" | "write" | "danger";
   summary: string;
   planJson: string;
+  /** 终态验证结论（JSON）；旧记录为空。 */
+  outcomeJson?: string;
+  /** 任务当前目录（恢复执行的起点）；旧记录为空。 */
+  cwd?: string;
   createdAt: number;
 }
 

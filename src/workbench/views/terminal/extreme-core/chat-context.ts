@@ -37,17 +37,42 @@ export const PICKED_KIND_LABEL: Record<PickedContext["kind"], string> = {
 /**
  * 带哪些历史消息。
  *
- * * `session`：最近若干条（按时间正序），与以前一致；
+ * * `session`：**整段任务对话**（按时间正序，不按条数截断）；
  * * `only` / `picked`：**不带**历史——独立问题不该被前面的对话带偏，
  *   也不该把上一台服务器的内容混进这次提问。
+ *
+ * 这里**不做条数上限**：以前是"最近 6 条"，于是长任务只带着最近两三轮，
+ * 界面上的"上下文"也只反映最近几轮 —— 用户看到的是一个很小的数字，还以为
+ * 自己的对话很短。真正该裁的地方是 Rust 侧的 token 预算（`prune_conversation`
+ * 按 L1 瘦身 → L2 折叠 → L3 丢最旧单元），那里有模型的真实窗口做依据。
  */
-export function historyFor(
-  mode: ContextMode,
-  messages: ExtremeMessage[],
-  limit = 20,
-): ExtremeMessage[] {
+export function historyFor(mode: ContextMode, messages: ExtremeMessage[]): ExtremeMessage[] {
   if (mode !== "session") return [];
-  return messages.filter((message) => message.text.trim()).slice(-limit);
+  return messages.filter((message) => message.text.trim());
+}
+
+/**
+ * 要不要**自动**附带"真实终端最近输出"。
+ *
+ * 它属于"这次对话的上下文"，只在「当前会话」范围里自动带；「仅本条 / 自选」
+ * 要带就由用户自己「加入本次对话」—— 隐式放大上下文会让用户误判模型收到了
+ * 什么（"我只问了一句，它怎么知道我刚才跑了什么"）。
+ *
+ * 已经手动加过命令输出时也不再带：同一段内容不该在提示词里出现两次。
+ */
+export function shouldAttachTerminalTail(mode: ContextMode, picked: PickedContext[]): boolean {
+  if (mode !== "session") return false;
+  return !picked.some((item) => item.kind === "output");
+}
+
+/** 终端最近输出 → 提示词里的一段；`""` = 不带（没有输出）。 */
+export function terminalTailBlock(tail: string): string {
+  const text = tail.trim();
+  if (!text) return "";
+  return (
+    "用户右侧「真实终端」的最近输出（可能是他刚执行过的命令与返回，供参考；" +
+    `不要重复已经完成的命令）：\n\`\`\`\n${text}\n\`\`\``
+  );
 }
 
 /** 输出偏好 → 系统提示里的一句（`auto` 不加，保持现有行为）。 */
@@ -90,6 +115,8 @@ export function renderManifest(attachments: ExtremeAttachment[]): string {
       const traits = [formatSize(item.size)];
       if (item.binary) traits.push("二进制");
       if (item.state === "failed") traits.push("读取失败");
+      // 服务器上的文件读不到正文：**路径仍然有效**，说清楚让模型自己按路径读。
+      else if (item.error) traits.push("未读到正文，按路径读取");
       if (item.uploadState === "uploaded") traits.push("已上传");
       return `- ${name}（${traits.join("，")}）`;
     })

@@ -30,7 +30,9 @@ export type TaskStatus =
   | "verifying"
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  /** 进程退出 / 断线导致的中断：最后一步是否生效未知，可恢复执行。 */
+  | "interrupted";
 
 /**
  * 允许的状态流转。
@@ -48,11 +50,17 @@ const TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   done: [],
   failed: ["running", "inspecting", "cancelled"],
   cancelled: ["inspecting"],
+  interrupted: ["running", "inspecting", "cancelled"],
 };
 
 /** 终态：不再有任何自动化动作。 */
 export function isTerminal(status: TaskStatus): boolean {
-  return status === "done" || status === "failed" || status === "cancelled";
+  return (
+    status === "done" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted"
+  );
 }
 
 /** 需要用户点确认才能进执行。 */
@@ -93,12 +101,14 @@ export function statusLabel(status: TaskStatus): string {
       return "失败";
     case "cancelled":
       return "已取消";
+    case "interrupted":
+      return "已中断";
   }
 }
 
 /** 终态里"可以重试"的那些。`done` 不该重跑，`cancelled` 要重新检查。 */
 export function canRetry(status: TaskStatus): boolean {
-  return status === "failed" || status === "cancelled";
+  return status === "failed" || status === "cancelled" || status === "interrupted";
 }
 
 /** 任务的稳定目标：服务器 / 数据库标识 + 当前 SSH 会话。 */

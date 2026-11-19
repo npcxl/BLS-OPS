@@ -1,16 +1,16 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, FolderOpen, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
+import { openExternal } from "@/lib/open-external";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
 import type { RemoteFileEntry } from "@/api/ops-api";
 import type { ExtremeAttachment } from "@/stores/extreme-store";
 
 export type WorkspaceTarget =
-  | { kind: "directory"; path: string; sessionId: string }
+  | { kind: "directory"; path: string; sessionId: string; serverId?: string | null; revealNonce?: number }
   | { kind: "website"; url: string };
 
-export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, onReset, onClose, onAddRemoteToChat, onError, embedded = false }: {
+export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, onReset, onClose, onAddRemoteToChat, onError, onPathChange, embedded = false }: {
   /** 嵌在「服务器命令面板」的文件标签里：不要自己的侧栏宽度与边框。 */
   embedded?: boolean;
   sessionId: string;
@@ -36,6 +36,8 @@ export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, on
   /** 服务器文件右键「添加到对话」：按绝对路径挂成附件。 */
   onAddRemoteToChat: (entry: RemoteFileEntry) => void;
   onError: (cause: unknown) => void;
+  /** 当前目录变化：上层按对话记住，切回来恢复。 */
+  onPathChange?: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const website = target?.kind === "website" ? target.url : null;
@@ -72,7 +74,17 @@ export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, on
             <span className="truncate" title={website ?? path}>{website ? t("返回远程文件") : t("远程文件")}</span>
           </button>
           {website && (
-            <Button variant="ghost" size="xs" title={t("在浏览器打开")} aria-label={t("在浏览器打开")} onClick={() => void openUrl(website).catch(onError)}>
+            <Button
+              variant="ghost"
+              size="xs"
+              title={t("在浏览器打开")}
+              aria-label={t("在浏览器打开")}
+              onClick={() =>
+                void openExternal(website, { browser: "chrome" }).then((ok) => {
+                  if (!ok) onError(new Error(t("打开浏览器失败")));
+                })
+              }
+            >
               <ExternalLink size={13} />
             </Button>
           )}
@@ -96,7 +108,11 @@ export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, on
             /* 跟随 Agent 的 cwd：只在任务结束时 nonce 变一次。 */
             follow={follow ?? { nonce: 0, path: path ?? "/" }}
             initialPath={initialPath}
+            reveal={target?.kind === "directory" && target.revealNonce
+              ? { nonce: target.revealNonce, path: target.path }
+              : undefined}
             onAddToChat={onAddRemoteToChat}
+            onPathChange={onPathChange}
             onClose={onClose}
           />
         </div>

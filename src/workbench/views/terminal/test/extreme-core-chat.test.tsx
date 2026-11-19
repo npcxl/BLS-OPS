@@ -71,6 +71,12 @@ vi.mock("@/hooks/use-theme", () => ({
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),
 }));
+/** 真实终端尾部读取：默认空；模型快照用例里手动挂起，模拟"还在等终端输出"。 */
+const manualShell = vi.hoisted(() => ({ tail: vi.fn(async () => "") }));
+vi.mock("../extreme-core/manual-shell", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../extreme-core/manual-shell")>();
+  return { ...actual, manualShellTail: manualShell.tail };
+});
 
 /** 后端快照的测试替身。 */
 function snapshot(overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
@@ -347,6 +353,48 @@ it("写操作先挂起：确认前不发命令，点「允许执行」才回后�
   }
 });
 
+it("执行中补一句交给正在跑的任务，不再被挡回", async () => {
+  const run = vi.spyOn(opsApi, "aiAgentRun").mockImplementation(
+    () => new Promise<AgentSnapshot>(() => undefined),
+  );
+  const snap = vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot({ status: "running" }));
+  const steer = vi.spyOn(opsApi, "aiAgentSteer").mockResolvedValue(true);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const sessionId = "extreme-steer-test";
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  channels.clear();
+  useExtremeStore.getState().enter(`server-${sessionId}`, "server", sessionId, "203.0.113.90");
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    await submit(holder, "查一下 nginx");
+    const taskId = run.mock.calls[0][0].taskId;
+
+    // 同一句话在任务执行中再发一次：作为补充要求送进同一个 taskId。
+    await submit(holder, "只看容器里的");
+    expect(steer).toHaveBeenCalledWith(taskId, "只看容器里的");
+    expect(holder.textContent).toContain("已更新当前任务：下一步开始前生效。");
+    // 补充要求也要上屏，不能只进后端。
+    expect(holder.textContent).toContain("只看容器里的");
+
+    // 收尾：后端确认终态，避免测试结束时还有运行中的卡片。
+    await emitAgent({ taskId, kind: "cancelled", message: "已停止" });
+    await flushAgent();
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    run.mockRestore();
+    snap.mockRestore();
+    steer.mockRestore();
+    vi.unstubAllGlobals();
+    channels.clear();
+    await i18n.changeLanguage(language);
+  }
+});
+
 it("message timeline: one tick per user turn, hover preview, click jumps inside the chat", async () => {
   const store = useExtremeStore;
   const sessionId = "extreme-timeline-test";
@@ -448,7 +496,13 @@ it("shows the latest request context and the task totals in the usage popover", 
 
     // 菜单走 portal，挂在 document.body 上。
     const text = document.body.textContent ?? "";
-    expect(text).toContain("约 38.1%");
+    /*
+     * 口径是**任务对话**（裁剪前 16000），不是"这一轮发了多少"（12500）：
+     * 16000 / 32768 ≈ 48.8%。
+     */
+    expect(text).toContain("任务对话 16,000 / 32,768 token");
+    expect(text).toContain("已占 48.8%");
+    expect(text).toContain("本轮实际发送 12,500");
     expect(text).toContain("本任务累计");
     expect(text).toContain("查一下当前跑了哪些服务");
     expect(text).toContain("L1 瘦身 2 条");
@@ -1506,7 +1560,7 @@ it("已有草稿时编辑旧消息：不覆盖草稿，并说明原因", async (
   }
 });
 
-it("右栏统一成会话工作区：四个固定标签，开关不动窗口尺寸，收起再开复原，换会话记住各自的标签", async () => {
+it("右栏按标签页工作：固定入口开标签，收起再开复原，换会话记住各自的标签", async () => {
   /*
    * 窗口尺寸一律不许改：以前打开右栏会把外框往右扩一段，用户看到的是
    * "窗口自己变宽"，收起再开还会和实际宽度对不上。现在宽度在窗口内自适应。
@@ -1525,27 +1579,29 @@ it("右栏统一成会话工作区：四个固定标签，开关不动窗口尺�
   useExtremeStore.getState().pushMessage({ id: "m-1", role: "user", text: "看看日志" });
   try {
     await act(async () => root.render(<ExtremeCoreView />));
-    const toggle = holder.querySelector<HTMLButtonElement>(
-      'button[aria-label="远程工作区"], button[aria-label="服务器详情"]',
-    );
-    expect(toggle).toBeTruthy();
-    await act(async () => toggle!.click());
+    const open = () => holder.querySelector<HTMLButtonElement>('button[aria-label="远程工作区"]')!;
+    expect(open()).toBeTruthy();
+    await act(async () => open().click());
     expect(widen).not.toHaveBeenCalled();
 
-    // 四个固定标签。
+    // 浏览器式标签：打开时只显示当前对话已有/按需打开的标签。
     const tab = (label: string) =>
       Array.from(holder.querySelectorAll<HTMLElement>('[role="tab"]')).find(
         (node) => node.textContent?.trim() === label,
       );
-    for (const label of ["远程文件", "终端", "附件", "计划"]) {
-      expect(tab(label), label).toBeTruthy();
-    }
+    expect(tab("远程文件"), "远程文件").toBeTruthy();
     expect(tab("远程文件")!.getAttribute("aria-selected")).toBe("true");
 
-    // 切到「终端」：内容换成两段，窗口尺寸始终不动。
-    await act(async () => tab("终端")!.click());
+    // 快捷入口属于右栏标签行，应用头部只负责恢复整个右栏。
+    const shortcut = holder.querySelector<HTMLButtonElement>(
+      '[data-pane-view] .extreme-core-pane-tabs button[aria-label="服务器终端"]',
+    );
+    expect(shortcut).toBeTruthy();
+    expect(holder.querySelector('.extreme-core-header button[aria-label="服务器终端"]')).toBeNull();
+    await act(async () => shortcut!.click());
     expect(widen).not.toHaveBeenCalled();
     expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
+    expect(tab("远程文件")).toBeTruthy();
     // 「终端」内部的两段（子标签不带业务状态，标题固定）。
     for (const label of ["执行输出", "真实终端"]) {
       expect(tab(label), label).toBeTruthy();
@@ -1553,10 +1609,17 @@ it("右栏统一成会话工作区：四个固定标签，开关不动窗口尺�
     await act(async () => tab("执行输出")!.click());
     expect(tab("执行输出")!.getAttribute("aria-selected")).toBe("true");
 
+    const closeTerminal = tab("终端")!.querySelector<HTMLButtonElement>('button[aria-label="关闭标签"]')!;
+    await act(async () => closeTerminal.click());
+    expect(tab("终端")).toBeUndefined();
+    await act(async () => shortcut!.click());
+    expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
+
     // 收起 → 再打开：回到「终端 › 执行输出」，窗口尺寸始终不动。
-    await act(async () => toggle!.click());
+    const close = holder.querySelector<HTMLButtonElement>('[data-pane-view] button[aria-label="收起右栏"]')!;
+    await act(async () => close.click());
     expect(widen).not.toHaveBeenCalled();
-    await act(async () => toggle!.click());
+    await act(async () => open().click());
     expect(widen).not.toHaveBeenCalled();
     expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
     expect(tab("执行输出")!.getAttribute("aria-selected")).toBe("true");
@@ -1574,6 +1637,48 @@ it("右栏统一成会话工作区：四个固定标签，开关不动窗口尺�
     });
     await act(async () => root.render(<ExtremeCoreView />));
     expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => {
+      useExtremeStore.getState().pushMessage({
+        id: "panel-website",
+        role: "assistant",
+        text: "查看 http://example.org/ops",
+      });
+    });
+    const link = holder.querySelector<HTMLAnchorElement>('a[href="http://example.org/ops"]');
+    expect(link).toBeTruthy();
+    await act(async () => link!.click());
+    expect(tab("浏览器")!.getAttribute("aria-selected")).toBe("true");
+    expect(useExtremeStore.getState().browserByWorkspace[firstWorkspace]).toBe("http://example.org/ops");
+
+    /*
+     * 显式外拖：窗口目标宽度变大，新增宽度全部给右栏；聊天容器本身的宽度
+     * 在 jsdom 里没有布局，只能断言“窗口请求 + 右栏变宽”这条契约。
+     */
+    const resize = vi
+      .spyOn(opsApi, "extremePanelResize")
+      .mockResolvedValue({ widened: true, added: 80, reason: null });
+    const outer = holder.querySelector<HTMLElement>('[aria-label="向外拖宽右栏"]')!;
+    expect(outer).toBeTruthy();
+    const before = useExtremeStore.getState().paneWidth;
+    const pointer = (type: string, clientX: number) =>
+      new MouseEvent(type, { bubbles: true, clientX, button: 0 });
+    await act(async () => {
+      outer.dispatchEvent(pointer("pointerdown", 600));
+      window.dispatchEvent(pointer("pointermove", 680));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      window.dispatchEvent(pointer("pointerup", 680));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(resize).toHaveBeenCalled();
+    // 绝对目标宽度：基准窗口 + 拖动位移（80），不是每帧叠加。
+    expect(resize.mock.calls[0][0]).toBeGreaterThan(window.innerWidth);
+    expect(useExtremeStore.getState().paneWidth).toBeGreaterThan(before);
+    resize.mockRestore();
   } finally {
     await act(async () => root.unmount());
     holder.remove();
@@ -1815,17 +1920,16 @@ it("输入区是官方 Prompt Bar：模型 / 思考强度 / 上下文都在组�
     );
     expect(useExtremeStore.getState().chatPrefs.providerId).toBe("p1");
 
-    // 「上下文」菜单：范围 + 档位都在这里。
-    const contextButton = composer.querySelector<HTMLButtonElement>('button[aria-label="上下文"]')!;
-    await act(async () => contextButton.click());
-    const contextMenu = document.querySelector<HTMLElement>('[role="menu"][aria-label="上下文"]')!;
-    const radio = (label: string) =>
-      Array.from(contextMenu.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
-        (node) => node.textContent === label,
+    // 「上下文」范围与档位各是一个统一 Select（与 Prompt Bar 同一套面板）。
+    const budgetButton = composer.querySelector<HTMLButtonElement>('button[aria-label="上下文长度"]')!;
+    await act(async () => budgetButton.click());
+    const budgetMenu = document.querySelector<HTMLElement>('[role="listbox"][aria-label="上下文长度"]')!;
+    const budgetOption = (label: string) =>
+      Array.from(budgetMenu.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((node) =>
+        node.textContent?.includes(label),
       )!;
-    await act(async () => radio("600K").click());
+    await act(async () => budgetOption("600K").click());
     expect(useExtremeStore.getState().modelSettings["p:p1"]).toMatchObject({ budget: 600 * 1024 });
-    await act(async () => contextButton.click());
 
     // 思考强度：组件里的滑杆选到最高档（MAX），发送时按模型记住。
     const effortButton = composer.querySelector<HTMLButtonElement>('button[aria-label="选择思考强度"]')!;
@@ -1852,6 +1956,90 @@ it("输入区是官方 Prompt Bar：模型 / 思考强度 / 上下文都在组�
     useExtremeStore.getState().exit();
     useExtremeStore.setState({ modelSettings: {} });
     localStorage.removeItem("bls-ops.extreme-model-settings.v1");
+    providers.mockRestore();
+    run.mockRestore();
+    vi.unstubAllGlobals();
+    channels.clear();
+    await i18n.changeLanguage(language);
+  }
+});
+
+it("发送即锁定模型：A 等终端输出时切到 B，A 的请求仍用 A 的模型", async () => {
+  const providers = vi.spyOn(opsApi, "aiProviderList").mockResolvedValue([
+    {
+      id: "pa",
+      name: "A",
+      model: "model-a",
+      enabled: true,
+      is_default: true,
+      updated_at: 2,
+      context_window: 1024 * 1024,
+      context_budgets: [300 * 1024, 600 * 1024],
+      reasoning_efforts: ["low", "high"],
+    },
+    {
+      id: "pb",
+      name: "B",
+      model: "model-b",
+      enabled: true,
+      context_window: 1024 * 1024,
+      reasoning_efforts: [],
+    },
+  ] as never);
+  const run = vi.spyOn(opsApi, "aiAgentRun").mockResolvedValue(snapshot());
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  channels.clear();
+  useExtremeStore.setState({ modelSettings: {} });
+  useExtremeStore.getState().enter("srv-select", "生产", "extreme-select", "root@10.0.0.41:22");
+  useExtremeStore.getState().ensureWorkspace();
+  useExtremeStore.getState().setProviderId("pa");
+  useExtremeStore.getState().setModelSetting("p:pa", { effort: "high", budget: 600 * 1024 });
+
+  let release!: (value: string) => void;
+  const tail = new Promise<string>((resolve) => {
+    release = resolve;
+  });
+  manualShell.tail.mockReturnValueOnce(tail);
+
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // A 发送：请求会卡在“读取终端输出”上。
+    await submit(holder, "A 的问题");
+    expect(run).not.toHaveBeenCalled();
+
+    // 等 A 的终端输出时切到 B，并给 B 选另一个模型。
+    await act(async () => {
+      useExtremeStore.getState().addWorkspace([]);
+    });
+    await act(async () => {
+      useExtremeStore.getState().setProviderId("pb");
+    });
+    await act(async () => {
+      release("");
+      await tail;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    const request = run.mock.calls[0][0];
+    expect(request.providerId).toBe("pa");
+    expect(request.reasoningEffort).toBe("high");
+    expect(request.contextBudget).toBe(600 * 1024);
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    useExtremeStore.setState({ modelSettings: {} });
+    manualShell.tail.mockReset();
+    manualShell.tail.mockImplementation(async () => "");
     providers.mockRestore();
     run.mockRestore();
     vi.unstubAllGlobals();

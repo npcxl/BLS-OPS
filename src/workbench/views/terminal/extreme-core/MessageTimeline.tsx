@@ -11,7 +11,7 @@
  * * 滚动时按"当前阅读到哪一轮"高亮，长回复仍算同一轮；
  * * 刻度多到放不下时刻度区自己滚动，当前高亮始终可见。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import LineSidebar from "@/components/ui/line-sidebar";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -196,6 +196,81 @@ export function MessageTimeline({
     [scrollRef, stick],
   );
 
+  /**
+   * 刻度条自己的边缘自动滚动。
+   *
+   * 轮次多到 rail 放不下时（100 轮就是两千多像素），不该逼用户去拨滚轮：
+   * 指针靠近刻度区上下边缘就持续滚动，越贴边越快，离开 / 失焦 / 滚到端点
+   * 立刻停 —— 与正文容器那套边缘滚动同一手感（豆包的时间轴也是这么走的）。
+   */
+  const edgeDir = useRef(0);
+  const edgePower = useRef(0);
+  const edgeFrame = useRef(0);
+
+  const stopEdgeScroll = useCallback(() => {
+    if (edgeFrame.current) cancelAnimationFrame(edgeFrame.current);
+    edgeFrame.current = 0;
+    edgeDir.current = 0;
+    edgePower.current = 0;
+  }, []);
+
+  const runEdgeScroll = useCallback(() => {
+    const rail = railRef.current;
+    if (!rail || edgeDir.current === 0) {
+      edgeFrame.current = 0;
+      return;
+    }
+    const max = rail.scrollHeight - rail.clientHeight;
+    const speed = 1.5 + edgePower.current * 9;
+    const next = rail.scrollTop + edgeDir.current * speed;
+    if (max <= 0 || next <= 0 || next >= max) {
+      rail.scrollTop = Math.max(0, Math.min(max, next));
+      stopEdgeScroll();
+      return;
+    }
+    rail.scrollTop = next;
+    edgeFrame.current = requestAnimationFrame(runEdgeScroll);
+  }, [stopEdgeScroll]);
+
+  /** 只在刻度区自己的 32px 边缘生效：内侧不动，避免"悬停看预览"时乱跑。 */
+  const onRailPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rail = event.currentTarget;
+    const rect = rail.getBoundingClientRect();
+    const zone = 32;
+    const fromTop = event.clientY - rect.top;
+    const fromBottom = rect.bottom - event.clientY;
+    let dir = 0;
+    let power = 0;
+    if (fromTop >= 0 && fromTop < zone) {
+      dir = -1;
+      power = 1 - fromTop / zone;
+    } else if (fromBottom >= 0 && fromBottom < zone) {
+      dir = 1;
+      power = 1 - fromBottom / zone;
+    }
+    if (dir === 0) {
+      stopEdgeScroll();
+      return;
+    }
+    // 已经贴到端点就不要再起循环：起一次也会立刻停。
+    const max = rail.scrollHeight - rail.clientHeight;
+    if ((dir < 0 && rail.scrollTop <= 0) || (dir > 0 && rail.scrollTop >= max)) {
+      stopEdgeScroll();
+      return;
+    }
+    edgeDir.current = dir;
+    edgePower.current = power;
+    if (!edgeFrame.current) edgeFrame.current = requestAnimationFrame(runEdgeScroll);
+  };
+
+  useEffect(() => {
+    window.addEventListener("blur", stopEdgeScroll);
+    return () => {
+      window.removeEventListener("blur", stopEdgeScroll);
+      stopEdgeScroll();
+    };
+  }, [stopEdgeScroll]);
+
   if (turns.length === 0) return null;
 
   return (
@@ -204,18 +279,26 @@ export function MessageTimeline({
         <div className="pointer-events-auto absolute inset-y-0 -left-8 flex w-8 flex-col">
           <div
             ref={railRef}
-            className="relative max-h-full overflow-y-auto py-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            onPointerMove={onRailPointerMove}
+            onPointerLeave={stopEdgeScroll}
+            // flex + 子项 my-auto：轮次少时整条刻度在可视高度里上下居中；
+            // 轮次多到溢出时 auto margin 归零，仍然从顶部开始滚，不会裁掉第一根。
+            className="relative flex max-h-full flex-col overflow-y-auto py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             <LineSidebar
+              className="my-auto"
               items={turns.map((turn) => turn.question)}
               showIndex={false}
               showLabel={false}
               showMarker
               // 受控高亮：由正文滚动位置决定；点击只是把高亮先切过去。
               activeIndex={controlledActive}
-              markerLength={20}
-              itemGap={10}
-              proximityRadius={90}
+              // 刻度只做"这是第几轮"的提示，不需要抢正文注意力：
+              // 线长 10、2px 粗、相邻间隔 6 —— 更像一条细密的尺子。
+              markerLength={10}
+              markerThickness={2}
+              itemGap={6}
+              proximityRadius={40}
               falloff="smooth"
               smoothing={90}
               accentColor="rgb(var(--accent))"

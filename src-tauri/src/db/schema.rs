@@ -60,10 +60,11 @@ impl AppDb {
 ///
 /// v19 建 `extreme_tasks`，v20 补索引，v21 / v22 分别加 `kind` 与 `name`，
 /// v23 补 `server_id` / `workspace_id`（任务归属），v24 补 `goal` / `risk`
-/// （类型按用户目标判断，风险单独记录）。
+/// （类型按用户目标判断，风险单独记录），v25 补 `outcome_json`（验证结论，
+/// 重启后仍能显示「已验证 / 部分完成」），v26 补 `cwd`（恢复执行时的起点目录）。
 /// 这个常量还决定 `init()` 要不要在迁移前自动备份旧库 —— 落后于真实迁移步数
 /// 时，v18 的库会**跳过**那次备份直接升上来。
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 26;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -1306,6 +1307,42 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             "TEXT NOT NULL DEFAULT 'read'",
         )?;
         conn.pragma_update(None, "user_version", 24u32)?;
+    }
+    if version < 25 {
+        /*
+         * 验证结论（`verified` / `partial` / `needs_info` + 证据）。
+         *
+         * 与 `summary` 分开：摘要是"发生了什么"，结论是"凭什么说目标达成"。
+         * 旧记录留空，前端不显示结论标签（不猜）。
+         */
+        add_column(
+            conn,
+            "extreme_tasks",
+            "outcome_json",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.pragma_update(None, "user_version", 25u32)?;
+    }
+    if version < 26 {
+        /*
+         * 恢复执行的起点目录。旧记录留空，恢复时退回 `/` 并在检查点里说明
+         * （绝不猜一个可能不存在的目录）。
+         */
+        add_column(conn, "extreme_tasks", "cwd", "TEXT NOT NULL DEFAULT ''")?;
+        conn.pragma_update(None, "user_version", 26u32)?;
+    }
+    if version < 27 {
+        /*
+         * 模型能力的**用户声明**（v27）。
+         *
+         * 内置能力表只认 DeepSeek 与 OpenAI 推理模型，用户接的别家模型落到
+         * "未知"，界面只剩「默认 / 自动」而看不出原因。三列都允许 NULL：
+         * NULL = 用内置表，空数组 = 用户明确声明"没有"（两者语义不同，不能合并）。
+         */
+        add_column(conn, "ai_providers", "context_window", "INTEGER")?;
+        add_column(conn, "ai_providers", "context_budgets", "TEXT")?;
+        add_column(conn, "ai_providers", "reasoning_efforts", "TEXT")?;
+        conn.pragma_update(None, "user_version", 27u32)?;
     }
     Ok(())
 }

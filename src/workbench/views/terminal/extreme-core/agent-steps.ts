@@ -5,7 +5,7 @@
  * `DeployStep[]`：卡片、历史详情、右栏读到的是同一个东西，不会出现
  * "聊天里 3 步、历史里 5 步"这种对不上的情况。
  */
-import type { AgentEvent, AgentStep } from "@/api/types/agent";
+import type { AgentEvent, AgentOutcome, AgentStep } from "@/api/types/agent";
 import type { DeployStep, StepState } from "./deploy-plan";
 import { kindOfGoal, titleOf, type TaskCardModel } from "./task-view";
 import type { TaskKind, TaskStatus } from "./task";
@@ -50,6 +50,7 @@ function blankStep(index: number, event: AgentEvent): AgentStep {
     backupPath: null,
     rollback: null,
     impact: event.impact ?? null,
+    changeId: event.changeId ?? null,
     elapsedMs: 0,
   };
 }
@@ -90,6 +91,7 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
       impact: event.impact ?? current.impact,
       script: event.script ?? current.script,
       summary: event.summary ?? current.summary,
+      changeId: event.changeId ?? current.changeId,
       elapsedMs: event.elapsedMs ?? current.elapsedMs,
     };
   } else {
@@ -106,6 +108,8 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
       ...(event.rollback !== undefined ? { rollback: event.rollback } : {}),
       ...(event.script !== undefined ? { script: event.script } : {}),
       ...(event.summary !== undefined ? { summary: event.summary } : {}),
+      // 预览换成新版本时，步骤上的标识要跟着走（旧标识只指向作废的那条）。
+      ...(event.changeId ? { changeId: event.changeId } : {}),
     };
   }
 
@@ -126,6 +130,7 @@ export function stepsFromSnapshot(steps: AgentStep[] | undefined): AgentStep[] {
     impact: step.impact ?? null,
     script: step.script ?? null,
     summary: step.summary ?? null,
+    changeId: step.changeId ?? null,
   }));
 }
 
@@ -298,6 +303,8 @@ export function cardFromAgent(input: {
   status: string;
   error?: string | null;
   cwd?: string;
+  /** 终态验证结论（由后端按真实步骤判定）。 */
+  outcome?: AgentOutcome | null;
   existing?: TaskCardModel;
   now?: number;
   t: Translate;
@@ -331,9 +338,14 @@ export function cardFromAgent(input: {
     createdAt: input.existing?.createdAt ?? now,
     updatedAt: now,
     steps: toDeploySteps(input.steps, input.t),
+    // 终态才带结论；执行中被清掉，避免旧结论挂在新一轮上。
+    outcome:
+      input.status === "success" || input.status === "failed"
+        ? input.outcome ?? input.existing?.outcome ?? null
+        : null,
     // 写过的文件直接给预览入口：用户能立刻对照备份看到改成了什么。
     artifacts: input.steps
-      .filter((step) => step.tool === "write_file" && step.path)
+      .filter((step) => step.state === "success" && step.tool === "write_file" && step.path)
       .map((step) => ({
         name: (step.path ?? "").split("/").filter(Boolean).pop() ?? step.path ?? "",
         path: step.path ?? "",

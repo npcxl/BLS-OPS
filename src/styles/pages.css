@@ -638,11 +638,29 @@
     padding: 0 10px;
     border-radius: 5px;
     outline: none;
+    /* 悬停 / 选中 / 右键菜单按住 三种底色都走这一条过渡，切换不闪。 */
+    transition: background-color 120ms ease;
+  }
+
+  /*
+   * 三种态共用一套底色，优先级固定：
+   * 普通悬停 < 选中 < 选中悬停 / 选中右键。
+   * 以前选中态只有 aria-selected 一条规则，鼠标移上去被行内的 hover 类盖掉，
+   * 右键弹出的那一刻更是完全看不出点的是哪一行。
+   */
+  .page-tree-row:hover,
+  .page-tree-row[data-menu-open="true"] {
+    background: rgb(var(--surface-hover));
   }
 
   .page-tree-row[aria-selected="true"] {
     background: rgb(var(--accent) / 0.12);
     color: rgb(var(--fg));
+  }
+
+  .page-tree-row[aria-selected="true"]:hover,
+  .page-tree-row[aria-selected="true"][data-menu-open="true"] {
+    background: rgb(var(--accent) / 0.2);
   }
 
   .page-tree-row:focus-visible {

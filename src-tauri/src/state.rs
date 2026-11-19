@@ -36,6 +36,11 @@ pub struct AppState {
     pub ai_reviews: AiReviewRegistry,
     /// 超能 Agent 的运行中任务（循环跑在这里，不随 WebView 卸载而中断）。
     pub agents: crate::agent::AgentRegistry,
+    /// 服务器文件变更记录：预览 / 实际回读的**当时快照**与 Diff。
+    ///
+    /// 内存态、按 taskId / workspaceId 归属；重启后清空（历史 Diff 不会随服务器
+    /// 再次修改而变，但也不跨进程持久化）。
+    pub changes: crate::agent::ChangeRegistry,
     /// 命令检索的收藏/使用快照：避免每次按键都开库查两张表。
     pub command_search: crate::command_center::CommandSearchCache,
     /// 文件传输任务中心（上传 / 下载队列，内存态 + 可取消）。
@@ -62,6 +67,7 @@ impl AppState {
             env_locks: EnvironmentLocks::default(),
             ai_reviews: AiReviewRegistry::default(),
             agents: crate::agent::AgentRegistry::default(),
+            changes: crate::agent::ChangeRegistry::default(),
             command_search: crate::command_center::CommandSearchCache::default(),
             transfers: Arc::new(crate::transfer::TransferCenter::new()),
             database: DatabaseManager::default(),

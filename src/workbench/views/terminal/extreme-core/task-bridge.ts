@@ -28,8 +28,9 @@ const PHASE: Record<TaskStatus, TaskPhase> = {
   verifying: "running",
   done: "done",
   failed: "failed",
-  // 已取消 = 还可以重试：和失败同一条链路（重跑未完成的步骤），不是"重新收集"。
+  // 已取消 / 已中断 = 还可以继续：和失败同一条链路（核对后重跑未完成的步骤）。
   cancelled: "failed",
+  interrupted: "failed",
 };
 
 export function phaseOfCard(card: TaskCardModel): TaskPhase {

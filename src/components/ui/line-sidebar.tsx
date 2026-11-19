@@ -40,6 +40,8 @@ export interface LineSidebarProps {
   maxShift?: number;
   falloff?: Falloff;
   markerLength?: number;
+  /** 刻度线粗细（px）。默认 1px；时间轴这类"细刻度"可以调粗到 2px。 */
+  markerThickness?: number;
   markerGap?: number;
   tickScale?: number;
   scaleTick?: boolean;
@@ -90,6 +92,7 @@ const LineSidebar = ({
   maxShift = 30,
   falloff = 'smooth',
   markerLength = 60,
+  markerThickness = 1,
   markerGap = 0,
   tickScale = 0.5,
   scaleTick = true,
@@ -202,7 +205,7 @@ const LineSidebar = ({
   );
 
   const tickClass = showMarker
-    ? `after:absolute after:left-[calc(-1*var(--marker-length)-var(--marker-gap))] after:top-[calc(100%+var(--item-gap)/2)] after:h-px after:opacity-50 after:content-[''] last:after:content-none after:[background-color:var(--marker-color)] after:[width:calc(var(--marker-length)*var(--tick-scale))] ${
+    ? `after:absolute after:left-[calc(-1*var(--marker-length)-var(--marker-gap))] after:top-[calc(100%+var(--item-gap)/2)] after:h-[length:var(--marker-thickness)] after:opacity-50 after:content-[''] last:after:content-none after:[background-color:var(--marker-color)] after:[width:calc(var(--marker-length)*var(--tick-scale))] ${
         scaleTick
           ? "after:origin-left after:[transform:translateY(-50%)_scaleX(calc(0.7+var(--effect,0)*0.6))]"
           : 'after:-translate-y-1/2'
@@ -220,6 +223,7 @@ const LineSidebar = ({
           '--text-color': textColor,
           '--marker-color': markerColor,
           '--marker-length': `${markerLength}px`,
+          '--marker-thickness': `${markerThickness}px`,
           '--marker-gap': `${markerGap}px`,
           '--tick-scale': tickScale,
           '--max-shift': `${maxShift}px`,
@@ -252,7 +256,7 @@ const LineSidebar = ({
               >
                 <span
                   aria-hidden="true"
-                  className="block h-px w-[length:var(--marker-length)] origin-left [background-color:color-mix(in_srgb,var(--accent-color)_calc(var(--effect,0)*100%),var(--marker-color))] [transform:scaleX(calc(0.7+var(--effect,0)*0.5))] group-focus-visible:[background-color:var(--accent-color)] group-focus-visible:[transform:scaleX(1)]"
+                  className="block h-[length:var(--marker-thickness)] w-[length:var(--marker-length)] origin-left [background-color:color-mix(in_srgb,var(--accent-color)_calc(var(--effect,0)*100%),var(--marker-color))] [transform:scaleX(calc(0.7+var(--effect,0)*0.5))] group-focus-visible:[background-color:var(--accent-color)] group-focus-visible:[transform:scaleX(1)]"
                 />
               </button>
             );
@@ -286,7 +290,7 @@ const LineSidebar = ({
               {showMarker && (
                 <span
                   aria-hidden="true"
-                  className="absolute left-[calc(-1*var(--marker-length)-var(--marker-gap))] top-1/2 h-px w-[length:var(--marker-length)] origin-left [background-color:color-mix(in_srgb,var(--accent-color)_calc(var(--effect,0)*100%),var(--marker-color))] [transform:translateY(-50%)_scaleX(calc(0.7+var(--effect,0)*0.5))]"
+                  className="absolute left-[calc(-1*var(--marker-length)-var(--marker-gap))] top-1/2 h-[length:var(--marker-thickness)] w-[length:var(--marker-length)] origin-left [background-color:color-mix(in_srgb,var(--accent-color)_calc(var(--effect,0)*100%),var(--marker-color))] [transform:translateY(-50%)_scaleX(calc(0.7+var(--effect,0)*0.5))]"
                 />
               )}
               <span className="relative inline-flex items-baseline leading-[1.2] [color:color-mix(in_srgb,var(--accent-color)_calc(var(--effect,0)*100%),var(--text-color))] [font-size:var(--font-size)] [transform:translateX(calc(var(--effect,0)*var(--max-shift)))]">

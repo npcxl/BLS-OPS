@@ -51,6 +51,26 @@ pub fn plan_widen(
     Some((pos.0, pos.1, width, height))
 }
 
+/// 外拖的目标宽度：右侧留 8px，且不越出工作区。
+///
+/// 正常拖拽只允许外扩；取消 / 收起回收时传 `allow_shrink = true`。
+pub fn plan_resize(
+    current: f64,
+    desired: f64,
+    left: f64,
+    work_right: f64,
+    allow_shrink: bool,
+) -> Option<f64> {
+    let max_width = (work_right - left - 8.0).max(current);
+    let min_width = if allow_shrink { 320.0 } else { current };
+    let target = desired.clamp(min_width, max_width);
+    if (target - current).abs() < 1.0 {
+        None
+    } else {
+        Some(target)
+    }
+}
+
 /// 最近一次由面板自动增加的宽度（逻辑像素）与加完之后的窗口宽度。
 static AUTO: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
@@ -168,9 +188,84 @@ fn set_logical_size(window: &WebviewWindow, width: f64, height: f64, scale: f64)
     ));
 }
 
+/**
+ * 右栏外缘拖动：把窗口右侧拉到鼠标位置。
+ *
+ * `width` 是**目标客户区宽度**（逻辑像素），不是增量 —— 每帧都用拖拽开始时的
+ * 基准算绝对目标，避免 pointermove 重复调用时把宽度越加越大。左边缘、垂直
+ * 位置与高度保持不变；只受当前显示器**工作区**右侧限制（任务栏也算）。
+ */
+#[tauri::command]
+pub fn extreme_panel_resize(
+    window: WebviewWindow,
+    width: f64,
+    allow_shrink: Option<bool>,
+) -> OpsResult<WidenOutcome> {
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return Ok(WidenOutcome {
+            widened: false,
+            added: 0.0,
+            reason: Some("最大化 / 全屏：内部按分栏显示".to_string()),
+        });
+    }
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let outer = window
+        .outer_position()
+        .unwrap_or(PhysicalPosition::new(0, 0));
+    let inner = window
+        .inner_size()
+        .or_else(|_| window.outer_size())
+        .unwrap_or(PhysicalSize::new(1200, 800));
+    let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        return Ok(WidenOutcome {
+            widened: false,
+            added: 0.0,
+            reason: Some("没有可用的显示器信息".to_string()),
+        });
+    };
+
+    let work = monitor.work_area();
+    let work_right = (work.position.x as f64 + work.size.width as f64) / scale;
+    let work_bottom = (work.position.y as f64 + work.size.height as f64) / scale;
+    let left = outer.x as f64 / scale;
+    let top = outer.y as f64 / scale;
+    let current = inner.width as f64 / scale;
+    let height = inner.height as f64 / scale;
+
+    // 留 8px，别贴着工作区边缘；宽度不能小于当前（这个手柄只负责外扩）。
+    let Some(target) = plan_resize(
+        current,
+        width,
+        left,
+        work_right,
+        allow_shrink.unwrap_or(false),
+    ) else {
+        return Ok(WidenOutcome {
+            widened: false,
+            added: 0.0,
+            reason: Some("显示器右侧空间不足：内部按分栏显示".to_string()),
+        });
+    };
+    let added = target - current;
+
+    let next_height = height.min(work_bottom - top).max(320.0);
+    set_logical_size(&window, target, next_height, scale);
+    Ok(WidenOutcome {
+        widened: true,
+        added,
+        reason: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::plan_widen;
+    use super::{plan_resize, plan_widen};
 
     #[test]
     fn widens_when_there_is_room_on_the_right() {
@@ -197,6 +292,25 @@ mod tests {
             340.0
         )
         .is_none());
+    }
+
+    #[test]
+    fn outer_resize_uses_absolute_target_and_keeps_left_edge() {
+        // 拖到 1600：工作区右侧 1920，左边缘 100 → 上限 1812。
+        assert_eq!(
+            plan_resize(1200.0, 1600.0, 100.0, 1920.0, false),
+            Some(1600.0)
+        );
+        // 超过工作区：夹到 1812，不会把窗口推到屏幕外。
+        assert_eq!(
+            plan_resize(1200.0, 3000.0, 100.0, 1920.0, false),
+            Some(1812.0)
+        );
+        // 没有空间：返回 None，调用方退回内部拖拽。
+        assert_eq!(plan_resize(1200.0, 1500.0, 1400.0, 1920.0, false), None);
+        // 正常拖拽不能缩窗口；取消 / 收起回收时允许。
+        assert_eq!(plan_resize(1200.0, 900.0, 100.0, 1920.0, false), None);
+        assert_eq!(plan_resize(1200.0, 900.0, 100.0, 1920.0, true), Some(900.0));
     }
 
     #[test]

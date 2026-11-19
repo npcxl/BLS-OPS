@@ -6,6 +6,8 @@ import {
   outputInstruction,
   pickedLines,
   renderManifest,
+  shouldAttachTerminalTail,
+  terminalTailBlock,
   type PickedContext,
 } from "../chat-context";
 
@@ -31,7 +33,7 @@ describe("上下文范围", () => {
     message("4", "user", "第二句"),
   ];
 
-  it("当前会话带最近的历史（跳过空消息）", () => {
+  it("当前会话带整段历史（跳过空消息）", () => {
     expect(historyFor("session", history).map((item) => item.text)).toEqual([
       "第一句",
       "回答一",
@@ -44,8 +46,41 @@ describe("上下文范围", () => {
     expect(historyFor("picked", history)).toEqual([]);
   });
 
-  it("按上限截取的是**最近**的几条", () => {
-    expect(historyFor("session", history, 1).map((item) => item.text)).toEqual(["第二句"]);
+  /*
+   * 不再按条数截断：以前是"最近 6 条"，长任务只剩最近两三轮，模型看不到
+   * 前面的结论，界面上的"上下文"也随之失真。裁剪交给 Rust 的 token 预算。
+   */
+  it("长对话一条都不丢", () => {
+    const long = Array.from({ length: 40 }, (_, index) =>
+      message(`m${index}`, index % 2 === 0 ? "user" : "assistant", `第 ${index} 句`),
+    );
+    expect(historyFor("session", long)).toHaveLength(40);
+    expect(historyFor("session", long)[0].text).toBe("第 0 句");
+  });
+});
+
+describe("终端输出的上下文规则", () => {
+  const output = [
+    { kind: "output" as const, id: "terminal:ws-a", label: "真实终端最近 3 行", detail: "$ uptime\n..." },
+  ];
+
+  it("「当前会话」自动带（它属于这段对话的上下文）", () => {
+    expect(shouldAttachTerminalTail("session", [])).toBe(true);
+  });
+
+  it("「仅本条 / 自选」不自动带：模型不该凭空知道用户刚才在终端里跑了什么", () => {
+    expect(shouldAttachTerminalTail("only", [])).toBe(false);
+    expect(shouldAttachTerminalTail("picked", [])).toBe(false);
+  });
+
+  it("已经手动「加入本次对话」：不重复带同一段", () => {
+    expect(shouldAttachTerminalTail("session", output)).toBe(false);
+  });
+
+  it("空输出不产生段落（避免空代码块）", () => {
+    expect(terminalTailBlock("   \n ")).toBe("");
+    expect(terminalTailBlock("$ uptime")).toContain("$ uptime");
+    expect(terminalTailBlock("$ uptime")).toContain("真实终端");
   });
 });
 
@@ -93,5 +128,20 @@ describe("附件清单", () => {
     expect(text).toContain("logo.png（2.0 KB，二进制）");
     expect(text).toContain("broken.txt（2.0 KB，读取失败）");
     expect(text).toContain("dist.zip（2.0 KB，已上传）");
+  });
+
+  it("服务器上的文件没读到正文：保留路径并写明按路径读取", () => {
+    const text = renderManifest([
+      attachment({
+        id: "r1",
+        name: "nginx.conf",
+        path: "/etc/nginx/nginx.conf",
+        remotePath: "/etc/nginx/nginx.conf",
+        uploadState: "uploaded",
+        error: "permission denied",
+      }),
+    ]);
+    expect(text).toContain("/etc/nginx/nginx.conf");
+    expect(text).toContain("未读到正文，按路径读取");
   });
 });

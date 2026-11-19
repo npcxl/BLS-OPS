@@ -26,6 +26,19 @@ const TONE: Record<TaskStatus, "neutral" | "warning" | "info" | "success" | "dan
   done: "success",
   failed: "danger",
   cancelled: "neutral",
+  interrupted: "warning",
+};
+
+/** 验证结论的文案与颜色（后端只给 level，显示措辞由界面决定）。 */
+const OUTCOME_LABEL: Record<string, string> = {
+  verified: "已验证",
+  partial: "部分完成",
+  needs_info: "需要补充信息",
+};
+const OUTCOME_TONE: Record<string, string> = {
+  verified: "text-success",
+  partial: "text-warning",
+  needs_info: "text-fg-muted",
 };
 
 const KIND_ICON = {
@@ -45,11 +58,14 @@ const KIND_ICON = {
 export function TaskCardView({
   task,
   onPreview,
+  onResume,
   defaultExpanded = false,
 }: {
   task: TaskCardModel;
   /** 打开任务产物（服务器绝对路径 + 任务自己的会话）。 */
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
+  /** 从检查点恢复（中断 / 失败的任务）。 */
+  onResume?: (task: TaskCardModel) => void;
   defaultExpanded?: boolean;
 }) {
   const { t } = useTranslation();
@@ -59,6 +75,10 @@ export function TaskCardView({
   const failedStep = task.steps.find((step) => step.state === "failed");
   const verify = verificationStep(task);
   const running = task.status === "running" || task.status === "verifying";
+  /** 计划里会改动服务器的步骤（写 / 危险）：执行前就让人看清"要动哪里"。 */
+  const writes = task.steps.filter(
+    (step) => step.kind === "tool" && step.risk && step.risk !== "read",
+  );
 
   return (
     <section className="overflow-hidden rounded-[10px] border border-line bg-surface-1/95">
@@ -72,12 +92,27 @@ export function TaskCardView({
 
       <div className="space-y-1 border-t border-line px-3 py-2">
         {task.goal && <p className="truncate text-11 text-fg-muted">{t("目标")}：{task.goal}</p>}
+        {writes.length > 0 && (
+          <p className="truncate text-11 text-fg-subtle" title={writes.map((step) => step.title).join("、")}>
+            {t("拟改动")}：{writes.map((step) => step.title).join("、")}
+          </p>
+        )}
         <p className="text-12">
           {t("当前")}：
           {progress.total > 0 ? `${progress.done}/${progress.total}` : "—"}
           {progress.current ? ` · ${progress.current.title}` : ""}
         </p>
         <p className={cn("text-12", task.status === "failed" ? "text-danger" : "text-fg-muted")}>{task.result}</p>
+        {/*
+         * 结论不能只靠"模型回了话"：后端按真实步骤给出 verified / partial /
+         * needs_info，这里必须显示出来，别让"改完没验证"看起来像完成。
+         */}
+        {task.outcome && (task.status === "done" || task.status === "failed") && (
+          <p className={cn("text-11", OUTCOME_TONE[task.outcome.level] ?? "text-fg-muted")}>
+            {t("结论")}：{t(OUTCOME_LABEL[task.outcome.level] ?? task.outcome.level)}
+            {task.outcome.reason ? ` · ${task.outcome.reason}` : ""}
+          </p>
+        )}
 
         {/* 关键结果按任务类型取不同字段，避免每种任务一个卡片组件。 */}
         {/*
@@ -144,6 +179,18 @@ export function TaskCardView({
         <span className="text-11 text-fg-subtle">
           {progress.done}/{progress.total}
         </span>
+        {onResume &&
+          (task.status === "interrupted" ||
+            (task.status === "failed" && task.steps.length > 0)) && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="ml-auto gap-1 text-accent"
+            onClick={() => onResume(task)}
+          >
+            {t("继续执行")}
+          </Button>
+        )}
       </div>
 
       {expanded && (
@@ -158,6 +205,18 @@ export function TaskCardView({
               <span className="font-medium">{failedStep.title}</span>
               <span className="ml-1 text-fg-muted">{failedStep.stderr?.trim() || failedStep.detail}</span>
             </StatusNotice>
+          )}
+          {task.outcome && task.outcome.evidence.length > 0 && (
+            <div className="border-t border-line px-3 py-2">
+              <p className="text-11 text-fg-muted">{t("结论依据")}</p>
+              <ul className="mt-1 space-y-0.5">
+                {task.outcome.evidence.map((item) => (
+                  <li key={item} className="truncate font-mono text-10 text-fg-subtle" title={item}>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}

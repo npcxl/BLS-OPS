@@ -191,6 +191,7 @@ pub fn run() {
             desktop_notification::desktop_notification_frame,
             desktop_notification::desktop_notification_debug_texture,
             desktop_notification::desktop_notification_dismiss,
+            desktop_notification::desktop_notification_clear_extreme,
             // 快捷键独立窗口
             commands::open_shortcuts_window,
             // 配置备份 / 恢复（整机迁移）
@@ -441,16 +442,31 @@ pub fn run() {
             commands::agent_start,
             commands::agent_snapshot,
             commands::agent_approve,
+            commands::agent_steer,
+            commands::agent_resume,
             commands::agent_cancel,
+            commands::agent_abandon,
+            // 文件变更审阅：列表只给摘要，Diff 正文按需加载
+            commands::agent_file_changes,
+            commands::agent_file_change_detail,
             commands::extreme_task_save,
             // ---- 极核：实时日志（独立于问答任务的 SSH 长连接） ----
             commands::extreme_log_start,
             commands::extreme_log_stop,
             commands::extreme_panel_widen,
+            commands::extreme_panel_resize,
             commands::extreme_pick_workspace_folders,
             commands::extreme_task_list,
             commands::extreme_task_rename,
             commands::extreme_task_delete,
+            // ---- 极核：右栏内置浏览器（独立子 WebView） ----
+            commands::extreme_browser_open,
+            commands::extreme_browser_bounds,
+            commands::extreme_browser_navigate,
+            commands::extreme_browser_show,
+            commands::extreme_browser_history,
+            commands::extreme_browser_reload,
+            commands::extreme_browser_close,
             // ---- P5.5 用户知识库 ----
             commands::deployment_knowledge_list,
             commands::deployment_knowledge_get,

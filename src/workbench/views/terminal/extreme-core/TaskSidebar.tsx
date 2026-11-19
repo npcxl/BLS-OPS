@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronLeft,
@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
+import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { OutputStyle } from "./chat-context";
@@ -22,6 +23,16 @@ import { displayTitle, type ExtremeWorkspace } from "./workspace-history";
 
 /** 左栏收起状态：跨会话记住，重进超能时保持上次的宽度。 */
 const RAIL_COLLAPSED_KEY = "bls-ops.extreme-task-rail-collapsed.v1";
+
+const ROW_STATUS = {
+  waiting: { label: "待确认", className: "bg-warning" },
+  running: {
+    label: "运行中",
+    className: "border border-accent/35 border-t-accent motion-safe:animate-spin",
+  },
+  failed: { label: "失败", className: "bg-danger" },
+  unread: { label: "有新结果", className: "bg-accent" },
+} as const;
 
 function readRailCollapsed(): boolean {
   try {
@@ -73,6 +84,8 @@ function TaskSidebarInner({
   onDelete,
   blockedIds,
   runningIds,
+  attentionById,
+  unreadIds,
   outputStyle,
   onOutputStyleChange,
   hasContext,
@@ -91,6 +104,10 @@ function TaskSidebarInner({
   blockedIds?: Set<string>;
   /** 这些对话里有任务正在推进：列表上点一个小状态点。 */
   runningIds?: Set<string>;
+  /** 需要关注的状态：待确认 / 失败。只在有值时画标记。 */
+  attentionById?: Record<string, "waiting" | "failed">;
+  /** 后台对话有新结果：小圆点，点开即清。 */
+  unreadIds?: Set<string>;
   /** 当前会话的输出偏好（从底栏移到了会话菜单）。 */
   outputStyle: OutputStyle;
   onOutputStyleChange: (style: OutputStyle) => void;
@@ -117,11 +134,25 @@ function TaskSidebarInner({
     setCollapsed(next);
   };
 
-  /** 同名服务器计数：>1 时要补地址消歧。 */
-  const nameCount = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const entry of entries) counts.set(entry.server, (counts.get(entry.server) ?? 0) + 1);
-    return counts;
+  /**
+   * 真正需要补地址的是「两台不同机器取了同一个名字」。
+   *
+   * 以前按**会话条目数**计数：同一台服务器开两条对话就算「重名」，于是那一台
+   * 下面的每一条都拖上同一串 `· root@47.94.20…`（完全相同的噪音），而只有一条
+   * 对话的服务器反倒不显示 —— 表现就是列表里"有的带地址有的不带"。
+   * 现在按 `serverId` 去重后计数：只有同名的不同连接才需要地址消歧。
+   */
+  const duplicatedNames = useMemo(() => {
+    const idsByName = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      if (!entry.serverId) continue;
+      const ids = idsByName.get(entry.server) ?? new Set<string>();
+      ids.add(entry.serverId);
+      idsByName.set(entry.server, ids);
+    }
+    return new Set(
+      [...idsByName.entries()].filter(([, ids]) => ids.size > 1).map(([name]) => name),
+    );
   }, [entries]);
 
   const options = useMemo(() => {
@@ -132,6 +163,10 @@ function TaskSidebarInner({
     }
     return [...seen.entries()];
   }, [entries, t]);
+  // 选中的服务器没有对话了（对话被删 / 服务器断开）：回到「全部」，避免空列表。
+  useEffect(() => {
+    if (filter !== "all" && !options.some(([key]) => key === filter)) setFilter("all");
+  }, [filter, options]);
 
   const visible =
     filter === "all"
@@ -140,8 +175,9 @@ function TaskSidebarInner({
 
   const subtitle = (entry: ExtremeWorkspace) => {
     if (!entry.serverId) return t("未关联服务器");
-    const duplicated = (nameCount.get(entry.server) ?? 0) > 1;
-    return duplicated && entry.host ? `${entry.server} · ${entry.host}` : entry.server;
+    return duplicatedNames.has(entry.server) && entry.host
+      ? `${entry.server} · ${entry.host}`
+      : entry.server;
   };
 
   const titleOf = (entry: ExtremeWorkspace) =>
@@ -154,7 +190,7 @@ function TaskSidebarInner({
    * 略新，但预览只需要"大概聊了什么"的新鲜度，不值得为它引入实时消息流。
    * 旧记录没有 updatedAt（=0）时不显示时间，不拿"现在"冒充。
    */
-  const previewOf = (entry: ExtremeWorkspace) => {
+  const previewOf = (entry: ExtremeWorkspace, statusLabel?: string) => {
     const snippet = previewSnippet(entry.messages);
     const time = dayTime(entry.updatedAt, t);
     return (
@@ -166,6 +202,7 @@ function TaskSidebarInner({
         <span className="text-10 leading-4 text-fg-subtle">
           {subtitle(entry)}
           {time ? ` · ${time}` : ""}
+          {statusLabel ? ` · ${statusLabel}` : ""}
         </span>
       </span>
     );
@@ -302,19 +339,17 @@ function TaskSidebarInner({
 
       {!collapsed && options.length > 1 && (
         <div className="px-3 pb-2">
-          <select
-            aria-label={t("按服务器筛选")}
+          <Select
+            variant="menu"
+            ariaLabel={t("按服务器筛选")}
+            testId="task-server-filter"
             value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            className="w-full rounded-md border border-line/70 bg-transparent px-1.5 py-1 text-11 text-fg-muted outline-none"
-          >
-            <option value="all">{t("全部服务器")}</option>
-            {options.map(([key, name]) => (
-              <option key={key} value={key}>
-                {name}
-              </option>
-            ))}
-          </select>
+            onChange={setFilter}
+            options={[
+              { value: "all", label: t("全部服务器") },
+              ...options.map(([key, name]) => ({ value: key, label: name })),
+            ]}
+          />
         </div>
       )}
 
@@ -400,10 +435,29 @@ function TaskSidebarInner({
           const active = entry.id === currentId;
           const title = titleOf(entry);
           const serverLabel = subtitle(entry);
-          const running = runningIds?.has(entry.id) ?? false;
+          const attention = attentionById?.[entry.id];
+          const status =
+            attention === "waiting" ? "waiting" :
+              runningIds?.has(entry.id) ? "running" :
+                attention === "failed" ? "failed" :
+                  unreadIds?.has(entry.id) ? "unread" : null;
+          const indicator = status ? ROW_STATUS[status] : null;
+          const statusLabel = indicator ? t(indicator.label) : undefined;
+          const rowLabel = [title, serverLabel, statusLabel].filter(Boolean).join(" · ");
+          const statusMark = indicator && (
+            <span
+              aria-hidden="true"
+              data-task-status={status}
+              className={cn(
+                "block shrink-0 rounded-full",
+                status === "running" ? "size-2.5" : "size-1.5",
+                indicator.className,
+              )}
+            />
+          );
           if (editing === entry.id) {
             return (
-              <li key={entry.id} className="px-1.5 py-0.5">
+              <li key={entry.id} className="px-0.5 py-0.5">
                 <input
                   ref={inputRef}
                   autoFocus
@@ -431,15 +485,13 @@ function TaskSidebarInner({
                 <Tooltip
                   side="right"
                   delay={400}
-                  label={previewOf(entry)}
+                  label={previewOf(entry, statusLabel)}
                 >
                   <button
                     type="button"
                     role="option"
                     aria-selected={active}
-                    aria-label={
-                      running ? `${title} · ${serverLabel} · ${t("运行中")}` : `${title} · ${serverLabel}`
-                    }
+                    aria-label={rowLabel}
                     onClick={() => {
                       // 点当前这条只是把焦点放回来：不重载，阅读位置保持原样。
                       if (!active) onOpen(entry.id);
@@ -448,16 +500,15 @@ function TaskSidebarInner({
                     className={cn(
                       "relative grid size-8 place-items-center rounded-[8px] text-12 font-medium transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
                       active
-                        ? "bg-surface-2 text-fg hover:bg-surface-active"
+                        ? "bg-surface-active/65 text-fg"
                         : "text-fg-muted hover:bg-surface-hover hover:text-fg",
                     )}
                   >
                     <span aria-hidden="true">{initialOf(title)}</span>
-                    {running && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute right-0.5 top-0.5 size-1.5 animate-pulse rounded-full bg-accent ring-2 ring-surface-1"
-                      />
+                    {statusMark && (
+                      <span className="absolute right-0.5 top-0.5 grid size-3 place-items-center">
+                        {statusMark}
+                      </span>
                     )}
                   </button>
                 </Tooltip>
@@ -465,47 +516,35 @@ function TaskSidebarInner({
             );
           }
           return (
-            <li key={entry.id} className="group relative">
+            // 行与行之间留 4px 缝：悬停底色是圆角块，贴着排会连成一片，
+            // 分不清悬停的是哪一条（收起态另有 gap，不用这段内边距）。
+            <li key={entry.id} className={cn("group relative", !collapsed && "py-0.5")}>
               {/* 整行一张预览卡（豆包式）：标题/摘要/时间都在卡里，行内不再单独挂提示。 */}
-              <Tooltip label={previewOf(entry)} side="right" delay={400}>
+              <Tooltip label={previewOf(entry, statusLabel)} side="right" delay={400}>
               <button
                 type="button"
                 role="option"
                 aria-selected={active}
+                aria-label={rowLabel}
                 onClick={() => {
                   // 点当前这条不改 store：刚滚到一半的位置不该被"重新打开"顶掉。
                   if (!active) onOpen(entry.id);
                 }}
                 onContextMenu={menu.onContextMenu(() => items(entry))}
                 className={cn(
-                  "relative flex w-full flex-col gap-0.5 rounded-[6px] py-1.5 pl-2.5 pr-7 text-left transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
-                  active ? "bg-surface-2 hover:bg-surface-active" : "hover:bg-surface-hover",
+                  "grid w-full grid-cols-[minmax(0,1fr)_12px] items-center gap-2 rounded-[7px] py-1.5 pl-2.5 pr-7 text-left transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
+                  active ? "bg-surface-active/65" : "hover:bg-surface-hover",
                 )}
               >
-                {/* 选中标记：一条细强调线，比整块高亮安静，但一眼能认出。 */}
-                {active && (
+                <span className="flex min-w-0 flex-col gap-1">
                   <span
-                    aria-hidden="true"
-                    className="absolute left-1 top-1/2 h-3.5 w-0.5 -translate-y-1/2 rounded-full bg-accent"
-                  />
-                )}
-                <span className="flex min-w-0 items-center gap-1.5 text-12">
-                  {/*
-                   * 状态点常驻占位：只有运行中才亮起来。
-                   * 运行开始/结束时标题不会左右跳一格。
-                   */}
-                  <span className="grid size-1.5 shrink-0 place-items-center" aria-hidden="true">
-                    {running && <span className="size-1.5 animate-pulse rounded-full bg-accent" />}
-                  </span>
-                  <span
-                    className={cn("min-w-0 flex-1 truncate", active ? "text-fg" : "text-fg-muted")}
+                    className={cn("truncate text-12 leading-4", active ? "font-medium text-fg" : "text-fg-muted")}
                   >
                     {title}
                   </span>
+                  <span className="truncate text-11 leading-4 text-fg-subtle">{serverLabel}</span>
                 </span>
-                <span className="min-w-0 truncate text-10 text-fg-subtle">
-                  {serverLabel}
-                </span>
+                <span className="grid size-3 place-items-center">{statusMark}</span>
               </button>
               </Tooltip>
               {/* 悬停才出现：行内一直留着右侧留白，菜单按钮浮上去不会挤动文字。 */}

@@ -26,6 +26,7 @@ export {
   Eraser,
   ExternalLink,
   FileArchive,
+  FileDiff,
   FilePlus2,
   Folder,
   FolderInput,

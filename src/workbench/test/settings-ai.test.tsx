@@ -175,6 +175,107 @@ describe("设置页 AI 模型", () => {
     );
   });
 
+  /*
+   * 能力默认走**自动识别**：新建不预设档位，编辑未知模型只改名也不会凭空
+   * 写出"四档强度 + 1M 预算"。
+   */
+  it("未知模型只改名：保存不产生任何能力覆盖值", async () => {
+    listMock.mockResolvedValue([
+      provider({
+        model: "unknown-gateway-alias",
+        capability_known: false,
+        capability_overridden: false,
+        context_window: 0,
+        context_budgets: [],
+        reasoning_efforts: [],
+      }),
+    ]);
+    saveMock.mockResolvedValue(provider());
+    await render(<AiProviderSettings />);
+
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="ai-edit-p1"]').click();
+      await tick();
+    });
+
+    // 默认是「自动识别」：界面上没有档位勾选，只有来源三选一。
+    expect(text()).toContain(i18n.t("自动识别"));
+    expect(q('[data-testid="provider-efforts"]')).toBeNull();
+    expect(q('[data-testid="provider-context-budgets"]')).toBeNull();
+
+    await setInput("provider-name", "改个名字");
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="provider-save"]').click();
+      await tick();
+    });
+
+    expect(saveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "p1",
+        name: "改个名字",
+        context_window: null,
+        context_budgets: null,
+        reasoning_efforts: null,
+      }),
+    );
+  });
+
+  it("新建默认自动识别：没有勾选就不写档位与预算", async () => {
+    listMock.mockResolvedValue([]);
+    saveMock.mockResolvedValue(provider());
+    await render(<AiProviderSettings />);
+    await act(async () => {
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      await tick();
+    });
+    await setInput("provider-name", "自建网关");
+    await setInput("provider-base-url", "http://127.0.0.1:1234/v1");
+    await setInput("provider-model", "alias");
+    await setInput("provider-api-key", "sk-x");
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="provider-save"]').click();
+      await tick();
+    });
+    expect(saveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: null,
+        context_window: null,
+        context_budgets: null,
+        reasoning_efforts: null,
+      }),
+    );
+  });
+
+  it("手写能力声明过：编辑保留手动覆盖，档位照旧回显", async () => {
+    listMock.mockResolvedValue([
+      provider({
+        capability_overridden: true,
+        context_window: 600 * 1024,
+        context_budgets: [300 * 1024, 600 * 1024],
+        reasoning_efforts: ["low", "high"],
+      }),
+    ]);
+    saveMock.mockResolvedValue(provider());
+    await render(<AiProviderSettings />);
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="ai-edit-p1"]').click();
+      await tick();
+    });
+    expect(q('[data-testid="provider-efforts"]')).not.toBeNull();
+    expect(q('[data-testid="provider-context-budgets"]')).not.toBeNull();
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="provider-save"]').click();
+      await tick();
+    });
+    expect(saveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context_window: 600 * 1024,
+        context_budgets: [300 * 1024, 600 * 1024],
+        reasoning_efforts: ["low", "high"],
+      }),
+    );
+  });
+
   it("连接测试：只显示结果、耗时与真实尝试次数", async () => {
     listMock.mockResolvedValue([provider()]);
     testMock.mockResolvedValue({

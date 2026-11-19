@@ -1,7 +1,7 @@
 import { create } from "zustand";
-import { pushDesktopNotification } from "@/desktop-notification/bridge";
-import type { ContextUsage } from "@/api/types/agent";
+import type { ContextUsage, FileChangeSummary } from "@/api/types/agent";
 import type { DeployStep } from "@/workbench/views/terminal/extreme-core/deploy-plan";
+import type { LogSource } from "@/workbench/views/terminal/extreme-core/panel-target";
 import type { ExecutionReport } from "@/workbench/views/terminal/extreme-core/execution-report";
 import type { PanelRequest, PanelTab } from "@/workbench/views/terminal/extreme-core/panel-target";
 import type { TaskCardModel } from "@/workbench/views/terminal/extreme-core/task-view";
@@ -113,6 +113,21 @@ export interface ExtremeMessage {
    * 仍能显示"这条消息带了哪个文件、在服务器哪条路径"。
    */
   attachmentSnapshot?: SentAttachment[];
+  /**
+   * 这一轮没有正常跑完。
+   *
+   * `failed` / `startup` 保留用户已经看到的正文并给重试入口；`cancelled`
+   * 是用户主动停止，同样保留正文但不当作错误。
+   */
+  interrupted?: "failed" | "cancelled" | "startup" | null;
+  /** 中断原因（展示用；`cancelled` 时通常为空）。 */
+  interruptReason?: string | null;
+  /**
+   * 用户消息没有送到后端（补充指令 / 重发失败）。
+   *
+   * 正文仍留在气泡里，旁边给出重发入口 —— 静默丢弃比报错更糟。
+   */
+  deliveryError?: string | null;
 }
 
 export interface ExtremeAttachment {
@@ -159,7 +174,20 @@ export type ExtremeRightTab = "preflight" | "steps" | "logs" | "panel";
  * 和以前那套"远程文件 / Inspector / 服务器面板 互斥"不同：右栏永远只有这一
  * 个工作区，标签位置固定，切标签只换内容，不再出现"打开面板就换了一整套入口"。
  */
-export type WorkspacePane = "files" | "terminal" | "attachments" | "plan";
+/**
+ * 右栏标签。
+ *
+ * 原来只有四个固定标签；现在按浏览器式工作区管理：日志与内置浏览器也是独立
+ * 标签，标签可以关闭（最后一个关闭时收起右栏）。
+ */
+export type WorkspacePane =
+  | "files"
+  | "terminal"
+  | "logs"
+  | "attachments"
+  | "plan"
+  | "changes"
+  | "browser";
 
 import type {
   ContextMode,
@@ -167,6 +195,14 @@ import type {
   PickedContext,
 } from "@/workbench/views/terminal/extreme-core/chat-context";
 import type { EffortChoice } from "@/workbench/views/terminal/extreme-core/model-choice";
+import {
+  clearSendError,
+  enqueueSend,
+  forgetSends,
+  markSendError,
+  removeSend,
+  type QueuedSend,
+} from "@/workbench/views/terminal/extreme-core/send-queue";
 
 /** 右栏的三种形态：收起 / 分栏 / 占满内容区（类似 Codex 的展开视图）。 */
 export type WorkspacePaneView = "hidden" | "split" | "expanded";
@@ -181,6 +217,7 @@ export type WorkspacePaneView = "hidden" | "split" | "expanded";
 export type TerminalPane = "output" | "manual";
 
 const PANE_KEY = "bls-ops.extreme-pane.v1";
+const PANE_VIEW_KEY = "bls-ops.extreme-pane-view.v1";
 const CHAT_PREFS_KEY = "bls-ops.extreme-chat-prefs.v1";
 const MODEL_SETTINGS_KEY = "bls-ops.extreme-model-settings.v1";
 
@@ -215,15 +252,15 @@ function normalizePrefs(value: unknown): ChatPrefs {
       : ("auto" as const);
   const picked = Array.isArray(raw.picked)
     ? (raw.picked as PickedContext[]).filter(
-        (item) =>
-          item &&
-          typeof item.id === "string" &&
-          typeof item.label === "string" &&
-          (item.kind === "attachment" ||
-            item.kind === "path" ||
-            item.kind === "output" ||
-            item.kind === "step"),
-      )
+      (item) =>
+        item &&
+        typeof item.id === "string" &&
+        typeof item.label === "string" &&
+        (item.kind === "attachment" ||
+          item.kind === "path" ||
+          item.kind === "output" ||
+          item.kind === "step"),
+    )
     : [];
   const providerId =
     typeof raw.providerId === "string" && raw.providerId ? raw.providerId : null;
@@ -266,9 +303,9 @@ function normalizeModelSetting(value: unknown): ModelSetting {
   const raw = (value ?? {}) as { effort?: unknown; budget?: unknown };
   const effort =
     raw.effort === "low" ||
-    raw.effort === "medium" ||
-    raw.effort === "high" ||
-    raw.effort === "max"
+      raw.effort === "medium" ||
+      raw.effort === "high" ||
+      raw.effort === "max"
       ? raw.effort
       : ("auto" as const);
   const budget =
@@ -304,30 +341,178 @@ function writeModelSettings(map: Record<string, ModelSetting>) {
   }
 }
 
-/** 每个会话记住自己选中的标签；宽度整个应用记住一份。 */
-function readPaneState(): { tabs: Record<string, WorkspacePane>; width: number } {
+const PANE_KINDS: WorkspacePane[] = [
+  "files",
+  "terminal",
+  "logs",
+  "attachments",
+  "plan",
+  "changes",
+  "browser",
+];
+
+function isPane(value: unknown): value is WorkspacePane {
+  return PANE_KINDS.includes(value as WorkspacePane);
+}
+
+interface PaneState {
+  /** 每条对话当前选中的标签。 */
+  active: Record<string, WorkspacePane>;
+  /** 每条对话**已打开**的标签（顺序即标签顺序）。 */
+  lists: Record<string, WorkspacePane[]>;
+  /** 最近使用顺序：关闭当前标签后切到最近用过的那一个。 */
+  mru: Record<string, WorkspacePane[]>;
+  /** 每条对话的浏览器地址。 */
+  browser: Record<string, string>;
+  /** 每条对话上次看的日志来源（关掉标签再打开时接着看）。 */
+  logs: Record<string, LogSource>;
+  width: number;
+}
+
+function readPaneState(): PaneState {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(PANE_KEY) ?? "{}");
-    const value = (parsed ?? {}) as { tabs?: unknown; width?: unknown };
-    const tabs: Record<string, WorkspacePane> = {};
+    const value = (parsed ?? {}) as {
+      tabs?: unknown;
+      lists?: unknown;
+      mru?: unknown;
+      browser?: unknown;
+      logs?: unknown;
+      width?: unknown;
+    };
+    const active: Record<string, WorkspacePane> = {};
     if (value.tabs && typeof value.tabs === "object") {
       for (const [key, tab] of Object.entries(value.tabs as Record<string, unknown>)) {
-        if (tab === "files" || tab === "terminal" || tab === "attachments" || tab === "plan") {
-          tabs[key] = tab;
-        }
+        if (isPane(tab)) active[key] = tab;
       }
     }
-    return { tabs, width: typeof value.width === "number" ? value.width : 360 };
+    const lists: Record<string, WorkspacePane[]> = {};
+    if (value.lists && typeof value.lists === "object") {
+      for (const [key, list] of Object.entries(value.lists as Record<string, unknown>)) {
+        if (!Array.isArray(list)) continue;
+        const panes = [...new Set(list.filter(isPane))];
+        if (panes.length > 0) lists[key] = panes;
+      }
+    }
+    const mru: Record<string, WorkspacePane[]> = {};
+    if (value.mru && typeof value.mru === "object") {
+      for (const [key, list] of Object.entries(value.mru as Record<string, unknown>)) {
+        if (!Array.isArray(list)) continue;
+        const panes = [...new Set(list.filter(isPane))];
+        if (panes.length > 0) mru[key] = panes;
+      }
+    }
+    const browser: Record<string, string> = {};
+    if (value.browser && typeof value.browser === "object") {
+      for (const [key, url] of Object.entries(value.browser as Record<string, unknown>)) {
+        if (typeof url === "string" && /^https?:\/\//i.test(url)) browser[key] = url;
+      }
+    }
+    const logs: Record<string, LogSource> = {};
+    if (value.logs && typeof value.logs === "object") {
+      for (const [key, source] of Object.entries(value.logs as Record<string, unknown>)) {
+        if (source && typeof source === "object") logs[key] = source as LogSource;
+      }
+    }
+    // 旧版本只存了"当前标签"：迁移成"已打开列表 + 当前标签"。
+    for (const [key, tab] of Object.entries(active)) {
+      if (!lists[key]) lists[key] = [tab];
+      if (!mru[key]) mru[key] = [tab];
+    }
+    return {
+      active,
+      lists,
+      mru,
+      browser,
+      logs,
+      width: typeof value.width === "number" ? value.width : 360,
+    };
   } catch {
-    return { tabs: {}, width: 360 };
+    return { active: {}, lists: {}, mru: {}, browser: {}, logs: {}, width: 360 };
   }
 }
 
-function writePaneState(tabs: Record<string, WorkspacePane>, width: number) {
+function writePaneState(state: PaneState) {
   try {
-    localStorage.setItem(PANE_KEY, JSON.stringify({ tabs, width }));
+    localStorage.setItem(
+      PANE_KEY,
+      JSON.stringify({
+        tabs: state.active,
+        lists: state.lists,
+        mru: state.mru,
+        browser: state.browser,
+        logs: state.logs,
+        width: state.width,
+      }),
+    );
   } catch {
     // 存不了就只在内存里生效。
+  }
+}
+
+/* ---------------- 文件变更面板的阅读状态 ---------------- */
+
+/**
+ * 一次运行（或"待确认"）里的阅读状态。
+ *
+ * **按对话 + 变更批次**分开记：A 的对话看着 nginx 配置、B 的对话看着另一个文件，
+ * 来回切换时筛选、打开的文件和滚动位置都必须各自回到原处。
+ */
+export interface ChangeViewState {
+  /** `pending` = 待确认的变更；`run` = 某一次运行。 */
+  mode: "pending" | "run";
+  /** `run` 模式下选中的运行（taskId）；空 = 最新一次。 */
+  taskId?: string;
+  /** 选中的文件（changeId）。 */
+  changeId?: string;
+  /** 路径筛选。 */
+  filter: string;
+  /** 展开的未修改段（`${changeId}:${hunkIndex}`）。 */
+  expanded: string[];
+  scrollTop: number;
+}
+
+export const EMPTY_CHANGE_VIEW: ChangeViewState = {
+  mode: "run",
+  filter: "",
+  expanded: [],
+  scrollTop: 0,
+};
+
+const CHANGE_VIEW_KEY = "bls-ops.extreme-change-view.v1";
+
+function readChangeViews(): Record<string, ChangeViewState> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CHANGE_VIEW_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, ChangeViewState> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const raw = (value ?? {}) as Partial<ChangeViewState>;
+      out[key] = {
+        mode: raw.mode === "pending" ? "pending" : "run",
+        taskId: typeof raw.taskId === "string" && raw.taskId ? raw.taskId : undefined,
+        changeId: typeof raw.changeId === "string" && raw.changeId ? raw.changeId : undefined,
+        filter: typeof raw.filter === "string" ? raw.filter : "",
+        expanded: Array.isArray(raw.expanded)
+          ? raw.expanded.filter((item): item is string => typeof item === "string")
+          : [],
+        scrollTop:
+          typeof raw.scrollTop === "number" && Number.isFinite(raw.scrollTop)
+            ? Math.max(0, raw.scrollTop)
+            : 0,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeChangeViews(map: Record<string, ChangeViewState>) {
+  try {
+    localStorage.setItem(CHANGE_VIEW_KEY, JSON.stringify(map));
+  } catch {
+    // 存不了就只在本次会话里生效。
   }
 }
 
@@ -393,6 +578,36 @@ interface ExtremeState {
   /** 本地历史保存失败的原因（配额满 / 被禁用）；null = 正常。 */
   historyError: string | null;
   dismissHistoryError: () => void;
+  /** 后台对话有新结果未读：左栏只画一个小圆点。 */
+  unread: Record<string, boolean>;
+  clearUnread: (workspaceId: string) => void;
+
+  /**
+   * 「完成后发送」的**对话队列**。
+   *
+   * 按 `workspaceId` 分桶、FIFO；每项入队时已锁定文字 / 附件 / 模型 / 范围。
+   * 只放内存：它表示"马上要发"，应用重启后旧意图已经失效，恢复反而更危险。
+   */
+  queuedSends: QueuedSend[];
+  /** 入队（同一对话连续排队时保持提交顺序）。 */
+  queueSend: (item: QueuedSend) => void;
+  /** 派发成功后出队。 */
+  dropSend: (id: string) => void;
+  /** 断连 / 发送失败：保留队列项并标明原因。 */
+  failSend: (id: string, reason: string) => void;
+  /** 清掉错误，允许重新派发。 */
+  retrySend: (id: string) => void;
+
+  /**
+   * 覆盖**指定对话**的上下文字段（后台动作回写用）。
+   *
+   * 计划 / 执行标记都是"当前镜像"，前台切走时它们属于原来那条对话：
+   * 直接写镜像会把 A 的计划落到 B 上。
+   */
+  patchWorkspaceContext: (
+    workspaceId: string,
+    patch: Partial<ExtremeSessionContext>,
+  ) => void;
 
   workspaces: ExtremeWorkspace[];
   workspaceId: string | null;
@@ -434,14 +649,53 @@ interface ExtremeState {
   /** 显示 / 隐藏（隐藏不停止日志流）。 */
   setPanelShown: (shown: boolean) => void;
 
-  /** 统一右栏：当前会话选中的标签（四个固定标签之一）。 */
+  /** 统一右栏：当前会话选中的标签。 */
   paneTab: WorkspacePane;
   /** 每个会话各自记住的标签。 */
   paneByWorkspace: Record<string, WorkspacePane>;
+  /** 每条会话**已打开**的标签（浏览器式，可关闭）。 */
+  paneLists: Record<string, WorkspacePane[]>;
+  /** 最近使用顺序（关闭当前标签后切到这里面的第一个）。 */
+  paneMru: Record<string, WorkspacePane[]>;
+  /** 每条会话的内置浏览器地址（按 workspaceId 恢复）。 */
+  browserByWorkspace: Record<string, string>;
+  /** 每条会话日志标签上次看的来源。 */
+  logSourceByWorkspace: Record<string, LogSource>;
+  /** 每条会话远程文件面板最后停留的目录。 */
+  remotePathByWorkspace: Record<string, string>;
+  setRemotePath: (workspaceId: string, path: string) => void;
+  /**
+   * 文件变更摘要（按 changeId）。
+   *
+   * 事件与 `agent_file_changes` 查询都写这里；Diff 正文按需取，**不放进 store**，
+   * 否则一次任务能往内存里塞好几个完整文件。
+   */
+  fileChanges: Record<string, FileChangeSummary>;
+  mergeFileChange: (change: FileChangeSummary) => void;
+  mergeFileChanges: (changes: FileChangeSummary[]) => void;
+  /** 变更面板的阅读状态：按 `${workspaceId}:${taskId || "pending"}` 分开记。 */
+  changeViews: Record<string, ChangeViewState>;
+  /** `persist: false` 用于滚动这种高频更新（松手 / 卸载时再落盘）。 */
+  setChangeView: (
+    key: string,
+    patch: Partial<ChangeViewState>,
+    options?: { persist?: boolean },
+  ) => void;
+  /** 立刻把阅读状态落盘（滚动结束时用）。 */
+  flushChangeViews: () => void;
+  /** 关掉一个标签；最后一个关掉时收起右栏。 */
+  closePane: (tab: WorkspacePane) => void;
+  /** 记下某条会话的浏览器地址。 */
+  setBrowserUrl: (workspaceId: string, url: string) => void;
+  /** 记下某条会话日志标签的来源。 */
+  setLogSource: (workspaceId: string, source: LogSource) => void;
   /** 收起 / 分栏 / 展开视图。 */
   paneView: WorkspacePaneView;
   /** 分栏宽度（拖动分隔线后记住）。 */
   paneWidth: number;
+  /** 正在拖右栏（内拖 / 外扩）：浏览器子视图要临时隐藏。 */
+  paneDragging: boolean;
+  setPaneDragging: (dragging: boolean) => void;
   /** 「终端」标签内部选中的一段。 */
   terminalPane: TerminalPane;
   /** 每条会话各自记住的终端子标签（执行输出 / 实时日志 / 手动终端）。 */
@@ -456,7 +710,13 @@ interface ExtremeState {
   openPane: (tab: WorkspacePane, terminal?: TerminalPane) => void;
   setPaneTab: (tab: WorkspacePane) => void;
   setPaneView: (view: WorkspacePaneView) => void;
-  setPaneWidth: (width: number) => void;
+  /**
+   * 右栏宽度。
+   *
+   * `persist: false` 只改内存里的宽度（拖动中的中间帧），松手时才写 localStorage
+   * —— 以前每次 `pointermove` 都序列化一遍面板状态。
+   */
+  setPaneWidth: (width: number, options?: { persist?: boolean }) => void;
   setTerminalPane: (tab: TerminalPane) => void;
 
   /** 输入框底栏：当前会话的上下文范围 / 输出形态 / 勾选材料。 */
@@ -688,6 +948,26 @@ function loadWorkspace(entry: ExtremeWorkspace) {
   };
 }
 
+/** 收起 / 分栏 / 展开：跨重启保留，右下角"布局"才真的能恢复。 */
+function readPaneView(): WorkspacePaneView {
+  try {
+    const value = localStorage.getItem(PANE_VIEW_KEY);
+    return value === "split" || value === "expanded" ? value : "hidden";
+  } catch {
+    return "hidden";
+  }
+}
+
+function writePaneView(view: WorkspacePaneView) {
+  try {
+    localStorage.setItem(PANE_VIEW_KEY, view);
+  } catch {
+    // 存不了就只在本次会话里生效。
+  }
+}
+
+const INITIAL_PANE = readPaneState();
+
 export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   active: false,
   serverId: null,
@@ -699,6 +979,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   lastWorkspaceByServer: readLastWorkspaces(),
   taskUsage: readTaskUsage(),
   historyError: null,
+  unread: {},
+  queuedSends: [],
   workspaces: readWorkspaces(),
   workspaceId: null,
   draft: "",
@@ -715,9 +997,17 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   panelTarget: null,
   panelShown: false,
   paneTab: "files",
-  paneByWorkspace: readPaneState().tabs,
-  paneView: "hidden",
-  paneWidth: readPaneState().width,
+  paneByWorkspace: INITIAL_PANE.active,
+  paneLists: INITIAL_PANE.lists,
+  paneMru: INITIAL_PANE.mru,
+  browserByWorkspace: INITIAL_PANE.browser,
+  logSourceByWorkspace: INITIAL_PANE.logs,
+  remotePathByWorkspace: {},
+  fileChanges: {},
+  changeViews: readChangeViews(),
+  paneView: readPaneView(),
+  paneWidth: INITIAL_PANE.width,
+  paneDragging: false,
   terminalPane: "output",
   terminalPaneByWorkspace: {},
   chatPrefs: DEFAULT_CHAT_PREFS,
@@ -743,6 +1033,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       draft: "",
       workspaces: [entry, ...captureWorkspace(state)],
       workspaceId: entry.id,
+      paneTab: "files",
+      paneLists: { ...state.paneLists, [entry.id]: ["files"] },
       rightTab: null,
       lastWorkspaceByServer: state.serverId
         ? { ...state.lastWorkspaceByServer, [state.serverId]: entry.id }
@@ -769,16 +1061,29 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   openWorkspace: (id) => {
     const state = get();
     // 重复点当前会话：什么都不做，保留阅读位置（重新装载会把滚动条打回顶部）。
-    if (state.workspaceId === id) return;
+    if (state.workspaceId === id) {
+      get().clearUnread(id);
+      return;
+    }
+    get().clearUnread(id);
     const captured = captureWorkspace(state);
     const entry = captured.find((item) => item.id === id);
     if (!entry) return;
     const connection = entry.serverId ? state.connections[entry.serverId] : undefined;
     const sessionId = connection?.sessionId ?? "";
+    const entryTab = state.paneByWorkspace[id] ?? "files";
+    const entryList = state.paneLists[id]?.length ? state.paneLists[id] : [entryTab];
     set({
       ...loadWorkspace(entry),
       sessionId: sessionId || null,
-      // 终端子标签跟着对话走：A 停在「实时日志」，切到 B 再回来仍是日志。
+      // 右栏标签跟着对话走：A 开着文件和日志，切到 B 显示 B 自己的。
+      paneTab: entryTab,
+      paneLists: { ...state.paneLists, [id]: entryList },
+      paneMru: {
+        ...state.paneMru,
+        [id]: state.paneMru[id]?.length ? state.paneMru[id] : [entryTab],
+      },
+      // 终端子标签跟着对话走：A 停在「真实终端」，切到 B 再回来仍是终端。
       terminalPane: state.terminalPaneByWorkspace[id] ?? "output",
       workspaces: captured.map((item) =>
         item.id === id && sessionId ? { ...item, sessionId } : item,
@@ -845,18 +1150,18 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       resume || !serverHost
         ? undefined
         : workspaces.find(
-            (entry) =>
-              entry.host === serverHost &&
-              (entry.serverId === null ||
-                serverId.startsWith("quick:") ||
-                entry.serverId === serverId),
-          );
+          (entry) =>
+            entry.host === serverHost &&
+            (entry.serverId === null ||
+              serverId.startsWith("quick:") ||
+              entry.serverId === serverId),
+        );
     const target = resume ?? adopted;
     // 接管旧记录：把归属补成当前这台的 serverId / 名字，下次直接按 id 命中。
     const rebound = target
       ? workspaces.map((entry) =>
-          entry.id === target.id ? { ...entry, serverId, server } : entry,
-        )
+        entry.id === target.id ? { ...entry, serverId, server } : entry,
+      )
       : workspaces;
 
     if (!target) {
@@ -879,6 +1184,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       return;
     }
 
+    const targetTab = state.paneByWorkspace[target.id] ?? "files";
     set({
       active: true,
       ...loadWorkspace(target),
@@ -886,6 +1192,20 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       serverHost: serverHost ?? null,
       sessionId,
       connections,
+      paneTab: targetTab,
+      paneLists: {
+        ...state.paneLists,
+        [target.id]: state.paneLists[target.id]?.length
+          ? state.paneLists[target.id]
+          : [targetTab],
+      },
+      paneMru: {
+        ...state.paneMru,
+        [target.id]: state.paneMru[target.id]?.length
+          ? state.paneMru[target.id]
+          : [targetTab],
+      },
+      terminalPane: state.terminalPaneByWorkspace[target.id] ?? "output",
       workspaces: [
         { ...target, serverId, server, sessionId },
         ...rebound.filter((entry) => entry.id !== target.id),
@@ -908,6 +1228,9 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     set({
       workspaceId: entry.id,
       workspaces: [entry, ...captureWorkspace(state)],
+      paneTab: "files",
+      paneLists: { ...state.paneLists, [entry.id]: ["files"] },
+      paneMru: { ...state.paneMru, [entry.id]: ["files"] },
       lastWorkspaceByServer: {
         ...state.lastWorkspaceByServer,
         [state.serverId]: entry.id,
@@ -931,8 +1254,32 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     const state = get();
     const captured = captureWorkspace(state);
     const rest = captured.filter((entry) => entry.id !== id);
+    /** 对话删了，它的右栏状态也一起清掉，免得 id 复用时恢复出旧标签。 */
+    const forgetPane = () => {
+      const drop = <T,>(map: Record<string, T>) => {
+        const next = { ...map };
+        delete next[id];
+        return next;
+      };
+      return {
+        paneByWorkspace: drop(state.paneByWorkspace),
+        paneLists: drop(state.paneLists),
+        paneMru: drop(state.paneMru),
+        browserByWorkspace: drop(state.browserByWorkspace),
+        logSourceByWorkspace: drop(state.logSourceByWorkspace),
+        // 变更的阅读状态与摘要也一起清掉：id 复用时不至于恢复出别人的文件。
+        changeViews: Object.fromEntries(
+          Object.entries(state.changeViews).filter(([key]) => !key.startsWith(`${id}:`)),
+        ),
+        fileChanges: Object.fromEntries(
+          Object.entries(state.fileChanges).filter(([, item]) => item.workspaceId !== id),
+        ),
+      };
+    };
+    // 对话删了，它排着的消息也没有"原对话"可发了。
+    const queuedSends = forgetSends(state.queuedSends, id);
     if (state.workspaceId !== id) {
-      set({ workspaces: rest });
+      set({ workspaces: rest, queuedSends, ...forgetPane() });
       return;
     }
     const next = mostRecentForServer(rest, state.serverId);
@@ -943,14 +1290,24 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     }
     if (!next) {
       // 一条都不剩：回到欢迎态，**不新建**记录。
-      set({ workspaces: rest, workspaceId: null, ...emptyContext(), draft: "", lastWorkspaceByServer });
+      set({
+        workspaces: rest,
+        queuedSends,
+        workspaceId: null,
+        ...emptyContext(),
+        draft: "",
+        lastWorkspaceByServer,
+        ...forgetPane(),
+      });
       return;
     }
     set({
       workspaces: rest,
+      queuedSends,
       ...loadWorkspace(next),
       sessionId: state.sessionId,
       lastWorkspaceByServer,
+      ...forgetPane(),
     });
   },
 
@@ -1043,7 +1400,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         workspaces: state.workspaces.map((entry) =>
           entry.id === workspaceId
             ? // 后台任务也要把这条顶到"最近活跃"：左栏排序读的是 updatedAt。
-              { ...entry, messages: apply(entry.messages), updatedAt: Date.now() }
+            { ...entry, messages: apply(entry.messages), updatedAt: Date.now() }
             : entry,
         ),
         messages: state.workspaceId === workspaceId ? apply(state.messages) : state.messages,
@@ -1078,7 +1435,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         workspaces: state.workspaces.map((entry) =>
           entry.id === workspaceId
             ? // 还没有 context 的对话（从没切走过）等 `captureWorkspace` 收编。
-              { ...entry, context: entry.context ? { ...entry.context, attachments: next } : entry.context }
+            { ...entry, context: entry.context ? { ...entry.context, attachments: next } : entry.context }
             : entry,
         ),
       };
@@ -1102,38 +1459,98 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       return { taskUsage: next };
     }),
   dismissHistoryError: () => set({ historyError: null }),
+  clearUnread: (workspaceId) =>
+    set((state) => {
+      if (!state.unread[workspaceId]) return state;
+      const unread = { ...state.unread };
+      delete unread[workspaceId];
+      return { unread };
+    }),
+  queueSend: (item) => set((state) => ({ queuedSends: enqueueSend(state.queuedSends, item) })),
+  dropSend: (id) => set((state) => ({ queuedSends: removeSend(state.queuedSends, id) })),
+  failSend: (id, reason) =>
+    set((state) => ({ queuedSends: markSendError(state.queuedSends, id, reason) })),
+  retrySend: (id) => set((state) => ({ queuedSends: clearSendError(state.queuedSends, id) })),
+  patchWorkspaceContext: (workspaceId, patch) =>
+    set((state) => {
+      const isCurrent = state.workspaceId === workspaceId;
+      const workspaces = state.workspaces.map((entry) => {
+        if (entry.id !== workspaceId) return entry;
+        const base = entry.context ?? (isCurrent ? snapshot(state) : emptyContext());
+        return { ...entry, context: { ...base, ...patch } };
+      });
+      /*
+       * 前台这条同时更新镜像：界面读的是 `plan` / `executing` 这些字段，
+       * 只写 workspace.context 的话，前台看到的还是旧值。
+       */
+      if (!isCurrent) return { workspaces };
+      return {
+        workspaces,
+        plan: patch.plan === undefined ? state.plan : patch.plan,
+        planSession: patch.planSession === undefined ? state.planSession : patch.planSession,
+        planTaskId: patch.planTaskId === undefined ? state.planTaskId : patch.planTaskId,
+        notice: patch.notice === undefined ? state.notice : patch.notice,
+        model: patch.model === undefined ? state.model : patch.model,
+        executing: patch.executing === undefined ? state.executing : patch.executing,
+      };
+    }),
   setPanelOpen: (panelOpen) => set({ panelOpen }),
   setRightTab: (rightTab) => set({ rightTab }),
   openPanel: (request) =>
     set((state) => {
       /*
-       * 模型请求的目标 → 四个固定标签：
+       * 模型请求的目标 → 工作区标签：
        * * 远程文件 → files
-       * * 日志 / 命令输出 → terminal（并选中对应的一段）
-       * * 服务器运行状态 → plan（进度与计划在同一处）
+       * * 日志 → logs（独立标签，不再是"真实终端里 tail"）
+       * * 命令输出 → terminal › output
+       * * 服务器状态 / 服务 → plan（沿用旧行为，保持一个能看的地方）
        */
       const pane: WorkspacePane =
         request.tab === "files"
           ? "files"
-          : request.tab === "output" || request.tab === "logs"
-            ? "terminal"
-            : "plan";
-      // 想看日志 → 切到真实终端（在那里 `tail -F`，AI 也能读最近输出）。
+          : request.tab === "logs"
+            ? "logs"
+            : request.tab === "output"
+              ? "terminal"
+              : "plan";
       const terminalPane: TerminalPane =
-        request.tab === "output" ? "output" : "manual";
-      const tabs = state.workspaceId
-        ? { ...state.paneByWorkspace, [state.workspaceId]: pane }
-        : state.paneByWorkspace;
-      writePaneState(tabs, state.paneWidth);
+        request.tab === "output" ? "output" : state.terminalPane;
+      const ws = state.workspaceId;
+      const active = ws ? { ...state.paneByWorkspace, [ws]: pane } : state.paneByWorkspace;
+      const lists = ws
+        ? { ...state.paneLists, [ws]: [...(state.paneLists[ws] ?? []).filter((item) => item !== pane), pane] }
+        : state.paneLists;
+      const mru = ws
+        ? { ...state.paneMru, [ws]: [pane, ...(state.paneMru[ws] ?? []).filter((item) => item !== pane)] }
+        : state.paneMru;
+      const logs =
+        ws && request.tab === "logs" && request.source
+          ? { ...state.logSourceByWorkspace, [ws]: request.source }
+          : state.logSourceByWorkspace;
+      const view: WorkspacePaneView =
+        state.paneView === "hidden" ? "split" : state.paneView;
+      writePaneState({
+        active,
+        lists,
+        mru,
+        browser: state.browserByWorkspace,
+        logs,
+        width: state.paneWidth,
+      });
+      writePaneView(view);
       return {
         rightTab: "panel",
         panelShown: true,
-        paneView: "split",
+        // 收起态才展开；占满视图保持原样，不把展开缩回分栏。
+        paneView: view,
         paneTab: pane,
-        paneByWorkspace: tabs,
+        paneByWorkspace: active,
+        paneLists: lists,
+        paneMru: mru,
+        logSourceByWorkspace: logs,
         terminalPane,
-        terminalPaneByWorkspace: state.workspaceId
-          ? { ...state.terminalPaneByWorkspace, [state.workspaceId]: terminalPane }
+        terminalPaneByWorkspace: ws
+          ? { ...state.terminalPaneByWorkspace, [ws]: terminalPane }
           : state.terminalPaneByWorkspace,
         panelTab: request.tab === "files" ? "status" : request.tab,
         panelTarget: request,
@@ -1144,20 +1561,37 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   setPanelShown: (panelShown) => set({ panelShown }),
   openPane: (tab, terminal) =>
     set((state) => {
-      const tabs = state.workspaceId
-        ? { ...state.paneByWorkspace, [state.workspaceId]: tab }
-        : state.paneByWorkspace;
-      writePaneState(tabs, state.paneWidth);
+      const ws = state.workspaceId;
+      const active = ws ? { ...state.paneByWorkspace, [ws]: tab } : state.paneByWorkspace;
+      const lists = ws
+        ? { ...state.paneLists, [ws]: [...(state.paneLists[ws] ?? []).filter((item) => item !== tab), tab] }
+        : state.paneLists;
+      const mru = ws
+        ? { ...state.paneMru, [ws]: [tab, ...(state.paneMru[ws] ?? []).filter((item) => item !== tab)] }
+        : state.paneMru;
+      writePaneState({
+        active,
+        lists,
+        mru,
+        browser: state.browserByWorkspace,
+        logs: state.logSourceByWorkspace,
+        width: state.paneWidth,
+      });
+      const view: WorkspacePaneView =
+        state.paneView === "hidden" ? "split" : state.paneView;
+      writePaneView(view);
       const terminalPane = terminal ?? state.terminalPane;
       return {
         // 收起态才展开；占满视图（expanded）保持不变。
-        paneView: state.paneView === "hidden" ? ("split" as const) : state.paneView,
+        paneView: view,
         paneTab: tab,
-        paneByWorkspace: tabs,
+        paneByWorkspace: active,
+        paneLists: lists,
+        paneMru: mru,
         terminalPane,
         terminalPaneByWorkspace:
-          terminal && state.workspaceId
-            ? { ...state.terminalPaneByWorkspace, [state.workspaceId]: terminal }
+          terminal && ws
+            ? { ...state.terminalPaneByWorkspace, [ws]: terminal }
             : state.terminalPaneByWorkspace,
         // 旧入口仍在读这两个标记，保持一致。
         rightTab: "panel" as const,
@@ -1167,24 +1601,152 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     }),
   setPaneTab: (tab) =>
     set((state) => {
-      const tabs = state.workspaceId
-        ? { ...state.paneByWorkspace, [state.workspaceId]: tab }
-        : state.paneByWorkspace;
-      writePaneState(tabs, state.paneWidth);
-      return { paneTab: tab, paneByWorkspace: tabs };
+      const ws = state.workspaceId;
+      const active = ws ? { ...state.paneByWorkspace, [ws]: tab } : state.paneByWorkspace;
+      const lists = ws && !(state.paneLists[ws] ?? []).includes(tab)
+        ? { ...state.paneLists, [ws]: [...(state.paneLists[ws] ?? []), tab] }
+        : state.paneLists;
+      const mru = ws
+        ? { ...state.paneMru, [ws]: [tab, ...(state.paneMru[ws] ?? []).filter((item) => item !== tab)] }
+        : state.paneMru;
+      writePaneState({
+        active,
+        lists,
+        mru,
+        browser: state.browserByWorkspace,
+        logs: state.logSourceByWorkspace,
+        width: state.paneWidth,
+      });
+      return { paneTab: tab, paneByWorkspace: active, paneLists: lists, paneMru: mru };
     }),
-  setPaneView: (view) =>
+  closePane: (tab) =>
+    set((state) => {
+      const ws = state.workspaceId;
+      if (!ws) return state;
+      const list = (state.paneLists[ws] ?? []).filter((item) => item !== tab);
+      const mru = (state.paneMru[ws] ?? []).filter((item) => item !== tab);
+      const activeTab = state.paneByWorkspace[ws] ?? state.paneTab;
+      let nextTab = activeTab;
+      let view = state.paneView;
+      if (activeTab === tab) {
+        // 关掉当前标签：切到最近用过的；一个都不剩就收起右栏。
+        nextTab = mru.find((item) => list.includes(item)) ?? list[list.length - 1] ?? tab;
+        if (list.length === 0) view = "hidden";
+      }
+      const active = { ...state.paneByWorkspace, [ws]: nextTab };
+      const lists = { ...state.paneLists, [ws]: list };
+      const mrus = { ...state.paneMru, [ws]: mru };
+      writePaneState({
+        active,
+        lists,
+        mru: mrus,
+        browser: state.browserByWorkspace,
+        logs: state.logSourceByWorkspace,
+        width: state.paneWidth,
+      });
+      writePaneView(view);
+      return {
+        paneView: view,
+        paneTab: nextTab,
+        paneByWorkspace: active,
+        paneLists: lists,
+        paneMru: mrus,
+        rightTab: view === "hidden" ? null : "panel",
+        panelShown: view !== "hidden",
+      };
+    }),
+  setBrowserUrl: (workspaceId, url) =>
+    set((state) => {
+      if (!/^https?:\/\//i.test(url)) return state;
+      const browser = { ...state.browserByWorkspace, [workspaceId]: url };
+      writePaneState({
+        active: state.paneByWorkspace,
+        lists: state.paneLists,
+        mru: state.paneMru,
+        browser,
+        logs: state.logSourceByWorkspace,
+        width: state.paneWidth,
+      });
+      return { browserByWorkspace: browser };
+    }),
+  setLogSource: (workspaceId, source) =>
+    set((state) => {
+      const logs = { ...state.logSourceByWorkspace, [workspaceId]: source };
+      writePaneState({
+        active: state.paneByWorkspace,
+        lists: state.paneLists,
+        mru: state.paneMru,
+        browser: state.browserByWorkspace,
+        logs,
+        width: state.paneWidth,
+      });
+      return { logSourceByWorkspace: logs };
+    }),
+  setRemotePath: (workspaceId, path) =>
+    set((state) => {
+      if (state.remotePathByWorkspace[workspaceId] === path) return state;
+      return {
+        remotePathByWorkspace: { ...state.remotePathByWorkspace, [workspaceId]: path },
+      };
+    }),
+  mergeFileChange: (change) =>
+    set((state) => {
+      const current = state.fileChanges[change.id];
+      // 事件可能乱序：旧快照不能把"已写入"退回"拟修改"。
+      if (current && current.updatedAt > change.updatedAt) return state;
+      return { fileChanges: { ...state.fileChanges, [change.id]: change } };
+    }),
+  mergeFileChanges: (list) =>
+    set((state) => {
+      if (list.length === 0) return state;
+      const next = { ...state.fileChanges };
+      for (const item of list) {
+        const current = next[item.id];
+        if (current && current.updatedAt > item.updatedAt) continue;
+        next[item.id] = item;
+      }
+      return { fileChanges: next };
+    }),
+  setChangeView: (key, patch, options) =>
+    set((state) => {
+      const next = {
+        ...state.changeViews,
+        [key]: { ...(state.changeViews[key] ?? EMPTY_CHANGE_VIEW), ...patch },
+      };
+      // 滚动是高频的：中间帧只更新内存，松手时才写一次 localStorage。
+      if (options?.persist !== false) writeChangeViews(next);
+      return { changeViews: next };
+    }),
+  flushChangeViews: () => writeChangeViews(get().changeViews),
+  setPaneView: (view) => {
+    writePaneView(view);
     set({
       paneView: view,
       // `rightTab` / `panelShown` 是旧入口仍在读的两个标记，保持一致。
       rightTab: view === "hidden" ? null : "panel",
       panelShown: view !== "hidden",
       panelOpen: true,
-    }),
-  setPaneWidth: (width) =>
+    });
+  },
+  setPaneDragging: (paneDragging) => set({ paneDragging }),
+  setPaneWidth: (width, options) =>
     set((state) => {
-      const next = Math.min(720, Math.max(300, Math.round(width)));
-      writePaneState(state.paneByWorkspace, next);
+      /*
+       * 只保证最小值；上限交给当前容器（`paneRoom`）。
+       * 以前写死 720：大屏上拖到 720 就停住，用户会觉得"只能往里拖"。
+       */
+      const next = Math.max(300, Math.round(width));
+      // 拖动中的中间帧不落盘：松手时那一次才写。
+      if (options?.persist !== false) {
+        writePaneState({
+          active: state.paneByWorkspace,
+          lists: state.paneLists,
+          mru: state.paneMru,
+          browser: state.browserByWorkspace,
+          logs: state.logSourceByWorkspace,
+          width: next,
+        });
+      }
       return { paneWidth: next };
     }),
   setTerminalPane: (terminalPane) =>
@@ -1292,37 +1854,21 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       return { reports: { ...state.reports, [taskId]: next } };
     }),
   upsertTask: (task) => {
-    const previous = get().tasks[task.id];
     set((state) => ({
       tasks: { ...state.tasks, [task.id]: task },
       taskVersions: { ...state.taskVersions, [task.id]: (state.taskVersions[task.id] ?? 0) + 1 },
     }));
 
-    // 任务进入终态时弹一条桌面通知：用户可能已经退出超能、窗口在后台。
-    // 只在"第一次进入终态"时发，避免重放历史/重复事件刷屏。
+    // 后台对话产生结果：只在应用内点一个小圆点。
+    //
+    // 桌面通知**不在这里**：历史恢复 / 切换对话也会 upsertTask，一并把旧任务
+    // 当"刚完成"推出去。真实终态由事件层调 `notifyTaskOutcome`。
     const terminal = task.status === "done" || task.status === "failed";
-    const wasTerminal =
-      previous?.status === "done" ||
-      previous?.status === "failed" ||
-      previous?.status === "cancelled";
-    if (!terminal || wasTerminal) return;
-
-    pushDesktopNotification({
-      id: `extreme-${task.id}`,
-      tone: task.status === "done" ? "success" : "danger",
-      source: "超能模式",
-      time: "刚刚",
-      title: task.title,
-      body:
-        task.result ||
-        (task.status === "done"
-          ? "任务已执行完成，点击回到超能模式查看结果。"
-          : "任务执行失败，点击回到超能模式查看详情。"),
-      durationMs: 9000,
-      action: task.serverId
-        ? { kind: "extreme", serverId: task.serverId, server: task.server }
-        : { kind: "none" },
-    });
+    if (terminal && task.workspaceId && task.workspaceId !== get().workspaceId) {
+      set((state) => ({
+        unread: { ...state.unread, [task.workspaceId!]: true },
+      }));
+    }
   },
   mergeTask: (task, version) =>
     set((state) => {

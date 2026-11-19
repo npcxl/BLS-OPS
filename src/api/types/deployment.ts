@@ -659,6 +659,10 @@ export interface AiProviderView {
   context_budgets: number[];
   /** 支持的思考强度档位（升序，如 `["low", "high", "max"]`）。空 = 不支持。 */
   reasoning_efforts: string[];
+  /** 能力是否有依据（内置表命中，或用户在设置里声明过）。false = 界面提示「未登记」。 */
+  capability_known: boolean;
+  /** 是否包含用户声明（界面标注「自定义」）。 */
+  capability_overridden: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -676,6 +680,12 @@ export interface AiProviderSaveRequest {
   allow_insecure_http: boolean;
   timeout_seconds: number;
   max_output_tokens: number;
+  /** 声明上下文窗口；`null` / 缺省 = 用内置表。 */
+  context_window?: number | null;
+  /** 声明预算档位；`null` / 缺省 = 用内置表。 */
+  context_budgets?: number[] | null;
+  /** 声明思考强度档位；`null` / 缺省 = 用内置表。 */
+  reasoning_efforts?: string[] | null;
 }
 
 export interface AiProviderTestResult {

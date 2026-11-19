@@ -8,18 +8,24 @@
 //! 总计 [`MAX_TOTAL_SECONDS`] 秒；超限以 `failed` 结束并说明停在哪条命令。
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter as _};
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::changes::{
+    parse_snapshot, sanitize, snapshot_command, ChangeDraft, ChangeRegistry, FileChangeSummary,
+    FileSnapshot,
+};
 use super::protocol::{
     intent_guidance, looks_like_tool_call, parse_tool_calls, redact, strip_tool_calls,
-    tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentStep, PendingApproval,
-    ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT,
+    tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome, AgentStep,
+    PendingApproval, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT,
     STEP_OUTPUT_LIMIT,
 };
 use super::state::{AgentHandle, AgentSnapshot, ContextBreakdown, ContextUsage, TokenUsage};
@@ -50,6 +56,9 @@ pub struct AgentInput {
     pub task_id: String,
     pub session_id: String,
     pub server: String,
+    /// 服务器配置 id / 对话 id：变更记录按它们归属，切换对话不会串。
+    pub server_id: Option<String>,
+    pub workspace_id: Option<String>,
     pub cwd: String,
     pub messages: Vec<AgentTurn>,
     /// 用户为这条会话选的模型；`None` = 用默认提供方。
@@ -58,6 +67,13 @@ pub struct AgentInput {
     pub reasoning_effort: Option<String>,
     /// 上下文输入预算（tokens）；`None` = 按模型窗口自动。
     pub context_budget: Option<u32>,
+    /**
+     * 用户在提供方设置里为这个模型声明的能力。
+     *
+     * `spawn_agent` 从库里的配置填进来（命令层不传）—— 于是"选档 / 算预算"
+     * 与"界面菜单"用的是同一份依据，不会出现菜单能选、请求里被悄悄改掉。
+     */
+    pub capability: Option<crate::deployment::ai::CapabilityOverride>,
     /// 续跑（同一任务换一次 run_loop）时从上一段带过来的累计用量。
     pub carry_usage: Option<TokenUsage>,
     /// 允许 sudo（用户在界面上显式打开「完全权限」才为 true）。
@@ -65,6 +81,13 @@ pub struct AgentInput {
     /// 「完全权限」下修改范围内的写入 / 修改 / 删除**都不再确认**。
     pub auto_approve_writes: bool,
     pub max_rounds: Option<u32>,
+    /**
+     * 恢复中断任务时带进来的历史步骤。
+     *
+     * 只用于两步：让快照/界面继续显示"已经做过什么"，以及让新的步骤序号从
+     * 它们之后开始 —— 否则重进/恢复会把旧步骤按 index 覆盖掉。
+     */
+    pub carry_steps: Vec<AgentStep>,
 }
 
 #[derive(Debug)]
@@ -113,6 +136,25 @@ pub(crate) trait AgentIo: Send + Sync {
         // 正文增量出口：边生成边交给界面（同一条回复气泡）。
         on_delta: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> IoFuture<'a, Result<ToolReply, AiProviderError>>;
+
+    /// 文件变更记录的存储。生产实现用 `AppState` 里的注册表；测试默认拿到的
+    /// 是一份空表（记录不会跨调用保留，但流程照走）。
+    fn changes(&self) -> ChangeRegistry {
+        ChangeRegistry::default()
+    }
+
+    /// 回读服务器上的文件：**变更 Diff 的唯一事实来源**。
+    ///
+    /// `Ok(None)` = 当前 IO 不支持快照（测试替身 / 降级），此时不生成变更记录，
+    /// 行为与接入前一致；`Err` = 读了但读不到（权限 / 非普通文件），
+    /// 记录里显示"未采集差异"，不生成假 Diff。
+    fn read_snapshot<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _path: &'a str,
+    ) -> IoFuture<'a, Result<Option<FileSnapshot>, String>> {
+        Box::pin(async move { Ok(None) })
+    }
 }
 
 /// 待执行的一次调用（原生 `tool_calls` 与文本 `<tool>` 统一成这个形态）。
@@ -189,13 +231,78 @@ impl AgentIo for LiveIo<'_> {
                 .await
         })
     }
+
+    fn changes(&self) -> ChangeRegistry {
+        self.state.changes.clone()
+    }
+
+    fn read_snapshot<'a>(
+        &'a self,
+        session_id: &'a str,
+        path: &'a str,
+    ) -> IoFuture<'a, Result<Option<FileSnapshot>, String>> {
+        Box::pin(async move {
+            let output = self
+                .state
+                .ssh
+                .exec(session_id, &snapshot_command(path), Duration::from_secs(30))
+                .await
+                .map_err(|error| error.to_string())?;
+            // 输出被截断 = base64 不完整：此时**绝不能**当成文件正文去比较。
+            if output.truncated {
+                return Err("文件太大，单条命令的输出被截断（不生成逐行 Diff）".to_string());
+            }
+            parse_snapshot(&output.stdout, path).map(Some)
+        })
+    }
+}
+
+/**
+ * 循环异常退出时的兜底收尾。
+ *
+ * 正常路径（`run_loop` 返回）会在下面显式写终态、发事件并把 `armed` 置
+ * false。只有**没走到收尾**（panic / future 被丢弃）才会在 Drop 里补一条
+ * failed 终态 —— 否则句柄永远停在 `running`，前端重进会接到一个停不掉的
+ * 僵尸任务，`agent_resume` 与历史删除也都会被它挡住。
+ */
+struct RunGuard {
+    app: AppHandle,
+    state: AppState,
+    handle: Arc<AgentHandle>,
+    task_id: String,
+    armed: bool,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if !self.handle.snapshot().terminal() {
+            self.handle.update(|snapshot| {
+                snapshot.status = "failed".to_string();
+                snapshot.error = Some(
+                    "任务异常终止：执行循环退出但没有留下结果，请核对服务器状态后重试。"
+                        .to_string(),
+                );
+                snapshot.pending_approval = None;
+            });
+            let snapshot = self.handle.snapshot();
+            let mut event = AgentEvent::new(&self.task_id, "failed");
+            event.message = snapshot.error.clone();
+            event.cwd = Some(snapshot.cwd.clone());
+            emit(&self.app, event);
+        }
+        self.state.ai_reviews.forget(&self.task_id);
+        self.state.agents.finish(&self.task_id);
+    }
 }
 
 /// 启动一个 Agent 任务（立刻返回初始快照；真正的循环在后台跑）。
 pub async fn spawn_agent(
     app: AppHandle,
     state: AppState,
-    input: AgentInput,
+    mut input: AgentInput,
 ) -> Result<AgentSnapshot, String> {
     if input.task_id.trim().is_empty() {
         return Err("taskId 不能为空".to_string());
@@ -219,9 +326,15 @@ pub async fn spawn_agent(
             })?
     };
     let model = config.model.clone();
+    // 能力以**这条配置**为准：内置表 + 用户声明的窗口 / 档位。
+    // 命令层不传这份值，避免前端与库里的配置各说一套。
+    input.capability = config.capability_override();
     // 档位在**启动时**定下来：同一次运行里的工具续请求不会再变。
-    let reasoning_effort =
-        crate::deployment::ai::resolve_effort(&model, input.reasoning_effort.as_deref());
+    let reasoning_effort = crate::deployment::ai::resolve_effort_with(
+        &model,
+        input.capability.as_ref(),
+        input.reasoning_effort.as_deref(),
+    );
     // 行为段用的是**解析后**的档位；请求参数仍由 `LiveIo` 带着同一份值。
     let guidance_effort = reasoning_effort.clone();
     let api_key = crate::keyring::read_secret(&config.keyring_account())
@@ -244,13 +357,15 @@ pub async fn spawn_agent(
 
     // 与 `ai_chat_cancel` 共用注册表：前端点停止仍然只需一个命令。
     let cancel = state.ai_reviews.register(&input.task_id);
-    let snapshot = AgentSnapshot::new(
+    let mut snapshot = AgentSnapshot::new(
         &input.task_id,
         &input.server,
         &input.session_id,
         &input.cwd,
         &model,
     );
+    // 恢复执行：把上次的步骤带进快照，界面/历史不会从 0 步重新开始。
+    snapshot.steps = input.carry_steps.clone();
     let Some(handle) = state.agents.register(snapshot.clone(), cancel) else {
         state.ai_reviews.forget(&input.task_id);
         return Err("这条任务还在执行，等它结束或先停止".to_string());
@@ -260,13 +375,21 @@ pub async fn spawn_agent(
     let registry = state.agents.clone();
     let app_for_run = app.clone();
     tauri::async_runtime::spawn(async move {
+        // 先武装兜底：`run_loop` panic 时这一层还在，句柄不会停在 running。
+        let mut guard = RunGuard {
+            app: app_for_run.clone(),
+            state: state.clone(),
+            handle: handle.clone(),
+            task_id: task_id.clone(),
+            armed: true,
+        };
         let io = LiveIo {
             app: &app_for_run,
             state: &state,
             advisor: &advisor,
             reasoning_effort,
         };
-        let outcome = run_loop(&handle, &input, &io, guidance_effort.as_deref()).await;
+        let outcome = run_loop(&guard.handle, &input, &io, guidance_effort.as_deref()).await;
         let (kind, message) = match outcome {
             Ok(content) => {
                 handle.update(|snapshot| {
@@ -294,11 +417,14 @@ pub async fn spawn_agent(
         let snapshot = handle.snapshot();
         let mut event = AgentEvent::new(&task_id, kind);
         event.message = message;
-        event.content = (kind == "finished").then_some(snapshot.content);
-        event.model = (kind == "finished").then_some(snapshot.model);
+        event.content = (kind == "finished").then_some(snapshot.content.clone());
+        event.model = (kind == "finished").then_some(snapshot.model.clone());
         event.cwd = Some(snapshot.cwd);
+        event.outcome = snapshot.outcome.clone();
         event.context = snapshot.context;
         emit(&app_for_run, event);
+        // 正常收尾已经写过终态：不要让 Drop 再补一条 failed 事件。
+        guard.armed = false;
         state.ai_reviews.forget(&task_id);
         registry.finish(&task_id);
     });
@@ -884,6 +1010,62 @@ fn context_breakdown(messages: &[Value]) -> ContextBreakdown {
     out
 }
 
+/**
+ * 资源级串行：同一台服务器、同一个服务 / 目录 / 文件上的**写操作**排队。
+ *
+ * 只读查询不参与；不同资源（不同服务、不同路径）仍可并行。锁是进程内的，
+ * 覆盖同一条 SSH 连接上的多条对话 —— 这正是"同一服务上两个任务不能同时改"
+ * 需要拦住的场景。
+ */
+static RESOURCE_LOCKS: OnceLock<AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+
+async fn acquire_resource(key: String) -> OwnedMutexGuard<()> {
+    let map = RESOURCE_LOCKS.get_or_init(|| AsyncMutex::new(HashMap::new()));
+    let lock = {
+        let mut guard = map.lock().await;
+        guard
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+/// 这次写操作落在哪个资源上：文件路径 > systemd 服务 > docker > 服务器 shell。
+///
+/// 粗粒度是有意的：拿不准具体资源时宁可多串行一条同服务器的写命令，也不让
+/// 两个任务同时改同一处配置。
+fn resource_key(input: &AgentInput, planned: &PlannedTool) -> String {
+    let server = if input.server.is_empty() {
+        input.session_id.as_str()
+    } else {
+        input.server.as_str()
+    };
+    let resource = planned.path.as_deref().map_or_else(
+        || {
+            let text = planned.display.to_lowercase();
+            if let Some(rest) = text.strip_prefix("systemctl ") {
+                let mut parts = rest.split_whitespace();
+                let _ = parts.next();
+                if let Some(unit) = parts.next() {
+                    return format!("service:{unit}");
+                }
+            }
+            if text.starts_with("docker ") {
+                return "docker".to_string();
+            }
+            "shell".to_string()
+        },
+        // 同一目录下的写操作算同一资源（部署目录、配置目录）。
+        |path| match path.rfind('/') {
+            Some(0) => "/".to_string(),
+            Some(index) => path[..index].to_string(),
+            None => path.to_string(),
+        },
+    );
+    format!("{server}\u{1}{resource}")
+}
+
 /// 同一次运行的"操作"标识：同一操作只问一次，换个写法也不再问。
 ///
 /// 不直接拿原始命令：`rm /opt/a`、`rm -f /opt/a`、`sudo rm /opt/a` 是同一件事。
@@ -965,6 +1147,423 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
     out
 }
 
+/// 一条步骤的可读标签（证据列表用）。
+fn step_label(step: &AgentStep) -> String {
+    let what = if !step.command.trim().is_empty() {
+        first_line(&step.command, 60)
+    } else if let Some(path) = step.path.as_deref() {
+        path.to_string()
+    } else {
+        step.tool.clone()
+    };
+    format!("#{} {what}", step.index + 1)
+}
+
+/// 由**真实步骤**判断任务结论，而不是由"模型回了话"判断。
+///
+/// 规则：
+/// * 有成功的写入 / 修改，但之后没有任何成功的只读步骤 → `partial`
+///   （部署 / 排障里"改完没验证"最危险，不能算已验证）；
+/// * 没有任何成功步骤（或只读任务一步都没跑）→ `needs_info`；
+/// * 最后一次失败之后没有成功步骤 → `partial`（结论只覆盖了前面成功的部分）；
+/// * 其余 → `verified`，证据取写入与验证步骤的命令首行。
+pub(crate) fn evaluate_outcome(steps: &[AgentStep], query_only: bool) -> Option<AgentOutcome> {
+    if steps.is_empty() {
+        // 一步都没跑：纯问答不需要"验证"标签；只读任务则明确说没有证据。
+        return query_only.then(|| {
+            AgentOutcome::needs_info(
+                "没有执行任何只读检查：这句话没有服务器证据，不能当作结论。",
+                Vec::new(),
+            )
+        });
+    }
+    let succeeded: Vec<&AgentStep> = steps
+        .iter()
+        .filter(|step| step.state == "success")
+        .collect();
+    let writes: Vec<&AgentStep> = succeeded
+        .iter()
+        .copied()
+        .filter(|step| step.risk != "read")
+        .collect();
+    let last_write = writes.iter().map(|step| step.index).max();
+    let verified_after_writes = last_write.is_none_or(|last| {
+        succeeded
+            .iter()
+            .any(|step| step.index > last && step.risk == "read")
+    });
+
+    let mut evidence: Vec<String> = writes
+        .iter()
+        .rev()
+        .take(3)
+        .map(|step| step_label(step))
+        .collect();
+    if let Some(check) = last_write.and_then(|last| {
+        succeeded
+            .iter()
+            .filter(|step| step.index > last && step.risk == "read")
+            .next_back()
+    }) {
+        evidence.push(step_label(check));
+    }
+
+    if !writes.is_empty() && !verified_after_writes {
+        return Some(AgentOutcome::partial(
+            "改动已经执行，但之后没有只读验证步骤。",
+            evidence,
+        ));
+    }
+    if succeeded.is_empty() {
+        return Some(AgentOutcome::needs_info(
+            "所有步骤都没有成功，结论缺少服务器证据。",
+            steps
+                .iter()
+                .rev()
+                .take(3)
+                .map(|step| step_label(step))
+                .collect(),
+        ));
+    }
+    let last_failure = steps
+        .iter()
+        .filter(|step| step.state == "failed")
+        .map(|step| step.index)
+        .max();
+    let recovered = last_failure.is_none_or(|last| {
+        steps
+            .iter()
+            .any(|step| step.index > last && step.state == "success")
+    });
+    if !recovered {
+        return Some(AgentOutcome::partial(
+            "最后一次失败之后没有成功步骤，结论只覆盖了已完成的部分。",
+            evidence,
+        ));
+    }
+
+    Some(AgentOutcome::verified(
+        if writes.is_empty() {
+            "结论来自只读命令的真实输出。"
+        } else {
+            "改动后做了只读验证。"
+        },
+        evidence,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// 文件变更：预览 → 版本核对 → 写入 → 回读
+//
+// 事实来源只有两个：**服务器上读到的内容**与**这次工具调用提交的内容**。
+// 模型回复里的文件名 / 行数 / Markdown Diff 一律不采信。
+// ---------------------------------------------------------------------------
+
+fn emit_change(io: &dyn AgentIo, task_id: &str, summary: FileChangeSummary) {
+    let mut event = AgentEvent::new(task_id, "file_change");
+    event.change_id = Some(summary.id.clone());
+    event.change = Some(summary);
+    io.emit(event);
+}
+
+fn change_draft(
+    input: &AgentInput,
+    planned: &PlannedTool,
+    step_index: u32,
+    call_id: &str,
+    id: &str,
+    path: &str,
+) -> ChangeDraft {
+    ChangeDraft {
+        id: id.to_string(),
+        task_id: input.task_id.clone(),
+        call_id: call_id.to_string(),
+        step_index,
+        workspace_id: input.workspace_id.clone(),
+        server_id: input.server_id.clone(),
+        server: input.server.clone(),
+        tool: planned.call.name.clone(),
+        path: path.to_string(),
+    }
+}
+
+/// 落一条"拟修改"：`before` 是刚读到的服务器原文，`proposed` 是这次提交的新内容。
+fn store_preview(
+    registry: &ChangeRegistry,
+    draft: ChangeDraft,
+    before: FileSnapshot,
+    proposed: &str,
+    planned: &PlannedTool,
+) -> String {
+    let id = draft.id.clone();
+    // 提交内容同样过一遍脱敏：Diff 里不能出现明文密码 / 私钥。
+    let (sanitized, touched) = sanitize(proposed);
+    let touched = touched || before.redacted;
+    // 规范路径（符号链接已解析）：文件头显示的就是服务器上真正被读的那个文件。
+    let canonical = before.path.clone();
+    registry.create(draft, "proposed", "proposed");
+    registry.update(&id, |record| {
+        if !canonical.is_empty() {
+            record.path = canonical.clone();
+        }
+        record.before = Some(before);
+        record.proposed = sanitized;
+        record.redacted = touched;
+        record.backup_path = planned.backup_path.clone();
+        // 列表要显示 +N / -N：内容定下来时算一次，别在每次列表查询里重算。
+        record.recount();
+    });
+    id
+}
+
+/// 写文件前的预览。返回 `None` = 当前 IO 不支持快照，不生成变更记录。
+async fn create_preview(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    planned: &PlannedTool,
+    step_index: u32,
+    call_id: &str,
+) -> Option<String> {
+    let path = planned.path.as_deref()?;
+    let content = planned.write_content.as_deref()?;
+    let registry = io.changes();
+    let id = uuid::Uuid::new_v4().to_string();
+    match io.read_snapshot(&input.session_id, path).await {
+        Ok(None) => return None,
+        Ok(Some(snapshot)) => {
+            store_preview(
+                &registry,
+                change_draft(input, planned, step_index, call_id, &id, path),
+                snapshot,
+                content,
+                planned,
+            );
+        }
+        Err(reason) => {
+            // 读不到原文：**不生成 Diff**，但把原因如实记下来。
+            let (sanitized, _) = sanitize(content);
+            registry.create(
+                change_draft(input, planned, step_index, call_id, &id, path),
+                "unavailable",
+                "none",
+            );
+            registry.update(&id, |record| {
+                record.proposed = sanitized;
+                record.backup_path = planned.backup_path.clone();
+                record.note = Some(format!("未能读取修改前的文件：{reason}"));
+            });
+        }
+    }
+    let summary = registry.get(&id)?;
+    emit_change(io, &input.task_id, summary);
+    Some(id)
+}
+
+enum PreviewCheck {
+    /// 版本没变，可以按用户确认的那一份执行。
+    Verified,
+    /// 文件在确认前被外部改过：旧预览作废，已按当前内容生成新预览。
+    Regenerated { change_id: String, call_id: String },
+    /// 连版本都核对不了：不放行。
+    Failed(String),
+}
+
+/// 用户确认后、真正写入前再核对一次文件版本。
+async fn verify_preview(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    planned: &PlannedTool,
+    change_id: &str,
+    attempt: u32,
+) -> PreviewCheck {
+    let registry = io.changes();
+    let Some(record) = registry.record(change_id) else {
+        return PreviewCheck::Verified;
+    };
+    let Some(path) = planned.path.as_deref() else {
+        return PreviewCheck::Verified;
+    };
+    // 预览本来就没读到原文：没有可核对的基准，不在这里拦。
+    let Some(before) = record.before.clone() else {
+        return PreviewCheck::Verified;
+    };
+    let current = match io.read_snapshot(&input.session_id, path).await {
+        Ok(None) => return PreviewCheck::Verified,
+        Ok(Some(snapshot)) => snapshot,
+        Err(reason) => {
+            return PreviewCheck::Failed(format!(
+                "确认前无法重新核对文件版本：{reason}。这一步没有执行，请重新发起修改"
+            ))
+        }
+    };
+    if before.exists == current.exists && before.sha == current.sha {
+        return PreviewCheck::Verified;
+    }
+
+    // 旧确认只能用于它当时看到的那一版：作废并生成新预览。
+    registry.update(change_id, |item| {
+        item.status = "stale".to_string();
+        item.note = Some("文件在确认前被外部修改，这份预览已作废".to_string());
+    });
+    if let Some(summary) = registry.get(change_id) {
+        emit_change(io, &input.task_id, summary);
+    }
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let new_call = format!("{}-r{}", record.call_id, attempt + 1);
+    store_preview(
+        &registry,
+        change_draft(input, planned, record.step_index, &new_call, &new_id, path),
+        current,
+        &record.proposed,
+        planned,
+    );
+    if let Some(summary) = registry.get(&new_id) {
+        emit_change(io, &input.task_id, summary);
+    }
+    PreviewCheck::Regenerated {
+        change_id: new_id,
+        call_id: new_call,
+    }
+}
+
+/// 写入之后：**重新回读**服务器文件，用 before 与 actualAfter 生成实际 Diff。
+async fn finish_change(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    change_id: &str,
+    planned: &PlannedTool,
+    write_ok: bool,
+    failure: Option<&str>,
+    backup: Option<&str>,
+) {
+    let registry = io.changes();
+    let Some(record) = registry.record(change_id) else {
+        return;
+    };
+    let backup_path = backup.map(str::to_string).or_else(|| planned.backup_path.clone());
+    // `cp` 的标记只在备份真的成功后才打印：有标记 = 备份确实存在。
+    let backup_verified = backup.is_some();
+
+    if !write_ok {
+        registry.update(change_id, |record| {
+            record.status = "write_failed".to_string();
+            record.note = Some(match failure {
+                Some(reason) if !reason.trim().is_empty() => {
+                    format!("写入失败：{}；服务器上的文件没有被这次写入改动", reason.trim())
+                }
+                _ => "写入失败：服务器上的文件没有被这次写入改动".to_string(),
+            });
+            record.backup_path = backup_path.clone();
+            record.backup_verified = backup_verified;
+        });
+        if let Some(summary) = registry.get(change_id) {
+            emit_change(io, &input.task_id, summary);
+        }
+        return;
+    }
+
+    // 原文没读到（预览就已经是 unavailable）：写入可能成功了，但没有基准就
+    // 不能生成"全新增"的假 Diff，保持"未采集"并写明原因。
+    if record.before.is_none() {
+        registry.update(change_id, |item| {
+            item.stage = "none".to_string();
+            item.status = "unavailable".to_string();
+            item.note = Some(
+                "未能读取修改前的内容，无法证明实际改动了什么（写入可能已生效，请用远程文件核对）"
+                    .to_string(),
+            );
+            item.backup_path = backup_path.clone();
+            item.backup_verified = backup_verified;
+        });
+        if let Some(summary) = registry.get(change_id) {
+            emit_change(io, &input.task_id, summary);
+        }
+        return;
+    }
+
+    let Some(path) = planned.path.as_deref() else {
+        return;
+    };
+    match io.read_snapshot(&input.session_id, path).await {
+        Ok(Some(snapshot)) if snapshot.exists => {
+            let before = record.before.clone();
+            let unchanged = before.is_some_and(|item| item.exists && item.sha == snapshot.sha);
+            registry.update(change_id, |record| {
+                record.stage = "actual".to_string();
+                record.status = if unchanged { "unchanged" } else { "written" }.to_string();
+                record.actual = Some(snapshot);
+                record.backup_path = backup_path.clone();
+                record.backup_verified = backup_verified;
+                record.note = unchanged
+                    .then(|| "写入完成，但回读内容与写入前完全一致".to_string());
+                record.recount();
+            });
+        }
+        Ok(Some(_)) => {
+            registry.update(change_id, |record| {
+                record.stage = "none".to_string();
+                record.status = "readback_failed".to_string();
+                record.note = Some("写入后目标文件不存在：无法证明服务器上的实际内容".to_string());
+                record.backup_path = backup_path.clone();
+                record.backup_verified = backup_verified;
+            });
+        }
+        Ok(None) => {
+            registry.update(change_id, |record| {
+                record.stage = "none".to_string();
+                record.status = "unavailable".to_string();
+                record.note = Some("当前环境不支持回读，无法证明实际内容".to_string());
+                record.backup_path = backup_path.clone();
+                record.backup_verified = backup_verified;
+            });
+        }
+        Err(reason) => {
+            registry.update(change_id, |record| {
+                record.stage = "none".to_string();
+                record.status = "readback_failed".to_string();
+                record.note = Some(format!("写入已发送，但回读失败：{reason}"));
+                record.backup_path = backup_path.clone();
+                record.backup_verified = backup_verified;
+            });
+        }
+    }
+    if let Some(summary) = registry.get(change_id) {
+        emit_change(io, &input.task_id, summary);
+    }
+}
+
+/// 普通 shell 的写操作：没有明确目标与前后快照 → 如实标注"未采集文件差异"。
+fn record_uncollected(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    planned: &PlannedTool,
+    step_index: u32,
+    call_id: &str,
+) {
+    let registry = io.changes();
+    let id = uuid::Uuid::new_v4().to_string();
+    let draft = change_draft(
+        input,
+        planned,
+        step_index,
+        call_id,
+        &id,
+        planned.path.as_deref().unwrap_or(""),
+    );
+    registry.create(draft, "uncollected", "none");
+    let command: String = planned.display.chars().take(200).collect();
+    registry.update(&id, |record| {
+        record.uncollected = true;
+        record.note = Some(format!(
+            "普通 shell 命令无法可靠取得明确目标与前后快照，该操作未采集文件差异：{command}"
+        ));
+    });
+    if let Some(summary) = registry.get(&id) {
+        emit_change(io, &input.task_id, summary);
+    }
+}
+
 pub(crate) async fn run_loop(
     handle: &AgentHandle,
     input: &AgentInput,
@@ -990,11 +1589,20 @@ pub(crate) async fn run_loop(
      */
     let mut executed_signatures: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    let mut next_index: u32 = 0;
+    // 续跑：新步骤从历史步骤之后编号，不能把旧步骤按 index 覆盖。
+    let mut next_index: u32 = input
+        .carry_steps
+        .iter()
+        .map(|step| step.index + 1)
+        .max()
+        .unwrap_or(0);
     let mut total_bytes: usize = 0;
+    /// 改写后是否已经催过一次"先验证再收尾"（只催一次，避免来回拉扯）。
+    let mut verification_nudged = false;
     // 预算来自**这次启动的模型**：切模型只影响下一条消息。
-    let context_budget = crate::deployment::ai::context_budget_tokens(
+    let context_budget = crate::deployment::ai::context_budget_tokens_with(
         &handle.snapshot().model,
+        input.capability.as_ref(),
         input.context_budget,
     );
 
@@ -1010,6 +1618,22 @@ pub(crate) async fn run_loop(
                 MAX_TOTAL_SECONDS / 60,
                 last_step_hint(handle)
             )));
+        }
+
+        /*
+         * **运行中补的要求在这里生效**：下一步开始前追加成一条 user 消息。
+         *
+         * 不打断正在跑的命令（半截命令比多跑一条更危险），但这一轮之后的计划
+         * 必须按新要求走。事件让其它窗口 / 重进后的界面也知道这条已生效。
+         */
+        for text in handle.take_steers() {
+            conversation.push(json!({
+                "role": "user",
+                "content": format!("【任务更新】{text}"),
+            }));
+            let mut event = AgentEvent::new(&input.task_id, "steer_applied");
+            event.content = Some(text);
+            io.emit(event);
         }
 
         // 每轮发出前记一次裁剪结果：界面显示"已用 / 预算"，也方便回看丢了什么。
@@ -1111,6 +1735,43 @@ pub(crate) async fn run_loop(
                     "模型返回了无法识别的工具调用格式，已停止；请把这句话换个说法再试".to_string(),
                 ));
             }
+            /*
+             * 收尾这一轮正好收到补充要求：不能把任务标成功、把这句话吞掉。
+             * 把这轮回答留在历史里，下一轮带着新要求继续。
+             */
+            if handle.has_steers() {
+                conversation.push(json!({
+                    "role": "assistant",
+                    "content": reply.content,
+                }));
+                continue;
+            }
+            /*
+             * **没有工具调用 ≠ 任务达成**：按真实步骤判定结论。
+             *
+             * 改了东西却没有任何只读验证时，先催一次（把回答留在历史里），
+             * 让模型去做配置语法 / 服务状态 / 文件内容核对；催过一次仍不验证，
+             * 就明确标成「部分完成」，不再假装已验证。
+             */
+            let outcome = evaluate_outcome(&handle.snapshot().steps, query_only);
+            let needs_verification = outcome.as_ref().is_some_and(|result| {
+                result.level == "partial" && result.reason.contains("没有只读验证")
+            });
+            if needs_verification && !verification_nudged {
+                verification_nudged = true;
+                conversation.push(json!({
+                    "role": "assistant",
+                    "content": reply.content,
+                }));
+                conversation.push(json!({
+                    "role": "user",
+                    "content": "【验证要求】改动已经执行，但还没有在服务器上核对结果。\
+                        请先用只读命令验证（配置语法 / 服务状态 / 端口 / 文件内容），\
+                        再给结论；确实无法验证时明确说明未验证的原因。"
+                }));
+                continue;
+            }
+            handle.update(|snapshot| snapshot.outcome = outcome);
             return Ok(strip_tool_calls(&reply.content));
         }
 
@@ -1128,8 +1789,23 @@ pub(crate) async fn run_loop(
             if raw.id.is_empty() {
                 raw.id = format!("call-{round}-{index}");
             }
-            let call_id = raw.id.clone();
+            let mut call_id = raw.id.clone();
             start_step(handle, index, &call_id, &raw.name);
+
+            /*
+             * 用户刚补了要求：这条旧计划里的命令不再执行。
+             *
+             * 模型这一批调用是在收到新要求之前决定的；继续跑等于按旧计划动服务器。
+             * 跳过并把原因回给它，下一轮开头新要求会追加进对话。
+             */
+            if handle.has_steers() {
+                let reason = "用户补充了新要求：这条命令没有执行。\
+                    等新要求生效后重新判断要做什么，不要按原计划继续。"
+                    .to_string();
+                skip_step(io, handle, &input.task_id, index, &reason);
+                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                continue;
+            }
 
             // 参数不合法：回一句原因，让模型改写法，不中断任务。
             let args = match serde_json::from_str::<Value>(raw.body.trim()) {
@@ -1274,78 +1950,206 @@ pub(crate) async fn run_loop(
                 continue;
             }
 
+            /*
+             * 写文件的"拟修改"：**先回读服务器上的原文**，再把这次调用提交的
+             * 内容当作 proposedAfter。预览建在这里（即将挂起确认之前），
+             * 被范围 / 拒绝 / 重复拦下的调用不会留下空的变更记录。
+             */
+            let mut change_id: Option<String> = if planned.call.name == "write_file" {
+                create_preview(io, input, &planned, index, &call_id).await
+            } else {
+                None
+            };
+            if let Some(id) = &change_id {
+                handle.patch_step(index, |step| step.change_id = Some(id.clone()));
+            }
+
             if risk.needs_approval() && !skip_approval {
                 /*
-                 * 快照里也留一份"正在等确认"：刷新 / 重进 / 关掉 WebView 再打开
-                 * 时，界面能凭它把确认条画回来并继续 `agent_approve`。只发事件是
-                 * 不够的 —— 事件是过去的，重进时收不到。
+                 * 一轮确认 = 登记挂起 → 等用户表态 → 核对文件版本。
+                 *
+                 * 版本对不上时**不放行**：作废旧预览、按当前内容生成新预览，
+                 * 再用新的 callId 重新等确认（旧确认不能用于新版本）。
+                 * 最多重来两次，避免文件被持续改动时无限循环。
                  */
-                let step_cwd = handle.snapshot().cwd;
-                // 截止时刻在挂起前定死：事件、快照、等待超时用的是同一个值，
-                // 界面倒计时与后端实际放弃的时刻才不会各说各话。
-                let deadline = crate::db::AppDb::now() + (APPROVAL_SECONDS as i64) * 1000;
-                handle.update(|snapshot| {
-                    // 快照里的状态也要是"在等确认"，否则重进会显示成"执行中"。
-                    snapshot.status = "waiting".to_string();
-                    snapshot.pending_approval = Some(PendingApproval {
-                        call_id: call_id.clone(),
-                        step_index: index,
-                        tool: planned.call.name.clone(),
-                        path: planned.path.clone(),
-                        risk: risk.as_str().to_string(),
-                        command: display_command.clone(),
-                        script: script.clone(),
-                        summary: planned.summary.clone(),
-                        impact: planned.impact.clone(),
-                        backup_path: planned.backup_path.clone(),
-                        rollback: planned.rollback.clone(),
-                        cwd: step_cwd,
-                        deadline,
+                let mut attempt: u32 = 0;
+                let mut skip_this = false;
+                loop {
+                    /*
+                     * 快照里也留一份"正在等确认"：刷新 / 重进 / 关掉 WebView 再打开
+                     * 时，界面能凭它把确认条画回来并继续 `agent_approve`。只发事件是
+                     * 不够的 —— 事件是过去的，重进时收不到。
+                     */
+                    let step_cwd = handle.snapshot().cwd;
+                    // 截止时刻在挂起前定死：事件、快照、等待超时用的是同一个值，
+                    // 界面倒计时与后端实际放弃的时刻才不会各说各话。
+                    let deadline = crate::db::AppDb::now() + (APPROVAL_SECONDS as i64) * 1000;
+                    let pending_change = change_id.clone();
+                    handle.update(|snapshot| {
+                        // 快照里的状态也要是"在等确认"，否则重进会显示成"执行中"。
+                        snapshot.status = "waiting".to_string();
+                        snapshot.pending_approval = Some(PendingApproval {
+                            call_id: call_id.clone(),
+                            step_index: index,
+                            tool: planned.call.name.clone(),
+                            path: planned.path.clone(),
+                            risk: risk.as_str().to_string(),
+                            command: display_command.clone(),
+                            script: script.clone(),
+                            summary: planned.summary.clone(),
+                            impact: planned.impact.clone(),
+                            backup_path: planned.backup_path.clone(),
+                            rollback: planned.rollback.clone(),
+                            change_id: pending_change,
+                            cwd: step_cwd,
+                            deadline,
+                        });
                     });
-                });
-                let mut event = AgentEvent::new(&input.task_id, "approval_required");
-                if let Some(step) = handle.step(index) {
-                    event = AgentEvent::from_step(&input.task_id, "approval_required", &step);
-                }
-                event.deadline = Some(deadline);
-                io.emit(event);
+                    let mut event = AgentEvent::new(&input.task_id, "approval_required");
+                    if let Some(step) = handle.step(index) {
+                        event = AgentEvent::from_step(&input.task_id, "approval_required", &step);
+                    }
+                    event.deadline = Some(deadline);
+                    io.emit(event);
 
-                let decision = wait_approval(handle, &call_id, deadline).await;
-                // 用户已表态（或取消 / 超时）：快照里不该再挂着它。
-                handle.update(|snapshot| {
-                    snapshot.pending_approval = None;
-                    if snapshot.status == "waiting" {
-                        snapshot.status = "running".to_string();
+                    /*
+                     * 指令可能在"登记等待"之前就到了：那时 `push_steer` 看不到
+                     * pending，不会撤回。这里补一次，避免白等到超时。
+                     */
+                    if handle.has_steers() {
+                        handle.withdraw_pending_approval();
                     }
-                });
-                match decision {
-                    Decision::Allow => {
-                        decided_ops.insert(op_signature.clone(), true);
-                    }
-                    Decision::Deny => {
-                        // 记住"这个操作被拒绝过"：换写法也不再弹第二次。
-                        decided_ops.insert(op_signature.clone(), false);
-                        let reason = "用户拒绝执行这条命令".to_string();
-                        fail_step(io, handle, index, &reason);
+
+                    let decision = wait_approval(handle, &call_id, deadline).await;
+                    // 用户已表态（或取消 / 超时）：快照里不该再挂着它。
+                    handle.update(|snapshot| {
+                        snapshot.pending_approval = None;
+                        if snapshot.status == "waiting" {
+                            snapshot.status = "running".to_string();
+                        }
+                    });
+                    /*
+                     * 补充要求撤回的确认：不能当成"用户拒绝过这个操作"。
+                     * 差别在于：拒绝要永久记住（换写法也不再问），撤回只是按新要求
+                     * 重新评估，下一步还可能做同样的事。
+                     *
+                     * 放在 match 之前：即使用户刚好先点了「允许」，只要撤回标记已
+                     * 落上，这一步也不会执行 —— 新要求优先。
+                     */
+                    if handle.take_withdrawn(&call_id) {
+                        let reason = "用户补充了新要求，这一步已撤回；\
+                            按新要求重新评估后再决定要不要做。"
+                            .to_string();
+                        skip_step(io, handle, &input.task_id, index, &reason);
+                        if let Some(id) = &change_id {
+                            io.changes().update(id, |record| {
+                                record.status = "withdrawn".to_string();
+                                // 保留预览：撤回也要能看到当时准备改什么（但绝不执行）。
+                                record.note = Some("按新的要求撤回，这一步没有执行".to_string());
+                            });
+                            if let Some(summary) = io.changes().get(id) {
+                                emit_change(io, &input.task_id, summary);
+                            }
+                        }
                         tool_messages
                             .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
-                        continue;
+                        let mut event = AgentEvent::new(&input.task_id, "approval_withdrawn");
+                        event.call_id = Some(call_id.clone());
+                        event.step_index = Some(index);
+                        event.message = Some("已收到新的要求，撤回了这条待确认操作。".to_string());
+                        io.emit(event);
+                        skip_this = true;
+                        break;
                     }
-                    Decision::Cancelled => {
-                        mark_step_aborted(io, handle, index, "已取消（用户停止），命令没有执行");
-                        return Err(StopReason::Cancelled(format!(
-                            "已停止：等待确认时收到停止信号（停在「{}」）",
-                            describe_step(&raw.name, &args)
-                        )));
+                    match decision {
+                        Decision::Allow => {
+                            decided_ops.insert(op_signature.clone(), true);
+                        }
+                        Decision::Deny => {
+                            // 记住"这个操作被拒绝过"：换写法也不再弹第二次。
+                            decided_ops.insert(op_signature.clone(), false);
+                            let reason = "用户拒绝执行这条命令".to_string();
+                            fail_step(io, handle, index, &reason);
+                            if let Some(id) = &change_id {
+                                io.changes().update(id, |record| {
+                                    record.status = "rejected".to_string();
+                                    record.note = Some("用户拒绝执行：服务器上的文件没有改动".to_string());
+                                });
+                                if let Some(summary) = io.changes().get(id) {
+                                    emit_change(io, &input.task_id, summary);
+                                }
+                            }
+                            tool_messages
+                                .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                            skip_this = true;
+                            break;
+                        }
+                        Decision::Cancelled => {
+                            mark_step_aborted(io, handle, index, "已取消（用户停止），命令没有执行");
+                            return Err(StopReason::Cancelled(format!(
+                                "已停止：等待确认时收到停止信号（停在「{}」）",
+                                describe_step(&raw.name, &args)
+                            )));
+                        }
+                        Decision::Timeout => {
+                            mark_step_aborted(io, handle, index, "等待确认超时，命令没有执行");
+                            return Err(StopReason::Failed(format!(
+                                "等待确认超过 {} 分钟，已停止（停在「{}」）",
+                                APPROVAL_SECONDS / 60,
+                                describe_step(&raw.name, &args)
+                            )));
+                        }
                     }
-                    Decision::Timeout => {
-                        mark_step_aborted(io, handle, index, "等待确认超时，命令没有执行");
-                        return Err(StopReason::Failed(format!(
-                            "等待确认超过 {} 分钟，已停止（停在「{}」）",
-                            APPROVAL_SECONDS / 60,
-                            describe_step(&raw.name, &args)
-                        )));
+
+                    /*
+                     * 允许之后**再核对一次文件版本**：确认卡上的 Diff 是发起确认
+                     * 时读到的，中间可能被别的会话 / 用户改过。
+                     */
+                    if let Some(id) = change_id.clone() {
+                        if attempt >= 2 {
+                            let reason = "文件在确认期间被反复修改，已停止这次写入".to_string();
+                            fail_step(io, handle, index, &reason);
+                            tool_messages.push(tool_error_message(
+                                &raw.id,
+                                raw.native,
+                                &raw.name,
+                                &reason,
+                            ));
+                            skip_this = true;
+                            break;
+                        }
+                        match verify_preview(io, input, &planned, &id, attempt).await {
+                            PreviewCheck::Verified => {}
+                            PreviewCheck::Regenerated {
+                                change_id: new_id,
+                                call_id: new_call,
+                            } => {
+                                change_id = Some(new_id.clone());
+                                call_id = new_call;
+                                attempt += 1;
+                                handle.patch_step(index, |step| {
+                                    step.change_id = Some(new_id);
+                                    step.state = "waiting".to_string();
+                                });
+                                continue;
+                            }
+                            PreviewCheck::Failed(reason) => {
+                                fail_step(io, handle, index, &reason);
+                                tool_messages.push(tool_error_message(
+                                    &raw.id,
+                                    raw.native,
+                                    &raw.name,
+                                    &reason,
+                                ));
+                                skip_this = true;
+                                break;
+                            }
+                        }
                     }
+                    break;
+                }
+                if skip_this {
+                    continue;
                 }
                 handle.patch_step(index, |step| step.state = "running".to_string());
                 if let Some(step) = handle.step(index) {
@@ -1355,6 +2159,53 @@ pub(crate) async fn run_loop(
 
             // 到这一步才真的会执行：记下"这条命令跑过"，重复提交直接跳过。
             executed_signatures.insert(signature);
+
+            /*
+             * 普通 shell 的写操作：拿不到明确目标与前后快照。
+             *
+             * 这里**不猜**改了哪个文件（`sed -i` / `tee` / 脚本里的重定向都可能
+             * 改一堆文件），只登记一条"未采集差异"，让面板如实显示。
+             */
+            if planned.call.name == "run_shell" && risk != ToolRisk::Read {
+                record_uncollected(io, input, &planned, index, &call_id);
+            }
+
+            /*
+             * 同一服务器、同一资源的写操作在**执行层**串行。
+             *
+             * 第二条任务不弹确认、也不失败：它显示"等待该服务上的操作完成"，
+             * 拿到锁后继续。等待期间收到停止请求会立刻放弃这一步。
+             */
+            let _resource_guard = if risk == ToolRisk::Read {
+                None
+            } else {
+                let key = resource_key(input, &planned);
+                handle.patch_step(index, |step| {
+                    step.summary = Some("等待该服务上的操作完成".to_string());
+                });
+                if let Some(step) = handle.step(index) {
+                    io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
+                }
+                tokio::select! {
+                    guard = acquire_resource(key) => {
+                        handle.patch_step(index, |step| {
+                            step.summary = planned.summary.clone();
+                        });
+                        Some(guard)
+                    }
+                    _ = handle.cancel().cancelled() => {
+                        let reason = "等待该服务上的操作完成时被取消，这一步没有执行。".to_string();
+                        skip_step(io, handle, &input.task_id, index, &reason);
+                        tool_messages.push(tool_error_message(
+                            &raw.id,
+                            raw.native,
+                            &raw.name,
+                            &reason,
+                        ));
+                        continue;
+                    }
+                }
+            };
 
             if !io.connected(&input.session_id).await {
                 let reason = "SSH 会话已断开，任务停止".to_string();
@@ -1476,6 +2327,26 @@ pub(crate) async fn run_loop(
                 }
                 step.elapsed_ms = elapsed_ms;
             });
+
+            /*
+             * 写入之后回读一次：**实际 Diff 只来自服务器上的回读结果**。
+             *
+             * 写入失败 / 回读失败 / 内容完全没变，三种情况分别落不同的状态，
+             * 不能用"备份存在"或"命令退出码 0"代替证据。
+             */
+            if let Some(id) = change_id.clone() {
+                let failure = (!ok).then(|| first_line(&stderr, 200)).filter(|line| !line.is_empty());
+                finish_change(
+                    io,
+                    input,
+                    &id,
+                    &planned,
+                    ok,
+                    failure.as_deref(),
+                    backup.as_deref(),
+                )
+                .await;
+            }
 
             // 实时片段已在命令运行期间由转发任务发出（见上面的 `forward`）。
             if truncated {

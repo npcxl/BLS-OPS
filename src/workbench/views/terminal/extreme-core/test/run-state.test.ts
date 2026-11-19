@@ -75,6 +75,19 @@ describe("运行状态派生", () => {
     ).toBe("done");
   });
 
+  it("进程中断是终态，但仍可从检查点继续", () => {
+    const state = deriveRunState({
+      task: { status: "interrupted", steps: [] },
+      thinking: false,
+      stopping: false,
+      stale: false,
+    });
+    expect(state).toBe("interrupted");
+    expect(isTerminalRun(state)).toBe(true);
+    expect(runStateLabel(state, t)).toBe("已中断");
+    expect(canSendIn(state)).toBe(true);
+  });
+
   it("没有任务也不在请求 = 空闲", () => {
     expect(
       deriveRunState({ task: null, thinking: false, stopping: false, stale: false }),

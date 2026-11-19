@@ -68,6 +68,59 @@ it("sends normally when connected", async () => {
   }
 });
 
+it("输入法选词时的回车不会被建议菜单或发送吃掉", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const onSend = vi.fn();
+  const onChange = vi.fn();
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const bar = (value: string) => (
+    <PromptBar
+      value={value}
+      onChange={onChange}
+      onSend={onSend}
+      commands={[{ key: "inspect", name: "巡检这台服务器", description: "CPU、内存与磁盘" }]}
+    />
+  );
+  // `/` 打开命令建议菜单：这正是"回车会被菜单抢走"的场景。
+  await act(async () => root.render(bar("/")));
+  const press = async (event: KeyboardEvent) => {
+    await act(async () => {
+      holder.querySelector("textarea")!.dispatchEvent(event);
+    });
+  };
+  try {
+    // 1) 组合中的回车：既不能选菜单，也不能发送。
+    await press(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+
+    // 2) WebView2 上提交选词的那次 keydown 有时不带 isComposing，只有 keyCode 229。
+    const legacy = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+    Object.defineProperty(legacy, "keyCode", { value: 229 });
+    await press(legacy);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+
+    // 3) 选完词后的下一次回车：菜单照常工作（选中候选）。
+    await press(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(onChange).toHaveBeenCalledWith("巡检这台服务器 ");
+
+    // 4) 菜单收起、正文写好后：回车正常发送。
+    await act(async () => root.render(bar("巡检这台服务器")));
+    await press(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0][0]).toBe("巡检这台服务器");
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    vi.unstubAllGlobals();
+    await i18n.changeLanguage(language);
+  }
+});
+
 it("keeps the stop button usable while disconnected", async () => {
   const language = i18n.language;
   await i18n.changeLanguage("zh-CN");

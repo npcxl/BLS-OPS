@@ -905,3 +905,63 @@ pub fn desktop_notification_dismiss(app: tauri::AppHandle, id: String) -> Result
     }
     Ok(())
 }
+
+/**
+ * 主窗口回到前台：撤下所有超能通知，并清掉仍在等待显示的队列。
+ *
+ * 只按 id 前缀清理（`extreme-`：任务结果、审批、后台运行提醒），不碰应用
+ * 其他模块的通知。**队列也要清**：`dismiss` 只处理已占槽的那条，槽位一空
+ * 队列里的旧结果就会补上来 —— 用户会看到"关了一条又冒出一条"。
+ */
+#[tauri::command]
+pub fn desktop_notification_clear_extreme(app: tauri::AppHandle) -> Result<(), String> {
+    const PREFIX: &str = "extreme-";
+
+    if let Ok(mut pending) = PENDING_PUSH.lock() {
+        pending.retain(|payload| !payload.id.starts_with(PREFIX));
+    }
+
+    let mut hidden_labels: Vec<String> = Vec::new();
+    {
+        let mut guard = MANAGER.lock().map_err(|_| "通知状态已损坏".to_string())?;
+        let Some(manager) = guard.as_mut() else {
+            return Ok(());
+        };
+
+        manager
+            .queue
+            .retain(|payload| !payload.id.starts_with(PREFIX));
+
+        let order = std::mem::take(&mut manager.order);
+        for index in order {
+            let is_extreme = manager
+                .slots
+                .get(index)
+                .and_then(|slot| slot.notification.as_ref())
+                .is_some_and(|payload| payload.id.starts_with(PREFIX));
+            if is_extreme {
+                let slot = &mut manager.slots[index];
+                slot.notification = None;
+                slot.height = ESTIMATED_HEIGHT;
+                slot.visible = false;
+                slot.geometry = None;
+                slot.version += 1;
+                hidden_labels.push(slot.label.clone());
+            } else {
+                manager.order.push(index);
+            }
+        }
+    }
+
+    for label in &hidden_labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = desktop_surface::hide(&window);
+        }
+        let _ = app.emit_to(label, "desktop-notification:reset", ());
+        capture::clear_frame(label);
+    }
+
+    let moves = commit(&app)?;
+    start_move_animation(&app, moves);
+    Ok(())
+}

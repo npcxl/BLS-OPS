@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Attachment01Icon } from "@hugeicons/core-free-icons";
-import { ChevronDown, Lock, ShieldCheck } from "@/components/icons";
+import { Lock, ShieldCheck } from "@/components/icons";
+import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { ContextUsage } from "@/api/types/agent";
 import type { ModelSetting } from "@/stores/extreme-store";
@@ -14,14 +15,17 @@ import PromptBar, {
 import { PERMISSION_HINT, type PermissionMode } from "./permissions";
 import { EC } from "./theme";
 import { PICKED_KIND_LABEL, type ContextMode, type PickedContext } from "./chat-context";
-import { ComposerMenu, MenuChoice, MenuGroupTitle, MenuSegments } from "./ComposerMenu";
+import { ComposerMenu } from "./ComposerMenu";
 import {
   contextOptions,
   effortTiers,
   effectiveProvider,
   formatTokens,
+  highestEffort,
+  matchBudget,
   modelKey,
   type EffortChoice,
+  type ModelSelection,
   type ProviderChoice,
 } from "./model-choice";
 
@@ -29,7 +33,8 @@ export interface ComposerPanelProps {
   /** 草稿：唯一来源是页面，这里只读写。 */
   draft: string;
   onDraftChange: (value: string) => void;
-  onSend: (text: string) => void;
+  /** 点击发送那一刻锁定模型 / 强度 / 预算，页面后续只认这份快照。 */
+  onSend: (text: string, selection: ModelSelection) => void;
   /** 停止：整个聊天区**唯一**的停止入口（Prompt Bar 右下角那个键）。 */
   onCancel: () => void;
   /**
@@ -80,9 +85,10 @@ export interface ComposerPanelProps {
 /**
  * 「权限」入口：收起时只显示当前权限，点开才出现两项。
  *
- * 以前是一个"点一下就切换"的按钮：切到完全权限没有任何确认，误触代价太大。
+ * 用统一 `Select`（Prompt Bar 同款）；`tone="warning"` 保留「完全权限」的
+ * 警示色 —— 这是一个一旦误设就会直接改生产文件的开关。
  */
-function PermissionMenu({
+function PermissionSelect({
   permission,
   onChange,
 }: {
@@ -90,68 +96,41 @@ function PermissionMenu({
   onChange: (next: PermissionMode) => void;
 }) {
   const { t } = useTranslation();
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const [open, setOpen] = useState(false);
-  const full = permission === "full";
-
   return (
-    <>
-      <button
-        ref={anchorRef}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={t("权限")}
-        title={PERMISSION_HINT[permission]}
-        onClick={() => setOpen((value) => !value)}
-        className="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-10 transition-colors hover:bg-surface-hover"
-        style={{
-          // 颜色取 token：之前写死的是深色主题的黄字 / 深棕底，浅色下像块脏污。
-          color: full ? "rgb(var(--warning))" : "rgb(var(--fg-subtle))",
-          border: `1px solid ${full ? "rgb(var(--warning) / .35)" : "transparent"}`,
-          background: full ? "rgb(var(--warning) / .12)" : "transparent",
-        }}
-      >
-        {full ? <ShieldCheck size={11} /> : <Lock size={11} />}
-        <span>{full ? t("完全权限") : t("只读")}</span>
-        <ChevronDown size={10} aria-hidden="true" />
-      </button>
-
-      <ComposerMenu
-        open={open}
-        onClose={() => setOpen(false)}
-        anchor={anchorRef.current}
-        label={t("权限")}
-      >
-        <MenuChoice
-          label={t("只读")}
-          hint={t("查询直接执行；写 / 改 / 删确认一次，sudo 禁用")}
-          selected={!full}
-          onClick={() => {
-            onChange("readonly");
-            setOpen(false);
-          }}
-        />
-        <MenuChoice
-          label={t("完全权限")}
-          hint={t("写入 / 修改 / 删除直接执行，不再逐条确认")}
-          selected={full}
-          onClick={() => {
-            onChange("full");
-            setOpen(false);
-          }}
-        />
-      </ComposerMenu>
-    </>
+    <Select
+      variant="menu"
+      className="shrink-0"
+      menuMinWidth={340}
+      tone={permission === "full" ? "warning" : "default"}
+      ariaLabel={t("权限")}
+      title={PERMISSION_HINT[permission]}
+      value={permission}
+      onChange={(value) => onChange(value as PermissionMode)}
+      options={[
+        {
+          value: "readonly",
+          label: t("只读"),
+          hint: t("查询直接执行；写 / 改 / 删确认一次，sudo 禁用"),
+          icon: <Lock size={11} />,
+        },
+        {
+          value: "full",
+          label: t("完全权限"),
+          hint: t("写入 / 修改 / 删除直接执行，不再逐条确认"),
+          icon: <ShieldCheck size={11} />,
+        },
+      ]}
+    />
   );
 }
 
 /**
  * 「上下文」入口：范围（会话 / 仅本条 / 自选）与模型声明的上下文档位。
  *
- * 模型与思考强度已经交给 Prompt Bar 自己的菜单，这里只留项目特有的两项。
+ * 两个维度各用一个统一 `Select`；模型与思考强度仍然在 Prompt Bar 自己的
+ * 菜单里（它们与输入框绑定，不在这里拆开）。
  */
-function ContextMenu({
+function ContextSelects({
   contextMode,
   onContextModeChange,
   budget,
@@ -167,73 +146,46 @@ function ContextMenu({
   running: boolean;
 }) {
   const { t } = useTranslation();
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const [open, setOpen] = useState(false);
-  const modeLabel = {
-    session: t("当前会话"),
-    only: t("仅本条"),
-    picked: t("自选"),
-  }[contextMode];
+  const runningHint = running
+    ? t("下一条消息生效；正在跑的任务沿用启动时的模型与设置。")
+    : undefined;
 
   return (
     <>
-      <button
-        ref={anchorRef}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={t("上下文")}
-        onClick={() => setOpen((value) => !value)}
-        className="flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 text-10 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
-      >
-        <span className="truncate">{modeLabel}</span>
-        <span className="shrink-0 text-fg-subtle" aria-hidden="true">
-          ·
-        </span>
-        <span className="shrink-0">{budget ? formatTokens(budget) : t("自动")}</span>
-        <ChevronDown size={11} className="shrink-0" aria-hidden="true" />
-      </button>
-
-      <ComposerMenu
-        open={open}
-        onClose={() => setOpen(false)}
-        anchor={anchorRef.current}
-        label={t("上下文")}
-        opaque
-      >
-        <MenuGroupTitle>{t("上下文范围")}</MenuGroupTitle>
-        <MenuSegments
-          label={t("上下文范围")}
+      <Select
+        variant="menu"
+        className="shrink-0"
+        ariaLabel={t("上下文范围")}
+        title={runningHint ?? t("上下文范围")}
+        value={contextMode}
+        onChange={(value) => onContextModeChange(value as ContextMode)}
+        options={[
+          { value: "session", label: t("当前会话") },
+          { value: "only", label: t("仅本条") },
+          { value: "picked", label: t("自选") },
+        ]}
+      />
+      {budgets.length > 0 ? (
+        <Select
+          variant="menu"
+          className="shrink-0"
+          ariaLabel={t("上下文长度")}
+          title={runningHint ?? t("上下文长度")}
+          value={budget === null ? "auto" : String(budget)}
+          onChange={(value) => onBudgetChange(value === "auto" ? null : Number(value))}
           options={[
-            { value: "session" as ContextMode, label: t("当前会话") },
-            { value: "only" as ContextMode, label: t("仅本条") },
-            { value: "picked" as ContextMode, label: t("自选") },
+            { value: "auto", label: t("自动") },
+            ...budgets.map((value) => ({ value: String(value), label: formatTokens(value) })),
           ]}
-          value={contextMode}
-          onChange={onContextModeChange}
         />
-
-        <MenuGroupTitle>{t("上下文长度")}</MenuGroupTitle>
-        {budgets.length > 0 ? (
-          <MenuSegments
-            label={t("上下文长度")}
-            options={[
-              { value: 0, label: t("自动") },
-              ...budgets.map((value) => ({ value, label: formatTokens(value) })),
-            ]}
-            value={budget ?? 0}
-            onChange={(value) => onBudgetChange(value === 0 ? null : value)}
-          />
-        ) : (
-          <p className="px-2 py-1 text-11 text-fg-muted">{t("自动（由模型决定）")}</p>
-        )}
-
-        {running && (
-          <p className="mt-2 px-2 pb-1 text-10 leading-relaxed text-fg-subtle">
-            {t("下一条消息生效；正在跑的任务沿用启动时的模型与设置。")}
-          </p>
-        )}
-      </ComposerMenu>
+      ) : (
+        <span
+          className="shrink-0 px-1 text-10 text-fg-subtle"
+          title={t("该模型未登记上下文档位：请到设置里填上下文窗口")}
+        >
+          {t("自动（由模型决定）")}
+        </span>
+      )}
     </>
   );
 }
@@ -300,22 +252,48 @@ export function ComposerPanel({
       })),
     ];
   }, [provider, t]);
-  const activeEffort: EffortChoice =
-    setting?.effort && (setting.effort === "auto" || provider?.efforts.includes(setting.effort))
-      ? setting.effort
-      : "auto";
+  /*
+   * 「MAX」= 该模型实际支持的最高档。
+   *
+   * 换到只支持到 high 的模型时，之前存的 max 要收成 high（而不是掉回默认）：
+   * 用户选的意图是"最高"，不是"某一路枚举值"。
+   */
+  const activeEffort: EffortChoice = (() => {
+    const effort = setting?.effort ?? "auto";
+    if (effort === "auto") return "auto";
+    if (provider?.efforts.includes(effort)) return effort;
+    if (effort === "max") return highestEffort(provider?.efforts ?? []) ?? "auto";
+    return "auto";
+  })();
   const defaultEffort = effortChoices.find((choice) => choice.value === activeEffort)?.label ?? "";
 
   const budgets = provider ? contextOptions(provider.budgets) : [];
-  const budget = setting?.budget && budgets.includes(setting.budget) ? setting.budget : null;
+  const budget = setting?.budget ? matchBudget(setting.budget, budgets) : null;
   const usage = contextUsage && contextUsage.budget > 0 ? contextUsage : null;
-  const usagePercent = usage ? (usage.used / usage.budget) * 100 : 0;
+  /*
+   * 指标口径：**这段任务对话有多长**，不是"这一轮发了多少"。
+   *
+   * `beforeTokens` 是裁剪前的大小（系统提示 + 整段历史 + 本轮工具结果），
+   * 用户问"我的上下文用了多少"指的就是它；`afterTokens` 是超出预算后真正
+   * 发出去的部分，只在被裁时作为补充说明。
+   */
+  const taskTokens = usage ? usage.report.beforeTokens : 0;
+  const sentTokens = usage ? usage.report.afterTokens : 0;
+  const trimmed = Boolean(usage && sentTokens < taskTokens);
+  const usagePercent = usage ? (taskTokens / usage.budget) * 100 : 0;
   const usageSummary = usage
-    ? t("约 {{percent}}% · {{used}} / {{budget}} token", {
-        percent: usagePercent.toFixed(1),
-        used: usage.used.toLocaleString(),
-        budget: usage.budget.toLocaleString(),
-      })
+    ? trimmed
+      ? t("任务对话 {{used}} / {{budget}} token（已占 {{percent}}%）；本轮实际发送 {{sent}}", {
+          used: taskTokens.toLocaleString(),
+          budget: usage.budget.toLocaleString(),
+          percent: usagePercent.toFixed(1),
+          sent: sentTokens.toLocaleString(),
+        })
+      : t("任务对话 {{used}} / {{budget}} token（已占 {{percent}}%）", {
+          used: taskTokens.toLocaleString(),
+          budget: usage.budget.toLocaleString(),
+          percent: usagePercent.toFixed(1),
+        })
     : t(running ? "正在计算上下文用量…" : "暂无上下文用量");
 
   const sources = useMemo<PromptBarSource[]>(
@@ -341,27 +319,28 @@ export function ComposerPanel({
   );
 
   /**
-   * 发送：先落选中的模型与强度，再交给页面发起。
+   * 发送：**只把当前受控值锁成快照**，不再把组件内部状态写回 store。
    *
-   * `ask` 从 store 读最新值（不是渲染闭包），所以同一次发送就能用上这里的选择。
+   * 模型 / 强度 / 预算在菜单里选中时已经写进当前 workspace 的设置；点击发送
+   * 后页面拿这份快照发请求，之后等终端输出、附件或切对话都不会改它。
    */
-  const handleSend = (text: string, detail: PromptBarSendDetail) => {
+  const handleSend = (text: string, _detail: PromptBarSendDetail) => {
     // 未连接时不受理（按钮已禁用，这里是回车等路径的最后防线）。
     if (!connected) return;
-    const model = detail.model;
-    if (model && model.key !== providerId) onProviderChange(model.key);
-    if (model && detail.effort) {
-      const effort = effortChoices.find((choice) => choice.label === detail.effort)?.value;
-      if (effort) onModelSettingChange(modelKey(model.key, model.name), { effort });
-    }
-    onSend(text);
+    onSend(text, {
+      providerId: provider?.id ?? providerId,
+      model: provider?.model ?? "",
+      effort: activeEffort,
+      contextBudget: budget,
+    });
   };
 
   return (
     <div className="extreme-core-composer-wrap shrink-0">
       {/* `data-extreme-composer`：编辑 / 引用后页面靠它把光标送回输入框末尾。 */}
       <div data-extreme-composer className="extreme-core-composer mx-auto w-full max-w-[880px]">
-        {(focusLabel || (contextMode === "picked" && picked.length > 0)) && (
+        {/* 材料在任何范围下都会发出去，所以在任何范围下都要显示（发送前能看到）。 */}
+        {(focusLabel || picked.length > 0) && (
           <div className="flex flex-wrap items-center gap-1.5 px-1 pb-1.5">
             {focusLabel && (
               <span className="flex max-w-full items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-11 text-fg-muted">
@@ -378,9 +357,8 @@ export function ComposerPanel({
                 </button>
               </span>
             )}
-            {/* 自选上下文：勾选的材料摆在输入框上方，逐个可移除。 */}
-            {contextMode === "picked" &&
-              picked.map((item) => (
+            {/* 材料：摆在输入框上方，逐个可移除（发送前就知道模型会收到什么）。 */}
+            {picked.map((item) => (
                 <span
                   key={item.id}
                   className="flex max-w-[220px] items-center gap-1 rounded-full px-2 py-0.5 text-11 text-fg-muted"
@@ -427,11 +405,13 @@ export function ComposerPanel({
           }}
           models={models}
           defaultModel={providerId ?? provider?.id ?? ""}
+          modelValue={providerId ?? provider?.id ?? ""}
           onModelChange={(model) => {
             if (model.key !== providerId) onProviderChange(model.key);
           }}
           efforts={effortChoices.map((choice) => choice.label)}
           defaultEffort={defaultEffort}
+          effortValue={defaultEffort}
           onEffortChange={(label) => {
             const effort = effortChoices.find((choice) => choice.label === label)?.value;
             if (effort && provider) onModelSettingChange(modelKey(provider.id, provider.model), { effort });
@@ -451,6 +431,8 @@ export function ComposerPanel({
                 aria-haspopup="menu"
                 onClick={() => setUsageOpen((value) => !value)}
                 className="grid size-7 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                /* 超过预算 = 这段对话已经放不进模型窗口，本轮会裁剪最旧的部分。 */
+                style={usage && usagePercent > 100 ? { color: "rgb(var(--warning))" } : undefined}
               >
                 <span
                   aria-hidden="true"
@@ -474,7 +456,20 @@ export function ComposerPanel({
         />
 
         <div className="flex min-w-0 items-center gap-1.5 px-1 pt-1.5">
-          <ContextMenu
+          {/*
+           * 能力未登记就明说：后端不认识这个模型名时，思考强度只剩「默认」、
+           * 上下文只剩「自动」，不说清楚会被当成功能坏了。修的地方在设置页。
+           */}
+          {provider && !provider.capabilityKnown ? (
+            <span
+              className="rounded-full px-2 py-0.5 text-10"
+              style={{ background: EC.surfaceRaised, color: "rgb(var(--warning))" }}
+              title={t("该模型未登记能力：请到设置里填上下文窗口与思考强度档位")}
+            >
+              {t("能力未登记")}
+            </span>
+          ) : null}
+          <ContextSelects
             contextMode={contextMode}
             onContextModeChange={onContextModeChange}
             budget={budget}
@@ -526,7 +521,7 @@ export function ComposerPanel({
 
                 <div className="border-t border-line/60 pt-1.5">
                   <p className="text-10 font-medium tracking-wide text-fg-subtle uppercase">
-                    {t("本轮裁剪")}
+                    {t("上下文裁剪")}
                   </p>
                   <p className="mt-1 text-fg-muted">
                     {t("L1 瘦身 {{slimmed}} 条 · L2 折叠 {{folded}} 单元 · L3 丢弃 {{dropped}} 单元", {
@@ -536,7 +531,7 @@ export function ComposerPanel({
                     })}
                   </p>
                   <p className="mt-0.5 text-fg-subtle">
-                    {t("本轮 {{before}} → {{after}}", {
+                    {t("任务对话 {{before}} → 本轮实际发送 {{after}}", {
                       before: formatTokens(contextUsage.report.beforeTokens),
                       after: formatTokens(contextUsage.report.afterTokens),
                     })}
@@ -561,7 +556,7 @@ export function ComposerPanel({
               </div>
             )}
           </ComposerMenu>
-          <PermissionMenu permission={permission} onChange={onPermissionChange} />
+          <PermissionSelect permission={permission} onChange={onPermissionChange} />
           {/*
            * 这里不再重复显示「正在停止…」：进度由上方状态行统一说明，
            * 停止键本身就在右下角（`busy`），同一个状态不必说两遍。

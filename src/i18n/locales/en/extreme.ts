@@ -34,6 +34,7 @@ export default {
   "收起远程工作区": "Collapse remote workspace",
   "返回远程文件": "Back to remote files",
   "服务预览": "Service preview",
+  "打开浏览器失败": "Opening the browser failed",
   "请重新连接任务所属的服务器以浏览此目录。":
     "Reconnect the server this task belongs to in order to browse this folder.",
 
@@ -175,6 +176,48 @@ export default {
     "Still running — wait for it to finish or press Stop, then retry.",
   "任务仍在执行：等它结束或点「停止」后再发送。":
     "Still running — wait for it to finish or press Stop, then send.",
+  "这条任务已经结束：请重新发送。":
+    "This task has already finished — send the message again.",
+  "执行中发送": "Send while running",
+  "更新当前任务": "Update the current task",
+  "完成后发送": "Send after it finishes",
+  "已更新当前任务：下一步开始前生效。":
+    "Task updated — it takes effect before the next step.",
+  "已更新当前任务：下一步开始前生效。当前正在执行：{{step}}":
+    "Task updated — it takes effect before the next step. Now running: {{step}}",
+  "已收到补充要求：撤回待确认操作，按新要求重新评估。":
+    "Received the extra requirement — the pending action is withdrawn and will be re-evaluated.",
+  "已收到新的要求，撤回了这条待确认操作。":
+    "Received the new requirement; the pending action was withdrawn.",
+  "已排队：当前任务结束后自动发送。":
+    "Queued — it will be sent automatically when the current task finishes.",
+  "已排队：任务结束后发送「{{text}}」":
+    "Queued for after the task: “{{text}}”",
+  "结论": "Result",
+  "结论依据": "Evidence",
+  "已验证": "Verified",
+  "部分完成": "Partially done",
+  "需要补充信息": "Needs more information",
+  "继续执行": "Resume",
+  "已中断": "Interrupted",
+  "从检查点继续：先只读核对已完成的步骤，再继续未完成的部分。":
+    "Resuming from the checkpoint: verify the completed steps with read-only checks, then continue.",
+  "服务器未连接：重新连接后才能恢复任务。":
+    "The server is not connected; reconnect to resume the task.",
+  "任务仍在执行：等它结束或点「停止」后再恢复。":
+    "Still running — wait for it to finish or press Stop, then resume.",
+  "拟改动": "Planned changes",
+  "改动前备份": "Backup before change",
+  "建议：先 nginx -t 通过，再 reload 并确认站点返回 200":
+    "Suggested check: pass nginx -t, reload, then confirm the site returns 200",
+  "建议：用 systemctl status 与端口 / 健康检查核对服务":
+    "Suggested check: systemctl status plus a port / health check",
+  "建议：用 docker ps 与容器健康状态核对":
+    "Suggested check: docker ps and container health",
+  "建议：重新读取文件核对内容，并检查引用它的服务":
+    "Suggested check: re-read the file and inspect the services that use it",
+  "建议：执行后用只读命令核对结果（状态 / 端口 / 文件内容）":
+    "Suggested check: verify the result with read-only commands (status / port / file content)",
   "没有可重试的失败任务。": "There is no failed task to retry.",
   "正在重试：{{step}}": "Retrying: {{step}}",
   "上一次停在「{{step}}」。如果这一步涉及写文件、改配置或重启服务，先用只读命令核对远端当前状态，确认没有已经生效后再继续；不要盲目重复执行。":
@@ -247,6 +290,10 @@ export default {
   "本任务上下文与用量": "Context & usage for this task",
   "上下文用量": "Context usage",
   "约 {{percent}}% · {{used}} / {{budget}} token": "About {{percent}}% · {{used}} / {{budget}} tokens",
+  "任务对话 {{used}} / {{budget}} token（已占 {{percent}}%）":
+    "Task conversation {{used}} / {{budget}} tokens ({{percent}}% used)",
+  "任务对话 {{used}} / {{budget}} token（已占 {{percent}}%）；本轮实际发送 {{sent}}":
+    "Task conversation {{used}} / {{budget}} tokens ({{percent}}% used); sending {{sent}} this round",
   "正在计算上下文用量…": "Calculating context usage…",
   "暂无上下文用量": "No context usage yet",
   "用户目标": "User goal",
@@ -258,10 +305,11 @@ export default {
   "附件 {{n}} 个（内容已计入历史）": "{{n}} attachment(s), content counted in history",
   "计划步骤 {{n}} 步": "{{n}} plan step(s)",
   "工具调用 {{n}} 次": "{{n}} tool call(s)",
-  "本轮裁剪": "Pruning in this request",
+  "上下文裁剪": "Context pruning",
   "L1 瘦身 {{slimmed}} 条 · L2 折叠 {{folded}} 单元 · L3 丢弃 {{dropped}} 单元":
     "L1 slimmed {{slimmed}} · L2 folded {{folded}} unit(s) · L3 dropped {{dropped}} unit(s)",
-  "本轮 {{before}} → {{after}}": "This request {{before}} → {{after}}",
+  "任务对话 {{before}} → 本轮实际发送 {{after}}":
+    "Task conversation {{before}} → sending {{after}} this round",
   "本任务累计": "Task totals",
   "{{requests}} 次请求 · 输入 {{input}} · 输出 {{output}}":
     "{{requests}} request(s) · input {{input}} · output {{output}}",
@@ -276,6 +324,39 @@ export default {
   "暂无结果": "No result yet",
   "任务仍在执行，停止后才能删除。": "The task is still running; stop it before deleting.",
   "任务仍在执行，停止后才能删除": "The task is still running; stop it before deleting",
+  "服务器终端": "Server terminal",
+  "浏览器": "Browser",
+  "向外拖宽右栏": "Drag outward to widen the pane",
+  "向右拖动：窗口和右栏一起变宽，聊天区保持宽度；最大化时在窗口内加宽":
+    "Drag right: the window and pane grow together while the chat keeps its width; when maximized, the pane grows inside the window",
+  "网页区域太小或不可用": "The page area is too small or unavailable",
+  "网页区域超出窗口客户区": "The page area exceeds the window client area",
+  "网页区域太小或坐标无效": "The page area is too small or its position is invalid",
+  "后退": "Back",
+  "前进": "Forward",
+  "刷新": "Reload",
+  "加载中…": "Loading…",
+  "在 Chrome 中打开": "Open in Chrome",
+  "输入网址，回车打开": "Enter a URL and press Enter",
+  "浏览器地址": "Browser address",
+  "网址会在这里打开；也可以直接输入地址。":
+    "Pages open here; you can also type an address.",
+  "只支持 http / https 网址": "Only http / https URLs are supported",
+  "文件已不存在：{{path}}": "The file no longer exists: {{path}}",
+  "容器日志": "Container logs",
+  "服务日志": "Service logs",
+  "筛选日志来源": "Filter log sources",
+  "切换日志来源": "Change log source",
+  "筛选服务 / 容器": "Filter services / containers",
+  "没有运行中的服务": "No running services",
+  "重新开始监听": "Restart listening",
+  "服务器未连接：重新连接后才能查看实时日志。":
+    "Server not connected: reconnect to view live logs.",
+  "服务器未连接：重新连接后才能打开这个文件。":
+    "Server not connected: reconnect to open this file.",
+  "这是桌面客户端的本机地址；要访问服务器自己的 127.0.0.1，请先建立端口转发或改用可访问的地址。":
+    "This is the desktop client's loopback address; to reach the server's own 127.0.0.1, set up port forwarding or use an address reachable from here.",
+  "有新结果": "New result",
   "在右栏「附件」里勾选文件": "Tick files under Attachments on the right",
   "巡检这台服务器，给出结论": "Inspect this server and report back",
   "CPU、内存、磁盘与关键服务": "CPU, memory, disk and key services",
@@ -431,4 +512,136 @@ export default {
   "等待模型连接断开…": "Waiting for the model connection to close…",
   "服务器未连接，重新连接后才能发送": "Server not connected — reconnect to send",
   "服务器未连接：重新连接后才能发送。": "Server not connected: reconnect to send.",
+  // —— 首页 / 服务器右键进入超能，以及停止的兜底路径 ——
+  "最近的对话": "Recent conversations",
+  "还没有超能对话。进入超能模式问第一个问题，这里会出现记录。":
+    "No conversations yet. Ask the first question in Super Mode and it shows up here.",
+  "未命名对话": "Untitled conversation",
+  "还没有可用的服务器：先在服务器列表里添加一台，再进入超能模式。":
+    "No server available yet — add one in the server list, then open Super Mode.",
+  "这条对话已经不存在，可能已被删除。":
+    "This conversation no longer exists; it may have been deleted.",
+  "等待确认主机指纹": "Waiting for host fingerprint confirmation",
+  "无法连接到 {{name}}，超能模式打不开":
+    "Could not connect to {{name}} — Super Mode cannot open",
+  "这台服务器已经不在服务器列表里：无法自动重连，请从服务器列表重新进入。":
+    "This server is no longer in the server list — reconnect from there.",
+  "服务器未连接：发送与执行都不可用。":
+    "Server not connected — sending and execution are unavailable.",
+  "重新连接": "Reconnect",
+  "停止还没有被后端确认：可以再点一次停止，或强制结束这次运行。":
+    "The stop has not been confirmed — click stop again, or force-end this run.",
+  "强制结束": "Force end",
+  "后端已经没有这条运行。": "The backend no longer has this run.",
+  "这次运行已经不在后端：已按「已停止」收尾。":
+    "This run is no longer in the backend — marked as stopped.",
+  "停止请求已发出，但后端还没有确认。可以再点一次停止，或强制结束这次运行。":
+    "Stop was sent but the backend has not confirmed. Click stop again, or force-end this run.",
+  "已强制结束这次运行：后端不再跟踪它。已经发到服务器上的命令可能仍在执行，请先核对。":
+    "This run was force-ended: the backend no longer tracks it. Commands already sent to the server may still be running — verify first.",
+  "上一条运行已经结束：这句话按新任务发送。":
+    "The previous run has already ended — sending this as a new task.",
+  "上次运行已中断：后端没有这次运行的记录。":
+    "The last run was interrupted: the backend has no record of it.",
+  "连接已经更换，这次运行不会继续；需要时可「继续执行」。":
+    "The connection has changed, so this run will not continue; use Resume if needed.",
+  // -- 归属 / 队列 / 失败回执 -------------------------------------------------
+  "这一步没有继续：{{reason}}": "This step did not continue: {{reason}}",
+  "这一步已暂停：{{reason}}": "This step is paused: {{reason}}",
+  "这条对话已经不在了，这一步没有执行。":
+    "This conversation no longer exists, so the step was not executed.",
+  "这条对话没有关联服务器，这一步没有执行。":
+    "This conversation is not bound to a server, so the step was not executed.",
+  "这条对话的服务器连接已经重建，这一步停在原地：回到原对话重新确认后再继续。":
+    "The server connection was rebuilt. This step is parked — go back to the original conversation and confirm before continuing.",
+  "这条对话的服务器连接已断开，这一步停在原地：重新连接后再继续。":
+    "The server connection is gone. This step is parked — reconnect before continuing.",
+  "回复中断": "Reply interrupted",
+  "没有送达": "Not delivered",
+  "重发": "Resend",
+  "重试": "Retry",
+  "已停止：上面是停止前已经生成的内容。":
+    "Stopped: the text above is what was generated before stopping.",
+  "这次没有开始：{{reason}}": "This run did not start: {{reason}}",
+  "补充给当前任务": "Add to the current task",
+  "待发送队列": "Send queue",
+  "{{n}} 个附件": "{{n}} attachment(s)",
+  "这条消息没有发出：检查连接后可以重试。":
+    "This message was not sent. Check the connection and retry.",
+  "这条对话的服务器未连接：重新连接后才能发送。":
+    "This conversation's server is not connected. Reconnect to send.",
+
+  /* ---- 文件变更审阅 ---- */
+  "文件变更": "File changes",
+  "查看变更": "View changes",
+  "查看实际变更": "View actual changes",
+  "打开右栏的文件变更：服务器实际回读的差异":
+    "Open file changes in the right pane: the diff read back from the server",
+  "拟修改": "Proposed",
+  "已写入": "Written",
+  "无变化": "No change",
+  "写入失败": "Write failed",
+  "回读失败": "Read-back failed",
+  "已拒绝": "Rejected",
+  "已撤回": "Withdrawn",
+  "已作废": "Superseded",
+  "未采集差异": "Diff not captured",
+  "无法对比": "Cannot compare",
+  "部分成功": "Partially applied",
+  "未执行": "Not applied",
+  "暂无变更": "No changes",
+  "待确认的变更": "Pending changes",
+  "本次运行": "This run",
+  "运行 {{id}}": "Run {{id}}",
+  "选择运行": "Choose a run",
+  "筛选文件…": "Filter files…",
+  "按路径筛选文件": "Filter files by path",
+  "文件变更视图": "File change views",
+  "已更改的文件": "Changed files",
+  "选择文件": "Choose a file",
+  "{{n}} 个文件": "{{n}} file(s)",
+  "多台服务器": "Multiple servers",
+  "新文件": "New file",
+  "修改已有文件": "Modified file",
+  "拟修改：还没有执行": "Proposed — not executed yet",
+  "实际变更": "Actual changes",
+  "无差异可展示": "No diff to show",
+  "复制路径": "Copy path",
+  "复制备份路径": "Copy backup path",
+  "已复制": "Copied",
+  "已备份：{{path}}": "Backed up: {{path}}",
+  "计划备份：{{path}}": "Planned backup: {{path}}",
+  "在远程文件中打开": "Open in remote files",
+  "（无文件路径）": "(no file path)",
+  "正在加载差异…": "Loading diff…",
+  "没有逐行差异。": "No line-by-line diff.",
+  "没有差异。": "No differences.",
+  "写入完成，但回读内容与写入前完全一致：没有差异。":
+    "The write completed, but the file read back identical to before: no differences.",
+  "这次操作没有采集到可比对的正文。": "No comparable content was captured for this operation.",
+  "敏感内容已脱敏：Diff 里的 *** 是真实值的替代，不是原文。":
+    "Secrets are masked: *** in the diff replaces the real value, it is not the original text.",
+  "{{n}} 行未修改": "{{n}} unmodified lines",
+  "收起未修改的 {{n}} 行": "Collapse {{n}} unmodified lines",
+  "共 {{add}} 行新增、{{del}} 行删除": "{{add}} added, {{del}} removed",
+  "改动段": "Diff hunk",
+  "未采集": "Not captured",
+  "无 Diff": "No diff",
+  "没有匹配「{{filter}}」的文件。": "No files match \"{{filter}}\".",
+  "没有待确认的变更。": "No pending changes.",
+  "这次运行没有可展示的文件变更。": "This run has no file changes to show.",
+  "还没有对话：文件变更按对话归属，先开始一条任务。":
+    "No conversation yet: file changes belong to a conversation — start a task first.",
+  "这次对话还没有文件变更：AI 用 write_file 改文件时，这里会显示预览与实际差异。":
+    "This conversation has no file changes yet: when the AI uses write_file, the preview and the actual diff show up here.",
+  "普通 shell 命令（sed / tee / 脚本）拿不到明确目标与前后快照，不会生成 Diff。":
+    "Plain shell commands (sed / tee / scripts) have no clear target or before/after snapshot, so no diff is generated.",
+  "服务器未连接：这里展示的是历史快照，可以查看但不能执行。":
+    "Server not connected: this is a historical snapshot — readable, but nothing can be executed.",
+  "变更内容加载失败（可能已超出保留范围）":
+    "Failed to load the change — it may be outside the retention window",
+  "文件过大：没有逐行比较，改动的规模见上方状态。":
+    "File too large: it was not compared line by line — see the status above for the scale of the change.",
+  "原文件在确认前被外部修改：旧预览已作废，已按当前内容生成新的预览，请重新确认。":
+    "The original file changed before you confirmed: the old preview is void, a new preview was generated from the current content — please confirm again.",
 } as const;

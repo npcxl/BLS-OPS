@@ -1,14 +1,19 @@
 /**
  * 应用内统一的下拉选择器。
  *
- * 为什么不用原生 `<select>`：WebView 展开的选项列表由系统绘制，白底、
- * 系统字体、蓝色高亮，和这套深色 UI 完全脱节（数据库模块一屏好几个下拉
- * 时尤其明显）。这里用 button + listbox 自己画，触发器与 `selectClass`
- * 同一套 token，展开面板用 `surface-2` / `line` / `accent`。
+ * 外观与手感**复制自**超能模式输入区的 Prompt Bar（`prompt-bar.tsx` 里的
+ * 模型选择）：
+ * - 收起态是轻量按钮：`menu` 档无边框，hover 只上一层淡底；
+ * - 展开态是 12px 圆角浮层，36px 选项行、13px medium 主文案；
+ * - 高亮不是给某一行刷底色，而是一块光晕在行间平滑移动（220ms）；
+ * - 选中靠右侧勾，不靠 accent 色块 —— 深色下不会出现一条亮条；
+ * - 面板 4px + 0.98 缩放入场，方向跟随展开方向。
  *
- * 面板通过 portal 挂到 `body` 并用 fixed 定位：Modal、表格工具栏这些
- * 容器都有 `overflow`，绝对定位会被裁剪；fixed + portal 才能保证下拉
- * 永远完整显示，且不会被 `overflow-y-auto` 截断。
+ * 两处必要适配（不改 Prompt Bar 的视觉）：
+ * 1. 面板 portal 到 `body` + fixed：Modal、表格工具栏这些容器都有 `overflow`，
+ *    绝对定位会被裁掉；
+ * 2. 触发器分档：`field`（默认）与 Input 同高、留一条淡边，表单里看得出是
+ *    控件；`menu`（页面顶栏入口）与 Prompt Bar 完全一致。
  *
  * 行为对齐原生 select：
  * - 点击外部 / Esc / 滚动 / 窗口 resize 关闭；
@@ -40,7 +45,15 @@ interface MenuPosition {
   /** 面板顶部（向下展开时）或底部（向上展开时）的 fixed 坐标。 */
   top?: number;
   bottom?: number;
+  /** 向上展开：入场方向与变形原点都要翻过来。 */
+  dropUp: boolean;
 }
+
+/** 与 Prompt Bar 同一组关键帧：从触发方向缩进来 4px。 */
+const STYLE = `
+@keyframes select-pop-up { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+@keyframes select-pop-down { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+`;
 
 export function Select({
   value,
@@ -55,6 +68,9 @@ export function Select({
   id,
   testId,
   invalid = false,
+  variant = "field",
+  tone = "default",
+  menuMinWidth = 180,
 }: {
   value: string;
   options: SelectOption[];
@@ -68,8 +84,7 @@ export function Select({
    *
    * **不再提供 `height` / `itemHeight`**：以前每个页面自己传 42/38，
    * 结果是同一个弹窗里下拉比输入框高 12px。要更高就调公共档位。
-   * `lg` 的**选项行**仍然是 34px 高（带图标/说明的选项需要），这是选项
-   * 语义，不是触发器尺寸。
+   * `menu` 档固定 28px（与输入区底栏同一行高），不受此值影响。
    */
   size?: ControlSize;
   className?: string;
@@ -78,6 +93,23 @@ export function Select({
   id?: string;
   /** 端到端测试用的定位锚点（挂到触发器上）。 */
   testId?: string;
+  /**
+   * 外观档位：
+   * - `field`（默认）表单字段：与 Input 同一套边框 / 高度 / 字号。
+   * - `menu` 轻量入口（页面顶栏的服务器 / 环境之类）：无边框透明底，
+   *   与输入区「模型 / 思考强度」按钮完全一致。
+   */
+  variant?: "field" | "menu";
+  /**
+   * 触发器语气。`warning` = 当前值需要提醒（例如超能模式的「完全权限」），
+   * 只在 `menu` 档生效；`field` 档由 `invalid` 表达。
+   */
+  tone?: "default" | "warning";
+  /**
+   * 面板最小宽度（默认 180）。选项带说明文字时（`hint`）调大，
+   * 否则说明会被 `truncate` 切掉。
+   */
+  menuMinWidth?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -85,6 +117,10 @@ export function Select({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  /** 跟随光标（键盘 / 鼠标）移动的高亮块，见下方 `useLayoutEffect`。 */
+  const glowRef = useRef<HTMLSpanElement | null>(null);
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const lastOpen = useRef(false);
   const generatedId = useId();
   const listId = `select-list-${id ?? generatedId}`;
   /**
@@ -103,12 +139,16 @@ export function Select({
     const spaceBelow = window.innerHeight - rect.bottom - gap - 8;
     const spaceAbove = rect.top - gap - 8;
     const dropUp = spaceBelow < 200 && spaceAbove > spaceBelow;
-    const maxHeight = Math.max(96, Math.min(260, dropUp ? spaceAbove : spaceBelow));
-    const width = Math.min(Math.max(rect.width, 160), Math.max(160, window.innerWidth - rect.left - 8));
+    const maxHeight = Math.max(96, Math.min(288, dropUp ? spaceAbove : spaceBelow));
+    const width = Math.min(
+      Math.max(rect.width, menuMinWidth),
+      Math.max(menuMinWidth, window.innerWidth - rect.left - 8),
+    );
     return {
       left: Math.min(rect.left, window.innerWidth - width - 8),
       width,
       maxHeight,
+      dropUp,
       ...(dropUp
         ? { bottom: window.innerHeight - rect.top + gap }
         : { top: rect.bottom + gap }),
@@ -164,6 +204,35 @@ export function Select({
     // `position`：面板是 portal + fixed，第一次 render 时还没挂载。
   }, [activeIndex, open, position]);
 
+  /**
+   * 光晕：**整块移动**，不是逐行切换底色（Prompt Bar 的做法）。
+   *
+   * 首次打开时先关掉过渡，否则会从面板顶部"飞"到选中行。
+   */
+  useLayoutEffect(() => {
+    const glow = glowRef.current;
+    if (!glow || !open) return;
+    const row = rowRefs.current[activeIndex];
+    if (!row) {
+      glow.style.opacity = "0";
+      return;
+    }
+    const fresh = !lastOpen.current;
+    lastOpen.current = true;
+    if (fresh) glow.style.transition = "none";
+    glow.style.top = `${row.offsetTop}px`;
+    glow.style.height = `${row.offsetHeight}px`;
+    glow.style.opacity = "1";
+    if (fresh) {
+      void glow.offsetHeight;
+      glow.style.transition = "";
+    }
+  }, [open, activeIndex, position, options.length]);
+
+  useEffect(() => {
+    if (!open) lastOpen.current = false;
+  }, [open]);
+
   const openMenu = () => {
     if (disabled) return;
     const index = options.findIndex((option) => option.value === value);
@@ -196,11 +265,8 @@ export function Select({
   const menu = open && position && (
     <div
       ref={listRef}
-      id={listId}
-      role="listbox"
       tabIndex={-1}
-      aria-label={ariaLabel}
-      className="select-menu fixed min-w-[160px] overflow-y-auto rounded-[8px] border border-line bg-surface-2 p-1 shadow-xl shadow-black/40 outline-none animate-[ops-pop_120ms_ease-out]"
+      className="select-menu fixed overflow-y-auto rounded-[12px] p-1 text-fg outline-none"
       style={{
         left: position.left,
         width: position.width,
@@ -209,6 +275,12 @@ export function Select({
         bottom: position.bottom,
         // 高于所在弹窗（含嵌套），低于右键菜单与 tooltip。
         zIndex: OVERLAY_Z.select + Math.min(layer.depth, 8) * 2,
+        background: "rgb(var(--surface-2))",
+        boxShadow: "0 10px 30px -10px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.08)",
+        transformOrigin: position.dropUp ? "bottom left" : "top left",
+        animation: position.dropUp
+          ? "select-pop-up 180ms cubic-bezier(0.23, 1, 0.32, 1) both"
+          : "select-pop-down 180ms cubic-bezier(0.23, 1, 0.32, 1) both",
       }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown") {
@@ -217,6 +289,17 @@ export function Select({
         } else if (event.key === "ArrowUp") {
           event.preventDefault();
           move(-1);
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          setActiveIndex(options.findIndex((option) => !option.disabled));
+        } else if (event.key === "End") {
+          event.preventDefault();
+          for (let i = options.length - 1; i >= 0; i -= 1) {
+            if (!options[i]?.disabled) {
+              setActiveIndex(i);
+              break;
+            }
+          }
         } else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           choose(activeIndex);
@@ -228,40 +311,58 @@ export function Select({
         }
       }}
     >
-      {options.length === 0 && <p className="px-2 py-1.5 text-11 text-fg-subtle">—</p>}
-      {options.map((option, index) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value || index}
-            type="button"
-            role="option"
-            data-index={index}
-            aria-selected={active}
-            disabled={option.disabled}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-[5px] px-2 text-left text-12 transition-colors",
-              // lg 的行更高：带引擎图标 + 版本号时 26px 会贴在一起
-              size === "lg" ? "min-h-[34px] py-[9px]" : "py-[6px]",
-              active ? "bg-accent/10 text-accent" : "text-fg",
-              !option.disabled && "hover:bg-surface-hover",
-              option.disabled && "cursor-not-allowed opacity-40",
-              activeIndex === index && !option.disabled && "bg-surface-hover",
-            )}
-            onMouseEnter={() => setActiveIndex(index)}
-            onClick={() => choose(index)}
-          >
-            {option.icon}
-            <span className="min-w-0 flex-1 truncate">{option.label}</span>
-            {option.hint && (
-              <span className="max-w-[150px] shrink-0 truncate text-10 text-fg-subtle">
-                {option.hint}
+      <style>{STYLE}</style>
+      {/* 高亮光晕：绝对定位在面板内容里，随 activeIndex 平移。 */}
+      <span
+        ref={glowRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-1 rounded-[8px] bg-fg/8 opacity-0 [transition:top_220ms_cubic-bezier(0.23,1,0.32,1),height_220ms_cubic-bezier(0.23,1,0.32,1),opacity_150ms_ease] motion-reduce:[transition:opacity_150ms_ease]"
+      />
+      {/* listbox 只包选项，光晕与关键帧留在外层，语义树里不出现装饰元素。 */}
+      <div id={listId} role="listbox" aria-label={ariaLabel}>
+        {options.length === 0 && (
+          <p className="flex h-9 items-center px-2 text-11 text-fg-muted">—</p>
+        )}
+        {options.map((option, index) => {
+          const active = option.value === value;
+          return (
+            <button
+              key={option.value || index}
+              ref={(element) => {
+                rowRefs.current[index] = element;
+              }}
+              type="button"
+              role="option"
+              data-index={index}
+              aria-selected={active}
+              disabled={option.disabled}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => choose(index)}
+              className={cn(
+                "relative z-[1] flex min-h-9 w-full cursor-pointer items-center gap-2 rounded-[8px] border-0 bg-transparent px-2 py-1.5 text-left text-inherit outline-none [font:inherit] [-webkit-tap-highlight-color:transparent]",
+                option.disabled && "cursor-not-allowed opacity-40",
+              )}
+            >
+              {option.icon && <span className="flex shrink-0 items-center">{option.icon}</span>}
+              <span className="min-w-0 flex-1 truncate text-12 font-medium">{option.label}</span>
+              {option.hint && (
+                <span className="max-w-[150px] shrink-0 truncate text-10 text-fg-subtle">
+                  {option.hint}
+                </span>
+              )}
+              <span
+                className={cn(
+                  "inline-flex w-4 shrink-0 justify-center transition-opacity duration-150",
+                  active ? "opacity-100" : "opacity-0",
+                )}
+              >
+                <Check size={13} strokeWidth={2.5} aria-hidden="true" />
               </span>
-            )}
-            {active && <Check size={11} className="shrink-0 text-accent" />}
-          </button>
-        );
-      })}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 
@@ -280,17 +381,33 @@ export function Select({
         aria-invalid={invalid || undefined}
         title={title ?? selected?.label}
         className={cn(
-          // 触发器与 Input 同一份基类：高度、边框、圆角、焦点、禁用完全一致。
-          controlBase,
-          CONTROL_HEIGHT[size],
-          CONTROL_TEXT[size],
-          "flex w-full items-center justify-between gap-1 px-2 text-left",
-          open
-            ? "border-accent/70 ring-1 ring-accent/20"
-            : invalid
-              ? "border-danger/70"
-              : "border-line",
-          disabled && "cursor-not-allowed",
+          variant === "menu"
+            ? cn(
+                // Prompt Bar 的模型按钮：无边框、透明底，hover / 打开只上一层淡底。
+                "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-[8px] px-2 text-11 font-medium transition-colors",
+                tone === "warning"
+                  ? cn(
+                      "text-[rgb(var(--warning))] ring-1 ring-inset ring-warning/35",
+                      open ? "bg-warning/12" : "hover:bg-warning/12",
+                    )
+                  : cn(
+                      open ? "bg-fg/8 text-fg" : "text-fg-muted hover:bg-fg/8 hover:text-fg",
+                    ),
+                disabled && "cursor-not-allowed opacity-50",
+              )
+            : cn(
+                // 触发器与 Input 同一份基类：高度、边框、圆角、焦点、禁用完全一致。
+                controlBase,
+                CONTROL_HEIGHT[size],
+                CONTROL_TEXT[size],
+                "flex w-full items-center justify-between gap-1 px-2 text-left",
+                open
+                  ? "border-accent/60 hover:border-accent/60"
+                  : invalid
+                    ? "border-danger/70"
+                    : "border-line",
+                disabled && "cursor-not-allowed",
+              ),
         )}
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={(event) => {
@@ -314,11 +431,8 @@ export function Select({
           </span>
         </span>
         <ChevronDown
-          size={size === "sm" ? 11 : 12}
-          className={cn(
-            "shrink-0 text-fg-subtle transition-transform duration-150",
-            open && "rotate-180",
-          )}
+          size={variant === "menu" ? 11 : size === "sm" ? 11 : 12}
+          className="shrink-0 text-fg-subtle"
         />
       </button>
 

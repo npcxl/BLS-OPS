@@ -31,6 +31,17 @@ fn status_from_text(text: &str) -> AiTaskStatus {
     }
 }
 
+/// `NULL` = 没声明；非空 TEXT = JSON 数组。
+///
+/// 解析失败按"没声明"处理：坏数据不能让整条配置读不出来 —— 内置能力表仍可兜底。
+fn json_list<T: serde::de::DeserializeOwned>(value: Option<String>) -> Option<Vec<T>> {
+    let text = value?;
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    serde_json::from_str(&text).ok()
+}
+
 fn provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiProviderConfig> {
     Ok(AiProviderConfig {
         id: row.get("id")?,
@@ -44,6 +55,9 @@ fn provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AiProviderConf
         allow_insecure_http: row.get::<_, i64>("allow_insecure_http")? != 0,
         timeout_seconds: row.get("timeout_seconds")?,
         max_output_tokens: row.get("max_output_tokens")?,
+        context_window: row.get("context_window")?,
+        context_budgets: json_list(row.get("context_budgets")?),
+        reasoning_efforts: json_list(row.get("reasoning_efforts")?),
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -108,8 +122,9 @@ pub fn upsert_provider(conn: &Connection, config: &AiProviderConfig) -> Result<(
         r#"
         INSERT INTO ai_providers (
             id, name, provider_kind, base_url, model, api_key_ref, enabled, is_default,
-            allow_insecure_http, timeout_seconds, max_output_tokens, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            allow_insecure_http, timeout_seconds, max_output_tokens, created_at, updated_at,
+            context_window, context_budgets, reasoning_efforts
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             provider_kind=excluded.provider_kind,
@@ -121,6 +136,9 @@ pub fn upsert_provider(conn: &Connection, config: &AiProviderConfig) -> Result<(
             allow_insecure_http=excluded.allow_insecure_http,
             timeout_seconds=excluded.timeout_seconds,
             max_output_tokens=excluded.max_output_tokens,
+            context_window=excluded.context_window,
+            context_budgets=excluded.context_budgets,
+            reasoning_efforts=excluded.reasoning_efforts,
             updated_at=excluded.updated_at
         "#,
         params![
@@ -137,6 +155,15 @@ pub fn upsert_provider(conn: &Connection, config: &AiProviderConfig) -> Result<(
             config.max_output_tokens,
             config.created_at,
             config.updated_at,
+            config.context_window,
+            config
+                .context_budgets
+                .as_ref()
+                .map(|value| serde_json::to_string(value).unwrap_or_default()),
+            config
+                .reasoning_efforts
+                .as_ref()
+                .map(|value| serde_json::to_string(value).unwrap_or_default()),
         ],
     )?;
     Ok(())

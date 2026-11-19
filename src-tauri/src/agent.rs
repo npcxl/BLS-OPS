@@ -7,6 +7,7 @@
 //! 分层：
 //! * [`protocol`] —— 数据结构、风险枚举、脱敏/截断、工具块解析（纯函数，可单测）
 //! * [`tools`]    —— 工具名 + 参数 → 唯一一份命令文本（含 cwd 包装与备份）
+//! * [`changes`]  —— 文件变更记录：回读的真实内容 → 指纹 → 行级 Diff（纯函数，可单测）
 //! * [`runner`]   —— 多轮循环、事件、审批挂起、取消与上限（**跑在 Rust 侧**，
 //!                  WebView 收起或刷新都不会中断正在长的命令）
 //! * [`state`]    —— 运行中的任务注册表（也是前端重进时恢复卡片的快照来源）
@@ -15,15 +16,20 @@
 //! 而 Agent 执行的是**模型提出的任意命令**。这个模块就是那个例外的唯一边界：
 //! 所有校验、风险判定、备份与 cwd 包装都在这一个目录里，不允许散落到别处。
 
+mod changes;
 mod protocol;
 mod runner;
 mod state;
 mod tools;
 
+pub use changes::{
+    ChangeRegistry, FileChangeDetail, FileChangeSummary, FileDiff, FileSnapshot, SnapshotView,
+    MAX_SNAPSHOT_BYTES,
+};
 pub use protocol::{
-    parse_tool_calls, redact, strip_tool_calls, tail_truncate, tool_prompt, AgentEvent, AgentStep,
-    ToolCall, ToolResult, ToolRisk, MAX_COMMAND_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS,
-    MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
+    parse_tool_calls, redact, strip_tool_calls, tail_truncate, tool_prompt, AgentEvent,
+    AgentOutcome, AgentStep, ToolCall, ToolResult, ToolRisk, MAX_COMMAND_SECONDS, MAX_ROUNDS,
+    MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
 };
 pub use runner::{spawn_agent, AgentInput, AgentTurn};
 pub use state::{AgentRegistry, AgentSnapshot, ContextUsage, TokenUsage};

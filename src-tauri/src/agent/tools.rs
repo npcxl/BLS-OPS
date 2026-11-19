@@ -149,6 +149,10 @@ pub struct PlannedTool {
     pub rollback: Option<String>,
     /// `write_file` 覆盖已有文件时预期的备份路径。
     pub backup_path: Option<String>,
+    /// `write_file` 这次明确提交的完整新内容（变更记录的 `proposedAfter`）。
+    ///
+    /// 只用于生成预览与 Diff；命令体另行 base64 编码，两者来自同一份参数。
+    pub write_content: Option<String>,
 }
 
 fn string_arg(args: &Value, key: &str) -> Result<String, String> {
@@ -217,6 +221,8 @@ pub fn has_sudo(command: &str) -> bool {
             segment
                 .split_whitespace()
                 .find(|token| !token.contains('='))
+                // 段首残留引号：`'sudo apt …` 也是提权，不能因为多了个引号就放过。
+                .map(|token| token.trim_start_matches(['\'', '"', '\\']))
                 == Some("sudo")
         })
 }
@@ -285,12 +291,173 @@ fn push_segment(out: &mut Vec<String>, current: &mut String) {
     current.clear();
 }
 
-/// 去掉 `FOO=bar` 这类前置环境变量赋值。
+/// 去掉 `FOO=bar` 这类前置环境变量赋值，并剥掉词首引号 / 反斜杠。
+///
+/// 最后这一步是必须的：`sh -c '…sed 's/a/b/' …'` 这种**单引号内再出现单引号**的
+/// 命令，切段后段首会残留一个 `'`，`first_word` 就成了 `'grep` —— 只读白名单
+/// 全部失配，整条命令被当成"不认识的写操作"，再叠上 /etc 规则就成了
+/// 「危险 · 修改系统配置」。命令是模型拼的，这种引号残留很常见。
 fn first_word(segment: &str) -> &str {
     segment
         .split_whitespace()
         .find(|token| !token.contains('='))
+        .map(|token| token.trim_start_matches(['\'', '"', '\\']))
         .unwrap_or("")
+}
+
+/// 取第一个词，返回 `(词, 剩下的原文)`。原文要保持原样（引号、空格都要留着，
+/// 后面要按引号取 `sh -c '…'` 的正文）。
+fn take_word(text: &str) -> (&str, &str) {
+    let trimmed = text.trim_start();
+    match trimmed.find(char::is_whitespace) {
+        Some(at) => (&trimmed[..at], &trimmed[at..]),
+        None => (trimmed, ""),
+    }
+}
+
+/// 去掉包在整段外面的一层引号（`'…'` / `"…"`）。
+fn unquote(text: &str) -> String {
+    let trimmed = text.trim();
+    for quote in ['\'', '"'] {
+        if trimmed.len() >= 2 && trimmed.starts_with(quote) && trimmed.ends_with(quote) {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn is_shell_word(word: &str) -> bool {
+    matches!(
+        word,
+        "sh" | "bash" | "ash" | "dash" | "zsh" | "/bin/sh" | "/bin/bash" | "/bin/ash" | "/bin/dash"
+    )
+}
+
+/// `docker exec <容器> <命令…>` 里**真正在做事**的那条命令。
+///
+/// `docker exec` 本身只是"进容器跑一条命令"，改不改服务器取决于里面那条：
+/// `docker exec web sh -c 'grep -n foo /etc/nginx/nginx.conf'` 是纯读，
+/// `docker exec web sed -i …` 才是写。返回 `None` = 没给命令（交互式 shell）
+/// 或这条不是 `docker exec`，交给后面的规则按"要确认"处理。
+fn docker_exec_inner(segment: &str) -> Option<String> {
+    let (first, rest) = take_word(segment);
+    if !first.eq_ignore_ascii_case("docker") {
+        return None;
+    }
+    let (second, mut rest) = take_word(rest);
+    if !second.eq_ignore_ascii_case("exec") {
+        return None;
+    }
+
+    // 选项都在容器名之前；带值的选项（`-u root` / `--env A=1`）要多跳一个词。
+    loop {
+        let (word, left) = take_word(rest);
+        if word.is_empty() {
+            return None;
+        }
+        if !word.starts_with('-') {
+            break;
+        }
+        rest = left;
+        if matches!(
+            word,
+            "-u" | "--user" | "-e" | "--env" | "-w" | "--workdir" | "--detach-keys"
+        ) {
+            let (_value, left) = take_word(rest);
+            rest = left;
+        }
+    }
+
+    // 容器名之后就是要跑的命令。
+    let (container, left) = take_word(rest);
+    if container.is_empty() {
+        return None;
+    }
+    let inner = left.trim();
+    if inner.is_empty() {
+        return None;
+    }
+
+    // `sh -c '<正文>'`：取引号里的正文（切段时引号是保留的）。
+    let (shell, after_shell) = take_word(inner);
+    if is_shell_word(shell) {
+        let (flag, payload) = take_word(after_shell);
+        if matches!(flag, "-c" | "-lc" | "-ic") {
+            let payload = payload.trim();
+            return if payload.is_empty() {
+                None
+            } else {
+                Some(unquote(payload))
+            };
+        }
+        // 交互式 shell：等于"没给命令"，不猜。
+        return None;
+    }
+    Some(inner.to_string())
+}
+
+/// 去掉只起语法作用的开头，返回**真正要执行**的那一段。
+///
+/// `for h in a b c; do …; done` 里的 `for` / `do` / `done` 都不是可执行文件：
+/// 按"未知命令"处理会把一条纯读的循环说成"影响未知"（用户看到的
+/// 「执行 for · 影响未知」就是这么来的）。返回 `None` = 整段只是语法。
+fn strip_syntax(segment: &str) -> Option<&str> {
+    let mut rest = segment.trim();
+    loop {
+        // `!` / `(` / `{` 是前缀，不是命令名。
+        let bare = rest.trim_start_matches(['!', '(', '{']).trim_start();
+        if bare.len() != rest.len() {
+            rest = bare;
+            if rest.is_empty() {
+                return None;
+            }
+        }
+        let (word, left) = take_word(rest);
+        if word.is_empty() {
+            return None;
+        }
+        let tail = left.trim();
+        match word {
+            // 结句关键字：后面没东西 = 纯语法（`done` / `fi` / `esac`）。
+            "done" | "fi" | "esac" | "}" | ")" | ";;" => {
+                if tail.is_empty() {
+                    return None;
+                }
+                rest = tail;
+            }
+            // 引导关键字：跳过它，看后面真正跑的那条。
+            "do" | "then" | "else" | "elif" | "time" => {
+                if tail.is_empty() {
+                    return None;
+                }
+                rest = tail;
+            }
+            // 循环头本身不执行命令（`for x in a b c` / `for ((…))`）。
+            "for" | "select" => return None,
+            // `while <条件>` / `until <条件>` / `if <条件>`：条件就是命令。
+            "while" | "until" | "if" => {
+                if tail.is_empty() {
+                    return None;
+                }
+                rest = tail;
+            }
+            _ => {
+                // `< /tmp/in`：输入重定向不写任何东西，跳过它的操作数。
+                if word.starts_with('<') && !word.starts_with("<(") {
+                    if tail.is_empty() {
+                        return None;
+                    }
+                    let (_, after) = take_word(tail);
+                    if after.trim().is_empty() {
+                        return None;
+                    }
+                    rest = after.trim();
+                    continue;
+                }
+                return Some(rest);
+            }
+        }
+    }
 }
 
 fn is_read_command(first: &str, second: &str) -> bool {
@@ -375,6 +542,15 @@ fn is_read_command(first: &str, second: &str) -> bool {
         "redis-cli",
         "mysql",
         "psql",
+        // shell 内建：只判断/读取，不改变服务器上的任何东西。
+        "[",
+        "[[",
+        "test",
+        "true",
+        "false",
+        ":",
+        "read",
+        "wait",
     ];
     if !READ.contains(&first) {
         return false;
@@ -397,7 +573,28 @@ fn is_read_command(first: &str, second: &str) -> bool {
 
 /// 单个命令段的风险。
 fn classify_segment(segment: &str) -> ToolRisk {
-    let lower = segment.to_ascii_lowercase();
+    match strip_syntax(segment) {
+        // 整段只是 shell 语法（`done` / `fi` / `for x in …`）。循环头里仍可能
+        // 藏 `$(…)`：`for x in $(rm -rf /tmp/x)` 照样按写算。
+        None => {
+            return if has_execution_escape(&segment.to_ascii_lowercase()) {
+                ToolRisk::Write
+            } else {
+                ToolRisk::Read
+            }
+        }
+        // 脱掉了 `do` / `then` / `if` / `!` 这类前缀：按剩下那条命令判。
+        Some(body) if body != segment.trim() => return classify_segment(body),
+        Some(_) => {}
+    }
+
+    // 空白先归一化成单空格：`systemctl  restart nginx` 与 `docker compose -f x up`
+    // 都要能和下面的模式对上，否则一个多余的空白就能把写操作判成只读。
+    let lower: String = segment
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let words: Vec<&str> = segment.split_whitespace().collect();
     let first = first_word(segment);
     let second = words.get(1).copied().unwrap_or("");
@@ -434,6 +631,16 @@ fn classify_segment(segment: &str) -> ToolRisk {
     ) || first.starts_with("mkfs");
     if dangerous_first {
         return ToolRisk::Danger;
+    }
+    /*
+     * `docker exec` 按**里面那条命令**定级。
+     *
+     * 以前它被写死成"写"，再加上 /etc 的放大规则，`docker exec web sh -c
+     * 'grep … /etc/nginx/nginx.conf'` 这种纯读的命令也会被标成"危险 · 修改
+     * 系统配置"，用户每次都得点一次「允许本次」。
+     */
+    if let Some(inner) = docker_exec_inner(segment) {
+        return classify_shell(&inner);
     }
     if first == "dd"
         && (lower.contains("of=/dev/")
@@ -519,6 +726,7 @@ fn classify_segment(segment: &str) -> ToolRisk {
     const WRITE_PATTERNS: &[&str] = &[
         "sed -i",
         "sed --in-place",
+        "perl -i",
         "docker run",
         "docker rm",
         "docker rmi",
@@ -527,6 +735,7 @@ fn classify_segment(segment: &str) -> ToolRisk {
         "docker kill",
         "docker prune",
         "docker exec",
+        "docker cp ",
         "docker compose up",
         "docker compose down",
         "docker compose restart",
@@ -543,7 +752,10 @@ fn classify_segment(segment: &str) -> ToolRisk {
         "systemctl disable",
         "systemctl mask",
         "systemctl unmask",
+        "systemctl edit",
         "nginx -s reload",
+        "nginx -s stop",
+        "nginx -s quit",
         "apt install",
         "apt-get install",
         "apt remove",
@@ -574,6 +786,28 @@ fn classify_segment(segment: &str) -> ToolRisk {
         "-exec mv",
         "truncate -s",
     ];
+    /*
+     * `docker compose` 的子命令在参数里：`docker compose -f docker-compose.yml up -d`
+     * 是运维最常用的写法，但固定串 `"docker compose up"` 会被中间的 `-f …` 绕过，
+     * 整条命令落进只读白名单。按"跳过选项 + 看子命令"判。
+     */
+    if let Some(sub) = compose_subcommand(segment) {
+        const COMPOSE_READ: &[&str] = &[
+            "ps", "logs", "config", "top", "images", "ls", "list", "version", "help", "port",
+            "events", "watch",
+        ];
+        const COMPOSE_WRITE: &[&str] = &[
+            "up", "down", "restart", "rm", "pull", "build", "push", "start", "stop", "create",
+            "scale", "exec", "run", "pause", "unpause", "kill", "cp", "wait", "attach",
+        ];
+        if COMPOSE_WRITE.contains(&sub.as_str()) {
+            return write_risk;
+        }
+        if !COMPOSE_READ.contains(&sub.as_str()) {
+            // 认不出的子命令按写处理：宁可多问一次。
+            return ToolRisk::Write;
+        }
+    }
     let padded = format!("{lower} ");
     for token in WRITE_PATTERNS {
         if padded.contains(token) {
@@ -616,6 +850,50 @@ fn classify_segment(segment: &str) -> ToolRisk {
         // 不认识的命令默认要确认：宁可多问一次，也不要静默改服务器。
         ToolRisk::Write
     }
+}
+
+/// `docker compose [-f file] [-p name] <子命令>` 里的子命令。
+///
+/// 选项可以夹在 `compose` 与子命令之间，且多数选项带一个值（`-f docker-compose.yml`），
+/// 因此先跳过选项再取第一个裸词。不是 compose 命令时返回 `None`。
+fn compose_subcommand(segment: &str) -> Option<String> {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    let mut index = 0usize;
+    if words.first()?.eq_ignore_ascii_case("docker") {
+        index = 1;
+    }
+    let head = words.get(index)?;
+    if !head.eq_ignore_ascii_case("compose") && !head.eq_ignore_ascii_case("docker-compose") {
+        return None;
+    }
+    index += 1;
+
+    const WITH_VALUE: &[&str] = &[
+        "-f",
+        "--file",
+        "-p",
+        "--project-name",
+        "-c",
+        "--context",
+        "--env-file",
+        "--profile",
+        "--project-directory",
+        "--ansi",
+        "--progress",
+        "--parallel",
+    ];
+    while let Some(word) = words.get(index) {
+        if WITH_VALUE.contains(&word.to_ascii_lowercase().as_str()) {
+            index += 2;
+            continue;
+        }
+        if word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(word.to_ascii_lowercase());
+    }
+    None
 }
 
 /// `curl` 的**写**用法：改方法、带请求体、上传文件、把响应写进文件。
@@ -1010,6 +1288,75 @@ fn service_change(lower: &str) -> Option<(&'static str, String)> {
     None
 }
 
+/// 命令是否**真的会写** `/etc` 下的文件。
+///
+/// 只看"出现了 `/etc/`"会把 `grep -r foo /etc/nginx` 说成"修改系统配置" ——
+/// 影响说明必须对得上实际后果，否则用户只能一条条点开自己看。
+fn writes_etc(command: &str) -> bool {
+    let Some(segments) = split_segments(command) else {
+        // 拆不开（引号没闭合）：命令本身已经要确认，但**不能因为出现 `/etc/`
+        // 就说"修改系统配置"** —— `docker exec nginx sh -c 'grep … /etc/nginx'`
+        // 这类只读查询会因此背上一句与事实相反的说明。只认明确的写特征。
+        let lower = command.to_ascii_lowercase();
+        return [
+            "sed -i",
+            "sed --in-place",
+            "perl -i",
+            "tee /etc/",
+            "tee -a /etc/",
+            " > /etc/",
+            " >> /etc/",
+            ">/etc/",
+            ">>/etc/",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    };
+    segments.iter().any(|segment| {
+        let lower = segment.to_ascii_lowercase();
+        if !lower.contains("/etc/") {
+            return false;
+        }
+        // 纯读的那一段（grep / cat / head…）不算。
+        if classify_segment(segment) == ToolRisk::Read {
+            return false;
+        }
+        let first = first_word(segment);
+        // 这些动词后面出现的路径就是"被写的那个"。
+        const ANY_PATH: &[&str] = &[
+            "rm", "tee", "touch", "mkdir", "rmdir", "chmod", "chown", "chgrp", "truncate",
+            "setfacl", "chattr", "patch",
+        ];
+        if ANY_PATH.contains(&first) {
+            return true;
+        }
+        // `cp 源 目标` / `mv 源 目标`：只有最后那个参数会被写。
+        const LAST_PATH: &[&str] = &["cp", "mv", "ln", "install", "rsync", "dd"];
+        if LAST_PATH.contains(&first) {
+            return segment
+                .split_whitespace()
+                .last()
+                .map(|last| last.contains("/etc/"))
+                .unwrap_or(false);
+        }
+        // `sed -i` / `perl -i`：就地改文件。
+        if lower.contains("sed -i") || lower.contains("sed --in-place") {
+            return true;
+        }
+        // 重定向目标落在 /etc（同段里出现 `> /etc/…` 或 `>>/etc/…`）。
+        [
+            " > /etc/",
+            " >> /etc/",
+            ">/etc/",
+            ">>/etc/",
+            "> \"/etc/",
+            ">'/etc/",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    })
+}
+
 /// 危险操作的影响说明（确认框里展示，必须具体）。
 ///
 /// **不复制命令**：命令在详情的"命令"一栏，影响这一行只说后果。认不出后果时
@@ -1036,7 +1383,7 @@ pub fn describe_impact(command: &str, risk: ToolRisk) -> Option<String> {
                 || lower.contains("ufw"),
             "修改防火墙规则，可能切断当前连接",
         ),
-        (lower.contains("/etc/"), "修改系统配置（/etc 下的文件）"),
+        (writes_etc(command), "修改系统配置（/etc 下的文件）"),
         (
             lower.contains("reboot") || lower.contains("shutdown") || lower.contains("poweroff"),
             "重启或关闭服务器",
@@ -1332,5 +1679,9 @@ pub fn plan_tool(name: &str, args: &Value, cwd: &str, stamp: u64) -> Result<Plan
         impact,
         rollback,
         backup_path,
+        // 与 `write_command` 用的是**同一份参数**：预览里的新内容不是模型口述，
+        // 而是这次调用真正提交的正文。
+        write_content: (call_name == "write_file")
+            .then(|| args.get("content").and_then(Value::as_str).unwrap_or("").to_string()),
     })
 }

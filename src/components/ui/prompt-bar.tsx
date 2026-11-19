@@ -58,7 +58,7 @@ import React, {
   type ReactNode
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { animate, useMotionValue, useMotionValueEvent, useReducedMotion } from 'motion/react';
+import { useReducedMotion } from 'motion/react';
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -113,10 +113,14 @@ export interface PromptBarProps {
   commands?: PromptBarCommand[];
   models?: PromptBarModel[];
   defaultModel?: string;
+  /** 受控模型 key；不传时用 `defaultModel` 初始化组件内部状态。 */
+  modelValue?: string;
   /** 组件里换了模型（用于同步外部的模型设置 / 上下文预算）。 */
   onModelChange?: (model: PromptBarModel) => void;
   efforts?: string[];
   defaultEffort?: string;
+  /** 受控思考强度标签；不传时组件内部维护。 */
+  effortValue?: string;
   onEffortChange?: (effort: string) => void;
   busy?: boolean;
   /** 外部原因禁止发送（如服务器未连接）：按钮禁用并给出原因，草稿仍可编辑。 */
@@ -134,9 +138,6 @@ export interface PromptBarProps {
   width?: number;
   radius?: number;
   maxRows?: number;
-  morphDuration?: number;
-  squash?: number;
-  tilt?: number;
   pressScale?: number;
   className?: string;
   /**
@@ -172,16 +173,6 @@ type Spark = {
   span: number;
 };
 
-interface SendGlyphProps {
-  busy: boolean;
-  morphDuration: number;
-  squash: number;
-  tilt: number;
-}
-
-const ARROW_UP = [12, 4.5, 18.5, 11, 14.25, 11, 14.25, 19.5, 9.75, 19.5, 9.75, 11, 5.5, 11];
-const SQUARE = [12, 6, 18, 6, 18, 12, 18, 18, 6, 18, 6, 12, 6, 6];
-const EASE_IN_OUT: [number, number, number, number] = [0.77, 0, 0.175, 1];
 const LINE = 22;
 const EDGE = 11;
 
@@ -213,15 +204,6 @@ const DEFAULT_MODELS: PromptBarModel[] = [
 ];
 const DEFAULT_EFFORTS = ['Low', 'Medium', 'High', 'Extra', 'Max'];
 
-const mix = (a: number, b: number, t: number) => a + (b - a) * t;
-const pathAt = (a: number[], b: number[], t: number) => {
-  let d = '';
-  for (let i = 0; i < a.length; i += 2) {
-    d += `${i ? 'L' : 'M'}${mix(a[i], b[i], t).toFixed(2)} ${mix(a[i + 1], b[i + 1], t).toFixed(2)}`;
-  }
-  return `${d}Z`;
-};
-
 const parseToken = (draft: string): Token | null => {
   const m = /(^|\s)([@/])([\w-]*)$/.exec(draft);
   if (!m) return null;
@@ -230,50 +212,6 @@ const parseToken = (draft: string): Token | null => {
 
 const renderIcon = (icon: ReactNode | IconSvgElement, size: number) =>
   isValidElement(icon) ? icon : <HugeiconsIcon icon={icon as IconSvgElement} size={size} strokeWidth={1.8} />;
-
-function SendGlyph({ busy, morphDuration, squash, tilt }: SendGlyphProps) {
-  const reduce = useReducedMotion();
-  const svgRef = useRef<SVGSVGElement>(null);
-  const pathRef = useRef<SVGPathElement>(null);
-  const dir = useRef(busy ? 1 : -1);
-  const t = useMotionValue(busy ? 1 : 0);
-
-  useEffect(() => {
-    const target = busy ? 1 : 0;
-    dir.current = busy ? 1 : -1;
-    if (t.get() === target) return undefined;
-    const controls = animate(
-      t,
-      target,
-      reduce ? { duration: 0 } : { duration: morphDuration / 1000, ease: EASE_IN_OUT }
-    );
-    return () => controls.stop();
-  }, [busy, morphDuration, reduce, t]);
-
-  useMotionValueEvent(t, 'change', v => {
-    pathRef.current?.setAttribute('d', pathAt(ARROW_UP, SQUARE, v));
-    const goo = reduce ? 0 : Math.sin(v * Math.PI);
-    const sx = 1 - squash * goo;
-    if (svgRef.current) {
-      svgRef.current.style.transform = goo ? `rotate(${dir.current * tilt * goo}deg) scale(${sx}, ${1 / sx})` : '';
-    }
-  });
-
-  return (
-    <svg
-      ref={svgRef}
-      className="block h-4 w-4 origin-center"
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      fill="currentColor"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinejoin="round"
-    >
-      <path ref={pathRef} d={pathAt(ARROW_UP, SQUARE, t.get())} />
-    </svg>
-  );
-}
 
 const STYLE = `
 @keyframes prompt-bar-pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
@@ -286,9 +224,11 @@ const PromptBar: React.FC<PromptBarProps> = ({
   commands = DEFAULT_COMMANDS,
   models = DEFAULT_MODELS,
   defaultModel = '',
+  modelValue,
   onModelChange,
   efforts = DEFAULT_EFFORTS,
   defaultEffort = '',
+  effortValue,
   onEffortChange,
   busy = false,
   sendDisabled = false,
@@ -309,9 +249,6 @@ const PromptBar: React.FC<PromptBarProps> = ({
   width = 400,
   radius = 16,
   maxRows = 5,
-  morphDuration = 240,
-  squash = 0.12,
-  tilt = 8,
   pressScale = 0.96,
   className = '',
   trailing
@@ -358,7 +295,8 @@ const PromptBar: React.FC<PromptBarProps> = ({
   const [active, setActive] = useState(0);
   const [listening, setListening] = useState(false);
 
-  const model = models.find(m => m.key === modelKey) ?? models[0];
+  const resolvedModelKey = modelValue ?? modelKey;
+  const model = models.find(m => m.key === resolvedModelKey) ?? models[0];
   const token = dismissed ? null : parseToken(draft);
   const open = plusOpen ? 'at' : (token?.kind ?? (modelOpen ? 'model' : effortOpen ? 'effort' : null));
   const query = plusOpen ? '' : (token?.query ?? '');
@@ -373,8 +311,10 @@ const PromptBar: React.FC<PromptBarProps> = ({
   // sendDisabled 只拦发送，不拦 busy 时的「停止」—— 断连了也要能停。
   const canSend = draft.trim().length > 0 && !sendDisabled;
   const armed = busy || canSend;
-  const level = efforts[effortIndex] ?? '';
-  const maxed = efforts.length > 1 && effortIndex === efforts.length - 1;
+  const controlledEffortIndex = effortValue !== undefined ? efforts.indexOf(effortValue) : -1;
+  const activeEffortIndex = controlledEffortIndex >= 0 ? controlledEffortIndex : effortIndex;
+  const level = efforts[activeEffortIndex] ?? '';
+  const maxed = efforts.length > 1 && activeEffortIndex === efforts.length - 1;
 
   /*
    * 外部换模型时档位列表会变短：把游标夹回可用范围，并跟上该模型记住的档位。
@@ -541,8 +481,8 @@ const PromptBar: React.FC<PromptBarProps> = ({
 
   const setEffort = (i: number) => {
     const next = Math.max(0, Math.min(efforts.length - 1, i));
-    if (next === effortIndex) return;
-    setEffortIndex(next);
+    if (next === activeEffortIndex) return;
+    if (effortValue === undefined) setEffortIndex(next);
     latest.current.onEffortChange?.(efforts[next]);
   };
   const effortFromPointer = (e: PointerEvent<HTMLDivElement>) => {
@@ -555,7 +495,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
       e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0;
     if (step) {
       e.preventDefault();
-      setEffort(effortIndex + step);
+      setEffort(activeEffortIndex + step);
     } else if (e.key === 'Home') {
       e.preventDefault();
       setEffort(0);
@@ -572,7 +512,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
 
   const pick = (row: Row) => {
     if (open === 'model') {
-      setModelKey(row.key);
+      if (modelValue === undefined) setModelKey(row.key);
       latest.current.onModelChange?.(
         models.find(item => item.key === row.key) ?? { key: row.key, name: row.name, tag: row.tag }
       );
@@ -638,6 +578,14 @@ const PromptBar: React.FC<PromptBarProps> = ({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    /*
+     * 输入法组合期间（中文选词）回车 / 方向键属于输入法，**先放行**。
+     *
+     * 以前只在最后"发送"那一支判 `isComposing`：建议菜单开着时，选词用的
+     * 回车会先被 `pick()` 吃掉（菜单选中一条），句子发不出去。WebView2 上
+     * 提交选词的那次 keydown 有时不带 `isComposing`，再用 keyCode 229 兜底。
+     */
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (open && list.length) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -658,7 +606,8 @@ const PromptBar: React.FC<PromptBarProps> = ({
       }
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // 组合态已经在函数开头统一放行了，这里只剩"真的按了回车"。
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();
     }
@@ -723,10 +672,10 @@ const PromptBar: React.FC<PromptBarProps> = ({
                     aria-label={t('Effort')}
                     aria-valuemin={0}
                     aria-valuemax={efforts.length - 1}
-                    aria-valuenow={effortIndex}
+                    aria-valuenow={activeEffortIndex}
                     aria-valuetext={level}
                     style={
-                      { '--pb-effort-x': stepAt(effortIndex), '--pb-effort-fill': fillAt(effortIndex) } as CSSProperties
+                      { '--pb-effort-x': stepAt(activeEffortIndex), '--pb-effort-fill': fillAt(activeEffortIndex) } as CSSProperties
                     }
                     onPointerDown={e => {
                       if (e.button !== 0) return;
@@ -956,36 +905,58 @@ const PromptBar: React.FC<PromptBarProps> = ({
             </button>
           ) : null}
           {          /*
-           * 发送键换成项目自己的主按钮皮肤：`--accent` 实心 + 白图标 + 8px 圆角，
-           * 和 `Button variant="primary"` 同一套质感（内高光 + 轻投影）；不再用
-           * 官方那套深色皮肤（浅色主题下会变成一块黑色方块）。
+           * Ant Design X Sender 风格的发送键：
+           * * 32px 圆形主按钮，向上箭头 = 发送；
+           * * 执行中同一位置切成白色方形 = 停止；
+           * * 空草稿 = 中性淡底并禁用。
            *
-           * 空草稿 = 中性淡底、禁用；执行中 = 中性底 + 方块（停止）。
+           * 不再做箭头↔方块的粘性形变，图标直接切换，点击反馈只用轻微缩放。
            */}
           <button
             type="button"
             className={[
-              'relative inline-grid h-7 w-7 flex-none touch-manipulation place-items-center rounded-[8px] border-0 p-0 outline-none select-none',
+              'relative inline-grid h-8 w-8 flex-none touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
               '[-webkit-tap-highlight-color:transparent]',
               'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
               'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               'active:[transform:scale(var(--pb-press))] motion-reduce:active:[transform:none]',
-              busy
-                ? 'cursor-pointer bg-fg/10 text-fg hover:bg-fg/15'
-                : armed
-                  ? 'cursor-pointer bg-accent text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.35),0_1px_2px_rgb(15_23_42/0.12)] hover:bg-accent/92 active:bg-accent/84'
-                  : 'cursor-default bg-fg/8 text-fg-subtle',
+              armed
+                ? 'cursor-pointer bg-accent text-white hover:bg-accent/90'
+                : 'cursor-not-allowed bg-fg/8 text-fg-subtle',
             ].join(' ')}
             disabled={!armed}
             aria-label={busy ? t('Stop') : t('Send')}
-            title={sendDisabled ? sendDisabledReason : undefined}
+            title={busy ? t('Stop') : sendDisabled ? sendDisabledReason : t('Send')}
             onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (busy) latest.current.onStop?.();
               else send();
             }}
           >
-            <SendGlyph busy={busy} morphDuration={morphDuration} squash={squash} tilt={tilt} />
+            {busy ? (
+              <svg
+                className="block h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <rect x="7" y="7" width="10" height="10" rx="2" />
+              </svg>
+            ) : (
+              <svg
+                className="block h-[18px] w-[18px]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 19V5" />
+                <path d="m6 11 6-6 6 6" />
+              </svg>
+            )}
           </button>
         </div>
       </div>

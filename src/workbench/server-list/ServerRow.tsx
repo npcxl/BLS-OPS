@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -7,6 +7,7 @@ import {
   Pencil,
   Plug,
   ScrollText,
+  Sparkles,
   SquareCheckBig,
   Star,
   Trash2,
@@ -15,6 +16,7 @@ import type { ServerGroupRecord, ServerRecord } from "@/api/types/servers";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/ui/context-menu";
 import { cn } from "@/lib/cn";
 import { useWorkbenchStore } from "@/stores/workbench-store";
+import { enterExtremeForServer } from "@/workbench/views/terminal/extreme-core/enter-extreme";
 import { UNGROUPED_LABEL } from "./sections";
 import type { ManageKind } from "./use-server-list";
 
@@ -28,6 +30,8 @@ export interface ServerRowProps {
   onDelete: (server: ServerRecord) => void;
   onToggleFavorite: (server: ServerRecord) => void;
   onMoveToGroup: (server: ServerRecord, groupId: string | null) => void;
+  /** 这台机器正开在右边的标签里：行保持一层选中底色，一眼能认出"现在在哪台"。 */
+  active?: boolean;
 }
 
 /**
@@ -45,11 +49,34 @@ export const ServerRow = memo(function ServerRow({
   onDelete,
   onToggleFavorite,
   onMoveToGroup,
+  active = false,
 }: ServerRowProps) {
   const { t } = useTranslation();
   const menu = useContextMenu();
   const openTab = useWorkbenchStore((s) => s.openTab);
   const openOrFocusServerTab = useWorkbenchStore((s) => s.openOrFocusServerTab);
+  /**
+   * 右键按住的行要留底色。
+   *
+   * 页面内菜单能看 `menu.props.open`，但桌面窗口菜单（Tauri）不进这个 state，
+   * 所以右键那一刻自己记一笔，下一次左键 / Esc 再撤掉 —— 否则用户在原生菜单
+   * 里点「打开终端」时，根本看不出自己是右键了哪一行。
+   */
+  const [rightHeld, setRightHeld] = useState(false);
+
+  useEffect(() => {
+    if (!rightHeld) return undefined;
+    const clear = () => setRightHeld(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clear();
+    };
+    window.addEventListener("pointerdown", clear, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", clear, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [rightHeld]);
 
   const openTerminal = () =>
     openOrFocusServerTab({
@@ -90,6 +117,7 @@ export const ServerRow = memo(function ServerRow({
 
   const items: ContextMenuItem[] = [
     { id: "connect", label: t("Open terminal"), icon: Plug, onSelect: openTerminal },
+    { id: "extreme", label: t("超能模式"), icon: Sparkles, onSelect: () => void enterExtremeForServer(server) },
     { id: "monitor", label: t("Open monitor"), icon: Activity, onSelect: openMonitor },
     { id: "sep-manage", separator: true },
     {
@@ -134,11 +162,18 @@ export const ServerRow = memo(function ServerRow({
     { id: "delete", label: t("Delete server"), icon: Trash2, danger: true, onSelect: () => onDelete(server) },
   ];
 
+  const rowMenu = menu.onContextMenu(() => items);
+
   return (
     <div
       data-testid={`server-row-${server.id}`}
-      className="page-tree-row group/row w-full hover:bg-surface-hover"
-      onContextMenu={menu.onContextMenu(() => items)}
+      aria-selected={active}
+      data-menu-open={menu.props.open || rightHeld ? "true" : undefined}
+      className="page-tree-row group/row w-full"
+      onContextMenu={(event) => {
+        setRightHeld(true);
+        rowMenu(event);
+      }}
     >
       <button
         type="button"

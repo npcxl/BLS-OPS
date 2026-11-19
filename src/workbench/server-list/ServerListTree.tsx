@@ -42,6 +42,15 @@ export function ServerListTree({
   const groups = useDomainStore((s) => s.groups);
   const removeServer = useDomainStore((s) => s.deleteServer);
   const setSidebarCollapsed = useWorkbenchStore((s) => s.setSidebarCollapsed);
+  /**
+   * 右边当前打开的那台机器。行上只认 `serverId`：同一个服务器开几个标签
+   * （终端 / 监控 / 服务）都算选中，切走就灭。
+   */
+  const activeServerId = useWorkbenchStore((s) => {
+    const pane = s.rootPane;
+    const active = pane.tabs.find((tab) => tab.id === pane.activeTabId);
+    return active?.serverId ?? null;
+  });
   const { t } = useTranslation();
 
   const sections = useServerSections();
@@ -198,6 +207,7 @@ export function ServerListTree({
                     <ServerRow
                       key={server.id}
                       server={server}
+                      active={server.id === activeServerId}
                       groups={groups}
                       onOpen={onOpenServer}
                       onEdit={setEditing}
@@ -231,6 +241,7 @@ export function ServerListTree({
                 renderRow={(server) => (
                   <ServerRow
                     server={server}
+                    active={server.id === activeServerId}
                     groups={groups}
                     onOpen={onOpenServer}
                     onEdit={setEditing}

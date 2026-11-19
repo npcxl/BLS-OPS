@@ -195,6 +195,7 @@ export function DeployView(_props: { tab: WorkspaceTab }) {
         }
         actions={
           <Select
+            variant="menu"
             className="w-52"
             size="sm"
             value={center.serverId}

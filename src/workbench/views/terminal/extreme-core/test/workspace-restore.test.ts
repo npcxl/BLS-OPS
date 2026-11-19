@@ -41,6 +41,15 @@ beforeEach(() => {
     tasks: {},
     taskVersions: {},
     panelShown: false,
+    paneByWorkspace: {},
+    paneLists: {},
+    paneMru: {},
+    paneTab: "files",
+    paneView: "hidden",
+    browserByWorkspace: {},
+    logSourceByWorkspace: {},
+    remotePathByWorkspace: {},
+    unread: {},
   });
 });
 
@@ -243,6 +252,53 @@ describe("快速连接与旧记录也能找回", () => {
     expect(store().workspaceId).toBeNull();
     expect(store().workspaces).toHaveLength(1);
     expect(store().workspaces[0].id).toBe(a);
+  });
+});
+
+describe("右栏标签页按对话隔离", () => {
+  it("打开 / 关闭标签；最后一个关闭时收起右栏", () => {
+    enter("srv-tabs", "aliyun", "sess-tabs");
+    const id = store().ensureWorkspace()!;
+
+    store().openPane("files");
+    expect(store().paneView).toBe("split");
+    store().openPane("logs");
+    expect(store().paneLists[id]).toEqual(["files", "logs"]);
+    expect(store().paneTab).toBe("logs");
+
+    // 关掉当前标签：切到最近使用的另一个。
+    store().closePane("logs");
+    expect(store().paneTab).toBe("files");
+    expect(store().paneView).toBe("split");
+
+    // 最后一个关掉：右栏收起，但标签页记录保留。
+    store().closePane("files");
+    expect(store().paneView).toBe("hidden");
+    expect(store().paneLists[id]).toEqual([]);
+  });
+
+  it("两条对话各自恢复标签、浏览器地址与日志来源", () => {
+    enter("srv-two", "aliyun", "sess-two");
+    const a = store().ensureWorkspace()!;
+    store().openPane("browser");
+    store().setBrowserUrl(a, "https://a.example.com/docs");
+    store().setLogSource(a, { kind: "journal", unit: "nginx", label: "nginx" });
+
+    store().addWorkspace([]);
+    const b = store().workspaceId!;
+    store().openPane("logs");
+    store().setBrowserUrl(b, "https://b.example.com/logs");
+
+    store().openWorkspace(a);
+    expect(store().paneTab).toBe("browser");
+    // 新对话默认带一个「远程文件」标签，浏览器是后打开的。
+    expect(store().paneLists[a]).toEqual(["files", "browser"]);
+    expect(store().browserByWorkspace[a]).toBe("https://a.example.com/docs");
+    expect(store().logSourceByWorkspace[a]).toMatchObject({ unit: "nginx" });
+
+    store().openWorkspace(b);
+    expect(store().paneTab).toBe("logs");
+    expect(store().browserByWorkspace[b]).toBe("https://b.example.com/logs");
   });
 });
 

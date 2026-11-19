@@ -12,8 +12,11 @@ import { Channel } from "@tauri-apps/api/core";
 import type { ExtremeTaskFilter, ExtremeTaskRecord } from "@/api/types/extreme";
 import type { LogEvent, LogStartRequest } from "@/api/types/panel";
 import type {
+  AgentResumeRequest,
   AgentSnapshot,
   AgentStartRequest,
+  FileChangeDetail,
+  FileChangeSummary,
 } from "@/api/types/agent";
 
 import type {
@@ -212,6 +215,7 @@ export {
   type AgentApproval,
   type AgentEvent,
   type AgentEventKind,
+  type AgentResumeRequest,
   type AgentRunStatus,
   type AgentSnapshot,
   type AgentStartRequest,
@@ -1310,14 +1314,55 @@ export const opsApi = {
       "extreme_panel_widen",
       { panelWidth, open },
     ),
+  /** 外缘拖拽：目标客户区宽度（逻辑像素），每帧传绝对目标。 */
+  extremePanelResize: (width: number, allowShrink = false) =>
+    invoke<{ widened: boolean; added: number; reason?: string | null }>(
+      "extreme_panel_resize",
+      { width, allowShrink },
+    ),
   aiAgentRun: (request: AgentStartRequest) =>
     invoke<AgentSnapshot>("agent_start", { request }),
   aiAgentSnapshot: (taskId: string) =>
     invoke<AgentSnapshot | null>("agent_snapshot", { taskId }),
   aiAgentApprove: (taskId: string, callId: string, allow: boolean) =>
     invoke<boolean>("agent_approve", { taskId, callId, allow }),
+  /**
+   * 运行中补一句要求（「更新当前任务」）：下一步开始前生效。
+   *
+   * 正在等确认的那一步会被撤回（按新要求重新评估），不会执行旧命令。
+   * `false` = 这条任务已经结束，前端应改为新发一条消息。
+   */
+  aiAgentSteer: (taskId: string, text: string) =>
+    invoke<boolean>("agent_steer", { taskId, text }),
+  /**
+   * 从检查点恢复一条被中断的任务：先只读核对已完成步骤，再从第一条未完成处继续。
+   * 用的是**当前** SSH 会话（重连后和记录里的 session 不同）。
+   */
+  aiAgentResume: (request: AgentResumeRequest) =>
+    invoke<AgentSnapshot>("agent_resume", { request }),
   /** 停止：当前命令跑完再停（与 `aiChatCancel` 同一套取消令牌）。 */
   aiAgentCancel: (taskId: string) => invoke<boolean>("agent_cancel", { taskId }),
+  /**
+   * 文件变更列表：只返回标识与摘要，Diff 正文另取。
+   *
+   * `workspaceId` 单独给 = 这条对话的全部记录（界面用来做"运行"下拉）；
+   * 两个都给 = 某一次运行。记录在内存里，应用重启后为空。
+   */
+  aiAgentFileChanges: (workspaceId?: string | null, taskId?: string | null) =>
+    invoke<FileChangeSummary[]>("agent_file_changes", {
+      workspaceId: workspaceId ?? null,
+      taskId: taskId ?? null,
+    }),
+  /** 取一条变更的实际 Diff（用的是记录当时保存的快照，不随服务器再变）。 */
+  aiAgentFileChangeDetail: (changeId: string) =>
+    invoke<FileChangeDetail>("agent_file_change_detail", { changeId }),
+  /**
+   * 强制结束：后端迟迟不确认停止时的最后手段。
+   *
+   * 只停止跟踪，**撤回不了**已经发到服务器上的命令；返回的快照里带着这条
+   * 说明。`null` = 后端已经没有这条运行，界面按本地"已停止"收尾。
+   */
+  aiAgentAbandon: (taskId: string) => invoke<AgentSnapshot | null>("agent_abandon", { taskId }),
   aiChatCancel: (taskId: string) => invoke<boolean>("ai_chat_cancel", { taskId }),
   /**
    * 超能模式的**任务历史**：每次部署落一条，重启后还能查。
@@ -1340,6 +1385,30 @@ export const opsApi = {
     invoke<void>("extreme_task_rename", { id, name }),
   /** 删除一条历史；执行中 / 等待确认的任务返回 false（拒绝删除）。 */
   extremeTaskDelete: (id: string) => invoke<boolean>("extreme_task_delete", { id }),
+
+  /* ---------------- 右栏内置浏览器（独立子 WebView） ---------------- */
+  extremeBrowserOpen: (input: {
+    url: string;
+    /** workspaceId + 请求版本：导航事件按它校验归属。 */
+    session: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => invoke<void>("extreme_browser_open", input),
+  extremeBrowserBounds: (input: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) => invoke<void>("extreme_browser_bounds", input),
+  extremeBrowserNavigate: (url: string, session: string) =>
+    invoke<void>("extreme_browser_navigate", { url, session }),
+  extremeBrowserShow: (shown: boolean) => invoke<void>("extreme_browser_show", { shown }),
+  extremeBrowserHistory: (delta: number) =>
+    invoke<void>("extreme_browser_history", { delta }),
+  extremeBrowserReload: () => invoke<void>("extreme_browser_reload"),
+  extremeBrowserClose: () => invoke<void>("extreme_browser_close"),
 
   // -- P5.5 用户知识库 -------------------------------------------------------
   deploymentKnowledgeList: (

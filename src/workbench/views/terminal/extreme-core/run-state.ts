@@ -24,7 +24,9 @@ export type RunState =
   | "stale"
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  /** 进程退出 / 断线中断：可以从检查点继续。 */
+  | "interrupted";
 
 export interface RunStateInput {
   /** 当前对话里最新的任务卡（没有就是 `null`）。 */
@@ -37,8 +39,8 @@ export interface RunStateInput {
   stale: boolean;
 }
 
-/** 终态：只有这三个可以显示"结束"。 */
-const TERMINAL: RunState[] = ["done", "failed", "cancelled"];
+/** 终态：这些都可以显示"结束"（中断也是结束，只是还能恢复）。 */
+const TERMINAL: RunState[] = ["done", "failed", "cancelled", "interrupted"];
 
 export function isTerminalRun(state: RunState): boolean {
   return TERMINAL.includes(state);
@@ -55,6 +57,7 @@ export function deriveRunState(input: RunStateInput): RunState {
   if (status === "done") return "done";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "cancelled";
+  if (status === "interrupted") return "interrupted";
   if (input.stopping) return "stopping";
   if (input.stale) return "stale";
   if (status === "confirming" || status === "waiting") return "waiting";
@@ -83,6 +86,8 @@ export function runStateLabel(state: RunState, t: (key: string) => string): stri
       return t("执行失败");
     case "cancelled":
       return t("已停止");
+    case "interrupted":
+      return t("已中断");
     default:
       return "";
   }
@@ -96,5 +101,5 @@ export function runStateLabel(state: RunState, t: (key: string) => string): stri
  */
 export function canSendIn(state: RunState): boolean {
   return state === "idle" || state === "analyzing" || state === "running" ||
-    state === "waiting" || state === "stopping";
+    state === "waiting" || state === "stopping" || state === "interrupted";
 }

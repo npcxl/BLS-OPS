@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, History, PanelRight, SquareTerminal } from "@/components/icons";
+import { ChevronLeft, History, PanelRight } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { PageToolbar, PageToolbarDivider } from "@/workbench/page-layout";
 import { WindowControls } from "@/workbench/window-controls";
@@ -12,12 +12,9 @@ export interface ExtremeHeaderProps {
   mac: boolean;
   /** 回退到普通终端（SSH 会话与草稿都保留）。 */
   onBack: () => void;
-  /** 右栏（会话工作区）当前是否展开：切换按钮跟着亮。 */
+  /** 右栏收起时，标题栏提供恢复入口。 */
   paneShown: boolean;
-  /** 右栏 › 终端 › 执行输出。 */
-  onOpenTerminal: () => void;
-  /** 收起 / 展开右栏。 */
-  onTogglePane: () => void;
+  onOpenPane: () => void;
   /** 任务历史浮层。 */
   onOpenHistory: () => void;
 }
@@ -27,11 +24,6 @@ export interface ExtremeHeaderProps {
  *
  * 与其他页面共用 `PageToolbar` 的尺寸 token；差别只有右侧要放窗口按钮
  * （超能盖住了应用标题栏）。
- *
- * 右侧从右往左：窗口控制 → 返回普通终端 → 分隔 → 终端 / 右栏 / 任务历史。
- * 三个入口原来塞在输入框右下角那块玻璃里，宽度被挤得只剩图标、还占掉输入
- * 区一行；放到这里与窗口按钮同一排，既不占高度也和"关闭"这类窗口级操作在
- * 一起。
  */
 export function ExtremeHeader({
   server,
@@ -39,8 +31,7 @@ export function ExtremeHeader({
   mac,
   onBack,
   paneShown,
-  onOpenTerminal,
-  onTogglePane,
+  onOpenPane,
   onOpenHistory,
 }: ExtremeHeaderProps) {
   const { t } = useTranslation();
@@ -51,6 +42,14 @@ export function ExtremeHeader({
       className={cn("extreme-core-header extreme-core-frosted relative z-20", mac ? "pl-[76px] pr-0" : "pr-0")}
     >
       <div className="page-toolbar-summary flex min-w-0 items-center gap-2 text-12" data-tauri-drag-region>
+        {/* 与应用标题栏同一枚 Logo；点击穿透给整条拖拽栏，不额外抢焦点。 */}
+        <img
+          src="/logo.png"
+          alt="Ops Workbench"
+          data-tauri-drag-region="false"
+          draggable={false}
+          className="pointer-events-none h-5 w-5 shrink-0 rounded-[4px]"
+        />
         <span className="truncate font-medium" title={server ?? undefined}>
           {server ?? t("未绑定服务器")}
         </span>
@@ -61,13 +60,9 @@ export function ExtremeHeader({
         )}
       </div>
       <div className="ml-auto flex items-center gap-1" data-tauri-drag-region="false">
-        <ToolbarIcon label={t("打开终端")} icon={SquareTerminal} onClick={onOpenTerminal} />
-        <ToolbarIcon
-          label={paneShown ? t("收起右栏") : t("远程工作区")}
-          icon={PanelRight}
-          active={paneShown}
-          onClick={onTogglePane}
-        />
+        {!paneShown && (
+          <ToolbarIcon label={t("远程工作区")} icon={PanelRight} onClick={onOpenPane} />
+        )}
         <ToolbarIcon label={t("任务历史")} icon={History} onClick={onOpenHistory} />
         <PageToolbarDivider />
         <ToolbarIcon label={t("返回普通终端，会话与任务都保留")} icon={ChevronLeft} onClick={onBack} />

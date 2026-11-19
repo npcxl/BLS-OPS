@@ -29,10 +29,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 const bridge = vi.hoisted(() => ({
   push: vi.fn(),
   dismiss: vi.fn(),
+  clear: vi.fn(),
 }));
 vi.mock("@/desktop-notification/bridge", () => ({
   pushDesktopNotification: bridge.push,
   dismissDesktopNotification: bridge.dismiss,
+  clearExtremeNotifications: bridge.clear,
 }));
 
 /** 事件总线替身：测试自己触发 `app:collapsed` 与通知按钮。 */
@@ -157,7 +159,12 @@ it("收起后推通知：在通知里点「拒绝执行」，回到会话看到�
     });
     expect(bridge.push).toHaveBeenCalledTimes(1);
     const payload = bridge.push.mock.calls[0][0];
-    expect(payload.id).toBe("extreme-approval-call-0-0");
+    /*
+     * 通知 id 带 **taskId**：`callId` 只在一次运行内唯一（`call-0-0` 会重复），
+     * 不带 taskId 的话两条任务的确认会抢同一个通知槽。
+     */
+    const noticeId = `extreme-approval-${taskId}|call-0-0`;
+    expect(payload.id).toBe(noticeId);
     expect(payload.title).toContain("确认重载 Nginx");
     expect(payload.body).toContain("配置校验通过后重载");
     expect(payload.body).toContain("aliyun");
@@ -166,7 +173,7 @@ it("收起后推通知：在通知里点「拒绝执行」，回到会话看到�
     // 在通知里点「拒绝执行」：走同一个 approve，不另开一条链路。
     await act(async () => {
       channels.emit("desktop-notification:decide", {
-        id: "extreme-approval-call-0-0",
+        id: noticeId,
         key: "deny",
       });
     });
@@ -182,7 +189,7 @@ it("收起后推通知：在通知里点「拒绝执行」，回到会话看到�
     // 通知同步更新成结果：同 id、无按钮、几秒后自己收起。
     const calls = bridge.push.mock.calls;
     const resolved = calls[calls.length - 1]?.[0];
-    expect(resolved.id).toBe("extreme-approval-call-0-0");
+    expect(resolved.id).toBe(noticeId);
     expect(resolved.title).toBe("已拒绝 · 此步骤未执行");
     expect(resolved.buttons).toBeUndefined();
 

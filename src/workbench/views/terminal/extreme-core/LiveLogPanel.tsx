@@ -17,11 +17,13 @@ export function LiveLogPanel({
   sessionId,
   serverId,
   source,
+  onChangeSource,
 }: {
   workspaceId: string;
   sessionId: string;
   serverId: string | null;
   source: LogSource;
+  onChangeSource?: () => void;
 }) {
   const { t } = useTranslation();
   const stream = useLogStreamStore((state) => activeLogFor(state, workspaceId));
@@ -36,7 +38,7 @@ export function LiveLogPanel({
 
   // 这条对话还没有流 / 来源换了：开一条新的（独立于问答任务）。
   useEffect(() => {
-    if (!stream || stream.source.kind !== source.kind ||
+    if (!stream || stream.sessionId !== sessionId || stream.source.kind !== source.kind ||
       JSON.stringify(stream.source) !== JSON.stringify(source)) {
       start({ workspaceId, serverId, sessionId, source });
     }
@@ -52,7 +54,7 @@ export function LiveLogPanel({
     if (!follow) return;
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lines.length, follow]);
+  }, [lines, follow]);
 
   const paused = stream?.paused ?? false;
   const status = stream?.status ?? "connecting";
@@ -63,6 +65,11 @@ export function LiveLogPanel({
         <span className="min-w-0 flex-1 truncate text-11 text-fg-muted" title={source.label}>
           {source.label}
         </span>
+        {onChangeSource && (
+          <Button variant="ghost" size="xs" onClick={onChangeSource}>
+            {t("切换日志来源")}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="xs"
@@ -148,8 +155,17 @@ export function LiveLogPanel({
       </div>
 
       {status === "stopped" && (
-        <div className="border-t border-line/70 px-2 py-1 text-10 text-fg-subtle">
-          {t("已停止监听（服务器上的进程已释放）")}
+        <div className="flex items-center gap-1 border-t border-line/70 px-2 py-1 text-10 text-fg-subtle">
+          <span className="min-w-0 flex-1 truncate">
+            {t("已停止监听（服务器上的进程已释放）")}
+          </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => start({ workspaceId, serverId, sessionId, source })}
+          >
+            {t("重新开始监听")}
+          </Button>
         </div>
       )}
     </div>

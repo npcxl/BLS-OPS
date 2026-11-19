@@ -19,6 +19,22 @@ export type AgentToolRisk = "read" | "write" | "danger";
 /** 运行状态。`waiting` = 正在等用户确认某一步。 */
 export type AgentRunStatus = "running" | "waiting" | "success" | "failed" | "cancelled";
 
+/**
+ * 任务结论的验证等级。
+ *
+ * 由后端按**真实步骤**判定：`verified` 有服务器证据（改后有只读验证）；
+ * `partial` 只完成了一部分（改完没验证 / 最后一次失败）；`needs_info` 没有任何
+ * 可核对的服务器结果。
+ */
+export type AgentOutcomeLevel = "verified" | "partial" | "needs_info";
+
+export interface AgentOutcome {
+  level: AgentOutcomeLevel | string;
+  reason: string;
+  /** 支撑结论的证据（命令 / 路径 + 步骤序号）。 */
+  evidence: string[];
+}
+
 /** 步骤状态（与 `DeployStep` 的 state 对齐）。 */
 export type AgentStepState = "running" | "waiting" | "success" | "failed" | "skipped";
 
@@ -29,6 +45,8 @@ export interface AgentStep {
   tool: string;
   /** 涉及的文件（读 / 写 / 列目录）。 */
   path?: string | null;
+  /** 这条步骤的文件变更记录（只有 `write_file` 带）。 */
+  changeId?: string | null;
   risk: AgentToolRisk;
   state: AgentStepState | string;
   /** 用户可读的命令（没有 `cd` 包装与内部标记）。 */
@@ -65,6 +83,8 @@ export interface PendingApproval {
   /** 写文件的备份路径与回滚命令：确认前就能核对。 */
   backupPath?: string | null;
   rollback?: string | null;
+  /** 待确认预览的变更记录：确认卡据此打开「查看变更」。 */
+  changeId?: string | null;
   cwd: string;
   /**
    * 等待确认的截止时刻（毫秒时间戳）。旧后端/旧快照可能没有：
@@ -129,6 +149,8 @@ export interface AgentSnapshot {
   pendingApproval?: PendingApproval | null;
   /** 最近一轮的上下文用量；还没请求过模型时为空。 */
   context?: ContextUsage | null;
+  /** 终态验证结论；没有执行过步骤时为空。 */
+  outcome?: AgentOutcome | null;
   updatedAt: number;
 }
 
@@ -140,6 +162,10 @@ export type AgentEventKind =
   | "tool_output"
   | "tool_finished"
   | "approval_required"
+  /** 文件变更记录新增 / 状态变化（只带摘要，正文按需加载）。 */
+  | "file_change"
+  | "approval_withdrawn"
+  | "steer_applied"
   | "finished"
   | "failed"
   | "cancelled";
@@ -164,9 +190,15 @@ export interface AgentEvent {
   backupPath?: string | null;
   rollback?: string | null;
   impact?: string | null;
+  /** 这一步对应的文件变更记录（`file_change` / 步骤事件都带）。 */
+  changeId?: string | null;
+  /** 变更摘要：列表与角标据此刷新，正文不在这里。 */
+  change?: FileChangeSummary | null;
   content?: string;
   model?: string;
   context?: ContextUsage;
+  /** 终态验证结论（只有 `finished` 且执行过步骤时带）。 */
+  outcome?: AgentOutcome | null;
   message?: string;
   elapsedMs?: number;
   /** 只有 `approval_required` 带：等待确认的截止时刻（毫秒）。 */
@@ -181,6 +213,9 @@ export interface AgentStartRequest {
   taskId: string;
   sessionId: string;
   server: string;
+  /** 服务器配置 id / 对话 id：文件变更记录按它们归属。 */
+  serverId?: string | null;
+  workspaceId?: string | null;
   cwd: string;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   /** 只有打开「完全权限」才允许 sudo。 */
@@ -198,6 +233,22 @@ export interface AgentStartRequest {
    *
    * 写文件仍然自动备份；sudo 由 `allowSudo` 单独控制；只查询任务由后端拦下写操作。
    */
+  autoApproveWrites?: boolean;
+  maxRounds?: number;
+}
+
+/** 从检查点恢复一条被中断的任务（历史里「继续执行」）。 */
+export interface AgentResumeRequest {
+  taskId: string;
+  /** 当前可用的 SSH 会话；重连后和记录里的不同。 */
+  sessionId: string;
+  /** 归属：继续执行时新产生的变更仍挂回原来那条对话 / 服务器。 */
+  serverId?: string | null;
+  workspaceId?: string | null;
+  providerId?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  contextBudget?: number | null;
+  allowSudo?: boolean;
   autoApproveWrites?: boolean;
   maxRounds?: number;
 }
@@ -224,4 +275,122 @@ export interface AgentApproval {
   cwd: string;
   /** 等待确认的截止时刻（毫秒）；缺失时界面按收到时刻兜底。 */
   deadline?: number;
+  /** 待确认预览的变更记录（没有 Diff 时不带）。 */
+  changeId?: string | null;
+}
+
+/* ---------------- 服务器文件变更审阅 ---------------- */
+
+/**
+ * 一条变更记录的状态。
+ *
+ * * `proposed`       —— 拟修改，等你确认；
+ * * `written`        —— 已写入，并按服务器上的**回读内容**生成实际 Diff；
+ * * `unchanged`      —— 写入完成，但回读内容与写入前完全一致；
+ * * `write_failed`   —— 写入失败，文件没有被这次写入改动；
+ * * `readback_failed`—— 写入已发送，但回读失败（无法证明实际内容）；
+ * * `rejected` / `withdrawn` —— 你没有放行；
+ * * `stale`          —— 确认前文件被外部修改，这份预览已作废；
+ * * `uncollected`    —— 普通 shell 命令，未采集文件差异；
+ * * `unavailable`    —— 读不到原文 / 目标不是普通文件，不生成假 Diff。
+ */
+export type FileChangeStatus =
+  | "proposed"
+  | "written"
+  | "unchanged"
+  | "write_failed"
+  | "readback_failed"
+  | "rejected"
+  | "withdrawn"
+  | "stale"
+  | "uncollected"
+  | "unavailable";
+
+/** 这条记录展示哪一版内容：拟修改 / 实际回读 / 没有可展示的 Diff。 */
+export type FileChangeStage = "proposed" | "actual" | "none";
+
+/** 列表项：只带标识与摘要，正文按需用 `agentFileChangeDetail` 取。 */
+export interface FileChangeSummary {
+  id: string;
+  taskId: string;
+  callId: string;
+  stepIndex: number;
+  workspaceId?: string | null;
+  server: string;
+  serverId?: string | null;
+  tool: string;
+  path: string;
+  status: FileChangeStatus | string;
+  stage: FileChangeStage | string;
+  /** 修改前不存在 = 全新增。 */
+  created: boolean;
+  binary: boolean;
+  tooLarge: boolean;
+  /** 增删行数；没有可展示的 Diff 时为 0。 */
+  additions: number;
+  deletions: number;
+  diffReady: boolean;
+  backupPath?: string | null;
+  /** 备份**已验证存在**（只是计划中的备份名为 false）。 */
+  backupVerified: boolean;
+  /** 目标文件在最近一次回读里确认存在。 */
+  canOpen: boolean;
+  /** 普通 shell 之类的"未采集差异"说明项。 */
+  uncollected: boolean;
+  note?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type DiffLineKind = "context" | "add" | "del";
+
+export interface DiffLine {
+  kind: DiffLineKind | string;
+  text: string;
+  /** 旧文件行号（新增行没有）。 */
+  oldNo?: number | null;
+  /** 新文件行号（删除行没有）。 */
+  newNo?: number | null;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: DiffLine[];
+}
+
+export interface FileDiff {
+  hunks: DiffHunk[];
+  additions: number;
+  deletions: number;
+  /** 未修改行总数（界面据此显示「N unmodified lines」）。 */
+  unchanged: number;
+  tooLarge: boolean;
+  note?: string | null;
+}
+
+export interface FileSnapshotView {
+  exists: boolean;
+  path: string;
+  sha: string;
+  size: number;
+  binary: boolean;
+  tooLarge: boolean;
+  note?: string | null;
+}
+
+/** 按需加载的 Diff 正文：用的是记录当时保存的快照。 */
+export interface FileChangeDetail {
+  summary: FileChangeSummary;
+  before?: FileSnapshotView | null;
+  after?: FileSnapshotView | null;
+  diff: FileDiff;
+  /** 两版正文（已脱敏）：展开被折叠的未修改段时用。 */
+  beforeText?: string | null;
+  afterText?: string | null;
+  /** 可见的限制说明（二进制 / 过大 / 脱敏 / 回读失败…）。 */
+  limits: string[];
+  redacted: boolean;
 }

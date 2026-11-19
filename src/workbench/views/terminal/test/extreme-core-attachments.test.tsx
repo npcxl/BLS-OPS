@@ -133,16 +133,11 @@ it("远程附件：选中 → 发送后气泡留文件、请求带路径；同�
   try {
     await act(async () => root.render(<ExtremeCoreView />));
 
-    // 打开右栏 › 附件：勾选「用于本次发送」。
-    await act(async () =>
-      holder.querySelector<HTMLButtonElement>('button[aria-label="远程工作区"]')!.click(),
-    );
-    // 标签后面可能跟着数量角标（"附件 1"），所以只比前缀。
-    const tab = Array.from(holder.querySelectorAll<HTMLElement>('[role="tab"]')).find(
-      (node) => node.textContent?.trim().startsWith("附件"),
-    );
-    expect(tab).toBeTruthy();
-    await act(async () => tab!.click());
+    /*
+     * 打开右栏 › 附件：与输入区 ＋ 走同一个入口（`openPane` 会把标签加进
+     * "已打开列表"并展开右栏），不依赖标签栏当前开着哪些标签。
+     */
+    await act(async () => useExtremeStore.getState().openPane("attachments"));
     await act(async () => select().click());
 
     // 输入框立刻显示这个附件，右栏同步勾上。

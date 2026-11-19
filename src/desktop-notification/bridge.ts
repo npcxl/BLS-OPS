@@ -87,6 +87,17 @@ export function dismissDesktopNotification(id: string): void {
   void invoke("desktop_notification_dismiss", { id }).catch(() => undefined);
 }
 
+/**
+ * 撤下所有超能通知，并清掉仍在等待显示的队列。
+ *
+ * 主窗口回到前台时调用：单个 dismiss 只清掉已占槽的那条，队列里的会在槽位
+ * 空出来时补上 —— 那正是"关了一条，又冒出一条旧结果"的来源。
+ */
+export function clearExtremeNotifications(): void {
+  if (!isTauri()) return;
+  void invoke("desktop_notification_clear_extreme").catch(() => undefined);
+}
+
 /** 点击通知：原生侧把 action 转给主窗口，由 `activate.ts` 执行。 */
 export function activateDesktopNotification(id: string): void {
   if (!isTauri()) return;

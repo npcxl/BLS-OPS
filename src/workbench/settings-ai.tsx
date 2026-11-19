@@ -28,6 +28,19 @@ import { cn } from "@/lib/cn";
 
 import { EmptyRow, Group, ListGroup } from "./settings-parts";
 
+/**
+ * 能力从哪来。
+ *
+ * * `auto` —— **自动识别**：不写显式能力，菜单与请求都按内置能力表；
+ * * `manual` —— **手动覆盖**：只把用户勾选的档位写进配置；
+ * * `provider` —— **由供应商决定**：显式声明"没有可调档位"，请求不带
+ *   `reasoning_effort` / `context_budget`，句子照常发。
+ *
+ * 新建默认 `auto`。编辑旧配置时**保留原来的模式**：普通保存不能凭空产生
+ * 覆盖值（那会把"未知模型"写成"支持四档 + 1M 预算"）。
+ */
+type CapabilityMode = "auto" | "manual" | "provider";
+
 type Draft = {
   /** `null` = 新建。 */
   id: string | null;
@@ -41,7 +54,37 @@ type Draft = {
   allow_insecure_http: boolean;
   timeout_seconds: number;
   max_output_tokens: number;
+  capabilityMode: CapabilityMode;
+  /** 该模型支持的思考强度（点选，不手输）。 */
+  efforts: string[];
+  /** 菜单里可选的上下文档位（点选，不手输）。 */
+  budgets: number[];
 };
+
+/**
+ * 思考强度预设。
+ *
+ * 后端只认这四个值（`reasoning_effort` 的协议枚举），界面上把最高档叫 MAX
+ * —— 和极核输入区里的菜单同一套叫法，用户不用记协议里的英文。
+ */
+const EFFORT_PRESETS: { value: string; label: string }[] = [
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "max", label: "MAX" },
+];
+
+/**
+ * 上下文档位预设：只用供应商真实声明的三个档，用户点选即可。
+ *
+ * 不提供"自己填 token 数"：填错一位（300000 而不是 307200）会让请求在窗口
+ * 边缘被服务端拒绝，而且菜单上写 300K、请求里是 300000 也说不清。
+ */
+const BUDGET_PRESETS: { tokens: number; label: string }[] = [
+  { tokens: 300 * 1024, label: "300K" },
+  { tokens: 600 * 1024, label: "600K" },
+  { tokens: 1024 * 1024, label: "1M" },
+];
 
 function emptyDraft(): Draft {
   return {
@@ -55,10 +98,36 @@ function emptyDraft(): Draft {
     allow_insecure_http: false,
     timeout_seconds: 30,
     max_output_tokens: 1200,
+    /*
+     * **新建默认自动识别**：什么都不勾，保存时也不写显式能力。
+     *
+     * 以前新建默认勾满四档强度 + 三个预算（含 1M）：接一个未知模型就会把
+     * "我们并不知道它支持什么"写成"它支持这些"。
+     */
+    capabilityMode: "auto",
+    efforts: [],
+    budgets: [],
   };
 }
 
 function draftFrom(provider: AiProviderView): Draft {
+  const declaredEfforts = provider.reasoning_efforts ?? [];
+  // 旧配置可能带重复档位：回显时先去重，保存时也不会再写回去。
+  const declaredBudgets = [...new Set(provider.context_budgets ?? [])].sort((a, b) => a - b);
+  /*
+   * **保留原来的模式**。
+   *
+   * `capability_overridden === false` = 从未声明过（新加字段的旧记录 / 内置表
+   * 命中）：进"自动识别"，保存时仍然不写覆盖值。
+   *
+   * 声明过但两样都是空的 = 用户选了"由供应商决定"（显式空声明）。
+   */
+  const overridden = provider.capability_overridden === true;
+  const capabilityMode: CapabilityMode = !overridden
+    ? "auto"
+    : declaredEfforts.length === 0 && declaredBudgets.length === 0
+      ? "provider"
+      : "manual";
   return {
     id: provider.id,
     name: provider.name,
@@ -71,6 +140,10 @@ function draftFrom(provider: AiProviderView): Draft {
     allow_insecure_http: provider.allow_insecure_http,
     timeout_seconds: provider.timeout_seconds,
     max_output_tokens: provider.max_output_tokens,
+    capabilityMode,
+    // 非手动覆盖时不回填任何档位：菜单来自内置表 / 供应商默认。
+    efforts: capabilityMode === "manual" ? declaredEfforts : [],
+    budgets: capabilityMode === "manual" ? declaredBudgets : [],
   };
 }
 
@@ -304,6 +377,32 @@ export function AiProviderSettings() {
   );
 }
 
+function ChoicePill({
+  selected,
+  label,
+  onClick,
+}: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2.5 py-1 text-11 transition-colors",
+        selected
+          ? "border-accent/60 bg-accent/10 text-accent"
+          : "border-line/60 bg-surface-1 text-fg-muted hover:text-fg",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 function AiProviderForm({
   draft,
   onChange,
@@ -338,6 +437,33 @@ function AiProviderForm({
         allow_insecure_http: draft.allow_insecure_http,
         timeout_seconds: draft.timeout_seconds,
         max_output_tokens: draft.max_output_tokens,
+        /*
+         * 能力声明**只按当前模式**写：
+         * * 自动识别 —— 一律 `null`，交给内置表（未知模型保持未知）；
+         * * 手动覆盖 —— 只写用户勾选的档位；窗口取所选预算的最大档；
+         * * 由供应商决定 —— 显式空数组（等于"没有可调档位"），请求不带参数。
+         *
+         * 这条边界是"普通保存不能凭空产生覆盖值"的落点。
+         */
+        context_window:
+          draft.capabilityMode === "manual" && draft.budgets.length > 0
+            ? Math.max(...draft.budgets)
+            : null,
+        context_budgets:
+          draft.capabilityMode === "manual"
+            ? [...new Set(draft.budgets)].sort((a, b) => a - b)
+            : draft.capabilityMode === "provider"
+              ? []
+              : null,
+        // 按预设顺序输出（后端也按升序用），避免点击顺序影响能力表。
+        reasoning_efforts:
+          draft.capabilityMode === "manual"
+            ? EFFORT_PRESETS.filter((item) => draft.efforts.includes(item.value)).map(
+                (item) => item.value,
+              )
+            : draft.capabilityMode === "provider"
+              ? []
+              : null,
       });
       await onSaved();
     } catch (cause) {
@@ -439,6 +565,102 @@ function AiProviderForm({
               }
             />
           </Field>
+        </div>
+
+        {/*
+         * 能力声明：先选**来源**，再决定要不要勾档位。
+         *
+         * 一律**点选**，不给手输：token 数填错一位就会在窗口边缘被服务端拒绝，
+         * 而档位本来就只有协议里的四个枚举值。
+         */}
+        <div className="rounded-lg border border-line/60 p-2.5">
+          <p className="text-11 text-fg-muted">{t("能力来源")}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="provider-capability-mode">
+            {(
+              [
+                ["auto", t("自动识别")],
+                ["manual", t("手动覆盖")],
+                ["provider", t("由供应商决定")],
+              ] as [CapabilityMode, string][]
+            ).map(([mode, label]) => (
+              <ChoicePill
+                key={mode}
+                selected={draft.capabilityMode === mode}
+                label={label}
+                onClick={() => onChange({ ...draft, capabilityMode: mode })}
+              />
+            ))}
+          </div>
+          <p className="mt-1.5 text-10 text-fg-subtle">
+            {draft.capabilityMode === "auto"
+              ? t("按内置能力表识别；认不出的模型沿用供应商默认设置，不写任何覆盖值。")
+              : draft.capabilityMode === "provider"
+                ? t("不写可调档位：请求不传思考强度与上下文预算，由供应商决定。")
+                : t("只把下面勾选的档位写进配置，请求按这份声明发送。")}
+          </p>
+
+          {/* 手动覆盖才显示档位：其余两种模式下勾选没有意义。 */}
+          {draft.capabilityMode === "manual" && (
+            <>
+              <p className="mt-3 text-11 text-fg-muted">{t("思考强度")}</p>
+              <p className="mt-0.5 text-10 text-fg-subtle">
+                {t("勾选该模型支持的档位，输入区的菜单只列出这些")}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="provider-efforts">
+                {EFFORT_PRESETS.map((preset) => {
+                  const selected = draft.efforts.includes(preset.value);
+                  return (
+                    <ChoicePill
+                      key={preset.value}
+                      selected={selected}
+                      label={preset.label}
+                      onClick={() =>
+                        onChange({
+                          ...draft,
+                          efforts: selected
+                            ? draft.efforts.filter((item) => item !== preset.value)
+                            : [...draft.efforts, preset.value],
+                        })
+                      }
+                    />
+                  );
+                })}
+              </div>
+
+              <p className="mt-3 text-11 text-fg-muted">{t("上下文档位")}</p>
+              <p className="mt-0.5 text-10 text-fg-subtle">
+                {t("输入区「上下文」菜单里可选的预算；窗口按最大档算")}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5" data-testid="provider-context-budgets">
+                {BUDGET_PRESETS.map((preset) => {
+                  const selected = draft.budgets.includes(preset.tokens);
+                  return (
+                    <ChoicePill
+                      key={preset.tokens}
+                      selected={selected}
+                      label={preset.label}
+                      onClick={() =>
+                        onChange({
+                          ...draft,
+                          budgets: selected
+                            ? draft.budgets.filter((item) => item !== preset.tokens)
+                            : [...draft.budgets, preset.tokens],
+                        })
+                      }
+                    />
+                  );
+                })}
+              </div>
+              {/* 勾了就按勾的送：模型真窗口更小时服务端会直接 400，这里先说清楚。 */}
+              <p className="mt-2 text-10 text-fg-subtle">
+                {t("只勾这个模型真实支持的档位；勾了超出窗口的档位，请求会被服务端拒绝。")}
+              </p>
+            </>
+          )}
+          {/*
+           * 开关型接口（"开启 / 关闭思考"这类）没有做请求适配，就不在这里显示：
+           * 打开了却发不出去，比没有这个开关更糟。
+           */}
         </div>
 
         <label className="flex items-center gap-2 text-11 text-fg-muted">

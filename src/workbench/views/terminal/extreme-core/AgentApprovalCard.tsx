@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import LiquidGlass from "liquid-glass-react";
-import { ChevronDown, ChevronRight, Copy, ShieldAlert } from "@/components/icons";
+import { ChevronDown, ChevronRight, Copy, FileDiff, ShieldAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import SpecularButton from "@/components/ui/specular-button";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import type { AgentApproval } from "@/api/types/agent";
@@ -75,15 +76,37 @@ function useRemainingSeconds(
  * 「查看命令与影响」里。允许之后原地变成「已允许 · 正在执行」，拒绝之后变成
  * 「已拒绝 · 此步骤未执行」，不跳走、不弹窗。
  */
+/** 按操作类型给一条**可执行的验证建议**（计划预审的一部分）。 */
+function verificationHint(approval: AgentApproval, t: (key: string) => string): string {
+  const command = approval.command.toLowerCase();
+  if (/nginx/.test(command) && /(conf|nginx\.conf|\/etc\/nginx)/.test(command)) {
+    return t("建议：先 nginx -t 通过，再 reload 并确认站点返回 200");
+  }
+  if (/systemctl\s+(restart|start|stop)/.test(command)) {
+    return t("建议：用 systemctl status 与端口 / 健康检查核对服务");
+  }
+  if (/docker\s+(compose|restart)/.test(command)) {
+    return t("建议：用 docker ps 与容器健康状态核对");
+  }
+  if (approval.tool === "write_file") {
+    return t("建议：重新读取文件核对内容，并检查引用它的服务");
+  }
+  return t("建议：执行后用只读命令核对结果（状态 / 端口 / 文件内容）");
+}
+
 export function AgentApprovalCard({
   approval,
+  goal,
   phase,
   failure,
   stepState,
   onDecide,
   onOpenOutput,
+  onOpenChanges,
 }: {
   approval: AgentApproval;
+  /** 这条任务的目标：预审时先看清"为什么要改这一处"。 */
+  goal?: string | null;
   phase: ApprovalPhase;
   /** `phase === "failed"` 时的原因（请求没送达）。 */
   failure?: string | null;
@@ -92,6 +115,13 @@ export function AgentApprovalCard({
   onDecide: (allow: boolean) => void;
   /** 「查看输出」：跳到右侧面板里这条命令的位置。 */
   onOpenOutput?: () => void;
+  /**
+   * 「查看变更」：在右栏打开这条记录的真实 Diff。
+   *
+   * 只是**定位**到该任务 / 该批次 / 该文件，不产生第二张审批卡：
+   * 允许 / 拒绝仍然只走这张卡上的按钮（taskId + callId）。
+   */
+  onOpenChanges?: () => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -116,6 +146,9 @@ export function AgentApprovalCard({
   return (
     <section
       data-testid="agent-approval"
+      data-approval-task={approval.taskId}
+      /* 精确定位到**这一条**审批：同一任务的多条审批也要能各自滚到位。 */
+      data-approval-key={`${approval.taskId}:${approval.callId}`}
       data-phase={phase}
       className="shrink-0 px-4 pt-2"
     >
@@ -176,6 +209,21 @@ export function AgentApprovalCard({
               >
                 {impact}
               </p>
+              {pending && goal?.trim() && (
+                <p className="mt-0.5 break-words pl-[22px] text-11 text-fg-muted">
+                  {t("目标")}：{goal}
+                </p>
+              )}
+              {pending && (
+                <p className="mt-0.5 break-words pl-[22px] text-10 text-fg-subtle">
+                  {verificationHint(approval, t)}
+                </p>
+              )}
+              {pending && approval.backupPath && (
+                <p className="mt-0.5 break-all pl-[22px] font-mono text-10 text-fg-subtle">
+                  {t("改动前备份")}：{approval.backupPath}
+                </p>
+              )}
               {phase === "allowed" && (
                 <p className="mt-1 flex flex-wrap items-center gap-2 pl-[22px] text-11 text-fg-muted">
                   <span>{runningLabel}</span>
@@ -215,6 +263,18 @@ export function AgentApprovalCard({
                 {t("查看命令与影响")}
               </button>
 
+              {/* 真实 Diff 在右栏：这里只负责定位，不放第二个"允许"按钮。 */}
+              {approval.changeId && onOpenChanges && (
+                <button
+                  type="button"
+                  onClick={onOpenChanges}
+                  className="flex items-center gap-0.5 text-11 text-accent hover:underline"
+                >
+                  <FileDiff size={12} />
+                  {t("查看变更")}
+                </button>
+              )}
+
               <span className="flex-1" />
 
               {pending && (
@@ -227,14 +287,27 @@ export function AgentApprovalCard({
                   >
                     {t("拒绝执行")}
                   </Button>
-                  <Button
-                    variant={danger ? "danger" : "primary"}
+                  {/* 主操作走官方 React Bits Specular Button：玻璃底 + 边缘高光
+                      跟随指针扫过（参数按危险/普通两档给色）。 */}
+                  <SpecularButton
                     size="sm"
+                    radius={7}
                     disabled={busy}
                     onClick={() => onDecide(true)}
+                    className="!px-3.5 !py-1.5 !text-11"
+                    tint={danger ? "#2b0b0b" : "#0b1220"}
+                    tintOpacity={0.9}
+                    textColor={danger ? "#fecaca" : "#f8fafc"}
+                    lineColor={danger ? "#f87171" : "#ffffff"}
+                    baseColor={danger ? "#7f1d1d" : "#334155"}
+                    intensity={1.15}
+                    shineSize={12}
+                    shineFade={30}
+                    thickness={1.4}
+                    proximity={180}
                   >
                     {busy ? t("提交中…") : t("允许本次")}
-                  </Button>
+                  </SpecularButton>
                 </>
               )}
             </div>

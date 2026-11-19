@@ -5,8 +5,8 @@ use super::protocol::{
     MODEL_OUTPUT_LIMIT,
 };
 use super::tools::{
-    absolute_path, classify_shell, has_sudo, plan_tool, plan_write_backup, strip_markers,
-    BACKUP_MARKER, PWD_MARKER,
+    absolute_path, classify_shell, describe_impact, has_sudo, plan_tool, plan_write_backup,
+    strip_markers, BACKUP_MARKER, PWD_MARKER,
 };
 
 /// 模型不按我们的 `<tool>` 写、而用它自己的调用标记时，也必须识别出来。
@@ -263,6 +263,187 @@ fn pipes_and_fd_redirects_do_not_turn_reads_into_writes() {
             "应当是只读：{command}"
         );
     }
+}
+
+#[test]
+fn docker_exec_is_judged_by_the_command_it_runs() {
+    /*
+     * 用户的原始反馈：这条只是把容器里的 nginx 配置 grep 出来看，却被标成
+     * 「危险 · 修改系统配置（/etc 下的文件）」，每次都要点「允许本次」。
+     * `docker exec` 本身不改任何东西，改不改看容器里跑的那条命令。
+     */
+    assert_eq!(
+        classify_shell(
+            "docker exec bls-edge-nginx sh -c 'grep -rhE \"server_name|listen|proxy_pass|root\" /etc/nginx/conf.d /etc/nginx/nginx.conf 2>/dev/null' | head -n 80"
+        ),
+        ToolRisk::Read
+    );
+
+    for command in [
+        "docker exec web cat /etc/nginx/nginx.conf",
+        "docker exec -i web ls -la /var/www",
+        "docker exec -u root web tail -n 20 /var/log/nginx/error.log",
+        "docker exec web sh -c 'ps aux | head -5'",
+        "docker exec --env FOO=1 web grep -c error /var/log/app.log",
+    ] {
+        assert_eq!(
+            classify_shell(command),
+            ToolRisk::Read,
+            "容器里的只读命令：{command}"
+        );
+    }
+
+    // 容器里真的在改东西：照样按写的档位算（写 /etc 仍是危险）。
+    assert_eq!(
+        classify_shell("docker exec web sh -c 'sed -i s/a/b/ /etc/nginx/nginx.conf'"),
+        ToolRisk::Danger
+    );
+    assert_eq!(
+        classify_shell("docker exec web rm -rf /var/www/cache"),
+        ToolRisk::Write
+    );
+    // 只给了 shell（没给命令）：等于"不知道要做什么"，必须确认。
+    assert_eq!(classify_shell("docker exec -it web bash"), ToolRisk::Write);
+    assert_eq!(
+        classify_shell("docker exec -it web sh -c 'rm -rf /data'"),
+        ToolRisk::Write
+    );
+}
+
+#[test]
+fn a_stray_quote_before_the_verb_does_not_promote_a_read() {
+    /*
+     * `sh -c '…'` 里再嵌一层 `sed 's/…/'`：单引号提前闭合，切段后段首残留一个
+     * 引号（`'grep`）。以前只读白名单按字面比较，`'grep` 匹配不上就成了"不认识的
+     * 写操作"，再叠 /etc 规则直接升到危险档 —— 用户看到的就是「什么都标红」。
+     */
+    assert_eq!(
+        classify_shell(
+            "docker exec bls-edge-nginx sh -c 'grep -rHE \"server_name|listen|proxy_pass|root\" /etc/nginx/nginx.conf 2>/dev/null 2>&1 | sed 's/[:space:]//' | head -n 80'"
+        ),
+        ToolRisk::Read
+    );
+    // 段首带引号的动词按原动词判。
+    assert_eq!(
+        classify_shell("'grep -n foo /etc/nginx/nginx.conf'"),
+        ToolRisk::Read
+    );
+    // 段首带引号的 sudo 仍然是提权。
+    assert_eq!(classify_shell("'sudo rm -rf /var/www'"), ToolRisk::Danger);
+}
+
+#[test]
+fn compose_options_do_not_hide_a_writing_subcommand() {
+    /*
+     * `docker compose -f x.yml up -d` 是最常见的写法，但固定串匹配会被中间的
+     * `-f …` 绕过去，整条落进只读白名单 —— 这是漏判，比误报危险。
+     */
+    for command in [
+        "docker compose -f docker-compose.yml up -d",
+        "docker compose --project-name bls -f x.yml restart",
+        "docker compose -p bls stop",
+    ] {
+        assert!(
+            classify_shell(command).needs_approval(),
+            "带选项的写子命令仍要确认：{command}"
+        );
+    }
+    for command in [
+        "docker compose ps",
+        "docker compose -f x.yml logs --tail 50",
+        "docker compose config",
+    ] {
+        assert_eq!(
+            classify_shell(command),
+            ToolRisk::Read,
+            "只读子命令：{command}"
+        );
+    }
+}
+
+#[test]
+fn unclear_punctuation_does_not_claim_etc_is_written() {
+    // 拆不开的命令仍要确认，但不能给出与事实相反的"修改系统配置"。
+    let impact = describe_impact(
+        "docker exec web sh -c 'grep a /etc/nginx/x 2>&1 | sed 's/a/b/'",
+        ToolRisk::Write,
+    );
+    let impact = impact.unwrap_or_default();
+    assert!(!impact.contains("修改系统配置"), "{impact}");
+}
+
+#[test]
+fn shell_loops_are_judged_by_the_commands_inside() {
+    /*
+     * 用户的原始反馈：这条只是挨个域名 curl 一下看状态码，却被标成
+     * 「执行 for · 影响未知」，还得手点「允许本次」。
+     */
+    assert_eq!(
+        classify_shell(
+            "for h in ops.xlcig.cn admin.xlcig.cn api.xlcig.cn; do printf \"%-18s \" \"$h\"; curl -sk -o /dev/null -w \"code=%{http_code} size=%{size_download}\\n\" --max-time 5 -H \"Host: $h\" https://127.0.0.1:8080; curl -s -o /dev/null -w \"code=%{http_code} size=%{size_download}\\n\" --max-time 5 -H \"Host: ops.xlcig.cn\" http://127.0.0.1:8088/; done"
+        ),
+        ToolRisk::Read
+    );
+
+    for command in [
+        "for f in /var/log/nginx/*.log; do echo $f; done",
+        "if [ -f /etc/nginx/nginx.conf ]; then echo ok; fi",
+        "while read line; do echo \"$line\"; done < /tmp/list.txt",
+        "! grep -q error /var/log/app.log",
+        "{ uptime; df -h; }",
+    ] {
+        assert_eq!(
+            classify_shell(command),
+            ToolRisk::Read,
+            "循环 / 条件 / 分组里的只读命令：{command}"
+        );
+    }
+
+    // 循环体里真的有写：照样按写算（路径在循环头里，所以是"写"而不是"危险"，
+    // 一样需要确认）。
+    assert_eq!(
+        classify_shell("for f in /var/www/*.log; do rm -f $f; done"),
+        ToolRisk::Write
+    );
+    assert_eq!(
+        classify_shell("for f in /etc/nginx/conf.d/*.conf; do sed -i s/a/b/ $f; done"),
+        ToolRisk::Write
+    );
+    // 同一段里既写又在 /etc 下：仍然是危险。
+    assert_eq!(
+        classify_shell("sed -i s/a/b/ /etc/nginx/nginx.conf"),
+        ToolRisk::Danger
+    );
+    // 循环头里藏命令替换：不能因为"只是 for 头"就放过去。
+    assert_eq!(
+        classify_shell("for x in $(rm -rf /tmp/x); do echo $x; done"),
+        ToolRisk::Write
+    );
+    // 输出重定向仍然算写。
+    assert_eq!(
+        classify_shell("for f in *.log; do echo $f >> /tmp/all.log; done"),
+        ToolRisk::Write
+    );
+}
+
+#[test]
+fn impact_only_mentions_etc_when_it_is_really_written() {
+    // 只读：连确认都不需要，更没有"修改系统配置"。
+    assert!(describe_impact("grep -rn foo /etc/nginx/nginx.conf", ToolRisk::Read).is_none());
+    // 读 /etc、写 /tmp：提到 /etc 只是参数，不能说成"修改系统配置"。
+    let impact = describe_impact(
+        "cp /etc/nginx/nginx.conf /tmp/nginx.conf.bak",
+        ToolRisk::Write,
+    )
+    .expect("写文件要给影响说明");
+    assert!(!impact.contains("/etc"), "{impact}");
+    // 真的写 /etc：说清楚。
+    let impact = describe_impact("sed -i 's/a/b/' /etc/nginx/nginx.conf", ToolRisk::Danger)
+        .expect("危险操作要给影响说明");
+    assert!(impact.contains("/etc"), "{impact}");
+    let impact = describe_impact("echo 'x' > /etc/profile.d/x.sh", ToolRisk::Danger)
+        .expect("危险操作要给影响说明");
+    assert!(impact.contains("/etc"), "{impact}");
 }
 
 #[test]
@@ -879,7 +1060,9 @@ mod loop_tests {
 
     use super::*;
     use crate::agent::protocol::AgentEvent;
-    use crate::agent::runner::{is_query_only, run_loop, AgentIo, IoFuture, StopReason};
+    use crate::agent::runner::{
+        evaluate_outcome, is_query_only, run_loop, AgentIo, IoFuture, StopReason,
+    };
     use crate::agent::state::{AgentHandle, AgentSnapshot};
     use crate::agent::TokenUsage;
     use crate::agent::{AgentInput, AgentTurn};
@@ -892,6 +1075,8 @@ mod loop_tests {
             task_id: "task-loop".to_string(),
             session_id: "ssh-1".to_string(),
             server: "prod".to_string(),
+            server_id: None,
+            workspace_id: None,
             cwd: "/root".to_string(),
             messages: vec![AgentTurn {
                 role: "user".to_string(),
@@ -902,10 +1087,12 @@ mod loop_tests {
             provider_id: None,
             reasoning_effort: None,
             context_budget: None,
+            capability: None,
             carry_usage: None,
             allow_sudo: false,
             auto_approve_writes: false,
             max_rounds,
+            carry_steps: Vec::new(),
         }
     }
 
@@ -977,6 +1164,15 @@ mod loop_tests {
                         .filter_map(|message| message["role"].as_str().map(str::to_string))
                         .collect()
                 })
+                .unwrap_or_default()
+        }
+
+        /// 最后一次请求的完整消息（用来断言"补充要求进了下一轮对话"）。
+        fn last_messages(&self) -> Vec<Value> {
+            self.sent
+                .lock()
+                .ok()
+                .and_then(|list| list.last().cloned())
                 .unwrap_or_default()
         }
     }
@@ -1111,6 +1307,19 @@ mod loop_tests {
         });
     }
 
+    /// 等循环挂起后补一句要求（模拟用户在执行中改方向）。
+    fn steer_later(handle: Arc<AgentHandle>, text: &'static str) {
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                if handle.pending_approval().is_some() {
+                    handle.push_steer(text);
+                    return;
+                }
+            }
+        });
+    }
+
     const READ_CALL: &str = r#"<tool name="run_shell">{"command":"uname -a"}</tool>"#;
     const WRITE_CALL: &str =
         r#"<tool name="run_shell">{"command":"systemctl restart nginx"}</tool>"#;
@@ -1158,16 +1367,139 @@ mod loop_tests {
 
     #[tokio::test]
     async fn an_approved_write_runs_exactly_once() {
-        let io = FakeIo::new(&[WRITE_CALL, "已经重启。"]);
+        // 改写后执行器会催一次只读验证：补一条验证命令与最终答复。
+        let io = FakeIo::new(&[WRITE_CALL, "已经重启。", READ_CALL, "验证通过：服务正常。"]);
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
         decide_later(handle.clone(), "call-0-0", true);
 
         let result = run_loop(&handle, &loop_input(None), &io, None).await;
-        assert_eq!(result.unwrap(), "已经重启。");
-        assert_eq!(io.executed().len(), 1, "确认之后只执行一次");
-        assert!(io.executed()[0].contains("systemctl restart nginx"));
+        assert_eq!(result.unwrap(), "验证通过：服务正常。");
+        let executed = io.executed();
+        assert_eq!(
+            executed
+                .iter()
+                .filter(|command| command.contains("systemctl restart nginx"))
+                .count(),
+            1,
+            "确认之后只执行一次"
+        );
+        assert!(executed[0].contains("systemctl restart nginx"));
         assert_eq!(handle.snapshot().steps[0].risk, "write");
         assert_eq!(handle.snapshot().steps[0].state, "success");
+    }
+
+    fn outcome_step(index: u32, risk: &str, state: &str, command: &str) -> crate::agent::AgentStep {
+        crate::agent::AgentStep {
+            index,
+            risk: risk.to_string(),
+            state: state.to_string(),
+            command: command.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_write_without_a_later_read_is_only_partially_verified() {
+        let steps = vec![
+            outcome_step(0, "read", "success", "cat /etc/nginx/nginx.conf"),
+            outcome_step(1, "write", "success", "systemctl restart nginx"),
+        ];
+        let outcome = evaluate_outcome(&steps, false).unwrap();
+        assert_eq!(outcome.level, "partial");
+        assert!(outcome.reason.contains("没有只读验证"));
+        assert!(outcome
+            .evidence
+            .iter()
+            .any(|item| item.contains("systemctl")));
+    }
+
+    #[test]
+    fn a_write_followed_by_a_read_is_verified() {
+        let steps = vec![
+            outcome_step(0, "write", "success", "systemctl restart nginx"),
+            outcome_step(1, "read", "success", "systemctl status nginx"),
+        ];
+        let outcome = evaluate_outcome(&steps, false).unwrap();
+        assert_eq!(outcome.level, "verified");
+        assert!(outcome.evidence.iter().any(|item| item.contains("status")));
+    }
+
+    #[test]
+    fn a_query_without_any_step_has_no_server_evidence() {
+        let outcome = evaluate_outcome(&[], true).unwrap();
+        assert_eq!(outcome.level, "needs_info");
+        assert!(outcome.reason.contains("没有执行任何只读检查"));
+    }
+
+    #[test]
+    fn a_trailing_failure_keeps_the_result_partial() {
+        let steps = vec![
+            outcome_step(0, "read", "success", "docker ps"),
+            outcome_step(1, "read", "failed", "docker inspect ops-web"),
+        ];
+        let outcome = evaluate_outcome(&steps, false).unwrap();
+        assert_eq!(outcome.level, "partial");
+        assert!(outcome.reason.contains("最后一次失败"));
+    }
+
+    #[tokio::test]
+    async fn a_steer_withdraws_the_pending_write_and_reaches_the_next_round() {
+        let io = FakeIo::new(&[WRITE_CALL, "只查了容器里的服务。"]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        steer_later(handle.clone(), "只看容器里的");
+
+        let result = run_loop(&handle, &loop_input(None), &io, None).await;
+        assert_eq!(result.unwrap(), "只查了容器里的服务。");
+        assert!(io.executed().is_empty(), "撤回的写操作绝不能执行");
+        assert_eq!(handle.snapshot().steps[0].state, "skipped");
+        assert!(
+            io.kinds().contains(&"approval_withdrawn".to_string()),
+            "界面要能收到撤回事件"
+        );
+        let sent = io.last_messages();
+        assert!(
+            sent.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("【任务更新】只看容器里的"))
+            }),
+            "下一轮请求必须带上补充要求：{sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resuming_continues_step_indexes_after_the_checkpoint() {
+        let io = FakeIo::new(&[READ_CALL, "从检查点继续完成。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.carry_steps = vec![outcome_step(0, "read", "success", "uname -a")];
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert_eq!(content, "从检查点继续完成。");
+        let steps = handle.snapshot().steps;
+        assert_eq!(steps.len(), 1);
+        // 历史里已有 #1，新步骤必须从 #2 开始，不能按 index 覆盖旧步骤。
+        assert_eq!(steps[0].index, 1);
+    }
+
+    #[tokio::test]
+    async fn finishing_after_a_write_asks_for_verification_once() {
+        // 写入 → 模型直接收尾 → 执行器催一次只读验证 → 模型补验 → 才成功。
+        let io = FakeIo::new(&[WRITE_CALL, "改好了。", READ_CALL, "已验证：服务正常。"]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", true);
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "已验证：服务正常。");
+        assert_eq!(io.executed().len(), 2, "改写后必须再跑一条只读验证");
+        assert!(io.executed()[1].contains("uname -a"));
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.outcome.unwrap().level, "verified");
+        // 催验证是追加给模型的要求，不是把任务判失败。
+        assert!(!io.kinds().contains(&"failed".to_string()));
     }
 
     #[tokio::test]
@@ -1253,15 +1585,15 @@ mod loop_tests {
     /// 「完全权限」：写操作**不再逐条确认**，但写文件仍然走备份命令。
     #[tokio::test]
     async fn full_permission_runs_writes_without_asking() {
-        let io = FakeIo::new(&[WRITE_CALL, "已重启。"]);
+        let io = FakeIo::new(&[WRITE_CALL, "已重启。", READ_CALL, "服务正常。"]);
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = loop_input(None);
         input.auto_approve_writes = true;
         input.allow_sudo = true;
 
         let content = run_loop(&handle, &input, &io, None).await.unwrap();
-        assert_eq!(content, "已重启。");
-        assert_eq!(io.executed().len(), 1, "写操作应直接执行");
+        assert_eq!(content, "服务正常。");
+        assert_eq!(io.executed().len(), 2, "写操作 + 必要的只读验证");
         assert!(
             !io.kinds().contains(&"approval_required".to_string()),
             "完全权限下不该再弹确认"
@@ -1295,6 +1627,8 @@ mod loop_tests {
         let io = FakeIo::new(&[
             r#"<tool name="run_shell">{"command":"iptables -F"}</tool>"#,
             "已清空防火墙规则。",
+            READ_CALL,
+            "规则已确认。",
         ]);
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = loop_input(None);
@@ -1302,8 +1636,8 @@ mod loop_tests {
         input.allow_sudo = true;
 
         let content = run_loop(&handle, &input, &io, None).await.unwrap();
-        assert_eq!(content, "已清空防火墙规则。");
-        assert_eq!(io.executed().len(), 1, "完全权限下危险操作直接执行");
+        assert_eq!(content, "规则已确认。");
+        assert_eq!(io.executed().len(), 2, "危险操作 + 必要的只读验证");
         assert!(
             !io.kinds().contains(&"approval_required".to_string()),
             "完全权限下不该再弹确认"
@@ -1489,7 +1823,7 @@ mod loop_tests {
     /// 且 = 挂起时刻 + APPROVAL_SECONDS（重进恢复时不能重新起算 5 分钟）。
     #[tokio::test]
     async fn pending_approval_carries_a_shared_deadline() {
-        let io = FakeIo::new(&[WRITE_CALL, "好的，改完了。"]);
+        let io = FakeIo::new(&[WRITE_CALL, "好的，改完了。", READ_CALL, "验证通过。"]);
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
         let probe = handle.clone();
         let observed = tokio::spawn(async move {
@@ -1529,3 +1863,8 @@ mod loop_tests {
         );
     }
 }
+
+/// 文件变更审阅：预览 / 外部改动 / 回读 / 失败 / 未采集（独立子模块，见
+/// `src/agent/tests/change_tests.rs`）。
+#[cfg(test)]
+mod change_tests;

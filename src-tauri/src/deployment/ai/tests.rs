@@ -625,10 +625,10 @@ fn deepseek_capability_maps_efforts_and_context() {
     assert_eq!(resolve_effort("qwen-max", Some("high")), None);
     // 预算档位也由能力表给出；未知模型没有档位。
     assert_eq!(
-        context_budget_options("deepseek-reasoner"),
+        context_budget_options("deepseek-reasoner", None),
         vec![300 * 1024, 600 * 1024, 1024 * 1024]
     );
-    assert!(context_budget_options("qwen-max").is_empty());
+    assert!(context_budget_options("qwen-max", None).is_empty());
     // 档位不能超过窗口，否则菜单能选、请求必然 400。
     assert!(DEEPSEEK_CONTEXT_BUDGETS
         .iter()
@@ -656,10 +656,11 @@ fn context_budget_stays_inside_the_model_window() {
         context_budget_tokens("deepseek-chat", Some(1024 * 1024)),
         1024 * 1024
     );
-    // 不在档位表里的值收敛到自动预算以内，避免超出窗口。
+    // 不在档位表里的值收敛到**窗口**以内（不是收敛到 80% 的 auto：
+    // 否则"选了 900K、实际只有 816K"这类缩水看不出原因）。
     assert_eq!(
         context_budget_tokens("deepseek-chat", Some(2_000_000)),
-        auto
+        DEEPSEEK_CONTEXT_WINDOW as usize
     );
     assert_eq!(
         context_budget_tokens("deepseek-chat", Some(64 * 1024)),
@@ -669,6 +670,54 @@ fn context_budget_stays_inside_the_model_window() {
     assert_eq!(
         context_budget_tokens("qwen-max", Some(200_000)),
         FALLBACK_INPUT_TOKENS
+    );
+}
+
+#[test]
+fn declared_capability_overrides_the_builtin_table() {
+    // 内置表不认识的模型（MiMo 这类）：用户在设置里声明之后，菜单与请求都能用上。
+    let overrides = CapabilityOverride {
+        context_window: Some(256 * 1024),
+        budgets: Some(vec![128 * 1024, 256 * 1024]),
+        efforts: Some(vec!["low".to_string(), "high".to_string()]),
+    };
+    let capability = resolve_capability("mimo-2.6-pro", Some(&overrides));
+    assert!(capability.known, "声明过就必须算已知，界面不能再报未登记");
+    assert!(capability.overridden);
+    assert_eq!(capability.context_window, 256 * 1024);
+    assert_eq!(
+        resolve_effort_with("mimo-2.6-pro", Some(&overrides), Some("high")),
+        Some("high".to_string())
+    );
+    // 没声明的档位仍然不发：不替用户猜。
+    assert_eq!(
+        resolve_effort_with("mimo-2.6-pro", Some(&overrides), Some("medium")),
+        None
+    );
+    assert_eq!(
+        context_budget_tokens_with("mimo-2.6-pro", Some(&overrides), Some(128 * 1024)),
+        128 * 1024
+    );
+    // 没有声明时保持"未知"：界面据此提示用户去补，而不是装作支持。
+    let unknown = resolve_capability("mimo-2.6-pro", None);
+    assert!(!unknown.known);
+    assert!(unknown.efforts.is_empty());
+    assert_eq!(unknown.auto_input_tokens(), FALLBACK_INPUT_TOKENS);
+}
+
+#[test]
+fn partial_declaration_falls_back_to_the_builtin_row() {
+    // 只声明窗口：档位仍走内置表（deepseek 的三档）。
+    let overrides = CapabilityOverride {
+        context_window: Some(512 * 1024),
+        ..CapabilityOverride::default()
+    };
+    let capability = resolve_capability("deepseek-chat", Some(&overrides));
+    assert_eq!(capability.context_window, 512 * 1024);
+    assert_eq!(capability.efforts, vec!["low", "high", "max"]);
+    assert_eq!(
+        capability.budgets,
+        vec![300 * 1024, 600 * 1024, 1024 * 1024]
     );
 }
 

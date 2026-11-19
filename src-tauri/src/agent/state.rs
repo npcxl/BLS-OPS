@@ -6,19 +6,26 @@
 //! 2. **审批握手**：写 / 危险操作挂起在这里等 `agent_approve`，命令本身还没
 //!    发出去 —— 用户不点，服务器就不会变。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::protocol::{AgentStep, PendingApproval};
+use super::protocol::{AgentOutcome, AgentStep, PendingApproval, MAX_TOTAL_SECONDS};
 use super::runner::PruneReport;
 use crate::deployment::ai::model::AiCancel;
 
 /// 已结束的任务快照保留这么久，供前端重进时恢复（之后连同内存一起释放）。
 const RETAIN: Duration = Duration::from_secs(10 * 60);
+
+/// 非终态快照超过这么久没有任何进展 → 判定"执行循环已经不在"。
+///
+/// 比任务总上限（[`MAX_TOTAL_SECONDS`]，30 分钟）再多两分钟：正常循环最迟在
+/// 总上限处结束并写终态，之后还停在 `running / waiting` 只能是异常退出
+/// （panic、future 被丢弃、WebView 重载打断收尾）留下的僵尸句柄。
+const STALE_AFTER_MS: i64 = (MAX_TOTAL_SECONDS as i64 + 120) * 1000;
 
 /// 本任务累计用量：**每次模型请求相加**（同一段历史会在多次请求里重复计入）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -84,6 +91,8 @@ pub struct AgentSnapshot {
     pub pending_approval: Option<PendingApproval>,
     /// 最近一轮的上下文用量；还没请求过模型时为 `None`。
     pub context: Option<ContextUsage>,
+    /// 验证结论：`verified` / `partial` / `needs_info`；没执行过步骤时为 `None`。
+    pub outcome: Option<AgentOutcome>,
     pub updated_at: i64,
 }
 
@@ -101,6 +110,7 @@ impl AgentSnapshot {
             steps: Vec::new(),
             pending_approval: None,
             context: None,
+            outcome: None,
             updated_at: crate::db::AppDb::now(),
         }
     }
@@ -116,6 +126,21 @@ pub struct AgentHandle {
     cancel: AiCancel,
     /// callId → 等待审批的回复通道。
     approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /**
+     * 运行中用户补充的指令（「更新当前任务」）。
+     *
+     * 循环在 Rust 侧，前端不能直接改 `conversation`；这里只排队，由 `run_loop`
+     * 在**下一步开始前**取走并作为一条 user 消息交给模型。取走即清空，
+     * 同一条指令不会重复生效。
+     */
+    steers: Mutex<Vec<String>>,
+    /**
+     * 因补充指令而**撤回**的待确认调用（callId）。
+     *
+     * 撤回与「用户拒绝」在循环里必须区分：拒绝要记进 decided_ops（换写法也不再问），
+     * 撤回只是按新要求重新评估，不能把这一操作永久判死。
+     */
+    withdrawn: Mutex<HashSet<String>>,
     finished_at: Mutex<Option<Instant>>,
 }
 
@@ -125,6 +150,8 @@ impl AgentHandle {
             snapshot: Mutex::new(snapshot),
             cancel,
             approvals: Mutex::new(HashMap::new()),
+            steers: Mutex::new(Vec::new()),
+            withdrawn: Mutex::new(HashSet::new()),
             finished_at: Mutex::new(None),
         }
     }
@@ -204,6 +231,64 @@ impl AgentHandle {
         }
     }
 
+    /**
+     * 运行中收到一条补充指令。
+     *
+     * 如果这一步正在等确认，**先撤回**：用户刚说"只查容器里的"，再执行原来那条
+     * 写操作就是违背新要求。撤回后模型会带着这条指令重新评估（见 `take_withdrawn`）。
+     */
+    pub fn push_steer(&self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if let Ok(mut queue) = self.steers.lock() {
+            queue.push(text.to_string());
+        }
+        self.withdraw_pending_approval();
+    }
+
+    /**
+     * 撤回当前待确认操作（如果有）。
+     *
+     * 循环"登记等待"与"推送指令"之间有极小的窗口：登记前推来的指令看不到
+     * pending，就会一直等到超时。所以循环在真正 `wait_approval` 之前也会调
+     * 一次这里，两边都安全。
+     */
+    pub fn withdraw_pending_approval(&self) -> bool {
+        let Some(call_id) = self.pending_approval() else {
+            return false;
+        };
+        if let Ok(mut withdrawn) = self.withdrawn.lock() {
+            withdrawn.insert(call_id.clone());
+        }
+        self.resolve_approval(&call_id, false)
+    }
+
+    /// 取走全部待生效指令（取走即清空）。
+    pub fn take_steers(&self) -> Vec<String> {
+        self.steers
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }
+
+    /// 是否有待生效指令（执行器在每条命令前用它决定"还要不要继续按旧计划跑"）。
+    pub fn has_steers(&self) -> bool {
+        self.steers
+            .lock()
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// 这个调用是不是被补充指令撤回的（与用户主动拒绝区分）。
+    pub fn take_withdrawn(&self, call_id: &str) -> bool {
+        self.withdrawn
+            .lock()
+            .map(|mut set| set.remove(call_id))
+            .unwrap_or(false)
+    }
+
     /// 有等待中的审批时返回它的 callId（快照里 `waiting` 状态用得上）。
     pub fn pending_approval(&self) -> Option<String> {
         self.approvals
@@ -216,6 +301,54 @@ impl AgentHandle {
         if let Ok(mut slot) = self.finished_at.lock() {
             *slot = Some(Instant::now());
         }
+    }
+
+    /**
+     * 非终态但已经超过总时长上限没有任何进展：收敛成 `failed`。
+     *
+     * 这种句柄**不可能**再推进（循环已经不在），但前端重进时看到 `running`
+     * 会显示一个停不掉的「执行中」。这里按"失联"收尾，让界面能正常结束。
+     * 返回是否真的收敛过。
+     */
+    pub fn reap_if_stale(&self) -> bool {
+        let now = crate::db::AppDb::now();
+        let mut reaped = false;
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            if !snapshot.terminal() && now.saturating_sub(snapshot.updated_at) > STALE_AFTER_MS {
+                snapshot.status = "failed".to_string();
+                snapshot.error = Some(
+                    "任务失联：超过任务总时长上限没有进展，已停止跟踪。\
+                     服务器上已经发出的命令可能仍在执行，请先核对再重试。"
+                        .to_string(),
+                );
+                snapshot.pending_approval = None;
+                snapshot.updated_at = now;
+                reaped = true;
+            }
+        }
+        if reaped {
+            self.mark_finished();
+        }
+        reaped
+    }
+
+    /**
+     * 用户强制结束：不再等后端确认，直接收敛成 `cancelled`。
+     *
+     * 只能停掉"跟踪"，无法撤回已经发到服务器上的命令 —— 原因写在 `error`
+     * 里，界面必须原样告诉用户，不能显示成一个干净的「已停止」。
+     */
+    pub fn abandon(&self, reason: &str) -> AgentSnapshot {
+        self.cancel.cancel();
+        self.update(|snapshot| {
+            snapshot.pending_approval = None;
+            if !snapshot.terminal() {
+                snapshot.status = "cancelled".to_string();
+                snapshot.error = Some(reason.to_string());
+            }
+        });
+        self.mark_finished();
+        self.snapshot()
     }
 
     fn expired(&self) -> bool {
@@ -249,14 +382,25 @@ impl AgentRegistry {
     }
 
     pub fn get(&self, task_id: &str) -> Option<Arc<AgentHandle>> {
-        self.runs
+        let handle = self
+            .runs
             .lock()
             .ok()
-            .and_then(|runs| runs.get(task_id).cloned())
+            .and_then(|runs| runs.get(task_id).cloned())?;
+        // 顺带收敛失联句柄：`agent_resume` / `extreme_task_delete` 都通过它
+        // 判断"还在执行"，不收敛就会永远拒绝恢复、也永远删不掉。
+        handle.reap_if_stale();
+        Some(handle)
     }
 
     pub fn snapshot(&self, task_id: &str) -> Option<AgentSnapshot> {
         self.get(task_id).map(|handle| handle.snapshot())
+    }
+
+    /// 强制结束（用户明确选择，不再等后端确认）。没有句柄时返回 `None`。
+    pub fn abandon(&self, task_id: &str, reason: &str) -> Option<AgentSnapshot> {
+        let handle = self.get(task_id)?;
+        Some(handle.abandon(reason))
     }
 
     /// 结束：保留句柄供快照查询，但标记完成时间（超时后清掉）。
@@ -322,6 +466,64 @@ mod tests {
         assert!(handle.pending_approval().is_none());
         // 第二次没有等待者，返回 false（不会误成功）。
         assert!(!handle.resolve_approval("call-1", true));
+    }
+
+    #[test]
+    fn steer_withdraws_a_pending_approval_and_is_taken_once() {
+        let handle = AgentHandle::new(snapshot(), AiCancel::new());
+        let mut receiver = handle.wait_approval("call-1");
+
+        handle.push_steer("只看容器里的");
+        // 撤回的是"这次待确认"，不是整个任务：接收端按拒绝收到 false。
+        assert!(matches!(receiver.try_recv(), Ok(false)));
+        assert!(handle.take_withdrawn("call-1"));
+        assert_eq!(handle.take_steers(), vec!["只看容器里的".to_string()]);
+        // 取走后清空，不会重复生效；撤回标记也只消费一次。
+        assert!(!handle.has_steers());
+        assert!(handle.take_steers().is_empty());
+        assert!(!handle.take_withdrawn("call-1"));
+    }
+
+    #[test]
+    fn stale_running_task_is_reaped_so_it_can_run_again() {
+        let registry = AgentRegistry::default();
+        let handle = registry.register(snapshot(), AiCancel::new()).unwrap();
+        // 超过总时长上限没有任何进展：循环已经不可能还在跑。
+        // 直接改快照字段（`update` 会把 updated_at 刷新成"现在"）。
+        handle
+            .snapshot
+            .lock()
+            .unwrap()
+            .updated_at = crate::db::AppDb::now() - STALE_AFTER_MS - 1000;
+        let reaped = registry.snapshot("task-1").unwrap();
+        assert_eq!(reaped.status, "failed");
+        assert!(reaped.error.unwrap().contains("失联"));
+        // 收敛之后同一个 taskId 允许重新启动；以前会永远卡在"还在执行"。
+        assert!(registry.register(snapshot(), AiCancel::new()).is_some());
+    }
+
+    #[test]
+    fn abandon_marks_a_running_task_cancelled() {
+        let registry = AgentRegistry::default();
+        registry.register(snapshot(), AiCancel::new()).unwrap();
+        let snapshot = registry.abandon("task-1", "用户强制结束").unwrap();
+        assert_eq!(snapshot.status, "cancelled");
+        assert_eq!(snapshot.error.as_deref(), Some("用户强制结束"));
+        assert!(snapshot.pending_approval.is_none());
+    }
+
+    #[test]
+    fn abandon_without_a_handle_returns_none() {
+        let registry = AgentRegistry::default();
+        assert!(registry.abandon("missing", "用户强制结束").is_none());
+    }
+
+    #[test]
+    fn empty_steer_is_ignored() {
+        let handle = AgentHandle::new(snapshot(), AiCancel::new());
+        handle.push_steer("   ");
+        assert!(!handle.has_steers());
+        assert!(handle.take_steers().is_empty());
     }
 
     #[test]

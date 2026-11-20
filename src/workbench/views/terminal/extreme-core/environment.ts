@@ -12,6 +12,13 @@
  * 结合这些事实自由编排，由用户确认。写死流程只会让它对没见过的环境束手无策。
  */
 
+import { i18n } from "@/i18n";
+
+/** 当前界面是不是英文：这段事实会进模型上下文，必须跟着界面走。 */
+function isEnglish(): boolean {
+  return (i18n.resolvedLanguage ?? i18n.language)?.toLowerCase().startsWith("en") ?? false;
+}
+
 /** 域名解析结论。 */
 export type DnsVerdict = "points-here" | "points-elsewhere" | "unresolved" | "unknown";
 
@@ -101,24 +108,39 @@ export function summarizeProjectTree(files: string[], maxEntries = 40): string[]
   const entries = [...tops.entries()].sort(([a], [b]) => a.localeCompare(b));
   const lines = entries
     .slice(0, maxEntries)
-    .map(([name, count]) => (name.endsWith("/") ? `${name}  (${count} 个文件)` : name));
+    .map(([name, count]) =>
+      name.endsWith("/") ? `${name}  (${count} ${isEnglish() ? "files" : "个文件"})` : name,
+    );
   if (entries.length > maxEntries) {
-    lines.push(`… 另有 ${entries.length - maxEntries} 项`);
+    lines.push(
+      isEnglish()
+        ? `… ${entries.length - maxEntries} more item(s)`
+        : `… 另有 ${entries.length - maxEntries} 项`,
+    );
   }
   return lines;
 }
 
 /** 结论 → 一句人话（写进上下文，也用于界面提示）。 */
 export function describeDnsVerdict(verdict: DnsVerdict): string {
+  const en = isEnglish();
   switch (verdict) {
     case "points-here":
-      return "域名已指向本机，可以在本机验证公网入口";
+      return en
+        ? "the domain points at this machine — the public entry can be verified here"
+        : "域名已指向本机，可以在本机验证公网入口";
     case "points-elsewhere":
-      return "域名指向别的主机 —— 改动前先确认目标机器，否则改完也访问不到";
+      return en
+        ? "the domain points at another host — confirm the target machine first, otherwise the change will not be reachable"
+        : "域名指向别的主机 —— 改动前先确认目标机器，否则改完也访问不到";
     case "unresolved":
-      return "域名当前解析不到，部署完成后也无法通过域名访问";
+      return en
+        ? "the domain does not resolve right now — it will not be reachable through the domain after deployment either"
+        : "域名当前解析不到，部署完成后也无法通过域名访问";
     case "unknown":
-      return "缺少本机对外地址，无法判断域名是否指向本机";
+      return en
+        ? "no public address for this machine — cannot tell whether the domain points here"
+        : "缺少本机对外地址，无法判断域名是否指向本机";
   }
 }
 
@@ -128,39 +150,60 @@ export function describeDnsVerdict(verdict: DnsVerdict): string {
  * 只有事实，没有"建议先做什么"。模型自己决定下一步。
  */
 export function renderEnvironmentReport(report: EnvironmentReport): string {
+  const en = isEnglish();
   const lines: string[] = [];
 
-  const system = [report.os, report.arch, report.user ? `用户 ${report.user}` : null]
+  const system = [report.os, report.arch, report.user ? `${en ? "user" : "用户"} ${report.user}` : null]
     .filter(Boolean)
     .join(" · ");
   if (system) {
-    lines.push(`系统：${system}${report.isRoot ? "（root）" : ""}`);
+    lines.push(`${en ? "System" : "系统"}：${system}${report.isRoot ? "（root）" : ""}`);
   }
 
   if (report.tools.length > 0) {
-    lines.push(`实测可用工具：${report.tools.join("、")}`);
+    lines.push(
+      en
+        ? `Tools actually available: ${report.tools.join(", ")}`
+        : `实测可用工具：${report.tools.join("、")}`,
+    );
   } else {
-    lines.push("实测可用工具：（未探测到，或探测未执行）");
+    lines.push(en ? "Tools actually available: (none detected, or the probe did not run)" : "实测可用工具：（未探测到，或探测未执行）");
   }
 
   if (report.attachmentCount !== undefined) {
     const size =
-      report.attachmentBytes !== undefined ? `（约 ${Math.round(report.attachmentBytes / 1024)} KB）` : "";
-    lines.push(`附件：${report.attachmentCount} 个文件${size}`);
+      report.attachmentBytes !== undefined
+        ? en
+          ? ` (about ${Math.round(report.attachmentBytes / 1024)} KB)`
+          : `（约 ${Math.round(report.attachmentBytes / 1024)} KB）`
+        : "";
+    lines.push(
+      en
+        ? `Attachments: ${report.attachmentCount} file(s)${size}`
+        : `附件：${report.attachmentCount} 个文件${size}`,
+    );
   }
   if (report.projectFiles.length > 0) {
-    lines.push(`项目顶层结构：\n${summarizeProjectTree(report.projectFiles).map((line) => `  ${line}`).join("\n")}`);
+    lines.push(
+      `${en ? "Top-level project layout" : "项目顶层结构"}：\n${summarizeProjectTree(report.projectFiles)
+        .map((line) => `  ${line}`)
+        .join("\n")}`,
+    );
   }
 
   if (report.dns) {
-    const addresses = report.dns.resolved.length > 0 ? report.dns.resolved.join(", ") : "无记录";
+    const addresses = report.dns.resolved.length > 0 ? report.dns.resolved.join(", ") : en ? "no record" : "无记录";
     lines.push(
-      `域名 ${report.dns.domain}：解析到 ${addresses} —— ${describeDnsVerdict(report.dns.verdict)}`,
+      en
+        ? `Domain ${report.dns.domain}: resolves to ${addresses} — ${describeDnsVerdict(report.dns.verdict)}`
+        : `域名 ${report.dns.domain}：解析到 ${addresses} —— ${describeDnsVerdict(report.dns.verdict)}`,
     );
   }
 
   if (report.listening && report.listening.length > 0) {
-    lines.push(`正在监听：${report.listening.join("、")}`);
+    lines.push(
+      en ? `Listening on: ${report.listening.join(", ")}` : `正在监听：${report.listening.join("、")}`,
+    );
   }
 
   return lines.join("\n");

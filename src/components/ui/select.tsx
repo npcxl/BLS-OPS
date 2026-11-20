@@ -70,6 +70,7 @@ export function Select({
   invalid = false,
   variant = "field",
   tone = "default",
+  iconOnly = false,
   menuMinWidth = 180,
 }: {
   value: string;
@@ -100,6 +101,13 @@ export function Select({
    *   与输入区「模型 / 思考强度」按钮完全一致。
    */
   variant?: "field" | "menu";
+  /**
+   * 仅图标触发器（`menu` 档专用）。
+   *
+   * 顶栏这种"一行要放好几个入口"的位置，名字留给面板和 `title`，触发器本身
+   * 只占 28px、跟 `ToolbarIcon` 同一尺寸；`field` 档忽略此值。
+   */
+  iconOnly?: boolean;
   /**
    * 触发器语气。`warning` = 当前值需要提醒（例如超能模式的「完全权限」），
    * 只在 `menu` 档生效；`field` 档由 `invalid` 表达。
@@ -384,7 +392,8 @@ export function Select({
           variant === "menu"
             ? cn(
                 // Prompt Bar 的模型按钮：无边框、透明底，hover / 打开只上一层淡底。
-                "flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded-[8px] px-2 text-11 font-medium transition-colors",
+                "flex h-7 min-w-0 items-center rounded-[8px] text-11 font-medium transition-colors",
+                iconOnly ? "w-7 shrink-0 justify-center px-0" : "w-full justify-between gap-1 px-2",
                 tone === "warning"
                   ? cn(
                       "text-[rgb(var(--warning))] ring-1 ring-inset ring-warning/35",
@@ -424,16 +433,27 @@ export function Select({
           }
         }}
       >
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {selected?.icon}
-          <span className={cn("min-w-0 truncate", selected ? "text-fg" : "text-fg-subtle")}>
-            {selected?.label ?? placeholder ?? ""}
+        {iconOnly ? (
+          // 只留图标：当前值靠图标 + `title` 说明，面板里仍是完整文字。
+          <span className="flex shrink-0 items-center justify-center">
+            {selected?.icon ?? (
+              <ChevronDown size={variant === "menu" ? 11 : size === "sm" ? 11 : 12} className="text-fg-subtle" />
+            )}
           </span>
-        </span>
-        <ChevronDown
-          size={variant === "menu" ? 11 : size === "sm" ? 11 : 12}
-          className="shrink-0 text-fg-subtle"
-        />
+        ) : (
+          <>
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              {selected?.icon}
+              <span className={cn("min-w-0 truncate", selected ? "text-fg" : "text-fg-subtle")}>
+                {selected?.label ?? placeholder ?? ""}
+              </span>
+            </span>
+            <ChevronDown
+              size={variant === "menu" ? 11 : size === "sm" ? 11 : 12}
+              className="shrink-0 text-fg-subtle"
+            />
+          </>
+        )}
       </button>
 
       {menu ? createPortal(menu, document.body) : null}

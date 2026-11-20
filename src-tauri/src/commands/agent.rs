@@ -63,6 +63,9 @@ pub struct AgentStartRequest {
     /// 上下文输入预算（tokens）；`None` = 按模型窗口自动。
     #[serde(default)]
     pub context_budget: Option<u32>,
+    /// 界面语言（`zh-CN` / `en`）：决定系统提示词用哪种语言写；不传按中文。
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 #[tauri::command]
@@ -95,6 +98,7 @@ pub async fn agent_start(
         auto_approve_writes: request.auto_approve_writes,
         max_rounds: request.max_rounds,
         provider_id: request.provider_id,
+        locale: request.locale,
         carry_steps: Vec::new(),
     };
     spawn_agent(app, state.inner().clone(), input)
@@ -126,6 +130,9 @@ pub struct AgentResumeRequest {
     pub auto_approve_writes: bool,
     #[serde(default)]
     pub max_rounds: Option<u32>,
+    /// 界面语言（`zh-CN` / `en`）：决定系统提示词用哪种语言写；不传按中文。
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 /// 把历史 `plan_json`（DeployStep[]）还原成 Agent 步骤。
@@ -301,6 +308,7 @@ pub async fn agent_resume(
             },
         ],
         provider_id: request.provider_id,
+        locale: request.locale,
         reasoning_effort: request.reasoning_effort,
         context_budget: request.context_budget,
         capability: None,

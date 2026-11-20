@@ -1,23 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   FileDiff,
   FileText,
-  Folder,
+  Search,
+  X,
 } from "@/components/icons";
-import { Button } from "@/components/ui/button";
-import { PaneTabBar } from "@/components/ui/pane-tab-bar";
 import { StatusBadge } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
-import type {
-  DiffHunk,
-  FileChangeDetail,
-  FileChangeSummary,
-} from "@/api/types/agent";
+import type { DiffHunk, FileChangeDetail, FileChangeSummary } from "@/api/types/agent";
 import { opsApi } from "@/api/ops-api";
 import { useExtremeStore, type ChangeViewState } from "@/stores/extreme-store";
 import {
@@ -28,7 +25,6 @@ import {
   buildChangeTree,
   canOpenInRemote,
   changeStatusLabel,
-  changeTone,
   countInDir,
   diffSegments,
   fileLabel,
@@ -78,12 +74,14 @@ export function FileChangesPane({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [narrow, setNarrow] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   /** 正文当前滚到哪个文件：文件树的选中项跟着它走（不写回 store 的高频路径）。 */
   const [activeId, setActiveId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef(new Map<string, HTMLElement>());
   const scrollSave = useRef<number | null>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
 
   /** 这条对话的全部记录：切换对话时不混入别人的。 */
   const mine = useMemo(
@@ -94,13 +92,20 @@ export function FileChangesPane({
     [changesById, workspaceId],
   );
 
-  /** 按运行（taskId）分批：新的在前，界面用来做"运行"下拉。 */
+  /** 按运行（taskId）分批：新的在前，界面用来做「上一轮 / 本次运行」下拉。 */
   const runs = useMemo(() => {
-    const map = new Map<string, { taskId: string; changes: FileChangeSummary[]; at: number }>();
+    const map = new Map<
+      string,
+      { taskId: string; changes: FileChangeSummary[]; at: number; additions: number; deletions: number }
+    >();
     for (const change of mine) {
-      const entry = map.get(change.taskId) ?? { taskId: change.taskId, changes: [], at: 0 };
+      const entry =
+        map.get(change.taskId) ??
+        { taskId: change.taskId, changes: [], at: 0, additions: 0, deletions: 0 };
       entry.changes.push(change);
       entry.at = Math.max(entry.at, change.updatedAt);
+      entry.additions += change.additions;
+      entry.deletions += change.deletions;
       map.set(change.taskId, entry);
     }
     return [...map.values()].sort((a, b) => b.at - a.at);
@@ -233,6 +238,19 @@ export function FileChangesPane({
     return () => observer.disconnect();
   }, []);
 
+  /* 点外面关掉下拉：菜单与窄面板选择器共用一套。 */
+  useEffect(() => {
+    if (!menuOpen && !pickerOpen) return undefined;
+    const onDown = (event: MouseEvent) => {
+      if (!headerRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen, pickerOpen]);
+
   /* ---------------- 选中文件 / 滚动同步 ---------------- */
 
   const selectedId =
@@ -261,15 +279,27 @@ export function FileChangesPane({
    * `appliedFocus` 按 nonce 去重：摘要 / 正文加载引起的重渲染不该反复滚动。
    */
   const appliedFocus = useRef<number | null>(null);
+  const focusTimer = useRef<number | null>(null);
+  /** 用户先动手切了视图 / 文件：还没落地的"聊天点进来"跳转就不再覆盖他。 */
+  const cancelFocusJump = useCallback(() => {
+    if (focusTimer.current === null) return;
+    window.clearTimeout(focusTimer.current);
+    focusTimer.current = null;
+  }, []);
   useEffect(() => {
     if (!focus?.changeId || !focusTaskId) return;
     if (appliedFocus.current === focus.nonce) return;
     appliedFocus.current = focus.nonce;
     const timer = window.setTimeout(() => {
+      focusTimer.current = null;
       scrollToChange(focus.changeId!);
       remember({ mode: "run", taskId: focusTaskId, changeId: focus.changeId });
     }, 60);
-    return () => window.clearTimeout(timer);
+    focusTimer.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (focusTimer.current === timer) focusTimer.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.nonce, focusTaskId]);
 
@@ -316,6 +346,39 @@ export function FileChangesPane({
 
   const tree = useMemo(() => buildChangeTree(visible), [visible]);
 
+  /** 复制整批差异：只在正文已加载的文件上拼接（不编造行）。 */
+  const copyAll = () => {
+    const text = visible
+      .map((change) => {
+        const detail = details[change.id];
+        const head = `--- a${change.path}\n+++ b${change.path}\n`;
+        if (!detail) return `${head}(${changeStatusLabel(change.status, t)})`;
+        const body = detail.diff.hunks
+          .map((hunk) =>
+            hunk.lines
+              .map((line) => `${line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}${line.text}`)
+              .join("\n"),
+          )
+          .join("\n");
+        return `${head}${body}`;
+      })
+      .join("\n\n");
+    void copyTextWithFeedback(text);
+  };
+
+  const toggleGap = (key: string) =>
+    remember({
+      expanded: view.expanded.includes(key)
+        ? view.expanded.filter((item) => item !== key)
+        : [...view.expanded, key],
+    });
+
+  const selectChange = (change: FileChangeSummary) => {
+    cancelFocusJump();
+    remember({ changeId: change.id });
+    scrollToChange(change.id);
+  };
+
   if (!workspaceId) {
     return (
       <p className="px-3 py-2 text-11 text-fg-subtle">
@@ -326,125 +389,161 @@ export function FileChangesPane({
 
   if (mine.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
+        <FileDiff size={20} className="text-fg-subtle" />
         {/* 空态也标明所属服务器：面板永远回答"这是哪台机器上的变更"。 */}
-        <p className="px-3 py-1.5 text-11 text-fg-muted">
+        <p className="text-11 text-fg">
           {serverName || t("未关联服务器")}
           <span className="text-fg-subtle"> · {t("暂无变更")}</span>
         </p>
-        <p className="px-3 py-1 text-11 text-fg-subtle">
+        <p className="max-w-[300px] text-11 text-fg-subtle">
           {t("这次对话还没有文件变更：AI 用 write_file 改文件时，这里会显示预览与实际差异。")}
         </p>
-        <p className="px-3 text-10 text-fg-subtle">
+        <p className="max-w-[300px] text-10 text-fg-subtle">
           {t("普通 shell 命令（sed / tee / 脚本）拿不到明确目标与前后快照，不会生成 Diff。")}
         </p>
       </div>
     );
   }
 
+  const chipLabel =
+    mode === "pending"
+      ? t("待确认的变更")
+      : activeTaskId && runs[0] && activeTaskId !== runs[0].taskId
+        ? t("上一轮")
+        : t("本次运行");
+
   return (
     <div ref={rootRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* 顶部：待确认 / 本次运行 + 运行下拉 + 服务器与范围（始终可见）。 */}
-      <div className="extreme-core-pane-tabs shrink-0 px-2">
-        <PaneTabBar
-          size="sm"
-          ariaLabel={t("文件变更视图")}
-          value={mode}
-          onChange={(id) => {
-            if (id === "pending") remember({ mode: "pending", changeId: undefined });
-            else remember({ mode: "run", taskId: activeTaskId ?? undefined });
+      {/* 顶栏：轮次胶囊（切换待确认 / 历史运行）+ 右侧动作。 */}
+      <div ref={headerRef} className="relative flex h-9 shrink-0 items-center gap-1 px-2">
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => {
+            setMenuOpen((open) => !open);
+            setPickerOpen(false);
           }}
-          tabs={[
-            {
-              id: "pending",
-              label: t("待确认的变更"),
-              badge:
-                pending.length > 0 ? (
-                  <span className="shrink-0 rounded-[4px] bg-surface-3 px-1 text-[10px] leading-4 text-fg-subtle">
-                    {pending.length}
-                  </span>
-                ) : undefined,
-            },
-            { id: "run", label: t("本次运行") },
-          ]}
-        />
-      </div>
+          className="flex h-7 max-w-[250px] min-w-0 items-center gap-1.5 rounded-full border border-line/70 bg-surface-2/70 pl-2.5 pr-2 text-11 text-fg transition-colors hover:bg-surface-3"
+        >
+          <span className="min-w-0 truncate">{chipLabel}</span>
+          {mode === "pending" && pending.length > 0 && (
+            <span className="shrink-0 rounded-full bg-surface-3 px-1 text-[10px] leading-4 text-fg-muted">
+              {pending.length}
+            </span>
+          )}
+          <ChevronDown
+            size={11}
+            className={cn(
+              "shrink-0 text-fg-subtle transition-transform",
+              menuOpen && "rotate-180",
+            )}
+          />
+          <span className="shrink-0 font-mono text-10 text-success">+{batch.additions}</span>
+          <span className="shrink-0 font-mono text-10 text-danger">-{batch.deletions}</span>
+        </button>
 
-      <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-11">
-        <span className="min-w-0 truncate text-fg-muted" title={serverName}>
-          {serverLabel || t("未关联服务器")}
-        </span>
-        <span className="text-fg-subtle">·</span>
-        <span className="text-fg-muted">
-          {t("{{n}} 个文件", { n: batch.files })}
-        </span>
-        <span className="font-mono text-10 text-success">+{batch.additions}</span>
-        <span className="font-mono text-10 text-danger">-{batch.deletions}</span>
-        <StatusBadge tone={batchTone(batch.state)}>{batchStateLabel(batch.state, t)}</StatusBadge>
-        <span className="flex-1" />
-        {mode === "run" && runs.length > 0 && (
-          <select
-            aria-label={t("选择运行")}
-            value={activeTaskId ?? ""}
-            onChange={(event) => remember({ taskId: event.target.value, changeId: undefined })}
-            className="h-6 max-w-[190px] min-w-0 shrink rounded-md border border-line/70 bg-surface-2 px-1 text-10 text-fg outline-none"
-          >
-            {runs.map((run) => (
-              <option key={run.taskId} value={run.taskId}>
-                {labelOfRun(run.taskId)}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      <div className="flex shrink-0 items-center gap-1 px-3 pb-1.5">
-        <input
-          value={view.filter}
-          onChange={(event) => remember({ filter: event.target.value })}
-          placeholder={t("筛选文件…")}
-          aria-label={t("按路径筛选文件")}
-          className="h-6 min-w-0 flex-1 rounded-md border border-line/70 bg-surface-2 px-2 text-11 text-fg outline-none placeholder:text-fg-subtle focus-visible:border-accent/60"
-        />
         {narrow && (
-          <Button
-            variant="ghost"
-            size="xs"
+          <button
+            type="button"
             aria-expanded={pickerOpen}
-            onClick={() => setPickerOpen((open) => !open)}
+            onClick={() => {
+              setPickerOpen((open) => !open);
+              setMenuOpen(false);
+            }}
+            className="flex h-7 max-w-[170px] min-w-0 items-center gap-1.5 rounded-full border border-line/70 bg-surface-2/70 px-2 text-11 text-fg-muted transition-colors hover:bg-surface-3"
             title={t("选择文件")}
           >
-            <FileText size={12} />
-            <span className="max-w-[110px] truncate">
+            <FileText size={11} className="shrink-0 text-fg-subtle" />
+            <span className="min-w-0 truncate">
               {selectedChange ? fileLabel(selectedChange) : t("选择文件")}
             </span>
-            {pickerOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          </Button>
+            <ChevronDown size={10} className="shrink-0" />
+          </button>
+        )}
+
+        <span className="flex-1" />
+
+        <IconAction title={t("复制差异")} onClick={copyAll}>
+          <Copy size={13} />
+        </IconAction>
+        {selectedChange && canOpenInRemote(selectedChange) && (
+          <IconAction
+            title={t("在远程文件中打开")}
+            onClick={() => onOpenRemotePath(selectedChange.path)}
+          >
+            <ExternalLink size={13} />
+          </IconAction>
+        )}
+
+        {menuOpen && (
+          <div
+            role="menu"
+            className="absolute left-2 top-[calc(100%-2px)] z-30 w-[288px] overflow-hidden rounded-lg border border-line/70 bg-surface-1 py-1 shadow-xl"
+          >
+            <MenuRow
+              selected={mode === "pending"}
+              onClick={() => {
+                cancelFocusJump();
+                remember({ mode: "pending", changeId: undefined });
+                setMenuOpen(false);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{t("待确认的变更")}</span>
+              {pending.length > 0 && (
+                <span className="shrink-0 rounded-full bg-surface-3 px-1 text-10 leading-4 text-fg-muted">
+                  {pending.length}
+                </span>
+              )}
+            </MenuRow>
+            <div className="my-1 h-px bg-line/60" />
+            <p className="px-2.5 pb-0.5 pt-1 text-10 text-fg-subtle">{t("更改所在运行")}</p>
+            {runs.map((run) => (
+              <MenuRow
+                key={run.taskId}
+                selected={mode === "run" && run.taskId === activeTaskId}
+                onClick={() => {
+                  cancelFocusJump();
+                  remember({ mode: "run", taskId: run.taskId, changeId: undefined });
+                  setMenuOpen(false);
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate" title={labelOfRun(run.taskId)}>
+                  {labelOfRun(run.taskId)}
+                </span>
+                <span className="shrink-0 font-mono text-10 text-success">+{run.additions}</span>
+                <span className="shrink-0 font-mono text-10 text-danger">-{run.deletions}</span>
+              </MenuRow>
+            ))}
+          </div>
+        )}
+
+        {pickerOpen && narrow && (
+          <div className="absolute left-2 top-[calc(100%-2px)] z-30 flex max-h-[60vh] w-[268px] flex-col overflow-hidden rounded-lg border border-line/70 bg-surface-1 shadow-xl">
+            <FilterBox
+              value={view.filter}
+              onChange={(value) => remember({ filter: value })}
+              placeholder={t("筛选文件…")}
+              label={t("按路径筛选文件")}
+              clearLabel={t("清除筛选")}
+            />
+            <div className="min-h-0 flex-1 overflow-y-auto p-1">
+              <ChangeTree dir={tree} selectedId={selectedId} onSelect={selectChange} />
+            </div>
+          </div>
         )}
       </div>
 
-      {pickerOpen && narrow && (
-        <div className="mx-2 mb-1 max-h-[45%] overflow-y-auto rounded-md border border-line/70 bg-surface-1 p-1">
-          <ChangeTree
-            dir={tree}
-            selectedId={selectedId}
-            onSelect={(change) => {
-              remember({ changeId: change.id });
-              scrollToChange(change.id);
-            }}
-          />
-        </div>
-      )}
-
-      <div className="flex min-h-0 min-w-0 flex-1 border-t border-line/60">
+      <div className="flex min-h-0 min-w-0 flex-1 border-t border-line/50">
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-4"
+          className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pb-6"
           data-testid="file-change-diff"
         >
           {visible.length === 0 ? (
-            <p className="px-3 py-3 text-11 text-fg-subtle">
+            <p className="px-3 py-4 text-11 text-fg-subtle">
               {view.filter.trim()
                 ? t("没有匹配「{{filter}}」的文件。", { filter: view.filter })
                 : mode === "pending"
@@ -460,10 +559,7 @@ export function FileChangesPane({
                   else fileRefs.current.delete(change.id);
                 }}
                 data-change-id={change.id}
-                className={cn(
-                  "scroll-mt-1 border-b border-line/50",
-                  selectedId === change.id && "bg-surface-2/40",
-                )}
+                className="border-b border-line/40 last:border-b-0"
               >
                 <FileChangeHeader
                   change={change}
@@ -475,40 +571,141 @@ export function FileChangesPane({
                   change={change}
                   detail={details[change.id]}
                   expanded={view.expanded}
-                  onToggleGap={(key) =>
-                    remember({
-                      expanded: view.expanded.includes(key)
-                        ? view.expanded.filter((item) => item !== key)
-                        : [...view.expanded, key],
-                    })
-                  }
+                  onToggleGap={toggleGap}
                 />
               </section>
             ))
           )}
           {loadError && <p className="px-3 py-2 text-11 text-danger">{loadError}</p>}
-          {!sessionId && (
-            <p className="px-3 py-2 text-10 text-warning">
-              {t("服务器未连接：这里展示的是历史快照，可以查看但不能执行。")}
-            </p>
-          )}
         </div>
 
         {!narrow && (
-          <aside className="w-[196px] shrink-0 overflow-y-auto border-l border-line/60 px-1.5 py-1.5">
-            <p className="px-1 pb-1 text-10 text-fg-subtle">{t("已更改的文件")}</p>
-            <ChangeTree
-              dir={tree}
-              selectedId={selectedId}
-              onSelect={(change) => {
-                remember({ changeId: change.id });
-                scrollToChange(change.id);
-              }}
-            />
+          <aside className="flex w-[212px] shrink-0 flex-col border-l border-line/50 bg-surface-1/40">
+            <div className="p-2 pb-1">
+              <FilterBox
+                value={view.filter}
+                onChange={(value) => remember({ filter: value })}
+                placeholder={t("筛选文件…")}
+                label={t("按路径筛选文件")}
+                clearLabel={t("清除筛选")}
+              />
+            </div>
+            <div className="flex items-center gap-1.5 px-2.5 py-0.5">
+              <span className="text-10 text-fg-muted">{t("已更改的文件")}</span>
+              <span className="text-10 text-fg-subtle">{batch.files}</span>
+              <span className="flex-1" />
+              <span className="size-1.5 rounded-full bg-accent" />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+              <ChangeTree dir={tree} selectedId={selectedId} onSelect={selectChange} />
+            </div>
           </aside>
         )}
       </div>
+
+      {/* 底栏：始终标明服务器、范围与结论。 */}
+      <div className="flex h-7 shrink-0 items-center gap-1.5 overflow-hidden border-t border-line/50 px-2 text-10 text-fg-subtle">
+        <span className="min-w-0 truncate" title={serverLabel}>
+          {serverLabel || t("未关联服务器")}
+        </span>
+        <span>·</span>
+        <span className="shrink-0">{t("{{n}} 个文件", { n: batch.files })}</span>
+        <StatusBadge tone={batchTone(batch.state)}>{batchStateLabel(batch.state, t)}</StatusBadge>
+        <span className="flex-1" />
+        {!sessionId && (
+          <span className="shrink-0 text-warning">{t("服务器未连接：只展示历史快照")}</span>
+        )}
+      </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* 顶栏零件                                                            */
+/* ------------------------------------------------------------------ */
+
+function IconAction({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      className="flex size-7 shrink-0 items-center justify-center rounded-md text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+    >
+      {children}
+    </button>
+  );
+}
+
+function MenuRow({
+  selected,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={onClick}
+      className={cn(
+        "flex h-7 w-full items-center gap-1.5 px-2.5 text-left text-11 transition-colors",
+        selected ? "bg-surface-2 text-fg" : "text-fg-muted hover:bg-surface-hover",
+      )}
+    >
+      {children}
+      {selected && <Check size={11} className="shrink-0 text-accent" />}
+    </button>
+  );
+}
+
+function FilterBox({
+  value,
+  onChange,
+  placeholder,
+  label,
+  clearLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  label: string;
+  clearLabel: string;
+}) {
+  return (
+    <label className="flex h-7 min-w-0 items-center gap-1.5 rounded-full border border-line/70 bg-surface-2/60 px-2.5 transition-colors focus-within:border-accent/50">
+      <Search size={11} className="shrink-0 text-fg-subtle" />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        aria-label={label}
+        className="min-w-0 flex-1 bg-transparent text-11 text-fg outline-none placeholder:text-fg-subtle"
+      />
+      {value && (
+        <button
+          type="button"
+          aria-label={clearLabel}
+          onClick={() => onChange("")}
+          className="shrink-0 text-fg-subtle hover:text-fg"
+        >
+          <X size={10} />
+        </button>
+      )}
+    </label>
   );
 }
 
@@ -540,66 +737,95 @@ function FileChangeHeader({
     });
   };
 
+  const slash = change.path.lastIndexOf("/");
+  const dir = slash > 0 ? change.path.slice(0, slash) : "";
+  const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
+  const stage = stageLabel(detail ?? { summary: change }, t);
+  // 正常写入不额外占用位置：只有"不合预期"的状态才需要在这里点明。
+  const abnormal =
+    change.status !== "written" && change.status !== "proposed"
+      ? changeStatusLabel(change.status, t)
+      : null;
+
   return (
-    <div className="sticky top-0 z-10 border-b border-line/50 bg-surface-1/95 px-2.5 py-1.5 backdrop-blur">
-      <div className="flex min-w-0 items-center gap-1.5">
+    <div className="sticky top-0 z-10 border-b border-line/50 bg-surface-1/95 backdrop-blur">
+      <div className="flex h-8 min-w-0 items-center gap-1.5 px-2">
         <FileDiff size={12} className="shrink-0 text-fg-subtle" />
+        <span
+          className="flex min-w-0 items-baseline font-mono text-11 text-fg"
+          title={change.path || change.tool}
+        >
+          {dir && (
+            <>
+              <span className="min-w-0 truncate text-fg-subtle">{dir}</span>
+              <span className="shrink-0 text-fg-subtle">/</span>
+            </>
+          )}
+          <span className="shrink-0">{name || t("（无文件路径）")}</span>
+        </span>
+        <span className="shrink-0 font-mono text-10 text-success">+{additions}</span>
+        <span className="shrink-0 font-mono text-10 text-danger">-{deletions}</span>
+        <span
+          className={cn(
+            "shrink-0 rounded border px-1 text-[10px] leading-4",
+            change.status === "proposed"
+              ? "border-accent/40 bg-accent/8 text-accent"
+              : "border-line/60 text-fg-subtle",
+          )}
+        >
+          {stage}
+        </span>
+        {abnormal && (
+          <span className="shrink-0 text-10 text-fg-subtle">{abnormal}</span>
+        )}
+        <span className="flex-1" />
+        {runLabel && (
+          <span className="max-w-[96px] min-w-0 shrink truncate text-10 text-fg-subtle" title={runLabel}>
+            {runLabel}
+          </span>
+        )}
+        {copied && <span className="shrink-0 text-10 text-success">{t("已复制")}</span>}
+        {canOpenInRemote(change) && (
+          <button
+            type="button"
+            onClick={onOpenRemote}
+            aria-label={t("在远程文件中打开")}
+            title={t("在远程文件中打开")}
+            className="flex size-6 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
+          >
+            <ExternalLink size={11} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => copy(change.path || change.tool)}
+          aria-label={t("复制路径")}
           title={t("复制路径")}
-          className="min-w-0 flex-1 truncate text-left font-mono text-11 text-fg hover:underline"
+          className="flex size-6 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-surface-hover hover:text-fg"
         >
-          {change.path || t("（无文件路径）")}
+          <Copy size={11} />
         </button>
-        <span className="shrink-0 font-mono text-10 text-success">+{additions}</span>
-        <span className="shrink-0 font-mono text-10 text-danger">-{deletions}</span>
-        <StatusBadge tone={changeTone(change.status)}>
-          {changeStatusLabel(change.status, t)}
-        </StatusBadge>
       </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-[18px] text-10 text-fg-subtle">
-        <span>{change.created ? t("新文件") : t("修改已有文件")}</span>
-        <span>·</span>
-        <span>{stageLabel(detail ?? { summary: change }, t)}</span>
-        {runLabel && (
-          <>
-            <span>·</span>
-            <span className="min-w-0 truncate" title={runLabel}>
-              {runLabel}
-            </span>
-          </>
-        )}
-        {change.backupPath && (
-          <>
-            <span>·</span>
-            {/* 备份路径只给可复制文本：没有验证过就不假装能打开。 */}
+      {(change.backupPath || change.note) && (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 px-2 pb-1 pl-[22px] text-10 text-fg-subtle">
+          {change.backupPath && (
+            /* 备份路径只给可复制文本：没有验证过就不假装能打开。 */
             <button
               type="button"
               onClick={() => copy(change.backupPath!)}
               className="inline-flex min-w-0 items-center gap-0.5 text-left hover:text-fg"
               title={t("复制备份路径")}
             >
-              <span className="max-w-[220px] truncate font-mono">
-                {backupVerified(change) ? t("已备份：{{path}}", { path: change.backupPath }) : t("计划备份：{{path}}", { path: change.backupPath })}
+              <span className="max-w-[260px] truncate font-mono">
+                {backupVerified(change)
+                  ? t("已备份：{{path}}", { path: change.backupPath })
+                  : t("计划备份：{{path}}", { path: change.backupPath })}
               </span>
-              <Copy size={9} />
+              <Copy size={9} className="shrink-0" />
             </button>
-          </>
-        )}
-        {copied && <span className="text-success">{t("已复制")}</span>}
-        {canOpenInRemote(change) && (
-          <button
-            type="button"
-            onClick={onOpenRemote}
-            className="text-10 text-accent hover:underline"
-          >
-            {t("在远程文件中打开")}
-          </button>
-        )}
-      </div>
-      {change.note && (
-        <p className="mt-0.5 break-words pl-[18px] text-10 text-fg-subtle">{change.note}</p>
+          )}
+          {change.note && <span className="min-w-0 break-words">{change.note}</span>}
+        </div>
       )}
     </div>
   );
@@ -629,21 +855,21 @@ function FileChangeBody({
     );
   }
 
-  const limits = detail.limits.length > 0 ? (
-    <ul className="space-y-0.5 px-3 py-1.5 text-10 text-fg-subtle">
+  const limits = detail.limits.length > 0 && (
+    <ul className="mx-2 mb-1.5 space-y-0.5 rounded-md bg-surface-2/50 px-2 py-1 text-10 text-fg-subtle">
       {detail.limits.map((item) => (
         <li key={item} className="break-words">
           {item}
         </li>
       ))}
     </ul>
-  ) : null;
+  );
 
   if (detail.diff.hunks.length === 0) {
     return (
-      <>
+      <div className="py-1">
         {limits}
-        <p className="px-3 py-2 text-11 text-fg-subtle">
+        <p className="px-3 py-1.5 text-11 text-fg-subtle">
           {detail.diff.tooLarge
             ? t("文件过大：没有逐行比较，改动的规模见上方状态。")
             : detail.summary.status === "unchanged"
@@ -652,14 +878,14 @@ function FileChangeBody({
                 ? t("这次操作没有采集到可比对的正文。")
                 : t("没有差异。")}
         </p>
-      </>
+      </div>
     );
   }
 
   const segments = diffSegments(change.id, detail.diff);
 
   return (
-    <div className="py-1">
+    <div className="py-1.5">
       {limits}
       {detail.redacted && (
         <p className="px-3 pb-1 text-10 text-warning">
@@ -681,7 +907,9 @@ function FileChangeBody({
                 onClick={() => onToggleGap(segment.key)}
                 className="extreme-core-diff-gap"
               >
-                {open ? t("收起未修改的 {{n}} 行", { n: segment.count }) : t("{{n}} 行未修改", { n: segment.count })}
+                {open
+                  ? t("收起未修改的 {{n}} 行", { n: segment.count })
+                  : t("{{n}} 行未修改", { n: segment.count })}
               </button>
               {open &&
                 lines.map(([number, text]) => (
@@ -697,23 +925,13 @@ function FileChangeBody({
           );
         })}
       </div>
-      <p className="px-3 pt-1 text-10 text-fg-subtle">
-        {t("共 {{add}} 行新增、{{del}} 行删除", {
-          add: detail.diff.additions,
-          del: detail.diff.deletions,
-        })}
-      </p>
     </div>
   );
 }
 
 function DiffHunkBlock({ hunk }: { hunk: DiffHunk }) {
-  const { t } = useTranslation();
   return (
     <div>
-      <div className="extreme-core-diff-hunk" aria-label={t("改动段")}>
-        @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
-      </div>
       {hunk.lines.map((line, index) => (
         <DiffRow
           key={`${hunk.oldStart}-${hunk.newStart}-${index}`}
@@ -740,10 +958,11 @@ function DiffRow({
 }) {
   return (
     <div className="extreme-core-diff-row" data-kind={kind}>
-      <span className="extreme-core-diff-no">{oldNo ?? ""}</span>
-      <span className="extreme-core-diff-no">{newNo ?? ""}</span>
-      <span className="extreme-core-diff-sign" aria-hidden="true">
-        {kind === "add" ? "+" : kind === "del" ? "-" : ""}
+      <span className="extreme-core-diff-no" aria-hidden="true">
+        {oldNo ?? ""}
+      </span>
+      <span className="extreme-core-diff-no" aria-hidden="true">
+        {newNo ?? ""}
       </span>
       {/* 原文可能含制表符：用 pre-wrap 保留，不重排成一行。 */}
       <span className="extreme-core-diff-text">{text === "" ? "\u00a0" : text}</span>
@@ -768,7 +987,6 @@ function ChangeTree({
 }) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const total = countInDir(dir);
   const key = dir.path || "/";
   const closed = collapsed.has(key);
 
@@ -786,13 +1004,16 @@ function ChangeTree({
               return next;
             })
           }
-          className="flex w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-11 text-fg-muted hover:bg-surface-hover"
+          className="flex h-6 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-11 text-fg-muted transition-colors hover:bg-surface-hover"
           title={dir.path}
         >
-          {closed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
-          <Folder size={11} className="shrink-0 text-fg-subtle" />
+          {closed ? (
+            <ChevronRight size={10} className="shrink-0 text-fg-subtle" />
+          ) : (
+            <ChevronDown size={10} className="shrink-0 text-fg-subtle" />
+          )}
           <span className="min-w-0 flex-1 truncate">{dir.name}</span>
-          <span className="shrink-0 text-10 text-fg-subtle">{total}</span>
+          <span className="shrink-0 text-10 text-fg-subtle">{countInDir(dir)}</span>
         </button>
       )}
       {!closed && (
@@ -806,39 +1027,43 @@ function ChangeTree({
               depth={depth + 1}
             />
           ))}
-          {dir.files.map((change) => (
-            <button
-              key={change.id}
-              type="button"
-              onClick={() => onSelect(change)}
-              data-selected={selectedId === change.id ? "true" : undefined}
-              title={change.path}
-              className={cn(
-                "flex w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-11",
-                selectedId === change.id
-                  ? "bg-accent/12 text-fg"
-                  : "text-fg-muted hover:bg-surface-hover",
-              )}
-            >
-              <FileText size={11} className="shrink-0 text-fg-subtle" />
-              <span className="min-w-0 flex-1 truncate">{fileLabel(change)}</span>
-              {change.diffReady && (
-                <span className="shrink-0 font-mono text-10">
-                  <span className="text-success">+{change.additions}</span>
-                  <span className="text-danger"> -{change.deletions}</span>
-                </span>
-              )}
-              {!change.diffReady && (
-                <span className="shrink-0 text-10 text-fg-subtle">
-                  {change.uncollected ? t("未采集") : t("无 Diff")}
-                </span>
-              )}
-            </button>
-          ))}
+          {dir.files.map((change) => {
+            const selected = selectedId === change.id;
+            return (
+              <button
+                key={change.id}
+                type="button"
+                onClick={() => onSelect(change)}
+                data-selected={selected ? "true" : undefined}
+                title={change.path}
+                className={cn(
+                  "flex h-6 w-full min-w-0 items-center gap-1 rounded-md border px-1 text-left text-11 transition-colors",
+                  selected
+                    ? "border-accent/45 bg-accent/8 text-fg"
+                    : "border-transparent text-fg-muted hover:bg-surface-hover hover:text-fg",
+                )}
+              >
+                <FileText
+                  size={11}
+                  className={cn("shrink-0", selected ? "text-accent" : "text-fg-subtle")}
+                />
+                <span className="min-w-0 flex-1 truncate">{fileLabel(change)}</span>
+                {change.diffReady ? (
+                  <span className="shrink-0 font-mono text-10">
+                    <span className="text-success">+{change.additions}</span>
+                    <span className="text-danger"> -{change.deletions}</span>
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-10 text-fg-subtle">
+                    {change.uncollected ? t("未采集") : t("无 Diff")}
+                  </span>
+                )}
+                {selected && <span className="mr-0.5 size-1.5 shrink-0 rounded-full bg-accent" />}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
-
-

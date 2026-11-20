@@ -96,6 +96,11 @@ function PermissionSelect({
   onChange: (next: PermissionMode) => void;
 }) {
   const { t } = useTranslation();
+  /*
+   * 悬停说明要跟界面语言：`PERMISSION_HINT` 是中文常量（还被测试断言），
+   * 英文界面在这里给英文等价说明，不改常量本身。
+   */
+  const permissionHint = t(PERMISSION_HINT[permission], { defaultValue: PERMISSION_HINT[permission] });
   return (
     <Select
       variant="menu"
@@ -103,7 +108,7 @@ function PermissionSelect({
       menuMinWidth={340}
       tone={permission === "full" ? "warning" : "default"}
       ariaLabel={t("权限")}
-      title={PERMISSION_HINT[permission]}
+      title={permissionHint}
       value={permission}
       onChange={(value) => onChange(value as PermissionMode)}
       options={[
@@ -365,7 +370,7 @@ export function ComposerPanel({
                   style={{ background: EC.surfaceRaised, border: `1px solid ${EC.border}` }}
                   title={item.detail}
                 >
-                  <span className="shrink-0 text-10 text-fg-subtle">{PICKED_KIND_LABEL[item.kind]}</span>
+                  <span className="shrink-0 text-10 text-fg-subtle">{t(PICKED_KIND_LABEL[item.kind])}</span>
                   <span className="min-w-0 truncate">{item.label}</span>
                   <button
                     type="button"

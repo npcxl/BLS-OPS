@@ -7,6 +7,24 @@
  */
 export default {
   "超能模式": "Super Mode",
+  // 能力 / 检查项 / 自选材料类型（数据文件里的 label 用中文当 key）
+  "Kubernetes 工作负载": "Kubernetes workload",
+  "Docker Compose 服务": "Docker Compose service",
+  "静态站点（Nginx 托管）": "Static site (Nginx-hosted)",
+  "systemd 服务": "systemd service",
+  "普通 Linux 项目": "Plain Linux project",
+  "没有明显的技术栈约定": "No clear stack convention",
+  "域名解析": "DNS resolution",
+  "目录可写": "Directory writable",
+  "磁盘余量": "Disk headroom",
+  "HTTPS 证书": "HTTPS certificate",
+  "上游可达": "Upstream reachable",
+  "远程路径": "Remote path",
+  "计划步骤": "Plan step",
+  "只读：查询直接执行；只有命令确实会写文件、改配置、改服务或删数据时，才请你确认一次。sudo 禁用。":
+    "Read-only: queries run directly; you are asked to confirm only when a command really writes files, changes config or services, or deletes data. sudo is disabled.",
+  "完全权限：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行，不再逐条确认；写文件前仍会在同目录留一份带 .bls-bak- 标记的备份。你只要求查询时，执行器会拦下所有写操作，模型只做只读查询。":
+    "Full permissions: writes, edits and deletes you explicitly ask for (including sudo and service restarts) run directly without per-step confirmation; before writing a file, a backup carrying the .bls-bak- marker is still kept in the same directory. When you only ask to query, the executor blocks every write and the model stays read-only.",
   "任务": "Task",
   "新任务": "New task",
   "新建任务": "New task",
@@ -592,6 +610,7 @@ export default {
   "暂无变更": "No changes",
   "待确认的变更": "Pending changes",
   "本次运行": "This run",
+  "上一轮": "Previous turn",
   "运行 {{id}}": "Run {{id}}",
   "选择运行": "Choose a run",
   "筛选文件…": "Filter files…",
@@ -644,4 +663,211 @@ export default {
     "File too large: it was not compared line by line — see the status above for the scale of the change.",
   "原文件在确认前被外部修改：旧预览已作废，已按当前内容生成新的预览，请重新确认。":
     "The original file changed before you confirmed: the old preview is void, a new preview was generated from the current content — please confirm again.",
+
+  /* ---- 审批卡 ---- */
+  "已允许 · 已完成": "Allowed · Completed",
+  "已允许 · 执行失败": "Allowed · Failed",
+  "已允许 · 已跳过": "Allowed · Skipped",
+  "已允许 · 正在执行": "Allowed · Running",
+  "查看输出": "View output",
+  "已拒绝 · 此步骤未执行": "Denied · Step not executed",
+  "没有送达服务器：{{reason}}。可以再试一次。":
+    "Not delivered to the server: {{reason}}. You can try again.",
+  "连接中断": "Connection lost",
+  "查看命令与影响": "View command and impact",
+  "拒绝执行": "Deny",
+  "提交中…": "Submitting…",
+  "允许本次": "Allow this time",
+  "复制命令": "Copy command",
+  "工作目录": "Working directory",
+  "实际执行脚本（调试）": "Actual script (debug)",
+
+  /* ---- 输入条 / 模型能力 ---- */
+  "该模型未登记上下文档位：请到设置里填上下文窗口":
+    "This model has no context budget registered — set its context window in Settings",
+  "移除 {{name}}": "Remove {{name}}",
+  "该模型未登记能力：请到设置里填上下文窗口与思考强度档位":
+    "This model has no capabilities registered — set its context window and reasoning levels in Settings",
+  "能力未登记": "Capabilities not registered",
+
+  /* ---- 执行回执 ---- */
+  "已请求": "Requested",
+  "已成功": "Succeeded",
+  "已请求上传 {{n}} 个文件到服务器临时目录":
+    "Requested upload of {{n}} files to the server temp directory",
+  "上传失败：{{n}} 个文件都没有写成功":
+    "Upload failed: none of the {{n}} files were written",
+  "已上传 {{n}} 个文件，{{failed}} 个失败":
+    "Uploaded {{n}} files, {{failed}} failed",
+  "已复用 {{n}} 个文件，{{failed}} 个失败":
+    "Reused {{n}} files, {{failed}} failed",
+  "已上传 {{n}} 个文件（复用 {{reused}} 个）到服务器临时目录":
+    "Uploaded {{n}} files ({{reused}} reused) to the server temp directory",
+  "已上传 {{n}} 个文件到服务器临时目录":
+    "Uploaded {{n}} files to the server temp directory",
+  "已上传 {{n}} 个文件到 {{root}}": "Uploaded {{n}} files to {{root}}",
+  "失败 {{n}} 个：{{detail}}": "{{n}} failed: {{detail}}",
+  "失败的文件仍只在用户本机，需要的话先修权限/路径再重试。":
+    "Failed files remain only on your machine; fix permissions or paths and retry if needed.",
+  "文件已按原目录结构落盘，部署时可直接复制，不必重传。":
+    "Files are stored with their original directory structure, so deployments can copy them directly instead of re-uploading.",
+  "已生成计划": "Plan generated",
+  "计划缺少执行所需的信息": "The plan is missing information required to execute",
+  "没有可执行的步骤": "No executable steps",
+  "{{n}} 个步骤全部通过": "All {{n}} steps passed",
+  "{{ok}} 个步骤通过，{{failed}} 个失败":
+    "{{ok}} steps passed, {{failed}} failed",
+  "{{failed}} 个步骤失败": "{{failed}} steps failed",
+
+  /* ---- 计划 / 部署 / 右栏 ---- */
+  "有 {{n}} 个任务可以继续：{{list}}。请指明要继续哪一个。":
+    "{{n}} tasks can be resumed: {{list}}. Tell me which one to continue.",
+  "已允许执行": "Execution allowed",
+  "已拒绝执行": "Execution denied",
+  "正在执行": "Running",
+  "此步骤未执行": "This step was not executed",
+  "按附件生成部署计划": "Generate a deployment plan from the attachments",
+  "已生成 {{n}} 个步骤，确认前不会改动服务器。":
+    "Generated {{n}} steps; nothing changes on the server before you confirm.",
+  "目标目录": "Target directory",
+  "会话已断开": "Session disconnected",
+  "拿不到家目录，无法写入文件":
+    "Cannot resolve the home directory, so the file cannot be written",
+  "这一步没有可写入的内容（text / data / sourcePath 都为空）":
+    "This step has no content to write (text / data / sourcePath are all empty)",
+  "创建目录失败": "Failed to create the directory",
+  "备份失败，已取消覆盖：{{detail}}":
+    "Backup failed, overwrite cancelled: {{detail}}",
+  "从临时目录复制失败": "Failed to copy from the temp directory",
+  "临时目录里没有这个文件，本地也没有可写入的内容":
+    "The file is not in the temp directory and there is no local content to write",
+  "已写入 {{path}}": "Written to {{path}}",
+  "步骤缺少命令": "The step has no command",
+  "这一步还没得到你的确认：回复「开始吧」我再执行。":
+    "This step is not confirmed yet — reply with the go-ahead and I will run it.",
+  "会话已变化，计划已失效。请重新生成计划。":
+    "The session changed and the plan is stale. Please regenerate it.",
+  "还没有取到家目录，先等待预检完成。":
+    "The home directory is not known yet; wait for the preflight to finish.",
+  "这条任务属于上一次计划，请重新生成计划后再执行。":
+    "This task belongs to the previous plan — regenerate the plan before running it.",
+  "部署完成：全部步骤通过。": "Deployment complete: all steps passed.",
+  "正在停止…当前步骤结束后不会再继续。":
+    "Stopping… nothing else runs after the current step.",
+  "正在执行部署计划：已完成 {{n}}/{{total}} 步":
+    "Running the deployment plan: {{n}}/{{total}} steps done",
+  "正在执行部署计划…": "Running the deployment plan…",
+  "影响未知：这一步会改动服务器上的内容。":
+    "Impact unknown — this step changes something on the server.",
+  "这个附件没有可预览的内容（读取失败或已被清理）。":
+    "This attachment has no preview (read failed or it was cleaned up).",
+  "右侧真实终端还没有输出可以加入。":
+    "The real terminal on the right has no output to add yet.",
+  "真实终端最近 {{n}} 行": "Last {{n}} lines of the real terminal",
+  "已加入本次对话：{{n}} 行终端输出。":
+    "Added to this conversation: {{n}} lines of terminal output.",
+  "没有需要上传的附件：已经在服务器上了。":
+    "Nothing to upload — the attachments are already on the server.",
+  "创建临时目录失败": "Failed to create the temp directory",
+  "没有可写入的内容": "No content to write",
+  "上传失败：{{reason}}": "Upload failed: {{reason}}",
+  "docker ps 失败": "docker ps failed",
+  "更新现有服务：{{name}}": "Update the existing service: {{name}}",
+  "这个容器没有可写的挂载目录":
+    "This container has no writable mounted directory",
+  "更新 {{name}}：备份 {{dir}} → 解压 → 替换 → 重启 → 验证":
+    "Update {{name}}: back up {{dir}} → extract → replace → restart → verify",
+  "先拖入 compose.yaml 或项目文件，再生成计划。":
+    "Drop compose.yaml or project files in first, then generate a plan.",
+  "用这些附件生成部署计划": "Generate a deployment plan from these attachments",
+  "没有找到容器 {{name}}：先说清要更新哪个服务，我再列一遍在跑的容器。":
+    "No container named {{name}} — tell me which service to update and I will list the running containers again.",
+  "已生成 {{name}} 的更新计划（备份 → 解压 → 替换 → 重启 → 验证）。":
+    "Generated an update plan for {{name}} (backup → extract → replace → restart → verify).",
+  "已按你的要求生成部署计划。":
+    "Generated the deployment plan as requested.",
+  "已生成部署计划。": "Deployment plan generated.",
+  "右侧真实终端打不开：这条会话的终端通道没有起来，重连服务器再试。":
+    "The real terminal on the right cannot open: its channel did not come up. Reconnect the server and try again.",
+  "已在右侧真实终端开始监听：{{command}}\n最近输出：\n{{tail}}":
+    "Started watching in the real terminal on the right: {{command}}\nRecent output:\n{{tail}}",
+  "（暂时没有输出，日志一有内容就会出现在终端里）":
+    "(No output yet — it will appear in the terminal as soon as the log has content)",
+  "还没有可执行的计划，先说明要做什么。":
+    "There is no executable plan yet — describe what you want to do first.",
+  "计划还没有得到用户确认：请用一句话请用户回复「开始吧」，不要假设已经执行。":
+    "The plan is not confirmed yet: ask the user to reply with the go-ahead in one sentence, and do not assume it ran.",
+  "在 设置 → AI providers 里配置默认模型与 API Key。":
+    "Configure the default model and API key in Settings → AI providers.",
+  "回复「重试」重新执行。": "Reply with retry to run it again.",
+  "服务器未连接：重新连接后才能使用手动终端。":
+    "Server not connected — reconnect to use the manual terminal.",
+  "编辑": "Edit",
+  "引用": "Quote",
+  "在浏览器打开": "Open in browser",
+  "选择要更新的服务（{{n}} 个候选）":
+    "Choose the service to update ({{n}} candidates)",
+  "无端口映射": "No port mappings",
+  "等待执行": "Waiting to run",
+  "终端": "Terminal",
+  "计划": "Plan",
+  "拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）":
+    "Drag to resize; once focused, use the left/right arrows (Shift for bigger steps)",
+  "展开视图": "Expand view",
+  "收起右栏": "Collapse the sidebar",
+  "服务器未连接：可以查看历史，重新连接后才能继续执行。":
+    "Server not connected — history is readable, but reconnect to continue running.",
+  "真实终端": "Real terminal",
+  "把真实终端的最近输出加进这次发送":
+    "Add the real terminal's recent output to this send",
+  "加入本次对话": "Add to this conversation",
+  "读取失败 · 按路径使用": "Read failed · use by path",
+  "二进制 · 按路径使用": "Binary · use by path",
+  "已读取 · 在服务器上": "Loaded · on the server",
+  "待上传": "Pending upload",
+  "已选 {{n}} 个，用于本次发送": "{{n}} selected for this send",
+
+  /* ---- 任务状态 / 历史筛选（值在 t() 里） ---- */
+  "、": ", ",
+  "检查中": "Checking",
+  "等待补充信息": "Waiting for more information",
+  "验证中": "Verifying",
+  "完成": "Done",
+  "全部": "All",
+  "部署": "Deploy",
+  "检测": "Probe",
+  "自动化": "Automation",
+  "等待用户": "Waiting for you",
+
+  /* ---- 部署计划步骤标题 ---- */
+  "上传 Compose 文件": "Upload the Compose file",
+  "准备部署目录": "Prepare the deployment directory",
+  "拉取镜像": "Pull images",
+  "构建镜像": "Build images",
+  "启动服务": "Start services",
+  "验证容器状态": "Verify container status",
+  "检查 ZIP 布局与站点目录": "Check the ZIP layout and site directory",
+  "备份当前站点": "Back up the current site",
+  "解压并替换静态文件": "Extract and replace the static files",
+  "验证站点响应": "Verify the site responds",
+  "校验 ZIP 完整性": "Verify ZIP integrity",
+  "备份线上目录": "Back up the live directory",
+  "解压到暂存目录": "Extract to the staging directory",
+  "替换线上目录内容": "Replace the live directory contents",
+  "检查容器状态": "Check container status",
+  "验证页面": "Verify the page",
+  "清理暂存目录": "Clean up the staging directory",
+  "上传 {{name}}": "Upload {{name}}",
+  "重启服务 {{name}}": "Restart service {{name}}",
+  "没有找到 compose.yaml / docker-compose.yml。请先把它拖进来，或告诉我用别的方式部署。":
+    "No compose.yaml / docker-compose.yml found. Drop one in first, or tell me to deploy another way.",
+  "compose 文件里没有解析到 services，请检查缩进或内容是否完整。":
+    "No services were parsed from the compose file — check the indentation and content.",
+
+  /* ---- 文件改动面板（历史快照） ---- */
+  "复制差异": "Copy diff",
+  "更改所在运行": "Changed in run",
+  "清除筛选": "Clear filter",
+  "服务器未连接：只展示历史快照":
+    "Server not connected — showing a historical snapshot only",
 } as const;

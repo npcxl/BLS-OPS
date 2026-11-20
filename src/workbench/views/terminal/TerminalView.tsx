@@ -75,6 +75,14 @@ const MUTATES_DIRECTORY =
 const FILES_PANEL_KEY = "ops.terminal.filesPanel";
 
 /**
+ * 握手总超时。
+ *
+ * 后端也加了 20 秒的连接超时，这里是**前端兜底**：即使 IPC 本身卡住（运行时
+ * 忙于别的事 / 事件丢失），界面也必须在 20 秒内从「连接中」变成可重试的错误。
+ */
+const CONNECT_TIMEOUT_MS = 20_000;
+
+/**
  * 接受候选（Enter / → / Tab）的结果。
  *
  * `noop` 是关键：候选与已输入内容完全一致时，"填入"什么都不会做。此时
@@ -94,6 +102,13 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   if (!fallbackSessionRef.current) fallbackSessionRef.current = crypto.randomUUID();
   const sessionId = tab.sessionId ?? fallbackSessionRef.current;
   const connectingRef = useRef(false);
+  /**
+   * 连接代次：断开 / 重连后旧连接的迟到结果必须失效。
+   *
+   * 没有它时，用户点「断开」之后那条仍在握手的 `ssh_connect` 返回成功，
+   * 又会把界面改回 connected —— 看起来就是"断开没生效"。
+   */
+  const connectSeqRef = useRef(0);
   const connectedHostRef = useRef<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -1028,6 +1043,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
     connectingRef.current = true;
+    const seq = ++connectSeqRef.current;
     inputQueue.current = { tail: Promise.resolve() };
     lineEditorRef.current?.reset();
     setDraft("");
@@ -1048,8 +1064,20 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       serverId: tab.serverId,
     });
 
+    /*
+     * 握手超时：TCP 被防火墙丢包 / 服务端不回包时，`ssh_connect` 可能几分钟都
+     * 不返回。没有这层兜底，界面会永远停在「连接中」，既没有报错，重连键还是
+     * 灰的，用户只能去点「断开」。超时后必须给出明确原因并允许立即重试。
+     */
+    let timer: number | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => {
+        reject(new Error(t("连接超时：{{seconds}} 秒内服务器没有响应", { seconds: 20 })));
+      }, CONNECT_TIMEOUT_MS);
+    });
+
     try {
-      const result = await opsApi.sshConnect({
+      const request = opsApi.sshConnect({
         sessionId,
         serverId: tab.serverId,
         target: tab.quickTarget,
@@ -1058,6 +1086,17 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         cols,
         rows,
       });
+      // 已经被「断开 / 重连」取代，但握手仍在后台走完：成功就立刻清理，
+      // 否则后端会留下一条没有任何界面引用的连接。
+      request
+        .then(() => {
+          if (connectSeqRef.current !== seq) {
+            void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
+      const result = await Promise.race([request, timeout]);
+      if (connectSeqRef.current !== seq) return;
 
       if (result.status === "connected") {
         connectedHostRef.current = result.host;
@@ -1124,6 +1163,8 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         },
       });
     } catch (cause) {
+      // 已经被「断开 / 重连」取代：旧结果不许写回界面。
+      if (connectSeqRef.current !== seq) return;
       // 横幅拿原始异常（阶段 / 详情 / 复制齐全）；终端里只写一行摘要，
       // 状态栏也只要一句 —— 同一个错误在三个位置说的都是"同一件事"，措辞一致。
       const summary = toAppError(cause).message;
@@ -1131,8 +1172,11 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
       setError(cause);
       setStatus(sessionId, "error", { error: summary });
       instance?.writeln(`\r\n\x1b[31m${t("Connection failed: {{message}}", { message: summary })}\x1b[0m`);
+      // 超时 / 半途失败都清一次：后端可能还握着一条没走完的握手。
+      void opsApi.sshDisconnect(sessionId).catch(() => undefined);
     } finally {
-      connectingRef.current = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (connectSeqRef.current === seq) connectingRef.current = false;
     }
   }, [
     raiseChallenge,
@@ -1150,6 +1194,40 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     tab.title,
     updateTab,
   ]);
+
+  /**
+   * 传输层断开（`ssh-closed`）。
+   *
+   * 握手期间断流是最像"点了没反应"的一条路径：以前只处理 connected → closed，
+   * 握手期什么都不做、也不写 error，界面永远停在「连接中」，重连键还是灰的。
+   * 这里必须把原因写出来，并让状态可以重试。
+   */
+  const handleSessionClosed = useCallback(
+    (reason: string | null) => {
+      const status = useSessionStore.getState().sessions[sessionId]?.status;
+      if (status === "connecting") {
+        const message = reason
+          ? t("连接在握手阶段中断：{{reason}}", { reason })
+          : t("连接在握手阶段中断，请重新连接");
+        setPhase("error");
+        setError(new Error(message));
+        setStatus(sessionId, "error", { error: message });
+        terminalRef.current?.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+        return;
+      }
+      setPhase((current) => (current === "connected" ? "closed" : current));
+      setStatus(sessionId, "closed");
+    },
+    [sessionId, setStatus, t],
+  );
+
+  /** 重连：先放弃可能还挂着的上一次握手，再从干净状态重试。 */
+  const reconnect = useCallback(() => {
+    connectSeqRef.current += 1;
+    connectingRef.current = false;
+    void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+    void connect();
+  }, [connect, sessionId]);
 
   // xterm 实例的创建、输入/输出接线、缩放、选区菜单与断开清理 —— 见
   // `use-terminal-session.ts`（依赖只留 hasTarget / sessionId：换目标或换
@@ -1181,6 +1259,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     setPhase,
     setStatus,
     connect: () => void connect(),
+    onSessionClosed: handleSessionClosed,
     removeSession,
   });
 
@@ -1209,8 +1288,12 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   /** 主动断开（工具栏按钮与右键菜单共用同一条路径）。 */
   const disconnect = useCallback(() => {
+    // 作废进行中的握手：它的迟到结果不能再把界面改回 connected。
+    connectSeqRef.current += 1;
+    connectingRef.current = false;
     void opsApi.sshDisconnect(sessionId).catch(() => undefined);
     setPhase("closed");
+    setError(null);
     setStatus(sessionId, "closed");
     // 极核里这台服务器进入"未连接"：正在看的对话只读，旧对话仍可查看。
     if (tab.serverId) useExtremeStore.getState().markDisconnected(tab.serverId);
@@ -1218,6 +1301,18 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
 
   // 只在真的连着的时候探测：服务端可能早就关了，UI 不能继续显示"活着"。
   useSshKeepalive({ phase, sessionId, onLost: handleConnectionLost });
+
+  /**
+   * 再点一次同一台服务器（store 写 `reconnectNonce`）：标签被聚焦的同时恢复
+   * 已断开的连接。以前这里只切标签，用户看到的是"点了没反应"。
+   */
+  const handledReconnectNonce = useRef(tab.reconnectNonce ?? 0);
+  useEffect(() => {
+    const nonce = tab.reconnectNonce ?? 0;
+    if (nonce === handledReconnectNonce.current) return;
+    handledReconnectNonce.current = nonce;
+    if (phase !== "connected" && phase !== "connecting") reconnect();
+  }, [tab.reconnectNonce, phase, reconnect]);
 
 
 
@@ -1242,7 +1337,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
     onToggleFiles: () => setFilesOpen((v) => !v),
     onRefreshEnvironment: refreshEnvironmentCaches,
     onDisconnect: disconnect,
-    onReconnect: () => void connect(),
+    onReconnect: reconnect,
   });
 
   const inspection = useInspectionMode();
@@ -1265,7 +1360,7 @@ export function TerminalView({ tab }: { tab: WorkspaceTab }) {
         onToggleFiles={() => setFilesOpen((v) => !v)}
         onRefreshEnvironment={refreshEnvironmentCaches}
         onDisconnect={disconnect}
-        onReconnect={() => void connect()}
+        onReconnect={reconnect}
         onToggleExtreme={() => {
           const server = servers.find((entry) => entry.id === tab.serverId);
           /*

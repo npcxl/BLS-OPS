@@ -62,6 +62,13 @@ export interface TerminalSessionHost {
   setPhase: Dispatch<SetStateAction<Phase>>;
   setStatus: (sessionId: string, status: SessionStatus, patch?: { error?: string }) => void;
   connect: () => void;
+  /**
+   * 传输层断开（`ssh-closed`）。
+   *
+   * 视图必须自己决定怎么落地：已连接 → "断开"，握手期 → **错误 + 可重试**。
+   * hook 里不写死状态，否则握手期中断会永远停在"连接中"。
+   */
+  onSessionClosed: (reason: string | null) => void;
   removeSession: (sessionId: string) => void;
 }
 
@@ -384,10 +391,9 @@ export function useTerminalSession(host: TerminalSessionHost): void {
       enqueue({ stream: "stderr", text: event.payload });
     });
 
-    const unlistenClosed = listen<string>(sshClosedEvent(sessionId), () => {
+    const unlistenClosed = listen<string>(sshClosedEvent(sessionId), (event) => {
       if (disposed) return;
-      hostRef.current.setPhase((current) => (current === "connected" ? "closed" : current));
-      hostRef.current.setStatus(sessionId, "closed");
+      hostRef.current.onSessionClosed(event.payload?.trim() || null);
     });
 
     void hostRef.current.connect();

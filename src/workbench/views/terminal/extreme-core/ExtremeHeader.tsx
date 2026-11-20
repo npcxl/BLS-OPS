@@ -1,9 +1,82 @@
+import { useCallback, useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, History, PanelRight } from "@/components/icons";
+import {
+  ChevronLeft,
+  History,
+  Languages,
+  Monitor,
+  Moon,
+  PanelRight,
+  Pin,
+  PinOff,
+  Sun,
+} from "@/components/icons";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
+import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
+import type { LocaleCode } from "@/i18n";
+import { useLocale } from "@/i18n/use-locale";
 import { PageToolbar, PageToolbarDivider } from "@/workbench/page-layout";
 import { WindowControls } from "@/workbench/window-controls";
 import { ToolbarIcon } from "@/workbench/views/terminal/ToolbarIcon";
+
+/**
+ * 安全地拿当前窗口句柄。
+ *
+ * 浏览器预览与 jsdom 里没有 Tauri 运行时，`getCurrentWindow()` 会在内部
+ * 访问 `__TAURI_INTERNALS__` 时抛错 —— 拿不到就当"没有窗口"，置顶按钮
+ * 只是点不动，不能让整个顶栏跟着崩。
+ */
+function currentWindow(): ReturnType<typeof getCurrentWindow> | null {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 窗口置顶开关。
+ *
+ * 初值从窗口本身读（`isAlwaysOnTop`），不是本地臆断 —— 上次关窗前置顶过、
+ * 或者用户用系统快捷键切过，重新进来时按钮要和真实状态一致。
+ */
+function useAlwaysOnTop(): [boolean, () => void] {
+  const [onTop, setOnTop] = useState(false);
+
+  useEffect(() => {
+    const win = currentWindow();
+    // 窗口对象在测试替身里不一定带这一对方法 —— 缺了就当作"不支持置顶"，
+    // 顶栏照常渲染，不要整页跟着报错。
+    if (!win || typeof win.isAlwaysOnTop !== "function") return undefined;
+    let alive = true;
+    void win
+      .isAlwaysOnTop()
+      .then((value) => {
+        if (alive && typeof value === "boolean") setOnTop(value);
+      })
+      .catch(() => {
+        // 少数平台不提供查询：保持"未置顶"就够了，不必打扰用户。
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggle = useCallback(() => {
+    setOnTop((current) => {
+      const next = !current;
+      const win = currentWindow();
+      if (win && typeof win.setAlwaysOnTop === "function") {
+        void win.setAlwaysOnTop(next).catch(() => {});
+      }
+      return next;
+    });
+  }, []);
+
+  return [onTop, toggle];
+}
 
 export interface ExtremeHeaderProps {
   server: string | null;
@@ -35,6 +108,20 @@ export function ExtremeHeader({
   onOpenHistory,
 }: ExtremeHeaderProps) {
   const { t } = useTranslation();
+  /** 主题：跟随系统 / 浅色 / 深色，与设置页同一个 store，改一边另一边跟着变。 */
+  const [themeMode, setThemeMode] = useThemeMode();
+  const { locale, locales, setLocale } = useLocale();
+  const [onTop, toggleOnTop] = useAlwaysOnTop();
+
+  const themeOptions = [
+    {
+      value: "system",
+      label: t("Follow system"),
+      icon: <Monitor size={13} strokeWidth={1.75} />,
+    },
+    { value: "light", label: t("Light"), icon: <Sun size={13} strokeWidth={1.75} /> },
+    { value: "dark", label: t("Dark"), icon: <Moon size={13} strokeWidth={1.75} /> },
+  ];
 
   return (
     <PageToolbar
@@ -60,6 +147,39 @@ export function ExtremeHeader({
         )}
       </div>
       <div className="ml-auto flex items-center gap-1" data-tauri-drag-region="false">
+        <Select
+          variant="menu"
+          iconOnly
+          className="shrink-0"
+          value={themeMode}
+          ariaLabel={t("Theme")}
+          testId="extreme-theme-select"
+          menuMinWidth={148}
+          options={themeOptions}
+          onChange={(next) => setThemeMode(next as ThemeMode)}
+        />
+        <Select
+          variant="menu"
+          iconOnly
+          className="shrink-0"
+          value={locale}
+          ariaLabel={t("Language")}
+          testId="extreme-locale-select"
+          menuMinWidth={148}
+          options={locales.map((item) => ({
+            value: item.code,
+            label: item.native,
+            icon: <Languages size={13} strokeWidth={1.75} />,
+          }))}
+          onChange={(next) => setLocale(next as LocaleCode)}
+        />
+        <ToolbarIcon
+          label={t("Always on top of other windows")}
+          icon={onTop ? PinOff : Pin}
+          active={onTop}
+          onClick={toggleOnTop}
+        />
+        <PageToolbarDivider />
         {!paneShown && (
           <ToolbarIcon label={t("远程工作区")} icon={PanelRight} onClick={onOpenPane} />
         )}

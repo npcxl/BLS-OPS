@@ -64,6 +64,8 @@ struct ChangeIo {
     unreadable: Mutex<Vec<String>>,
     /// 写入命令返回失败（模拟权限不足）。
     fail_write: Mutex<bool>,
+    /// 写入**之后**的回读失败（模拟文件被别的进程锁住 / 权限被收回）。
+    fail_readback: Mutex<bool>,
     replies: Mutex<VecDeque<String>>,
     executed: Mutex<Vec<String>>,
     events: Arc<Mutex<Vec<super::super::AgentEvent>>>,
@@ -80,6 +82,7 @@ impl ChangeIo {
             files: Arc::new(Mutex::new(files)),
             unreadable: Mutex::new(Vec::new()),
             fail_write: Mutex::new(false),
+            fail_readback: Mutex::new(false),
             replies: Mutex::new(replies.iter().map(|item| item.to_string()).collect()),
             executed: Mutex::new(Vec::new()),
             events: Arc::new(Mutex::new(Vec::new())),
@@ -173,6 +176,10 @@ impl AgentIo for ChangeIo {
                 } else {
                     format!("\n__BLS_WROTE__{target}\n")
                 };
+                // 回读失败只能在写入之后发生：从这里把路径标成不可读。
+                if *self.fail_readback.lock().unwrap() {
+                    self.unreadable.lock().unwrap().push(target.clone());
+                }
                 return Ok(ExecOutput {
                     stdout,
                     stderr: String::new(),
@@ -270,6 +277,7 @@ fn input() -> AgentInput {
             content: "改一下 nginx 配置".to_string(),
         }],
         provider_id: None,
+        locale: None,
         reasoning_effort: None,
         context_budget: None,
         capability: None,
@@ -467,6 +475,29 @@ async fn a_failed_write_is_reported_without_a_fake_after() {
             .cloned()
             .unwrap_or_default(),
         BEFORE
+    );
+}
+
+#[tokio::test]
+async fn a_readback_failure_is_reported_without_pretending_it_succeeded() {
+    let io = ChangeIo::new(
+        Some(BEFORE),
+        &[&write_call(AFTER), "已写入。", READ_CALL, "完成。"],
+    );
+    *io.fail_readback.lock().unwrap() = true;
+    let handle = Arc::new(AgentHandle::new(snapshot(), AiCancel::new()));
+    decide_later(handle.clone(), "call-0-0", true);
+
+    let _ = run_loop(&handle, &input(), &io, None).await;
+    let list = io.registry.list(None, None);
+    let record = list.first().expect("写入之后要留一条记录");
+    assert_eq!(record.status, "readback_failed");
+    assert_eq!(record.stage, "none", "回读失败不能显示成实际变更");
+    assert!(!record.diff_ready);
+    assert!(
+        record.note.as_deref().unwrap_or("").contains("回读失败"),
+        "{:?}",
+        record.note
     );
 }
 

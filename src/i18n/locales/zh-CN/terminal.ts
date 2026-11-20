@@ -48,6 +48,9 @@ export default {
   "Waiting for host key confirmation": "等待主机指纹确认",
   "Connection lost: {{message}}": "连接已断开：{{message}}",
   "Connection failed: {{message}}": "连接失败：{{message}}",
+  "连接超时：{{seconds}} 秒内服务器没有响应": "连接超时：{{seconds}} 秒内服务器没有响应",
+  "连接在握手阶段中断：{{reason}}": "连接在握手阶段中断：{{reason}}",
+  "连接在握手阶段中断，请重新连接": "连接在握手阶段中断，请重新连接",
 
   // —— TerminalView：风险确认弹窗（补全候选"补全并立即执行"）——
   "Run this command?": "执行该命令？",

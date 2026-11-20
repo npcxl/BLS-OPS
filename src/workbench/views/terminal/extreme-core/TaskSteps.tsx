@@ -61,7 +61,7 @@ export function TaskSteps({ steps }: { steps: DeployStep[] }) {
       line="solid"
       items={groupSteps(steps).map(({ step, repeat }) => ({
         key: step.id,
-        title: repeat > 1 ? `${step.title} ×${repeat}` : step.title,
+        title: repeat > 1 ? `${t(step.title)} ×${repeat}` : t(step.title),
         description: step.detail,
         status: STEP_STATUS[step.state],
         collapsible: Boolean(

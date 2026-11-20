@@ -225,6 +225,12 @@ export interface AgentStartRequest {
   reasoningEffort?: ReasoningEffort | null;
   /** 上下文输入预算（tokens）；不传 = 按模型窗口自动。 */
   contextBudget?: number | null;
+  /**
+   * 界面语言（`zh-CN` / `en`）：后端按它写系统提示词。
+   *
+   * 不传 = 中文。只影响提示词语言，不改权限与审批。
+   */
+  locale?: string | null;
   /** 续跑同一个 taskId 时带上已知的累计用量（后端从它继续加）。 */
   carryUsage?: TokenUsage | null;
   allowSudo?: boolean;
@@ -248,6 +254,8 @@ export interface AgentResumeRequest {
   providerId?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   contextBudget?: number | null;
+  /** 界面语言（`zh-CN` / `en`）：恢复时同样按它写系统提示词；不传 = 中文。 */
+  locale?: string | null;
   allowSudo?: boolean;
   autoApproveWrites?: boolean;
   maxRounds?: number;

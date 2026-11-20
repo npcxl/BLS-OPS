@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 import { applyWindowMaterial, systemMediaTheme } from "@/lib/window-material";
 
@@ -81,4 +81,28 @@ export function initTheme() {
 export function useThemeMode(): [ThemeMode, (mode: ThemeMode) => void] {
   const mode = useSyncExternalStore(subscribeTheme, getThemeMode, getThemeMode);
   return [mode, setThemeMode];
+}
+
+/**
+ * 当前**实际**是深色还是浅色（把「跟随系统」也解析掉）。
+ *
+ * `useThemeMode` 给的是用户选的那三档；画 canvas / shader 的组件读不到 CSS
+ * 变量，必须知道真实落下来的是哪一边。真值只写在 `<html data-theme>` 上，
+ * 而且「跟随系统」会被原生结果异步纠正一次 —— 所以直接盯这个属性。
+ */
+export function useIsDarkTheme(): boolean {
+  const subscribe = useCallback((listener: () => void) => {
+    const observer = new MutationObserver(listener);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    const off = subscribeTheme(listener);
+    return () => {
+      observer.disconnect();
+      off();
+    };
+  }, []);
+  const get = useCallback(() => document.documentElement.dataset.theme === "dark", []);
+  return useSyncExternalStore(subscribe, get, () => false);
 }

@@ -56,7 +56,7 @@ export function DeployPlanPanel({
           {t("部署计划")}
           <span className="ml-1 text-fg-subtle">
             {doneCount}/{plan.length}
-            {currentStep && ` · ${currentStep.title}`}
+            {currentStep && ` · ${t(currentStep.title)}`}
           </span>
         </span>
         {/* 状态取自真实步骤结果，不靠 "2/5" 让用户自己猜。 */}
@@ -88,7 +88,7 @@ export function DeployPlanPanel({
         <div className="border-t border-line px-2.5 py-1.5">
           <StatusNotice tone="warning" icon>
             <span className="font-medium">{t("待处理")}：</span>
-            {failedStep.title}
+            {t(failedStep.title)}
             <span className="ml-1 text-fg-muted">{failedStep.stderr?.trim() || failedStep.detail}</span>
           </StatusNotice>
           {/* 回滚命令只展示、不自动执行：让用户看清原因后自己决定。 */}

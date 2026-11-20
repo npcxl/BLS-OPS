@@ -56,6 +56,14 @@ export interface WorkspaceTab {
   initialPath?: { path: string; nonce: number };
   /** Unsaved indicator (remote editor, config draft…). */
   dirty?: boolean;
+  /**
+   * 「再点一次这台服务器」触发的重连信号。
+   *
+   * 标签已存在时点击只切换、不重建（保住滚动位置与文件面板目录）；但用户再点
+   * 通常就是想恢复已经断掉的连接。只在会话已关闭 / 出错时写一个新值，终端看到
+   * 变化后自己重连。
+   */
+  reconnectNonce?: number;
 }
 
 /**

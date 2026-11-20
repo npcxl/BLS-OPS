@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import LiquidGlass from "liquid-glass-react";
 import { ChevronDown, ChevronRight, Copy, FileDiff, ShieldAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
-import SpecularButton from "@/components/ui/specular-button";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import type { AgentApproval } from "@/api/types/agent";
@@ -287,27 +286,14 @@ export function AgentApprovalCard({
                   >
                     {t("拒绝执行")}
                   </Button>
-                  {/* 主操作走官方 React Bits Specular Button：玻璃底 + 边缘高光
-                      跟随指针扫过（参数按危险/普通两档给色）。 */}
-                  <SpecularButton
+                  <Button
+                    variant={danger ? "danger" : "primary"}
                     size="sm"
-                    radius={7}
                     disabled={busy}
                     onClick={() => onDecide(true)}
-                    className="!px-3.5 !py-1.5 !text-11"
-                    tint={danger ? "#2b0b0b" : "#0b1220"}
-                    tintOpacity={0.9}
-                    textColor={danger ? "#fecaca" : "#f8fafc"}
-                    lineColor={danger ? "#f87171" : "#ffffff"}
-                    baseColor={danger ? "#7f1d1d" : "#334155"}
-                    intensity={1.15}
-                    shineSize={12}
-                    shineFade={30}
-                    thickness={1.4}
-                    proximity={180}
                   >
                     {busy ? t("提交中…") : t("允许本次")}
-                  </SpecularButton>
+                  </Button>
                 </>
               )}
             </div>

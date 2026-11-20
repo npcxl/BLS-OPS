@@ -1,3 +1,4 @@
+import { i18n } from "@/i18n";
 import type { DeployStep } from "./deploy-plan";
 
 /**
@@ -179,7 +180,7 @@ export function buildUpdatePlan(input: {
           {
             id: "restart",
             kind: "up",
-            title: `重启服务 ${service.name}`,
+            title: i18n.t("重启服务 {{name}}", { name: service.name }),
             detail: `docker restart ${service.name}`,
             command: `docker restart ${quote(service.name)}`,
             state: "pending",

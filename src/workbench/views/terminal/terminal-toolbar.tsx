@@ -76,10 +76,14 @@ export function TerminalToolbar({
         onClick={() => onToggleExtreme?.()}
       />
       <PageToolbarDivider />
-      {phase === "connected" ? (
+      {/*
+       * 连接中也要给一个能点的键：以前这里显示**禁用的**重连键，一次卡住的
+       * 握手会让用户既取消不了也重连不了（只能看着转圈）。
+       */}
+      {phase === "connected" || phase === "connecting" ? (
         <ToolbarIcon label={t("Disconnect")} icon={Unplug} onClick={onDisconnect} />
       ) : (
-        <ToolbarIcon label={t("Reconnect")} icon={PlugZap} disabled={phase === "connecting"} onClick={onReconnect} />
+        <ToolbarIcon label={t("Reconnect")} icon={PlugZap} onClick={onReconnect} />
       )}
 
     </PageToolbar>

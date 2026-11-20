@@ -93,14 +93,17 @@ export function TaskCardView({
       <div className="space-y-1 border-t border-line px-3 py-2">
         {task.goal && <p className="truncate text-11 text-fg-muted">{t("目标")}：{task.goal}</p>}
         {writes.length > 0 && (
-          <p className="truncate text-11 text-fg-subtle" title={writes.map((step) => step.title).join("、")}>
-            {t("拟改动")}：{writes.map((step) => step.title).join("、")}
+          <p
+            className="truncate text-11 text-fg-subtle"
+            title={writes.map((step) => t(step.title)).join(t("、"))}
+          >
+            {t("拟改动")}：{writes.map((step) => t(step.title)).join(t("、"))}
           </p>
         )}
         <p className="text-12">
           {t("当前")}：
           {progress.total > 0 ? `${progress.done}/${progress.total}` : "—"}
-          {progress.current ? ` · ${progress.current.title}` : ""}
+          {progress.current ? ` · ${t(progress.current.title)}` : ""}
         </p>
         <p className={cn("text-12", task.status === "failed" ? "text-danger" : "text-fg-muted")}>{task.result}</p>
         {/*
@@ -202,7 +205,7 @@ export function TaskCardView({
           )}
           {failedStep && (
             <StatusNotice tone="danger" icon className="m-2">
-              <span className="font-medium">{failedStep.title}</span>
+              <span className="font-medium">{t(failedStep.title)}</span>
               <span className="ml-1 text-fg-muted">{failedStep.stderr?.trim() || failedStep.detail}</span>
             </StatusNotice>
           )}

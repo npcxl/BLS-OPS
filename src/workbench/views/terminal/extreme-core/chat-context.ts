@@ -1,5 +1,11 @@
+import { i18n } from "@/i18n";
 import { formatSize } from "@/lib/format";
 import type { ExtremeAttachment, ExtremeMessage } from "@/stores/extreme-store";
+
+/** 界面是不是英文：这些文案都会进模型上下文，必须跟界面语言一致。 */
+function isEnglish(): boolean {
+  return (i18n.resolvedLanguage ?? i18n.language)?.toLowerCase().startsWith("en") ?? false;
+}
 
 /**
  * 输入框底栏的「上下文」与「输出」偏好。
@@ -32,6 +38,14 @@ export const PICKED_KIND_LABEL: Record<PickedContext["kind"], string> = {
   path: "远程路径",
   output: "命令输出",
   step: "计划步骤",
+};
+
+/** 同上，英文界面用（`PICKED_KIND_LABEL` 是自然 key，界面仍走 `t()`）。 */
+export const PICKED_KIND_EN: Record<PickedContext["kind"], string> = {
+  attachment: "attachment",
+  path: "remote path",
+  output: "command output",
+  step: "plan step",
 };
 
 /**
@@ -69,6 +83,12 @@ export function shouldAttachTerminalTail(mode: ContextMode, picked: PickedContex
 export function terminalTailBlock(tail: string): string {
   const text = tail.trim();
   if (!text) return "";
+  if (isEnglish()) {
+    return (
+      "Recent output of the user's real terminal on the right (possibly commands they just ran — for reference; " +
+      `do not repeat commands that already ran):\n\`\`\`\n${text}\n\`\`\``
+    );
+  }
   return (
     "用户右侧「真实终端」的最近输出（可能是他刚执行过的命令与返回，供参考；" +
     `不要重复已经完成的命令）：\n\`\`\`\n${text}\n\`\`\``
@@ -77,13 +97,20 @@ export function terminalTailBlock(tail: string): string {
 
 /** 输出偏好 → 系统提示里的一句（`auto` 不加，保持现有行为）。 */
 export function outputInstruction(style: OutputStyle): string | null {
+  const en = isEnglish();
   switch (style) {
     case "brief":
-      return "**输出要求**：只给结论与下一步，最多三句话；细节、命令与日志留在右栏，不要复述。";
+      return en
+        ? "**Output style**: conclusion and next step only, three sentences at most; details, commands and logs stay in the right pane — do not repeat them."
+        : "**输出要求**：只给结论与下一步，最多三句话；细节、命令与日志留在右栏，不要复述。";
     case "detailed":
-      return "**输出要求**：结论之后补齐判断依据与执行过程（为什么这么做、看到了什么），仍然避免空话。";
+      return en
+        ? "**Output style**: after the conclusion, give the reasoning and what you actually did (why, and what you saw), still without filler."
+        : "**输出要求**：结论之后补齐判断依据与执行过程（为什么这么做、看到了什么），仍然避免空话。";
     case "structured":
-      return "**输出要求**：用固定结构回答——结论 / 证据 / 下一步；每一项一行，证据里写清命令或文件路径。";
+      return en
+        ? "**Output style**: use a fixed structure — conclusion / evidence / next step; one line each, with the command or file path in the evidence."
+        : "**输出要求**：用固定结构回答——结论 / 证据 / 下一步；每一项一行，证据里写清命令或文件路径。";
     default:
       return null;
   }
@@ -92,9 +119,10 @@ export function outputInstruction(style: OutputStyle): string | null {
 /** 自选材料 → 提示词里的段落（空数组 = 没有段落）。 */
 export function pickedLines(items: PickedContext[]): string[] {
   if (items.length === 0) return [];
-  const lines = ["**本次只依据这些材料**（用户勾选的上下文）："];
+  const en = isEnglish();
+  const lines = [en ? "**Answer using only these materials** (context picked by the user):" : "**本次只依据这些材料**（用户勾选的上下文）："];
   for (const item of items) {
-    const title = PICKED_KIND_LABEL[item.kind];
+    const title = en ? PICKED_KIND_EN[item.kind] : PICKED_KIND_LABEL[item.kind];
     lines.push(`- [${title}] ${item.label}`);
     const body = item.detail.trim();
     if (body) lines.push(`  ${body.replace(/\n+/g, "\n  ")}`);
@@ -109,21 +137,24 @@ export function pickedLines(items: PickedContext[]): string[] {
  * 正文在后面的段落里单独给，清单只负责"有哪些"。
  */
 export function renderManifest(attachments: ExtremeAttachment[]): string {
+  const en = isEnglish();
   return attachments
     .map((item) => {
       const name = item.path ?? item.name;
       const traits = [formatSize(item.size)];
-      if (item.binary) traits.push("二进制");
-      if (item.state === "failed") traits.push("读取失败");
+      if (item.binary) traits.push(en ? "binary" : "二进制");
+      if (item.state === "failed") traits.push(en ? "read failed" : "读取失败");
       // 服务器上的文件读不到正文：**路径仍然有效**，说清楚让模型自己按路径读。
-      else if (item.error) traits.push("未读到正文，按路径读取");
-      if (item.uploadState === "uploaded") traits.push("已上传");
-      return `- ${name}（${traits.join("，")}）`;
+      else if (item.error) traits.push(en ? "no content read; read it by path" : "未读到正文，按路径读取");
+      if (item.uploadState === "uploaded") traits.push(en ? "uploaded" : "已上传");
+      return en ? `- ${name} (${traits.join(", ")})` : `- ${name}（${traits.join("，")}）`;
     })
     .join("\n");
 }
 
 /** 自选模式没有任何材料时，明确告诉模型"别猜"，而不是静默退回全量历史。 */
 export function missingPickedHint(): string {
-  return "（用户选择了「自选」上下文，但没有勾选任何材料：只回答这句话本身，不要假设服务器上的状态。）";
+  return isEnglish()
+    ? "(the user chose the \"picked\" context but selected no material: answer only this sentence, and do not assume anything about the server's state.)"
+    : "（用户选择了「自选」上下文，但没有勾选任何材料：只回答这句话本身，不要假设服务器上的状态。）";
 }

@@ -631,75 +631,91 @@
 
 /* ---------------- 文件变更：统一 Diff ---------------- */
 /*
- * 双列行号 + 增删底色。颜色全部走 token：深色下只叠一层透明底，
- * 不出现整块亮色高光（和数据库工作台的 diff 保持一致的分寸）。
+ * 双列行号 + 左侧 2px 增删色条；不印 +/- 字符，靠底色与色条区分。
+ * 颜色全部走 token：深色下只叠一层透明底，不出现整块亮色高光。
  */
 .extreme-core-diff {
+  --diff-gutter: 2.6rem;
+  --diff-add-bg: rgb(var(--success) / .1);
+  --diff-del-bg: rgb(var(--danger) / .08);
+  --diff-add-strip: rgb(var(--success) / .85);
+  --diff-del-strip: rgb(var(--danger) / .85);
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.7;
+  font-size: 11.5px;
+  line-height: 20px;
+}
+
+:root[data-theme="dark"] .extreme-core-diff {
+  --diff-add-bg: rgb(var(--success) / .14);
+  --diff-del-bg: rgb(var(--danger) / .13);
 }
 
 .extreme-core-diff-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 3.25rem 3.25rem 1rem minmax(0, 1fr);
+  grid-template-columns: var(--diff-gutter) var(--diff-gutter) minmax(0, 1fr);
   align-items: start;
 }
 
 .extreme-core-diff-row[data-kind="add"] {
-  background: rgb(var(--success) / .1);
+  background: var(--diff-add-bg);
 }
 
 .extreme-core-diff-row[data-kind="del"] {
-  background: rgb(var(--danger) / .1);
+  background: var(--diff-del-bg);
+}
+
+.extreme-core-diff-row[data-kind="add"]::before,
+.extreme-core-diff-row[data-kind="del"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 2px;
+}
+
+.extreme-core-diff-row[data-kind="add"]::before {
+  background: var(--diff-add-strip);
+}
+
+.extreme-core-diff-row[data-kind="del"]::before {
+  background: var(--diff-del-strip);
 }
 
 .extreme-core-diff-no {
-  padding-inline-end: .4rem;
-  color: rgb(var(--fg-subtle));
+  padding-inline-end: .5rem;
+  color: rgb(var(--fg-subtle) / .85);
+  font-size: 10.5px;
+  line-height: 20px;
   text-align: end;
   user-select: none;
 }
 
-.extreme-core-diff-sign {
-  color: rgb(var(--fg-subtle));
-  text-align: center;
-  user-select: none;
-}
-
-.extreme-core-diff-row[data-kind="add"] .extreme-core-diff-sign {
-  color: rgb(var(--success));
-}
-
-.extreme-core-diff-row[data-kind="del"] .extreme-core-diff-sign {
-  color: rgb(var(--danger));
-}
-
 .extreme-core-diff-text {
-  padding-inline-end: .6rem;
+  padding-inline-end: 1rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.extreme-core-diff-hunk {
-  padding: 0 .5rem;
-  background: rgb(var(--surface-2) / .7);
-  color: rgb(var(--fg-subtle));
+  tab-size: 4;
 }
 
 .extreme-core-diff-gap {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: .375rem;
   width: 100%;
-  padding: .1rem .6rem;
-  background: rgb(var(--surface-2) / .45);
-  color: rgb(var(--fg-subtle));
-  font-size: 10px;
+  height: 24px;
+  padding-inline: .75rem;
+  border-block: 1px solid rgb(var(--line) / .35);
+  background: rgb(var(--surface-2) / .55);
+  color: rgb(var(--fg-muted));
+  font-size: 11px;
   text-align: start;
+  transition: background-color .12s ease, color .12s ease;
 }
 
 .extreme-core-diff-gap:hover,
 .extreme-core-diff-gap:focus-visible {
-  background: rgb(var(--surface-hover));
+  background: rgb(var(--surface-3) / .85);
   color: rgb(var(--fg));
 }
 

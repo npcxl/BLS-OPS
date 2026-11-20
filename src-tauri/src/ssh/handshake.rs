@@ -44,6 +44,12 @@ pub(crate) enum HopResult {
     },
 }
 
+/// TCP + SSH 握手的总超时。
+///
+/// 防火墙丢包 / 服务端不回包时 `client::connect` 可能挂几分钟，界面则会一直
+/// 停在"连接中"。给一个明确上限，超时就是可重试的错误，而不是无期限等待。
+const CONNECT_TIMEOUT_SECS: u64 = 20;
+
 fn build_config() -> Arc<client::Config> {
     let mut config = client::Config::default();
     config.keepalive_interval = Some(Duration::from_secs(DEFAULT_KEEPALIVE_SECS));
@@ -86,9 +92,31 @@ pub(crate) async fn connect_hop(target: &ConnectTarget, cols: u32, rows: u32) ->
                 .await?;
             // The jump handle has to stay alive for the tunnel to keep working.
             chain.push(jump_handle);
-            client::connect_stream(config, channel.into_stream(), handler).await
+            tokio::time::timeout(
+                Duration::from_secs(CONNECT_TIMEOUT_SECS),
+                client::connect_stream(config, channel.into_stream(), handler),
+            )
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "连接 {} 超时（{} 秒内没有响应）",
+                    target.label(),
+                    CONNECT_TIMEOUT_SECS
+                )
+            })?
         }
-        None => client::connect(config, (target.host.as_str(), target.port), handler).await,
+        None => tokio::time::timeout(
+            Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            client::connect(config, (target.host.as_str(), target.port), handler),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "连接 {} 超时（{} 秒内没有响应）",
+                target.label(),
+                CONNECT_TIMEOUT_SECS
+            )
+        })?,
     };
 
     let mut handle = match attempt {

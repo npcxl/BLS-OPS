@@ -9,6 +9,8 @@
  * 每一步都写清**来源 / 目标 / 覆盖策略**，确认前不执行任何有副作用的动作。
  */
 
+import { i18n } from "@/i18n";
+
 export type StepKind = "upload" | "pull" | "up" | "verify" | "tool";
 
 export type StepState = "pending" | "waiting" | "running" | "success" | "failed" | "skipped";
@@ -165,8 +167,9 @@ export function buildDeployPlan(
   if (!compose) {
     return {
       plan: [],
-      blocked:
+      blocked: i18n.t(
         "没有找到 compose.yaml / docker-compose.yml。请先把它拖进来，或告诉我用别的方式部署。",
+      ),
       services: [],
     };
   }
@@ -175,7 +178,7 @@ export function buildDeployPlan(
   if (services.length === 0) {
     return {
       plan: [],
-      blocked: "compose 文件里没有解析到 services，请检查缩进或内容是否完整。",
+      blocked: i18n.t("compose 文件里没有解析到 services，请检查缩进或内容是否完整。"),
       services,
     };
   }
@@ -201,7 +204,7 @@ export function buildDeployPlan(
       return {
         id: `upload-${index}`,
         kind: "upload" as const,
-        title: `上传 ${relative}`,
+        title: i18n.t("上传 {{name}}", { name: relative }),
         detail: `来源：本地附件 ${relative} · 目标：${remoteDir}/${relative} · 覆盖策略：覆盖同名文件（先建目录）`,
         ...(file.data ? { data: file.data } : { text: file.text }),
         remotePath: `${remoteDir}/${relative}`,

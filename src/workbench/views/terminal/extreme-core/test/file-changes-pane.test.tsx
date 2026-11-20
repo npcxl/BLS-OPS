@@ -140,14 +140,62 @@ it("renders the unified diff returned by the backend", async () => {
     expect(text).toContain("listen 8080");
     expect(text).toContain("+2");
     expect(text).toContain("-1");
-    expect(text).toContain("已写入");
+    // 回读之后的记录标「实际变更」（不是模型的说法）。
+    expect(text).toContain("实际变更");
     // 两个列的行号：删除行只有旧行号，新增行只有新行号。
     const del = holder.querySelector("[data-kind='del']");
     expect(del?.textContent).toContain("listen 80");
+    expect(del?.textContent).not.toContain("listen 8080");
     const add = holder.querySelector("[data-kind='add']");
     expect(add?.textContent).toContain("listen 8080");
     // 已验证的备份显示"已备份"，未验证的只能是"计划备份"。
     expect(text).toContain("已备份");
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+it("uses the compact codex-style diff layout", async () => {
+  const summary = change();
+  useExtremeStore.setState({ fileChanges: { [summary.id]: summary } });
+  list.mockResolvedValue([summary]);
+  detail.mockResolvedValue(detailOf(summary));
+
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const { holder, cleanup } = await renderPane(
+    <FileChangesPane
+      workspaceId="w1"
+      serverName="prod"
+      sessionId="ssh-1"
+      onOpenRemotePath={() => undefined}
+    />,
+  );
+  try {
+    // 顶栏：轮次胶囊带增删总数，切换入口收在胶囊里（不再叠一排标签）。
+    const chip = holder.querySelector("[aria-haspopup='menu']");
+    expect(chip?.textContent).toContain("+2");
+    expect(chip?.textContent).toContain("-1");
+    expect(holder.querySelector(".extreme-core-pane-tabs")).toBeNull();
+
+    // 文件头吸顶；正文只有旧 / 新两列行号与代码（无 + / - 字符列、无 @@ 行）。
+    const header = holder.querySelector("section > div");
+    expect(header?.className).toContain("sticky");
+    const rows = holder.querySelectorAll(".extreme-core-diff-row");
+    expect(rows.length).toBe(4);
+    expect(rows[0]?.children.length).toBe(3);
+    expect(holder.textContent).not.toContain("@@");
+
+    // 未修改的长段折叠成一条可展开的带。
+    expect(holder.querySelector(".extreme-core-diff-gap")?.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(holder.textContent).toContain("行未修改");
+
+    // 文件树的筛选框就在树面板里，不是在正文上方。
+    const aside = holder.querySelector("aside");
+    expect(aside?.querySelector("input[aria-label='按路径筛选文件']")).toBeTruthy();
   } finally {
     await cleanup();
     await i18n.changeLanguage(language);
@@ -244,12 +292,30 @@ it("offers a pending view and jumps to a file from the tree", async () => {
     />,
   );
   try {
-    const text = holder.textContent ?? "";
-    expect(text).toContain("待确认的变更");
-    expect(text).toContain("拟修改");
     // 从聊天点进来：定位到指定文件（文件树里该项被选中）。
     const selected = holder.querySelector("[data-selected='true']");
     expect(selected?.textContent).toContain("index.html");
+
+    // 顶栏胶囊是"待确认 / 历史运行"的切换入口（和上一轮 Diff 一起收在这里）。
+    const chip = holder.querySelector("[aria-haspopup='menu']") as HTMLElement | null;
+    expect(chip).toBeTruthy();
+    await act(async () => {
+      chip!.click();
+    });
+    const pendingItem = [...holder.querySelectorAll("[role='menuitemradio']")].find((node) =>
+      (node.textContent ?? "").includes("待确认的变更"),
+    ) as HTMLElement | undefined;
+    expect(pendingItem).toBeTruthy();
+    await act(async () => {
+      pendingItem!.click();
+    });
+
+    const text = holder.textContent ?? "";
+    expect(text).toContain("待确认的变更");
+    expect(text).toContain("拟修改");
+    // 切到待确认：只剩还没放行的那份，已写入的不再混进来。
+    expect(text).toContain("ops.conf");
+    expect(text).not.toContain("index.html");
   } finally {
     await cleanup();
     await i18n.changeLanguage(language);

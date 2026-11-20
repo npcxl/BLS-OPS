@@ -19,6 +19,8 @@ export default {
   System: "系统",
   Light: "浅色",
   Dark: "深色",
+  "Always on top": "窗口置顶",
+  "Always on top of other windows": "始终显示在其他窗口之上",
   // -- 终端 --
   Terminal: "终端",
   "The font is shared by the terminal and the command output panel.":

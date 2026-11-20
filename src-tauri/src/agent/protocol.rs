@@ -687,7 +687,34 @@ pub fn tail_truncate(text: &str, limit: usize) -> (String, bool) {
 ///
 /// 传入的是 [`super::super::deployment::ai::resolve_effort`] 解析后的档位
 /// （`max` 已按模型能力收敛到最高档）；`None` / 未知值走默认段。
-pub fn thinking_guidance(effort: Option<&str>) -> &'static str {
+/// 界面语言：决定追加给模型的协议 / 强度 / 范围用中文还是英文。
+///
+/// 只决定**提示词本身的写法**，不改风险分级与权限：同一档的行为约束，
+/// 两种语言逐条对应。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Zh,
+    En,
+}
+
+impl Lang {
+    /// `en` / `en-US` / `EN` 走英文，其余（`zh-CN`、`None`）走中文。
+    pub fn from_locale(locale: Option<&str>) -> Self {
+        match locale.map(|value| value.trim().to_ascii_lowercase()) {
+            Some(value) if value.starts_with("en") => Lang::En,
+            _ => Lang::Zh,
+        }
+    }
+}
+
+pub fn thinking_guidance(effort: Option<&str>, lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => thinking_guidance_zh(effort),
+        Lang::En => thinking_guidance_en(effort),
+    }
+}
+
+fn thinking_guidance_zh(effort: Option<&str>) -> &'static str {
     match effort.unwrap_or("").trim().to_ascii_lowercase().as_str() {
         "low" => {
             r#"
@@ -725,12 +752,57 @@ pub fn thinking_guidance(effort: Option<&str>) -> &'static str {
     }
 }
 
+fn thinking_guidance_en(effort: Option<&str>) -> &'static str {
+    match effort.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "low" => {
+            r#"
+[Thinking level: low] Take the shortest path: if one command settles it, do not split it up; no alternatives, no scope creep.
+On the first failure, hand the raw error to the user instead of chaining retries or swapping commands.
+Still read the original file with read_file before editing — this rule is never relaxed by level.
+"#
+        }
+        "medium" => {
+            r#"
+[Thinking level: medium] Run 1–2 read-only probes first, then act; verify after each step.
+On failure, read stderr to decide the cause before changing approach; at most 2 variations in the same spot, then hand the evidence to the user.
+"#
+        }
+        "high" => {
+            r#"
+[Thinking level: high] List the candidate approaches and their trade-offs before acting; assess the blast radius of every write (who reads this file / this service).
+Diagnose failures to the root cause (logs / exit code / permissions / path) instead of swapping commands at random.
+"#
+        }
+        "max" => {
+            r#"
+[Thinking level: max] Build on "high", plus two more rules:
+1. Verify consistency before and after every critical change (snapshot before, checks after);
+2. State explicitly in the conclusion what is verified and what is not — never pass inference off as evidence.
+Keep verification bounded too: do not re-run the same check without new information.
+"#
+        }
+        _ => {
+            r#"
+[Thinking level: default] Follow the tool protocol's default rhythm: read-only probes first, then act; on failure read the evidence before changing approach.
+Read the original file with read_file before editing.
+"#
+        }
+    }
+}
+
 /// 操作范围约束：先判断"只查询"还是"要改动"，再决定用什么工具。
 ///
 /// 权限模式只决定"写操作要不要问"，不决定"该不该写"：用户只问状态时，
 /// 即使开了完全权限也只做只读查询。命令用途不明确时宁可换工具，也不要
 /// 拿一条看不懂的命令去试探。
-pub fn intent_guidance() -> &'static str {
+pub fn intent_guidance(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => intent_guidance_zh(),
+        Lang::En => intent_guidance_en(),
+    }
+}
+
+fn intent_guidance_zh() -> &'static str {
     r#"
 【操作范围】先判断用户这句话是"只查询"还是"要改动"，再选工具：
 1. 只查询（看看 / 查一下 / 状态 / 日志 / 哪些…）：只用只读工具与只读命令（list_dir、read_file、ps、systemctl status、docker ps、df…），拿到结果就汇报；**即使已开启完全权限，也不要顺手改任何东西**。
@@ -740,8 +812,25 @@ pub fn intent_guidance() -> &'static str {
 "#
 }
 
+fn intent_guidance_en() -> &'static str {
+    r#"
+[Scope] Decide first whether this request is "query only" or "needs a change", then pick tools:
+1. Query only (show / check / status / logs / which...): read-only tools and read-only commands only (list_dir, read_file, ps, systemctl status, docker ps, df...), then report. **Even with full permissions, do not change anything along the way.**
+2. Needs a change: do exactly the step the user asked for — no widening the scope, no opportunistic cleanups; read the original file before editing. With normal permissions each write is confirmed once; with full permissions it runs directly. In a query-only task any write is blocked by the executor.
+3. Unclear command purpose (custom scripts, binaries whose flags you cannot read): switch to a known read-only tool with a clear target; if none fits, explain the specific reason instead of guessing.
+4. Query failed or permission denied: report the actual error (stderr / exit code / permissions); do not try another command in the hope it works, and do not repeat the same one.
+"#
+}
+
 /// 给模型的工具说明（由后端追加，**工具集只有这一份事实**）。
-pub const fn tool_prompt() -> &'static str {
+pub fn tool_prompt(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => tool_prompt_zh(),
+        Lang::En => tool_prompt_en(),
+    }
+}
+
+fn tool_prompt_zh() -> &'static str {
     r#"
 【工具协议】你可以实际执行服务器命令。**优先直接调用随请求提供的工具**：run_shell / read_file / list_dir / write_file。
 
@@ -765,5 +854,32 @@ pub const fn tool_prompt() -> &'static str {
 9. 同一条命令在一次运行里**只会执行一次**：重复提交会被执行器直接拦下并记为「已跳过」，你拿到的仍是一条错误。要重试就必须改参数，并在动手前说明改了什么、为什么这样能绕过刚才的错误。
 10. 连续两次失败就停下来汇报：说明已经排除了什么、还缺哪条信息、建议用户做什么（例如确认路径、提供权限）。不要无限尝试。
 11. 收尾时用一小段话给：结论 + 关键证据 + 下一步建议。
+"#
+}
+
+fn tool_prompt_en() -> &'static str {
+    r#"
+[Tool protocol] You can actually run commands on the server. **Prefer calling the tools sent with the request directly**: run_shell / read_file / list_dir / write_file.
+
+Only when the current API does not support tool calls, write text blocks in the reply body (several per message, executed in order):
+<tool name="run_shell">{"command":"uname -a"}</tool>
+<tool name="read_file">{"path":"/var/www/app/index.html","offset":1,"limit":200}</tool>
+<tool name="list_dir">{"path":"/var/www"}</tool>
+<tool name="write_file">{"path":"/var/www/app/index.html","content":"the complete new file content"}</tool>
+
+**Do not invent tool-call markers** (e.g. `<|DSL|...`, `invoke name="..."`). They are not part of this protocol, will be treated as a plain answer, and nothing gets executed.
+
+Rules:
+1. Tool calls must not depend on each other; when you need the previous output, send only that one call first and wait for the result.
+2. Commands run in the task's **current directory** (each result reports the directory afterwards); to change directory use `cd <dir> && ...`.
+3. Probe read-only first, then change; read the original file with read_file before editing. Writes follow the permission mode: with normal permissions wait for user approval (if rejected, explain why and propose another approach — do not re-request the same command); with full permissions execute directly.
+4. `write_file` backs up the original automatically — you do not need to `cp` it yourself; when deleting/overwriting with `run_shell`, back it up first and say where.
+5. sudo is disabled by default and only allowed after the user turns on "full permissions"; if you truly need root and it is not allowed, give the user the command and the reason and let them decide.
+6. Never run destructive commands (`rm -rf /`, `mkfs`, firewall changes, formatting). Normal permissions will stop and ask; full permissions will execute irreversibly — do not write such commands unless the user explicitly asks.
+7. Conclusions must come from tool output; if there is no output, say "not found" — never guess.
+8. **Diagnose before switching commands**: read `stderr` and classify it — missing permission (needs root / read-only directory), path or file does not exist, wrong service or unit name, file already exists, port already in use, command not found. State the cause in one sentence, then issue a **different** command (add override flags, change the path, use a diagnostic command) — never retry the same one unchanged.
+9. The same command runs **only once** per run: a duplicate submission is blocked by the executor and recorded as "skipped", and you still get an error. To retry you must change the arguments and explain, before acting, what changed and why it should get past the previous error.
+10. After two consecutive failures, stop and report: what has been ruled out, what information is still missing, what the user should do (e.g. confirm the path, grant permissions). Do not keep trying.
+11. Wrap up with one short paragraph: conclusion + key evidence + next step.
 "#
 }

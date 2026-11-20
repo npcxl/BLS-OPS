@@ -24,7 +24,7 @@ use super::changes::{
 };
 use super::protocol::{
     intent_guidance, looks_like_tool_call, parse_tool_calls, redact, strip_tool_calls,
-    tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome, AgentStep,
+    tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome, AgentStep, Lang,
     PendingApproval, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT,
     STEP_OUTPUT_LIMIT,
 };
@@ -63,6 +63,13 @@ pub struct AgentInput {
     pub messages: Vec<AgentTurn>,
     /// 用户为这条会话选的模型；`None` = 用默认提供方。
     pub provider_id: Option<String>,
+    /**
+     * 界面语言（`zh-CN` / `en`）；`None` = 按中文处理。
+     *
+     * 只决定系统提示词用哪种语言写，不改任何权限：切英文后模型不会
+     * 再拿中文的"操作范围 / 工具协议"当默认约定。
+     */
+    pub locale: Option<String>,
     /// 思考强度（已由界面按模型能力选好）；`None` / `auto` = 供应商默认。
     pub reasoning_effort: Option<String>,
     /// 上下文输入预算（tokens）；`None` = 按模型窗口自动。
@@ -1116,6 +1123,7 @@ fn normalize_operation_text(text: &str) -> String {
 /// （`max` 已按模型收敛）；这里不再解读 `input.reasoning_effort` 原值，避免
 /// "界面选 MAX、模型只支持 high，行为段却按 max"这种错位。
 fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> Vec<Value> {
+    let lang = Lang::from_locale(input.locale.as_deref());
     let mut system = String::new();
     let mut turns: Vec<Value> = Vec::new();
     for turn in &input.messages {
@@ -1126,21 +1134,39 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
             turns.push(json!({ "role": turn.role, "content": turn.content }));
         }
     }
-    system.push_str(&format!(
-        "\n当前任务目录：{}\n服务器：{}\n当前时间：{}\n",
-        input.cwd,
-        input.server,
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-    ));
-    system.push_str(tool_prompt());
+    /*
+     * 语言跟着界面走：英文界面下这三行也必须是英文，否则模型会把
+     * "当前任务目录"当成本地约定，整段回答继续用中文。
+     */
+    let head = match lang {
+        Lang::Zh => format!(
+            "\n当前任务目录：{}\n服务器：{}\n当前时间：{}\n",
+            input.cwd,
+            input.server,
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+        Lang::En => format!(
+            "\nTask directory: {}\nServer: {}\nCurrent time: {}\n",
+            input.cwd,
+            input.server,
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ),
+    };
+    system.push_str(&head);
+    system.push_str(tool_prompt(lang));
     system.push('\n');
-    system.push_str(thinking_guidance(effort));
+    system.push_str(thinking_guidance(effort, lang));
     system.push('\n');
-    system.push_str(intent_guidance());
+    system.push_str(intent_guidance(lang));
     if query_only {
-        system.push_str(
-            "\n【本次任务范围：只查询】只允许只读工具与只读命令；写 / 改 / 删会被执行器直接拦下，不要尝试。\n",
-        );
+        system.push_str(match lang {
+            Lang::Zh => {
+                "\n【本次任务范围：只查询】只允许只读工具与只读命令；写 / 改 / 删会被执行器直接拦下，不要尝试。\n"
+            }
+            Lang::En => {
+                "\n[Task scope: query only] Only read-only tools and read-only commands are allowed; any write / edit / delete is blocked by the executor. Do not attempt it.\n"
+            }
+        });
     }
     let mut out = vec![json!({ "role": "system", "content": system })];
     out.extend(turns);

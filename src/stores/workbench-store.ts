@@ -10,6 +10,7 @@ import type {
   WorkspaceTabType,
 } from "@/workbench/types";
 import { useDomainStore } from "@/stores/domain-store";
+import { useSessionStore } from "@/stores/session-store";
 
 const uuid = () => crypto.randomUUID();
 
@@ -357,9 +358,32 @@ export const useWorkbenchStore = create<WorkbenchState>()((set) => ({
           (item) => item.serverId === tab.serverId && item.type === nextTab.type,
         );
         if (existing) {
+          /*
+           * 会话已经断了 / 还没连上：再点这台服务器显然不是"切过来看看"，
+           * 而是想恢复连接。写一个 nonce，由终端自己重连 —— 直接复用标签，
+           * 滚动位置、文件面板目录都保留。
+           */
+          const status = existing.sessionId
+            ? useSessionStore.getState().sessions[existing.sessionId]?.status
+            : "closed";
+          const needsReconnect =
+            existing.type === "terminal" &&
+            Boolean(existing.sessionId) &&
+            status !== "connected" &&
+            status !== "connecting";
           return {
             activeModule: TAB_TYPE_TO_MODULE[existing.type] ?? state.activeModule,
-            rootPane: replacePane(state.rootPane, pane.id, { ...pane, activeTabId: existing.id }),
+            rootPane: replacePane(state.rootPane, pane.id, {
+              ...pane,
+              activeTabId: existing.id,
+              tabs: needsReconnect
+                ? pane.tabs.map((item) =>
+                    item.id === existing.id
+                      ? { ...item, reconnectNonce: Date.now() }
+                      : item,
+                  )
+                : pane.tabs,
+            }),
             focusedPaneId: pane.id,
           };
         }

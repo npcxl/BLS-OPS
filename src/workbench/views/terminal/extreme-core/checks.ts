@@ -18,7 +18,14 @@
  * 故意不区分成"成功/失败"：`unmet` 要用户动手、`denied` 要换权限、
  * `unverified` 是平台能力不足 —— 三种处理方式完全不同。
  */
+import { i18n } from "@/i18n";
+
 import { describeDnsVerdict, judgeDns, type DnsVerdict } from "./environment";
+
+/** 当前界面是不是英文 —— 这批文本会**进模型上下文**，必须跟着界面走。 */
+function isEnglish(): boolean {
+  return (i18n.resolvedLanguage ?? i18n.language)?.toLowerCase().startsWith("en") ?? false;
+}
 
 export type CheckStatus = "passed" | "unmet" | "denied" | "unverified" | "not-applicable";
 
@@ -38,19 +45,20 @@ export interface CheckItem {
   blockedBy?: string;
 }
 
-/** 状态 → 一行中文。 */
+/** 状态 → 一行（跟随界面语言）。 */
 export function statusLabel(status: CheckStatus): string {
+  const en = isEnglish();
   switch (status) {
     case "passed":
-      return "已验证";
+      return en ? "verified" : "已验证";
     case "unmet":
-      return "条件未满足";
+      return en ? "unmet" : "条件未满足";
     case "denied":
-      return "无权限";
+      return en ? "permission denied" : "无权限";
     case "unverified":
-      return "无法验证";
+      return en ? "could not verify" : "无法验证";
     case "not-applicable":
-      return "不适用";
+      return en ? "not applicable" : "不适用";
   }
 }
 
@@ -86,17 +94,27 @@ export function summarizeChecks(items: CheckItem[]): {
 /** 渲染成给模型看的一段（只写事实与结论，不给流程）。 */
 export function renderChecks(items: CheckItem[]): string {
   if (items.length === 0) return "";
+  const en = isEnglish();
   const lines = items.map((item) => {
-    const head = `- ${item.label}（${item.target}）：${statusLabel(item.status)}`;
-    const evidence = item.evidence ? ` —— ${item.evidence}` : "";
-    const blocked = item.blockedBy ? `；需要：${item.blockedBy}` : "";
+    const label = en ? i18n.t(item.label, { defaultValue: item.label }) : item.label;
+    const head = en
+      ? `- ${label} (${item.target}): ${statusLabel(item.status)}`
+      : `- ${item.label}（${item.target}）：${statusLabel(item.status)}`;
+    const evidence = item.evidence ? (en ? ` — ${item.evidence}` : ` —— ${item.evidence}`) : "";
+    const blocked = item.blockedBy ? (en ? `; needs: ${item.blockedBy}` : `；需要：${item.blockedBy}`) : "";
     return `${head}${evidence}${blocked}`;
   });
   const summary = summarizeChecks(items);
-  const overall = summary.ready
-    ? `可以继续（${summary.passed}/${summary.total} 已验证）`
-    : `有 ${summary.blocked.length} 项阻塞`;
-  return `前置条件检查（${overall}）：\n${lines.join("\n")}`;
+  const overall = en
+    ? summary.ready
+      ? `can proceed (${summary.passed}/${summary.total} verified)`
+      : `${summary.blocked.length} item(s) blocking`
+    : summary.ready
+      ? `可以继续（${summary.passed}/${summary.total} 已验证）`
+      : `有 ${summary.blocked.length} 项阻塞`;
+  return en
+    ? `Precondition checks (${overall}):\n${lines.join("\n")}`
+    : `前置条件检查（${overall}）：\n${lines.join("\n")}`;
 }
 
 /**
@@ -118,18 +136,23 @@ export function checkDns(input: {
       : verdict === "points-elsewhere" || verdict === "unresolved"
         ? "unmet"
         : "unverified";
+  const en = isEnglish();
   return {
     id: `dns:${input.domain}`,
-    label: "域名解析",
+    label: en ? "DNS resolution" : "域名解析",
     target: input.domain,
     status,
-    evidence: `${input.resolved.length > 0 ? input.resolved.join(", ") : "无记录"} —— ${describeDnsVerdict(verdict)}`,
+    evidence: `${input.resolved.length > 0 ? input.resolved.join(", ") : en ? "no record" : "无记录"} ${en ? "—" : "——"} ${describeDnsVerdict(verdict)}`,
     at: input.at ?? Date.now(),
     blockedBy:
       status === "unmet"
         ? verdict === "points-elsewhere"
-          ? "把 A 记录改为本机地址，或确认应部署到记录指向的那台机器"
-          : "为这个域名添加 A 记录"
+          ? en
+            ? "point the A record at this machine, or confirm the deployment belongs on the host the record points to"
+            : "把 A 记录改为本机地址，或确认应部署到记录指向的那台机器"
+          : en
+            ? "add an A record for this domain"
+            : "为这个域名添加 A 记录"
         : undefined,
   };
 }
@@ -146,14 +169,19 @@ export function checkPort(input: {
   at?: number;
 }): CheckItem {
   const occupied = input.listening.some((line) => new RegExp(`[:.]${input.port}(\\s|$)`).test(line));
+  const en = isEnglish();
   return {
     id: `port:${input.port}`,
-    label: `端口 ${input.port}`,
+    label: en ? `Port ${input.port}` : `端口 ${input.port}`,
     target: `:${input.port}`,
     status: occupied ? "unmet" : "passed",
-    evidence: occupied ? "已在监听" : "未被占用",
+    evidence: occupied ? (en ? "already listening" : "已在监听") : en ? "free" : "未被占用",
     at: input.at ?? Date.now(),
-    blockedBy: occupied ? "确认占用它的服务是否可以停止，或改用其他端口" : undefined,
+    blockedBy: occupied
+      ? en
+        ? "confirm the process holding it can be stopped, or use another port"
+        : "确认占用它的服务是否可以停止，或改用其他端口"
+      : undefined,
   };
 }
 
@@ -168,14 +196,27 @@ export function checkWritable(input: {
   writable?: boolean;
   at?: number;
 }): CheckItem {
+  const en = isEnglish();
   return {
     id: `write:${input.path}`,
-    label: "目录可写",
+    label: en ? "Directory writable" : "目录可写",
     target: input.path,
     status: input.writable === undefined ? "unverified" : input.writable ? "passed" : "denied",
-    evidence: input.writable === undefined ? "未测试" : input.writable ? "test -w 通过" : "test -w 失败",
+    evidence:
+      input.writable === undefined
+        ? en
+          ? "not tested"
+          : "未测试"
+        : input.writable
+          ? "test -w passed"
+          : "test -w failed",
     at: input.at ?? Date.now(),
-    blockedBy: input.writable === false ? "换一个有写权限的目录，或用提权账号执行" : undefined,
+    blockedBy:
+      input.writable === false
+        ? en
+          ? "switch to a directory you can write to, or run as a privileged account"
+          : "换一个有写权限的目录，或用提权账号执行"
+        : undefined,
   };
 }
 
@@ -197,20 +238,29 @@ export function checkDisk(input: {
   at?: number;
 }): CheckItem {
   const { availableBytes, needBytes } = input;
+  const en = isEnglish();
   const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024)} MB`;
   return {
     id: `disk:${input.path}`,
-    label: "磁盘余量",
+    label: en ? "Disk headroom" : "磁盘余量",
     target: input.path,
     status:
       availableBytes === null ? "unverified" : availableBytes >= needBytes ? "passed" : "unmet",
     evidence:
       availableBytes === null
-        ? "读不到 df 输出"
-        : `可用 ${mb(availableBytes)}，需要 ${mb(needBytes)}`,
+        ? en
+          ? "df output unreadable"
+          : "读不到 df 输出"
+        : en
+          ? `${mb(availableBytes)} available, ${mb(needBytes)} needed`
+          : `可用 ${mb(availableBytes)}，需要 ${mb(needBytes)}`,
     at: input.at ?? Date.now(),
     blockedBy:
-      availableBytes !== null && availableBytes < needBytes ? "清理磁盘或更换部署目录" : undefined,
+      availableBytes !== null && availableBytes < needBytes
+        ? en
+          ? "free up disk space or choose another deployment directory"
+          : "清理磁盘或更换部署目录"
+        : undefined,
   };
 }
 
@@ -226,9 +276,10 @@ export function checkCertificate(input: {
   details?: string;
   at?: number;
 }): CheckItem {
+  const en = isEnglish();
   const base = {
     id: `tls:${input.domain}`,
-    label: "HTTPS 证书",
+    label: en ? "HTTPS certificate" : "HTTPS 证书",
     target: input.domain,
     at: input.at ?? Date.now(),
   };
@@ -236,7 +287,7 @@ export function checkCertificate(input: {
     return {
       ...base,
       status: "not-applicable",
-      evidence: "没有可读取的证书（可能还没配 HTTPS）",
+      evidence: en ? "no readable certificate (HTTPS may not be configured yet)" : "没有可读取的证书（可能还没配 HTTPS）",
     };
   }
   const san = /DNS:([^,\n]+)/g;
@@ -249,14 +300,29 @@ export function checkCertificate(input: {
     return {
       ...base,
       status: "unmet",
-      evidence: `证书覆盖 ${names.join(", ") || "未知域名"}，不含 ${input.domain}`,
-      blockedBy: "为这个域名重新签发证书，或改用已覆盖的域名",
+      evidence: en
+        ? `the certificate covers ${names.join(", ") || "unknown domains"}, not ${input.domain}`
+        : `证书覆盖 ${names.join(", ") || "未知域名"}，不含 ${input.domain}`,
+      blockedBy: en
+        ? "re-issue a certificate for this domain, or use a domain it already covers"
+        : "为这个域名重新签发证书，或改用已覆盖的域名",
     };
   }
   if (expired) {
-    return { ...base, status: "unmet", evidence: `证书已于 ${notAfter} 过期`, blockedBy: "续签证书" };
+    return {
+      ...base,
+      status: "unmet",
+      evidence: en ? `the certificate expired on ${notAfter}` : `证书已于 ${notAfter} 过期`,
+      blockedBy: en ? "renew the certificate" : "续签证书",
+    };
   }
-  return { ...base, status: "passed", evidence: `覆盖 ${input.domain}，有效期至 ${notAfter ?? "未知"}` };
+  return {
+    ...base,
+    status: "passed",
+    evidence: en
+      ? `covers ${input.domain}, valid until ${notAfter ?? "unknown"}`
+      : `覆盖 ${input.domain}，有效期至 ${notAfter ?? "未知"}`,
+  };
 }
 
 /** 上游可达性：`curl -m 5 -o /dev/null -w '%{http_code}'` 的结果。 */
@@ -267,13 +333,19 @@ export function checkUpstream(input: {
 }): CheckItem {
   const code = input.httpCode;
   const ok = code !== undefined && code > 0 && code < 500;
+  const en = isEnglish();
   return {
     id: `upstream:${input.url}`,
-    label: "上游可达",
+    label: en ? "Upstream reachable" : "上游可达",
     target: input.url,
     status: code === undefined ? "unverified" : ok ? "passed" : "unmet",
-    evidence: code === undefined ? "请求没有返回" : `HTTP ${code}`,
+    evidence: code === undefined ? (en ? "request returned nothing" : "请求没有返回") : `HTTP ${code}`,
     at: input.at ?? Date.now(),
-    blockedBy: code !== undefined && !ok ? "确认上游服务是否在运行、监听端口与路径是否正确" : undefined,
+    blockedBy:
+      code !== undefined && !ok
+        ? en
+          ? "check that the upstream service is running, listening on the right port and path"
+          : "确认上游服务是否在运行、监听端口与路径是否正确"
+        : undefined,
   };
 }

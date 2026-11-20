@@ -14,6 +14,7 @@ import databaseWorkspace from "./databaseWorkspace";
 import dbEngines from "./dbEngines";
 import extreme from "./extreme";
 import redis from "./redis";
+import terminal from "./terminal";
 import workbenchUi from "./workbenchUi";
 
 export default {
@@ -25,5 +26,6 @@ export default {
   ...dbEngines,
   ...extreme,
   ...redis,
+  ...terminal,
   ...workbenchUi,
 } as const;

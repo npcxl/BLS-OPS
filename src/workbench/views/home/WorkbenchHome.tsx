@@ -26,6 +26,8 @@ import {
 } from "@/components/icons";
 import "./home.css";
 import { Button } from "@/components/ui/button";
+import SpecularButton from "@/components/ui/specular-button";
+import { useIsDarkTheme } from "@/hooks/use-theme";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { pushToast } from "@/components/ui/toast";
 import { PageScroll, PageSurface } from "@/workbench/page-layout";
@@ -55,6 +57,8 @@ import { useProjectAssets } from "./use-project-assets";
 
 export function WorkbenchHome() {
   const { t } = useTranslation();
+  /** 首页那颗「超能模式」要走官方 Specular Button：canvas 读不到 CSS 变量，按主题换一套色。 */
+  const isDark = useIsDarkTheme();
   const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ServerRecord | null>(null);
 
@@ -315,9 +319,27 @@ export function WorkbenchHome() {
             <h1 className="page-title">{t("Workbench")}</h1>
             <p className="page-description">{t("Servers, databases and projects in one place")}</p>
             <div className="page-actions home-hero-actions">
-              <Button variant="contrast" size="sm" onClick={openExtremeMode}>
-                <Sparkles size={14} />{t("超能模式")}
-              </Button>
+              <SpecularButton
+                size="sm"
+                radius={8}
+                onClick={openExtremeMode}
+                // 与旁边两个 size="sm" 按钮同一行高；官方 sm 的 10/20 内边距太胖。
+                className="!h-7 !px-3 !py-0 !text-12 !font-medium"
+                tint={isDark ? "#0b1220" : "#ffffff"}
+                tintOpacity={0.9}
+                textColor={isDark ? "#f8fafc" : "#0f172a"}
+                // 深色靠白线条扫边，浅色反过来用墨色线条，不然白线上白底全看不见。
+                lineColor={isDark ? "#ffffff" : "#0b1220"}
+                baseColor={isDark ? "#334155" : "#94a3b8"}
+                intensity={1.15}
+                shineSize={14}
+                shineFade={30}
+                thickness={1.5}
+                proximity={200}
+              >
+                <Sparkles size={14} />
+                {t("超能模式")}
+              </SpecularButton>
               <Button variant="outline" size="sm" onClick={openQuickConnect}>
                 <PlugZap size={14} />{t("Quick connect")}
               </Button>

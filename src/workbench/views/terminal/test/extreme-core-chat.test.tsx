@@ -67,6 +67,8 @@ vi.mock("@/components/backgrounds/aero-shards", () => ({
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
+  /** 顶栏的主题选择框（跟随系统 / 浅色 / 深色）也要能渲染。 */
+  useThemeMode: () => ["dark", () => undefined],
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),

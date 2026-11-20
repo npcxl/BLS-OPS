@@ -994,7 +994,9 @@ mod budget_tests {
  * 行为段只写"怎么做"，权限与审批完全不受影响（这里用 ToolRisk 与常量锁住）。
  */
 mod thinking_tests {
-    use crate::agent::protocol::{intent_guidance, thinking_guidance, ToolRisk, MAX_ROUNDS};
+    use crate::agent::protocol::{
+        intent_guidance, thinking_guidance, Lang, ToolRisk, MAX_ROUNDS,
+    };
 
     #[test]
     fn each_effort_has_its_own_block() {
@@ -1004,25 +1006,25 @@ mod thinking_tests {
             ("high", "思考强度：高"),
             ("max", "思考强度：最高"),
         ] {
-            let text = thinking_guidance(Some(effort));
+            let text = thinking_guidance(Some(effort), Lang::Zh);
             assert!(text.contains(marker), "{effort} 应命中自己的行为段");
         }
         // 大小写 / 前后空白不影响。
-        assert!(thinking_guidance(Some(" MAX ")).contains("思考强度：最高"));
+        assert!(thinking_guidance(Some(" MAX "), Lang::Zh).contains("思考强度：最高"));
     }
 
     #[test]
     fn unknown_effort_falls_back_to_default() {
-        let default = thinking_guidance(None);
+        let default = thinking_guidance(None, Lang::Zh);
         assert!(default.contains("思考强度：默认"));
-        assert_eq!(default, thinking_guidance(Some("auto")));
-        assert_eq!(default, thinking_guidance(Some("N/A")));
+        assert_eq!(default, thinking_guidance(Some("auto"), Lang::Zh));
+        assert_eq!(default, thinking_guidance(Some("N/A"), Lang::Zh));
     }
 
     /// 只查询 → 只读：即使开了完全权限也不顺手改；命令用途不明确先换工具。
     #[test]
     fn intent_guidance_keeps_queries_read_only() {
-        let text = intent_guidance();
+        let text = intent_guidance(Lang::Zh);
         assert!(text.contains("只查询"));
         assert!(text.contains("完全权限"), "要写明完全权限也不改变查询范围");
         assert!(text.contains("只读"));
@@ -1030,10 +1032,39 @@ mod thinking_tests {
         assert!(text.contains("实际错误"));
     }
 
+    /**
+     * 英文界面下四段提示词必须**整段英文**：只要混进中文，模型就会顺着
+     * 中文继续回答 —— 这正是"切英文还是满屏中文"的根因。
+     */
+    #[test]
+    fn english_locale_switches_every_prompt_block() {
+        for effort in ["low", "medium", "high", "max", "auto"] {
+            let text = thinking_guidance(Some(effort), Lang::En);
+            assert!(
+                !text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "{effort} 的英文段里不能有中文"
+            );
+        }
+        for text in [
+            intent_guidance(Lang::En),
+            crate::agent::protocol::tool_prompt(Lang::En),
+        ] {
+            assert!(
+                !text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文段里不能有中文"
+            );
+        }
+        // 语言判定：`en` / `en-US` 走英文，其余（含未传）走中文。
+        assert_eq!(Lang::from_locale(Some("en")), Lang::En);
+        assert_eq!(Lang::from_locale(Some("en-US")), Lang::En);
+        assert_eq!(Lang::from_locale(Some("zh-CN")), Lang::Zh);
+        assert_eq!(Lang::from_locale(None), Lang::Zh);
+    }
+
     /// 低档只是"直接做"，不改风险分级、审批门槛与轮数上限。
     #[test]
     fn effort_does_not_touch_risk_or_limits() {
-        let low = thinking_guidance(Some("low"));
+        let low = thinking_guidance(Some("low"), Lang::Zh);
         assert!(low.contains("读原文"), "低档也必须先读原文再改");
         assert!(!low.contains("无需确认"));
 
@@ -1085,6 +1116,7 @@ mod loop_tests {
                 content: "处理这台机器".to_string(),
             }],
             provider_id: None,
+            locale: None,
             reasoning_effort: None,
             context_budget: None,
             capability: None,

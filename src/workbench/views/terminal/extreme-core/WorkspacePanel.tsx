@@ -685,8 +685,8 @@ export function WorkspacePanel({
                     >
                       <span className={cn("mt-1 size-1.5 shrink-0 rounded-full", tone)} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-11 text-fg" title={step.title}>
-                          {index + 1}. {step.title}
+                        <span className="block truncate text-11 text-fg" title={t(step.title)}>
+                          {index + 1}. {t(step.title)}
                         </span>
                         {(step.detail || step.command) && (
                           <span className="block truncate font-mono text-10 text-fg-subtle">

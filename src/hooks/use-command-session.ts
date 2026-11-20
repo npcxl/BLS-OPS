@@ -22,6 +22,14 @@ import { useSessionStore } from "@/stores/session-store";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import type { WorkspaceTab } from "@/workbench/types";
 
+/**
+ * 握手总超时（与终端页一致）。
+ *
+ * 没有它，TCP 黑洞会让「连接中」永远转下去：模块页显示一个空白，用户既没有
+ * 报错也不知道该点哪里。
+ */
+const CONNECT_TIMEOUT_MS = 20_000;
+
 export type CommandSessionPhase =
   /** No server attached to the tab yet. */
   | "idle"
@@ -62,6 +70,8 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
   const connectingRef = useRef(false);
+  /** 连接代次：断开 / 重连后，旧握手的迟到结果必须失效。 */
+  const connectSeqRef = useRef(0);
 
   const register = useSessionStore((s) => s.register);
   const setStatus = useSessionStore((s) => s.setStatus);
@@ -74,6 +84,7 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
   const connect = useCallback(async () => {
     if (connectingRef.current) return;
     connectingRef.current = true;
+    const seq = ++connectSeqRef.current;
     // 新代次：上一次连接期间探到的工具状态全部作废（服务器可能已经变了）。
     setEpoch((current) => current + 1);
     setPhase("connecting");
@@ -87,14 +98,39 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
       serverId: tab.serverId,
     });
 
+    let timer: number | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => {
+        reject(
+          new Error(
+            i18n.t("连接超时：{{seconds}} 秒内服务器没有响应", { seconds: 20 }),
+          ),
+        );
+      }, CONNECT_TIMEOUT_MS);
+    });
+
     try {
-      const result = await opsApi.sshConnectMonitor({
+      const request = opsApi.sshConnectMonitor({
         sessionId,
         serverId: tab.serverId,
         target: tab.quickTarget,
         credentialId: tab.credentialId,
         password: tab.oneTimePassword,
       });
+      // 超时 / 被取代之后握手仍可能成功：成功就立刻清理，别留无主会话。
+      request
+        .then(() => {
+          if (connectSeqRef.current !== seq) {
+            void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+          }
+        })
+        .catch(() => undefined);
+      const result = await Promise.race([request, timeout]);
+      // 已被断开 / 重连取代：结果作废，并清掉可能刚建立的会话。
+      if (connectSeqRef.current !== seq) {
+        void opsApi.sshDisconnect(sessionId).catch(() => undefined);
+        return;
+      }
 
       if (result.status === "connected") {
         setStatus(sessionId, "connected", { connectedAt: Date.now() });
@@ -136,12 +172,17 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
         },
       });
     } catch (cause) {
+      // 已被断开 / 重连取代：旧结果不许写回界面。
+      if (connectSeqRef.current !== seq) return;
       const message = toErrorMessage(cause);
       setStatus(sessionId, "error", { error: message });
       setPhase("error");
       setError(message);
+      // 超时 / 半途失败：后端可能还握着一条没走完的握手，清掉才能干净重试。
+      void opsApi.sshDisconnect(sessionId).catch(() => undefined);
     } finally {
-      connectingRef.current = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (connectSeqRef.current === seq) connectingRef.current = false;
     }
   }, [
     raiseChallenge,
@@ -159,6 +200,9 @@ export function useCommandSession(tab: WorkspaceTab): CommandSession {
   ]);
 
   const disconnect = useCallback(() => {
+    // 作废进行中的握手，并允许立刻重连（否则 `connectingRef` 会一直挡住）。
+    connectSeqRef.current += 1;
+    connectingRef.current = false;
     void opsApi.sshDisconnect(sessionId).catch(() => undefined);
     setStatus(sessionId, "closed");
     setPhase("closed");

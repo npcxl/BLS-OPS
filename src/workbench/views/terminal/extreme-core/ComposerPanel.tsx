@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Attachment01Icon } from "@hugeicons/core-free-icons";
-import { Lock, ShieldCheck } from "@/components/icons";
+import { CornerDownLeft, Lock, ShieldCheck } from "@/components/icons";
+import { cn } from "@/lib/cn";
 import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { ContextUsage } from "@/api/types/agent";
@@ -78,6 +79,12 @@ export interface ComposerPanelProps {
   onModelSettingChange: (key: string, patch: Partial<ModelSetting>) => void;
   /** 是否有运行在飞：此时选的是「下一条」用的模型。 */
   running: boolean;
+  /**
+   * 执行中发送方式：补充给当前任务（下一步生效）/ 完成后排队。
+   * 只影响"下一条消息"，不改变正在跑的这一步。
+   */
+  sendWhileRunning: "steer" | "queue";
+  onSendWhileRunningChange: (mode: "steer" | "queue") => void;
   /** 正文最多几行（约聊天区三分之一），超出后在输入框内部滚动。 */
   maxRows: number;
 }
@@ -233,11 +240,15 @@ export function ComposerPanel({
   modelSettings,
   onModelSettingChange,
   running,
+  sendWhileRunning,
+  onSendWhileRunningChange,
   maxRows,
 }: ComposerPanelProps) {
   const { t } = useTranslation();
   const usageAnchorRef = useRef<HTMLButtonElement | null>(null);
   const [usageOpen, setUsageOpen] = useState(false);
+  const sendModeAnchorRef = useRef<HTMLButtonElement | null>(null);
+  const [sendModeOpen, setSendModeOpen] = useState(false);
   const provider = effectiveProvider(providers, providerId);
   const setting = provider ? modelSettings[modelKey(provider.id, provider.model)] : undefined;
 
@@ -343,7 +354,8 @@ export function ComposerPanel({
   return (
     <div className="extreme-core-composer-wrap shrink-0">
       {/* `data-extreme-composer`：编辑 / 引用后页面靠它把光标送回输入框末尾。 */}
-      <div data-extreme-composer className="extreme-core-composer mx-auto w-full max-w-[880px]">
+      {/* 与正文同一把尺子：不封顶，随容器铺满（两侧留白由 `extreme-core-composer` 的内边距控制）。 */}
+      <div data-extreme-composer className="extreme-core-composer mx-auto w-full">
         {/* 材料在任何范围下都会发出去，所以在任何范围下都要显示（发送前能看到）。 */}
         {(focusLabel || picked.length > 0) && (
           <div className="flex flex-wrap items-center gap-1.5 px-1 pb-1.5">
@@ -352,14 +364,16 @@ export function ComposerPanel({
                 <span className="truncate" title={focusLabel}>
                   {t("正在讨论")}：{focusLabel}
                 </span>
-                <button
-                  type="button"
-                  aria-label={t("取消关注")}
-                  onClick={onClearFocus}
-                  className="shrink-0 px-0.5 text-fg-subtle hover:text-fg"
-                >
-                  ×
-                </button>
+                <Tooltip label={t("取消关注")}>
+                  <button
+                    type="button"
+                    aria-label={t("取消关注")}
+                    onClick={onClearFocus}
+                    className="shrink-0 px-0.5 text-fg-subtle hover:text-fg"
+                  >
+                    ×
+                  </button>
+                </Tooltip>
               </span>
             )}
             {/* 材料：摆在输入框上方，逐个可移除（发送前就知道模型会收到什么）。 */}
@@ -372,14 +386,16 @@ export function ComposerPanel({
                 >
                   <span className="shrink-0 text-10 text-fg-subtle">{t(PICKED_KIND_LABEL[item.kind])}</span>
                   <span className="min-w-0 truncate">{item.label}</span>
-                  <button
-                    type="button"
-                    aria-label={t("移除 {{name}}", { name: item.label })}
-                    className="shrink-0 px-0.5 text-fg-subtle hover:text-fg"
-                    onClick={() => onRemovePicked(item.id)}
-                  >
-                    ×
-                  </button>
+                  <Tooltip label={t("移除 {{name}}", { name: item.label })}>
+                    <button
+                      type="button"
+                      aria-label={t("移除 {{name}}", { name: item.label })}
+                      className="shrink-0 px-0.5 text-fg-subtle hover:text-fg"
+                      onClick={() => onRemovePicked(item.id)}
+                    >
+                      ×
+                    </button>
+                  </Tooltip>
                 </span>
               ))}
           </div>
@@ -427,6 +443,29 @@ export function ComposerPanel({
           onSend={handleSend}
           onStop={onCancel}
           trailing={
+            <>
+              {running && (
+                <Tooltip
+                  label={
+                    sendWhileRunning === "steer"
+                      ? t("执行中：补充给当前任务")
+                      : t("执行中：任务完成后发送")
+                  }
+                  side="top"
+                >
+                  <button
+                    ref={sendModeAnchorRef}
+                    type="button"
+                    aria-label={t("执行中发送方式")}
+                    aria-expanded={sendModeOpen}
+                    aria-haspopup="menu"
+                    onClick={() => setSendModeOpen((value) => !value)}
+                    className="grid size-7 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                  >
+                    <CornerDownLeft size={13} />
+                  </button>
+                </Tooltip>
+              )}
             <Tooltip label={usageOpen ? t("本任务上下文与用量") : usageSummary} side="top">
               <button
                 ref={usageAnchorRef}
@@ -450,6 +489,7 @@ export function ComposerPanel({
                 </span>
               </button>
             </Tooltip>
+            </>
           }
           background="rgb(var(--surface-1))"
           color="rgb(var(--fg))"
@@ -560,6 +600,50 @@ export function ComposerPanel({
                 </div>
               </div>
             )}
+          </ComposerMenu>
+          <ComposerMenu
+            open={sendModeOpen}
+            onClose={() => setSendModeOpen(false)}
+            anchor={sendModeAnchorRef.current}
+            label={t("执行中发送方式")}
+            opaque
+          >
+            <p className="px-2 pb-1 pt-1.5 text-10 text-fg-subtle">
+              {t("任务执行中，新消息怎么处理")}
+            </p>
+            {(["steer", "queue"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={sendWhileRunning === mode}
+                onClick={() => {
+                  onSendWhileRunningChange(mode);
+                  setSendModeOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-11 transition-colors hover:bg-surface-hover",
+                  sendWhileRunning === mode ? "text-accent" : "text-fg-muted",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "mt-1 size-1.5 shrink-0 rounded-full",
+                    sendWhileRunning === mode ? "bg-accent" : "bg-line-strong",
+                  )}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block">
+                    {mode === "steer" ? t("补充给当前任务") : t("完成后发送")}
+                  </span>
+                  <span className="block text-10 text-fg-subtle">
+                    {mode === "steer"
+                      ? t("下一步开始前生效")
+                      : t("当前任务结束后按顺序发送")}
+                  </span>
+                </span>
+              </button>
+            ))}
           </ComposerMenu>
           <PermissionSelect permission={permission} onChange={onPermissionChange} />
           {/*

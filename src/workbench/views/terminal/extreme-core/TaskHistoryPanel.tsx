@@ -5,6 +5,7 @@ import { ArrowRight, History, Loader2, Trash2, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import { useOverlayLayer } from "@/components/ui/overlay";
 import { useOverlayFocusTrap } from "@/hooks/use-overlay-focus-trap";
 import { opsApi } from "@/api/ops-api";
@@ -187,14 +188,13 @@ export function TaskHistoryPanel({
               {t("部署、查询、检测、构建与传输的每一步与真实输出都保存在这里。")}
             </p>
           </div>
-          <button
-            type="button"
-            aria-label={t("关闭")}
-            className="rounded-[5px] p-1 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+          <ExtremeIconButton
+            label={t("关闭")}
+            icon={X}
+            iconSize={14}
+            side="bottom"
             onClick={onClose}
-          >
-            <X size={14} />
-          </button>
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">

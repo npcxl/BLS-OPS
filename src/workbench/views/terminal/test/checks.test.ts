@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import {
   checkCertificate,
   checkDisk,
@@ -12,6 +13,15 @@ import {
   summarizeChecks,
   type CheckItem,
 } from "../extreme-core/checks";
+
+// 结论文案按界面语言生成；这些用例断言中文，测试环境默认英文。
+const originalLanguage = i18n.language;
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
+});
+afterAll(async () => {
+  await i18n.changeLanguage(originalLanguage);
+});
 
 const at = new Date(2026, 10, 16, 10, 0, 0).getTime();
 
@@ -168,7 +178,8 @@ describe("上游可达性", () => {
 });
 
 describe("汇总与渲染", () => {
-  const items: CheckItem[] = [
+  // 检查项在构造时按界面语言定标签；必须在用例里（语言切好之后）再构造。
+  const makeItems = (): CheckItem[] => [
     checkDns({ domain: "ops.example.com", resolved: ["203.0.113.42"], selfAddress: "203.0.113.42", at }),
     checkPort({ port: 80, listening: ["0.0.0.0:80"], at }),
     checkWritable({ path: "/srv/ops", writable: false, at }),
@@ -176,7 +187,7 @@ describe("汇总与渲染", () => {
   ];
 
   it("只把「条件未满足」和「无权限」算阻塞", () => {
-    const summary = summarizeChecks(items);
+    const summary = summarizeChecks(makeItems());
     expect(summary.passed).toBe(1);
     expect(summary.unmet).toBe(1);
     expect(summary.denied).toBe(1);
@@ -195,7 +206,7 @@ describe("汇总与渲染", () => {
   });
 
   it("渲染只给事实与结论，不夹带步骤编排", () => {
-    const text = renderChecks(items);
+    const text = renderChecks(makeItems());
     expect(text).toContain("前置条件检查");
     expect(text).toContain("有 2 项阻塞");
     expect(text).toContain("域名解析");

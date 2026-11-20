@@ -1,5 +1,5 @@
 import { ExternalLink, FolderOpen, X } from "@/components/icons";
-import { Button } from "@/components/ui/button";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import { useTranslation } from "react-i18next";
 import { openExternal } from "@/lib/open-external";
 import { RemoteFilePanel } from "@/workbench/views/remote-file/RemoteFilePanel";
@@ -74,21 +74,23 @@ export function RemoteWorkspacePanel({ sessionId, remoteRoot, target, follow, on
             <span className="truncate" title={website ?? path}>{website ? t("返回远程文件") : t("远程文件")}</span>
           </button>
           {website && (
-            <Button
-              variant="ghost"
-              size="xs"
-              title={t("在浏览器打开")}
-              aria-label={t("在浏览器打开")}
+            <ExtremeIconButton
+              label={t("在浏览器打开")}
+              icon={ExternalLink}
               onClick={() =>
                 void openExternal(website, { browser: "chrome" }).then((ok) => {
                   if (!ok) onError(new Error(t("打开浏览器失败")));
                 })
               }
-            >
-              <ExternalLink size={13} />
-            </Button>
+            />
           )}
-          <Button variant="ghost" size="xs" title={t("收起远程工作区")} aria-label={t("收起远程工作区")} onClick={onClose}><X size={14} /></Button>
+          <ExtremeIconButton
+            label={t("收起远程工作区")}
+            icon={X}
+            iconSize={14}
+            side="bottom"
+            onClick={onClose}
+          />
         </div>
       )}
       {website ? (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronsLeft,
@@ -17,10 +17,14 @@ import type { IconComponent } from "@/components/icons";
 import { PaneTabBar, type PaneTab } from "@/components/ui/pane-tab-bar";
 import { ToolbarIcon } from "@/workbench/views/terminal/ToolbarIcon";
 import { RunPlanPanel } from "./RunPlanPanel";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import { attachmentReadState } from "./attachments";
 import type { RunRecord } from "./run-plan";
 import { cn } from "@/lib/cn";
 import { formatSize } from "@/lib/format";
+
+/** 本版先隐藏「文件变更」入口；组件、数据与 Diff 逻辑都保留，下周改回 true。 */
+const FILE_CHANGES_VISIBLE = false;
 /**
  * 计划里的一步。
  *
@@ -71,7 +75,6 @@ export function WorkspacePanel({
   output,
   manual,
   logs,
-  changes,
   pendingChanges = 0,
   browser,
   attachments,
@@ -126,8 +129,6 @@ export function WorkspacePanel({
   output: ReactNode;
   manual: ReactNode;
   logs: ReactNode;
-  /** 文件变更审阅：统一 Diff + 文件树（按当前对话与运行归属）。 */
-  changes: ReactNode;
   /** 待确认的变更数量：标签上的角标。 */
   pendingChanges?: number;
   browser: ReactNode;
@@ -160,23 +161,10 @@ export function WorkspacePanel({
   const dragCleanup = useRef<(() => void) | null>(null);
   useEffect(() => () => dragCleanup.current?.(), []);
 
-  /**
-   * 展开视图的宽度：和分栏宽度分开记。
-   *
-   * 展开后默认还是一块宽面板，但左缘可以继续拖 —— 用户不该被 960 卡死。
-   * 分栏宽度存 store（跨会话），展开宽度只影响本次展开，切回分栏不受影响。
-   */
-  const [expandedWidth, setExpandedWidth] = useState(() =>
-    Math.min(960, Math.max(560, window.innerWidth - 160)),
-  );
-  const currentWidth = view === "expanded" ? expandedWidth : width;
+  /** 展开是全屏，不再有独立的浮窗宽度；分栏宽度仍由页面传入。 */
+  const currentWidth = width;
 
   const applyWidth = (next: number, persist: boolean) => {
-    if (view === "expanded") {
-      const max = Math.max(560, window.innerWidth - 96);
-      setExpandedWidth(Math.min(Math.max(next, 560), max));
-      return;
-    }
     // 分栏只保底 300；上限由页面用“扣除任务栏后的可用宽度 - 聊天下限”
     // 这一套约束统一计算，避免拖动与渲染各算一套。
     onWidthChange(Math.max(300, next), persist);
@@ -246,7 +234,14 @@ export function WorkspacePanel({
     },
     browser: { label: t("浏览器"), icon: Globe },
   };
-  const items: PaneTab[] = tabs.map((id) => ({
+  /*
+   * 本版先隐藏「文件变更」入口（组件、数据与 Diff 逻辑都保留）。
+   * 下周恢复时只改这一行；不要删 `changes` 的渲染与 store。
+   */
+  const visibleTabs = FILE_CHANGES_VISIBLE
+    ? tabs
+    : tabs.filter((id) => id !== "changes");
+  const items: PaneTab[] = visibleTabs.map((id) => ({
     id,
     label: meta[id].label,
     icon: meta[id].icon,
@@ -254,7 +249,25 @@ export function WorkspacePanel({
     onClose: () => onCloseTab(id),
   }));
   // 当前标签可能刚被关掉：渲染时退到第一个已打开的标签。
-  const activeTab: WorkspacePane = tabs.includes(tab) ? tab : tabs[0] ?? tab;
+  const activeTab: WorkspacePane = visibleTabs.includes(tab)
+    ? tab
+    : visibleTabs[0] ?? (FILE_CHANGES_VISIBLE ? tab : "files");
+
+  /**
+   * 标签栏右侧的固定入口（远程文件 / 终端 / 日志 / 文件变更）。
+   *
+   * 分栏与完整视图两处都用同一份，免得两边入口数量悄悄走歪。
+   */
+  const paneTrailing = (
+    <div role="toolbar" aria-label={t("远程工作区")} className="flex shrink-0 items-center border-l border-divider/70 pl-1">
+      <ToolbarIcon label={t("远程文件")} icon={FolderOpen} onClick={() => onTabChange("files")} />
+      <ToolbarIcon label={t("服务器终端")} icon={SquareTerminal} onClick={() => onTabChange("terminal")} />
+      <ToolbarIcon label={t("日志")} icon={FileText} onClick={() => onTabChange("logs")} />
+      {FILE_CHANGES_VISIBLE && (
+        <ToolbarIcon label={t("文件变更")} icon={FileDiff} onClick={() => onTabChange("changes")} />
+      )}
+    </div>
+  );
 
   /**
    * 拖动左边缘调宽度：向左拖 = 变宽。
@@ -286,11 +299,10 @@ export function WorkspacePanel({
     const move = (moveEvent: PointerEvent) => {
       if (dragRef.current !== drag) return;
       /*
-       * 展开面板是居中的：宽度增加 Δ，左右各外扩 Δ/2，手柄才会停在光标下，
-       * 所以这里乘 2；分栏是右对齐的，1:1 即可。
+       * 展开的浮窗和分栏一样**右对齐**：宽度增加 Δ，左缘只移动 Δ，
+       * 所以 1:1 跟手（居中面板才需要乘 2）。
        */
-      const factor = view === "expanded" ? 2 : 1;
-      drag.latest = drag.startWidth - (moveEvent.clientX - drag.startX) * factor;
+      drag.latest = drag.startWidth - (moveEvent.clientX - drag.startX);
       // 同一帧里的多次 pointermove 只上报一次。
       if (drag.frame === null) drag.frame = requestAnimationFrame(flush);
     };
@@ -341,14 +353,25 @@ export function WorkspacePanel({
       className={cn(
         "extreme-core-frosted relative flex min-h-0 flex-col overflow-hidden",
         /*
-         * 展开视图：中间一块宽面板，四周是压暗的聊天（聊天仍挂载、状态不丢）。
-         * 宽度不再写死：左缘手柄可以继续拖，窗口变窄时由 max-w-full 兜底。
+         * 完整视图：从任务列表右缘铺到窗口右缘。
+         *
+         * 面板与 `main` 是**兄弟**（都在 `extreme-core-row` 里，头部 toolbar 在
+         * row 之外），所以 `inset-0` 会连左侧任务列表一起盖住 —— 用 `left`
+         * 让开它，宽度由 rail 的 CSS 变量决定（收起 48 / 窄屏 168 / 常规 216）。
          */
         view === "expanded"
-          ? "absolute inset-0 z-30 bg-black/25 backdrop-blur-[2px]"
+          ? "extreme-core-pane-expanded pointer-events-auto absolute inset-y-0 right-0 z-30 isolate flex flex-col overflow-hidden bg-surface-1"
           : overlay
-            ? "absolute inset-y-0 right-0 z-20 border-l border-line/70 bg-surface-1 shadow-2xl"
-            : "shrink-0 border-l border-line/70",
+            ? "absolute inset-y-0 right-0 z-30 isolate border-l border-line/70 bg-surface-1 shadow-2xl"
+            /*
+             * 与普通模式的「远程文件」面板一致：只保留一条 `border-l`，
+             * 拖拽手柄是一条 5px 的透明感应带，hover 时染 accent，不再画
+             * 第二条线或 ↔ 图标。
+             *
+             * `isolate` 把面板内部的 sticky / 下拉 / 手柄 z-index 关在自己的
+             * 层叠上下文里，不再盖到聊天、输入框或标签栏上。
+             */
+            : "relative z-30 isolate shrink-0 border-l border-line bg-surface-1",
       )}
       style={view === "expanded" ? undefined : { width }}
     >
@@ -364,19 +387,8 @@ export function WorkspacePanel({
           title={t("拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）")}
           onPointerDown={onHandleDown}
           onKeyDown={onHandleKey}
-          className="group absolute inset-y-0 left-0 z-10 w-3 touch-none cursor-col-resize focus-visible:outline-none"
-        >
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
-          />
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
-          >
-            ↔
-          </span>
-        </div>
+          className="page-resizer absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize hover:bg-accent/40"
+        />
       )}
       {view === "split" && (
         <div
@@ -392,100 +404,81 @@ export function WorkspacePanel({
             event.preventDefault();
             onOuterDragStart(event);
           }}
-          className="group absolute inset-y-0 right-0 z-20 w-3 touch-none cursor-ew-resize focus-visible:outline-none"
-        >
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
-          />
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
-          >
-            ↔
-          </span>
-        </div>
+          className="page-resizer absolute inset-y-0 right-0 z-20 w-[5px] cursor-ew-resize hover:bg-accent/40"
+        />
       )}
 
       {/*
-       * 展开时这里是真正的面板；分栏 / 浮层时 `contents`，让原有子节点继续
-       * 直接参与 aside 的 flex 布局，结构不变。
+       * 完整视图时这里是真正的面板；分栏 / 浮层时 `contents`，让原有子节点
+       * 继续直接参与 aside 的 flex 布局，结构不变。
        */}
       <div
         className={cn(
           view === "expanded"
-            ? "relative mx-auto flex h-full w-full max-w-full flex-col border-x border-line/70 bg-surface-1 shadow-[0_10px_40px_rgb(0_0_0/0.18)]"
+            ? "relative flex min-h-0 w-full flex-1 flex-col overflow-hidden"
             : "contents",
         )}
-        style={view === "expanded" ? { width: expandedWidth } : undefined}
       >
+      {/*
+       * 完整视图顶栏照 Codex：**只有一行** —— 标签页占满整行（每个标签自带
+       * 关闭，右侧是固定入口图标），行尾一个「退出全屏」。分栏态仍然是原来
+       * 的「服务器名 + 展开 / 收起」一行 + 标签行。
+       */}
       {view === "expanded" && (
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={t("拖动调整右栏宽度")}
-          aria-valuenow={Math.round(expandedWidth)}
-          aria-valuemin={560}
-          aria-valuemax={Math.max(560, window.innerWidth - 96)}
-          tabIndex={0}
-          title={t("拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）")}
-          onPointerDown={onHandleDown}
-          onKeyDown={onHandleKey}
-          className="group absolute inset-y-0 left-0 z-20 w-3 touch-none cursor-col-resize focus-visible:outline-none"
-        >
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/35 transition-colors duration-150 group-hover:bg-accent/60 group-focus-visible:bg-accent/60"
+        <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1 border-b border-line/60 pl-3 pr-1">
+          <div className="extreme-core-pane-tabs min-w-0 flex-1 overflow-x-auto">
+            <PaneTabBar
+              tabs={items}
+              value={activeTab}
+              onChange={(id) => onTabChange(id as WorkspacePane)}
+              ariaLabel={t("会话工作区标签")}
+              trailing={paneTrailing}
+            />
+          </div>
+          <Button variant="ghost" size="xs" onClick={onRestore} title={t("退出全屏，回到分栏")}>
+            <ChevronsLeft size={13} /> {t("退出全屏")}
+          </Button>
+          <ExtremeIconButton
+            label={t("收起右栏")}
+            icon={X}
+            side="bottom"
+            onClick={onCollapse}
           />
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-line/70 bg-surface-1 px-1 py-px text-[10px] leading-3 text-fg-subtle opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
-          >
-            ↔
-          </span>
         </div>
       )}
-      {/* 顶部：服务器名 + 展开 / 收起。 */}
-      <div className="flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1.5 px-2">
-        <span className="min-w-0 flex-1 truncate text-12 text-fg-muted" title={serverName}>
-          {serverName || t("未关联服务器")}
-        </span>
-        {view === "split" ? (
-          <Button variant="ghost" size="xs" onClick={onExpand} title={t("展开视图")}>
-            <Maximize2 size={13} /> {t("展开")}
-          </Button>
-        ) : (
-          <Button variant="ghost" size="xs" onClick={onRestore} title={t("返回分栏")}>
-            <ChevronsLeft size={13} /> {t("返回分栏")}
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={t("收起右栏")}
-          title={t("收起右栏")}
-          onClick={onCollapse}
-        >
-          <X size={13} />
-        </Button>
-      </div>
 
-      <div className="extreme-core-pane-tabs px-2">
-        <PaneTabBar
-          tabs={items}
-          value={activeTab}
-          onChange={(id) => onTabChange(id as WorkspacePane)}
-          ariaLabel={t("会话工作区标签")}
-          trailing={
-            <div role="toolbar" aria-label={t("远程工作区")} className="flex shrink-0 items-center border-l border-divider/70 pl-1">
-              <ToolbarIcon label={t("远程文件")} icon={FolderOpen} onClick={() => onTabChange("files")} />
-              <ToolbarIcon label={t("服务器终端")} icon={SquareTerminal} onClick={() => onTabChange("terminal")} />
-              <ToolbarIcon label={t("日志")} icon={FileText} onClick={() => onTabChange("logs")} />
-              <ToolbarIcon label={t("文件变更")} icon={FileDiff} onClick={() => onTabChange("changes")} />
-            </div>
-          }
-        />
-      </div>
+      {view !== "expanded" && (
+        <>
+          {/*
+           * 顶部一行：服务器名 · 固定入口图标 · 展开 / 收起。
+           *
+           * 四个入口（远程文件 / 终端 / 日志 / 变更）原来挂在标签行右侧，
+           * 把标签挤得只剩一小截；移到「展开」左边后，标签行整行留给标签，
+           * 展开也只留图标（文字放 tooltip）。
+           */}
+          <div className="extreme-core-pane-toolbar flex h-[var(--page-toolbar-height)] shrink-0 items-center gap-1 px-2">
+            <span className="min-w-0 flex-1 truncate text-12 text-fg-muted" title={serverName}>
+              {serverName || t("未关联服务器")}
+            </span>
+            {paneTrailing}
+            {view === "split" ? (
+              <ToolbarIcon label={t("展开视图")} icon={Maximize2} onClick={onExpand} />
+            ) : (
+              <ToolbarIcon label={t("返回分栏")} icon={ChevronsLeft} onClick={onRestore} />
+            )}
+            <ToolbarIcon label={t("收起右栏")} icon={X} onClick={onCollapse} />
+          </div>
+
+          <div className="extreme-core-pane-tabs px-2">
+            <PaneTabBar
+              tabs={items}
+              value={activeTab}
+              onChange={(id) => onTabChange(id as WorkspacePane)}
+              ariaLabel={t("会话工作区标签")}
+            />
+          </div>
+        </>
+      )}
 
       {!sessionId && (
         <p
@@ -546,9 +539,7 @@ export function WorkspacePanel({
        * 文件变更：正文用统一 Diff，右侧是服务器目录树。
        * `min-w-0 overflow-hidden` 保证长路径只在正文里换行，不撑宽右栏。
        */}
-      {activeTab === "changes" && (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{changes}</div>
-      )}
+
 
       {activeTab === "browser" && (
         // 留出两边手柄的 10px：原生子 WebView 会盖住同位置的主 WebView 元素，
@@ -627,14 +618,13 @@ export function WorkspacePanel({
                         {t("重试")}
                       </Button>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      aria-label={t("移除 {{name}}", { name: item.name })}
+                    <ExtremeIconButton
+                      label={t("移除 {{name}}", { name: item.name })}
+                      icon={X}
+                      iconSize={12}
+                      className="size-6"
                       onClick={() => onRemoveAttachment(item.id)}
-                    >
-                      <X size={12} />
-                    </Button>
+                    />
                   </li>
                 );
               })}

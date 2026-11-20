@@ -18,7 +18,7 @@ import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { OutputStyle } from "./chat-context";
-import { dayTime, previewSnippet } from "./format-time";
+import { dayTime, chatTime, previewSnippet } from "./format-time";
 import { displayTitle, type ExtremeWorkspace } from "./workspace-history";
 
 /** 左栏收起状态：跨会话记住，重进超能时保持上次的宽度。 */
@@ -322,15 +322,16 @@ function TaskSidebarInner({
       ) : (
         <div className="flex items-center gap-1 px-2 py-2">
           <h2 className="min-w-0 flex-1 truncate pl-1 text-12 font-medium">{t("任务")}</h2>
-          <button
-            type="button"
-            aria-label={t("收起会话列表")}
-            title={t("收起会话列表")}
-            onClick={() => setRailCollapsed(true)}
-            className="grid size-5 shrink-0 place-items-center rounded-[4px] text-fg-subtle transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <ChevronLeft size={13} />
-          </button>
+          <Tooltip label={t("收起会话列表")}>
+            <button
+              type="button"
+              aria-label={t("收起会话列表")}
+              onClick={() => setRailCollapsed(true)}
+              className="grid size-5 shrink-0 place-items-center rounded-[4px] text-fg-subtle transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <ChevronLeft size={13} />
+            </button>
+          </Tooltip>
           <Button variant="ghost" size="xs" onClick={onNew} disabled={busy}>
             <Plus size={13} /> {t("新建任务")}
           </Button>
@@ -443,6 +444,7 @@ function TaskSidebarInner({
                   unreadIds?.has(entry.id) ? "unread" : null;
           const indicator = status ? ROW_STATUS[status] : null;
           const statusLabel = indicator ? t(indicator.label) : undefined;
+          const updatedAt = chatTime(entry.updatedAt, t);
           const rowLabel = [title, serverLabel, statusLabel].filter(Boolean).join(" · ");
           const statusMark = indicator && (
             <span
@@ -542,27 +544,34 @@ function TaskSidebarInner({
                   >
                     {title}
                   </span>
-                  <span className="truncate text-11 leading-4 text-fg-subtle">{serverLabel}</span>
+                  {/* 第二行：服务器 + 最后活动时间（Codex 列表也把时间挂在这一行）。 */}
+                  <span className="flex min-w-0 items-center gap-1.5 text-11 leading-4 text-fg-subtle">
+                    <span className="min-w-0 flex-1 truncate">{serverLabel}</span>
+                    {updatedAt && (
+                      <span className="shrink-0 tabular-nums">{updatedAt}</span>
+                    )}
+                  </span>
                 </span>
                 <span className="grid size-3 place-items-center">{statusMark}</span>
               </button>
               </Tooltip>
               {/* 悬停才出现：行内一直留着右侧留白，菜单按钮浮上去不会挤动文字。 */}
-              <button
-                type="button"
-                aria-label={t("会话操作")}
-                title={t("会话操作")}
-                aria-haspopup="menu"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  // 菜单右对齐到按钮、贴着下沿展开：和工具栏「⋯」一致。
-                  menu.openAt(Math.max(8, rect.right - 184), rect.bottom + 4, items(entry));
-                }}
-                className="pointer-events-none absolute right-1 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-[4px] text-fg-subtle opacity-0 transition duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100"
-              >
-                <MoreHorizontal size={13} />
-              </button>
+              <Tooltip label={t("会话操作")}>
+                <button
+                  type="button"
+                  aria-label={t("会话操作")}
+                  aria-haspopup="menu"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    // 菜单右对齐到按钮、贴着下沿展开：和工具栏「⋯」一致。
+                    menu.openAt(Math.max(8, rect.right - 184), rect.bottom + 4, items(entry));
+                  }}
+                  className="pointer-events-none absolute right-1 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-[4px] text-fg-subtle opacity-0 transition duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100"
+                >
+                  <MoreHorizontal size={13} />
+                </button>
+              </Tooltip>
             </li>
           );
         })}

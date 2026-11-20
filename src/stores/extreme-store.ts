@@ -200,6 +200,7 @@ import {
   enqueueSend,
   forgetSends,
   markSendError,
+  moveSendUp,
   removeSend,
   type QueuedSend,
 } from "@/workbench/views/terminal/extreme-core/send-queue";
@@ -593,6 +594,8 @@ interface ExtremeState {
   queueSend: (item: QueuedSend) => void;
   /** 派发成功后出队。 */
   dropSend: (id: string) => void;
+  /** 队列项上移一位（只在本对话内调整顺序）。 */
+  moveSendUp: (id: string) => void;
   /** 断连 / 发送失败：保留队列项并标明原因。 */
   failSend: (id: string, reason: string) => void;
   /** 清掉错误，允许重新派发。 */
@@ -1468,6 +1471,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     }),
   queueSend: (item) => set((state) => ({ queuedSends: enqueueSend(state.queuedSends, item) })),
   dropSend: (id) => set((state) => ({ queuedSends: removeSend(state.queuedSends, id) })),
+  moveSendUp: (id) =>
+    set((state) => ({ queuedSends: moveSendUp(state.queuedSends, id) })),
   failSend: (id, reason) =>
     set((state) => ({ queuedSends: markSendError(state.queuedSends, id, reason) })),
   retrySend: (id) => set((state) => ({ queuedSends: clearSendError(state.queuedSends, id) })),

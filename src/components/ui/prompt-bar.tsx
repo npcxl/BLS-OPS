@@ -59,6 +59,7 @@ import React, {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useReducedMotion } from 'motion/react';
+import { Tooltip } from './tooltip';
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -690,7 +691,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
                     }}
                     onKeyDown={onEffortKey}
                   >
-                    <span className="absolute inset-y-0 left-0 rounded-[11px] [width:var(--pb-effort-fill)] [background:color-mix(in_srgb,var(--pb-ink)_18%,transparent)] [transition:width_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] group-data-[max]:[background:color-mix(in_srgb,var(--pb-spark)_35%,transparent)] motion-reduce:[transition:background-color_300ms_ease]" />
+                    <span className="absolute inset-y-0 left-0 rounded-[11px] [width:var(--pb-effort-fill)] [background:color-mix(in_srgb,var(--pb-ink)_18%,transparent)] [transition:width_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] motion-reduce:[transition:background-color_300ms_ease]" />
                     {efforts.map((label, i) => (
                       <i
                         key={label}
@@ -698,7 +699,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
                         style={{ left: stepAt(i) }}
                       />
                     ))}
-                    <span className="absolute -top-[3px] -ml-[7px] h-7 w-3.5 rounded-[7px] shadow-[0_2px_6px_rgba(0,0,0,0.25)] [left:var(--pb-effort-x)] [background:var(--pb-ink)] [transition:left_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] group-data-[max]:[background:var(--pb-spark)] motion-reduce:[transition:background-color_300ms_ease]" />
+                    <span className="absolute -top-[3px] -ml-[7px] h-7 w-3.5 rounded-[7px] shadow-[0_2px_6px_rgba(0,0,0,0.25)] [left:var(--pb-effort-x)] [background:var(--pb-ink)] [transition:left_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] motion-reduce:[transition:background-color_300ms_ease]" />
                   </div>
                 </>
               ) : (
@@ -769,7 +770,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
       ) : null}
 
       <div
-        className="relative isolate flex cursor-text flex-col gap-2 p-3 [background:var(--pb-bg)] [border-radius:var(--pb-radius)] before:pointer-events-none before:absolute before:inset-0 before:-z-10 before:rounded-[inherit] before:opacity-0 before:content-[''] before:[background:radial-gradient(140%_120%_at_0%_100%,color-mix(in_srgb,var(--pb-spark)_26%,transparent),transparent_62%)] before:[transition:opacity_500ms_ease] data-[max]:before:opacity-100"
+        className="relative isolate flex cursor-text flex-col gap-2 p-3 [background:var(--pb-bg)] [border-radius:var(--pb-radius)]"
         role="presentation"
         data-max={maxed ? '' : undefined}
         onPointerDown={e => {
@@ -777,11 +778,6 @@ const PromptBar: React.FC<PromptBarProps> = ({
         }}
         onClick={focusInput}
       >
-        <canvas
-          ref={sparkRef}
-          className="pointer-events-none absolute inset-0 -z-10 h-full w-full rounded-[inherit]"
-          aria-hidden="true"
-        />
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {attachments.map((file, i) => (
@@ -821,23 +817,25 @@ const PromptBar: React.FC<PromptBarProps> = ({
         />
 
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            className="inline-grid h-7 w-7 flex-none cursor-pointer touch-manipulation place-items-center rounded-lg border-0 bg-transparent p-0 outline-none select-none [color:color-mix(in_srgb,var(--pb-ink)_60%,transparent)] [font:inherit] [-webkit-tap-highlight-color:transparent] [transition:background-color_150ms_ease,color_150ms_ease,transform_160ms_cubic-bezier(0.23,1,0.32,1)] active:[transform:scale(0.94)] data-[on]:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] data-[on]:[color:var(--pb-ink)] motion-reduce:active:[transform:none] [@media(hover:hover)_and_(pointer:fine)]:hover:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] [@media(hover:hover)_and_(pointer:fine)]:hover:[color:var(--pb-ink)]"
-            aria-label={t('Add files and sources')}
-            aria-expanded={plusOpen}
-            data-on={plusOpen ? '' : undefined}
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => {
-              setModelOpen(false);
-              setEffortOpen(false);
-              setActive(0);
-              setPlusOpen(v => !v);
-              focusInput();
-            }}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} size={16} strokeWidth={2} />
-          </button>
+          <Tooltip label={t('Add files and sources')}>
+            <button
+              type="button"
+              className="inline-grid h-7 w-7 flex-none cursor-pointer touch-manipulation place-items-center rounded-lg border-0 bg-transparent p-0 outline-none select-none [color:color-mix(in_srgb,var(--pb-ink)_60%,transparent)] [font:inherit] [-webkit-tap-highlight-color:transparent] [transition:background-color_150ms_ease,color_150ms_ease,transform_160ms_cubic-bezier(0.23,1,0.32,1)] active:[transform:scale(0.94)] data-[on]:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] data-[on]:[color:var(--pb-ink)] motion-reduce:active:[transform:none] [@media(hover:hover)_and_(pointer:fine)]:hover:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] [@media(hover:hover)_and_(pointer:fine)]:hover:[color:var(--pb-ink)]"
+              aria-label={t('Add files and sources')}
+              aria-expanded={plusOpen}
+              data-on={plusOpen ? '' : undefined}
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                setModelOpen(false);
+                setEffortOpen(false);
+                setActive(0);
+                setPlusOpen(v => !v);
+                focusInput();
+              }}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={16} strokeWidth={2} />
+            </button>
+          </Tooltip>
           {models.length > 0 ? (
             <button
               type="button"
@@ -881,28 +879,30 @@ const PromptBar: React.FC<PromptBarProps> = ({
           <span className="flex-auto" />
           {trailing}
           {onDictate ? (
-            <button
-              type="button"
-              className="inline-grid h-7 w-7 flex-none cursor-pointer touch-manipulation place-items-center rounded-lg border-0 bg-transparent p-0 outline-none select-none [color:color-mix(in_srgb,var(--pb-ink)_60%,transparent)] [font:inherit] [-webkit-tap-highlight-color:transparent] [transition:background-color_150ms_ease,color_150ms_ease,transform_160ms_cubic-bezier(0.23,1,0.32,1)] active:[transform:scale(0.94)] data-[on]:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] data-[on]:[color:var(--pb-ink)] motion-reduce:active:[transform:none] [@media(hover:hover)_and_(pointer:fine)]:hover:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] [@media(hover:hover)_and_(pointer:fine)]:hover:[color:var(--pb-ink)]"
-              aria-label={listening ? t('Stop dictation') : t('Dictate')}
-              aria-pressed={listening}
-              data-on={listening ? '' : undefined}
-              onMouseDown={e => e.preventDefault()}
-              onClick={toggleListen}
-            >
-              {listening ? (
-                <span
-                  className="flex h-3.5 items-center gap-[2.5px] [&>i]:block [&>i]:h-full [&>i]:w-[2.5px] [&>i]:origin-center [&>i]:rounded-full [&>i]:bg-current [&>i]:[animation:prompt-bar-eq_900ms_ease-in-out_infinite] [&>i:nth-child(2)]:[animation-delay:150ms] [&>i:nth-child(3)]:[animation-delay:300ms]"
-                  aria-hidden="true"
-                >
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              ) : (
-                <HugeiconsIcon icon={Mic01Icon} size={15} strokeWidth={2} />
-              )}
-            </button>
+            <Tooltip label={listening ? t('Stop dictation') : t('Dictate')}>
+              <button
+                type="button"
+                className="inline-grid h-7 w-7 flex-none cursor-pointer touch-manipulation place-items-center rounded-lg border-0 bg-transparent p-0 outline-none select-none [color:color-mix(in_srgb,var(--pb-ink)_60%,transparent)] [font:inherit] [-webkit-tap-highlight-color:transparent] [transition:background-color_150ms_ease,color_150ms_ease,transform_160ms_cubic-bezier(0.23,1,0.32,1)] active:[transform:scale(0.94)] data-[on]:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] data-[on]:[color:var(--pb-ink)] motion-reduce:active:[transform:none] [@media(hover:hover)_and_(pointer:fine)]:hover:[background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] [@media(hover:hover)_and_(pointer:fine)]:hover:[color:var(--pb-ink)]"
+                aria-label={listening ? t('Stop dictation') : t('Dictate')}
+                aria-pressed={listening}
+                data-on={listening ? '' : undefined}
+                onMouseDown={e => e.preventDefault()}
+                onClick={toggleListen}
+              >
+                {listening ? (
+                  <span
+                    className="flex h-3.5 items-center gap-[2.5px] [&>i]:block [&>i]:h-full [&>i]:w-[2.5px] [&>i]:origin-center [&>i]:rounded-full [&>i]:bg-current [&>i]:[animation:prompt-bar-eq_900ms_ease-in-out_infinite] [&>i:nth-child(2)]:[animation-delay:150ms] [&>i:nth-child(3)]:[animation-delay:300ms]"
+                    aria-hidden="true"
+                  >
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                ) : (
+                  <HugeiconsIcon icon={Mic01Icon} size={15} strokeWidth={2} />
+                )}
+              </button>
+            </Tooltip>
           ) : null}
           {          /*
            * Ant Design X Sender 风格的发送键：
@@ -912,10 +912,11 @@ const PromptBar: React.FC<PromptBarProps> = ({
            *
            * 不再做箭头↔方块的粘性形变，图标直接切换，点击反馈只用轻微缩放。
            */}
+          <Tooltip label={busy ? t('Stop') : sendDisabled ? sendDisabledReason : t('Send')}>
           <button
             type="button"
             className={[
-              'relative inline-grid h-8 w-8 flex-none touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
+              'relative inline-grid h-6 w-6 flex-none touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
               '[-webkit-tap-highlight-color:transparent]',
               'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
               'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
@@ -926,7 +927,6 @@ const PromptBar: React.FC<PromptBarProps> = ({
             ].join(' ')}
             disabled={!armed}
             aria-label={busy ? t('Stop') : t('Send')}
-            title={busy ? t('Stop') : sendDisabled ? sendDisabledReason : t('Send')}
             onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (busy) latest.current.onStop?.();
@@ -935,7 +935,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
           >
             {busy ? (
               <svg
-                className="block h-3.5 w-3.5"
+                className="block h-3 w-3"
                 viewBox="0 0 24 24"
                 fill="currentColor"
                 aria-hidden="true"
@@ -944,7 +944,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
               </svg>
             ) : (
               <svg
-                className="block h-[18px] w-[18px]"
+                className="block h-3.5 w-3.5"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -958,6 +958,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
               </svg>
             )}
           </button>
+          </Tooltip>
         </div>
       </div>
     </div>

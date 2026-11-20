@@ -259,7 +259,8 @@ it("marks shell writes as uncollected instead of drawing a fake diff", async () 
   try {
     const text = holder.textContent ?? "";
     expect(text).toContain("未采集差异");
-    expect(text).toContain("没有逐行差异");
+    // shell 记录不画假 Diff；原因就写在行内 note 里，不再重复一句空态。
+    expect(text).toContain("该操作未采集文件差异");
     expect(detail).not.toHaveBeenCalled();
   } finally {
     await cleanup();

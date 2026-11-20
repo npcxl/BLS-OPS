@@ -11,6 +11,7 @@ import { useExtremeStore } from "@/stores/extreme-store";
 import { RemotePathLink, type OpenTarget } from "./RemotePathLink";
 import { TaskSteps } from "./TaskSteps";
 import type { TaskArtifact, TaskCardModel } from "./task-view";
+import { durationText } from "./format-time";
 
 export function isAgentActivity(task: TaskCardModel) {
   return task.source === "agent" || task.steps.some((step) => step.kind === "tool");
@@ -127,23 +128,10 @@ export function AgentActivity({
           : running
             ? t(task.steps.length ? "正在使用工具" : "正在分析请求")
             : t("处理过程");
-  const outcomeTone =
-    task.outcome?.level === "verified"
-      ? "text-success"
-      : task.outcome?.level === "partial"
-        ? "text-warning"
-        : "text-fg-muted";
-  const outcomeLabel =
-    task.outcome?.level === "verified"
-      ? t("已验证")
-      : task.outcome?.level === "partial"
-        ? t("部分完成")
-        : t("需要补充信息");
-
   return (
     <>
       <Think
-        className="extreme-core-agent-activity"
+        className={cn("extreme-core-agent-activity", running && "extreme-core-agent-running")}
         data-agent-activity={task.id}
         loading={running}
         expanded={expanded}
@@ -155,6 +143,14 @@ export function AgentActivity({
             <span>{label}</span>
             {task.steps.length > 0 && (
               <span className="text-fg-muted">{t("工具调用 · {{n}} 次", { n: task.steps.length })}</span>
+            )}
+            {/* 完成后显示**真实执行耗时**（createdAt → 最后一次 updatedAt），不是当前时刻减开始。 */}
+            {settled(task) && task.updatedAt > task.createdAt && (
+              <span className="text-fg-subtle">
+                {t("用时 {{duration}}", {
+                  duration: durationText(task.updatedAt - task.createdAt, t),
+                })}
+              </span>
             )}
           </button>
         }
@@ -175,26 +171,15 @@ export function AgentActivity({
           )}
         </div>
       </Think>
-      {(task.outcome ||
-        (onResume &&
-          (task.status === "interrupted" ||
-            (task.status === "failed" && task.steps.length > 0)))) && (
-        <div className="flex flex-wrap items-center gap-2 px-3 pb-1 text-11">
-          {task.outcome && (
-            <span className={cn(outcomeTone)} title={task.outcome.reason}>
-              {t("结论")}：{outcomeLabel}
-              {task.outcome.reason ? ` · ${task.outcome.reason}` : ""}
-            </span>
-          )}
-          {onResume &&
-            (task.status === "interrupted" ||
-              (task.status === "failed" && task.steps.length > 0)) && (
-              <Button variant="ghost" size="xs" className="gap-1 text-accent" onClick={() => onResume(task)}>
-                {t("继续执行")}
-              </Button>
-            )}
-        </div>
-      )}
+      {onResume &&
+        (task.status === "interrupted" ||
+          (task.status === "failed" && task.steps.length > 0)) && (
+          <div className="flex flex-wrap items-center gap-2 px-3 pb-1 text-11">
+            <Button variant="ghost" size="xs" className="gap-1 text-accent" onClick={() => onResume(task)}>
+              {t("继续执行")}
+            </Button>
+          </div>
+        )}
       {reports && reports.length > 0 && (
         <ExecutionResults reports={reports} sessionId={task.sessionId} serverId={task.serverId} onOpenTarget={onOpenTarget} />
       )}

@@ -471,6 +471,22 @@ fn is_read_command(first: &str, second: &str) -> bool {
         "cat",
         "head",
         "tail",
+        // 带行号打印 / 只读计算：`nl -ba $F | sed -n '1,30p'` 是最常见的"看配置"手法。
+        "nl",
+        "od",
+        "xxd",
+        "md5sum",
+        "sha1sum",
+        "sha256sum",
+        "base64",
+        "basename",
+        "dirname",
+        "readlink",
+        "realpath",
+        "diff",
+        "cmp",
+        "tree",
+        "jq",
         "grep",
         "egrep",
         "fgrep",
@@ -932,8 +948,29 @@ fn curl_writes(segment: &str) -> bool {
             }
             return true;
         }
+        /*
+         * 响应头：`-D -` / `-D /dev/null` 只是打到 stdout，是**读**操作。
+         * 排查站点时 `curl -s -o /dev/null -D -` 很常见，不能当成写文件。
+         */
+        if token == "-D" || lower == "--dump-header" {
+            let target = tokens
+                .next()
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim_matches('\'');
+            if matches!(target, "-" | "/dev/null") {
+                continue;
+            }
+            return true;
+        }
+        if let Some(target) = lower.strip_prefix("--dump-header=") {
+            if matches!(target, "-" | "/dev/null") {
+                continue;
+            }
+            return true;
+        }
         // 请求体 / 表单 / 上传 / cookie 罐 / 头文件。
-        if matches!(token, "-d" | "-F" | "-T" | "-c" | "-D" | "-O")
+        if matches!(token, "-d" | "-F" | "-T" | "-c" | "-O")
             || matches!(
                 lower.as_str(),
                 "--data"
@@ -1189,6 +1226,308 @@ pub fn classify_shell(command: &str) -> ToolRisk {
     };
     parts.iter().fold(ToolRisk::Read, |risk, segment| {
         risk.max(classify_segment(segment))
+    })
+}
+
+/// 从一条 shell 命令里提取**可确定的绝对写目标**。
+///
+/// 只认能落到具体路径的几种形态：重定向（`>` / `>>`）、`tee`、`sed -i` /
+/// `perl -i`、`cp` / `mv` / `install` / `truncate`。变量、通配符、相对路径与
+/// `/dev` `/proc` `/sys` 一律跳过 —— 解析不准宁可不记录，也不能编一个假目标。
+///
+/// 返回顺序即命令里出现的顺序，最多 3 个：每次目标都要多两次 SSH 回读，
+/// 不能让一条 `for f in /etc/nginx/conf.d/*.conf` 把整条链路拖慢。
+/// 按 `;` / `|` / `&` / 换行切段，**引号里的不切**。
+///
+/// `sed -i 's/listen 80;/listen 8080;/' /etc/x.conf` 里的 `;` 属于表达式，
+/// 按字符直接切会把目标和命令都切碎，什么都解析不出来。
+fn split_command_segments(command: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(item) = chars.next() {
+        match quote {
+            Some(q) => {
+                current.push(item);
+                if item == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else if item == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if item == '\'' || item == '"' {
+                    quote = Some(item);
+                    current.push(item);
+                } else if matches!(item, ';' | '|' | '&' | '\n') {
+                    out.push(std::mem::take(&mut current));
+                } else {
+                    current.push(item);
+                }
+            }
+        }
+    }
+    out.push(current);
+    out
+}
+
+pub fn shell_write_targets(command: &str, base_cwd: &str) -> Vec<String> {
+    /// 相对路径按**当前段之前的 `cd`** 解析成绝对路径；解析不出就跳过。
+    fn absolute(raw: &str, cwd: Option<&str>) -> Option<String> {
+        let raw = raw.trim().trim_matches('"').trim_matches('\'');
+        if raw.is_empty() || raw.contains(['$', '*', '?', '{', '}', '`', '~']) {
+            return None;
+        }
+        let joined = if raw.starts_with('/') {
+            raw.to_string()
+        } else {
+            format!("{}/{}", cwd?, raw)
+        };
+        let mut parts: Vec<&str> = Vec::new();
+        for part in joined.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(format!("/{}", parts.join("/")))
+    }
+
+    /// 这个参数是不是备份目标（`.bak` / `.bls-bak` / `~` 结尾）。
+    fn is_backup(raw: &str) -> bool {
+        let raw = raw.trim_matches('"').trim_matches('\'');
+        let base = raw.rsplit('/').next().unwrap_or(raw);
+        base.contains(".bak") || base.contains(".bls-bak") || base.ends_with('~')
+    }
+
+    /// 展开 `$F` / `${F}`：模型常写 `F=/etc/nginx/x.conf; … > "$F"`。
+    fn expand(raw: &str, vars: &std::collections::HashMap<String, String>) -> String {
+        if !raw.contains('$') {
+            return raw.to_string();
+        }
+        let mut out = String::new();
+        let mut chars = raw.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '$' {
+                out.push(ch);
+                continue;
+            }
+            let braced = chars.peek() == Some(&'{');
+            if braced {
+                chars.next();
+            }
+            let mut name = String::new();
+            while let Some(next) = chars.peek().copied() {
+                if next.is_ascii_alphanumeric() || next == '_' {
+                    name.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if braced && chars.peek() == Some(&'}') {
+                chars.next();
+            }
+            match vars.get(&name) {
+                Some(value) => out.push_str(value),
+                None => {
+                    out.push('$');
+                    if braced {
+                        out.push('{');
+                    }
+                    out.push_str(&name);
+                    if braced {
+                        out.push('}');
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 收集 `NAME=/abs/path`：只认**绝对路径**的赋值，别的（命令替换、变量套变量）不猜。
+    fn collect_vars(segments: &[String]) -> std::collections::HashMap<String, String> {
+        let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for segment in segments {
+            for token in segment.split_whitespace() {
+                let Some((name, value)) = token.split_once('=') else {
+                    continue;
+                };
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let value = expand(value, &vars);
+                let value = value.trim_matches('"').trim_matches('\'');
+                if value.starts_with('/') && !value.contains(['$', '*', '?', '{', '}', '`', '~']) {
+                    vars.insert(name.to_string(), value.to_string());
+                }
+            }
+        }
+        vars
+    }
+
+    fn push_target(
+        out: &mut Vec<String>,
+        raw: &str,
+        cwd: Option<&str>,
+        vars: &std::collections::HashMap<String, String>,
+    ) {
+        let raw = expand(raw, vars);
+        let Some(path) = absolute(&raw, cwd) else {
+            return;
+        };
+        if path.starts_with("/dev/") || path.starts_with("/proc/") || path.starts_with("/sys/") {
+            return;
+        }
+        // `cp -a x x.bak-*` / `x.bls-bak-1` / `sed -i ... x~` 是备份副本，不是用户要看的改动。
+        let base = path.rsplit('/').next().unwrap_or(&path);
+        if base.contains(".bak") || base.contains(".bls-bak") || base.ends_with('~') {
+            return;
+        }
+        if out.iter().any(|item| item == &path) || out.len() >= 3 {
+            return;
+        }
+        out.push(path);
+    }
+
+    let segments = split_command_segments(command);
+    // `F=/etc/nginx/x.conf; sed -i … "$F"`：先收变量，后面按值解析目标。
+    let vars = collect_vars(&segments);
+
+    let mut out: Vec<String> = Vec::new();
+    let base = base_cwd.trim_end_matches('/');
+    /*
+     * 不直接用任务 cwd 解析裸相对路径：`sed ... ./x` 没有明确基准时宁可
+     * 不记录，也不能猜错。只有命令里显式 `cd` 过的目录才作为解析基准。
+     */
+    let mut cwd: Option<String> = None;
+
+    for segment in segments {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+        let first = words[0].trim_matches(|c| c == '\'' || c == '"');
+        /*
+         * `cd /opt/app && sed -i ... index.html`：后面的相对路径都属于
+         * `/opt/app`。不跟踪这个 `cd`，真实写目标会被当成相对路径丢掉，
+         * 面板就只能显示"未采集差异"。
+         */
+        if first == "cd" {
+            if let Some(dir) = words.get(1) {
+                let dir = dir.trim_matches(|c| c == '\'' || c == '"');
+                cwd = if dir.starts_with('/') {
+                    absolute(dir, None)
+                } else if base.starts_with('/') {
+                    // `cd app` 相对任务 cwd 解析；`cd /opt/app` 走上一分支。
+                    absolute(dir, Some(base))
+                } else {
+                    None
+                };
+            }
+            continue;
+        }
+        // 重定向：`> /path`、`>>/path`、`2> /path`；`2>&1` 的 `&1` 不是路径。
+        for (index, word) in words.iter().enumerate() {
+            let trimmed = word.trim_start_matches(|c: char| c.is_ascii_digit());
+            if let Some(rest) = trimmed
+                .strip_prefix(">>")
+                .or_else(|| trimmed.strip_prefix('>'))
+            {
+                if !rest.is_empty() {
+                    push_target(&mut out, rest, cwd.as_deref(), &vars);
+                } else if let Some(next) = words.get(index + 1) {
+                    push_target(&mut out, next, cwd.as_deref(), &vars);
+                }
+            }
+        }
+        match first {
+            "tee" => {
+                for word in words.iter().skip(1) {
+                    if !word.starts_with('-') {
+                        push_target(&mut out, word, cwd.as_deref(), &vars);
+                    }
+                }
+            }
+            "sed" | "perl" if words.iter().any(|word| word.starts_with("-i")) => {
+                if let Some(last) = words.last() {
+                    push_target(&mut out, last, cwd.as_deref(), &vars);
+                }
+            }
+            /*
+             * `cp -a site.conf site.conf.bak-1 && ./patch.sh`：备份目标不是改动，
+             * 真正的目标是 **cp 的源文件**。只看最后一个参数会把唯一线索丢掉，
+             * 面板又变成"未采集"。
+             */
+            "cp" if words.len() >= 3 => {
+                let args: Vec<&str> = words
+                    .iter()
+                    .skip(1)
+                    .filter(|word| !word.starts_with('-'))
+                    .copied()
+                    .collect();
+                if args.len() >= 2 {
+                    let dest = args[args.len() - 1];
+                    if is_backup(dest) {
+                        for src in &args[..args.len() - 1] {
+                            push_target(&mut out, src, cwd.as_deref(), &vars);
+                        }
+                    } else {
+                        push_target(&mut out, dest, cwd.as_deref(), &vars);
+                    }
+                } else if let Some(last) = words.last() {
+                    push_target(&mut out, last, cwd.as_deref(), &vars);
+                }
+            }
+            "cp" | "mv" | "install" | "truncate" | "rsync" | "scp" => {
+                if let Some(last) = words.last() {
+                    push_target(&mut out, last, cwd.as_deref(), &vars);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 这条命令**有没有可能改文件**（决定要不要进「文件变更」）。
+///
+/// 与风险定级分开：`echo "$(stat …)"` 因为有命令替换而要确认，但它什么都没写，
+/// 不该在变更面板里留一条"未采集"。反过来，`rm` / `sed -i` / `cp` 这类哪怕
+/// 目标解析不出来，也要留一条占位。
+pub fn shell_may_write(command: &str) -> bool {
+    let Some(parts) = split_segments(command) else {
+        // 引号都没闭合：看不懂，按会写处理。
+        return true;
+    };
+    const WRITE_VERBS: &[&str] = &[
+        "cp", "mv", "rm", "tee", "install", "truncate", "dd", "rsync", "scp", "ln", "touch",
+        "mkdir", "rmdir", "chmod", "chown", "unzip", "tar",
+    ];
+    const WRITE_NEEDLES: &[&str] = &["sed -i", "sed --in-place", "perl -i", "docker cp"];
+    parts.iter().any(|segment| {
+        if has_write_redirect(segment) {
+            return true;
+        }
+        if WRITE_VERBS.contains(&first_word(segment)) {
+            return true;
+        }
+        WRITE_NEEDLES.iter().any(|needle| segment.contains(needle))
     })
 }
 
@@ -1681,7 +2020,11 @@ pub fn plan_tool(name: &str, args: &Value, cwd: &str, stamp: u64) -> Result<Plan
         backup_path,
         // 与 `write_command` 用的是**同一份参数**：预览里的新内容不是模型口述，
         // 而是这次调用真正提交的正文。
-        write_content: (call_name == "write_file")
-            .then(|| args.get("content").and_then(Value::as_str).unwrap_or("").to_string()),
+        write_content: (call_name == "write_file").then(|| {
+            args.get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        }),
     })
 }

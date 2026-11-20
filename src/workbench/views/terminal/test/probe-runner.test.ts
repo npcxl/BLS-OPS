@@ -1,9 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import {
   checksFromProbe,
   parseProbe,
   probeCommand,
 } from "../extreme-core/probe-runner";
+
+// 检查项原因按界面语言生成；用例断言中文，测试环境默认英文。
+const originalLanguage = i18n.language;
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
+});
+afterAll(async () => {
+  await i18n.changeLanguage(originalLanguage);
+});
 
 // 真实 `ss -ltn` + `df -Pk` 的输出形状（缩进与列宽都照实写）。
 const SAMPLE = [

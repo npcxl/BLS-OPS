@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import { PageInspector } from "@/workbench/page-layout";
 import type { DeployStep } from "./deploy-plan";
 import { TaskSteps } from "./TaskSteps";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import type { PreflightField } from "./preflight";
 import type { ExtremeRightTab } from "@/stores/extreme-store";
 
@@ -57,14 +58,13 @@ export function InspectorPanel({
             {label}
           </button>
         ))}
-        <button
-          type="button"
-          className="ml-auto text-fg-subtle hover:text-fg"
-          aria-label={t("收起详情")}
+        <ExtremeIconButton
+          label={t("收起详情")}
+          icon={X}
+          iconSize={12}
+          className="ml-auto"
           onClick={onClose}
-        >
-          <X size={12} />
-        </button>
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-2">

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import LiquidGlass from "liquid-glass-react";
 import { ChevronDown, ChevronRight, Copy, FileDiff, ShieldAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import type { AgentApproval } from "@/api/types/agent";
@@ -142,6 +143,59 @@ export function AgentApprovalCard({
           ? t("已允许 · 已跳过")
           : t("已允许 · 正在执行");
 
+  /*
+   * 已经表态之后**不再占一张卡**：收成一行操作记录。
+   * 卡片只留给"还需要你决定"（pending / sending / failed）的状态，
+   * 否则一次写入会在输入框上方挂一整块玻璃卡，把对话挤没。
+   */
+  if (phase === "allowed" || phase === "denied") {
+    const tone =
+      phase === "denied"
+        ? "text-fg-subtle"
+        : stepState === "success"
+          ? "text-success"
+          : stepState === "failed"
+            ? "text-danger"
+            : "text-fg-muted";
+    return (
+      <section
+        data-testid="agent-approval"
+        data-approval-task={approval.taskId}
+        data-approval-key={`${approval.taskId}:${approval.callId}`}
+        data-phase={phase}
+        className="shrink-0 px-4 pt-1.5"
+      >
+        <div className="mx-auto flex w-full max-w-3xl min-w-0 items-center gap-2 text-11">
+          <span className={cn("shrink-0", tone)}>
+            {phase === "denied" ? t("已拒绝 · 未执行") : runningLabel}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-fg-muted" title={approval.command}>
+            {summary}
+          </span>
+          {phase === "allowed" && onOpenOutput && (
+            <button
+              type="button"
+              className="shrink-0 text-accent hover:underline"
+              onClick={onOpenOutput}
+            >
+              {t("查看输出")}
+            </button>
+          )}
+          {approval.changeId && onOpenChanges && (
+            <button
+              type="button"
+              className="flex shrink-0 items-center gap-0.5 text-accent hover:underline"
+              onClick={onOpenChanges}
+            >
+              <FileDiff size={12} />
+              {t("查看变更")}
+            </button>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section
       data-testid="agent-approval"
@@ -223,25 +277,6 @@ export function AgentApprovalCard({
                   {t("改动前备份")}：{approval.backupPath}
                 </p>
               )}
-              {phase === "allowed" && (
-                <p className="mt-1 flex flex-wrap items-center gap-2 pl-[22px] text-11 text-fg-muted">
-                  <span>{runningLabel}</span>
-                  {onOpenOutput && (
-                    <button
-                      type="button"
-                      className="text-11 text-accent underline underline-offset-2"
-                      onClick={onOpenOutput}
-                    >
-                      {t("查看输出")}
-                    </button>
-                  )}
-                </p>
-              )}
-              {phase === "denied" && (
-                <p className="mt-1 pl-[22px] text-11 text-fg-muted">
-                  {t("已拒绝 · 此步骤未执行")}
-                </p>
-              )}
               {phase === "failed" && (
                 <p className="mt-1 pl-[22px] text-11 text-danger">
                   {t("没有送达服务器：{{reason}}。可以再试一次。", {
@@ -307,14 +342,13 @@ export function AgentApprovalCard({
                   <pre className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-[6px] bg-surface-2 px-2 py-1 font-mono text-11">
                     {approval.command}
                   </pre>
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    title={t("复制命令")}
+                  <ExtremeIconButton
+                    label={t("复制命令")}
+                    icon={Copy}
+                    iconSize={12}
+                    className="size-6"
                     onClick={() => void copyTextWithFeedback(approval.command)}
-                  >
-                    <Copy size={12} />
-                  </Button>
+                  />
                 </div>
                 {approval.backupPath && (
                   <p className="break-all text-fg-muted">

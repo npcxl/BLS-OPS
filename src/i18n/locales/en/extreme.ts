@@ -21,6 +21,8 @@ export default {
   "上游可达": "Upstream reachable",
   "远程路径": "Remote path",
   "计划步骤": "Plan step",
+  "退出全屏": "Exit full screen",
+  "退出全屏，回到分栏": "Exit full screen and return to split view",
   "只读：查询直接执行；只有命令确实会写文件、改配置、改服务或删数据时，才请你确认一次。sudo 禁用。":
     "Read-only: queries run directly; you are asked to confirm only when a command really writes files, changes config or services, or deletes data. sudo is disabled.",
   "完全权限：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行，不再逐条确认；写文件前仍会在同目录留一份带 .bls-bak- 标记的备份。你只要求查询时，执行器会拦下所有写操作，模型只做只读查询。":
@@ -272,6 +274,7 @@ export default {
   "模型": "Model",
   "本机提示": "Local note",
   "正在回答…": "Answering…",
+  "仍在执行…": "Still running…",
 
   "模型与思考强度": "Model & reasoning",
   "默认模型": "Default model",
@@ -651,10 +654,12 @@ export default {
   "这次运行没有可展示的文件变更。": "This run has no file changes to show.",
   "还没有对话：文件变更按对话归属，先开始一条任务。":
     "No conversation yet: file changes belong to a conversation — start a task first.",
-  "这次对话还没有文件变更：AI 用 write_file 改文件时，这里会显示预览与实际差异。":
-    "This conversation has no file changes yet: when the AI uses write_file, the preview and the actual diff show up here.",
-  "普通 shell 命令（sed / tee / 脚本）拿不到明确目标与前后快照，不会生成 Diff。":
-    "Plain shell commands (sed / tee / scripts) have no clear target or before/after snapshot, so no diff is generated.",
+  "这次对话还没有文件变更：上传、AI 写入或 shell 改写文件后，这里会显示预览与实际差异。":
+    "This conversation has no file changes yet: uploads, AI writes and shell edits show up here with a preview and the actual diff.",
+  "能确定目标、读得到前后内容的改动会生成逐行 Diff；其余操作只标注路径。":
+    "Changes with a known target and readable before/after content get a line-by-line diff; other operations are listed by path only.",
+  "二进制文件：只记录路径，不做逐行比较":
+    "Binary file: recorded by path only, no line-by-line diff",
   "服务器未连接：这里展示的是历史快照，可以查看但不能执行。":
     "Server not connected: this is a historical snapshot — readable, but nothing can be executed.",
   "变更内容加载失败（可能已超出保留范围）":
@@ -870,4 +875,25 @@ export default {
   "清除筛选": "Clear filter",
   "服务器未连接：只展示历史快照":
     "Server not connected — showing a historical snapshot only",
+  "这次写入与写入前一致：没有产生改动。若文件此前已被改过，差异在更早那次运行里。":
+    "This write matched the file as it already was — nothing changed. If it was edited earlier, the diff is in that earlier run.",
+
+  /* ---- 执行耗时 / 队列 / 确认后收口 ---- */
+  "用时 {{duration}}": "Took {{duration}}",
+  "{{n}} 秒": "{{n}}s",
+  "{{m}} 分 {{s}} 秒": "{{m}}m {{s}}s",
+  "{{m}} 分钟": "{{m}} min",
+  "{{h}} 小时 {{m}} 分": "{{h}}h {{m}}m",
+  "{{h}} 小时": "{{h}}h",
+  "待发送 {{n}} 条": "{{n}} queued",
+  "已拒绝 · 未执行": "Rejected — not executed",
+  "执行中发送方式": "Sending while running",
+  "执行中：补充给当前任务": "While running: steer the current task",
+  "执行中：任务完成后发送": "While running: queue after this task",
+  "任务执行中，新消息怎么处理": "While a task is running, how should new messages be handled?",
+  "下一步开始前生效": "Applies before the next step",
+  "当前任务结束后按顺序发送": "Sent in order after the current task finishes",
+  "Shell 写入（未采集 Diff）": "Shell write (diff not captured)",
+  "命令已经执行，但没有采集到逐行差异（shell 直接改写）。":
+    "The command ran, but no line-by-line diff was captured (shell edited the file directly).",
 } as const;

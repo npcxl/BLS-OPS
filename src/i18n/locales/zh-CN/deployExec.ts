@@ -164,9 +164,18 @@ export default {
     "模型只用于复核部署方案，绝不会执行任何操作。",
   "Add model": "添加模型",
   "Edit model": "编辑模型",
+  "Quick add": "快速添加",
+  "Pick a preset and fill in only the API Key; presets use each provider's latest alias rather than a fixed version, and the model ID is still editable.":
+    "选一个预设，填 API Key 即可；预设使用各家最新别名，不绑定固定版本，模型 ID 仍可直接改。",
+  Custom: "自定义",
+  "Enter your own base URL and model": "自己填地址与模型",
+  "Preset filled in — only the API Key is needed. You can still edit it from the list after saving.":
+    "已填入预设，只需填写 API Key；保存后仍可在列表里继续编辑。",
   "No models yet": "还没有模型提供方",
   Default: "默认",
   "Test connection": "连接测试",
+  "Testing…": "测试中…",
+  "Fill in the base URL, model and API key first": "先填写 Base URL、模型和 API Key",
   "Set as default": "设为默认",
   "Delete model provider": "删除模型提供方",
   'Delete "{{name}}"? The saved configuration is removed.':

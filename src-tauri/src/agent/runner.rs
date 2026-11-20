@@ -23,10 +23,10 @@ use super::changes::{
     FileSnapshot,
 };
 use super::protocol::{
-    intent_guidance, looks_like_tool_call, parse_tool_calls, redact, strip_tool_calls,
-    tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome, AgentStep, Lang,
-    PendingApproval, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT,
-    STEP_OUTPUT_LIMIT,
+    intent_guidance, looks_like_tool_call, parse_tool_calls, redact, reply_language_rule,
+    strip_tool_calls, tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome,
+    AgentStep, Lang, PendingApproval, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS,
+    MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
 };
 use super::state::{AgentHandle, AgentSnapshot, ContextBreakdown, ContextUsage, TokenUsage};
 use super::tools::{has_sudo, plan_tool, strip_markers, tool_schemas, PlannedTool};
@@ -1168,6 +1168,9 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
             }
         });
     }
+    // 放最后：模型对末尾指令最敏感，前面的中英混杂材料不能把回复语言带偏。
+    system.push('\n');
+    system.push_str(reply_language_rule(lang));
     let mut out = vec![json!({ "role": "system", "content": system })];
     out.extend(turns);
     out
@@ -1193,12 +1196,21 @@ fn step_label(step: &AgentStep) -> String {
 /// * 没有任何成功步骤（或只读任务一步都没跑）→ `needs_info`；
 /// * 最后一次失败之后没有成功步骤 → `partial`（结论只覆盖了前面成功的部分）；
 /// * 其余 → `verified`，证据取写入与验证步骤的命令首行。
-pub(crate) fn evaluate_outcome(steps: &[AgentStep], query_only: bool) -> Option<AgentOutcome> {
+pub(crate) fn evaluate_outcome(
+    steps: &[AgentStep],
+    query_only: bool,
+    lang: Lang,
+) -> Option<AgentOutcome> {
+    let en = matches!(lang, Lang::En);
     if steps.is_empty() {
         // 一步都没跑：纯问答不需要"验证"标签；只读任务则明确说没有证据。
         return query_only.then(|| {
             AgentOutcome::needs_info(
-                "没有执行任何只读检查：这句话没有服务器证据，不能当作结论。",
+                if en {
+                    "No read-only checks were run: this conclusion has no server evidence."
+                } else {
+                    "没有执行任何只读检查：这句话没有服务器证据，不能当作结论。"
+                },
                 Vec::new(),
             )
         });
@@ -1236,13 +1248,21 @@ pub(crate) fn evaluate_outcome(steps: &[AgentStep], query_only: bool) -> Option<
 
     if !writes.is_empty() && !verified_after_writes {
         return Some(AgentOutcome::partial(
-            "改动已经执行，但之后没有只读验证步骤。",
+            if en {
+                "Changes were applied, but no read-only verification followed."
+            } else {
+                "改动已经执行，但之后没有只读验证步骤。"
+            },
             evidence,
         ));
     }
     if succeeded.is_empty() {
         return Some(AgentOutcome::needs_info(
-            "所有步骤都没有成功，结论缺少服务器证据。",
+            if en {
+                "Every step failed; the conclusion has no server evidence."
+            } else {
+                "所有步骤都没有成功，结论缺少服务器证据。"
+            },
             steps
                 .iter()
                 .rev()
@@ -1263,16 +1283,21 @@ pub(crate) fn evaluate_outcome(steps: &[AgentStep], query_only: bool) -> Option<
     });
     if !recovered {
         return Some(AgentOutcome::partial(
-            "最后一次失败之后没有成功步骤，结论只覆盖了已完成的部分。",
+            if en {
+                "Nothing succeeded after the last failure, so the conclusion covers only the completed part."
+            } else {
+                "最后一次失败之后没有成功步骤，结论只覆盖了已完成的部分。"
+            },
             evidence,
         ));
     }
 
     Some(AgentOutcome::verified(
-        if writes.is_empty() {
-            "结论来自只读命令的真实输出。"
-        } else {
-            "改动后做了只读验证。"
+        match (writes.is_empty(), en) {
+            (true, false) => "结论来自只读命令的真实输出。",
+            (true, true) => "Verified against the real output of read-only commands.",
+            (false, false) => "改动后做了只读验证。",
+            (false, true) => "Verified with read-only checks after the change.",
         },
         evidence,
     ))
@@ -1467,18 +1492,38 @@ async fn finish_change(
     let Some(record) = registry.record(change_id) else {
         return;
     };
-    let backup_path = backup.map(str::to_string).or_else(|| planned.backup_path.clone());
+    let backup_path = backup
+        .map(str::to_string)
+        .or_else(|| planned.backup_path.clone());
     // `cp` 的标记只在备份真的成功后才打印：有标记 = 备份确实存在。
     let backup_verified = backup.is_some();
+    // 变更面板的说明文字也跟界面语言走（英文界面下不该冒出中文 note）。
+    let en = matches!(Lang::from_locale(input.locale.as_deref()), Lang::En);
 
     if !write_ok {
         registry.update(change_id, |record| {
             record.status = "write_failed".to_string();
             record.note = Some(match failure {
                 Some(reason) if !reason.trim().is_empty() => {
-                    format!("写入失败：{}；服务器上的文件没有被这次写入改动", reason.trim())
+                    if en {
+                        format!(
+                            "Write failed: {}; the server file was not changed.",
+                            reason.trim()
+                        )
+                    } else {
+                        format!(
+                            "写入失败：{}；服务器上的文件没有被这次写入改动",
+                            reason.trim()
+                        )
+                    }
                 }
-                _ => "写入失败：服务器上的文件没有被这次写入改动".to_string(),
+                _ => {
+                    if en {
+                        "Write failed: the server file was not changed.".to_string()
+                    } else {
+                        "写入失败：服务器上的文件没有被这次写入改动".to_string()
+                    }
+                }
             });
             record.backup_path = backup_path.clone();
             record.backup_verified = backup_verified;
@@ -1496,7 +1541,11 @@ async fn finish_change(
             item.stage = "none".to_string();
             item.status = "unavailable".to_string();
             item.note = Some(
-                "未能读取修改前的内容，无法证明实际改动了什么（写入可能已生效，请用远程文件核对）"
+                if en {
+                    "Could not read the file before the write, so the actual change cannot be proven (the write may have applied — verify with Remote files)."
+                } else {
+                    "未能读取修改前的内容，无法证明实际改动了什么（写入可能已生效，请用远程文件核对）"
+                }
                     .to_string(),
             );
             item.backup_path = backup_path.clone();
@@ -1521,8 +1570,14 @@ async fn finish_change(
                 record.actual = Some(snapshot);
                 record.backup_path = backup_path.clone();
                 record.backup_verified = backup_verified;
-                record.note = unchanged
-                    .then(|| "写入完成，但回读内容与写入前完全一致".to_string());
+                record.note = unchanged.then(|| {
+                    if en {
+                        "Write finished, but the read-back matched the file as it already was."
+                    } else {
+                        "回读内容与写入前一致：这次没有产生改动"
+                    }
+                    .to_string()
+                });
                 record.recount();
             });
         }
@@ -1530,7 +1585,14 @@ async fn finish_change(
             registry.update(change_id, |record| {
                 record.stage = "none".to_string();
                 record.status = "readback_failed".to_string();
-                record.note = Some("写入后目标文件不存在：无法证明服务器上的实际内容".to_string());
+                record.note = Some(
+                    if en {
+                        "Target file missing after the write: the server content cannot be proven."
+                    } else {
+                        "写入后目标文件不存在：无法证明服务器上的实际内容"
+                    }
+                    .to_string(),
+                );
                 record.backup_path = backup_path.clone();
                 record.backup_verified = backup_verified;
             });
@@ -1539,7 +1601,12 @@ async fn finish_change(
             registry.update(change_id, |record| {
                 record.stage = "none".to_string();
                 record.status = "unavailable".to_string();
-                record.note = Some("当前环境不支持回读，无法证明实际内容".to_string());
+                record.note = Some(if en {
+                    "Read-back is not supported in this environment; actual content cannot be proven."
+                } else {
+                    "当前环境不支持回读，无法证明实际内容"
+                }
+                    .to_string());
                 record.backup_path = backup_path.clone();
                 record.backup_verified = backup_verified;
             });
@@ -1548,7 +1615,11 @@ async fn finish_change(
             registry.update(change_id, |record| {
                 record.stage = "none".to_string();
                 record.status = "readback_failed".to_string();
-                record.note = Some(format!("写入已发送，但回读失败：{reason}"));
+                record.note = Some(if en {
+                    format!("Write was sent, but read-back failed: {reason}")
+                } else {
+                    format!("写入已发送，但回读失败：{reason}")
+                });
                 record.backup_path = backup_path.clone();
                 record.backup_verified = backup_verified;
             });
@@ -1587,6 +1658,89 @@ fn record_uncollected(
     });
     if let Some(summary) = registry.get(&id) {
         emit_change(io, &input.task_id, summary);
+    }
+}
+
+/// `run_shell` 写操作的**可确定目标**：执行前各读一份快照。
+///
+/// 解析不出目标时返回空表，调用方退回"未采集差异"的占位记录。
+async fn shell_baseline(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    planned: &PlannedTool,
+    base_cwd: &str,
+) -> Vec<(String, FileSnapshot)> {
+    if planned.call.name != "run_shell" {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for path in super::tools::shell_write_targets(&planned.display, base_cwd) {
+        if let Ok(Some(snapshot)) = io.read_snapshot(&input.session_id, &path).await {
+            out.push((path, snapshot));
+        }
+    }
+    out
+}
+
+/// 执行后回读 shell 目标，落成真实 Diff（`before` 来自执行前）。
+async fn record_shell_changes(
+    io: &dyn AgentIo,
+    input: &AgentInput,
+    planned: &PlannedTool,
+    step_index: u32,
+    call_id: &str,
+    baseline: Vec<(String, FileSnapshot)>,
+    ok: bool,
+    failure: Option<&str>,
+) {
+    if baseline.is_empty() {
+        return;
+    }
+    let registry = io.changes();
+    for (path, before) in baseline {
+        let readback = io.read_snapshot(&input.session_id, &path).await;
+        let after = readback.as_ref().ok().and_then(|item| item.clone());
+        let unchanged = after
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.exists && before.exists && snapshot.sha == before.sha);
+        let status = if !ok {
+            "write_failed"
+        } else if readback.is_err() {
+            "readback_failed"
+        } else if unchanged {
+            "unchanged"
+        } else {
+            "written"
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        registry.create(
+            change_draft(input, planned, step_index, call_id, &id, &path),
+            status,
+            "actual",
+        );
+        registry.update(&id, |record| {
+            record.before = Some(before.clone());
+            match after.clone() {
+                Some(snapshot) => record.actual = Some(snapshot),
+                None => record.stage = "none".to_string(),
+            }
+            record.note = if !ok {
+                Some(match failure {
+                    Some(line) => format!("命令执行失败：{line}"),
+                    None => "命令执行失败".to_string(),
+                })
+            } else if readback.is_err() {
+                Some("写入后无法回读目标文件，不能证明实际改动".to_string())
+            } else if unchanged {
+                Some("命令执行后回读与执行前一致：这次没有产生改动".to_string())
+            } else {
+                None
+            };
+            record.recount();
+        });
+        if let Some(summary) = registry.get(&id) {
+            emit_change(io, &input.task_id, summary);
+        }
     }
 }
 
@@ -1779,9 +1933,15 @@ pub(crate) async fn run_loop(
              * 让模型去做配置语法 / 服务状态 / 文件内容核对；催过一次仍不验证，
              * 就明确标成「部分完成」，不再假装已验证。
              */
-            let outcome = evaluate_outcome(&handle.snapshot().steps, query_only);
+            let outcome = evaluate_outcome(
+                &handle.snapshot().steps,
+                query_only,
+                Lang::from_locale(input.locale.as_deref()),
+            );
             let needs_verification = outcome.as_ref().is_some_and(|result| {
-                result.level == "partial" && result.reason.contains("没有只读验证")
+                result.level == "partial"
+                    && (result.reason.contains("没有只读验证")
+                        || result.reason.contains("no read-only verification"))
             });
             if needs_verification && !verification_nudged {
                 verification_nudged = true;
@@ -2099,7 +2259,8 @@ pub(crate) async fn run_loop(
                             if let Some(id) = &change_id {
                                 io.changes().update(id, |record| {
                                     record.status = "rejected".to_string();
-                                    record.note = Some("用户拒绝执行：服务器上的文件没有改动".to_string());
+                                    record.note =
+                                        Some("用户拒绝执行：服务器上的文件没有改动".to_string());
                                 });
                                 if let Some(summary) = io.changes().get(id) {
                                     emit_change(io, &input.task_id, summary);
@@ -2111,7 +2272,12 @@ pub(crate) async fn run_loop(
                             break;
                         }
                         Decision::Cancelled => {
-                            mark_step_aborted(io, handle, index, "已取消（用户停止），命令没有执行");
+                            mark_step_aborted(
+                                io,
+                                handle,
+                                index,
+                                "已取消（用户停止），命令没有执行",
+                            );
                             return Err(StopReason::Cancelled(format!(
                                 "已停止：等待确认时收到停止信号（停在「{}」）",
                                 describe_step(&raw.name, &args)
@@ -2135,12 +2301,8 @@ pub(crate) async fn run_loop(
                         if attempt >= 2 {
                             let reason = "文件在确认期间被反复修改，已停止这次写入".to_string();
                             fail_step(io, handle, index, &reason);
-                            tool_messages.push(tool_error_message(
-                                &raw.id,
-                                raw.native,
-                                &raw.name,
-                                &reason,
-                            ));
+                            tool_messages
+                                .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                             skip_this = true;
                             break;
                         }
@@ -2162,10 +2324,7 @@ pub(crate) async fn run_loop(
                             PreviewCheck::Failed(reason) => {
                                 fail_step(io, handle, index, &reason);
                                 tool_messages.push(tool_error_message(
-                                    &raw.id,
-                                    raw.native,
-                                    &raw.name,
-                                    &reason,
+                                    &raw.id, raw.native, &raw.name, &reason,
                                 ));
                                 skip_this = true;
                                 break;
@@ -2192,8 +2351,24 @@ pub(crate) async fn run_loop(
              * 这里**不猜**改了哪个文件（`sed -i` / `tee` / 脚本里的重定向都可能
              * 改一堆文件），只登记一条"未采集差异"，让面板如实显示。
              */
+            /*
+             * 命令里能解析出**确定的写目标**时，直接生成真实 Diff：
+             * 执行前读一份、执行后回读一份，面板就能看到 `sed -i` / `>` 到底
+             * 改了哪几行；解析不出来才退回"未采集"占位。
+             */
+            let mut shell_before: Vec<(String, FileSnapshot)> = Vec::new();
             if planned.call.name == "run_shell" && risk != ToolRisk::Read {
-                record_uncollected(io, input, &planned, index, &call_id);
+                let base_cwd = handle.snapshot().cwd;
+                shell_before = shell_baseline(io, input, &planned, &base_cwd).await;
+                /*
+                 * 只有**可能改文件**的命令才留"未采集"占位：`nl … | sed -n`、
+                 * `curl -D -` 这类只是要看配置/响应头，风险等级虽被保守地判成
+                 * write（有 `$()` 或未知命令），但并没有写任何文件 —— 全记下来
+                 * 会让变更面板变成一屏"未采集差异"。
+                 */
+                if shell_before.is_empty() && super::tools::shell_may_write(&planned.display) {
+                    record_uncollected(io, input, &planned, index, &call_id);
+                }
             }
 
             /*
@@ -2361,7 +2536,9 @@ pub(crate) async fn run_loop(
              * 不能用"备份存在"或"命令退出码 0"代替证据。
              */
             if let Some(id) = change_id.clone() {
-                let failure = (!ok).then(|| first_line(&stderr, 200)).filter(|line| !line.is_empty());
+                let failure = (!ok)
+                    .then(|| first_line(&stderr, 200))
+                    .filter(|line| !line.is_empty());
                 finish_change(
                     io,
                     input,
@@ -2370,6 +2547,24 @@ pub(crate) async fn run_loop(
                     ok,
                     failure.as_deref(),
                     backup.as_deref(),
+                )
+                .await;
+            }
+
+            // shell 写目标：回读执行后的内容，与执行前的快照生成真实 Diff。
+            if !shell_before.is_empty() {
+                let failure = (!ok)
+                    .then(|| first_line(&stderr, 200))
+                    .filter(|line| !line.is_empty());
+                record_shell_changes(
+                    io,
+                    input,
+                    &planned,
+                    index,
+                    &call_id,
+                    shell_before,
+                    ok,
+                    failure.as_deref(),
                 )
                 .await;
             }

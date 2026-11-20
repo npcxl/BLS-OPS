@@ -374,6 +374,18 @@ it("执行中补一句交给正在跑的任务，不再被挡回", async () => {
     await submit(holder, "查一下 nginx");
     const taskId = run.mock.calls[0][0].taskId;
 
+    // 默认是队列；这条用例显式切到「补充给当前任务」。
+    const mode = holder.querySelector<HTMLButtonElement>(
+      'button[aria-label="执行中发送方式"]',
+    );
+    expect(mode).toBeTruthy();
+    await act(async () => mode!.click());
+    const steerItem = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("补充给当前任务"),
+    );
+    expect(steerItem).toBeTruthy();
+    await act(async () => steerItem!.click());
+
     // 同一句话在任务执行中再发一次：作为补充要求送进同一个 taskId。
     await submit(holder, "只看容器里的");
     expect(steer).toHaveBeenCalledWith(taskId, "只看容器里的");
@@ -1542,12 +1554,12 @@ it("已有草稿时编辑旧消息：不覆盖草稿，并说明原因", async (
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
-    // 消息操作条是 antd Actions：自己那条的第二项是「编辑」。
-    const actions = holder.querySelectorAll<HTMLElement>(
-      '[data-role="user"] .ant-actions-item',
+    // 消息操作条：自己的气泡下有「复制 / 编辑」两个图标按钮。
+    const edit = holder.querySelector<HTMLButtonElement>(
+      '[data-role="user"] button[aria-label="编辑"]',
     );
-    expect(actions.length).toBeGreaterThanOrEqual(2);
-    await act(async () => actions[1].click());
+    expect(edit).toBeTruthy();
+    await act(async () => edit!.click());
 
     // 草稿没被 "旧的问题" 顶掉，并且说清了为什么。
     expect(textarea.value).toBe("写到一半的草稿");
@@ -1594,12 +1606,14 @@ it("右栏按标签页工作：固定入口开标签，收起再开复原，换�
     expect(tab("远程文件"), "远程文件").toBeTruthy();
     expect(tab("远程文件")!.getAttribute("aria-selected")).toBe("true");
 
-    // 快捷入口属于右栏标签行，应用头部只负责恢复整个右栏。
+    // 快捷入口在顶栏（服务器名右侧、展开左边），标签行整行留给标签。
     const shortcut = holder.querySelector<HTMLButtonElement>(
-      '[data-pane-view] .extreme-core-pane-tabs button[aria-label="服务器终端"]',
+      '[data-pane-view] .extreme-core-pane-toolbar button[aria-label="服务器终端"]',
     );
     expect(shortcut).toBeTruthy();
-    expect(holder.querySelector('.extreme-core-header button[aria-label="服务器终端"]')).toBeNull();
+    expect(
+      holder.querySelector('.extreme-core-pane-tabs button[aria-label="服务器终端"]'),
+    ).toBeNull();
     await act(async () => shortcut!.click());
     expect(widen).not.toHaveBeenCalled();
     expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
@@ -1625,6 +1639,23 @@ it("右栏按标签页工作：固定入口开标签，收起再开复原，换�
     expect(widen).not.toHaveBeenCalled();
     expect(tab("终端")!.getAttribute("aria-selected")).toBe("true");
     expect(tab("执行输出")!.getAttribute("aria-selected")).toBe("true");
+
+    /*
+     * 展开是**全屏**：从左侧任务栏右缘铺到窗口右缘，不再是带 16px 空隙的浮窗。
+     */
+    const expand = holder.querySelector<HTMLButtonElement>(
+      '[data-pane-view] button[aria-label="展开视图"]',
+    )!;
+    await act(async () => expand.click());
+    const expanded = holder.querySelector<HTMLElement>('[data-pane-view="expanded"]')!;
+    expect(expanded.className).toContain("extreme-core-pane-expanded");
+    expect(expanded.className).not.toContain("rounded-xl");
+    expect(holder.querySelector(".extreme-core-row")).toBeTruthy();
+    const restore = Array.from(holder.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("退出全屏"),
+    )!;
+    await act(async () => restore.click());
+    expect(holder.querySelector('[data-pane-view="expanded"]')).toBeNull();
 
     // 换一条会话：标签回到它自己记住的「远程文件」，上一份的不会串过来。
     await act(async () => {
@@ -2272,9 +2303,13 @@ it("气泡下有复制 / 引用 / 编辑，编辑与引用把文本送回输入�
     const textarea = holder.querySelector("textarea")!;
     const userRows = holder.querySelectorAll('[data-role="user"]');
     const replyRows = holder.querySelectorAll('[data-role="assistant"]');
-    // 自己的两句动作、回复的两句动作（antd X `Actions` 的条目）。
-    const own = userRows[userRows.length - 1].querySelectorAll<HTMLElement>(".ant-actions-item");
-    const reply = replyRows[replyRows.length - 1].querySelectorAll<HTMLElement>(".ant-actions-item");
+    // 自己的两句动作、回复的两句动作（项目 Tooltip + 图标按钮）。
+    const own = userRows[userRows.length - 1].querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="复制"], button[aria-label="编辑"]',
+    );
+    const reply = replyRows[replyRows.length - 1].querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="复制"], button[aria-label="引用"]',
+    );
     expect(own).toHaveLength(2);
     expect(reply).toHaveLength(2);
 

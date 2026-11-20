@@ -6,7 +6,7 @@ use super::protocol::{
 };
 use super::tools::{
     absolute_path, classify_shell, describe_impact, has_sudo, plan_tool, plan_write_backup,
-    strip_markers, BACKUP_MARKER, PWD_MARKER,
+    shell_may_write, shell_write_targets, strip_markers, BACKUP_MARKER, PWD_MARKER,
 };
 
 /// 模型不按我们的 `<tool>` 写、而用它自己的调用标记时，也必须识别出来。
@@ -27,6 +27,34 @@ fn recognises_the_models_own_tool_call_markup() {
     assert_eq!(strip_tool_calls(text), "");
     assert!(looks_like_tool_call(text));
     assert!(!looks_like_tool_call("这台机器磁盘用了 67%。"));
+}
+
+/// `cd ... && cp 备份 && sed -i 目标`：要跟踪 `cd`、跳过备份副本，只留真实目标。
+#[test]
+fn shell_write_targets_follow_cd_and_skip_backup_copies() {
+    let targets = shell_write_targets(
+        "cd /opt/bls-ops/dist && cp -a index.html index.html.bak-1795145023 && \
+         sed -i 's|<div id=\"root\">|<div id=\"root\"><p style=\"padding:12px\">hi</p>|' index.html",
+        "/root",
+    );
+    assert_eq!(targets, vec!["/opt/bls-ops/dist/index.html"]);
+}
+
+/// 显式 `cd` 之后的相对路径，按 `cd` 的目标解析。
+#[test]
+fn shell_write_targets_resolve_relative_after_cd() {
+    let targets = shell_write_targets("cd /srv/app && sed -i 's|a|b|' ./conf/app.conf", "/root");
+    assert_eq!(targets, vec!["/srv/app/conf/app.conf"]);
+}
+
+/// 命令先 `cp` 备份、后面是脚本时，从 `cp` 的**源文件**拿到真实目标。
+#[test]
+fn shell_write_targets_uses_cp_backup_source() {
+    let targets = shell_write_targets(
+        "cd /opt/app && cp -a site.conf site.conf.bak-1 && ./patch.sh",
+        "/root",
+    );
+    assert_eq!(targets, vec!["/opt/app/site.conf"]);
 }
 
 #[test]
@@ -239,6 +267,39 @@ fn output_redirection_to_dev_null_is_not_a_write() {
         ToolRisk::Read
     );
     assert_eq!(classify_shell("my-script 2>&1"), ToolRisk::Write);
+}
+
+/// 只"看"的命令不进文件变更：`nl` / `sed -n` / `curl -D -` 都是排查配置的常规手法。
+#[test]
+fn read_only_inspection_does_not_leave_a_change_record() {
+    for command in [
+        "echo '=== 5. 宿主配置 ==='; nl -ba /etc/nginx/conf.d/ehs-web.conf | sed -n '30,80p'; ls -l /etc/nginx/conf.d/*.bls-bak* 2>/dev/null",
+        "curl -s -o /dev/null -D - -m 10 https://glsz.sz369zhan.com/ehs-api/ 2>&1 | head -n 12",
+        "F=/etc/nginx/conf.d/ehs-web.conf; echo \"$(stat -c '%s' \"$F\")\"; nl -ba $F | sed -n '1,30p'",
+    ] {
+        assert!(!shell_may_write(command), "不该记变更：{command}");
+    }
+    for command in [
+        "sed -i 's/a/b/' /etc/nginx/nginx.conf",
+        "cat > /etc/nginx/conf.d/x.conf <<'EOF'",
+        "rm -f /tmp/x",
+    ] {
+        assert!(shell_may_write(command), "应当记变更：{command}");
+    }
+}
+
+#[test]
+fn inspection_commands_with_plain_redirects_stay_read() {
+    // `nl` 之前不在只读名单里，整条命令被当成写操作。
+    assert_eq!(
+        classify_shell("nl -ba /etc/nginx/conf.d/ehs-web.conf | sed -n '30,80p'"),
+        ToolRisk::Read
+    );
+    // `curl -D -` 是把响应头打到 stdout，没有写文件。
+    assert_eq!(
+        classify_shell("curl -s -o /dev/null -D - -m 10 https://example.com/ 2>&1 | head -n 12"),
+        ToolRisk::Read
+    );
 }
 
 #[test]
@@ -737,7 +798,7 @@ fn changed_directory_is_reported_back() {
 mod budget_tests {
     use serde_json::{json, Value};
 
-    use crate::agent::runner::{estimate_tokens, prune_conversation};
+    use super::super::runner::{estimate_tokens, prune_conversation};
 
     fn conversation() -> Vec<serde_json::Value> {
         vec![
@@ -994,8 +1055,9 @@ mod budget_tests {
  * 行为段只写"怎么做"，权限与审批完全不受影响（这里用 ToolRisk 与常量锁住）。
  */
 mod thinking_tests {
-    use crate::agent::protocol::{
-        intent_guidance, thinking_guidance, Lang, ToolRisk, MAX_ROUNDS,
+    use super::super::protocol::{
+        intent_guidance, reply_language_rule, thinking_guidance, tool_prompt, Lang, ToolRisk,
+        MAX_ROUNDS,
     };
 
     #[test]
@@ -1047,13 +1109,18 @@ mod thinking_tests {
         }
         for text in [
             intent_guidance(Lang::En),
-            crate::agent::protocol::tool_prompt(Lang::En),
+            tool_prompt(Lang::En),
+            reply_language_rule(Lang::En),
         ] {
             assert!(
                 !text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
                 "英文段里不能有中文"
             );
         }
+        assert!(reply_language_rule(Lang::En).contains("English only"));
+        let zh = reply_language_rule(Lang::Zh);
+        assert!(zh.contains("只用简体中文"));
+        assert!(zh.contains("不要中英混写"));
         // 语言判定：`en` / `en-US` 走英文，其余（含未传）走中文。
         assert_eq!(Lang::from_locale(Some("en")), Lang::En);
         assert_eq!(Lang::from_locale(Some("en-US")), Lang::En);
@@ -1089,12 +1156,12 @@ mod loop_tests {
     use serde_json::Value;
     use tokio::sync::mpsc::UnboundedSender;
 
-    use super::*;
-    use crate::agent::protocol::AgentEvent;
-    use crate::agent::runner::{
+    use super::super::protocol::{AgentEvent, Lang};
+    use super::super::runner::{
         evaluate_outcome, is_query_only, run_loop, AgentIo, IoFuture, StopReason,
     };
-    use crate::agent::state::{AgentHandle, AgentSnapshot};
+    use super::super::state::{AgentHandle, AgentSnapshot};
+    use super::*;
     use crate::agent::TokenUsage;
     use crate::agent::{AgentInput, AgentTurn};
     use crate::deployment::ai::model::AiCancel;
@@ -1436,7 +1503,7 @@ mod loop_tests {
             outcome_step(0, "read", "success", "cat /etc/nginx/nginx.conf"),
             outcome_step(1, "write", "success", "systemctl restart nginx"),
         ];
-        let outcome = evaluate_outcome(&steps, false).unwrap();
+        let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("没有只读验证"));
         assert!(outcome
@@ -1451,14 +1518,14 @@ mod loop_tests {
             outcome_step(0, "write", "success", "systemctl restart nginx"),
             outcome_step(1, "read", "success", "systemctl status nginx"),
         ];
-        let outcome = evaluate_outcome(&steps, false).unwrap();
+        let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "verified");
         assert!(outcome.evidence.iter().any(|item| item.contains("status")));
     }
 
     #[test]
     fn a_query_without_any_step_has_no_server_evidence() {
-        let outcome = evaluate_outcome(&[], true).unwrap();
+        let outcome = evaluate_outcome(&[], true, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "needs_info");
         assert!(outcome.reason.contains("没有执行任何只读检查"));
     }
@@ -1469,7 +1536,7 @@ mod loop_tests {
             outcome_step(0, "read", "success", "docker ps"),
             outcome_step(1, "read", "failed", "docker inspect ops-web"),
         ];
-        let outcome = evaluate_outcome(&steps, false).unwrap();
+        let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("最后一次失败"));
     }
@@ -1875,7 +1942,7 @@ mod loop_tests {
         let (deadline, resolved) = observed.await.unwrap();
         assert!(resolved);
 
-        let span = (crate::agent::protocol::APPROVAL_SECONDS as i64) * 1000;
+        let span = (super::super::protocol::APPROVAL_SECONDS as i64) * 1000;
         assert!(deadline >= before + span, "deadline 早于挂起时刻 + 5min");
         assert!(
             deadline <= crate::db::AppDb::now() + span,

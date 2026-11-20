@@ -1,5 +1,6 @@
 import { ThoughtChain } from "@ant-design/x";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import type { DeployStep } from "./deploy-plan";
 
@@ -61,7 +62,17 @@ export function TaskSteps({ steps }: { steps: DeployStep[] }) {
       line="solid"
       items={groupSteps(steps).map(({ step, repeat }) => ({
         key: step.id,
-        title: repeat > 1 ? `${t(step.title)} ×${repeat}` : t(step.title),
+        title: (
+          <span
+            className={cn(
+              "relative inline-block max-w-full overflow-hidden truncate rounded-[4px] align-baseline",
+              // 当前步骤扫光：一眼看出"正在刷新的是这一步"，不是整列一起动。
+              step.state === "running" && "extreme-step-sweep",
+            )}
+          >
+            {repeat > 1 ? `${t(step.title)} ×${repeat}` : t(step.title)}
+          </span>
+        ),
         description: step.detail,
         status: STEP_STATUS[step.state],
         collapsible: Boolean(

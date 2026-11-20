@@ -25,6 +25,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "@/components/icons";
 import { cn } from "@/lib/cn";
+import { Tooltip } from "./tooltip";
 import { CONTROL_HEIGHT, CONTROL_TEXT, controlBase, type ControlSize } from "./input";
 import { OVERLAY_Z, useOverlayLayer } from "./overlay";
 
@@ -376,6 +377,9 @@ export function Select({
 
   return (
     <div ref={rootRef} className={cn("relative min-w-0", className)}>
+      <Tooltip
+        label={iconOnly ? (title ?? selected?.label ?? ariaLabel ?? "") : undefined}
+      >
       <button
         ref={buttonRef}
         type="button"
@@ -387,7 +391,6 @@ export function Select({
         aria-controls={open ? listId : undefined}
         aria-label={ariaLabel}
         aria-invalid={invalid || undefined}
-        title={title ?? selected?.label}
         className={cn(
           variant === "menu"
             ? cn(
@@ -455,6 +458,7 @@ export function Select({
           </>
         )}
       </button>
+      </Tooltip>
 
       {menu ? createPortal(menu, document.body) : null}
     </div>

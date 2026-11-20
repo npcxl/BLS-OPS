@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import type { ExtremeAttachment, ExtremeMessage } from "@/stores/extreme-store";
 import {
   historyFor,
@@ -24,6 +25,18 @@ const attachment = (patch: Partial<ExtremeAttachment> & { id: string }): Extreme
     state: "ready",
     ...patch,
   }) as ExtremeAttachment;
+
+/*
+ * 这些用例断言的是中文提示词的具体措辞；测试环境默认英文（i18n 在 test 模式
+ * 固定 en），不切语言会把"英文实现正确"误判成失败。英文分支另有 UI 用例覆盖。
+ */
+const originalLanguage = i18n.language;
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
+});
+afterAll(async () => {
+  await i18n.changeLanguage(originalLanguage);
+});
 
 describe("上下文范围", () => {
   const history = [

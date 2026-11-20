@@ -1239,6 +1239,9 @@ export const opsApi = {
   aiProviderSetDefault: (id: string) => invoke<void>("ai_provider_set_default", { id }),
   /** 连接测试：只回状态 / 耗时 / 脱敏错误。 */
   aiProviderTest: (id: string) => invoke<AiProviderTestResult>("ai_provider_test", { id }),
+  /** 未保存配置的连接测试：表单里先测再存，不落库、不写钥匙串。 */
+  aiProviderTestDraft: (request: AiProviderSaveRequest) =>
+    invoke<AiProviderTestResult>("ai_provider_test_draft", { request }),
   /**
    * 超能模式的对话入口：走**默认** AI 提供方（Key 由后端从钥匙串读）。
    *
@@ -1353,6 +1356,25 @@ export const opsApi = {
       workspaceId: workspaceId ?? null,
       taskId: taskId ?? null,
     }),
+  /**
+   * 登记一条变更（计划执行器 / 手工写入用）。
+   *
+   * Agent 的 `write_file` 有前后回读；计划里的上传由前端知道目标与正文，
+   * 把 `before` / `after` 交回来即可生成同样的 Diff。
+   */
+  aiAgentFileChangeRecord: (request: {
+    taskId: string;
+    workspaceId?: string | null;
+    server: string;
+    serverId?: string | null;
+    tool?: string;
+    path: string;
+    before?: string | null;
+    after?: string | null;
+    status?: string;
+    note?: string | null;
+    stepIndex?: number;
+  }) => invoke<FileChangeSummary>("agent_file_change_record", { request }),
   /** 取一条变更的实际 Diff（用的是记录当时保存的快照，不随服务器再变）。 */
   aiAgentFileChangeDetail: (changeId: string) =>
     invoke<FileChangeDetail>("agent_file_change_detail", { changeId }),

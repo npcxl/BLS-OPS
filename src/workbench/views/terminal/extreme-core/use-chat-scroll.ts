@@ -9,10 +9,21 @@
  * 这里把这件事收成一处：真实输入 → 关闭跟随；`scroll` → 只在"用户已经回到
  * 底部"时重新打开；同一帧的多次贴底请求合并成一次写入。
  */
-import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 /** 用户自己滚到距底这么多像素以内，算"回到最新"（只在用户滚动时判定）。 */
 const NEAR_BOTTOM = 24;
+
+/**
+ * 自动跟随的**最小内容增量**（px）。
+ *
+ * 流式输出时每个 token 都会让内容长高几像素，如果每帧都贴底，滚动条会一直
+ * 高频抖动、阅读也晃。攒够这个高度再滚一次；停止增长后再补一次收尾。
+ */
+const FOLLOW_STEP = 28;
+
+/** 内容停止增长后，最多等这么久把最后一段补齐（ms）。 */
+const SETTLE_MS = 150;
 
 const UP_KEYS = new Set(["PageUp", "Home", "ArrowUp"]);
 
@@ -25,6 +36,10 @@ export interface ChatScroll {
   follow: () => void;
   /** 还原到某个阅读位置：这次写入不算用户滚动，也顺带关掉跟随。 */
   restore: (top: number) => void;
+  /** 当前是否在底部（滚到最下面按钮据此显隐）。 */
+  atBottom: boolean;
+  /** 用户点「滚到最下面」：恢复跟随并直接落到底。 */
+  scrollToBottom: () => void;
 }
 
 export function useChatScroll(enabled: boolean): ChatScroll {
@@ -32,6 +47,19 @@ export function useChatScroll(enabled: boolean): ChatScroll {
   const stick = useRef(true);
   const previousTop = useRef(0);
   const frame = useRef<number | null>(null);
+  /** 上一次真正贴底时的 scrollHeight：用来判断"又长高了多少"。 */
+  const lastBottom = useRef(0);
+  /** 内容增长不足一步时，等它停下来的收尾定时器。 */
+  const settle = useRef<number | null>(null);
+  /** 是否在底部：滚到最下面的按钮据此显隐。 */
+  const [atBottom, setAtBottom] = useState(true);
+
+  const syncAtBottom = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+    const next = node.scrollHeight - node.scrollTop - node.clientHeight < NEAR_BOTTOM;
+    setAtBottom((previous) => (previous === next ? previous : next));
+  }, []);
 
   const writeTop = useCallback((top: number) => {
     const node = ref.current;
@@ -39,6 +67,15 @@ export function useChatScroll(enabled: boolean): ChatScroll {
     const next = Math.max(0, Math.min(top, node.scrollHeight - node.clientHeight));
     if (Math.abs(node.scrollTop - next) >= 1) node.scrollTop = next;
     previousTop.current = node.scrollTop;
+    syncAtBottom();
+  }, [syncAtBottom]);
+
+  /** 取消"攒够再贴底"的收尾定时器。 */
+  const clearSettle = useCallback(() => {
+    if (settle.current !== null) {
+      window.clearTimeout(settle.current);
+      settle.current = null;
+    }
   }, []);
 
   const follow = useCallback(() => {
@@ -47,9 +84,31 @@ export function useChatScroll(enabled: boolean): ChatScroll {
       frame.current = null;
       if (!stick.current) return;
       const node = ref.current;
-      if (node) writeTop(node.scrollHeight);
+      if (!node) return;
+      const bottom = node.scrollHeight;
+      const grew = bottom - lastBottom.current;
+      /*
+       * 小幅增长（流式 token）：先不滚，攒够 `FOLLOW_STEP` 再动；
+       * 内容停下来后由 `SETTLE_MS` 的定时器补最后一次，保证最终确实在底部。
+       */
+      if (grew > 0 && grew < FOLLOW_STEP) {
+        if (settle.current === null) {
+          settle.current = window.setTimeout(() => {
+            settle.current = null;
+            if (!stick.current) return;
+            const current = ref.current;
+            if (!current) return;
+            lastBottom.current = current.scrollHeight;
+            writeTop(current.scrollHeight);
+          }, SETTLE_MS);
+        }
+        return;
+      }
+      clearSettle();
+      lastBottom.current = bottom;
+      writeTop(bottom);
     });
-  }, [writeTop]);
+  }, [clearSettle, writeTop]);
 
   const restore = useCallback(
     (top: number) => {
@@ -64,6 +123,9 @@ export function useChatScroll(enabled: boolean): ChatScroll {
     const node = ref.current;
     if (!node) return undefined;
     previousTop.current = node.scrollTop;
+    lastBottom.current = node.scrollHeight;
+    syncAtBottom();
+    clearSettle();
 
     /** 用户主动离开底部：立刻停止跟随（不等到下一次 `scroll`）。 */
     const release = () => {
@@ -95,6 +157,7 @@ export function useChatScroll(enabled: boolean): ChatScroll {
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
       if (gap < NEAR_BOTTOM) stick.current = true;
       else if (movedUp) release();
+      syncAtBottom();
     };
 
     node.addEventListener("wheel", onWheel, { passive: true });
@@ -107,6 +170,7 @@ export function useChatScroll(enabled: boolean): ChatScroll {
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(() => {
         if (stick.current) follow();
+        syncAtBottom();
       });
       /*
        * 两个方向都要盯：
@@ -126,17 +190,28 @@ export function useChatScroll(enabled: boolean): ChatScroll {
       node.removeEventListener("keydown", onKeyDown);
       node.removeEventListener("scroll", onScroll);
       observer?.disconnect();
+      clearSettle();
     };
-  }, [enabled, follow]);
+  }, [clearSettle, enabled, follow, syncAtBottom]);
+
+  const scrollToBottom = useCallback(() => {
+    stick.current = true;
+    const node = ref.current;
+    if (!node) return;
+    clearSettle();
+    lastBottom.current = node.scrollHeight;
+    writeTop(node.scrollHeight);
+  }, [clearSettle, writeTop]);
 
   // 卸载：还没跑的那一帧取消掉，别往已经不在的容器里写。
   useEffect(
     () => () => {
       if (frame.current !== null) cancelAnimationFrame(frame.current);
       frame.current = null;
+      clearSettle();
     },
-    [],
+    [clearSettle],
   );
 
-  return { ref, stick, follow, restore };
+  return { ref, stick, follow, restore, atBottom, scrollToBottom };
 }

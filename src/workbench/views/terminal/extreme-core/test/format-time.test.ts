@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatTime, dayTime, previewSnippet, validTime } from "../format-time";
+import { chatTime, dayTime, durationText, previewSnippet, validTime } from "../format-time";
 
 /**
  * 时间展示是纯函数：固定 now，断言今天/昨天/更早三档与无效值兜底。
@@ -50,6 +50,26 @@ describe("validTime", () => {
     expect(validTime(0)).toBe(false);
     expect(validTime(-5)).toBe(false);
     expect(validTime(Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+describe("durationText（执行耗时）", () => {
+  it("秒级只给秒，四舍五入且至少 1 秒", () => {
+    expect(durationText(400, t)).toBe('{{n}} 秒:{"n":1}');
+    expect(durationText(12_400, t)).toBe('{{n}} 秒:{"n":12}');
+  });
+  it("分钟级带秒；整分钟不带 0 秒", () => {
+    expect(durationText(65_000, t)).toBe('{{m}} 分 {{s}} 秒:{"m":1,"s":5}');
+    expect(durationText(120_000, t)).toBe('{{m}} 分钟:{"m":2}');
+  });
+  it("小时级带分钟", () => {
+    expect(durationText(3_600_000, t)).toBe('{{h}} 小时:{"h":1}');
+    expect(durationText(7_800_000, t)).toBe('{{h}} 小时 {{m}} 分:{"h":2,"m":10}');
+  });
+  it("无效 / 非正数返回空串（界面不显示）", () => {
+    expect(durationText(0, t)).toBe("");
+    expect(durationText(-1, t)).toBe("");
+    expect(durationText(Number.NaN, t)).toBe("");
   });
 });
 

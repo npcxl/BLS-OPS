@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import {
   TOOL_PROBE_COMMAND,
   describeDnsVerdict,
@@ -8,6 +9,15 @@ import {
   renderEnvironmentReport,
   summarizeProjectTree,
 } from "../extreme-core/environment";
+
+// 环境报告按界面语言生成；这些用例断言的是中文措辞，测试环境默认英文。
+const originalLanguage = i18n.language;
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
+});
+afterAll(async () => {
+  await i18n.changeLanguage(originalLanguage);
+});
 
 describe("工具探测", () => {
   it("一次命令覆盖常见工具，且用 command -v（最小化镜像里没有 which）", () => {

@@ -17,6 +17,7 @@ const saveMock = vi.fn();
 const deleteMock = vi.fn();
 const setDefaultMock = vi.fn();
 const testMock = vi.fn();
+const testDraftMock = vi.fn();
 
 vi.mock("@/api/ops-api", () => ({
   toErrorMessage: (cause: unknown) => String(cause),
@@ -27,6 +28,7 @@ vi.mock("@/api/ops-api", () => ({
     aiProviderDelete: (...args: unknown[]) => deleteMock(...args),
     aiProviderSetDefault: (...args: unknown[]) => setDefaultMock(...args),
     aiProviderTest: (...args: unknown[]) => testMock(...args),
+    aiProviderTestDraft: (...args: unknown[]) => testDraftMock(...args),
   },
 }));
 
@@ -147,6 +149,86 @@ describe("设置页 AI 模型", () => {
         base_url: "http://127.0.0.1:1234/v1",
         model: "qwen",
         api_key: "sk-secret-value",
+      }),
+    );
+  });
+
+  it("预设：填一个 Key 就能保存，地址 / 模型 / 上下文 / 思考强度自动带入", async () => {
+    listMock.mockResolvedValue([]);
+    saveMock.mockResolvedValue(provider());
+    await render(<AiProviderSettings />);
+
+    await act(async () => {
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      await tick();
+    });
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="preset-deepseek"]').click();
+      await tick();
+    });
+
+    expect(q<HTMLInputElement>('[data-testid="provider-name"]').value).toBe("DeepSeek");
+    expect(q<HTMLInputElement>('[data-testid="provider-base-url"]').value).toBe(
+      "https://api.deepseek.com/v1",
+    );
+    expect(q<HTMLInputElement>('[data-testid="provider-model"]').value).toBe("deepseek-chat");
+
+    await setInput("provider-api-key", "sk-deepseek");
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="provider-save"]').click();
+      await tick();
+    });
+
+    expect(saveMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "DeepSeek",
+        base_url: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        api_key: "sk-deepseek",
+        context_window: 1024 * 1024,
+        context_budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+        reasoning_efforts: ["low", "high", "max"],
+      }),
+    );
+  });
+
+  it("保存前先测连通性：用草稿参数请求，不触发保存", async () => {
+    listMock.mockResolvedValue([]);
+    testDraftMock.mockResolvedValue({
+      ok: true,
+      latency_ms: 12,
+      attempts: 1,
+      message: "ok",
+    });
+    await render(<AiProviderSettings />);
+
+    await act(async () => {
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      await tick();
+    });
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="preset-deepseek"]').click();
+      await tick();
+    });
+    await setInput("provider-api-key", "sk-draft");
+
+    await act(async () => {
+      q<HTMLButtonElement>('[data-testid="provider-test-draft"]').click();
+      await tick();
+    });
+
+    expect(testDraftMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_url: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        api_key: "sk-draft",
+      }),
+    );
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(text()).toContain(
+      i18n.t("Connection OK ({{ms}} ms, {{attempts}} attempt(s))", {
+        ms: 12,
+        attempts: 1,
       }),
     );
   });

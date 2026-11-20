@@ -270,6 +270,82 @@ pub async fn ai_provider_test(
     Ok(result)
 }
 
+/// **未保存配置**的连接测试。
+///
+/// 表单里先测再存，不能因为"还没保存"就没有 id / 钥匙串条目。明文 Key 只在
+/// 这次请求的内存里用一次：**不落库、不写钥匙串、不写审计**。编辑已有提供方
+/// 时 Key 留空，则临时读一次已保存的 Key（仍然不回传给前端）。
+#[tauri::command]
+pub async fn ai_provider_test_draft(
+    state: State<'_, AppState>,
+    request: AiProviderSaveRequest,
+) -> OpsResult<AiProviderTestResult> {
+    let base_url = url::validate_base_url(
+        &request.base_url,
+        url::BaseUrlPolicy {
+            allow_insecure_http: request.allow_insecure_http,
+        },
+    )
+    .map_err(|error| invalid(error.user_message()))?;
+    if request.model.trim().is_empty() {
+        return Err(invalid("模型名不能为空"));
+    }
+
+    let api_key = match request
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        Some(key) => key.to_string(),
+        None => {
+            let id = request
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| invalid("测试前请先填写 API Key"))?;
+            let conn = state.db.open().map_err(store_error)?;
+            let existing = db::get_provider(&conn, id)
+                .map_err(store_error)?
+                .ok_or_else(|| invalid("提供方不存在"))?;
+            crate::keyring::read_secret(&existing.keyring_account())
+                .map_err(|_| invalid("这个提供方还没有保存可用的 API Key"))?
+        }
+    };
+
+    let now = AppDb::now();
+    let config = AiProviderConfig {
+        id: request
+            .id
+            .clone()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| "draft".to_string()),
+        name: if request.name.trim().is_empty() {
+            "draft".to_string()
+        } else {
+            request.name.clone()
+        },
+        provider_kind: request.provider_kind,
+        base_url,
+        model: request.model.clone(),
+        api_key_ref: None,
+        enabled: true,
+        is_default: false,
+        allow_insecure_http: request.allow_insecure_http,
+        timeout_seconds: request.timeout_seconds,
+        max_output_tokens: request.max_output_tokens,
+        context_window: request.context_window,
+        context_budgets: request.context_budgets.clone(),
+        reasoning_efforts: request.reasoning_efforts.clone(),
+        created_at: now,
+        updated_at: now,
+    };
+    let advisor =
+        OpenAiCompatibleAdvisor::new(config, api_key).map_err(|error| error.user_message())?;
+    Ok(advisor.test_connection().await)
+}
+
 /// 一轮对话消息（只带角色与文本，前端不可能传别的）。
 #[derive(Debug, serde::Deserialize)]
 pub struct ChatTurn {

@@ -490,11 +490,8 @@ mod tests {
         let handle = registry.register(snapshot(), AiCancel::new()).unwrap();
         // 超过总时长上限没有任何进展：循环已经不可能还在跑。
         // 直接改快照字段（`update` 会把 updated_at 刷新成"现在"）。
-        handle
-            .snapshot
-            .lock()
-            .unwrap()
-            .updated_at = crate::db::AppDb::now() - STALE_AFTER_MS - 1000;
+        handle.snapshot.lock().unwrap().updated_at =
+            crate::db::AppDb::now() - STALE_AFTER_MS - 1000;
         let reaped = registry.snapshot("task-1").unwrap();
         assert_eq!(reaped.status, "failed");
         assert!(reaped.error.unwrap().contains("失联"));

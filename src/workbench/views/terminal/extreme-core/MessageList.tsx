@@ -1,5 +1,3 @@
-import { Actions } from "@ant-design/x";
-import type { ActionsProps } from "@ant-design/x";
 import { XMarkdown } from "@ant-design/x-markdown";
 import {
   memo,
@@ -13,6 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Copy, FileArchive, Pencil, Quote } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { formatSize } from "@/lib/format";
@@ -25,6 +24,7 @@ import { TaskCardView } from "./TaskCardView";
 import type { TaskArtifact, TaskCardModel } from "./task-view";
 import type { WorkspaceTarget } from "./RemoteWorkspacePanel";
 import { RemotePathLink, type OpenTarget } from "./RemotePathLink";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 
 /**
  * **已定稿**的那半段 Markdown。
@@ -231,18 +231,19 @@ function ReplyCodeBlock({ children }: { children?: ReactNode }) {
 
   return (
     <div className="extreme-core-reply-code">
-      <button
-        type="button"
-        className="extreme-core-reply-copy"
-        title={t("复制代码")}
-        aria-label={t("复制代码")}
-        onClick={() => {
-          const text = codeRef.current?.textContent;
-          if (text) void copyTextWithFeedback(text);
-        }}
-      >
-        <Copy size={14} />
-      </button>
+      <Tooltip label={t("复制代码")}>
+        <button
+          type="button"
+          className="extreme-core-reply-copy"
+          aria-label={t("复制代码")}
+          onClick={() => {
+            const text = codeRef.current?.textContent;
+            if (text) void copyTextWithFeedback(text);
+          }}
+        >
+          <Copy size={14} />
+        </button>
+      </Tooltip>
       <pre ref={codeRef}>{children}</pre>
     </div>
   );
@@ -336,11 +337,9 @@ const MessageRow = memo(function MessageRow({
   // 还没有任何正文：给一个轻量占位，避免气泡突然出现又跳高度。
   const waiting = !mine && message.text === "";
   /*
-   * 气泡下的操作条：照 antd X `Bubble` footer 的做法，用 `Actions`。
-   *
-   * 模型的回复可以「复制 / 引用」，自己发的可以「复制 / 编辑」；占位气泡
-   * 还没有正文，不给按钮。复制走项目的剪贴板插件（WebView 的
-   * `navigator.clipboard` 会弹系统授权），失败会有一条提示，不会假装成功。
+   * 气泡下的操作条：统一用项目的 `ExtremeIconButton` + `Tooltip`：
+   * 模型回复「复制 / 引用」，自己发的「复制 / 编辑」；占位气泡没有正文，
+   * 不给按钮。复制走项目剪贴板插件，失败会提示，不会假装成功。
    */
   const canAct = !waiting && !streaming && message.text.trim().length > 0;
   /**
@@ -373,39 +372,6 @@ const MessageRow = memo(function MessageRow({
         uploadState: item.uploadState,
       }));
   }, [message.attachmentSnapshot, message.attachmentIds, attachmentById]);
-  const copyItem = {
-    key: "copy",
-    label: t("复制"),
-    icon: <Copy size={13} />,
-    onItemClick: () => void copyTextWithFeedback(message.text),
-  };
-  const actions: ActionsProps["items"] = mine
-    ? [
-        copyItem,
-        {
-          key: "edit",
-          label: t("编辑"),
-          icon: <Pencil size={13} />,
-          onItemClick: () => onEdit?.(message),
-        },
-      ]
-    : [
-        copyItem,
-        /*
-         * 本机提示（"已生成 3 个步骤…"）也是 assistant，但它不是模型
-         * 的回复：只能复制，没有可供追问的原文。
-         */
-        ...(message.local
-          ? []
-          : [
-              {
-                key: "quote",
-                label: t("引用"),
-                icon: <Quote size={13} />,
-                onItemClick: () => onQuote?.(message),
-              },
-            ]),
-      ];
 
   return (
     <div
@@ -537,7 +503,28 @@ const MessageRow = memo(function MessageRow({
             {chatTime(message.createdAt, t)}
           </span>
         )}
-        {canAct && <Actions className="extreme-core-actions" items={actions} />}
+        {canAct && (
+          <div className="extreme-core-actions flex items-center gap-0.5">
+            <ExtremeIconButton
+              label={t("复制")}
+              icon={Copy}
+              onClick={() => void copyTextWithFeedback(message.text)}
+            />
+            {mine ? (
+              <ExtremeIconButton
+                label={t("编辑")}
+                icon={Pencil}
+                onClick={() => onEdit?.(message)}
+              />
+            ) : message.local ? null : (
+              <ExtremeIconButton
+                label={t("引用")}
+                icon={Quote}
+                onClick={() => onQuote?.(message)}
+              />
+            )}
+          </div>
+        )}
       </div>}
       {task && (
         isAgentActivity(task)
@@ -677,6 +664,32 @@ export const MessageList = memo(function MessageList({
   /** 没有对应消息的任务（例如直接由按钮发起）统一排在对话末尾。 */
   const orphans = Object.values(tasks).filter((task) => !linked.has(task.id));
 
+  /*
+   * 末尾的「仍在执行」：任务在跑、正文却已经写了一轮时，界面上最容易误判成
+   * "跑完了" —— 顶部活动块离得远，最后一段表格/结论看上去就是收尾。
+   *
+   * 只有当末尾那条消息自己会渲染「正在回答…」（未吐字的占位气泡）时才不加，
+   * 避免同一句提示出现两遍。占位气泡被"紧跟活动块"规则隐藏时，这里必须补上。
+   */
+  const lastMessage = messages[messages.length - 1];
+  const previousTaskId = messages[messages.length - 2]?.taskId;
+  const previousTask = previousTaskId ? tasks[previousTaskId] : undefined;
+  const lastPlaceholder = Boolean(
+    lastMessage && lastMessage.role !== "user" && lastMessage.text === "",
+  );
+  const lastHidden =
+    lastPlaceholder && Boolean(previousTask && isAgentActivity(previousTask));
+  /** 还在跑的那条任务：文案用它区分"在调工具"和"在等模型"。 */
+  const liveTask = Object.values(tasks).find(
+    (task) =>
+      task.status === "running" || task.status === "waiting" || task.status === "confirming",
+  );
+  /*
+   * 后台跑着的任务同样要提示：切走再回来时 `asking` 已经是 false，但卡片
+   * 还在"正在使用工具"，正文底部不能看起来像结束了。
+   */
+  const showLive = (asking || Boolean(liveTask)) && !(lastPlaceholder && !lastHidden);
+
   return (
     <>
       <div className="extreme-core-messages">
@@ -730,12 +743,13 @@ export const MessageList = memo(function MessageList({
             />
           </div>
         ))}
+        {showLive && (
+          <div className="extreme-core-reply-wait" role="status" data-testid="extreme-run-live">
+            <span aria-hidden="true" />
+            {liveTask ? t("仍在执行…") : t("正在回答…")}
+          </div>
+        )}
       </div>
-      {asking && messages.every((message) => message.role === "user" && !message.taskId) && (
-        <div className="px-1 py-1 text-11" style={{ color: EC.fgSubtle }}>
-          {t("正在回答…")}
-        </div>
-      )}
     </>
   );
 });

@@ -325,12 +325,23 @@ export function WorkbenchHome() {
                 onClick={openExtremeMode}
                 // 与旁边两个 size="sm" 按钮同一行高；官方 sm 的 10/20 内边距太胖。
                 className="!h-7 !px-3 !py-0 !text-12 !font-medium"
-                tint={isDark ? "#0b1220" : "#ffffff"}
-                tintOpacity={0.9}
-                textColor={isDark ? "#f8fafc" : "#0f172a"}
-                // 深色靠白线条扫边，浅色反过来用墨色线条，不然白线上白底全看不见。
-                lineColor={isDark ? "#ffffff" : "#0b1220"}
-                baseColor={isDark ? "#334155" : "#94a3b8"}
+                tint={isDark ? "#0b1220" : "transparent"}
+                tintOpacity={isDark ? 0.9 : 0}
+                textColor={isDark ? "#f8fafc" : "#1e3a8a"}
+                // 深色靠白线条扫边；浅色改用浅蓝线条，压在渐变浅底上仍然可见。
+                lineColor={isDark ? "#ffffff" : "#8bbcff"}
+                baseColor={isDark ? "#334155" : "#c7ddff"}
+                // 浅色模式用浅蓝→浅紫的渐变底，不再是纯白块。
+                style={
+                  isDark
+                    ? undefined
+                    : {
+                        background:
+                          "linear-gradient(135deg, #ffffff 0%, #e8f2ff 44%, #e7e2ff 100%)",
+                        boxShadow:
+                          "0 10px 24px -16px rgb(59 130 246 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.95)",
+                      }
+                }
                 intensity={1.15}
                 shineSize={14}
                 shineFade={30}

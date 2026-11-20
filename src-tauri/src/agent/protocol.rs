@@ -822,6 +822,30 @@ fn intent_guidance_en() -> &'static str {
 "#
 }
 
+/// 回复语言的**最后一道约束**。
+///
+/// 放在整段系统提示词的最末尾：前面的平台说明、工具输出、错误原文都可能带
+/// 中英混杂（命令、路径、代码本来也不该翻译），模型很容易跟着最显眼的语言走。
+/// 这一条明确区分"可以保留原文的东西"和"必须用界面语言写的东西"。
+pub fn reply_language_rule(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => {
+            r#"
+【回复语言：只用简体中文】
+无论工具输出、报错原文、文档或代码注释是什么语言，所有解释、结论与下一步建议**必须全部用简体中文**。
+命令、路径、代码、配置键名与原始报错可以保留原文；**不要中英混写**，也不要把整段回答换成英文。
+"#
+        }
+        Lang::En => {
+            r#"
+[Reply language: English only]
+Every explanation, conclusion and next step **must be written in English only**, regardless of the language of tool output, raw errors, documentation or code comments.
+Commands, paths, code, config keys and raw error text may stay as-is; **do not mix Chinese into the reply**, and do not switch the whole answer to another language.
+"#
+        }
+    }
+}
+
 /// 给模型的工具说明（由后端追加，**工具集只有这一份事实**）。
 pub fn tool_prompt(lang: Lang) -> &'static str {
     match lang {

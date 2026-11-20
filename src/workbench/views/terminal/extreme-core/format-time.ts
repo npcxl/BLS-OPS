@@ -51,6 +51,30 @@ export function chatTime(ts: number | undefined, t: Translate, now = Date.now())
   return `${dateOf(date)} ${clock}`;
 }
 
+/**
+ * 执行耗时：`12 秒` / `1 分 05 秒` / `2 小时 10 分`。
+ *
+ * 只用于**已结束**的任务：执行中显示耗时会每秒重渲染整张卡，收益也不大。
+ * 小于 1 秒也明确写「不到 1 秒」，不显示 `0 秒`（那看起来像没执行）。
+ */
+export function durationText(ms: number, t: Translate): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return t("{{n}} 秒", { n: seconds });
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) {
+    return rest > 0
+      ? t("{{m}} 分 {{s}} 秒", { m: minutes, s: rest })
+      : t("{{m}} 分钟", { m: minutes });
+  }
+  const hours = Math.floor(minutes / 60);
+  const remain = minutes % 60;
+  return remain > 0
+    ? t("{{h}} 小时 {{m}} 分", { h: hours, m: remain })
+    : t("{{h}} 小时", { h: hours });
+}
+
 /** 预览卡：今天 `今天 14:01`；昨天 `昨天 14:01`；更早 `2026/11/16 14:01`。 */
 export function dayTime(ts: number | undefined, t: Translate, now = Date.now()): string {
   if (!validTime(ts)) return "";

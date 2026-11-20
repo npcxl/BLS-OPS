@@ -434,6 +434,7 @@ pub fn run() {
             commands::ai_provider_delete,
             commands::ai_provider_set_default,
             commands::ai_provider_test,
+            commands::ai_provider_test_draft,
             commands::ai_chat,
             commands::ai_chat_stream,
             commands::ai_chat_agent,
@@ -448,6 +449,7 @@ pub fn run() {
             commands::agent_abandon,
             // 文件变更审阅：列表只给摘要，Diff 正文按需加载
             commands::agent_file_changes,
+            commands::agent_file_change_record,
             commands::agent_file_change_detail,
             commands::extreme_task_save,
             // ---- 极核：实时日志（独立于问答任务的 SSH 长连接） ----

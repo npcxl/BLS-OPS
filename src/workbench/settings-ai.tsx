@@ -13,11 +13,16 @@
  *
  * 由 Rust 侧发一次最小请求，只回状态 / 耗时 / 脱敏错误 / 真实尝试次数。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Check, ChevronRight, PlugZap, Plus, Trash2 } from "@/components/icons";
+import { Check, ChevronRight, PlugZap, Plus, Trash2 } from "@/components/icons";
 
-import { opsApi, type AiProviderTestResult, type AiProviderView } from "@/api/ops-api";
+import {
+  opsApi,
+  type AiProviderSaveRequest,
+  type AiProviderTestResult,
+  type AiProviderView,
+} from "@/api/ops-api";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
@@ -75,15 +80,116 @@ const EFFORT_PRESETS: { value: string; label: string }[] = [
 ];
 
 /**
- * 上下文档位预设：只用供应商真实声明的三个档，用户点选即可。
+ * 上下文档位预设：覆盖常见窗口档，用户点选即可。
+ *
+ * 预设会把自己用到的档位填进来；这里必须列全，否则"已选中但界面上没有
+ * 对应胶囊"，用户既看不见也改不掉。
  *
  * 不提供"自己填 token 数"：填错一位（300000 而不是 307200）会让请求在窗口
  * 边缘被服务端拒绝，而且菜单上写 300K、请求里是 300000 也说不清。
  */
 const BUDGET_PRESETS: { tokens: number; label: string }[] = [
+  { tokens: 64 * 1024, label: "64K" },
+  { tokens: 128 * 1024, label: "128K" },
+  { tokens: 200 * 1024, label: "200K" },
+  { tokens: 256 * 1024, label: "256K" },
   { tokens: 300 * 1024, label: "300K" },
+  { tokens: 400 * 1024, label: "400K" },
   { tokens: 600 * 1024, label: "600K" },
   { tokens: 1024 * 1024, label: "1M" },
+];
+
+/**
+ * 常用模型预设。
+ *
+ * **名字里不写版本号**：版本一个月一变，写死就会立刻过时；模型 ID 用各家
+ * 的 latest 别名或当前版本，用户也能直接改。列表只是"少填几个字段"，
+ * 不是能力承诺。
+ */
+type ModelPreset = {
+  id: string;
+  name: string;
+  hint: string;
+  base_url: string;
+  model: string;
+  efforts: string[];
+  budgets: number[];
+};
+
+const MODEL_PRESETS: ModelPreset[] = [
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    hint: "api.deepseek.com · latest chat alias",
+    base_url: "https://api.deepseek.com/v1",
+    // `deepseek-chat` 是官方跟随最新版的别名，不把 4.1 / 4.2 写进预设。
+    model: "deepseek-chat",
+    efforts: ["low", "high", "max"],
+    budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+  },
+  {
+    id: "deepseek-reasoner",
+    name: "DeepSeek Reasoner",
+    hint: "api.deepseek.com · latest reasoner alias",
+    base_url: "https://api.deepseek.com/v1",
+    model: "deepseek-reasoner",
+    efforts: ["low", "high", "max"],
+    budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+  },
+  {
+    id: "openai-gpt",
+    name: "OpenAI GPT",
+    hint: "api.openai.com · gpt-6",
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-6",
+    efforts: ["low", "medium", "high"],
+    budgets: [128 * 1024, 256 * 1024, 400 * 1024],
+  },
+  {
+    id: "qwen",
+    name: "Qwen",
+    hint: "DashScope compatible · qwen-max (latest alias)",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-max",
+    efforts: ["low", "medium", "high"],
+    budgets: [128 * 1024, 256 * 1024],
+  },
+  {
+    id: "glm",
+    name: "GLM",
+    hint: "open.bigmodel.cn · glm-5.3",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-5.3",
+    efforts: ["low", "medium", "high", "max"],
+    budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+  },
+  {
+    id: "glm-flash",
+    name: "GLM Flash",
+    hint: "open.bigmodel.cn · glm-5.3-flash",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-5.3-flash",
+    efforts: ["low", "medium", "high", "max"],
+    budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+  },
+  {
+    id: "kimi",
+    name: "Kimi",
+    hint: "api.moonshot.cn · kimi-k3.1-pro",
+    base_url: "https://api.moonshot.cn/v1",
+    model: "kimi-k3.1-pro",
+    efforts: ["low", "medium", "high", "max"],
+    budgets: [300 * 1024, 600 * 1024, 1024 * 1024],
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    hint: "openrouter.ai · latest DeepSeek alias",
+    base_url: "https://openrouter.ai/api/v1",
+    model: "deepseek/deepseek-chat",
+    efforts: ["low", "medium", "high"],
+    budgets: [64 * 1024, 128 * 1024],
+  },
 ];
 
 function emptyDraft(): Draft {
@@ -247,9 +353,6 @@ export function AiProviderSettings() {
                   className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                   onClick={() => setDraft(draftFrom(provider))}
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-surface-2 text-fg-subtle">
-                    <Bot size={13} />
-                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
                       <span className="truncate text-12 text-fg">{provider.name}</span>
@@ -416,55 +519,95 @@ function AiProviderForm({
 }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<AiProviderTestResult | null>(null);
   // 保存失败留在弹窗里（表单数据不丢），错误带阶段与恢复建议。
   const { error, fail, clear } = useActionError();
   const editing = draft.id !== null;
+  const apiKeyRef = useRef<HTMLInputElement | null>(null);
+  // 地址 / 模型 / Key 一变，上次测试结论就不再代表当前配置。
+  useEffect(() => {
+    setTestResult(null);
+  }, [draft.base_url, draft.model, draft.api_key, draft.allow_insecure_http]);
+  /** 当前字段正好等于哪个预设；手动改过地址/模型就自动回到 custom。 */
+  const activePreset =
+    MODEL_PRESETS.find(
+      (preset) => preset.base_url === draft.base_url && preset.model === draft.model,
+    )?.id ?? "custom";
+
+  const applyPreset = (preset: ModelPreset) => {
+    onChange({
+      ...draft,
+      name: preset.name,
+      base_url: preset.base_url,
+      model: preset.model,
+      // 预设把上下文与思考强度也填好；用户仍可在下面点选调整。
+      capabilityMode: "manual",
+      efforts: [...preset.efforts],
+      budgets: [...preset.budgets],
+    });
+    // 预设已把地址/模型填好，焦点直接落到唯一还要填的 Key 上。
+    requestAnimationFrame(() => apiKeyRef.current?.focus());
+  };
+
+  const useCustom = () => {
+    // 自定义只清空地址/模型/能力，不丢已经输入的 Key 与开关。
+    onChange({
+      ...emptyDraft(),
+      api_key: draft.api_key,
+      enabled: draft.enabled,
+      is_default: draft.is_default,
+    });
+  };
+
+  /** 保存与"先测一次"共用同一份请求体，避免两处校验漂移。 */
+  const buildRequest = (): AiProviderSaveRequest => ({
+    id: draft.id,
+    name: draft.name.trim(),
+    provider_kind: "openai_compatible",
+    base_url: draft.base_url.trim(),
+    model: draft.model.trim(),
+    // 空 = 保留原 Key（前端不回显，也不会读）。
+    api_key: draft.api_key.trim() ? draft.api_key : null,
+    enabled: draft.enabled,
+    is_default: draft.is_default,
+    allow_insecure_http: draft.allow_insecure_http,
+    timeout_seconds: draft.timeout_seconds,
+    max_output_tokens: draft.max_output_tokens,
+    /*
+     * 能力声明**只按当前模式**写：
+     * * 自动识别 —— 一律 `null`，交给内置表（未知模型保持未知）；
+     * * 手动覆盖 —— 只写用户勾选的档位；窗口取所选预算的最大档；
+     * * 由供应商决定 —— 显式空数组（等于"没有可调档位"），请求不带参数。
+     *
+     * 这条边界是"普通保存不能凭空产生覆盖值"的落点。
+     */
+    context_window:
+      draft.capabilityMode === "manual" && draft.budgets.length > 0
+        ? Math.max(...draft.budgets)
+        : null,
+    context_budgets:
+      draft.capabilityMode === "manual"
+        ? [...new Set(draft.budgets)].sort((a, b) => a - b)
+        : draft.capabilityMode === "provider"
+          ? []
+          : null,
+    // 按预设顺序输出（后端也按升序用），避免点击顺序影响能力表。
+    reasoning_efforts:
+      draft.capabilityMode === "manual"
+        ? EFFORT_PRESETS.filter((item) => draft.efforts.includes(item.value)).map(
+            (item) => item.value,
+          )
+        : draft.capabilityMode === "provider"
+          ? []
+          : null,
+  });
 
   const submit = async () => {
     setBusy(true);
     clear();
     try {
-      await opsApi.aiProviderSave({
-        id: draft.id,
-        name: draft.name.trim(),
-        provider_kind: "openai_compatible",
-        base_url: draft.base_url.trim(),
-        model: draft.model.trim(),
-        // 空 = 保留原 Key（前端不回显，也不会读）。
-        api_key: draft.api_key.trim() ? draft.api_key : null,
-        enabled: draft.enabled,
-        is_default: draft.is_default,
-        allow_insecure_http: draft.allow_insecure_http,
-        timeout_seconds: draft.timeout_seconds,
-        max_output_tokens: draft.max_output_tokens,
-        /*
-         * 能力声明**只按当前模式**写：
-         * * 自动识别 —— 一律 `null`，交给内置表（未知模型保持未知）；
-         * * 手动覆盖 —— 只写用户勾选的档位；窗口取所选预算的最大档；
-         * * 由供应商决定 —— 显式空数组（等于"没有可调档位"），请求不带参数。
-         *
-         * 这条边界是"普通保存不能凭空产生覆盖值"的落点。
-         */
-        context_window:
-          draft.capabilityMode === "manual" && draft.budgets.length > 0
-            ? Math.max(...draft.budgets)
-            : null,
-        context_budgets:
-          draft.capabilityMode === "manual"
-            ? [...new Set(draft.budgets)].sort((a, b) => a - b)
-            : draft.capabilityMode === "provider"
-              ? []
-              : null,
-        // 按预设顺序输出（后端也按升序用），避免点击顺序影响能力表。
-        reasoning_efforts:
-          draft.capabilityMode === "manual"
-            ? EFFORT_PRESETS.filter((item) => draft.efforts.includes(item.value)).map(
-                (item) => item.value,
-              )
-            : draft.capabilityMode === "provider"
-              ? []
-              : null,
-      });
+      await opsApi.aiProviderSave(buildRequest());
       await onSaved();
     } catch (cause) {
       fail(cause, () => void submit());
@@ -473,17 +616,106 @@ function AiProviderForm({
     }
   };
 
+  /**
+   * 先测连通性，不保存。
+   *
+   * 新建时必须有 Key；编辑时留空则后端临时读一次已保存的 Key。测试用的
+   * 明文 Key 只在这次请求的内存里，不落库、不写钥匙串。
+   */
+  const testDraft = async () => {
+    setTesting(true);
+    clear();
+    setTestResult(null);
+    try {
+      const result = await opsApi.aiProviderTestDraft(buildRequest());
+      setTestResult(result);
+    } catch (cause) {
+      fail(cause, () => void testDraft());
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const canTest =
+    Boolean(draft.base_url.trim() && draft.model.trim()) &&
+    (editing || Boolean(draft.api_key.trim()));
+
   return (
     <Modal
       open
-      width={440}
+      width={520}
+      className="settings-ai-modal"
       title={editing ? t("Edit model") : t("Add model")}
       onClose={onClose}
     >
       {/* 滚动交给 Modal 自己的内容区（`max-h-[60vh] overflow-y-auto`）——
           这里再套一层 overflow 会同时出现内外两个滚动条。 */}
-      <div className="flex flex-col gap-3">
+      <div className="settings-ai-form flex flex-col gap-3">
         {error ? <ErrorState error={error} compact /> : null}
+
+        {!editing && (
+          <div>
+            <p className="text-12 font-medium text-fg">{t("Quick add")}</p>
+            <p className="mt-0.5 text-11 leading-relaxed text-fg-subtle">
+              {t("Pick a preset and fill in only the API Key; presets use each provider's latest alias rather than a fixed version, and the model ID is still editable.")}
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {MODEL_PRESETS.map((preset) => {
+                const selected = activePreset === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    data-testid={`preset-${preset.id}`}
+                    aria-pressed={selected}
+                    onClick={() => applyPreset(preset)}
+                    className={cn(
+                      "min-w-0 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                      selected
+                        ? "border-accent/60 bg-accent/10 text-accent"
+                        : "border-line/60 bg-surface-1 text-fg-muted hover:bg-surface-hover hover:text-fg",
+                    )}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0">
+                        <span className="block truncate text-12">{preset.name}</span>
+                        <span className="block truncate text-10 text-fg-subtle">
+                          {preset.hint}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                data-testid="preset-custom"
+                aria-pressed={activePreset === "custom"}
+                onClick={useCustom}
+                className={cn(
+                  "min-w-0 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                  activePreset === "custom"
+                    ? "border-accent/60 bg-accent/10 text-accent"
+                    : "border-line/60 bg-surface-1 text-fg-muted hover:bg-surface-hover hover:text-fg",
+                )}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0">
+                    <span className="block text-12">{t("Custom")}</span>
+                    <span className="block truncate text-10 text-fg-subtle">
+                      {t("Enter your own base URL and model")}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            </div>
+            {activePreset !== "custom" && (
+              <p className="mt-1.5 text-10 text-fg-subtle">
+                {t("Preset filled in — only the API Key is needed. You can still edit it from the list after saving.")}
+              </p>
+            )}
+          </div>
+        )}
 
         <Field label={t("Name")}>
           <input
@@ -528,6 +760,7 @@ function AiProviderForm({
           }
         >
           <input
+            ref={apiKeyRef}
             className={fieldClass}
             type="password"
             autoComplete="off"
@@ -700,11 +933,49 @@ function AiProviderForm({
           </span>
         </label>
 
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
+        {testResult && (
+          <p
+            role="status"
+            className={cn(
+              "text-11 leading-relaxed",
+              testResult.ok ? "text-success" : "text-danger",
+            )}
+          >
+            {testResult.ok
+              ? t("Connection OK ({{ms}} ms, {{attempts}} attempt(s))", {
+                  ms: testResult.latency_ms,
+                  attempts: testResult.attempts,
+                })
+              : testResult.message}
+          </p>
+        )}
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1"
+            disabled={busy || testing || !canTest}
+            title={
+              canTest
+                ? t("Test connection")
+                : t("Fill in the base URL, model and API key first")
+            }
+            onClick={() => void testDraft()}
+            data-testid="provider-test-draft"
+          >
+            <PlugZap size={12} /> {testing ? t("Testing…") : t("Test connection")}
+          </Button>
+          <span className="flex-1" />
+          <Button variant="ghost" size="sm" disabled={busy || testing} onClick={onClose}>
             {t("Cancel")}
           </Button>
-          <Button size="sm" disabled={busy} onClick={() => void submit()} data-testid="provider-save">
+          <Button
+            size="sm"
+            disabled={busy || testing}
+            onClick={() => void submit()}
+            data-testid="provider-save"
+          >
             {busy ? t("Saving") : t("Save")}
           </Button>
         </div>

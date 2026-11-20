@@ -13,9 +13,10 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
 import { TaskSteps } from "./TaskSteps";
-import { statusLabel, type TaskStatus } from "./task";
+import { isTerminal, statusLabel, type TaskStatus } from "./task";
 import { verificationStep } from "./task-bridge";
 import { stepProgress, type TaskArtifact, type TaskCardModel } from "./task-view";
+import { durationText } from "./format-time";
 
 const TONE: Record<TaskStatus, "neutral" | "warning" | "info" | "success" | "danger"> = {
   inspecting: "info",
@@ -27,18 +28,6 @@ const TONE: Record<TaskStatus, "neutral" | "warning" | "info" | "success" | "dan
   failed: "danger",
   cancelled: "neutral",
   interrupted: "warning",
-};
-
-/** 验证结论的文案与颜色（后端只给 level，显示措辞由界面决定）。 */
-const OUTCOME_LABEL: Record<string, string> = {
-  verified: "已验证",
-  partial: "部分完成",
-  needs_info: "需要补充信息",
-};
-const OUTCOME_TONE: Record<string, string> = {
-  verified: "text-success",
-  partial: "text-warning",
-  needs_info: "text-fg-muted",
 };
 
 const KIND_ICON = {
@@ -79,12 +68,19 @@ export function TaskCardView({
   const writes = task.steps.filter(
     (step) => step.kind === "tool" && step.risk && step.risk !== "read",
   );
+  /** 完成后显示真实执行耗时：createdAt → 最后一次 updatedAt。 */
+  const elapsed = task.updatedAt - task.createdAt;
 
   return (
     <section className="overflow-hidden rounded-[10px] border border-line bg-surface-1/95">
       <header className="flex items-center gap-2 px-3 py-2">
         <Icon size={13} className="shrink-0 text-fg-subtle" />
         <span className="min-w-0 flex-1 truncate text-12 font-medium">{task.title}</span>
+        {isTerminal(task.status) && elapsed > 0 && (
+          <span className="shrink-0 text-10 text-fg-subtle">
+            {t("用时 {{duration}}", { duration: durationText(elapsed, t) })}
+          </span>
+        )}
         <StatusBadge tone={TONE[task.status]} dot={running}>
           {t(statusLabel(task.status))}
         </StatusBadge>
@@ -106,17 +102,6 @@ export function TaskCardView({
           {progress.current ? ` · ${t(progress.current.title)}` : ""}
         </p>
         <p className={cn("text-12", task.status === "failed" ? "text-danger" : "text-fg-muted")}>{task.result}</p>
-        {/*
-         * 结论不能只靠"模型回了话"：后端按真实步骤给出 verified / partial /
-         * needs_info，这里必须显示出来，别让"改完没验证"看起来像完成。
-         */}
-        {task.outcome && (task.status === "done" || task.status === "failed") && (
-          <p className={cn("text-11", OUTCOME_TONE[task.outcome.level] ?? "text-fg-muted")}>
-            {t("结论")}：{t(OUTCOME_LABEL[task.outcome.level] ?? task.outcome.level)}
-            {task.outcome.reason ? ` · ${task.outcome.reason}` : ""}
-          </p>
-        )}
-
         {/* 关键结果按任务类型取不同字段，避免每种任务一个卡片组件。 */}
         {/*
          * Agent 任务（`tool` 步骤）没有"部署验证"这一步：显示"未执行验证"

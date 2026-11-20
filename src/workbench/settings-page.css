@@ -14,6 +14,31 @@
 .settings-page .settings-release-icon { display:grid; place-items:center; width:58px; height:58px; border-radius:17px; background:rgb(var(--accent)/.07); color:rgb(var(--accent)); }
 .settings-page .settings-release-entry h2 { font-size:21px; font-weight:500; color:rgb(var(--fg)); }
 .settings-page .settings-release-entry p { font-size:12px; line-height:1.8; color:rgb(var(--fg-muted)); }
+
+/*
+ * 设置页整体字号比工作区大一档：设置项是"读"和"核对"的场景，11/12px 太密。
+ * 这里只作用于 `.settings-page` 与设置弹窗，不影响主工作区。
+ */
+.settings-page { font-size:13px; }
+.settings-page .settings-nav-item { min-height:40px; padding-block:10px; font-size:13px; }
+.settings-page .page-form-label { font-size:13px; }
+.settings-page .page-form-help { font-size:12px; line-height:1.6; }
+.settings-page .page-form-row { min-height:44px; }
+.settings-page .text-9 { font-size:11px; }
+.settings-page .text-10 { font-size:12px; }
+.settings-page .text-11 { font-size:13px; }
+.settings-page .text-12 { font-size:14px; }
+.settings-page .text-13 { font-size:15px; }
+
+/* 弹窗挂在 body 上，不在 `.settings-page` 内：单独给 AI 表单放大一档。 */
+.settings-ai-form .text-9 { font-size:11px; }
+.settings-ai-form .text-10 { font-size:12px; }
+.settings-ai-form .text-11 { font-size:13px; }
+.settings-ai-form .text-12 { font-size:14px; }
+.settings-ai-form .text-13 { font-size:15px; }
+.settings-ai-modal .text-13 { font-size:15px; }
+.settings-ai-modal .text-11 { font-size:13px; }
+
 @media(max-width:850px) { .settings-page .settings-navigation { width:170px; padding:20px 9px; } .settings-page .settings-nav-item { gap:8px; padding-inline:10px; } }
-@media(max-width:560px) { .settings-page .settings-navigation { width:145px; padding-inline:7px; } .settings-page .settings-nav-item { font-size:11px; gap:7px; } }
+@media(max-width:560px) { .settings-page .settings-navigation { width:145px; padding-inline:7px; } .settings-page .settings-nav-item { font-size:12px; gap:7px; } }
 @media(prefers-reduced-motion:reduce) { .settings-page .settings-nav-item { transition:none; } }

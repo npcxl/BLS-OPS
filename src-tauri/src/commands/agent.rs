@@ -12,11 +12,11 @@
 //! 命令层只做参数形状转换。
 
 use serde::Deserialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter as _, State};
 
 use crate::agent::{
     spawn_agent, AgentInput, AgentSnapshot, AgentStep, AgentTurn, FileChangeDetail,
-    FileChangeSummary, TokenUsage,
+    FileChangeSummary, FileSnapshot, Lang, TokenUsage,
 };
 use crate::commands::extreme::{load_task_record, ExtremeTaskRecord};
 use crate::ops_error::{OpsError, OpsResult};
@@ -195,7 +195,7 @@ fn resume_step_line(step: &AgentStep) -> String {
 }
 
 /// 给模型的检查点说明：做了什么、断在哪、恢复时必须先核对。
-fn resume_brief(record: &ExtremeTaskRecord, steps: &[AgentStep], cwd: &str) -> String {
+fn resume_brief(record: &ExtremeTaskRecord, steps: &[AgentStep], cwd: &str, lang: Lang) -> String {
     let total = steps.len();
     let done = steps
         .iter()
@@ -205,7 +205,10 @@ fn resume_brief(record: &ExtremeTaskRecord, steps: &[AgentStep], cwd: &str) -> S
         .iter()
         .find(|step| matches!(step.state.as_str(), "failed" | "running" | "waiting"))
         .map(|step| format!("#{} {}", step.index + 1, resume_step_line(step)))
-        .unwrap_or_else(|| "最后一步之后".to_string());
+        .unwrap_or_else(|| match lang {
+            Lang::Zh => "最后一步之后".to_string(),
+            Lang::En => "after the last step".to_string(),
+        });
     let history: Vec<String> = steps
         .iter()
         .rev()
@@ -219,6 +222,26 @@ fn resume_brief(record: &ExtremeTaskRecord, steps: &[AgentStep], cwd: &str) -> S
             )
         })
         .collect();
+    if lang == Lang::En {
+        return format!(
+            "[Resume] The previous run stopped in the middle of this task.\n\
+             Goal: {}\nServer: {}\nPrevious directory: {}\n{}/{} steps done.\n\
+             Recent steps (newest first):\n{}\nInterruption point: {}\n\n\
+             Resume rules:\n\
+             1. First use **read-only commands only** to check whether the completed steps are still in effect (file content / service state / port); never redo a step that already took effect;\n\
+             2. Continue from the first unfinished or failed step;\n\
+             3. If the check shows a step did not actually take effect, run it again and say so in the conclusion;\n\
+             4. One operation may have been waiting for confirmation when it stopped: it **did not run**; re-propose it if needed and wait for approval;\n\
+             5. After completing or changing anything, run a read-only verification; if it cannot be verified, say so explicitly.",
+            record.goal,
+            record.server,
+            cwd,
+            done,
+            total,
+            history.join("\n"),
+            point
+        );
+    }
     format!(
         "【恢复执行】上一次运行在这个任务的中途结束。\n\
          目标：{}\n服务器：{}\n上次的目录：{}\n已完成 {}/{} 步。\n\
@@ -289,7 +312,12 @@ pub async fn agent_resume(
         goal = "继续完成上次未完成的任务".to_string();
     }
     let server = record.server.clone();
-    let brief = resume_brief(&record, &steps, &cwd);
+    let brief = resume_brief(
+        &record,
+        &steps,
+        &cwd,
+        Lang::from_locale(request.locale.as_deref()),
+    );
     let input = AgentInput {
         task_id: task_id.to_string(),
         session_id: request.session_id,
@@ -384,8 +412,12 @@ pub fn agent_cancel(state: State<'_, AppState>, task_id: String) -> OpsResult<bo
 /// 所以原因会写进 `error`，界面必须原样说明。返回 `None` = 后端已经没有这条
 /// 运行（应用重启 / 记录被清理），前端应按本地"已停止"收尾。
 #[tauri::command]
-pub fn agent_abandon(state: State<'_, AppState>, task_id: String) -> OpsResult<Option<AgentSnapshot>> {
-    let reason = "用户强制结束了这次运行：不再等待后端确认。服务器上已经发出的命令可能仍在执行，请先核对。";
+pub fn agent_abandon(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> OpsResult<Option<AgentSnapshot>> {
+    let reason =
+        "用户强制结束了这次运行：不再等待后端确认。服务器上已经发出的命令可能仍在执行，请先核对。";
     let snapshot = state.agents.abandon(&task_id, reason);
     state.ai_reviews.forget(&task_id);
     Ok(snapshot)
@@ -404,6 +436,91 @@ pub fn agent_file_changes(
     Ok(state
         .changes
         .list(workspace_id.as_deref(), task_id.as_deref()))
+}
+
+/// 计划执行器 / 手工写入登记一条变更。
+///
+/// Agent 自己的 `write_file` 有前后回读；计划里的上传步骤由前端知道目标与
+/// 正文，直接交回来即可生成同样的 Diff。`before` 读不到时传 `null`，
+/// 记录会标成"未采集差异"，而不是编一份"全新增"的假 Diff。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangeRecordRequest {
+    pub task_id: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    pub server: String,
+    #[serde(default)]
+    pub server_id: Option<String>,
+    #[serde(default)]
+    pub tool: String,
+    pub path: String,
+    #[serde(default)]
+    pub before: Option<String>,
+    #[serde(default)]
+    pub after: Option<String>,
+    /// `written` / `unchanged` / `write_failed` / `unavailable`
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub step_index: Option<u32>,
+}
+
+#[tauri::command]
+pub fn agent_file_change_record(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: FileChangeRecordRequest,
+) -> OpsResult<FileChangeSummary> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let status = request.status.as_deref().unwrap_or("written").to_string();
+    state.changes.create(
+        crate::agent::ChangeDraft {
+            id: id.clone(),
+            task_id: request.task_id.clone(),
+            call_id: request.tool.clone(),
+            step_index: request.step_index.unwrap_or(0),
+            workspace_id: request.workspace_id.clone(),
+            server_id: request.server_id.clone(),
+            server: request.server.clone(),
+            tool: request.tool.clone(),
+            path: request.path.clone(),
+        },
+        &status,
+        "actual",
+    );
+    state.changes.update(&id, |record| {
+        record.before = request.before.as_deref().map(|text| {
+            // 空串 = 目标原本不存在（新文件）：按 absent 记，卡片才会标「新增」。
+            if text.is_empty() {
+                FileSnapshot::absent(&request.path)
+            } else {
+                FileSnapshot::from_text(&request.path, text)
+            }
+        });
+        record.actual = request
+            .after
+            .as_deref()
+            .map(|text| FileSnapshot::from_text(&request.path, text));
+        // 没有前后正文就不做逐行比较：宁可说"未采集"，也不凭空生成全新增。
+        if record.before.is_none() || record.actual.is_none() {
+            record.stage = "none".to_string();
+        }
+        record.note = request.note.clone();
+        record.recount();
+    });
+    let summary = state
+        .changes
+        .get(&id)
+        .ok_or_else(|| OpsError::new("config", "变更记录创建失败：记录不在注册表里"))?;
+    // 广播同一条记录：面板、任务历史都靠它刷新，不必各自再拉一次。
+    let mut event = crate::agent::AgentEvent::new(&summary.task_id, "file_change");
+    event.change_id = Some(summary.id.clone());
+    event.change = Some(summary.clone());
+    let _ = app.emit(crate::agent::AGENT_EVENT, event);
+    Ok(summary)
 }
 
 /// 取一条变更的实际 Diff 与前后快照（已脱敏）。

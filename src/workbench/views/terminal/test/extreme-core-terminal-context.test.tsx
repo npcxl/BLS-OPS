@@ -61,6 +61,7 @@ vi.mock("@/components/backgrounds/aero-shards", () => ({ default: () => null }))
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
+  useThemeMode: () => ["dark", () => undefined],
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),

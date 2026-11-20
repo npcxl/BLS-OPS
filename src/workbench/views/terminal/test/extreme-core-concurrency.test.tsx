@@ -68,6 +68,7 @@ vi.mock("@/components/backgrounds/aero-shards", () => ({ default: () => null }))
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
+  useThemeMode: () => ["dark", () => undefined],
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),
@@ -125,12 +126,25 @@ async function waitForRuns(run: ReturnType<typeof vi.spyOn>, count: number) {
 }
 
 /** 点界面上文字为 `label` 的按钮（切换发送方式 / 取消排队）。 */
-async function clickButton(holder: HTMLElement, label: string) {
-  const button = Array.from(holder.querySelectorAll("button")).find(
-    (node) => node.textContent?.trim() === label,
+/** 发送方式收进发送键旁的小菜单：先开菜单再选项。 */
+async function chooseSendMode(holder: HTMLElement, label: string) {
+  const trigger = holder.querySelector<HTMLButtonElement>(
+    'button[aria-label="执行中发送方式"]',
   );
-  expect(button, `button ${label}`).toBeTruthy();
-  await act(async () => button!.click());
+  expect(trigger, "send mode trigger").toBeTruthy();
+  await act(async () => trigger!.click());
+  // 菜单走 portal；只认**当前这个**菜单，避免并行测试残留的节点被误点。
+  const menus = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="menu"][aria-label="执行中发送方式"]'),
+  );
+  const menu = menus[menus.length - 1];
+  expect(menu, "send mode menu").toBeTruthy();
+  // 菜单项还有一行说明，textContent 不会与标签完全相等。
+  const item = Array.from(menu!.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes(label),
+  );
+  expect(item, `send mode ${label}`).toBeTruthy();
+  await act(async () => item!.click());
 }
 
 function textAttachment(id: string, name: string, text: string): ExtremeAttachment {
@@ -296,7 +310,7 @@ it("A 连排两条、B 排一条：三条都在各自对话里按顺序发送，
     await submit(holder, "A 第一条");
     await waitForRuns(run, 1);
     const taskA1 = run.mock.calls[0][0].taskId;
-    await clickButton(holder, "完成后发送");
+    await chooseSendMode(holder, "完成后发送");
     // 上一条消息已经把勾选消费掉了：排队的那条重新勾一次附件。
     const again = holder.querySelector<HTMLInputElement>(
       `input[aria-label="${i18n.t("选择 {{name}}", { name: "queued.txt" })}"]`,
@@ -323,8 +337,9 @@ it("A 连排两条、B 排一条：三条都在各自对话里按顺序发送，
     await submit(holder, "B 第一条");
     await waitForRuns(run, 2);
     const taskB1 = run.mock.calls[1][0].taskId;
-    await clickButton(holder, "完成后发送");
+    await chooseSendMode(holder, "完成后发送");
     await submit(holder, "B 第二条");
+    // 队列面板常驻在输入框下方：B 只有自己的一条。
     expect(holder.querySelectorAll("[data-queue-id]")).toHaveLength(1);
 
     // 入队后把附件删掉、模型也换回另一个：已排队的那条仍然是入队时的样子。

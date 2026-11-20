@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ArrowRight, ChevronLeft, ChevronRight, Globe, RefreshCw } from "@/components/icons";
-import { Button } from "@/components/ui/button";
 import { opsApi } from "@/api/ops-api";
 import { useExtremeStore } from "@/stores/extreme-store";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 
 /**
  * 右栏内置浏览器。
@@ -322,33 +322,21 @@ export function BrowserPane({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-w-0 items-center gap-1 overflow-hidden border-b border-line/70 px-2 py-1.5">
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={t("后退")}
-          title={t("后退")}
+        <ExtremeIconButton
+          label={t("后退")}
+          icon={ChevronLeft}
           onClick={() => void opsApi.extremeBrowserHistory(-1).catch(() => undefined)}
-        >
-          <ChevronLeft size={13} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={t("前进")}
-          title={t("前进")}
+        />
+        <ExtremeIconButton
+          label={t("前进")}
+          icon={ChevronRight}
           onClick={() => void opsApi.extremeBrowserHistory(1).catch(() => undefined)}
-        >
-          <ChevronRight size={13} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={t("刷新")}
-          title={t("刷新")}
+        />
+        <ExtremeIconButton
+          label={t("刷新")}
+          icon={RefreshCw}
           onClick={() => void opsApi.extremeBrowserReload().catch(() => undefined)}
-        >
-          <RefreshCw size={13} />
-        </Button>
+        />
         <form
           className="flex min-w-0 flex-1 items-center gap-1"
           onSubmit={(event) => {
@@ -366,19 +354,14 @@ export function BrowserPane({
             className="min-w-0 flex-1 rounded-[5px] border border-line bg-surface-1 px-2 py-0.5 font-mono text-10 text-fg outline-none focus:border-accent"
           />
         </form>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="shrink-0"
+        <ExtremeIconButton
+          label={t("在 Chrome 中打开")}
+          icon={ArrowRight}
           disabled={!current.current}
-          aria-label={t("在 Chrome 中打开")}
-          title={t("在 Chrome 中打开")}
           onClick={() => {
             if (current.current) void openUrl(current.current).catch(() => undefined);
           }}
-        >
-          <ArrowRight size={13} />
-        </Button>
+        />
       </div>
 
       {error && (

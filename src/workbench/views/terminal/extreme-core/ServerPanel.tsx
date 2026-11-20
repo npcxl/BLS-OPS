@@ -7,6 +7,7 @@ import { opsApi } from "@/api/ops-api";
 import type { ContainerInfo, MonitorSnapshot } from "@/api/ops-api";
 import type { ServiceUnit } from "@/api/types/services";
 import type { PanelTab } from "./panel-target";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 
 /**
  * 右栏：**服务器运行面板**。
@@ -131,14 +132,13 @@ export function ServerPanel({
         <span className="min-w-0 flex-1 truncate text-11 text-fg-muted" title={serverName}>
           {serverName}
         </span>
-        <button
-          type="button"
-          className="shrink-0 text-fg-subtle hover:text-fg"
-          aria-label={t("收起面板")}
+        <ExtremeIconButton
+          label={t("收起面板")}
+          icon={X}
+          iconSize={12}
+          className="size-6"
           onClick={onClose}
-        >
-          <X size={12} />
-        </button>
+        />
       </div>
 
       <div className="flex items-center gap-1 border-b border-line/70 px-2 py-1">

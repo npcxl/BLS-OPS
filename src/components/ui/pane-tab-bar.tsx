@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight, Pin, X, type IconComponent } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 
 /**
@@ -54,6 +56,7 @@ export function PaneTabBar({
   size?: "md" | "sm";
   onReorder?: (fromId: string, toId: string) => void;
 }) {
+  const { t } = useTranslation();
   const stripRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ left: false, right: false });
   const dragRef = useRef<string | null>(null);
@@ -139,19 +142,20 @@ export function PaneTabBar({
       )}
     >
       {edges.left && (
-        <button
-          type="button"
-          aria-label="向左滚动标签"
-          title="向左滚动标签"
-          disabled={!edges.left}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
-          onClick={() => {
-            const strip = stripRef.current;
-            if (strip) strip.scrollLeft -= Math.max(120, strip.clientWidth * 0.7);
-          }}
-        >
-          <ChevronLeft size={13} />
-        </button>
+        <Tooltip label={t("向左滚动标签")}>
+          <button
+            type="button"
+            aria-label={t("向左滚动标签")}
+            disabled={!edges.left}
+            className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
+            onClick={() => {
+              const strip = stripRef.current;
+              if (strip) strip.scrollLeft -= Math.max(120, strip.clientWidth * 0.7);
+            }}
+          >
+            <ChevronLeft size={13} />
+          </button>
+        </Tooltip>
       )}
 
       <div className="relative flex min-w-0 flex-1 basis-0 items-center overflow-hidden">
@@ -257,27 +261,29 @@ export function PaneTabBar({
                 )}
                 <span className="min-w-0 flex-1 truncate">{tab.label}</span>
                 {tab.preview && (
-                  <span className="shrink-0 rounded bg-surface-2 px-1 text-10 text-fg-subtle">预览</span>
+                  <span className="shrink-0 rounded bg-surface-2 px-1 text-10 text-fg-subtle">{t("预览")}</span>
                 )}
                 {tab.pinned && <Pin size={10} className="shrink-0 text-fg-subtle" />}
                 {tab.badge}
                 {tab.onClose && (
-                  <button
-                    type="button"
-                    aria-label="关闭标签"
-                    className={cn(
-                      "ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-fg-subtle transition-colors hover:bg-surface-active hover:text-fg",
-                      active
-                        ? "opacity-100"
-                        : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                    )}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      tab.onClose?.();
-                    }}
-                  >
-                    <X size={11} strokeWidth={2} />
-                  </button>
+                  <Tooltip label={t("关闭标签")}>
+                    <button
+                      type="button"
+                      aria-label={t("关闭标签")}
+                      className={cn(
+                        "ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-fg-subtle transition-colors hover:bg-surface-active hover:text-fg",
+                        active
+                          ? "opacity-100"
+                          : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                      )}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        tab.onClose?.();
+                      }}
+                    >
+                      <X size={11} strokeWidth={2} />
+                    </button>
+                  </Tooltip>
                 )}
               </div>
             );
@@ -286,19 +292,20 @@ export function PaneTabBar({
       </div>
 
       {edges.right && (
-        <button
-          type="button"
-          aria-label="向右滚动标签"
-          title="向右滚动标签"
-          disabled={!edges.right}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
-          onClick={() => {
-            const strip = stripRef.current;
-            if (strip) strip.scrollLeft += Math.max(120, strip.clientWidth * 0.7);
-          }}
-        >
-          <ChevronRight size={13} />
-        </button>
+        <Tooltip label={t("向右滚动标签")}>
+          <button
+            type="button"
+            aria-label={t("向右滚动标签")}
+            disabled={!edges.right}
+            className="grid size-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-tab-hover disabled:opacity-30"
+            onClick={() => {
+              const strip = stripRef.current;
+              if (strip) strip.scrollLeft += Math.max(120, strip.clientWidth * 0.7);
+            }}
+          >
+            <ChevronRight size={13} />
+          </button>
+        </Tooltip>
       )}
 
       {trailing && <div className="flex shrink-0 items-center gap-1">{trailing}</div>}

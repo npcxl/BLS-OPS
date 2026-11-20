@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::super::changes::{ChangeRegistry, DiffKind, FileSnapshot};
 use super::super::runner::{run_loop, AgentInput, AgentIo, AgentTurn, IoFuture};
 use super::super::state::{AgentHandle, AgentSnapshot};
+use super::super::tools::shell_write_targets;
 use super::super::AgentEvent;
 use crate::deployment::ai::model::AiCancel;
 use crate::deployment::ai::{AiProviderError, ToolReply};
@@ -90,7 +91,10 @@ impl ChangeIo {
     }
 
     fn executed(&self) -> Vec<String> {
-        self.executed.lock().map(|list| list.clone()).unwrap_or_default()
+        self.executed
+            .lock()
+            .map(|list| list.clone())
+            .unwrap_or_default()
     }
 
     /// 真正发出去的 `write_file` 命令条数（回读不走 `exec`）。
@@ -104,7 +108,11 @@ impl ChangeIo {
     fn change_events(&self) -> usize {
         self.events
             .lock()
-            .map(|list| list.iter().filter(|event| event.kind == "file_change").count())
+            .map(|list| {
+                list.iter()
+                    .filter(|event| event.kind == "file_change")
+                    .count()
+            })
             .unwrap_or(0)
     }
 }
@@ -182,6 +190,25 @@ impl AgentIo for ChangeIo {
                 }
                 return Ok(ExecOutput {
                     stdout,
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                    truncated: false,
+                });
+            }
+            /*
+             * 普通 shell 写操作：只模拟 `sed -i` 改一个已知目标。
+             *
+             * 真实的 `exec` 会在服务器上执行任意命令，测试只需要证明"执行前后的
+             * 两份快照能算出 Diff"，不需要一个完整的 shell。
+             */
+            if command.contains("sed -i") && command.contains(PATH) {
+                if let Ok(mut files) = self.files.lock() {
+                    if let Some(text) = files.get_mut(PATH) {
+                        *text = text.replace("listen 80;", "listen 8080;");
+                    }
+                }
+                return Ok(ExecOutput {
+                    stdout: String::new(),
                     stderr: String::new(),
                     exit_code: Some(0),
                     truncated: false,
@@ -365,11 +392,10 @@ async fn preview_and_actual_diff_come_from_the_server() {
         .count() as i64;
     assert_eq!(adds, detail.summary.additions);
     assert_eq!(dels, detail.summary.deletions);
-    assert!(detail
-        .diff
-        .hunks
+    assert!(detail.diff.hunks.iter().any(|hunk| hunk
+        .lines
         .iter()
-        .any(|hunk| hunk.lines.iter().any(|line| line.text.contains("listen 8080"))));
+        .any(|line| line.text.contains("listen 8080"))));
 
     // 步骤上带着变更标识：执行结果能定位到这条记录。
     assert_eq!(
@@ -527,8 +553,9 @@ async fn a_shell_write_is_marked_as_uncollected() {
     let io = ChangeIo::new(
         Some(BEFORE),
         &[
-            "<tool name=\"run_shell\">{\"command\":\"systemctl restart nginx\"}</tool>",
-            "已重启。",
+            // 真的会改文件、但解析不出具体目标（rm 没有前后快照）。
+            "<tool name=\"run_shell\">{\"command\":\"rm -rf /var/www/old\"}</tool>",
+            "已删除。",
             READ_CALL,
             "完成。",
         ],
@@ -545,4 +572,100 @@ async fn a_shell_write_is_marked_as_uncollected() {
     assert!(shell.uncollected);
     assert!(shell.note.as_deref().unwrap_or("").contains("未采集"));
     assert!(!shell.diff_ready);
+}
+
+/// 只读排查（`systemctl restart` 也不改文件）不该在变更面板里刷占位。
+#[tokio::test]
+async fn a_restart_leaves_no_change_record() {
+    let io = ChangeIo::new(
+        Some(BEFORE),
+        &[
+            "<tool name=\"run_shell\">{\"command\":\"systemctl restart nginx\"}</tool>",
+            "已重启。",
+            READ_CALL,
+            "完成。",
+        ],
+    );
+    let handle = Arc::new(AgentHandle::new(snapshot(), AiCancel::new()));
+    decide_later(handle.clone(), "call-0-0", true);
+
+    let _ = run_loop(&handle, &input(), &io, None).await;
+    assert!(
+        io.registry.list(None, None).is_empty(),
+        "重启服务没有文件变更，不该留记录"
+    );
+}
+
+/// `sed -i` 这种**能确定目标**的 shell 写操作：执行前后各读一次，
+/// 生成真实 Diff —— 不再只丢一句"未采集"。
+#[tokio::test]
+async fn a_shell_write_with_a_known_target_gets_a_real_diff() {
+    let io = ChangeIo::new(
+        Some(BEFORE),
+        &[
+            "<tool name=\"run_shell\">{\"command\":\"sed -i 's/listen 80;/listen 8080;/' /etc/nginx/conf.d/ops.conf\"}</tool>",
+            "改好了。",
+            READ_CALL,
+            "完成。",
+        ],
+    );
+    let handle = Arc::new(AgentHandle::new(snapshot(), AiCancel::new()));
+    decide_later(handle.clone(), "call-0-0", true);
+
+    let result = run_loop(&handle, &input(), &io, None).await;
+    assert!(result.is_ok(), "{result:?}");
+
+    let list = io.registry.list(Some("workspace-1"), Some("task-change"));
+    assert_eq!(list.len(), 1, "shell 写目标要生成一条变更记录");
+    let summary = &list[0];
+    assert_eq!(summary.path, PATH);
+    assert_eq!(summary.tool, "run_shell");
+    assert_eq!(summary.status, "written");
+    assert!(summary.diff_ready, "前后都读到了，必须能看逐行 Diff");
+    assert_eq!(summary.additions, 1);
+    assert_eq!(summary.deletions, 1);
+}
+
+#[test]
+fn shell_write_targets_only_keep_confident_absolute_paths() {
+    assert_eq!(
+        shell_write_targets("cat > /etc/nginx/conf.d/a.conf <<'EOF'", "/root"),
+        vec!["/etc/nginx/conf.d/a.conf"]
+    );
+    assert_eq!(
+        shell_write_targets("echo x >> /var/log/app.log", "/root"),
+        vec!["/var/log/app.log"]
+    );
+    assert!(shell_write_targets("echo x > /dev/null", "/root").is_empty());
+    assert_eq!(
+        shell_write_targets("sed -i 's/a/b/' /etc/nginx/nginx.conf", "/root"),
+        vec!["/etc/nginx/nginx.conf"]
+    );
+    // 引号里的 `;` 不是命令分隔符：表达式不能被切碎。
+    assert_eq!(
+        shell_write_targets(
+            "sed -i 's/listen 80;/listen 8080;/' /etc/nginx/nginx.conf",
+            "/root"
+        ),
+        vec!["/etc/nginx/nginx.conf"]
+    );
+    assert_eq!(
+        shell_write_targets("cp -a /tmp/a /etc/b.conf", "/root"),
+        vec!["/etc/b.conf"]
+    );
+    // 没有显式 `cd` 的相对路径 / 变量 / 通配符：解析不准就不记录，不能编假目标。
+    assert!(shell_write_targets("sed -i 's/a/b/' ./local.conf", "/root").is_empty());
+    assert!(shell_write_targets("cat > $HOME/x", "/root").is_empty());
+    assert!(shell_write_targets("rm -rf /tmp/x", "/root").is_empty());
+    /*
+     * 模型最常写的形态：先 `F=/path` 再 `"$F"`。不展开变量，真实目标就丢了，
+     * 面板只剩"未采集差异"；备份副本（`.bls-bak-`）不该算成第二条变更。
+     */
+    assert_eq!(
+        shell_write_targets(
+            "F=/etc/nginx/conf.d/ehs-web.conf; cp -a \"$F\" \"$F.bls-bak-1795\"; sed -i 's/80/81/' \"$F\"",
+            "/root"
+        ),
+        vec!["/etc/nginx/conf.d/ehs-web.conf"]
+    );
 }

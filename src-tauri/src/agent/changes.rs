@@ -106,6 +106,26 @@ impl FileSnapshot {
         }
     }
 
+    /// 从**已知正文**构造快照。
+    ///
+    /// 计划里的上传步骤由前端知道目标与内容，不必再回读；走与服务器回读相同的
+    /// 脱敏入口，Diff 里同样不会出现明文密码 / 私钥。
+    pub fn from_text(path: &str, text: &str) -> Self {
+        let (content, redacted) = sanitize(text);
+        Self {
+            exists: true,
+            path: path.to_string(),
+            sha: sha_of(content.as_bytes()),
+            size: text.len() as u64,
+            binary: false,
+            too_large: false,
+            is_dir: false,
+            redacted,
+            content,
+            note: None,
+        }
+    }
+
     /// 能否拿它做逐行比较。
     pub fn comparable(&self) -> bool {
         !self.binary && !self.too_large && !self.is_dir
@@ -350,7 +370,10 @@ fn edit_script(a: &[&str], b: &[&str]) -> Vec<(Op, usize, usize)> {
         start += 1;
     }
     let mut end = 0usize;
-    while end < a.len() - start && end < b.len() - start && a[a.len() - 1 - end] == b[b.len() - 1 - end] {
+    while end < a.len() - start
+        && end < b.len() - start
+        && a[a.len() - 1 - end] == b[b.len() - 1 - end]
+    {
         end += 1;
     }
     let mut ops: Vec<(Op, usize, usize)> = Vec::with_capacity(a.len() + b.len());
@@ -436,7 +459,8 @@ pub fn diff_lines(before: &str, after: &str) -> FileDiff {
     let mut additions = 0u32;
     let mut deletions = 0u32;
     let mut unchanged = 0u32;
-    let mut numbered: Vec<(Op, String, Option<u32>, Option<u32>)> = Vec::with_capacity(script.len());
+    let mut numbered: Vec<(Op, String, Option<u32>, Option<u32>)> =
+        Vec::with_capacity(script.len());
     for (op, old_index, new_index) in script {
         match op {
             Op::Equal => {
@@ -450,11 +474,21 @@ pub fn diff_lines(before: &str, after: &str) -> FileDiff {
             }
             Op::Del => {
                 deletions += 1;
-                numbered.push((Op::Del, a[old_index].to_string(), Some(old_index as u32 + 1), None));
+                numbered.push((
+                    Op::Del,
+                    a[old_index].to_string(),
+                    Some(old_index as u32 + 1),
+                    None,
+                ));
             }
             Op::Add => {
                 additions += 1;
-                numbered.push((Op::Add, b[new_index].to_string(), None, Some(new_index as u32 + 1)));
+                numbered.push((
+                    Op::Add,
+                    b[new_index].to_string(),
+                    None,
+                    Some(new_index as u32 + 1),
+                ));
             }
         }
     }
@@ -587,7 +621,11 @@ impl ChangeRecord {
         if !self.comparable() {
             return FileDiff::default();
         }
-        let before = self.before.as_ref().map(|snapshot| snapshot.content.as_str()).unwrap_or("");
+        let before = self
+            .before
+            .as_ref()
+            .map(|snapshot| snapshot.content.as_str())
+            .unwrap_or("");
         let after = match self.stage.as_str() {
             "actual" => self.actual.as_ref().map(|item| item.content.as_str()),
             _ => Some(self.proposed.as_str()),
@@ -856,10 +894,12 @@ impl ChangeRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<FileChangeSummary> {
-        self.records
-            .lock()
-            .ok()
-            .and_then(|records| records.iter().find(|record| record.id == id).map(|record| record.summary()))
+        self.records.lock().ok().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record.id == id)
+                .map(|record| record.summary())
+        })
     }
 
     /// 取一条完整记录（执行器核对版本时要用 `before` 的指纹与内容）。
@@ -871,14 +911,20 @@ impl ChangeRegistry {
     }
 
     pub fn detail(&self, id: &str) -> Option<FileChangeDetail> {
-        self.records
-            .lock()
-            .ok()
-            .and_then(|records| records.iter().find(|record| record.id == id).map(|record| record.detail()))
+        self.records.lock().ok().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record.id == id)
+                .map(|record| record.detail())
+        })
     }
 
     /// 按对话 / 任务列出：**新的在前**，同一任务内按步骤顺序。
-    pub fn list(&self, workspace_id: Option<&str>, task_id: Option<&str>) -> Vec<FileChangeSummary> {
+    pub fn list(
+        &self,
+        workspace_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Vec<FileChangeSummary> {
         let Ok(records) = self.records.lock() else {
             return Vec::new();
         };
@@ -886,7 +932,8 @@ impl ChangeRegistry {
             .iter()
             .filter(|record| {
                 task_id.is_none_or(|task| record.task_id == task)
-                    && workspace_id.is_none_or(|space| record.workspace_id.as_deref() == Some(space))
+                    && workspace_id
+                        .is_none_or(|space| record.workspace_id.as_deref() == Some(space))
             })
             .map(|record| record.summary())
             .collect();
@@ -961,7 +1008,11 @@ mod tests {
             "/etc/app.conf",
         )
         .unwrap();
-        assert!(parsed.content.contains("password=***"), "{}", parsed.content);
+        assert!(
+            parsed.content.contains("password=***"),
+            "{}",
+            parsed.content
+        );
         assert!(!parsed.content.contains("super-secret"));
         assert!(parsed.note.is_some());
     }
@@ -1020,7 +1071,10 @@ mod tests {
         assert_eq!(diff.additions, 2);
         assert_eq!(diff.deletions, 0);
         assert_eq!(diff.hunks.len(), 1);
-        assert!(diff.hunks[0].lines.iter().all(|line| line.kind == DiffKind::Add));
+        assert!(diff.hunks[0]
+            .lines
+            .iter()
+            .all(|line| line.kind == DiffKind::Add));
     }
 
     #[test]
@@ -1038,11 +1092,7 @@ mod tests {
     #[test]
     fn registry_filters_by_workspace_and_task() {
         let registry = ChangeRegistry::default();
-        for (id, task, space) in [
-            ("c1", "t1", "w1"),
-            ("c2", "t1", "w1"),
-            ("c3", "t2", "w2"),
-        ] {
+        for (id, task, space) in [("c1", "t1", "w1"), ("c2", "t1", "w1"), ("c3", "t2", "w2")] {
             registry.create(
                 ChangeDraft {
                     id: id.to_string(),

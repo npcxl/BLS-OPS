@@ -100,6 +100,27 @@ export function removeSend(queue: QueuedSend[], id: string): QueuedSend[] {
   return queue.filter((item) => item.id !== id);
 }
 
+/**
+ * 上移一位：只和**同一对话**的前一项交换，不能跨对话抖队列。
+ * 已经在队首时原样返回。
+ */
+export function moveSendUp(queue: QueuedSend[], id: string): QueuedSend[] {
+  const index = queue.findIndex((item) => item.id === id);
+  if (index <= 0) return queue;
+  const owner = queue[index].workspaceId;
+  let previous = -1;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (queue[cursor].workspaceId === owner) {
+      previous = cursor;
+      break;
+    }
+  }
+  if (previous < 0) return queue;
+  const next = [...queue];
+  [next[previous], next[index]] = [next[index], next[previous]];
+  return next;
+}
+
 export function markSendError(queue: QueuedSend[], id: string, error: string): QueuedSend[] {
   return queue.map((item) => (item.id === id ? { ...item, error } : item));
 }

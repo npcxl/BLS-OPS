@@ -601,6 +601,16 @@ fn review_reports_the_real_number_of_attempts() {
 // -- 模型能力 ----------------------------------------------------------------
 
 #[test]
+fn gpt6_uses_openai_efforts() {
+    let capability = model_capability("gpt-6");
+    assert_eq!(capability.efforts, &["low", "medium", "high"][..]);
+    assert_eq!(
+        resolve_effort("gpt-6", Some("high")).as_deref(),
+        Some("high")
+    );
+}
+
+#[test]
 fn deepseek_capability_maps_efforts_and_context() {
     let capability = model_capability("deepseek-chat");
     assert_eq!(capability.context_window, DEEPSEEK_CONTEXT_WINDOW);

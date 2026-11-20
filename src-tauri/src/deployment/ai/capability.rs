@@ -38,7 +38,7 @@ impl ModelCapability {
 
 /// DeepSeek Chat Completions：`reasoning_effort` = 低 / 高 / 最大。
 const DEEPSEEK_EFFORTS: &[&str] = &["low", "high", "max"];
-/// OpenAI 推理模型（o1 / o3 / o4 / gpt-5）：低 / 中 / 高。
+/// OpenAI 推理模型（o1 / o3 / o4 / gpt-5 / gpt-6）：低 / 中 / 高。
 const OPENAI_EFFORTS: &[&str] = &["low", "medium", "high"];
 
 /// DeepSeek 全系（chat / reasoner / v3.x / v4）的上下文窗口。
@@ -73,11 +73,12 @@ pub fn model_capability(model: &str) -> ModelCapability {
             efforts: DEEPSEEK_EFFORTS,
         };
     }
-    // `o1` / `o3` / `o4-mini` / `gpt-5*`：支持 reasoning_effort 的推理模型。
+    // `o1` / `o3` / `o4-mini` / `gpt-5*` / `gpt-6*`：支持 reasoning_effort 的推理模型。
     if name.starts_with("o1")
         || name.starts_with("o3")
         || name.starts_with("o4")
         || name.starts_with("gpt-5")
+        || name.starts_with("gpt-6")
     {
         return ModelCapability {
             context_window: 0,

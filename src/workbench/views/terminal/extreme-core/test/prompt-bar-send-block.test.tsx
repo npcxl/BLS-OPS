@@ -42,7 +42,15 @@ it("disables send with a reason when the server is not connected", async () => {
     const button = sendButton();
     expect(button).toBeTruthy();
     expect(button?.disabled).toBe(true);
-    expect(button?.getAttribute("title")).toBe("服务器未连接，重新连接后才能发送");
+    // 提示统一走项目 Tooltip，不再用浏览器原生 title。
+    expect(button?.hasAttribute("title")).toBe(false);
+    await act(async () => {
+      button?.dispatchEvent(new Event("pointerover", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(
+      "服务器未连接，重新连接后才能发送",
+    );
     await act(async () => button?.click());
     expect(onSend).not.toHaveBeenCalled();
   } finally {

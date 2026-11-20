@@ -123,12 +123,14 @@
 /* 与主窗口标题栏同高（36px）：窗口按钮贴边、整条是拖拽区。 */
 /* 顶栏高度由 `page-toolbar` 决定，不再单独覆盖。 */
 /*
- * 正文列宽与输入框**同一把尺子**（880）。
+ * 正文列宽与输入框**同一把尺子**。
  *
- * 以前正文 800、输入框 880：两边各自居中，中间差出来的 80px 在右栏打开后
- * 特别明显 —— 输入框比气泡宽出一截、还不与气泡对齐，看着像两块没对齐的板。
+ * 以前固定 880：窗口一展开（最大化 / 全屏）就在两侧空出大片，正文挤在中间，
+ * 与"整个超能对话铺满、只让开头部和左侧任务列表"的要求相反。现在不再封顶，
+ * 由容器宽度决定；两侧留白只靠 `padding-inline`（1rem / 2rem）控制，宽屏也
+ * 不会贴到边缘。
  */
-.extreme-core-column { max-width: 880px; }
+.extreme-core-column { max-width: none; }
 
 .extreme-core-chat-layout {
   container: extreme-chat / inline-size;
@@ -136,6 +138,12 @@
 
 .extreme-core-chat {
   padding-inline: 1rem;
+  /*
+   * 正文列**永远不横向滚动**：长表格 / 代码块各自有 `overflow-x`，而整列一旦
+   * 出现横条就会吃掉底部高度、还把最后一行顶到看不见。之前这里只写了
+   * `overflow-y-auto`，CSS 会把另一轴也变成 auto，一点超宽就冒横条。
+   */
+  overflow-x: hidden;
 }
 
 .extreme-core-timeline {
@@ -154,6 +162,7 @@
       display: block;
     }
   }
+
 }
 
 .extreme-core[data-welcome="true"] .extreme-core-main {
@@ -465,7 +474,70 @@
 }
 
 .extreme-core-composer-wrap { width: 100%; padding: 8px 16px 16px; }
+
+/*
+ * 发送队列在**输入框上方**、铺满整个对话宽度：它把聊天区往上撑，
+ * 不与输入框抢空间，也不是一张只敢占 880px 的小卡。
+ */
+.extreme-core-send-queue { width: 100%; padding: 0 16px 8px; }
+@media (min-width: 1180px) {
+  .extreme-core-send-queue { padding-inline: 2rem; }
+}
+.extreme-core[data-welcome="true"] .extreme-core-send-queue { display: none; }
 .extreme-core[data-welcome="true"] .extreme-core-composer-wrap { padding: 0; }
+/*
+ * 输入框与正文**同一条边**：宽屏下都留 2rem。
+ *
+ * 这条必须写在基础 `padding` 之后 —— 同优先级下后写的 shorthand 会把
+ * 前面的 `padding-inline` 复位成 16px，结果正文 32、输入框 16，宽屏下
+ * 输入框比正文宽出一截（这次的"宽度异常"就是这么来的）。
+ */
+@media (min-width: 1180px) {
+  .extreme-core-composer-wrap {
+    padding-inline: 2rem;
+  }
+  /* 欢迎页不要内边距：输入区在那里是整块居中，加了反而缩一圈。 */
+  .extreme-core[data-welcome="true"] .extreme-core-composer-wrap {
+    padding: 0;
+  }
+}
+
+/*
+ * 完整视图：右栏从任务列表右缘铺到窗口右缘。
+ *
+ * 右栏与 `main` 是兄弟（都在 `extreme-core-row` 里），所以不能用 `inset-0`
+ * —— 那会连左侧任务列表一起盖住。rail 宽度只有三种（常规 / 窄屏 / 收起），
+ * 用变量交给 `:has()` 选择，不依赖 JS 量宽度。
+ */
+.extreme-core-row {
+  --extreme-rail-w: 216px;
+}
+
+.extreme-core-row:has(.extreme-core-task-rail[data-collapsed="true"]) {
+  --extreme-rail-w: 48px;
+}
+
+.extreme-core-pane-expanded {
+  left: var(--extreme-rail-w);
+}
+
+@media (max-width: 960px) {
+  .extreme-core-row {
+    --extreme-rail-w: 168px;
+  }
+}
+
+/*
+ * 完整视图：面板铺满右侧，输入框与队列**不再显示**。
+ *
+ * 以前把输入框抬到 z-40，结果它压在全屏面板上，看起来像面板没铺满。
+ * 现在直接隐藏，退出全屏再回到对话；选择器挂到 row 上 —— 右栏不是
+ * `main` 的子元素。
+ */
+.extreme-core-row:has(> aside[data-pane-view="expanded"]) .extreme-core-composer-wrap,
+.extreme-core-row:has(> aside[data-pane-view="expanded"]) .extreme-core-send-queue {
+  display: none;
+}
 
 /* 外层只负责定位，Prompt Bar 绘制输入区的轮廓。 */
 .extreme-core-composer {
@@ -535,6 +607,17 @@
   box-shadow:
     0 0 0 1px var(--extreme-composer-focus, rgb(var(--accent) / .45)),
     0 2px 8px rgb(0 0 0 / .06);
+}
+
+/*
+ * 输入框宽度：官方 Prompt Bar 自己的默认值是 `width=400`（`--pb-w`），
+ * 组件根节点写的是 `width: min(var(--pb-w), 100%)` —— 所以聊天列再宽，
+ * 输入框也只占 400 出头、靠左，全屏后右边空出一大块，和铺满的正文对不齐。
+ * 这里让它在**对话页**跟随整列；欢迎页保持定宽（那一屏是居中的介绍 + 输入区，
+ * 铺满反而把标题和输入框拉成两条不一样的宽度）。
+ */
+.extreme-core[data-welcome="false"] .extreme-core-prompt-bar {
+  width: 100%;
 }
 
 /* 正文与占位符跟着主题走（官方默认用的是 `--pb-ink`，这里已换成 token）。 */
@@ -635,14 +718,14 @@
  * 颜色全部走 token：深色下只叠一层透明底，不出现整块亮色高光。
  */
 .extreme-core-diff {
-  --diff-gutter: 2.6rem;
+  --diff-gutter: 2.8rem;
   --diff-add-bg: rgb(var(--success) / .1);
   --diff-del-bg: rgb(var(--danger) / .08);
   --diff-add-strip: rgb(var(--success) / .85);
   --diff-del-strip: rgb(var(--danger) / .85);
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 20px;
+  font-size: 12.5px;
+  line-height: 22px;
 }
 
 :root[data-theme="dark"] .extreme-core-diff {
@@ -685,8 +768,8 @@
 .extreme-core-diff-no {
   padding-inline-end: .5rem;
   color: rgb(var(--fg-subtle) / .85);
-  font-size: 10.5px;
-  line-height: 20px;
+  font-size: 11.5px;
+  line-height: 22px;
   text-align: end;
   user-select: none;
 }
@@ -720,3 +803,42 @@
 }
 
 /* 发送/停止沿用 Sender 自带的圆形主色按钮（ArrowUp / Loading→停止）。 */
+
+/* ---------------- Running step sweep ---------------- */
+/*
+ * A single light band sweeps across the current step / collapsed running header.
+ * It must stay subtle: the user is reading, not watching a loading screen.
+ */
+@keyframes extreme-core-sweep {
+  from { transform: translateX(-130%); }
+  to { transform: translateX(130%); }
+}
+
+.extreme-core-agent-running .extreme-core-agent-activity-header,
+.extreme-step-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.extreme-core-agent-running .extreme-core-agent-activity-header::after,
+.extreme-step-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 15%,
+    rgb(var(--accent) / 0.14) 45%,
+    transparent 75%
+  );
+  animation: extreme-core-sweep 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core-agent-running .extreme-core-agent-activity-header::after,
+  .extreme-step-sweep::after {
+    animation: none;
+    background: none;
+  }
+}

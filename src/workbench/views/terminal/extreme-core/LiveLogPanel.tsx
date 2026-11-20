@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pause, Play, Search, Square } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import type { LogSource } from "@/api/types/panel";
 import { filterLines, visibleLines } from "./log-buffer";
 import { activeLogFor, useLogStreamStore } from "./log-stream-store";
@@ -70,11 +71,10 @@ export function LiveLogPanel({
             {t("切换日志来源")}
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={paused ? t("继续跟随") : t("暂停滚动")}
-          title={paused ? t("继续跟随") : t("暂停滚动")}
+        <ExtremeIconButton
+          label={paused ? t("继续跟随") : t("暂停滚动")}
+          icon={paused ? Play : Pause}
+          iconSize={12}
           onClick={() => {
             if (paused) {
               resume(stream!.id);
@@ -84,19 +84,14 @@ export function LiveLogPanel({
               setFollow(false);
             }
           }}
-        >
-          {paused ? <Play size={12} /> : <Pause size={12} />}
-        </Button>
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={t("停止监听")}
-          title={t("停止监听")}
+        />
+        <ExtremeIconButton
+          label={t("停止监听")}
+          icon={Square}
+          iconSize={12}
           disabled={status === "stopped"}
           onClick={() => stream && stop(stream.id)}
-        >
-          <Square size={12} />
-        </Button>
+        />
       </div>
 
       <div className="flex items-center gap-1 border-b border-line/70 px-2 py-1">

@@ -23,15 +23,15 @@ mod state;
 mod tools;
 
 pub use changes::{
-    ChangeRegistry, FileChangeDetail, FileChangeSummary, FileDiff, FileSnapshot, SnapshotView,
-    MAX_SNAPSHOT_BYTES,
+    ChangeDraft, ChangeRegistry, FileChangeDetail, FileChangeSummary, FileDiff, FileSnapshot,
+    SnapshotView, MAX_SNAPSHOT_BYTES,
 };
 pub use protocol::{
     parse_tool_calls, redact, strip_tool_calls, tail_truncate, tool_prompt, AgentEvent,
-    AgentOutcome, AgentStep, ToolCall, ToolResult, ToolRisk, MAX_COMMAND_SECONDS, MAX_ROUNDS,
+    AgentOutcome, AgentStep, Lang, ToolCall, ToolResult, ToolRisk, MAX_COMMAND_SECONDS, MAX_ROUNDS,
     MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
 };
-pub use runner::{spawn_agent, AgentInput, AgentTurn};
+pub use runner::{spawn_agent, AgentInput, AgentTurn, AGENT_EVENT};
 pub use state::{AgentRegistry, AgentSnapshot, ContextUsage, TokenUsage};
 
 #[cfg(test)]

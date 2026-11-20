@@ -7,6 +7,7 @@ import {
   enqueueSend,
   forgetSends,
   markSendError,
+  moveSendUp,
 } from "../send-queue";
 
 /**
@@ -51,6 +52,22 @@ describe("发送队列", () => {
     // 失败项保留并带原因，后面的等它处理完 —— 顺序不能乱。
     expect(nextSend(failed, "ws-a")).toBeNull();
     expect(sendsFor(failed, "ws-a")[0].error).toBe("服务器未连接");
+  });
+
+  it("上移只在本对话内交换，不跨对话、不越过队首", () => {
+    const queue = [
+      item("ws-a", "一", "q1"),
+      item("ws-b", "B 一", "q2"),
+      item("ws-a", "二", "q3"),
+      item("ws-a", "三", "q4"),
+    ];
+    expect(moveSendUp(queue, "q3").map((entry) => entry.id)).toEqual([
+      "q3",
+      "q2",
+      "q1",
+      "q4",
+    ]);
+    expect(moveSendUp(queue, "q1")).toBe(queue);
   });
 
   it("取消只删目标项；删除对话会清掉它自己的队列", () => {

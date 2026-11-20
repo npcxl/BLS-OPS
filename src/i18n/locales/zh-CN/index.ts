@@ -21,6 +21,7 @@ import deployments from "./deployments";
 import deployExec from "./deployExec";
 import database from "./database";
 import databaseWorkspace from "./databaseWorkspace";
+import coverage from "./coverage";
 
 export default {
   ...common,
@@ -41,4 +42,5 @@ export default {
   ...deployExec,
   ...database,
   ...databaseWorkspace,
+  ...coverage,
 } as const;

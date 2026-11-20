@@ -16,6 +16,7 @@ import extreme from "./extreme";
 import redis from "./redis";
 import terminal from "./terminal";
 import workbenchUi from "./workbenchUi";
+import coverage from "./coverage";
 
 export default {
   ...commands,
@@ -28,4 +29,5 @@ export default {
   ...redis,
   ...terminal,
   ...workbenchUi,
+  ...coverage,
 } as const;

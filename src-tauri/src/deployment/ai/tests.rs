@@ -834,8 +834,21 @@ fn a_cancelled_retry_wait_returns_without_sending_again() {
     let advisor = advisor(&server, "sk-x");
     let cancel = AiCancel::new();
     let cancel_for_thread = cancel.clone();
+    let seen = server.requests.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        /*
+         * 不要从测试开始就固定睡 150ms：慢 runner 上第一个请求可能还没到，
+         * 取消会发生在发送前，断言就变成 0 次请求。等到第一次请求真的被
+         * mock server 收到，再留 50ms 进入退避，然后取消。
+         */
+        for _ in 0..200 {
+            let received = seen.lock().map(|items| !items.is_empty()).unwrap_or(false);
+            if received {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
         cancel_for_thread.cancel();
     });
     let outcome = review_outcome(&advisor, &cancel);

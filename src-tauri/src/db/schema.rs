@@ -64,7 +64,7 @@ impl AppDb {
 /// 重启后仍能显示「已验证 / 部分完成」），v26 补 `cwd`（恢复执行时的起点目录）。
 /// 这个常量还决定 `init()` 要不要在迁移前自动备份旧库 —— 落后于真实迁移步数
 /// 时，v18 的库会**跳过**那次备份直接升上来。
-pub const SCHEMA_VERSION: u32 = 26;
+pub const SCHEMA_VERSION: u32 = 27;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -1338,10 +1338,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          * 内置能力表只认 DeepSeek 与 OpenAI 推理模型，用户接的别家模型落到
          * "未知"，界面只剩「默认 / 自动」而看不出原因。三列都允许 NULL：
          * NULL = 用内置表，空数组 = 用户明确声明"没有"（两者语义不同，不能合并）。
+         *
+         * 迁移测试会构造只含部分表的旧库；别为了补列把测试库弄挂，表不存在
+         * 就跳过补列（真实旧库一定有这张表）。
          */
-        add_column(conn, "ai_providers", "context_window", "INTEGER")?;
-        add_column(conn, "ai_providers", "context_budgets", "TEXT")?;
-        add_column(conn, "ai_providers", "reasoning_efforts", "TEXT")?;
+        let has_ai_providers = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ai_providers'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if has_ai_providers {
+            add_column(conn, "ai_providers", "context_window", "INTEGER")?;
+            add_column(conn, "ai_providers", "context_budgets", "TEXT")?;
+            add_column(conn, "ai_providers", "reasoning_efforts", "TEXT")?;
+        }
         conn.pragma_update(None, "user_version", 27u32)?;
     }
     Ok(())

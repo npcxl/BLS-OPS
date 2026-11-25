@@ -6,6 +6,98 @@
  * (including punctuation and `{{placeholders}}`).
  */
 export default {
+  "能力来源":
+    "Capability source",
+  "按内置能力表识别；认不出的模型沿用供应商默认设置，不写任何覆盖值。":
+    "Resolved from the built-in capability table; unknown models keep provider defaults with no overrides.",
+  "不写可调档位：请求不传思考强度与上下文预算，由供应商决定。":
+    "No tunable tiers are written: requests omit reasoning effort and context budget, leaving it to the provider.",
+  "只把下面勾选的档位写进配置，请求按这份声明发送。":
+    "Only the tiers ticked below are written to the config, and requests follow that declaration.",
+  "勾选该模型支持的档位，输入区的菜单只列出这些":
+    "Tick the tiers this model supports; the composer menu lists only these",
+  "只勾这个模型真实支持的档位；勾了超出窗口的档位，请求会被服务端拒绝。":
+    "Only tick tiers the model really supports; tiers beyond its window are rejected by the server.",
+  "AI 模型":
+    "AI models",
+  "模型只审阅部署方案，不会执行任何操作。":
+    "Models only review deployment proposals; they never execute anything.",
+  "添加模型":
+    "Add model",
+  "加载中":
+    "Loading",
+  "还没有模型":
+    "No models yet",
+  "已停用":
+    "Disabled",
+  "密钥已保存":
+    "Key saved",
+  "密钥未保存":
+    "Key missing",
+  "测试连接":
+    "Test connection",
+  "设为默认":
+    "Set as default",
+  "删除模型提供方":
+    "Delete model provider",
+  "连接成功（{{ms}} 毫秒，{{attempts}} 次尝试）":
+    "Connection OK ({{ms}} ms, {{attempts}} attempt(s))",
+  "同时从系统凭据管理器中删除 API Key":
+    "Also delete the API key from the system credential manager",
+  "编辑模型":
+    "Edit model",
+  "快速添加":
+    "Quick add",
+  "选一个预设，只需要填 API Key；预设用的是各家的最新别名而不是固定版本，模型 ID 仍然可以改。":
+    "Pick a preset and fill in only the API Key; presets use each provider's latest alias rather than a fixed version, and the model ID is still editable.",
+  "自定义":
+    "Custom",
+  "自己填写 Base URL 和模型":
+    "Enter your own base URL and model",
+  "预设已填好，只差 API Key；保存后仍可在列表里修改。":
+    "Preset filled in — only the API Key is needed. You can still edit it from the list after saving.",
+  "名称":
+    "Name",
+  "提供方类型":
+    "Provider type",
+  "OpenAI 兼容":
+    "OpenAI compatible",
+  "留空表示沿用已保存的密钥；密钥只写进系统凭据管理器。":
+    "Leave empty to keep the saved key. Keys are only written to the system credential manager.",
+  "密钥只写进系统凭据管理器，数据库里只保存引用。":
+    "The key is written to the system credential manager only; the database keeps a reference.",
+  "留空表示沿用已保存的密钥":
+    "Leave empty to keep the saved key",
+  "超时（秒）":
+    "Timeout (seconds)",
+  "最大输出 Token":
+    "Max output tokens",
+  "设为默认模型":
+    "Use as default",
+  "允许非本机地址使用明文 HTTP":
+    "Allow plain HTTP for non-local hosts",
+  "仅在完全信任的自建网关上开启。":
+    "Only enable this for a trusted self-hosted gateway on your own network.",
+  "先填好 Base URL、模型和 API Key":
+    "Fill in the base URL, model and API key first",
+  "测试中…":
+    "Testing…",
+  "保存中":
+    "Saving",
+  "保存":
+    "Save",
+  "上下文档位":
+    "Context tiers",
+  "自动识别":
+    "Auto detect",
+  "手动覆盖":
+    "Manual override",
+  "由供应商决定":
+    "Provider decides",
+  "首页":
+    "Home",
+  "MCP 服务":
+    "MCP servers",
   "超能模式": "Super Mode",
   // 能力 / 检查项 / 自选材料类型（数据文件里的 label 用中文当 key）
   "Kubernetes 工作负载": "Kubernetes workload",
@@ -274,6 +366,7 @@ export default {
   "模型": "Model",
   "本机提示": "Local note",
   "正在回答…": "Answering…",
+  "思考中": "Thinking",
   "仍在执行…": "Still running…",
 
   "模型与思考强度": "Model & reasoning",
@@ -471,8 +564,19 @@ export default {
   "工具调用": "Tool call",
   "正在分析请求": "Analyzing request",
   "正在使用工具": "Using tools",
+  "正在整理结果": "Putting results together…",
   "处理过程": "Activity",
   "工具调用 · {{n}} 次": "Tool calls · {{n}}",
+  "已跳过": "Skipped",
+  "待执行": "Pending",
+  "错误输出": "Error output",
+  "在右侧终端查看": "View in terminal pane",
+  "{{n}} 个操作": "{{n}} actions",
+  "正在执行 {{n}} 个操作": "Running {{n}} actions",
+  "{{n}} 个操作 · 等待你的确认": "{{n}} actions · waiting for you",
+  "{{n}} 个操作 · {{failed}} 个失败": "{{n}} actions · {{failed}} failed",
+  "{{n}} 个操作 · 未执行": "{{n}} actions · not run",
+  "{{n}} 个操作 · 已完成": "{{n}} actions · done",
   "危险": "Dangerous",
   "写入": "Write",
   "风险": "Risk",
@@ -581,6 +685,17 @@ export default {
   "没有送达": "Not delivered",
   "重发": "Resend",
   "重试": "Retry",
+  "正在加载变更…": "Loading changes…",
+  "编辑器保存": "Editor saves",
+  "文件在服务器上已不存在：历史 Diff 与路径仍保留。":
+    "The file no longer exists on the server: the historical diff and path are kept.",
+  "知道了": "Got it",
+  "加载失败": "Failed to load",
+  "变更列表加载失败": "Failed to load the change list",
+  "这次对话还没有文件变更：AI 写入、编辑器保存或计划上传后，这里会显示预览与实际差异。":
+    "This conversation has no file changes yet: AI writes, editor saves and plan uploads show up here with a preview and the actual diff.",
+  "能确定目标、读得到前后内容的改动生成逐行 Diff；其余操作只标注路径。":
+    "Changes with a known target and readable before/after content get a line-by-line diff; other operations are listed by path only.",
   "已停止：上面是停止前已经生成的内容。":
     "Stopped: the text above is what was generated before stopping.",
   "这次没有开始：{{reason}}": "This run did not start: {{reason}}",
@@ -652,6 +767,23 @@ export default {
   "没有匹配「{{filter}}」的文件。": "No files match \"{{filter}}\".",
   "没有待确认的变更。": "No pending changes.",
   "这次运行没有可展示的文件变更。": "This run has no file changes to show.",
+  "已删除": "Deleted",
+  "无净变化": "No net change",
+  "本轮无文件净变化": "No net file changes in this run",
+  "{{n}} 条未确认": "{{n}} unconfirmed",
+  "{{n}} 个无净变化": "{{n}} without net change",
+  "另有 {{n}} 个文件原样保存或改回原样，已从列表隐藏；需要核对过程请在步骤历史里查看。":
+    "{{n}} more file(s) ended up identical to how they started, so they are hidden here — check the step history to audit them.",
+  "这次运行没有产生可确认的文件变化。": "This run produced no confirmable file changes.",
+  /* 后端算出来的零行变化原因（没有逐行差异时顶替 +0 -0）。 */
+  "新增空文件": "New empty file",
+  "删除空文件": "Deleted empty file",
+  "二进制已修改（只记录指纹与大小）": "Binary file changed (fingerprint and size only)",
+  "敏感内容已变化，差异已隐藏": "Sensitive content changed — the diff is hidden",
+  "内容已变化，但没有逐行差异": "Content changed, but there is no line-by-line diff",
+  "文件超过 256 KB：只确认了大小，未逐行比较":
+    "File exceeds 256 KB: only the size was confirmed, no line-by-line diff",
+  "目标是目录：只记录存在状态": "Target is a directory: only its existence is recorded",
   "还没有对话：文件变更按对话归属，先开始一条任务。":
     "No conversation yet: file changes belong to a conversation — start a task first.",
   "这次对话还没有文件变更：上传、AI 写入或 shell 改写文件后，这里会显示预览与实际差异。":
@@ -802,8 +934,8 @@ export default {
     "There is no executable plan yet — describe what you want to do first.",
   "计划还没有得到用户确认：请用一句话请用户回复「开始吧」，不要假设已经执行。":
     "The plan is not confirmed yet: ask the user to reply with the go-ahead in one sentence, and do not assume it ran.",
-  "在 设置 → AI providers 里配置默认模型与 API Key。":
-    "Configure the default model and API key in Settings → AI providers.",
+  "在左栏「设置」里配置默认模型与 API Key。":
+    "Configure the default model and API key in Settings in the left rail.",
   "回复「重试」重新执行。": "Reply with retry to run it again.",
   "服务器未连接：重新连接后才能使用手动终端。":
     "Server not connected — reconnect to use the manual terminal.",
@@ -816,6 +948,12 @@ export default {
   "等待执行": "Waiting to run",
   "终端": "Terminal",
   "计划": "Plan",
+  "执行计划": "Execution plan",
+  "收起计划": "Collapse plan",
+  "步骤 {{n}}": "{{n}} steps",
+  "已全部完成": "All steps done",
+  "需要确认的前提": "Premises to confirm",
+  "已完成 {{done}} / {{total}} 步": "{{done}} / {{total}} steps done",
   "拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）":
     "Drag to resize; once focused, use the left/right arrows (Shift for bigger steps)",
   "展开视图": "Expand view",
@@ -896,4 +1034,422 @@ export default {
   "Shell 写入（未采集 Diff）": "Shell write (diff not captured)",
   "命令已经执行，但没有采集到逐行差异（shell 直接改写）。":
     "The command ran, but no line-by-line diff was captured (shell edited the file directly).",
+  "收起侧栏": "Collapse sidebar",
+  "展开任务列表": "Expand task list",
+  "收起任务列表": "Collapse task list",
+  "任务列表已收起": "Task list collapsed",
+  "任务列表已收起，还有 {{n}} 个任务在后台":
+    "Task list collapsed — {{n}} more task(s) running in the background",
+  "管理": "Manage",
+  "设置": "Settings",
+  "返回对话": "Back to chat",
+  "模型、上下文能力与对话偏好": "Models, context capabilities and chat preferences",
+  "上下文窗口上限（Token）": "Context window limit (tokens)",
+  "模型真实支持的窗口上限；下面的预算档位不应超过它。":
+    "The model's real context window; keep the budgets below within this limit.",
+  "可选上下文预算": "Context budgets",
+  "输入区「上下文」菜单里可选的预算；应不超过上面的窗口上限":
+    "Budgets offered in the composer; keep them within the context window above.",
+  "停用": "Disable",
+  "启用": "Enable",
+  "该模型未登记上下文档位：请到左栏「设置」里填上下文窗口":
+    "This model has no declared context budgets — set the context window in Settings in the left rail.",
+  "该模型未登记能力：请到左栏「设置」里填上下文窗口与思考强度档位":
+    "This model has no declared capabilities — set the context window and reasoning efforts in Settings in the left rail.",
+
+  /* ---- 超能：审批与权限 ---- */
+  "已批准": "Approved",
+  "{{n}} 个操作 · 已批准，等待执行": "{{n}} actions · approved, waiting to run",
+  "只执行查询；写入 / 删除会被拒绝，提权禁用":
+    "Queries only; writes / deletes are rejected and sudo is disabled",
+  "按需确认": "Ask before changes",
+  "查询直接执行；写 / 改 / 删逐条确认":
+    "Queries run directly; every write / edit / delete needs confirmation",
+  "完全访问": "Full access",
+  "写入 / 修改 / 删除直接执行；严重操作仍确认":
+    "Writes / edits / deletes run directly; severe operations still ask",
+  "管理权限": "Manage permissions",
+  "默认值、提权、备份与外部工具": "Defaults, sudo, backups and external tools",
+  "执行权限": "Execution permissions",
+  "只读直接拒绝写入；按需确认逐条询问；完全访问只对严重操作二次确认。仅作用于超能 Agent 的工具调用。":
+    "Read-only rejects writes; Ask confirms each one; Full access only double-checks severe operations. Applies to Extreme Agent tool calls only.",
+  "新任务默认值": "Defaults for new tasks",
+  "当前任务覆盖": "This task's override",
+  "跟随默认": "Follow default",
+  "这条对话使用上面的覆盖值；新任务仍使用默认值。":
+    "This conversation uses the override above; new tasks keep the defaults.",
+  "这条对话当前跟随默认值；改这里会为它单独记住。":
+    "This conversation follows the defaults; changing this remembers a value just for it.",
+  "外部工具": "External tools",
+  "当前会话已启用、已连接且绑定到这台服务器 / 工作区的 MCP 连接。调用仍受上面的权限与审批约束。":
+    "MCP connections enabled in this session, connected, and bound to this server / workspace. Calls still follow the permissions and approvals above.",
+  "可调用范围：{{mode}}。只读模式下写入型工具会被拦截。":
+    "Callable scope: {{mode}}. In read-only mode, write tools are blocked.",
+  "管理 MCP": "Manage MCP",
+  "当前会话没有可用的外部 MCP 连接。": "No external MCP connections are available in this session.",
+  "{{n}} 个工具（{{read}} 只读）": "{{n}} tools ({{read}} read-only)",
+  "备份与恢复": "Backups and restore",
+  "覆盖超能 Agent 的文件修改与删除；新建文件无需备份。备份失败会取消本次改动并在步骤里说明原因。":
+    "Covers the Extreme Agent's file edits and deletions; new files need no backup. A failed backup cancels the change and explains why in the step.",
+  "备份保留期限": "Backup retention",
+  "当前生效：{{n}} 天，下次备份时清理同目录下过期的本应用备份。":
+    "Active: {{n}} days; the next backup prunes expired backups of this app in the same directory.",
+  "当前生效：永久保留，不会自动清理。": "Active: kept forever, never pruned automatically.",
+  "永久": "Forever",
+  "{{n}} 天": "{{n}} days",
+  "查看已有备份": "View existing backups",
+  "{{n}} 份已验证": "{{n}} verified",
+  "只列出当前会话里已确认存在的备份；还原会走 Agent 的权限、审批与变更登记。":
+    "Lists only backups confirmed in this session; restoring goes through the Agent's permissions, approvals and change log.",
+  "当前会话还没有已登记的备份。": "No backups have been registered in this session yet.",
+  "备份：{{path}}": "Backup: {{path}}",
+  "应用范围": "Coverage",
+  "这一页的权限与备份由 Rust 执行器裁决；未接入的入口保留各自原有确认。":
+    "Permissions and backups here are enforced by the Rust executor; entries not wired in keep their own confirmations.",
+  "Agent 工具 / 写文件 / 删除 / 服务重启":
+    "Agent tools / write file / delete / service restart",
+  "已覆盖": "Covered",
+  "MCP 工具调用": "MCP tool calls",
+  "右栏远程编辑保存 / 删除": "Right-pane remote edit save / delete",
+  "保留原有确认": "Keeps its own confirmation",
+  "标准模式手工文件操作": "Manual file operations in standard mode",
+  "保留原有确认与备份": "Keeps its own confirmation and backup",
+  "部署执行器": "Deploy executor",
+  "使用部署自己的确认": "Uses the deploy's own confirmation",
+  "权限只决定要不要确认，不改变“只查询”任务的只读边界；列出计划本身不授予执行权限。":
+    "Permissions only decide whether to ask; they never widen a read-only task. Listing a plan does not grant execution rights.",
+  "还原备份": "Restore backup",
+  "将用备份覆盖 {{target}}：\n{{backup}}\n\n执行前会按当前权限重新核对版本与目标，成功后记为一条真实文件变更。":
+    "The backup will overwrite {{target}}:\n{{backup}}\n\nBefore running, the version and target are re-checked against current permissions; a success is recorded as a real file change.",
+  "打开备份文件": "Open backup file",
+  "二进制已修改": "Binary file changed",
+  "允许提权": "Allow sudo",
+  "允许 Agent 执行 sudo；只读模式仍禁用。需要提权的操作按实际影响确认。":
+    "Let the Agent run sudo; still disabled in read-only mode. Operations that need elevation are confirmed by their actual impact.",
+  "修改或覆盖前备份": "Back up before modify / overwrite",
+  "只保护本次会被覆盖 / 修改的文件，在同目录留旧版本（.bls-bak. 标记）；新建文件显示「无需备份」。":
+    "Only the files overwritten / modified this time are protected, keeping the old version in the same directory (.bls-bak. marker); new files show “no backup needed”.",
+  "删除前备份": "Back up before delete",
+  "删除文件时保护该文件，删除目录时保护整个目标目录；目录同步只保护本次会被覆盖 / 删除的具体文件。":
+    "Deleting a file protects that file; deleting a directory protects the whole target directory; directory sync protects only the specific files overwritten / deleted this time.",
+  "操作权限与备份策略": "Operation permissions and backup policy",
+
+  /* ---- 超能：MCP 菜单 / 市场 / 连接 ---- */
+  "MCP 能力": "MCP capabilities",
+  "已启用但暂不可用": "Enabled but currently unavailable",
+  "{{n}} 个工具": "{{n}} tools",
+  "可用": "Available",
+  "当前服务器不可用": "Unavailable on this server",
+  "未测试": "Not tested",
+  "未绑定当前服务器": "Not bound to this server",
+  "没有启用的工具": "No enabled tools",
+  "已启用 {{n}} 项": "{{n}} enabled",
+  "内置运维技能": "Built-in ops skills",
+  "检查环境…": "Checking environment…",
+  "重新检测": "Re-detect",
+  "已连接 MCP": "MCP connected",
+  "还没有连接。先从市场添加一个，或自定义远程 / 本地服务。":
+    "Nothing connected yet — add one from the marketplace, or define a custom remote / local server.",
+  "打开 MCP 市场": "Open MCP marketplace",
+  "管理连接": "Manage connections",
+  "支持": "Supported",
+  "客户端测试中": "Being tested",
+  "暂不支持": "Not supported yet",
+  "编辑 MCP 连接": "Edit MCP connection",
+  "添加 {{name}}": "Add {{name}}",
+  "自定义 MCP 连接": "Custom MCP connection",
+  "官方文档": "Official docs",
+  "上游来源": "Upstream source",
+  "同一服务可以配多个实例，例如「Grafana · 生产」。":
+    "One service can have several instances, e.g. “Grafana · Production”.",
+  "必填": "Required",
+  "可选": "Optional",
+  "服务地址（可修改）": "Server URL (editable)",
+  "已按模板预填；实例地址不同或模板变更时以这里为准。":
+    "Prefilled from the template; if the instance URL differs or the template changed, this value wins.",
+  "启动命令（可修改）": "Launch command (editable)",
+  "默认使用目录模板。": "Defaults to the catalog template.",
+  "当前目标：{{url}}": "Current target: {{url}}",
+  "远程 HTTP": "Remote HTTP",
+  "本地进程": "Local process",
+  "本地进程（stdio）": "Local process (stdio)",
+  "服务地址": "Server URL",
+  "Streamable HTTP 的 MCP 端点（http/https）。": "Streamable HTTP MCP endpoint (http/https).",
+  "请求 Header": "Request headers",
+  "一行一个 KEY=VALUE；令牌写入系统钥匙串，值留空表示保留原值。":
+    "One KEY=VALUE per line; tokens go to the system keychain — leave the value empty to keep the current one.",
+  "启动命令": "Launch command",
+  "例如 npx、uvx 或服务自己的可执行文件。":
+    "e.g. npx, uvx or the service's own executable.",
+  "参数": "Arguments",
+  "一行一个参数。": "One argument per line.",
+  "一行一个 KEY=VALUE；值写入系统钥匙串，留空表示保留原值。":
+    "One KEY=VALUE per line; values go to the system keychain — leave empty to keep the current value.",
+  "绑定范围": "Binding",
+  "当前工作区": "This workspace",
+  "当前服务器": "This server",
+  "全局": "Global",
+  "工作区": "Workspace",
+  "启用这个连接": "Enable this connection",
+  "连接成功后默认勾选": "Enabled by default once connected",
+  "已连接 · 发现 {{n}} 个工具（{{ms}} ms）":
+    "Connected · {{n}} tools discovered ({{ms}} ms)",
+  "连接失败：{{error}}": "Connection failed: {{error}}",
+  "请填写 {{label}}": "Please fill in {{label}}",
+  "导入 JSON": "Import JSON",
+  "自定义添加": "Add custom",
+  "市场": "Marketplace",
+  "我的连接": "My connections",
+  "搜索服务、发布者或用途": "Search services, publishers or use cases",
+  "运维精选": "Ops picks",
+  "本地维护的清单": "Locally maintained list",
+  "没有匹配的服务": "No matching services",
+  "添加": "Add",
+  "需要授权": "Authorization required",
+  "搜索更多": "Search more",
+  "官方 MCP Registry": "Official MCP Registry",
+  "关键词，例如 postgres、github": "Keywords, e.g. postgres, github",
+  "搜索中…": "Searching…",
+  "搜索": "Search",
+  "由 BLS-OPS 现有能力提供": "Provided by BLS-OPS's existing capabilities",
+  "当前服务器：{{name}}。勾选后会出现在输入框下栏的 MCP 菜单里。":
+    "Current server: {{name}}. Enabled tools appear in the MCP menu under the composer.",
+  "可用 · 经由 {{server}}": "Available · via {{server}}",
+  "当前连接": "Current connection",
+  "需要先连接服务器": "Connect the server first",
+  "{{n}} 个实例": "{{n}} instances",
+  "正在加载…": "Loading…",
+  "还没有 MCP 连接": "No MCP connections yet",
+  "从市场添加，或自定义远程 / 本地服务。":
+    "Add one from the marketplace, or define a custom remote / local server.",
+  "默认勾选": "Enabled by default",
+  "绑定：{{scope}}": "Binding: {{scope}}",
+  "停用服务": "Disable service",
+  "启用服务": "Enable service",
+  "测试 / 刷新": "Test / refresh",
+  "可用能力": "Available capabilities",
+  "{{tools}} 个工具": "{{tools}} tools",
+  "{{n}} 个资源": "{{n}} resources",
+  "{{n}} 个提示": "{{n}} prompts",
+  "资源": "Resources",
+  "提示模板": "Prompt templates",
+  "配置与能力缓存存本地 SQLite；env / Header 的值存系统钥匙串，界面只显示是否已保存。":
+    "Configuration and capability cache live in local SQLite; env / header values live in the system keychain — the UI only shows whether they are saved.",
+  "添加连接": "Add connection",
+  "连接方式：{{transport}} · 授权：{{auth}}": "Transport: {{transport}} · Auth: {{auth}}",
+  "无": "None",
+  "当前客户端不支持这个传输方式。": "This client does not support that transport.",
+  "已配置的实例": "Configured instances",
+  "已添加 · 未验证": "Added · Unverified",
+  "正在连接服务…": "Connecting…",
+  "已连接但无可用工具": "Connected · No tools",
+  "工具发现失败": "Tool discovery failed",
+  "导入 MCP JSON": "Import MCP JSON",
+  "确认添加 {{n}} 个": "Add {{n}}",
+  "解析预览": "Preview",
+  "将添加这些连接：": "These connections will be added:",
+  "粘贴 mcpServers / servers 配置": "Paste a mcpServers / servers config",
+  "识别常见的 mcpServers、servers 对象；先预览再确认。":
+    "Recognizes common mcpServers / servers objects; preview first, then confirm.",
+  "删除 MCP 连接": "Delete MCP connection",
+  "删除「{{name}}」？它的工具会从后续任务中移除。":
+    "Delete “{{name}}”? Its tools will be removed from future tasks.",
+  "未找到 mcpServers / servers 配置": "No mcpServers / servers config found",
+  "没有可导入的服务": "No importable services",
+  "市场、连接与可用能力": "Marketplace, connections and available capabilities",
+  "监控与日志": "Monitoring and logs",
+  "容器与集群": "Containers and clusters",
+  "云服务与 DNS": "Cloud services and DNS",
+  "该服务只提供旧版 SSE 传输，当前客户端暂不支持。":
+    "This service only offers the legacy SSE transport, which this client does not support yet.",
+  "目录没有提供可用的远程地址或 stdio 启动信息，暂不支持。":
+    "The catalog entry has no usable remote URL or stdio launch info, so it is not supported yet.",
+  "官方 Registry": "Official Registry",
+  "来自官方 MCP Registry": "From the official MCP Registry",
+  "访问令牌（如服务要求）": "Access token (if the service requires one)",
+  "BLS-OPS 内置": "Built into BLS-OPS",
+  "服务器巡检": "Server inspection",
+  "查看系统状态、进程、端口与资源": "Inspect system status, processes, ports and resources",
+  "通过当前 SSH 连接执行只读命令，适合先了解机器现状。":
+    "Runs read-only commands over the current SSH connection — good for a first look at the machine.",
+  "读取服务日志与 journal / 容器输出": "Read service logs plus journal / container output",
+  "沿用现有日志通道；连接断开时不可用。":
+    "Reuses the existing log channel; unavailable while disconnected.",
+  "读取、修改、上传与解压文件": "Read, edit, upload and extract files",
+  "受任务权限与备份策略约束；只读档会拒绝写入。":
+    "Governed by task permissions and the backup policy; read-only rejects writes.",
+  "解析域名、检查证书与 HTTP 响应": "Resolve DNS, check certificates and HTTP responses",
+  "需要当前服务器能执行 dig / curl 等只读命令。":
+    "Requires the server to run read-only commands such as dig / curl.",
+  "查看容器、Compose 服务与镜像": "Inspect containers, Compose services and images",
+  "检测到 docker 后默认启用；未安装时不可用。":
+    "Enabled by default once docker is detected; unavailable when not installed.",
+  "Nginx / 站点排查": "Nginx / site troubleshooting",
+  "检查站点配置、语法与容器内 Nginx": "Check site config, syntax and Nginx inside containers",
+  "检测到 nginx 或 /etc/nginx 后默认启用。":
+    "Enabled by default once nginx or /etc/nginx is detected.",
+  "查看与操作 systemd 服务": "Inspect and control systemd services",
+  "检测到 systemctl 后默认启用；重启关键服务仍按严重操作确认。":
+    "Enabled by default once systemctl is detected; restarting key services is still confirmed as a severe action.",
+  "数据库排查": "Database troubleshooting",
+  "连接 MySQL / PostgreSQL / Redis 排查": "Investigate through MySQL / PostgreSQL / Redis",
+  "检测到数据库客户端或已绑定连接后启用。":
+    "Enabled once a database client or a bound connection is detected.",
+
+  /* ---- 超能：检查项 / 部署计划 / 环境提示 ---- */
+  "条件未满足": "Precondition not met",
+  "无权限": "No permission",
+  "无法验证": "Cannot verify",
+  "不适用": "Not applicable",
+  "已在监听": "Already listening",
+  "未被占用": "Free",
+  "读不到 df 输出": "Could not read df output",
+  "没有可读取的证书（可能还没配 HTTPS）":
+    "No readable certificate (HTTPS probably not configured yet)",
+  "请求没有返回": "The request returned nothing",
+  "续签证书": "Renew the certificate",
+  "把 A 记录改为本机地址，或确认应部署到记录指向的那台机器":
+    "Point the A record at this machine, or confirm you should deploy to the host it resolves to",
+  "为这个域名添加 A 记录": "Add an A record for this domain",
+  "确认占用它的服务是否可以停止，或改用其他端口":
+    "Check whether the service holding it can stop, or use another port",
+  "换一个有写权限的目录，或用提权账号执行":
+    "Use a writable directory, or run with an elevated account",
+  "清理磁盘或更换部署目录": "Free up disk space or choose another deploy directory",
+  "为这个域名重新签发证书，或改用已覆盖的域名":
+    "Reissue a certificate for this domain, or use a covered domain",
+  "确认上游服务是否在运行、监听端口与路径是否正确":
+    "Check whether the upstream service runs and whether its port and path are correct",
+  "compose 里有 build 段，需要在服务器上构建（会下载依赖，耗时较长）":
+    "The compose file has a build section, so it must build on the server (downloads dependencies, takes a while)",
+  "读取 compose 项目里每个容器的实际状态，非 running 即视为失败":
+    "Read the real state of every container in the compose project; anything not running counts as failure",
+  "没有读到任何容器状态": "No container state was read",
+  "正在分析": "Analyzing",
+  "上次运行已中断：最后一步是否生效需要先在服务器上核对。":
+    "The previous run was interrupted: check on the server whether the last step took effect.",
+  "未找到上游": "Upstream not found",
+  "未找到目录": "Directory not found",
+  "上传附件到服务器临时目录": "Upload attachments to a temporary directory on the server",
+  "域名已指向本机，可以在本机验证公网入口":
+    "The domain already points at this machine — the public entry can be verified locally",
+  "域名指向别的主机 —— 改动前先确认目标机器，否则改完也访问不到":
+    "The domain points at another host — confirm the target machine first, or the change will not be reachable",
+  "域名当前解析不到，部署完成后也无法通过域名访问":
+    "The domain does not resolve right now, so it will not be reachable after deployment either",
+  "缺少本机对外地址，无法判断域名是否指向本机":
+    "No public address for this machine, so we cannot tell whether the domain points here",
+  "实测可用工具：（未探测到，或探测未执行）":
+    "Available tools (measured): (none detected, or the probe did not run)",
+  "无记录": "No record",
+  "已运行": "Uptime",
+  "新任务继承；MAX 仍会触发强制计划。切换模型时按模型实际支持的档位校验。":
+    "New tasks inherit these; MAX still forces a plan. When switching models, the tier is validated against what the model actually supports.",
+  "管理 MCP 连接": "Manage MCP connections",
+  "待确认通知可以直接允许或拒绝，与聊天审批卡共用同一个审批 ID。":
+    "Approval notifications can allow or deny directly, sharing the same approval ID as the chat approval card.",
+
+  /* ---- 超能：设置页 ---- */
+  "模型与供应商": "Models and providers",
+  "这里是超能模式的模型默认与能力来源；普通模式不再单独提供入口，但仍读取同一份配置。":
+    "This is where Extreme mode gets its model defaults and capabilities; standard mode no longer has its own entry but reads the same configuration.",
+  "对话与上下文": "Conversation and context",
+  "默认值用于新任务；当前会话可在输入框底栏覆盖，下面会显示实际生效值。":
+    "Defaults apply to new tasks; the current conversation can override them from the composer, and the effective value is shown below.",
+  "默认上下文范围": "Default context scope",
+  "当前会话含本任务历史、工具结果与已纳入的附件；仅本条只带这句话；自选只带勾选材料。":
+    "Conversation includes this task's history, tool results and included attachments; This message sends only the sentence itself; Picked sends only the selected material.",
+  "发送前自选": "Pick before sending",
+  "默认回复详略": "Default reply detail",
+  "只影响回答的写法；命令、路径、日志与错误原文保持可复制。":
+    "Affects wording only; commands, paths, logs and raw errors stay copyable.",
+  "默认回复语言": "Default reply language",
+  "跟随输入使用界面语言；固定语言会覆盖界面语言，仅影响回答正文。":
+    "Follow input uses the UI language; a fixed language overrides it for reply bodies only.",
+  "跟随输入": "Follow input",
+  "中文": "Chinese",
+  "英文": "English",
+  "模型、对话、执行、通知与界面偏好":
+    "Model, conversation, execution, notifications and interface preferences",
+  "默认思考强度": "Default reasoning effort",
+  "默认上下文预算": "Default context budget",
+  "只影响本轮带入多少内容；模型窗口与最大输出仍由后端按模型能力校验。":
+    "Only controls how much content is included this round; the model window and max output are still validated by the backend against model capabilities.",
+  "当前会话覆盖": "This conversation's override",
+  "输入框底栏与此处共用": "Shared with the composer",
+  "当前没有打开的对话": "No conversation open",
+  "回复详略": "Reply detail",
+  "思考 / 预算": "Reasoning / budget",
+  "未配置": "Not configured",
+  "恢复默认": "Reset to default",
+  "点击输入框的上下文用量可查看历史、附件、工具结果与裁剪情况；当前上下文和任务累计分别统计。":
+    "Click the context usage in the composer to see history, attachments, tool results and trimming; current context and task totals are counted separately.",
+  "执行与计划": "Execution and plan",
+  "计划卡显隐与工具详情默认展开只影响界面；权限与审批仍在「权限」页。":
+    "Plan-card visibility and tool-detail expansion are display-only; permissions and approvals live on the Permissions page.",
+  "计划卡": "Plan card",
+  "「生成后展开」只在第一份计划出现时展开一次；手动收起后进度更新不再抢焦点。":
+    "“Expand on generation” expands once when the first plan appears; after you collapse it, progress updates no longer steal focus.",
+  "生成后展开": "Expand on generation",
+  "默认收起": "Collapsed by default",
+  "工具详情": "Tool details",
+  "普通命令行的默认展开状态；当前对话里手动展开优先，失败原因和待确认操作始终可见。":
+    "Default expansion for ordinary command rows; manual expansion in the current conversation wins, and failure reasons plus pending approvals are always visible.",
+  "默认折叠": "Collapsed by default",
+  "默认展开": "Expanded by default",
+  "执行前说明": "Note before running",
+  "每组操作开始前保留一句简短说明；相同目的连续命令共用一次，目的改变时再补。":
+    "Keep one short note before each group of operations; consecutive commands with the same goal share it, and a new one appears when the goal changes.",
+  "始终开启": "Always on",
+  "管理权限与备份": "Manage permissions and backups",
+  "通知": "Notifications",
+  "只在主窗口最小化、隐藏或收进托盘时发桌面通知；主窗口可见时只在会话里显示状态。重进与历史恢复不补发。":
+    "Desktop notifications fire only while the main window is minimized, hidden or in the tray; when it is visible, status stays in the conversation. Re-entering or restoring history does not resend them.",
+  "后台通知": "Background notifications",
+  "总开关；关闭后三类通知都不发。":
+    "Master switch; turning it off disables all three notification types.",
+  "等待确认": "Waiting for approval",
+  "任务完成": "Task finished",
+  "点击通知回到对应任务。": "Clicking the notification returns to that task.",
+  "任务失败": "Task failed",
+  "点击通知回到失败的任务与真实错误。":
+    "Clicking the notification returns to the failed task and the real error.",
+  "界面与动效": "Interface and motion",
+  "跟随最新回复": "Follow the latest reply",
+  "在底部时平滑跟随；向上阅读时暂停，点「回到底部」恢复。":
+    "Smoothly follows while at the bottom; pauses when you scroll up, resumes with “Back to bottom”.",
+  "新任务右侧工作区": "Right pane for new tasks",
+  "只决定新建任务的默认展开；已有会话仍保留自己的标签、宽度与展开状态。":
+    "Only sets the default for new tasks; existing conversations keep their own tabs, width and expansion state.",
+  "动效": "Motion",
+  "跟随系统会尊重系统的减弱动效偏好；减弱后只压缩时长，不改变结果。":
+    "Follow system respects the OS reduced-motion preference; reduced only shortens durations, never changes results.",
+  "跟随系统": "Follow system",
+  "减弱动效": "Reduced motion",
+  "默认值只影响之后新建的任务；当前会话可用上面的「恢复默认」逐项切换。模型与连接测试仍需保存成功后才生效。":
+    "Defaults only affect tasks created afterwards; use “Reset to default” above to switch individual items for the current conversation. Models and connection tests take effect only after a successful save.",
+  "实际请求：{{endpoint}}": "Actual request: {{endpoint}}",
+  "上下文与输出": "Context and output",
+  "思考能力": "Reasoning capabilities",
+  "上下文 {{window}} · 输出上限 {{output}}": "Context {{window}} · output limit {{output}}",
+
+  /* ---- 超能：桌面通知 / 预览里仍会漏中文的 key ---- */
+  "正在提交…": "Submitting…",
+  "确认没有送达": "The approval did not reach the app",
+  "超能模式 · 已处理": "Extreme mode · Handled",
+  "超能模式 · 需要确认": "Extreme mode · Needs approval",
+  "本地文件（未上传）": "Local file (not uploaded)",
+  "没有可预览的来源": "Nothing to preview",
+  "后续计划：补齐该引擎的真实驱动后，这张表会逐项变为「支持」，届时才开放连接与查询。":
+    "Next: once this engine has a real driver, the table below turns “Supported” item by item — only then are connections and queries enabled.",
+  "删除不可撤销。这不是事务：多个键会逐条删除，中途失败的部分不会回滚。":
+    "Deletion cannot be undone. This is not a transaction: keys are deleted one by one and a mid-way failure is not rolled back.",
+
+  /* ---- 超能：权限模式的整段说明（权限页三张卡片直接展示） ---- */
+  "只读：只执行查询；写入、修改、删除会被直接拒绝，不产生确认。sudo 禁用。":
+    "Read-only: queries only. Writes, edits and deletes are rejected outright with no confirmation, and sudo is disabled.",
+  "按需确认：查询直接执行；命令确实要写文件、改配置、改服务或删数据时，逐条请你确认。sudo 需确认。":
+    "Ask before changes: queries run directly; when a command really writes files, changes config or services, or deletes data, you are asked one by one. sudo needs confirmation.",
+  "完全访问：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行；严重操作（改 SSH / 防火墙 / 磁盘 / 删系统目录等）仍会确认。备份按权限页的策略执行，备份文件带 .bls-bak. 标记。":
+    "Full access: writes, edits and deletes you explicitly asked for (including sudo and service restarts) run directly; severe operations (SSH / firewall / disk / deleting system directories) still ask. Backups follow the policy on the Permissions page and carry the .bls-bak. marker.",
 } as const;

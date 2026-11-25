@@ -42,7 +42,7 @@ export interface ChatScroll {
   scrollToBottom: () => void;
 }
 
-export function useChatScroll(enabled: boolean): ChatScroll {
+export function useChatScroll(enabled: boolean, followEnabled = true): ChatScroll {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const previousTop = useRef(0);
@@ -79,6 +79,8 @@ export function useChatScroll(enabled: boolean): ChatScroll {
   }, []);
 
   const follow = useCallback(() => {
+    // 设置里关掉「跟随最新回复」后，只有用户点「回到底部」才会移动。
+    if (!followEnabled) return;
     if (frame.current !== null) return;
     frame.current = requestAnimationFrame(() => {
       frame.current = null;
@@ -108,7 +110,7 @@ export function useChatScroll(enabled: boolean): ChatScroll {
       lastBottom.current = bottom;
       writeTop(bottom);
     });
-  }, [clearSettle, writeTop]);
+  }, [clearSettle, followEnabled, writeTop]);
 
   const restore = useCallback(
     (top: number) => {

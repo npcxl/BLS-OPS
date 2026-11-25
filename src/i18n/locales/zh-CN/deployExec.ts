@@ -205,7 +205,7 @@ export default {
   // -- P5.5.1 AI 复核状态 --
   "AI review idle": "AI 复核未运行",
   "Run again": "再跑一次",
-  "Go to settings → AI models": "前往设置 → AI 模型",
+  "Add models in Extreme mode → Settings": "在 超能模式 → 设置 中添加模型",
 
   // -- P5.5.1 知识库管理 --
   "Import Markdown": "导入 Markdown",

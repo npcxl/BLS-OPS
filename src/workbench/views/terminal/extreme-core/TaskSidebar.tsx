@@ -1,13 +1,17 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
   FolderOpen,
   MoreHorizontal,
   Pencil,
+  Plug,
   Plus,
+  Settings,
+  ShieldCheck,
   Trash2,
   X,
 } from "@/components/icons";
@@ -18,11 +22,22 @@ import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { OutputStyle } from "./chat-context";
-import { dayTime, chatTime, previewSnippet } from "./format-time";
+import { dayTime, previewSnippet } from "./format-time";
 import { displayTitle, type ExtremeWorkspace } from "./workspace-history";
 
 /** 左栏收起状态：跨会话记住，重进超能时保持上次的宽度。 */
 const RAIL_COLLAPSED_KEY = "bls-ops.extreme-task-rail-collapsed.v1";
+/** 「任务」分组的折叠状态：只收列表，不影响新建任务和后台运行。 */
+const TASKS_COLLAPSED_KEY = "bls-ops.extreme-task-group-collapsed.v1";
+
+/** 左栏底部三个管理入口。 */
+export type RailPage = "settings" | "permissions" | "mcp";
+
+const RAIL_PAGES: { id: RailPage; label: string; icon: typeof Settings }[] = [
+  { id: "settings", label: "设置", icon: Settings },
+  { id: "permissions", label: "权限", icon: ShieldCheck },
+  { id: "mcp", label: "MCP", icon: Plug },
+];
 
 const ROW_STATUS = {
   waiting: { label: "待确认", className: "bg-warning" },
@@ -45,6 +60,22 @@ function readRailCollapsed(): boolean {
 function writeRailCollapsed(collapsed: boolean) {
   try {
     localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 存不了就只在本次会话里生效。
+  }
+}
+
+function readTasksCollapsed(): boolean {
+  try {
+    return localStorage.getItem(TASKS_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeTasksCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(TASKS_COLLAPSED_KEY, collapsed ? "1" : "0");
   } catch {
     // 存不了就只在本次会话里生效。
   }
@@ -90,6 +121,9 @@ function TaskSidebarInner({
   onOutputStyleChange,
   hasContext,
   onClearCurrent,
+  activePage,
+  onOpenPage,
+  onShowChat,
 }: {
   entries: ExtremeWorkspace[];
   currentId: string | null;
@@ -114,6 +148,11 @@ function TaskSidebarInner({
   /** 当前会话是否有可清空的内容。 */
   hasContext: boolean;
   onClearCurrent?: () => void;
+  /** 主内容区当前打开的管理页；null = 聊天。 */
+  activePage?: RailPage | null;
+  onOpenPage?: (page: RailPage) => void;
+  /** 正在管理页时点当前对话：回到聊天，不重新加载会话。 */
+  onShowChat?: () => void;
 }) {
   const { t } = useTranslation();
   const current = entries.find((entry) => entry.id === currentId);
@@ -124,6 +163,7 @@ function TaskSidebarInner({
   const [clearing, setClearing] = useState(false);
   const [blocked, setBlocked] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(readRailCollapsed);
+  const [tasksCollapsed, setTasksCollapsed] = useState(readTasksCollapsed);
   const inputRef = useRef<HTMLInputElement>(null);
   const menu = useContextMenu();
 
@@ -132,6 +172,12 @@ function TaskSidebarInner({
     writeRailCollapsed(next);
     if (next) setFilter("all");
     setCollapsed(next);
+  };
+
+  /** 只折叠任务列表（不动左栏宽度，也不影响运行中的任务）。 */
+  const setTasksFolded = (next: boolean) => {
+    writeTasksCollapsed(next);
+    setTasksCollapsed(next);
   };
 
   /**
@@ -168,8 +214,15 @@ function TaskSidebarInner({
     if (filter !== "all" && !options.some(([key]) => key === filter)) setFilter("all");
   }, [filter, options]);
 
-  const visible =
-    filter === "all"
+  /*
+   * 分组收起时只留当前对话：列表收起来，但"我在哪、怎么回去"还在；
+   * 其余任务继续在后台跑，展开即恢复完整列表。
+   */
+  const visible = tasksCollapsed
+    ? current
+      ? [current]
+      : []
+    : filter === "all"
       ? entries
       : entries.filter((entry) => (entry.serverId ?? "unlinked") === filter);
 
@@ -320,25 +373,57 @@ function TaskSidebarInner({
           </Tooltip>
         </div>
       ) : (
-        <div className="flex items-center gap-1 px-2 py-2">
-          <h2 className="min-w-0 flex-1 truncate pl-1 text-12 font-medium">{t("任务")}</h2>
-          <Tooltip label={t("收起会话列表")}>
+        <>
+          {/* 顶部只放「新建任务」和整栏收起；任务列表的折叠在下面一行。 */}
+          <div className="flex items-center gap-1 px-2 pb-1 pt-2">
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={onNew}
+              disabled={busy}
+              className="min-w-0 flex-1 justify-start"
+            >
+              <Plus size={13} /> {t("新建任务")}
+            </Button>
+            <Tooltip label={t("收起侧栏")}>
+              <button
+                type="button"
+                aria-label={t("收起侧栏")}
+                onClick={() => setRailCollapsed(true)}
+                className="grid size-5 shrink-0 place-items-center rounded-[4px] text-fg-subtle transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <ChevronLeft size={13} />
+              </button>
+            </Tooltip>
+          </div>
+          <div className="px-2 pb-1">
             <button
               type="button"
-              aria-label={t("收起会话列表")}
-              onClick={() => setRailCollapsed(true)}
-              className="grid size-5 shrink-0 place-items-center rounded-[4px] text-fg-subtle transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+              onClick={() => setTasksFolded(!tasksCollapsed)}
+              aria-expanded={!tasksCollapsed}
+              aria-label={tasksCollapsed ? t("展开任务列表") : t("收起任务列表")}
+              data-testid="task-group-toggle"
+              className="flex w-full min-w-0 items-center gap-1 rounded-[5px] px-1 py-1 text-left text-fg-subtle transition-colors duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
             >
-              <ChevronLeft size={13} />
+              <ChevronDown
+                size={12}
+                className={cn(
+                  "shrink-0 transition-transform duration-[140ms] ease-out motion-reduce:transition-none",
+                  tasksCollapsed && "-rotate-90",
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate text-12 font-medium text-fg">
+                {t("任务")}
+              </span>
+              <span className="shrink-0 text-10 tabular-nums text-fg-subtle">
+                {entries.length}
+              </span>
             </button>
-          </Tooltip>
-          <Button variant="ghost" size="xs" onClick={onNew} disabled={busy}>
-            <Plus size={13} /> {t("新建任务")}
-          </Button>
-        </div>
+          </div>
+        </>
       )}
 
-      {!collapsed && options.length > 1 && (
+      {!collapsed && !tasksCollapsed && options.length > 1 && (
         <div className="px-3 pb-2">
           <Select
             variant="menu"
@@ -354,7 +439,17 @@ function TaskSidebarInner({
         </div>
       )}
 
-      {!collapsed && current && current.folders.length > 0 && (
+      {!collapsed && tasksCollapsed && (
+        <p className="px-3 pb-1.5 text-10 leading-4 text-fg-subtle">
+          {entries.length > 1
+            ? t("任务列表已收起，还有 {{n}} 个任务在后台", {
+                n: entries.length - (current ? 1 : 0),
+              })
+            : t("任务列表已收起")}
+        </p>
+      )}
+
+      {!collapsed && !tasksCollapsed && current && current.folders.length > 0 && (
         <ul className="max-h-24 overflow-auto border-b border-line/60 px-3 pb-2 text-11 text-fg-muted">
           {current.folders.map((folder) => (
             <li key={folder} title={folder} className="flex items-center gap-1.5 py-0.5">
@@ -444,7 +539,6 @@ function TaskSidebarInner({
                   unreadIds?.has(entry.id) ? "unread" : null;
           const indicator = status ? ROW_STATUS[status] : null;
           const statusLabel = indicator ? t(indicator.label) : undefined;
-          const updatedAt = chatTime(entry.updatedAt, t);
           const rowLabel = [title, serverLabel, statusLabel].filter(Boolean).join(" · ");
           const statusMark = indicator && (
             <span
@@ -495,8 +589,10 @@ function TaskSidebarInner({
                     aria-selected={active}
                     aria-label={rowLabel}
                     onClick={() => {
-                      // 点当前这条只是把焦点放回来：不重载，阅读位置保持原样。
+                      // 点当前这条只是把焦点放回来：不重载，阅读位置保持原样；
+                      // 如果正停在管理页，这一步负责切回聊天。
                       if (!active) onOpen(entry.id);
+                      else onShowChat?.();
                     }}
                     onContextMenu={menu.onContextMenu(() => items(entry))}
                     className={cn(
@@ -529,8 +625,10 @@ function TaskSidebarInner({
                 aria-selected={active}
                 aria-label={rowLabel}
                 onClick={() => {
-                  // 点当前这条不改 store：刚滚到一半的位置不该被"重新打开"顶掉。
+                  // 点当前这条不改 store：刚滚到一半的位置不该被"重新打开"顶掉；
+                  // 从管理页回来时只切视图。
                   if (!active) onOpen(entry.id);
+                  else onShowChat?.();
                 }}
                 onContextMenu={menu.onContextMenu(() => items(entry))}
                 className={cn(
@@ -544,12 +642,9 @@ function TaskSidebarInner({
                   >
                     {title}
                   </span>
-                  {/* 第二行：服务器 + 最后活动时间（Codex 列表也把时间挂在这一行）。 */}
+                  {/* 第二行只留服务器名：标题 + 服务器 + 状态就是这一行的全部信息。 */}
                   <span className="flex min-w-0 items-center gap-1.5 text-11 leading-4 text-fg-subtle">
                     <span className="min-w-0 flex-1 truncate">{serverLabel}</span>
-                    {updatedAt && (
-                      <span className="shrink-0 tabular-nums">{updatedAt}</span>
-                    )}
                   </span>
                 </span>
                 <span className="grid size-3 place-items-center">{statusMark}</span>
@@ -576,6 +671,51 @@ function TaskSidebarInner({
           );
         })}
       </ul>
+
+      {/*
+       * 底部三个管理入口固定在最下方：任务列表单独滚动，入口永远可见。
+       * 打开的是超能主内容区的页面，不离开当前对话。
+       */}
+      <nav
+        className={cn(
+          "shrink-0 border-t border-line/60",
+          collapsed ? "flex flex-col items-center gap-1 px-1.5 py-2" : "space-y-0.5 p-1.5",
+        )}
+        aria-label={t("管理")}
+      >
+        {RAIL_PAGES.map(({ id, label, icon: Icon }) => {
+          const active = activePage === id;
+          const button = (
+            <button
+              key={id}
+              type="button"
+              data-testid={`rail-${id}`}
+              aria-current={active ? "page" : undefined}
+              aria-label={t(label)}
+              onClick={() => onOpenPage?.(id)}
+              className={cn(
+                "transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
+                collapsed
+                  ? "grid size-7 place-items-center rounded-[7px]"
+                  : "flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-12",
+                active
+                  ? "bg-surface-active/65 text-fg"
+                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+              )}
+            >
+              <Icon size={collapsed ? 14 : 13} className="shrink-0" />
+              {!collapsed && <span className="min-w-0 flex-1 truncate">{t(label)}</span>}
+            </button>
+          );
+          return collapsed ? (
+            <Tooltip key={id} label={t(label)} side="right" delay={140}>
+              {button}
+            </Tooltip>
+          ) : (
+            button
+          );
+        })}
+      </nav>
 
       <ContextMenu {...menu.props} title={t("对话")} />
     </aside>

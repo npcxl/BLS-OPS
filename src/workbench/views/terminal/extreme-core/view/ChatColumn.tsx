@@ -11,9 +11,12 @@ import { MessageList } from "../MessageList";
 import { DeployPlanPanel } from "../DeployPlanPanel";
 import { MessageTimeline } from "../MessageTimeline";
 import { GlassIconButton } from "../GlassIconButton";
+import { PlanCard } from "../PlanCard";
 import type { DeployStep } from "../deploy-plan";
 import type { TaskArtifact, TaskCardModel } from "../task-view";
 import type { WorkspaceTarget } from "../RemoteWorkspacePanel";
+import type { AgentPlan } from "@/api/types/agent";
+import type { ApprovalEntry } from "./types";
 
 export interface ChatColumnProps {
   welcome: boolean;
@@ -33,6 +36,8 @@ export interface ChatColumnProps {
   editMessage: (message: ExtremeMessage) => void;
   retryInterrupted: (message: ExtremeMessage) => void;
   resendMessage: (message: ExtremeMessage) => void;
+  /** 任务结果里的「查看变更」：按 taskId 打开右栏对应的那一轮。 */
+  openChanges: (taskId: string, changeId?: string) => void;
   plan: DeployStep[] | null | undefined;
   panelOpen: boolean;
   setPanelOpen: (open: boolean) => void;
@@ -43,6 +48,12 @@ export interface ChatColumnProps {
   notice: string | null;
   setNotice: (text: string | null) => void;
   workspaceId: string | null;
+  /** 当前对话最近一版 MAX 计划（右上角计划卡）。 */
+  planCard: { taskId: string; plan: AgentPlan } | null;
+  /** 审批条目：画在对应步骤上（同一件事不再占输入框上方一条）。 */
+  approvals?: Record<string, ApprovalEntry>;
+  /** 审批表态（与 MessageList 的公开签名一致）。 */
+  onDecideApproval?: (allow: boolean, callId: string, taskId: string) => void;
 }
 
 export function ChatColumn({
@@ -63,6 +74,7 @@ export function ChatColumn({
   editMessage,
   retryInterrupted,
   resendMessage,
+  openChanges,
   plan,
   panelOpen,
   setPanelOpen,
@@ -73,8 +85,48 @@ export function ChatColumn({
   notice,
   setNotice,
   workspaceId,
+  planCard,
+  approvals,
+  onDecideApproval,
 }: ChatColumnProps) {
   const { t } = useTranslation();
+  /*
+   * 计划卡 → 聊天里的命令：按 `data-plan-step` 找到那一步，滚到可见处并
+   * 短暂高亮。计划本身不改聊天内容，只做定位。
+   */
+  const focusPlanStep = (planStepId: string) => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const findRow = () =>
+      Array.from(root.querySelectorAll<HTMLElement>("[data-plan-step]")).find(
+        (item) => item.dataset.planStep === planStepId,
+      );
+    const reveal = (node: HTMLElement) => {
+      node.scrollIntoView({ block: "center", behavior: "smooth" });
+      node.dataset.planFocus = "1";
+      window.setTimeout(() => {
+        delete node.dataset.planFocus;
+      }, 1600);
+    };
+    const row = findRow();
+    if (row) {
+      reveal(row);
+      return;
+    }
+    /*
+     * 这一步可能在一组已完成的命令里（组默认折叠）：
+     * 先展开那一组，等一帧行渲染出来再定位。
+     */
+    const group = Array.from(root.querySelectorAll<HTMLElement>("[data-plan-steps]")).find(
+      (node) => (node.dataset.planSteps ?? "").split(" ").includes(planStepId),
+    );
+    if (!group) return;
+    group.click();
+    window.requestAnimationFrame(() => {
+      const inside = findRow();
+      if (inside) reveal(inside);
+    });
+  };
   // 贴底判定不在这里做：真实输入（滚轮 / 触摸 / 按键）在 `useChatScroll` 里监听。
   return (
           <div className="extreme-core-chat-layout relative flex min-h-0 flex-1">
@@ -93,10 +145,13 @@ export function ChatColumn({
               asking={asking}
               attachments={attachments}
               tasks={sessionTasks}
+              approvals={approvals}
+              onDecideApproval={onDecideApproval}
               onPreview={openArtifact}
               sessionId={sessionId ?? undefined}
               onOpenWorkspaceTarget={openWorkspaceTarget}
               onResumeTask={(task) => void resumeTask(task)}
+              onOpenChanges={(task) => openChanges(task.id)}
               onQuote={quoteMessage}
               onEdit={editMessage}
               onRetryMessage={retryInterrupted}
@@ -117,6 +172,19 @@ export function ChatColumn({
               />
             </div>
           </div>
+          {/* 计划卡：贴在聊天内容区右上角，不随滚动跑；收起后只剩一个按钮。 */}
+          {!welcome && planCard && (
+            <div className="pointer-events-none absolute right-3 top-3 z-10 max-w-[calc(100%-1.5rem)]">
+              <div className="pointer-events-auto">
+                <PlanCard
+                  key={planCard.taskId}
+                  taskId={planCard.taskId}
+                  plan={planCard.plan}
+                  onFocusStep={focusPlanStep}
+                />
+              </div>
+            </div>
+          )}
           {/* 消息时间轴：贴在正文左缘，独立于左侧会话列表；欢迎页不显示。 */}
           {!welcome && (
             <MessageTimeline

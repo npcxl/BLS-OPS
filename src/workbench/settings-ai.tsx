@@ -60,6 +60,8 @@ type Draft = {
   timeout_seconds: number;
   max_output_tokens: number;
   capabilityMode: CapabilityMode;
+  /** 上下文窗口上限（token）；null = 未单独声明。 */
+  contextWindow: number | null;
   /** 该模型支持的思考强度（点选，不手输）。 */
   efforts: string[];
   /** 菜单里可选的上下文档位（点选，不手输）。 */
@@ -211,6 +213,7 @@ function emptyDraft(): Draft {
      * "我们并不知道它支持什么"写成"它支持这些"。
      */
     capabilityMode: "auto",
+    contextWindow: null,
     efforts: [],
     budgets: [],
   };
@@ -248,9 +251,37 @@ function draftFrom(provider: AiProviderView): Draft {
     max_output_tokens: provider.max_output_tokens,
     capabilityMode,
     // 非手动覆盖时不回填任何档位：菜单来自内置表 / 供应商默认。
+    contextWindow:
+      capabilityMode === "manual"
+        ? provider.context_window ||
+          (declaredBudgets.length > 0 ? Math.max(...declaredBudgets) : null)
+        : null,
     efforts: capabilityMode === "manual" ? declaredEfforts : [],
     budgets: capabilityMode === "manual" ? declaredBudgets : [],
   };
+}
+
+const TEST_RESULTS_KEY = "bls-ops.ai-provider-test-results.v1";
+
+function readTestResults(): Record<string, AiProviderTestResult> {
+  try {
+    const raw = localStorage.getItem(TEST_RESULTS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, AiProviderTestResult>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeTestResults(results: Record<string, AiProviderTestResult>) {
+  try {
+    localStorage.setItem(TEST_RESULTS_KEY, JSON.stringify(results));
+  } catch {
+    // 存不了就只在本次会话里显示。
+  }
 }
 
 export function AiProviderSettings() {
@@ -262,7 +293,8 @@ export function AiProviderSettings() {
   const [busy, setBusy] = useState(false);
   // 原始异常 + 可重试：模型连通性失败要能看清是网络、鉴权还是地址写错。
   const { error, fail, clear, retry } = useActionError();
-  const [results, setResults] = useState<Record<string, AiProviderTestResult>>({});
+  // 最近一次连接测试结果：持久化，重开设置仍能看到，不必再测一次才知道上次结论。
+  const [results, setResults] = useState<Record<string, AiProviderTestResult>>(readTestResults);
 
   const load = useCallback(async () => {
     const list = await opsApi.aiProviderList();
@@ -279,7 +311,11 @@ export function AiProviderSettings() {
     clear();
     try {
       const result = await opsApi.aiProviderTest(provider.id);
-      setResults((current) => ({ ...current, [provider.id]: result }));
+      setResults((current) => {
+        const next = { ...current, [provider.id]: result };
+        writeTestResults(next);
+        return next;
+      });
     } catch (cause) {
       fail(cause, () => void test(provider));
     } finally {
@@ -295,6 +331,41 @@ export function AiProviderSettings() {
       await load();
     } catch (cause) {
       fail(cause, () => void makeDefault(provider));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 快速启停：走同一份保存接口。
+   *
+   * 停用默认模型时顺手取消默认，避免"默认指向一个已停用的模型"。
+   * 能力声明只在原来就覆盖过时回传，别把自动识别改写成显式覆盖。
+   */
+  const toggleEnabled = async (provider: AiProviderView) => {
+    setBusy(true);
+    clear();
+    const overridden = provider.capability_overridden === true;
+    try {
+      await opsApi.aiProviderSave({
+        id: provider.id,
+        name: provider.name,
+        provider_kind: provider.provider_kind,
+        base_url: provider.base_url,
+        model: provider.model,
+        api_key: null,
+        enabled: !provider.enabled,
+        is_default: provider.enabled ? false : provider.is_default,
+        allow_insecure_http: provider.allow_insecure_http,
+        timeout_seconds: provider.timeout_seconds,
+        max_output_tokens: provider.max_output_tokens,
+        context_window: overridden ? provider.context_window || null : null,
+        context_budgets: overridden ? provider.context_budgets : null,
+        reasoning_efforts: overridden ? provider.reasoning_efforts : null,
+      });
+      await load();
+    } catch (cause) {
+      fail(cause, () => void toggleEnabled(provider));
     } finally {
       setBusy(false);
     }
@@ -318,15 +389,15 @@ export function AiProviderSettings() {
 
   return (
     <Group
-      title={t("AI models")}
-      hint={t("Models only review deployment proposals; they never execute anything.")}
+      title={t("AI 模型")}
+      hint={t("模型只审阅部署方案，不会执行任何操作。")}
       action={
-        <Tooltip label={t("Add model")}>
+        <Tooltip label={t("添加模型")}>
           <Button
             variant="ghost"
             size="xs"
             className="h-6 px-1.5"
-            aria-label={t("Add model")}
+            aria-label={t("添加模型")}
             onClick={() => setDraft(emptyDraft())}
           >
             <Plus size={13} />
@@ -337,9 +408,9 @@ export function AiProviderSettings() {
       {error ? <ErrorState error={error} compact onRetry={retry} className="px-3 pb-1" /> : null}
       <ListGroup>
         {providers === null ? (
-          <EmptyRow>{t("Loading")}</EmptyRow>
+          <EmptyRow>{t("加载中")}</EmptyRow>
         ) : providers.length === 0 ? (
-          <EmptyRow>{t("No models yet")}</EmptyRow>
+          <EmptyRow>{t("还没有模型")}</EmptyRow>
         ) : (
           providers.map((provider) => (
             <div
@@ -358,25 +429,49 @@ export function AiProviderSettings() {
                       <span className="truncate text-12 text-fg">{provider.name}</span>
                       {provider.is_default ? (
                         <span className="shrink-0 rounded bg-accent/10 px-1 text-9 text-accent">
-                          {t("Default")}
+                          {t("默认")}
                         </span>
                       ) : null}
                       {!provider.enabled ? (
-                        <span className="shrink-0 text-9 text-fg-subtle">{t("Disabled")}</span>
+                        <span className="shrink-0 text-9 text-fg-subtle">{t("已停用")}</span>
                       ) : null}
                     </span>
                     <span className="block truncate text-11 text-fg-subtle">
                       {provider.model} · {provider.base_url} ·{" "}
-                      {provider.has_api_key ? t("Key saved") : t("Key missing")}
+                      {provider.has_api_key ? t("密钥已保存") : t("密钥未保存")}
+                    </span>
+                    <span className="block truncate text-10 text-fg-subtle">
+                      {t("上下文 {{window}} · 输出上限 {{output}}", {
+                        window: provider.context_window
+                          ? `${Math.round(provider.context_window / 1024)}K`
+                          : t("未配置"),
+                        output: provider.max_output_tokens,
+                      })}
                     </span>
                   </span>
                   <ChevronRight size={13} className="shrink-0 text-fg-subtle" />
                 </button>
 
-                <Tooltip label={t("Test connection")} side="left">
+                <Tooltip
+                  label={provider.enabled ? t("停用") : t("启用")}
+                  side="left"
+                >
                   <button
                     type="button"
-                    aria-label={t("Test connection")}
+                    aria-label={provider.enabled ? t("停用") : t("启用")}
+                    data-testid={`ai-toggle-${provider.id}`}
+                    disabled={busy}
+                    className="shrink-0 rounded px-1 py-0.5 text-10 text-fg-subtle hover:bg-surface-hover hover:text-fg disabled:opacity-50"
+                    onClick={() => void toggleEnabled(provider)}
+                  >
+                    {provider.enabled ? t("停用") : t("启用")}
+                  </button>
+                </Tooltip>
+
+                <Tooltip label={t("测试连接")} side="left">
+                  <button
+                    type="button"
+                    aria-label={t("测试连接")}
                     data-testid={`ai-test-${provider.id}`}
                     disabled={busy}
                     className="shrink-0 rounded p-1 text-fg-subtle hover:text-fg disabled:opacity-50"
@@ -387,10 +482,10 @@ export function AiProviderSettings() {
                 </Tooltip>
 
                 {!provider.is_default && provider.enabled ? (
-                  <Tooltip label={t("Set as default")} side="left">
+                  <Tooltip label={t("设为默认")} side="left">
                     <button
                       type="button"
-                      aria-label={t("Set as default")}
+                      aria-label={t("设为默认")}
                       data-testid={`ai-default-${provider.id}`}
                       disabled={busy}
                       className="shrink-0 rounded p-1 text-fg-subtle hover:text-fg disabled:opacity-50"
@@ -401,10 +496,10 @@ export function AiProviderSettings() {
                   </Tooltip>
                 ) : null}
 
-                <Tooltip label={t("Delete model provider")} side="left">
+                <Tooltip label={t("删除模型提供方")} side="left">
                   <button
                     type="button"
-                    aria-label={t("Delete model provider")}
+                    aria-label={t("删除模型提供方")}
                     data-testid={`ai-delete-${provider.id}`}
                     className="shrink-0 rounded p-1 text-fg-subtle opacity-0 hover:text-danger group-hover:opacity-100"
                     onClick={() => {
@@ -425,7 +520,7 @@ export function AiProviderSettings() {
                   )}
                 >
                   {results[provider.id].ok
-                    ? t("Connection OK ({{ms}} ms, {{attempts}} attempt(s))", {
+                    ? t("连接成功（{{ms}} 毫秒，{{attempts}} 次尝试）", {
                         ms: results[provider.id].latency_ms,
                         attempts: results[provider.id].attempts,
                       })
@@ -453,11 +548,11 @@ export function AiProviderSettings() {
         <ConfirmDialog
           open
           danger
-          title={t("Delete model provider")}
+          title={t("删除模型提供方")}
           description={t('Delete "{{name}}"? The saved configuration is removed.', {
             name: deleteTarget.name,
           })}
-          confirmLabel={t("Delete")}
+          confirmLabel={t("删除")}
           pending={busy}
           onCancel={() => {
             setDeleteTarget(null);
@@ -472,7 +567,7 @@ export function AiProviderSettings() {
               checked={deleteSecret}
               onChange={(event) => setDeleteSecret(event.target.checked)}
             />
-            {t("Also delete the API key from the system credential manager")}
+            {t("同时从系统凭据管理器中删除 API Key")}
           </label>
         </ConfirmDialog>
       ) : null}
@@ -582,9 +677,14 @@ function AiProviderForm({
      *
      * 这条边界是"普通保存不能凭空产生覆盖值"的落点。
      */
+    /*
+     * 手动覆盖可以单独写「窗口上限」；旧记录没有这一项时仍回退到最大预算档，
+     * 避免升级后把原有配置读成"未知窗口"。
+     */
     context_window:
-      draft.capabilityMode === "manual" && draft.budgets.length > 0
-        ? Math.max(...draft.budgets)
+      draft.capabilityMode === "manual"
+        ? draft.contextWindow ??
+          (draft.budgets.length > 0 ? Math.max(...draft.budgets) : null)
         : null,
     context_budgets:
       draft.capabilityMode === "manual"
@@ -645,7 +745,7 @@ function AiProviderForm({
       open
       width={520}
       className="settings-ai-modal"
-      title={editing ? t("Edit model") : t("Add model")}
+      title={editing ? t("编辑模型") : t("添加模型")}
       onClose={onClose}
     >
       {/* 滚动交给 Modal 自己的内容区（`max-h-[60vh] overflow-y-auto`）——
@@ -655,9 +755,9 @@ function AiProviderForm({
 
         {!editing && (
           <div>
-            <p className="text-12 font-medium text-fg">{t("Quick add")}</p>
+            <p className="text-12 font-medium text-fg">{t("快速添加")}</p>
             <p className="mt-0.5 text-11 leading-relaxed text-fg-subtle">
-              {t("Pick a preset and fill in only the API Key; presets use each provider's latest alias rather than a fixed version, and the model ID is still editable.")}
+              {t("选一个预设，只需要填 API Key；预设用的是各家的最新别名而不是固定版本，模型 ID 仍然可以改。")}
             </p>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {MODEL_PRESETS.map((preset) => {
@@ -701,9 +801,9 @@ function AiProviderForm({
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0">
-                    <span className="block text-12">{t("Custom")}</span>
+                    <span className="block text-12">{t("自定义")}</span>
                     <span className="block truncate text-10 text-fg-subtle">
-                      {t("Enter your own base URL and model")}
+                      {t("自己填写 Base URL 和模型")}
                     </span>
                   </span>
                 </span>
@@ -711,13 +811,14 @@ function AiProviderForm({
             </div>
             {activePreset !== "custom" && (
               <p className="mt-1.5 text-10 text-fg-subtle">
-                {t("Preset filled in — only the API Key is needed. You can still edit it from the list after saving.")}
+                {t("预设已填好，只差 API Key；保存后仍可在列表里修改。")}
               </p>
             )}
           </div>
         )}
 
-        <Field label={t("Name")}>
+        <p className="text-11 font-medium text-fg">{t("连接")}</p>
+        <Field label={t("名称")}>
           <input
             className={fieldClass}
             data-testid="provider-name"
@@ -726,8 +827,8 @@ function AiProviderForm({
           />
         </Field>
 
-        <Field label={t("Provider type")}>
-          <input className={fieldClass} value={t("OpenAI compatible")} readOnly disabled />
+        <Field label={t("提供方类型")}>
+          <input className={fieldClass} value={t("OpenAI 兼容")} readOnly disabled />
         </Field>
 
         <Field
@@ -740,9 +841,16 @@ function AiProviderForm({
             value={draft.base_url}
             onChange={(event) => onChange({ ...draft, base_url: event.target.value })}
           />
+          {draft.base_url.trim() && (
+            <p className="mt-1 break-all text-10 text-fg-subtle">
+              {t("实际请求：{{endpoint}}", {
+                endpoint: `${draft.base_url.trim().replace(/\/+$/, "")}/chat/completions`,
+              })}
+            </p>
+          )}
         </Field>
 
-        <Field label={t("Model")}>
+        <Field label={t("模型")}>
           <input
             className={fieldClass}
             data-testid="provider-model"
@@ -755,8 +863,8 @@ function AiProviderForm({
           label={t("API Key")}
           hint={
             editing
-              ? t("Leave empty to keep the saved key. Keys are only written to the system credential manager.")
-              : t("The key is written to the system credential manager only; the database keeps a reference.")
+              ? t("留空表示沿用已保存的密钥；密钥只写进系统凭据管理器。")
+              : t("密钥只写进系统凭据管理器，数据库里只保存引用。")
           }
         >
           <input
@@ -765,14 +873,15 @@ function AiProviderForm({
             type="password"
             autoComplete="off"
             data-testid="provider-api-key"
-            placeholder={editing ? t("Leave empty to keep the saved key") : ""}
+            placeholder={editing ? t("留空表示沿用已保存的密钥") : ""}
             value={draft.api_key}
             onChange={(event) => onChange({ ...draft, api_key: event.target.value })}
           />
         </Field>
 
+        <p className="text-11 font-medium text-fg">{t("上下文与输出")}</p>
         <div className="grid grid-cols-2 gap-3">
-          <Field label={t("Timeout (seconds)")}>
+          <Field label={t("超时（秒）")}>
             <input
               className={fieldClass}
               type="number"
@@ -785,7 +894,7 @@ function AiProviderForm({
               }
             />
           </Field>
-          <Field label={t("Max output tokens")}>
+          <Field label={t("最大输出 Token")}>
             <input
               className={fieldClass}
               type="number"
@@ -800,6 +909,7 @@ function AiProviderForm({
           </Field>
         </div>
 
+        <p className="text-11 font-medium text-fg">{t("思考能力")}</p>
         {/*
          * 能力声明：先选**来源**，再决定要不要勾档位。
          *
@@ -835,6 +945,30 @@ function AiProviderForm({
           {/* 手动覆盖才显示档位：其余两种模式下勾选没有意义。 */}
           {draft.capabilityMode === "manual" && (
             <>
+              <div className="mt-3">
+                <Field
+                  label={t("上下文窗口上限（Token）")}
+                  hint={t("模型真实支持的窗口上限；下面的预算档位不应超过它。")}
+                >
+                  <input
+                    className={fieldClass}
+                    type="number"
+                    min={4096}
+                    step={1024}
+                    data-testid="provider-context-window"
+                    value={draft.contextWindow ?? ""}
+                    onChange={(event) =>
+                      onChange({
+                        ...draft,
+                        contextWindow: event.target.value
+                          ? Number(event.target.value)
+                          : null,
+                      })
+                    }
+                  />
+                </Field>
+              </div>
+
               <p className="mt-3 text-11 text-fg-muted">{t("思考强度")}</p>
               <p className="mt-0.5 text-10 text-fg-subtle">
                 {t("勾选该模型支持的档位，输入区的菜单只列出这些")}
@@ -846,7 +980,7 @@ function AiProviderForm({
                     <ChoicePill
                       key={preset.value}
                       selected={selected}
-                      label={preset.label}
+                      label={t(preset.label)}
                       onClick={() =>
                         onChange({
                           ...draft,
@@ -860,9 +994,9 @@ function AiProviderForm({
                 })}
               </div>
 
-              <p className="mt-3 text-11 text-fg-muted">{t("上下文档位")}</p>
+              <p className="mt-3 text-11 text-fg-muted">{t("可选上下文预算")}</p>
               <p className="mt-0.5 text-10 text-fg-subtle">
-                {t("输入区「上下文」菜单里可选的预算；窗口按最大档算")}
+                {t("输入区「上下文」菜单里可选的预算；应不超过上面的窗口上限")}
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5" data-testid="provider-context-budgets">
                 {BUDGET_PRESETS.map((preset) => {
@@ -903,7 +1037,7 @@ function AiProviderForm({
             checked={draft.enabled}
             onChange={(event) => onChange({ ...draft, enabled: event.target.checked })}
           />
-          {t("Enabled")}
+          {t("启用")}
         </label>
 
         <label className="flex items-center gap-2 text-11 text-fg-muted">
@@ -913,7 +1047,7 @@ function AiProviderForm({
             checked={draft.is_default}
             onChange={(event) => onChange({ ...draft, is_default: event.target.checked })}
           />
-          {t("Use as default")}
+          {t("设为默认模型")}
         </label>
 
         <label className="flex items-start gap-2 text-11 text-fg-muted">
@@ -926,9 +1060,9 @@ function AiProviderForm({
             }
           />
           <span>
-            {t("Allow plain HTTP for non-local hosts")}
+            {t("允许非本机地址使用明文 HTTP")}
             <span className="mt-0.5 block text-10 text-fg-subtle">
-              {t("Only enable this for a trusted self-hosted gateway on your own network.")}
+              {t("仅在完全信任的自建网关上开启。")}
             </span>
           </span>
         </label>
@@ -942,7 +1076,7 @@ function AiProviderForm({
             )}
           >
             {testResult.ok
-              ? t("Connection OK ({{ms}} ms, {{attempts}} attempt(s))", {
+              ? t("连接成功（{{ms}} 毫秒，{{attempts}} 次尝试）", {
                   ms: testResult.latency_ms,
                   attempts: testResult.attempts,
                 })
@@ -958,17 +1092,17 @@ function AiProviderForm({
             disabled={busy || testing || !canTest}
             title={
               canTest
-                ? t("Test connection")
-                : t("Fill in the base URL, model and API key first")
+                ? t("测试连接")
+                : t("先填好 Base URL、模型和 API Key")
             }
             onClick={() => void testDraft()}
             data-testid="provider-test-draft"
           >
-            <PlugZap size={12} /> {testing ? t("Testing…") : t("Test connection")}
+            <PlugZap size={12} /> {testing ? t("测试中…") : t("测试连接")}
           </Button>
           <span className="flex-1" />
           <Button variant="ghost" size="sm" disabled={busy || testing} onClick={onClose}>
-            {t("Cancel")}
+            {t("取消")}
           </Button>
           <Button
             size="sm"
@@ -976,7 +1110,7 @@ function AiProviderForm({
             onClick={() => void submit()}
             data-testid="provider-save"
           >
-            {busy ? t("Saving") : t("Save")}
+            {busy ? t("保存中") : t("保存")}
           </Button>
         </div>
       </div>

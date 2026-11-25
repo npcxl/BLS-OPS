@@ -68,6 +68,8 @@ export interface DeployStep {
   stdout?: string;
   stderr?: string;
   exitCode?: number | null;
+  /** 这一步的实际执行耗时（后端回报；旧记录没有就不显示）。 */
+  elapsedMs?: number;
   /** 输出超过上限被截断（界面要说明，不能把半截当完整结果）。 */
   truncated?: boolean;
 }

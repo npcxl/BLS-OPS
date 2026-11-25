@@ -333,8 +333,25 @@
     box-shadow: 0 24px 64px rgb(15 23 42 / 0.18);
   }
 
+  /*
+   * 扁平确认卡（`Modal bare`）。
+   *
+   * 参考 Material 3 / Gemini 的确认框：**不画描边、不切分隔线**，靠一层
+   * 大投影把卡片从遮罩上"托起来"，圆角 24px；危险色只出现在一行提示与
+   * 确认按钮上。底色仍用 `--overlay`，背后的表格不会透出来。
+   */
+  .dialog-plain {
+    background: rgb(var(--overlay));
+    border: 0;
+    box-shadow: 0 24px 64px rgb(15 23 42 / 0.18);
+  }
+
   :root[data-theme="dark"] .glass-panel {
     box-shadow: 0 20px 60px rgb(0 0 0 / 0.42);
+  }
+
+  :root[data-theme="dark"] .dialog-plain {
+    box-shadow: 0 28px 72px rgb(0 0 0 / 0.6);
   }
 
   :root[data-theme="dark"] .glass-panel-strong {

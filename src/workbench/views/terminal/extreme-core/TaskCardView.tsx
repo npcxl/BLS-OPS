@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
+import { FileKindIcon } from "./FileKindIcon";
 import { TaskSteps } from "./TaskSteps";
 import { isTerminal, statusLabel, type TaskStatus } from "./task";
 import { verificationStep } from "./task-bridge";
@@ -151,7 +152,7 @@ export function TaskCardView({
                 title={artifact.path}
                 onClick={() => onPreview?.(artifact, task.sessionId)}
               >
-                <FileText size={12} />
+                <FileKindIcon name={artifact.name} size={13} />
                 {artifact.name}
               </Button>
             ))}

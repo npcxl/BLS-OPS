@@ -86,3 +86,37 @@ describe("file completion by command semantics", () => {
     expect(result.items.map((item) => item.label)).toContain("release.zip");
   });
 });
+
+describe("path operands vs options", () => {
+  const entries = [entry("dist.old.20261123-150011", "directory"), entry("dist", "directory")];
+
+  async function complete(line: string) {
+    const context: CompletionContext = {
+      line,
+      cursor: line.length,
+      sessionId: "s1",
+      cwd: "/opt/bls-ops",
+      home: "/root",
+    };
+    const parsed = parseLine(line, line.length);
+    const provider = createFileProvider({ list: async () => entries });
+    expect(provider.matches(parsed)).toBe(true);
+    const result = await provider.complete(context, parsed);
+    return result.items.map((item) => item.label);
+  }
+
+  it("rm -rf dist.old. 里的 -rf 是选项，路径是第一个操作数", async () => {
+    const items = await complete("rm -rf dist.old.");
+    expect(items).toContain("dist.old.20261123-150011");
+  });
+
+  it("`--` 之后也是路径操作数", async () => {
+    const items = await complete("rm -rf -- dist.old.");
+    expect(items).toContain("dist.old.20261123-150011");
+  });
+
+  it("cp 的第二个路径操作数也能补", async () => {
+    const items = await complete("cp -r dist dist.old.");
+    expect(items).toContain("dist.old.20261123-150011");
+  });
+});

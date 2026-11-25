@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { attachmentReadState, remoteAttachment, remoteAttachmentId } from "../attachments";
+import {
+  attachmentReadState,
+  readAttachment,
+  remoteAttachment,
+  remoteAttachmentId,
+} from "../attachments";
 
 /**
  * 远程文件 → 附件：**会话 + 路径**是身份。
@@ -52,6 +57,19 @@ describe("remoteAttachment", () => {
     );
     expect(item.state).toBe("ready");
     expect(item.remotePath).toBe("/etc/nginx/sites-enabled");
+  });
+});
+
+describe("readAttachment 二进制不再被 8 MB 硬限制", () => {
+  it("刚过旧上限的 dist.zip 仍然读成 ready", async () => {
+    const file = new File([new Uint8Array(8 * 1024 * 1024 + 1)], "dist.zip");
+    const item = await readAttachment(file, {
+      id: "att-big",
+      t: ((key: string) => key) as never,
+    });
+    expect(item.state).toBe("ready");
+    expect(item.binary).toBe(true);
+    expect(item.data?.length).toBeGreaterThan(0);
   });
 });
 

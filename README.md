@@ -9,6 +9,7 @@
 **An SSH-first desktop operations workbench** — terminal, monitoring, services, files and databases in one window.
 
 [官网 Website](https://ops.xlcig.cn) ·
+[English](https://ops.xlcig.cn/en/) ·
 [下载 Download](https://github.com/npcxl/BLS-OPS/releases) ·
 [MIT](LICENSE)
 
@@ -35,6 +36,15 @@
 
 到 [Releases](https://github.com/npcxl/BLS-OPS/releases) 下载 `*.exe` 或 `*.msi` 双击安装即可，应用内置自动更新。
 也可以从官网 [ops.xlcig.cn](https://ops.xlcig.cn) 进入下载页。
+
+**官网与专题页**
+
+- [BLS-OPS 官网](https://ops.xlcig.cn)：产品介绍、更新日志与下载
+- [AI 运维助手（超能模式）](https://ops.xlcig.cn/ai-ops/)：一句话描述目标，确认后再执行
+- [AI 运维的安全边界](https://ops.xlcig.cn/ai-ops-safety/)：AI 改配置前该确认什么
+- [Windows SSH 客户端](https://ops.xlcig.cn/ssh-client/)：终端、SFTP 与数据库在同一个窗口
+- [数据库客户端](https://ops.xlcig.cn/database/)：MySQL / PostgreSQL / Redis 一站管理
+- [English site](https://ops.xlcig.cn/en/)
 
 **开发**
 
@@ -68,6 +78,14 @@ Built on Tauri 2 + React + Rust, Windows-first: the installer is under 15 MB and
 
 Grab the `*.exe` or `*.msi` from [Releases](https://github.com/npcxl/BLS-OPS/releases) and run it — the app updates itself.
 You can also start from the website: [ops.xlcig.cn](https://ops.xlcig.cn).
+
+**Site and topic pages**
+
+- [BLS-OPS website](https://ops.xlcig.cn/en/): product tour, changelog and downloads
+- [AI ops assistant](https://ops.xlcig.cn/en/ai-ops/): describe the task, confirm, then run
+- [Where AI ops has to stop](https://ops.xlcig.cn/en/ai-ops-safety/): what to confirm before an edit
+- [Windows SSH client](https://ops.xlcig.cn/en/ssh-client/): terminal, SFTP and SQL in one window
+- [Database client](https://ops.xlcig.cn/en/database/): MySQL / PostgreSQL / Redis
 
 **Development**
 

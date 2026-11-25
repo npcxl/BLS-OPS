@@ -19,10 +19,29 @@
  * 不会误删别人留的备份。
  */
 
-export type PermissionMode = "readonly" | "full";
+export type PermissionMode = "readonly" | "ask" | "full";
 
-/** 备份文件名里的固定标记。清理只认这个标记。 */
-export const BACKUP_MARK = ".bls-bak-";
+/** 备份文件名里的固定标记。清理只认这个标记（与后端 `.bls-bak.` 一致）。 */
+export const BACKUP_MARK = ".bls-bak.";
+
+/** 备份策略：开关决定是否先备份，保留期限只清理本应用生成的备份。 */
+export interface BackupPolicy {
+  /** 修改 / 覆盖前备份。 */
+  beforeWrite: boolean;
+  /** 删除前备份（删除后可能已经拿不到原文件）。 */
+  beforeDelete: boolean;
+  /** 保留天数；0 = 永久保留。 */
+  retentionDays: number;
+}
+
+export const DEFAULT_BACKUP_POLICY: BackupPolicy = {
+  beforeWrite: true,
+  beforeDelete: true,
+  retentionDays: 30,
+};
+
+/** 可选的保留期限（天）。 */
+export const BACKUP_RETENTION_OPTIONS = [7, 30, 90, 0] as const;
 
 /** 时间戳：`20260102030405`（本地时区无意义，只求唯一与可排序）。 */
 export function backupStamp(at = Date.now()): string {
@@ -104,7 +123,9 @@ export function parseBackups(stdout: string): BackupEntry[] {
  */
 export const PERMISSION_HINT: Record<PermissionMode, string> = {
   readonly:
-    "只读：查询直接执行；只有命令确实会写文件、改配置、改服务或删数据时，才请你确认一次。sudo 禁用。",
+    "只读：只执行查询；写入、修改、删除会被直接拒绝，不产生确认。sudo 禁用。",
+  ask:
+    "按需确认：查询直接执行；命令确实要写文件、改配置、改服务或删数据时，逐条请你确认。sudo 需确认。",
   full:
-    "完全权限：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行，不再逐条确认；写文件前仍会在同目录留一份带 .bls-bak- 标记的备份。你只要求查询时，执行器会拦下所有写操作，模型只做只读查询。",
+    "完全访问：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行；严重操作（改 SSH / 防火墙 / 磁盘 / 删系统目录等）仍会确认。备份按权限页的策略执行，备份文件带 .bls-bak. 标记。",
 };

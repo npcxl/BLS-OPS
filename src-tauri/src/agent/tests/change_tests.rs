@@ -305,12 +305,22 @@ fn input() -> AgentInput {
         }],
         provider_id: None,
         locale: None,
+        reply_language: None,
         reasoning_effort: None,
         context_budget: None,
         capability: None,
         carry_usage: None,
         allow_sudo: false,
         auto_approve_writes: false,
+        permission_mode: crate::agent::PermissionMode::Ask,
+        backup_before_write: true,
+        backup_before_delete: true,
+        backup_retention_days: 30,
+        mcp_tools: Vec::new(),
+        enabled_builtins: None,
+        db: None,
+        plan_required: false,
+        carry_plan: None,
         max_rounds: None,
         carry_steps: Vec::new(),
     }
@@ -553,8 +563,8 @@ async fn a_shell_write_is_marked_as_uncollected() {
     let io = ChangeIo::new(
         Some(BEFORE),
         &[
-            // 真的会改文件、但解析不出具体目标（rm 没有前后快照）。
-            "<tool name=\"run_shell\">{\"command\":\"rm -rf /var/www/old\"}</tool>",
+            // 真的会改文件、但解析不出具体目标（变量重定向拿不到路径）。
+            "<tool name=\"run_shell\">{\"command\":\"echo hi > \\\"$UNKNOWN_TARGET\\\"\"}</tool>",
             "已删除。",
             READ_CALL,
             "完成。",
@@ -653,10 +663,17 @@ fn shell_write_targets_only_keep_confident_absolute_paths() {
         shell_write_targets("cp -a /tmp/a /etc/b.conf", "/root"),
         vec!["/etc/b.conf"]
     );
-    // 没有显式 `cd` 的相对路径 / 变量 / 通配符：解析不准就不记录，不能编假目标。
-    assert!(shell_write_targets("sed -i 's/a/b/' ./local.conf", "/root").is_empty());
+    // 裸相对路径按任务 cwd（命令就在那里执行）解析；变量 / 通配符不猜。
+    assert_eq!(
+        shell_write_targets("sed -i 's/a/b/' ./local.conf", "/root"),
+        vec!["/root/local.conf"]
+    );
     assert!(shell_write_targets("cat > $HOME/x", "/root").is_empty());
-    assert!(shell_write_targets("rm -rf /tmp/x", "/root").is_empty());
+    // 删除目标也要能被看见：变更面板与删除前备份都依赖它。
+    assert_eq!(
+        shell_write_targets("rm -rf /tmp/x", "/root"),
+        vec!["/tmp/x"]
+    );
     /*
      * 模型最常写的形态：先 `F=/path` 再 `"$F"`。不展开变量，真实目标就丢了，
      * 面板只剩"未采集差异"；备份副本（`.bls-bak-`）不该算成第二条变更。

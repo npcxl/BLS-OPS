@@ -511,14 +511,12 @@ export function useDeployActions(deps: DeployDeps) {
           throw cause;
         }
         /*
-         * 变更审阅的"修改后"：文本写的就是这次提交的内容；从临时目录拷来的
-         * 回读一次。二进制没有正文可比，标成"未采集"。
+         * 变更审阅的"修改后"：**只认服务器回读**。
+         *
+         * 上传的 `text` 是"我们打算写什么"，不是服务器上实际是什么（可能被
+         * hooks / 权限 / 磁盘写满改过）。二进制没有正文可比，标成"未采集"。
          */
-        let afterText: string | null =
-          !copied && typeof step.text === "string" ? step.text : null;
-        if (afterText === null && !step.data) {
-          afterText = await readTextOrNull(scope.sessionId, target);
-        }
+        const afterText = step.data ? null : await readTextOrNull(scope.sessionId, target);
         await recordPlanChange(
           scope,
           target,

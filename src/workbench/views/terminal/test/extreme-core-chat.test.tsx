@@ -5,6 +5,7 @@ import { i18n } from "@/i18n";
 import { opsApi } from "@/api/ops-api";
 import type { AgentEvent, AgentSnapshot, AgentStep } from "@/api/types/agent";
 import { useExtremeStore } from "@/stores/extreme-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { ExtremeCoreView } from "../extreme-core/ExtremeCoreView";
 
 // 超能顶部栏与主窗口共用窗口按钮（最小化 / 最大化 / 关闭），jsdom 里没有 Tauri 运行时。
@@ -224,8 +225,8 @@ it("把 agent 事件增量写进同一张任务卡，不串到别的任务", asy
     expect(card.steps[0].stdout).toContain("Linux web-01");
     expect(card.cwd).toBe("/srv/app");
 
-    // 步骤默认收起（运行中也只留一行），点开才看细节；可以反复开合。
-    const expand = holder.querySelector<HTMLButtonElement>("[data-agent-activity] button[aria-expanded]");
+    // 命令紧跟正文、默认收起：一行操作名 + 状态，点开才看命令与输出。
+    const expand = holder.querySelector<HTMLButtonElement>("[data-step-part] button[aria-expanded]");
     expect(expand).toBeTruthy();
     expect(expand?.getAttribute("aria-expanded")).toBe("false");
     await act(async () => expand!.click());
@@ -334,11 +335,12 @@ it("写操作先挂起：确认前不发命令，点「允许执行」才回后�
     expect(allow).toBeTruthy();
     await act(async () => allow!.click());
     expect(approve).toHaveBeenCalledWith(taskId, "call-0-0", true);
-    // 确认送达后**确认条立即收起**（隐藏，不再占位），只留一行历史记录。
-    expect(
-      holder.querySelector('[data-testid="agent-approval"]')?.closest("[hidden]"),
-    ).not.toBeNull();
-    expect(holder.textContent).toContain("已允许执行：重启服务 nginx · 正在执行");
+    // 确认送达后**确认条原地消失**：先显示「已批准」，真实执行事件到了才是「运行中」。
+    expect(holder.querySelector('[data-testid="agent-approval"]')).toBeNull();
+    expect(holder.textContent).toContain("已批准");
+    await emitAgent({ ...approval, kind: "tool_started", state: "running" });
+    expect(holder.textContent).toContain("运行中");
+    expect(holder.textContent).not.toContain("已允许执行：重启服务 nginx · 正在执行");
 
     await emitAgent({ taskId, kind: "cancelled", message: "已停止" });
     await flushAgent();
@@ -541,7 +543,7 @@ it("shows the latest request context and the task totals in the usage popover", 
   }
 });
 
-it("确认回执留在原位，确认后的输出在回执下方另起一条回复", async () => {
+it("批准后不追加停在「正在执行」的气泡，结论直接写入当前回复", async () => {
   let finish!: (value: AgentSnapshot) => void;
   const run = vi.spyOn(opsApi, "aiAgentRun").mockImplementation(
     () =>
@@ -585,22 +587,22 @@ it("确认回执留在原位，确认后的输出在回执下方另起一条回�
     await act(async () => allow!.click());
     await flushAgent();
 
-    // 回执已经上屏。
-    const receiptAt = useExtremeStore
-      .getState()
-      .messages.findIndex((message) => message.text.includes("已允许执行"));
-    expect(receiptAt).toBeGreaterThan(-1);
+    // 不再额外生成一条「已允许执行 · 正在执行」气泡。
+    expect(
+      useExtremeStore
+        .getState()
+        .messages.some((message) => message.text.includes("已允许执行")),
+    ).toBe(false);
 
-    // 后端开始执行（步骤转 running），之后的正文必须落在回执**下方**。
+    // 后端开始执行（步骤转 running），正文直接写入当前回复。
     await emitAgent({ ...approval, kind: "tool_started", state: "running" });
     await emitAgent({ taskId, kind: "text_delta", content: "服务已重启。" });
     await flushAgent();
 
     const after = useExtremeStore.getState().messages;
     const conclusionAt = after.findIndex((message) => message.text.includes("服务已重启"));
-    expect(conclusionAt).toBeGreaterThan(receiptAt);
-    expect(after[receiptAt].text).toContain("已允许执行");
-    expect(after[receiptAt].text).not.toContain("服务已重启");
+    expect(conclusionAt).toBeGreaterThan(-1);
+    expect(after[conclusionAt].text).toContain("服务已重启");
 
     await act(async () => finish(snapshot({ taskId, status: "success", content: "服务已重启。" })));
     await emitAgent({ taskId, kind: "finished", content: "服务已重启。", model: "test-model" });
@@ -660,11 +662,10 @@ it("拒绝执行：原地显示已拒绝，计划里的那一步同步标记，�
     await flushAgent();
 
     expect(approve).toHaveBeenCalledWith(taskId, "call-0-0", false);
-    // 拒绝送达后确认条同样立即收起，记录折成一行。
-    expect(
-      holder.querySelector('[data-testid="agent-approval"]')?.closest("[hidden]"),
-    ).not.toBeNull();
-    expect(holder.textContent).toContain("已拒绝执行：更新 Nginx 配置 ops-access.log.conf · 此步骤未执行");
+    // 拒绝送达后确认条原地消失，这一步标成「未执行」。
+    expect(holder.querySelector('[data-testid="agent-approval"]')).toBeNull();
+    expect(holder.textContent).toContain("未执行");
+    expect(holder.textContent).not.toContain("已拒绝执行：更新 Nginx 配置 ops-access.log.conf · 此步骤未执行");
 
     // 后端把这步标成失败（拒绝 → fail_step），计划里同步。
     await emitAgent({
@@ -679,7 +680,7 @@ it("拒绝执行：原地显示已拒绝，计划里的那一步同步标记，�
     // 这一轮结束：确认条折成一行记录（不再挂在输入框上方）。
     await emitAgent({ taskId, kind: "finished", content: "那我改成只检查配置。", model: "test-model" });
     await flushAgent();
-    expect(holder.textContent).toContain("已拒绝执行：更新 Nginx 配置 ops-access.log.conf · 此步骤未执行");
+    expect(holder.textContent).not.toContain("已拒绝执行：更新 Nginx 配置 ops-access.log.conf · 此步骤未执行");
     expect(
       holder.querySelector('[data-testid="agent-approval"]'),
     ).toBeNull();
@@ -1590,6 +1591,8 @@ it("右栏按标签页工作：固定入口开标签，收起再开复原，换�
   channels.clear();
   useExtremeStore.getState().enter("srv-panel", "生产", "extreme-panel", "root@10.0.0.20:22");
   const firstWorkspace = useExtremeStore.getState().ensureWorkspace()!;
+  // 这个用例验证“从固定入口打开”：先确保右栏是收起的初始状态。
+  useExtremeStore.getState().setPaneView("hidden");
   useExtremeStore.getState().pushMessage({ id: "m-1", role: "user", text: "看看日志" });
   try {
     await act(async () => root.render(<ExtremeCoreView />));
@@ -1962,7 +1965,10 @@ it("输入区是官方 Prompt Bar：模型 / 思考强度 / 上下文都在组�
         node.textContent?.includes(label),
       )!;
     await act(async () => budgetOption("600K").click());
-    expect(useExtremeStore.getState().modelSettings["p:p1"]).toMatchObject({ budget: 600 * 1024 });
+    const workspaceNow = useExtremeStore.getState().workspaceId!;
+    expect(
+      useExtremeStore.getState().modelSettingsByWorkspace[workspaceNow]?.["p:p1"],
+    ).toMatchObject({ budget: 600 * 1024 });
 
     // 思考强度：组件里的滑杆选到最高档（MAX），发送时按模型记住。
     const effortButton = composer.querySelector<HTMLButtonElement>('button[aria-label="选择思考强度"]')!;
@@ -1972,7 +1978,9 @@ it("输入区是官方 Prompt Bar：模型 / 思考强度 / 上下文都在组�
       slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
     expect(effortButton.textContent).toContain("MAX");
-    expect(useExtremeStore.getState().modelSettings["p:p1"]?.effort).toBe("max");
+    expect(
+      useExtremeStore.getState().modelSettingsByWorkspace[workspaceNow]?.["p:p1"]?.effort,
+    ).toBe("max");
 
     await act(async () => {
       setValue.call(textarea, "再看一次");
@@ -2027,10 +2035,12 @@ it("发送即锁定模型：A 等终端输出时切到 B，A 的请求仍用 A �
   await i18n.changeLanguage("zh-CN");
   channels.clear();
   useExtremeStore.setState({ modelSettings: {} });
+  useExtremeSettingsStore.getState().update({ replyLanguage: "en" });
   useExtremeStore.getState().enter("srv-select", "生产", "extreme-select", "root@10.0.0.41:22");
   useExtremeStore.getState().ensureWorkspace();
   useExtremeStore.getState().setProviderId("pa");
-  useExtremeStore.getState().setModelSetting("p:pa", { effort: "high", budget: 600 * 1024 });
+  // 普通档（不是最高档）：这一轮保持原流程，不开启强制计划。
+  useExtremeStore.getState().setModelSetting("p:pa", { effort: "low", budget: 600 * 1024 });
 
   let release!: (value: string) => void;
   const tail = new Promise<string>((resolve) => {
@@ -2064,13 +2074,22 @@ it("发送即锁定模型：A 等终端输出时切到 B，A 的请求仍用 A �
     expect(run).toHaveBeenCalledTimes(1);
     const request = run.mock.calls[0][0];
     expect(request.providerId).toBe("pa");
-    expect(request.reasoningEffort).toBe("high");
+    expect(request.reasoningEffort).toBe("low");
+    expect(request.planRequired).toBe(false);
     expect(request.contextBudget).toBe(600 * 1024);
+    // 回复语言是独立偏好：设置为英文时请求带 en，而不是只跟界面语言。
+    expect(request.replyLanguage).toBe("en");
+    // 测试环境默认开放"连接即用"的内置技能；外部 MCP 未连接时不带工具。
+    expect(request.enabledBuiltins).toEqual(
+      expect.arrayContaining(["inspect", "logs", "files"]),
+    );
+    expect(request.enabledMcpTools).toEqual([]);
   } finally {
     await act(async () => root.unmount());
     holder.remove();
     useExtremeStore.getState().exit();
     useExtremeStore.setState({ modelSettings: {} });
+    useExtremeSettingsStore.getState().reset();
     manualShell.tail.mockReset();
     manualShell.tail.mockImplementation(async () => "");
     providers.mockRestore();
@@ -2329,6 +2348,161 @@ it("气泡下有复制 / 引用 / 编辑，编辑与引用把文本送回输入�
     run.mockRestore();
     snap.mockRestore();
     vi.unstubAllGlobals();
+    channels.clear();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/* ---------------- MAX 强制计划 / 执行前说明 ---------------- */
+
+it("MAX：计划卡在右上角，说明在命令上方；同组重复事件只留一条说明", async () => {
+  const run = vi.spyOn(opsApi, "aiAgentRun").mockResolvedValue(snapshot());
+  const snap = vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot());
+  const providers = vi.spyOn(opsApi, "aiProviderList").mockResolvedValue([
+    {
+      id: "p1",
+      name: "DeepSeek",
+      model: "deepseek-v4",
+      enabled: true,
+      is_default: true,
+      updated_at: 1,
+      context_window: 1024 * 1024,
+      context_budgets: [300 * 1024],
+      // 供应商最高档只到 high：用户仍然可以选 MAX，门控不能丢。
+      reasoning_efforts: ["low", "high"],
+    },
+  ] as never);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  vi.stubGlobal("matchMedia", () => ({
+    matches: false,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }));
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    value: vi.fn(),
+    configurable: true,
+  });
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  channels.clear();
+  useExtremeStore.setState({ modelSettings: {} });
+  useExtremeStore.getState().enter("server-max-plan", "server", "extreme-max-plan", "198.51.100.31");
+  useExtremeStore.getState().ensureWorkspace();
+  useExtremeStore.getState().setProviderId("p1");
+
+  const planOf = (state: "pending" | "done") => ({
+    understanding: "把站点部署到 nginx",
+    summary: "先检查再部署",
+    prerequisites: ["确认是生产环境"],
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    steps: [
+      {
+        id: "s1",
+        title: "检查 Nginx 配置",
+        action: "nginx -T",
+        verify: "确认站点目录",
+        kind: "probe",
+        state,
+      },
+      {
+        id: "s2",
+        title: "更新站点",
+        action: "写入新的配置",
+        verify: "nginx -t 通过",
+        kind: "action",
+        state: "pending",
+      },
+    ],
+  });
+
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    // 等提供方列表装进来，再按模型记住 MAX（与真实菜单写入同一个键）。
+    await flushAgent();
+    useExtremeStore.getState().setModelSetting("p:p1", { effort: "max" });
+    await submit(holder, "把站点部署到 nginx");
+
+    const request = run.mock.calls[0][0];
+    // 用户选 MAX：请求发 max（后端按能力落成 high），同时开启强制计划。
+    expect(request.reasoningEffort).toBe("max");
+    expect(request.planRequired).toBe(true);
+    const taskId = request.taskId;
+
+    await emitAgent({ taskId, kind: "plan_updated", plan: planOf("pending") });
+    await emitAgent({
+      taskId,
+      kind: "tool_started",
+      stepIndex: 0,
+      callId: "call-0-0",
+      tool: "run_shell",
+      risk: "read",
+      // 已经跑完的命令：这条用例验证排版与计划卡，不需要 ThoughtLine 动效。
+      state: "success",
+      command: "nginx -T",
+      summary: "读取 Nginx 配置",
+      planStepId: "s1",
+      groupId: "p-s1",
+      note: "先看看站点配置指向哪个目录。",
+    });
+    await flushAgent();
+
+    const text = holder.textContent ?? "";
+    expect(text).toContain("执行计划");
+    expect(text).toContain("检查 Nginx 配置");
+    // 说明必须排在命令上方。
+    expect(text.indexOf("先看看站点配置指向哪个目录。")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("先看看站点配置指向哪个目录。")).toBeLessThan(
+      text.indexOf("读取 Nginx 配置"),
+    );
+
+    // 点计划卡里的步骤：定位到聊天里对应的命令行（滚动 + 短暂高亮）。
+    const planStep = Array.from(holder.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("检查 Nginx 配置"),
+    );
+    expect(planStep).toBeTruthy();
+    await act(async () => planStep!.click());
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+    expect(
+      holder.querySelector('[data-plan-focus]') ??
+        holder.querySelector('[data-plan-step="s1"]'),
+    ).toBeTruthy();
+
+    // 同一组的下一条命令：不重复补说明。
+    await emitAgent({
+      taskId,
+      kind: "tool_started",
+      stepIndex: 1,
+      callId: "call-0-1",
+      tool: "run_shell",
+      risk: "read",
+      state: "success",
+      command: "cat /etc/nginx/nginx.conf",
+      summary: "查看 Nginx 配置",
+      planStepId: "s1",
+      groupId: "p-s1",
+    });
+    await flushAgent();
+    expect((holder.textContent ?? "").split("先看看站点配置指向哪个目录。").length - 1).toBe(1);
+
+    // 真实事件推进计划步骤：计划卡上的完成数跟着变，位置不跳。
+    await emitAgent({ taskId, kind: "plan_updated", plan: planOf("done") });
+    await flushAgent();
+    expect(holder.textContent).toContain("1/2");
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    useExtremeStore.setState({ modelSettings: {} });
+    run.mockRestore();
+    snap.mockRestore();
+    providers.mockRestore();
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "innerWidth", { value: 1024, configurable: true });
     channels.clear();
     await i18n.changeLanguage(language);
   }

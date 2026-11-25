@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Container, Search } from "@/components/icons";
+import { Search } from "@/components/icons";
 import { opsApi } from "@/api/ops-api";
 import type { LogSource } from "@/api/types/panel";
+import { VscodeIcon, serviceIconKey } from "./FileKindIcon";
 import { LiveLogPanel } from "./LiveLogPanel";
 
 /**
@@ -141,7 +142,7 @@ export function LogsPane({
                   }
                   className="flex w-full items-center gap-1.5 rounded-[6px] px-1.5 py-1 text-left text-11 text-fg-muted hover:bg-surface-hover hover:text-fg"
                 >
-                  <Container size={12} className="shrink-0 text-fg-subtle" />
+                  <VscodeIcon iconKey="docker" size={13} />
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
                   <span className="shrink-0 text-10 text-fg-subtle">{item.state}</span>
                 </button>
@@ -164,7 +165,8 @@ export function LogsPane({
                   }
                   className="flex w-full items-start gap-1.5 rounded-[6px] px-1.5 py-1 text-left hover:bg-surface-hover"
                 >
-                  <span className="mt-1 size-1.5 shrink-0 rounded-full bg-success" />
+                  {/* 服务名 → 品牌图标（nginx / docker / ssh / 数据库），认不出用 systemd。 */}
+                  <VscodeIcon iconKey={serviceIconKey(unit.unit)} size={13} className="mt-0.5" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-11 text-fg-muted">{unit.unit}</span>
                     <span className="block truncate text-10 text-fg-subtle">

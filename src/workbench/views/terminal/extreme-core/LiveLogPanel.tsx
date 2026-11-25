@@ -6,6 +6,7 @@ import { ExtremeIconButton } from "./ExtremeIconButton";
 import type { LogSource } from "@/api/types/panel";
 import { filterLines, visibleLines } from "./log-buffer";
 import { activeLogFor, useLogStreamStore } from "./log-stream-store";
+import { VscodeIcon, logSourceIconKey } from "./FileKindIcon";
 
 /**
  * 实时日志面板。
@@ -63,6 +64,8 @@ export function LiveLogPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1 border-b border-line/70 px-2 py-1.5">
+        {/* 来源图标：Docker 容器 / systemd 单元（按服务名认品牌）/ 日志文件。 */}
+        <VscodeIcon iconKey={logSourceIconKey(source)} size={13} />
         <span className="min-w-0 flex-1 truncate text-11 text-fg-muted" title={source.label}>
           {source.label}
         </span>

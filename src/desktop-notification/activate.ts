@@ -51,6 +51,13 @@ export function ensureNotificationActivation(): void {
           // 连接已经不在：至少把超能页打开，让用户看那条对话的历史。
           useExtremeStore.setState({ active: true });
         }
+        if (action.workspaceId) {
+          // 结果通知属于某次具体运行：切到那条对话，再定位到它的消息。
+          useExtremeStore.getState().openWorkspace(action.workspaceId);
+        }
+        if (action.taskId) {
+          useExtremeStore.getState().setFocusTaskId(action.taskId);
+        }
         break;
       }
       default:

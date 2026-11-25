@@ -4,6 +4,7 @@ import {
   batchSummary,
   buildChangeTree,
   canOpenInRemote,
+  changeReasonLabel,
   changeStatusLabel,
   countInDir,
   diffSegments,
@@ -107,6 +108,72 @@ describe("文件变更：批次结论", () => {
     ]);
     expect(summary.additions).toBe(8);
     expect(summary.deletions).toBe(3);
+  });
+});
+
+describe("文件变更：净变化的计数口径", () => {
+  it("净变化为空 = 无净变化，不是「暂无变更」", () => {
+    expect(batchSummary([], true).state).toBe("nochange");
+    expect(batchSummary([], false).state).toBe("empty");
+  });
+
+  it("未确认 / 未采集不计入已确认变更，也不贡献行数", () => {
+    const summary = batchSummary([
+      change({ status: "readback_failed", additions: 0, deletions: 0 }),
+      change({ id: "c2", status: "uncollected", uncollected: true, additions: 0, deletions: 0 }),
+      change({ id: "c3", additions: 4, deletions: 2 }),
+    ]);
+    expect(summary.files).toBe(3);
+    expect(summary.changed).toBe(1);
+    expect(summary.additions).toBe(4);
+    expect(summary.deletions).toBe(2);
+  });
+
+  it("待确认预览独立统计行数，但不算已更改文件", () => {
+    const summary = batchSummary([
+      change({ status: "proposed", stage: "proposed", additions: 7, deletions: 3 }),
+    ]);
+    expect(summary.pending).toBe(1);
+    expect(summary.changed).toBe(0);
+    expect(summary.files).toBe(1);
+    expect(summary.additions).toBe(7);
+    expect(summary.deletions).toBe(3);
+  });
+
+  it("删除也算已确认变化", () => {
+    const summary = batchSummary([change({ status: "deleted", additions: 0, deletions: 6 })]);
+    expect(summary.changed).toBe(1);
+    expect(summary.state).toBe("written");
+    expect(summary.deletions).toBe(6);
+  });
+});
+
+describe("文件变更：零行变化的原因文字", () => {
+  const t = (key: string) => key;
+
+  it("没有逐行差异时用状态 / 原因代替 +0 -0", () => {
+    expect(
+      changeReasonLabel(change({ additions: 0, deletions: 0, created: true }), t),
+    ).toBe("新增空文件");
+    expect(
+      changeReasonLabel(change({ additions: 0, deletions: 0, status: "deleted" }), t),
+    ).toBe("删除空文件");
+    expect(changeReasonLabel(change({ additions: 0, deletions: 0, binary: true }), t)).toBe(
+      "二进制已修改",
+    );
+    expect(
+      changeReasonLabel(change({ status: "readback_failed", additions: 0, deletions: 0 }), t),
+    ).toBe("回读失败");
+    expect(
+      changeReasonLabel(change({ status: "uncollected", uncollected: true }), t),
+    ).toBe("未采集差异");
+    // 后端给的原因优先（例如「敏感内容已变化，差异已隐藏」）。
+    expect(
+      changeReasonLabel(
+        change({ additions: 0, deletions: 0, reason: "敏感内容已变化，差异已隐藏" }),
+        t,
+      ),
+    ).toBe("敏感内容已变化，差异已隐藏");
   });
 });
 

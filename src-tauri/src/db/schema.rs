@@ -61,10 +61,13 @@ impl AppDb {
 /// v19 建 `extreme_tasks`，v20 补索引，v21 / v22 分别加 `kind` 与 `name`，
 /// v23 补 `server_id` / `workspace_id`（任务归属），v24 补 `goal` / `risk`
 /// （类型按用户目标判断，风险单独记录），v25 补 `outcome_json`（验证结论，
-/// 重启后仍能显示「已验证 / 部分完成」），v26 补 `cwd`（恢复执行时的起点目录）。
+/// 重启后仍能显示「已验证 / 部分完成」），v26 补 `cwd`（恢复执行时的起点目录），
+/// v27 补模型能力声明，v28 建 `extreme_workspaces`（对话正文也进数据库），
+/// v29 补 `extreme_tasks.changes_json`（文件变更随任务持久化），
+/// v30 建 `mcp_servers`（MCP 服务配置与能力缓存）。
 /// 这个常量还决定 `init()` 要不要在迁移前自动备份旧库 —— 落后于真实迁移步数
 /// 时，v18 的库会**跳过**那次备份直接升上来。
-pub const SCHEMA_VERSION: u32 = 27;
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -1355,6 +1358,54 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             add_column(conn, "ai_providers", "reasoning_efforts", "TEXT")?;
         }
         conn.pragma_update(None, "user_version", 27u32)?;
+    }
+    if version < 28 {
+        /*
+         * 对话正文 / 草稿 / 上下文进数据库（v28）。
+         *
+         * 一条 workspace 一行 JSON：字段还在快速演进（附件快照、任务卡、
+         * 用量…），先不把消息拆成列，避免每加一个字段就迁移；id 与 updated_at
+         * 单独成列，左栏排序和增量同步不需要解析整份 JSON。
+         */
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS extreme_workspaces (
+                id TEXT PRIMARY KEY NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_extreme_workspaces_updated
+                ON extreme_workspaces (updated_at DESC);",
+        )?;
+        conn.pragma_update(None, "user_version", 28u32)?;
+    }
+    if version < 29 {
+        /*
+         * 文件变更摘要 + 脱敏 Diff 跟着任务记录走（v29）。
+         *
+         * 以前变更只在内存里，应用一重启面板就空了 —— 用户看不到"上次改了
+         * 哪个文件"。存成 JSON：字段还年轻，拆列只会让迁移更频繁；正文在
+         * 写入前已经脱敏并按条截断（64 KiB / 2000 行）。
+         */
+        add_column(conn, "extreme_tasks", "changes_json", "TEXT")?;
+        conn.pragma_update(None, "user_version", 29u32)?;
+    }
+    if version < 30 {
+        /*
+         * MCP 服务配置与能力缓存（v30）。
+         *
+         * 一行一个服务：配置字段还在演进（环境变量、Header、能力缓存），
+         * 先存整份 JSON；列表按 updated_at 排序不需要解析正文。
+         */
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mcp_servers (
+                id TEXT PRIMARY KEY NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mcp_servers_updated
+                ON mcp_servers (updated_at DESC);",
+        )?;
+        conn.pragma_update(None, "user_version", 30u32)?;
     }
     Ok(())
 }

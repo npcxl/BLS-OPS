@@ -98,4 +98,7 @@ export default {
     "还没有服务器。请先在左侧“服务器”下添加一台。",
   "This command will modify the server run state ({{risk}}):\n{{command}}":
     "此命令会修改服务器运行状态（{{risk}}）：\n{{command}}",
+  // MCP 连接页里的鉴权术语：中文界面保持原词，不做意译。
+  "Bearer Token": "Bearer Token",
+  "OAuth": "OAuth",
 } as const;

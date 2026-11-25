@@ -5,6 +5,7 @@
  * 这里只负责呈现与把动作转发回对应入口。
  */
 import { useTranslation } from "react-i18next";
+import { X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { StatusNotice } from "@/components/ui/status";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -20,6 +21,8 @@ export interface StatusStackProps {
   tasks: Record<string, TaskCardModel>;
   decideApprovalById: (allow: boolean, callId: string, taskId: string) => Promise<void>;
   openPaneTab: (tab: WorkspacePane, terminal?: TerminalPane) => void;
+  /** 审批卡上的「查看变更」：定位到这条审批对应的文件。 */
+  openChanges: (taskId: string, changeId?: string) => void;
   sessionId: string | null;
   reconnect: () => void;
   notice: string | null;
@@ -42,6 +45,7 @@ export function StatusStack({
   tasks,
   decideApprovalById,
   openPaneTab,
+  openChanges,
   sessionId,
   reconnect,
   notice,
@@ -78,7 +82,7 @@ export function StatusStack({
                   <span className="mr-1">{askError}</span>
                   {/没有配置|还没有配置/.test(askError) && (
                     <span className="text-fg-muted">
-                      {t("在 设置 → AI providers 里配置默认模型与 API Key。")}
+                      {t("在左栏「设置」里配置默认模型与 API Key。")}
                     </span>
                   )}
                   {/*
@@ -112,6 +116,15 @@ export function StatusStack({
                 onDecide={(allow) =>
                   void decideApprovalById(allow, entry.approval.callId, entry.approval.taskId)
                 }
+                onOpenChanges={
+                  entry.approval.changeId
+                    ? () =>
+                        openChanges(
+                          entry.approval.taskId,
+                          entry.approval.changeId ?? undefined,
+                        )
+                    : undefined
+                }
                 onOpenOutput={() => {
                   // 「查看输出」：右栏切到终端 › 执行输出 —— 这条命令就在那一列里。
                   openPaneTab("terminal", "output");
@@ -143,21 +156,23 @@ export function StatusStack({
            * 停止中不能发送…）。以前只写不显示，等于没有反馈。
            */}
           {showNotice && (
-            <div
-              role="status"
-              className="mx-auto mb-1 flex w-full max-w-[880px] items-start gap-2 rounded-md border border-line/70 bg-surface-2 px-3 py-1.5 text-11 text-fg-muted"
-            >
-              <span className="min-w-0 flex-1">{notice}</span>
-              <Tooltip label={t("关闭提示")}>
-                <button
-                  type="button"
-                  aria-label={t("关闭提示")}
-                  className="shrink-0 px-0.5 text-fg-subtle hover:text-fg"
-                  onClick={() => setNotice(null)}
-                >
-                  ×
-                </button>
-              </Tooltip>
+            <div className="mb-1 flex min-w-0 shrink-0 justify-center px-4">
+              <div
+                role="status"
+                className="flex w-fit max-w-[min(100%,28rem)] items-start gap-1.5 rounded-lg bg-surface-2 py-1 pe-1 ps-2.5 text-11 text-fg-muted"
+              >
+                <span className="min-w-0 break-words py-0.5">{notice}</span>
+                <Tooltip label={t("关闭提示")}>
+                  <button
+                    type="button"
+                    aria-label={t("关闭提示")}
+                    className="grid size-5 shrink-0 place-items-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                    onClick={() => setNotice(null)}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
             </div>
           )}
 

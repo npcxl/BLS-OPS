@@ -6,10 +6,11 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, FileText, FolderOpen } from "@/components/icons";
+import { ChevronRight } from "@/components/icons";
 import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { ExtremeAttachment } from "@/stores/extreme-store";
+import { FileKindIcon } from "./FileKindIcon";
 import { EC } from "./theme";
 
 interface TreeDir {
@@ -188,7 +189,8 @@ export const AttachmentTree = memo(function AttachmentTree({
                   size={11}
                   className={cn("shrink-0 transition-transform", expanded.has(node.path) && "rotate-90")}
                 />
-                <FolderOpen size={12} className="shrink-0" style={{ color: EC.accentSoft }} />
+                {/* 目录图标按名字走 vscode-icons（.ssh / docker / logs 各有专图）。 */}
+                <FileKindIcon name={node.name} kind="directory" size={13} />
                 <span className="truncate">{node.name}</span>
                 <span className="ml-auto shrink-0 text-10" style={{ color: EC.fgSubtle }}>
                   {node.count}
@@ -218,7 +220,8 @@ export const AttachmentTree = memo(function AttachmentTree({
                   if (preview !== node.attachment.id) event.currentTarget.style.background = "transparent";
                 }}
               >
-                <FileText size={11} className="shrink-0" />
+                {/* 附件按扩展名给图标：一眼看出是配置 / 日志 / 图片 / 压缩包。 */}
+                <FileKindIcon name={node.name} size={13} />
                 <span className="truncate">{node.name}</span>
                 {/* 三态分开显示：只有"已部署"才是最终完成。 */}
                 {node.attachment.uploadState === "uploading" && (

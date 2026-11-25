@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolveCompletions } from "./completion/registry";
 import type { CompletionContext, CompletionItem } from "./completion/types";
 import { parseLine } from "./completion/path-input";
@@ -347,6 +347,8 @@ export function useComposerCompletion({
   usable: boolean;
   /** 远程部分是否还在算（本地候选已经在显示了）。 */
   loading: boolean;
+  /** 主动补全（Tab）：跳过防抖，复用同输入的在途请求。 */
+  completeNow: () => Promise<ComposerItem[]>;
 } {
   /** 远程结果 + 它对应的输入快照。 */
   const [remote, setRemote] = useState<{ items: ComposerItem[]; snapshot: ComposerSnapshot } | null>(
@@ -415,10 +417,91 @@ export function useComposerCompletion({
     return () => window.clearTimeout(timer);
   }, [caret, cwd, enabled, environment, history, home, sessionId, text]);
 
+  /*
+   * 主动补全（Tab）：**跳过防抖**，按当前输入立刻请求一次。
+   *
+   * 同一个 (会话, 输入, 光标) 只发一次请求，在途的复用；结果仍然走
+   * `snapshotMatches` 校验，晚了就丢 —— 不会把旧草稿的候选补进新输入。
+   */
+  /*
+   * 主动补全（Tab）：跳过 40ms 防抖，按当前输入立刻请求一次。
+   *
+   * 同一个 (会话, 输入, 光标) 只发一次，在途的复用；结果由调用方再按快照
+   * 校验后落地，迟到的不会补进新草稿。
+   */
+  /*
+   * 主动补全（Tab）：跳过 40ms 防抖，按当前输入立刻请求一次。
+   *
+   * 同一个 (会话, 输入, 光标) 只发一次，在途的复用；结果仍按快照校验，
+   * 迟到的不会补进新草稿。
+   */
+  const inputRef = useRef({ sessionId, text, caret, enabled, cwd, home, environment, history });
+  inputRef.current = { sessionId, text, caret, enabled, cwd, home, environment, history };
+  const activeRef = useRef<Map<string, Promise<ComposerItem[]>>>(new Map());
+
+  const completeNow = useCallback(async (): Promise<ComposerItem[]> => {
+    const state = inputRef.current;
+    const local = mergeUnique(
+      historyItems(state.text, state.caret, state.history),
+      [
+        ...rankByUsage(localSubcommandItems(state.text, state.caret), state.history, null),
+        ...rankByUsage(localCommandItems(state.text, state.caret), state.history, null),
+      ],
+    );
+    if (!state.enabled) return local;
+
+    const snapshot: ComposerSnapshot = {
+      text: state.text,
+      caret: state.caret,
+      sessionId: state.sessionId,
+    };
+    const key = `${snapshot.sessionId}\u0000${snapshot.text}\u0000${snapshot.caret}`;
+    let pending = activeRef.current.get(key);
+    if (!pending) {
+      pending = resolveCompletions({
+        line: snapshot.text,
+        cursor: snapshot.caret,
+        sessionId: snapshot.sessionId,
+        cwd: state.cwd,
+        home: state.home,
+        environment: state.environment,
+      })
+        .then((result) => result.items.filter((item) => !item.disabled))
+        .catch(() => [])
+        .finally(() => {
+          activeRef.current.delete(key);
+        });
+      activeRef.current.set(key, pending);
+    }
+    const remote = await pending;
+    const now = inputRef.current;
+    if (
+      now.text === snapshot.text &&
+      now.caret === snapshot.caret &&
+      now.sessionId === snapshot.sessionId
+    ) {
+      setRemote({
+        items: rankByUsage(
+          remote,
+          now.history,
+          parseLine(now.text, now.caret).tokens[0]?.value?.trim().toLowerCase() ?? null,
+        ),
+        snapshot,
+      });
+    }
+    return mergeUnique(remote, local);
+  }, []);
+
   const current: ComposerSnapshot = { text, caret, sessionId };
   // 远程结果只在快照仍然匹配时参与合并，否则退回本地候选（绝不显示旧内容）。
   const remoteUsable = remote !== null && snapshotMatches(remote.snapshot, current);
   const items = remoteUsable ? mergeUnique(remote.items, immediate) : immediate;
 
-  return { items, snapshot: current, usable: enabled && items.length > 0, loading };
+  return {
+    items,
+    snapshot: current,
+    usable: enabled && items.length > 0,
+    loading,
+    completeNow,
+  };
 }

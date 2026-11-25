@@ -1150,6 +1150,10 @@ impl SshSessionManager {
     ///
     /// 取消时**删掉临时文件**并把错误抛回去：目标名要么是完整内容，要么根本
     /// 不存在，绝不留下半截文件。
+    ///
+    /// `on_finishing` 在**字节全部写完、句柄还未关闭、改名还没做**时调用一次：
+    /// 这段时间里界面不能报成功（文件还没落到目标名下），但也不该继续显示
+    /// "传输中"的字节进度 —— 调用方据此切到「正在完成」。
     pub async fn upload_to_path(
         &self,
         session_id: &str,
@@ -1157,6 +1161,7 @@ impl SshSessionManager {
         remote_path: &str,
         cancel: &std::sync::atomic::AtomicBool,
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+        on_finishing: &(dyn Fn(u64) + Send + Sync),
     ) -> Result<u64> {
         use std::sync::atomic::Ordering;
         crate::safe::validate_abs_path(remote_path, "目标文件")?;
@@ -1202,6 +1207,8 @@ impl SshSessionManager {
                 written += read as u64;
                 on_progress(written, total);
             }
+            // 字节写完了，但目标名还没出现：先让界面进入「正在完成」。
+            on_finishing(written);
             if let Err(error) = remote.shutdown().await {
                 return Err(anyhow!("上传未完成：{error}"));
             }
@@ -1222,6 +1229,8 @@ impl SshSessionManager {
     }
 
     /// 带取消的整文件下载：写同目录唯一临时文件 → 完成 → 原子改名。
+    ///
+    /// `on_finishing` 语义与上传一致：字节收完、临时文件还没改名成目标名。
     pub async fn download_to_path(
         &self,
         session_id: &str,
@@ -1229,6 +1238,7 @@ impl SshSessionManager {
         local_path: &std::path::Path,
         cancel: &std::sync::atomic::AtomicBool,
         on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+        on_finishing: &(dyn Fn(u64) + Send + Sync),
     ) -> Result<u64> {
         use std::sync::atomic::Ordering;
         let session = self.get(session_id).await?;
@@ -1280,6 +1290,8 @@ impl SshSessionManager {
                 written += read as u64;
                 on_progress(written, total);
             }
+            // 字节收完了，但临时文件还没改名：界面显示「正在完成」。
+            on_finishing(written);
             if let Err(error) = local.shutdown().await {
                 return Err(anyhow!("写入本地文件失败：{error}"));
             }

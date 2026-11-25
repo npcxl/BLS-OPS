@@ -6,7 +6,30 @@ import { SquareTerminal } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import type { NginxEnvironment } from "@/api/types/environment";
 import { replaceSegment, resolveComposerKey } from "./composer-keys";
-import { useComposerCompletion, type ComposerItem } from "./use-composer-completion";
+import {
+  snapshotMatches,
+  useComposerCompletion,
+  type ComposerItem,
+} from "./use-composer-completion";
+
+/** 多个候选的公共前缀（去尾部空格）：只有比已输入的词更长才值得补。 */
+function commonPrefixOf(list: ComposerItem[]): string {
+  let prefix = list[0]?.insertText ?? "";
+  for (const item of list.slice(1)) {
+    let index = 0;
+    while (
+      index < prefix.length &&
+      index < item.insertText.length &&
+      prefix[index] === item.insertText[index]
+    ) {
+      index += 1;
+    }
+    prefix = prefix.slice(0, index);
+    if (!prefix) break;
+  }
+  return prefix.replace(/\s+$/, "");
+}
+
 
 /**
  * 终端输入条 —— 对话式输入 + **横向候选栏**（微软输入法式）。
@@ -71,11 +94,14 @@ export function TerminalComposer({
   const [forceOpen, setForceOpen] = useState(false);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const draftBeforeHistory = useRef("");
+  /** 主动补全的异步结果回来时，用**那一刻**的草稿做校验。 */
+  const snapshotRef = useRef({ text, caret, sessionId });
+  snapshotRef.current = { text, caret, sessionId };
   const barRef = useRef<HTMLDivElement>(null);
   const [barPos, setBarPos] = useState<{ left: number; top: number } | null>(null);
   const blocked = disabled || interactive;
 
-  const { items, usable } = useComposerCompletion({
+  const { items, usable, completeNow } = useComposerCompletion({
     sessionId,
     text,
     caret,
@@ -387,9 +413,35 @@ export function TerminalComposer({
             return;
           case "complete": {
             event.preventDefault();
-            // 统一入口：Tab 与鼠标点击走同一条 `applySelection`。
-            const pick = (barVisible ? visible[active] : visible[0]) ?? visible[0];
-            if (pick) applySelection(pick);
+            /*
+             * 有高亮项就填（与鼠标点击同一条路径）；只是浮层被空格收起时
+             * 不盲填 —— 那样会把看不见的候选塞进 `docker | --tail 100`。
+             */
+            const pick = barVisible ? (visible[active] ?? visible[0]) : undefined;
+            if (pick) {
+              applySelection(pick);
+              return;
+            }
+            /*
+             * 候选还没出现：立刻按当前输入请求一次（跳过防抖）。结果回来时
+             * 用快照校验草稿没变，再落地：一个匹配直接补，多个匹配补公共
+             * 前缀；补不动就只把候选留在界面上，草稿一字不动。
+             */
+            if (typeof completeNow !== "function") return;
+            const at = snapshotRef.current;
+            void completeNow().then((list) => {
+              if (list.length === 0) return;
+              if (!snapshotMatches(at, snapshotRef.current)) return;
+              const first = list[0];
+              const range = first.replaceRange ?? { start: at.caret, end: at.caret };
+              const token = at.text.slice(range.start, range.end);
+              const insert = list.length === 1 ? first.insertText : commonPrefixOf(list);
+              if (!insert || insert.length <= token.length) return;
+              if (list.length > 1 && !insert.toLowerCase().startsWith(token.toLowerCase())) return;
+              const next = replaceSegment(at.text, range, insert);
+              setText(next.text);
+              setCaret(next.caret);
+            });
             return;
           }
           case "submit": {

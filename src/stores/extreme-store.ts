@@ -6,6 +6,11 @@ import type { ExecutionReport } from "@/workbench/views/terminal/extreme-core/ex
 import type { PanelRequest, PanelTab } from "@/workbench/views/terminal/extreme-core/panel-target";
 import type { TaskCardModel } from "@/workbench/views/terminal/extreme-core/task-view";
 import {
+  partsText,
+  replaceTrailingText,
+  type MessagePart,
+} from "@/workbench/views/terminal/extreme-core/message-parts";
+import {
   mostRecentForServer,
   readLastWorkspaces,
   readTaskUsage,
@@ -15,6 +20,7 @@ import {
   writeWorkspaces,
   type ExtremeWorkspace,
 } from "@/workbench/views/terminal/extreme-core/workspace-history";
+import { loadWorkspacesFromDb, saveWorkspacesToDb } from "@/workbench/views/terminal/extreme-core/workspace-db";
 
 /**
  * 超能模式（应用级工作台）的状态。
@@ -86,6 +92,22 @@ export interface ExtremeMessage {
   local?: boolean;
   /** 这条消息发起的任务：卡片渲染在消息下面，与历史共用同一个 taskId。 */
   taskId?: string;
+  /**
+   * 这一轮里**正文与工具步骤的真实顺序**（见 `message-parts.ts`）。
+   *
+   * 有它时按片段依次渲染：正文 → 命令 → 正文 → 命令 → 结论；没有它的旧记录
+   * 仍按原来的"任务卡整块折叠"呈现。`text` 始终等于所有正文片段之和。
+   */
+  parts?: MessagePart[];
+  /**
+   * 这一轮是否强制先提交计划（用户选了 MAX）。
+   *
+   * 与 `effort` 分开记：供应商最高档可能只是 high，但重开 / 继续执行时仍要
+   * 保持同一份门控。
+   */
+  planRequired?: boolean;
+  /** 发起时用户实际选的强度（含 `max`）。 */
+  effort?: string;
   /**
    * 重试时给模型的补充说明（不落库、不进气泡）。
    *
@@ -195,6 +217,7 @@ import type {
   PickedContext,
 } from "@/workbench/views/terminal/extreme-core/chat-context";
 import type { EffortChoice } from "@/workbench/views/terminal/extreme-core/model-choice";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import {
   clearSendError,
   enqueueSend,
@@ -219,8 +242,12 @@ export type TerminalPane = "output" | "manual";
 
 const PANE_KEY = "bls-ops.extreme-pane.v1";
 const PANE_VIEW_KEY = "bls-ops.extreme-pane-view.v1";
+/** 每条对话自己的右栏开合；新任务默认值只写进新条目。 */
+const PANE_VIEWS_KEY = "bls-ops.extreme-pane-views.v1";
 const CHAT_PREFS_KEY = "bls-ops.extreme-chat-prefs.v1";
 const MODEL_SETTINGS_KEY = "bls-ops.extreme-model-settings.v1";
+/** 按会话覆盖的模型档位 / 预算；没有条目时沿用上面的模型默认值。 */
+const MODEL_OVERRIDES_KEY = "bls-ops.extreme-model-overrides.v1";
 
 /** 一条会话的输入偏好：上下文范围、输出形态、勾选的材料。 */
 export interface ChatPrefs {
@@ -229,6 +256,9 @@ export interface ChatPrefs {
   picked: PickedContext[];
   /** 选中的模型（provider id）；`null` = 用默认提供方。 */
   providerId: string | null;
+  /** false = 跟随超能模式默认值（设置页改默认时同步跟着变）。 */
+  contextCustom?: boolean;
+  outputCustom?: boolean;
 }
 
 export const DEFAULT_CHAT_PREFS: ChatPrefs = {
@@ -236,7 +266,22 @@ export const DEFAULT_CHAT_PREFS: ChatPrefs = {
   output: "auto",
   picked: [],
   providerId: null,
+  contextCustom: false,
+  outputCustom: false,
 };
+
+/** 新任务 / 未单独设置过的会话：从超能模式默认值生成。 */
+export function defaultChatPrefs(): ChatPrefs {
+  const settings = useExtremeSettingsStore.getState();
+  return {
+    context: settings.defaultContext,
+    output: settings.defaultOutput,
+    picked: [],
+    providerId: null,
+    contextCustom: false,
+    outputCustom: false,
+  };
+}
 
 function normalizePrefs(value: unknown): ChatPrefs {
   const raw = (value ?? {}) as {
@@ -244,6 +289,8 @@ function normalizePrefs(value: unknown): ChatPrefs {
     output?: unknown;
     picked?: unknown;
     providerId?: unknown;
+    contextCustom?: unknown;
+    outputCustom?: unknown;
   };
   const context =
     raw.context === "only" || raw.context === "picked" ? raw.context : ("session" as const);
@@ -265,7 +312,10 @@ function normalizePrefs(value: unknown): ChatPrefs {
     : [];
   const providerId =
     typeof raw.providerId === "string" && raw.providerId ? raw.providerId : null;
-  return { context, output, picked, providerId };
+  // 旧记录没有标志：当时的值就是用户显式选的，按“自定义”保留。
+  const contextCustom = raw.contextCustom === false ? false : true;
+  const outputCustom = raw.outputCustom === false ? false : true;
+  return { context, output, picked, providerId, contextCustom, outputCustom };
 }
 
 function readChatPrefs(): Record<string, ChatPrefs> {
@@ -340,6 +390,57 @@ function writeModelSettings(map: Record<string, ModelSetting>) {
   } catch {
     // 存不了就只在内存里生效。
   }
+}
+
+function readModelOverrides(): Record<string, Record<string, ModelSetting>> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(MODEL_OVERRIDES_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, Record<string, ModelSetting>> = {};
+    for (const [workspace, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const perModel: Record<string, ModelSetting> = {};
+      for (const [key, setting] of Object.entries(value as Record<string, unknown>)) {
+        perModel[key] = normalizeModelSetting(setting);
+      }
+      out[workspace] = perModel;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeModelOverrides(map: Record<string, Record<string, ModelSetting>>) {
+  try {
+    localStorage.setItem(MODEL_OVERRIDES_KEY, JSON.stringify(map));
+  } catch {
+    // 存不了就只在内存里生效。
+  }
+}
+
+/** 当前会话实际使用的模型档位：会话覆盖 > 模型默认 > 内置默认。 */
+export function effectiveModelSetting(
+  state: Pick<ExtremeState, "workspaceId" | "modelSettings" | "modelSettingsByWorkspace">,
+  key: string,
+): ModelSetting {
+  const override = state.workspaceId
+    ? state.modelSettingsByWorkspace[state.workspaceId]?.[key]
+    : undefined;
+  if (override) return override;
+  if (state.modelSettings[key]) return state.modelSettings[key];
+  const settings = useExtremeSettingsStore.getState();
+  return { effort: settings.defaultEffort, budget: settings.defaultBudget };
+}
+
+/** 把当前会话覆盖与模型默认合并成 Composer 用的 map。 */
+export function mergedModelSettings(
+  state: Pick<ExtremeState, "workspaceId" | "modelSettings" | "modelSettingsByWorkspace">,
+): Record<string, ModelSetting> {
+  const override = state.workspaceId
+    ? state.modelSettingsByWorkspace[state.workspaceId] ?? {}
+    : {};
+  return { ...state.modelSettings, ...override };
 }
 
 const PANE_KINDS: WorkspacePane[] = [
@@ -694,6 +795,8 @@ interface ExtremeState {
   setLogSource: (workspaceId: string, source: LogSource) => void;
   /** 收起 / 分栏 / 展开视图。 */
   paneView: WorkspacePaneView;
+  /** 每条对话自己的右栏开合；切换时恢复，不互相覆盖。 */
+  paneViewByWorkspace: Record<string, WorkspacePaneView>;
   /** 分栏宽度（拖动分隔线后记住）。 */
   paneWidth: number;
   /** 正在拖右栏（内拖 / 外扩）：浏览器子视图要临时隐藏。 */
@@ -728,15 +831,26 @@ interface ExtremeState {
   chatPrefsByWorkspace: Record<string, ChatPrefs>;
   setContextMode: (mode: ContextMode) => void;
   setOutputStyle: (style: OutputStyle) => void;
+  /** 当前会话把某一项恢复成“跟随默认”。 */
+  resetChatPreference: (field: "context" | "output") => void;
+  /** 设置页改默认值后，让所有“跟随默认”的会话同步到新默认。 */
+  applyDefaultChatPrefs: () => void;
   /** 加入一份/多份自选材料（同 id 去重）。 */
   addPicked: (items: PickedContext[]) => void;
   removePicked: (id: string) => void;
   clearPicked: () => void;
   /** 选模型：`null` = 默认提供方。下一条消息生效。 */
   setProviderId: (id: string | null) => void;
-  /** 按模型记住的思考强度与上下文预算（跨会话，key 见 `modelKey`）。 */
+  /** 按模型记住的思考强度与上下文预算（跨会话默认值，key 见 `modelKey`）。 */
   modelSettings: Record<string, ModelSetting>;
+  /** 当前会话对某个模型的覆盖（「自定义」）；没有条目 = 跟随模型默认。 */
+  modelSettingsByWorkspace: Record<string, Record<string, ModelSetting>>;
+  /** 会话内的选择：写会话覆盖。 */
   setModelSetting: (key: string, patch: Partial<ModelSetting>) => void;
+  /** 设置页改“模型默认值”：只影响没有会话覆盖的会话。 */
+  setDefaultModelSetting: (key: string, patch: Partial<ModelSetting>) => void;
+  /** 当前会话恢复某个模型的默认档位。 */
+  resetModelSetting: (key: string) => void;
   /**
    * 是否正在执行任务。
    *
@@ -745,6 +859,9 @@ interface ExtremeState {
    * `docker compose up` 跑两遍。
    */
   executing: boolean;
+  /** 桌面通知点开后要定位的任务；聊天区消费一次后清空。 */
+  focusTaskId: string | null;
+  setFocusTaskId: (taskId: string | null) => void;
 
   /**
    * 任务卡（按 taskId）。与 `plan` 的区别：`plan` 只是"当前这一版计划"，
@@ -886,6 +1003,24 @@ function withActiveMessages(
 }
 
 /**
+ * 覆盖正文时保持 `parts` 同步。
+ *
+ * 有顺序信息的一轮里，`text` 只是"所有正文片段之和"；终态 / 重试写回的是
+ * **最后一段**的权威全文，前面几轮的过程记录（正文、命令）不能被整条覆盖。
+ * 没有 `parts` 的旧记录照旧整体替换。
+ */
+function withPatchedText(
+  message: ExtremeMessage,
+  patch: Partial<ExtremeMessage>,
+): ExtremeMessage {
+  if (patch.parts !== undefined || patch.text === undefined || !message.parts?.length) {
+    return { ...message, ...patch };
+  }
+  const parts = replaceTrailingText(message.parts, patch.text);
+  return { ...message, ...patch, parts, text: partsText(parts) };
+}
+
+/**
  * 把镜像写回当前 workspace。
  *
  * `updatedAt` 只在对话内容真的变了时更新：切来切去不该把旧对话顶到最上面。
@@ -969,6 +1104,30 @@ function writePaneView(view: WorkspacePaneView) {
   }
 }
 
+function readPaneViews(): Record<string, WorkspacePaneView> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PANE_VIEWS_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, WorkspacePaneView> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === "split" || value === "expanded" || value === "hidden") {
+        out[id] = value;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writePaneViews(map: Record<string, WorkspacePaneView>) {
+  try {
+    localStorage.setItem(PANE_VIEWS_KEY, JSON.stringify(map));
+  } catch {
+    // 存不了就只在本次会话里生效。
+  }
+}
+
 const INITIAL_PANE = readPaneState();
 
 export const useExtremeStore = create<ExtremeState>()((set, get) => ({
@@ -1009,14 +1168,17 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   fileChanges: {},
   changeViews: readChangeViews(),
   paneView: readPaneView(),
+  paneViewByWorkspace: readPaneViews(),
   paneWidth: INITIAL_PANE.width,
   paneDragging: false,
   terminalPane: "output",
   terminalPaneByWorkspace: {},
-  chatPrefs: DEFAULT_CHAT_PREFS,
+  chatPrefs: defaultChatPrefs(),
   chatPrefsByWorkspace: readChatPrefs(),
   modelSettings: readModelSettings(),
+  modelSettingsByWorkspace: readModelOverrides(),
   executing: false,
+  focusTaskId: null,
   tasks: {},
   taskVersions: {},
   reports: {},
@@ -1030,14 +1192,26 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       sessionId: state.sessionId,
       folders,
     });
+    const prefs = defaultChatPrefs();
+    const chatMap = { ...state.chatPrefsByWorkspace, [entry.id]: prefs };
+    writeChatPrefs(chatMap);
+    // 新任务默认右栏：设置页可选“收起 / 打开”；已有会话保留自己的。
+    const newPane: WorkspacePaneView =
+      useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
+    const paneMap = { ...state.paneViewByWorkspace, [entry.id]: newPane };
+    writePaneViews(paneMap);
     set({
       ...emptyContext(),
       attachments,
       draft: "",
+      chatPrefs: prefs,
+      chatPrefsByWorkspace: chatMap,
       workspaces: [entry, ...captureWorkspace(state)],
       workspaceId: entry.id,
       paneTab: "files",
       paneLists: { ...state.paneLists, [entry.id]: ["files"] },
+      paneView: newPane,
+      paneViewByWorkspace: paneMap,
       rightTab: null,
       lastWorkspaceByServer: state.serverId
         ? { ...state.lastWorkspaceByServer, [state.serverId]: entry.id }
@@ -1076,8 +1250,12 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     const sessionId = connection?.sessionId ?? "";
     const entryTab = state.paneByWorkspace[id] ?? "files";
     const entryList = state.paneLists[id]?.length ? state.paneLists[id] : [entryTab];
+    const nextPrefs = state.chatPrefsByWorkspace[id] ?? defaultChatPrefs();
     set({
       ...loadWorkspace(entry),
+      chatPrefs: nextPrefs,
+      // 右栏开合按对话恢复：A 收起、B 打开，切回去仍是各自的样子。
+      paneView: state.paneViewByWorkspace[id] ?? "hidden",
       sessionId: sessionId || null,
       // 右栏标签跟着对话走：A 开着文件和日志，切到 B 显示 B 自己的。
       paneTab: entryTab,
@@ -1181,6 +1359,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         connections,
         workspaceId: null,
         draft: "",
+        chatPrefs: defaultChatPrefs(),
+        paneView: "hidden",
         rightTab: null,
         panelShown: false,
       });
@@ -1191,6 +1371,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     set({
       active: true,
       ...loadWorkspace(target),
+      chatPrefs: state.chatPrefsByWorkspace[target.id] ?? defaultChatPrefs(),
+      paneView: state.paneViewByWorkspace[target.id] ?? "hidden",
       server,
       serverHost: serverHost ?? null,
       sessionId,
@@ -1228,12 +1410,24 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       sessionId: state.sessionId,
       folders: [],
     });
+    const prefs = defaultChatPrefs();
+    const chatMap = { ...state.chatPrefsByWorkspace, [entry.id]: prefs };
+    writeChatPrefs(chatMap);
+    const lazyPane: WorkspacePaneView =
+      useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
+    const paneMap = { ...state.paneViewByWorkspace, [entry.id]: lazyPane };
+    writePaneViews(paneMap);
     set({
       workspaceId: entry.id,
+      chatPrefs: prefs,
+      chatPrefsByWorkspace: chatMap,
       workspaces: [entry, ...captureWorkspace(state)],
       paneTab: "files",
       paneLists: { ...state.paneLists, [entry.id]: ["files"] },
       paneMru: { ...state.paneMru, [entry.id]: ["files"] },
+      // 懒创建也是新任务：按“新任务默认”决定右栏，已有会话切回时仍用各自的值。
+      paneView: lazyPane,
+      paneViewByWorkspace: paneMap,
       lastWorkspaceByServer: {
         ...state.lastWorkspaceByServer,
         [state.serverId]: entry.id,
@@ -1264,7 +1458,16 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         delete next[id];
         return next;
       };
+      const chatMap = drop(state.chatPrefsByWorkspace);
+      writeChatPrefs(chatMap);
+      const modelMap = drop(state.modelSettingsByWorkspace);
+      writeModelOverrides(modelMap);
+      const paneMap = drop(state.paneViewByWorkspace);
+      writePaneViews(paneMap);
       return {
+        chatPrefsByWorkspace: chatMap,
+        modelSettingsByWorkspace: modelMap,
+        paneViewByWorkspace: paneMap,
         paneByWorkspace: drop(state.paneByWorkspace),
         paneLists: drop(state.paneLists),
         paneMru: drop(state.paneMru),
@@ -1299,6 +1502,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         workspaceId: null,
         ...emptyContext(),
         draft: "",
+        chatPrefs: defaultChatPrefs(),
         lastWorkspaceByServer,
         ...forgetPane(),
       });
@@ -1308,6 +1512,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       workspaces: rest,
       queuedSends,
       ...loadWorkspace(next),
+      chatPrefs: state.chatPrefsByWorkspace[next.id] ?? defaultChatPrefs(),
+      paneView: state.paneViewByWorkspace[next.id] ?? "hidden",
       sessionId: state.sessionId,
       lastWorkspaceByServer,
       ...forgetPane(),
@@ -1391,14 +1597,14 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   patchMessage: (id, patch) =>
     set((state) => {
       const messages = state.messages.map((message) =>
-        message.id === id ? { ...message, ...patch } : message,
+        message.id === id ? withPatchedText(message, patch) : message,
       );
       return { messages, workspaces: withActiveMessages(state, messages) };
     }),
   patchMessageIn: (workspaceId, id, patch) =>
     set((state) => {
       const apply = (messages: ExtremeMessage[]) =>
-        messages.map((message) => (message.id === id ? { ...message, ...patch } : message));
+        messages.map((message) => (message.id === id ? withPatchedText(message, patch) : message));
       return {
         workspaces: state.workspaces.map((entry) =>
           entry.id === workspaceId
@@ -1725,12 +1931,19 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   flushChangeViews: () => writeChangeViews(get().changeViews),
   setPaneView: (view) => {
     writePaneView(view);
-    set({
-      paneView: view,
-      // `rightTab` / `panelShown` 是旧入口仍在读的两个标记，保持一致。
-      rightTab: view === "hidden" ? null : "panel",
-      panelShown: view !== "hidden",
-      panelOpen: true,
+    set((state) => {
+      const map = state.workspaceId
+        ? { ...state.paneViewByWorkspace, [state.workspaceId]: view }
+        : state.paneViewByWorkspace;
+      if (state.workspaceId) writePaneViews(map);
+      return {
+        paneView: view,
+        paneViewByWorkspace: map,
+        // `rightTab` / `panelShown` 是旧入口仍在读的两个标记，保持一致。
+        rightTab: view === "hidden" ? null : "panel",
+        panelShown: view !== "hidden",
+        panelOpen: true,
+      };
     });
   },
   setPaneDragging: (paneDragging) => set({ paneDragging }),
@@ -1763,7 +1976,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     })),
   setContextMode: (context) =>
     set((state) => {
-      const next: ChatPrefs = { ...state.chatPrefs, context };
+      const next: ChatPrefs = { ...state.chatPrefs, context, contextCustom: true };
       const map = state.workspaceId
         ? { ...state.chatPrefsByWorkspace, [state.workspaceId]: next }
         : state.chatPrefsByWorkspace;
@@ -1772,7 +1985,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     }),
   setOutputStyle: (output) =>
     set((state) => {
-      const next: ChatPrefs = { ...state.chatPrefs, output };
+      const next: ChatPrefs = { ...state.chatPrefs, output, outputCustom: true };
       const map = state.workspaceId
         ? { ...state.chatPrefsByWorkspace, [state.workspaceId]: next }
         : state.chatPrefsByWorkspace;
@@ -1825,14 +2038,82 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       writeChatPrefs(map);
       return { chatPrefs: next, chatPrefsByWorkspace: map };
     }),
+  resetChatPreference: (field) =>
+    set((state) => {
+      const defaults = defaultChatPrefs();
+      const next: ChatPrefs =
+        field === "context"
+          ? {
+              ...state.chatPrefs,
+              context: defaults.context,
+              contextCustom: false,
+            }
+          : {
+              ...state.chatPrefs,
+              output: defaults.output,
+              outputCustom: false,
+            };
+      const map = state.workspaceId
+        ? { ...state.chatPrefsByWorkspace, [state.workspaceId]: next }
+        : state.chatPrefsByWorkspace;
+      writeChatPrefs(map);
+      return { chatPrefs: next, chatPrefsByWorkspace: map };
+    }),
+  applyDefaultChatPrefs: () =>
+    set((state) => {
+      const defaults = defaultChatPrefs();
+      const sync = (prefs: ChatPrefs): ChatPrefs => ({
+        ...prefs,
+        context: prefs.contextCustom === false ? defaults.context : prefs.context,
+        output: prefs.outputCustom === false ? defaults.output : prefs.output,
+      });
+      const map: Record<string, ChatPrefs> = {};
+      for (const [id, prefs] of Object.entries(state.chatPrefsByWorkspace)) {
+        map[id] = sync(prefs);
+      }
+      writeChatPrefs(map);
+      return { chatPrefs: sync(state.chatPrefs), chatPrefsByWorkspace: map };
+    }),
   setModelSetting: (key, patch) =>
+    set((state) => {
+      if (!state.workspaceId) {
+        const current = state.modelSettings[key] ?? DEFAULT_MODEL_SETTING;
+        const map = { ...state.modelSettings, [key]: { ...current, ...patch } };
+        writeModelSettings(map);
+        return { modelSettings: map };
+      }
+      const existing = state.modelSettingsByWorkspace[state.workspaceId] ?? {};
+      const current =
+        existing[key] ?? state.modelSettings[key] ?? DEFAULT_MODEL_SETTING;
+      const next = { ...current, ...patch };
+      const byWorkspace = {
+        ...state.modelSettingsByWorkspace,
+        [state.workspaceId]: { ...existing, [key]: next },
+      };
+      writeModelOverrides(byWorkspace);
+      return { modelSettingsByWorkspace: byWorkspace };
+    }),
+  setDefaultModelSetting: (key, patch) =>
     set((state) => {
       const current = state.modelSettings[key] ?? DEFAULT_MODEL_SETTING;
       const map = { ...state.modelSettings, [key]: { ...current, ...patch } };
       writeModelSettings(map);
       return { modelSettings: map };
     }),
+  resetModelSetting: (key) =>
+    set((state) => {
+      if (!state.workspaceId) return {};
+      const existing = { ...(state.modelSettingsByWorkspace[state.workspaceId] ?? {}) };
+      delete existing[key];
+      const byWorkspace = {
+        ...state.modelSettingsByWorkspace,
+        [state.workspaceId]: existing,
+      };
+      writeModelOverrides(byWorkspace);
+      return { modelSettingsByWorkspace: byWorkspace };
+    }),
   setExecuting: (executing) => set({ executing }),
+  setFocusTaskId: (focusTaskId) => set({ focusTaskId }),
   setDraftText: (draft) => set({ draft }),
   setExecutingFor: (workspaceId, executing) =>
     set((state) => {
@@ -1894,12 +2175,36 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
 let workspaceSave: ReturnType<typeof setTimeout> | undefined;
 function persistWorkspaces() {
   clearTimeout(workspaceSave);
+  const workspaces = captureWorkspace(useExtremeStore.getState());
+  // 数据库是长期来源；localStorage 只做启动兜底 / 旧版本迁移。
+  void saveWorkspacesToDb(workspaces);
   // 失败**不再静默**：把原因放回 store，由界面明确提示"重启后可能丢失"。
-  const error = writeWorkspaces(captureWorkspace(useExtremeStore.getState()));
+  const error = writeWorkspaces(workspaces);
   if (error) console.warn("[extreme] 本地历史保存失败：", error);
   if (useExtremeStore.getState().historyError !== error) {
     useExtremeStore.setState({ historyError: error });
   }
+}
+
+let hydrateStarted = false;
+/**
+ * 启动时从 SQLite 恢复对话。
+ *
+ * 数据库为空而本地有旧数据 → 先把本地这份迁进数据库（升级路径）；
+ * 数据库有数据 → 直接覆盖内存里的旧 localStorage 快照。调用失败保持本地
+ * 兜底，不阻塞应用启动。
+ */
+export async function hydrateExtremeStore(): Promise<void> {
+  if (hydrateStarted) return;
+  hydrateStarted = true;
+  const remote = await loadWorkspacesFromDb();
+  if (remote === null) return;
+  const local = useExtremeStore.getState().workspaces;
+  if (remote.length === 0) {
+    if (local.length > 0) await saveWorkspacesToDb(local);
+    return;
+  }
+  useExtremeStore.setState({ workspaces: remote });
 }
 
 /**

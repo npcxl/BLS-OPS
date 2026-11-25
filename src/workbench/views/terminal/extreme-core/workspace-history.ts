@@ -123,7 +123,9 @@ export function writeWorkspaces(entries: ExtremeWorkspace[]): string | null {
           title: entry.title,
           updatedAt: entry.updatedAt,
           messages: entry.messages
-            .filter((message) => message.text)
+            // 只有工具、没有正文的一轮（直接调用命令）也要留下来：
+            // 丢掉它，重开会话后命令顺序就断了一截。
+            .filter((message) => message.text || message.parts?.length)
             .map(({ tools: _tools, ...message }) => message),
         })),
       ),
@@ -131,7 +133,7 @@ export function writeWorkspaces(entries: ExtremeWorkspace[]): string | null {
     return null;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return `本地历史保存失败（${detail}）。当前内容仍可查看，但重启后可能丢失。`;
+    return `本地缓存保存失败（${detail}）。对话会继续尝试写入本地数据库；若数据库也不可用，重启后可能丢失。`;
   }
 }
 

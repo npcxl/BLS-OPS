@@ -113,13 +113,13 @@ describe("设置页 AI 模型", () => {
   it("没有模型时明确说明", async () => {
     listMock.mockResolvedValue([]);
     await render(<AiProviderSettings />);
-    expect(text()).toContain(i18n.t("No models yet"));
+    expect(text()).toContain(i18n.t("还没有模型"));
   });
 
   it("密钥已保存 / 缺失都有明确展示", async () => {
     listMock.mockResolvedValue([provider({ has_api_key: false })]);
     await render(<AiProviderSettings />);
-    expect(text()).toContain(i18n.t("Key missing"));
+    expect(text()).toContain(i18n.t("密钥未保存"));
   });
 
   it("新建：填完表单保存，API Key 只交给后端一次", async () => {
@@ -128,7 +128,7 @@ describe("设置页 AI 模型", () => {
     await render(<AiProviderSettings />);
 
     await act(async () => {
-      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("添加模型")}"]`).click();
       await tick();
     });
 
@@ -159,7 +159,7 @@ describe("设置页 AI 模型", () => {
     await render(<AiProviderSettings />);
 
     await act(async () => {
-      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("添加模型")}"]`).click();
       await tick();
     });
     await act(async () => {
@@ -203,7 +203,7 @@ describe("设置页 AI 模型", () => {
     await render(<AiProviderSettings />);
 
     await act(async () => {
-      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("添加模型")}"]`).click();
       await tick();
     });
     await act(async () => {
@@ -307,7 +307,7 @@ describe("设置页 AI 模型", () => {
     saveMock.mockResolvedValue(provider());
     await render(<AiProviderSettings />);
     await act(async () => {
-      q<HTMLButtonElement>(`[aria-label="${i18n.t("Add model")}"]`).click();
+      q<HTMLButtonElement>(`[aria-label="${i18n.t("添加模型")}"]`).click();
       await tick();
     });
     await setInput("provider-name", "自建网关");

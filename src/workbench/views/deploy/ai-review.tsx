@@ -23,7 +23,6 @@ import { useTranslation } from "react-i18next";
 
 import { opsApi, type AiReviewTask, type AiTaskStatus } from "@/api/ops-api";
 import { aiReviewEvent } from "@/lib/events";
-import { useWorkbenchStore } from "@/stores/workbench-store";
 
 import { isAiTaskActive, type DeploymentProposal } from "@/api/types/deployment";
 
@@ -36,7 +35,6 @@ type Props = {
 
 export function AiReviewRow({ applicationId, proposal, onProposalUpdated }: Props) {
   const { t } = useTranslation();
-  const openModuleTab = useWorkbenchStore((state) => state.openModuleTab);
   const proposalId = proposal?.id ?? null;
 
   const [hasProvider, setHasProvider] = useState<boolean | null>(null);
@@ -190,15 +188,16 @@ export function AiReviewRow({ applicationId, proposal, onProposalUpdated }: Prop
         <span className="rounded-full border border-line bg-surface-2 px-1.5 text-10">
           {t("AI not configured")}
         </span>
-        {/* 可点击入口（不是纯文本）：直接跳到「设置 → AI 模型」。 */}
-        <button
-          type="button"
+        {/*
+         * 模型管理已集中到「超能模式 → 设置」；这里只给指路，不再跳普通设置
+         * （普通设置的 AI 入口已移除，跳过去会落到一个不存在的分类）。
+         */}
+        <span
           data-testid="ai-go-to-settings"
-          className="rounded-[7px] border border-line px-2 py-0.5 text-10 hover:bg-surface-hover hover:text-fg"
-          onClick={() => openModuleTab("settings")}
+          className="rounded-[7px] border border-line px-2 py-0.5 text-10"
         >
-          {t("Go to settings → AI models")}
-        </button>
+          {t("Add models in Extreme mode → Settings")}
+        </span>
       </div>
     );
   }

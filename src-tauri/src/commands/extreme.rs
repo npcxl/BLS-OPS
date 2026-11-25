@@ -1,10 +1,10 @@
 //! 极核模式的**任务历史**：部署 / 查询 / 检测 / 构建 / 文件传输各落一条，重启后还能查。
 //!
-//! 只存任务本身（计划步骤 + 每步输出 + 结果 + 关键引用），不存对话内容，也不存
-//! 大文件、完整查询结果或凭据 —— 问答属于用户与模型之间的事，大对象有它们自己的
-//! 存放位置（临时目录 / 导出文件），历史里只留引用。
+//! 任务只存计划步骤 + 每步输出 + 结果 + 关键引用；对话正文单独存
+//! `extreme_workspaces`（v28），这样聊天记录不再依赖 WebView 的 localStorage。
+//! 大文件、完整查询结果与凭据仍不落库。
 //!
-//! 表结构见 `db::schema` 的 v20 与 v21 迁移（v21 补 `kind`）。
+//! 表结构见 `db::schema` 的 v20 / v21 / v28 迁移。
 
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter};
@@ -196,6 +196,77 @@ fn db_error(error: impl ToString) -> OpsError {
     OpsError::from_stage("io", error)
 }
 
+/// 读取全部对话（正文 / 草稿 / 上下文），按最近活跃排序。
+///
+/// 返回原始 JSON：前端 `ExtremeWorkspace` 字段还在演进，后端不复制一份
+/// 结构体，避免每加一个字段就要改 Rust。
+fn read_workspaces(conn: &rusqlite::Connection) -> OpsResult<Vec<serde_json::Value>> {
+    let mut stmt = conn
+        .prepare("SELECT payload_json FROM extreme_workspaces ORDER BY updated_at DESC")
+        .map_err(db_error)?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_error)?;
+    let mut workspaces = Vec::new();
+    for row in rows {
+        let raw = row.map_err(db_error)?;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            workspaces.push(value);
+        }
+    }
+    Ok(workspaces)
+}
+
+#[tauri::command]
+pub fn extreme_workspace_list(state: State<'_, AppState>) -> OpsResult<Vec<serde_json::Value>> {
+    let conn = state.db.open().map_err(db_error)?;
+    read_workspaces(&conn)
+}
+
+/// 用前端当前的全量快照覆盖对话表。
+///
+/// 前端原本每 800ms 全量写一次 localStorage；这里复用同一份快照，事务内
+/// 先清空再写入，删除 / 新建 / 改名都只需要一个入口，不会出现半份数据。
+fn write_workspaces(
+    conn: &mut rusqlite::Connection,
+    workspaces: Vec<serde_json::Value>,
+) -> OpsResult<()> {
+    let tx = conn.transaction().map_err(db_error)?;
+    tx.execute("DELETE FROM extreme_workspaces", [])
+        .map_err(db_error)?;
+    for workspace in workspaces {
+        let Some(id) = workspace.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let updated_at = workspace
+            .get("updatedAt")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let payload = serde_json::to_string(&workspace).map_err(db_error)?;
+        tx.execute(
+            "INSERT INTO extreme_workspaces (id, payload_json, updated_at)
+             VALUES (?1, ?2, ?3)",
+            params![id, payload, updated_at],
+        )
+        .map_err(db_error)?;
+    }
+    tx.commit().map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn extreme_workspace_sync(
+    state: State<'_, AppState>,
+    workspaces: Vec<serde_json::Value>,
+) -> OpsResult<()> {
+    let mut conn = state.db.open().map_err(db_error)?;
+    write_workspaces(&mut conn, workspaces)
+}
+
 /// 保存（或覆盖）一条任务记录。
 #[tauri::command]
 pub fn extreme_task_save(state: State<'_, AppState>, task: ExtremeTaskRecord) -> OpsResult<()> {
@@ -347,6 +418,34 @@ pub(crate) fn load_task_record(
     }
 }
 
+/// 保存某次任务的变更摘要 + 脱敏 Diff（应用重启后右栏还能看）。
+///
+/// 只更新 `changes_json`：任务记录本身由 `extreme_task_save` 维护，两条写入
+/// 不互相覆盖。
+pub(crate) fn save_task_changes(state: &AppState, task_id: &str, json: &str) -> Result<(), String> {
+    let conn = state.db.open().map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE extreme_tasks SET changes_json = ?1 WHERE id = ?2",
+        params![json, task_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// 读取某次任务保存的变更 JSON（没有记录 / 字段为空都返回 `None`）。
+pub(crate) fn load_task_changes(state: &AppState, task_id: &str) -> Result<Option<String>, String> {
+    let conn = state.db.open().map_err(|error| error.to_string())?;
+    match conn.query_row(
+        "SELECT changes_json FROM extreme_tasks WHERE id = ?1",
+        params![task_id],
+        |row| row.get::<_, Option<String>>(0),
+    ) {
+        Ok(value) => Ok(value.filter(|text| !text.trim().is_empty())),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// 给任务改名（空串 = 恢复显示执行摘要）。
 #[tauri::command]
 pub fn extreme_task_rename(state: State<'_, AppState>, id: String, name: String) -> OpsResult<()> {
@@ -377,4 +476,63 @@ pub fn extreme_task_delete(state: State<'_, AppState>, id: String) -> OpsResult<
     conn.execute("DELETE FROM extreme_tasks WHERE id = ?1", params![id])
         .map_err(db_error)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().expect("db");
+        conn.execute_batch(
+            "CREATE TABLE extreme_workspaces (
+                id TEXT PRIMARY KEY NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .expect("table");
+        conn
+    }
+
+    #[test]
+    fn sync_replaces_snapshot_and_lists_newest_first() {
+        let mut conn = db();
+        write_workspaces(
+            &mut conn,
+            vec![
+                serde_json::json!({ "id": "a", "updatedAt": 10, "messages": [] }),
+                serde_json::json!({ "id": "b", "updatedAt": 20, "messages": [] }),
+            ],
+        )
+        .expect("first sync");
+        let rows = read_workspaces(&conn).expect("list");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], "b");
+
+        // 第二次快照没有 a：整表覆盖后 a 必须消失，不能残留。
+        write_workspaces(
+            &mut conn,
+            vec![serde_json::json!({ "id": "c", "updatedAt": 30, "messages": [] })],
+        )
+        .expect("second sync");
+        let rows = read_workspaces(&conn).expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "c");
+    }
+
+    #[test]
+    fn sync_skips_rows_without_an_id() {
+        let mut conn = db();
+        write_workspaces(
+            &mut conn,
+            vec![
+                serde_json::json!({ "updatedAt": 1, "messages": [] }),
+                serde_json::json!({ "id": "  ", "messages": [] }),
+            ],
+        )
+        .expect("sync");
+        assert_eq!(read_workspaces(&conn).expect("list").len(), 0);
+    }
 }

@@ -1,30 +1,34 @@
 import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Attachment01Icon } from "@hugeicons/core-free-icons";
-import { CornerDownLeft, Lock, ShieldCheck } from "@/components/icons";
+import { CornerDownLeft, Lock, Settings, ShieldCheck } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { ContextUsage } from "@/api/types/agent";
 import type { ModelSetting } from "@/stores/extreme-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import PromptBar, {
   type PromptBarCommand,
   type PromptBarModel,
   type PromptBarSendDetail,
   type PromptBarSource,
 } from "@/components/ui/prompt-bar";
+import { FileKindIcon } from "./FileKindIcon";
 import { PERMISSION_HINT, type PermissionMode } from "./permissions";
 import { EC } from "./theme";
 import { PICKED_KIND_LABEL, type ContextMode, type PickedContext } from "./chat-context";
 import { ComposerMenu } from "./ComposerMenu";
+import { ComposerMcpMenu } from "./view/ComposerMcpMenu";
+import type { McpCapabilityState } from "./view/use-mcp-capabilities";
 import {
   contextOptions,
   effortTiers,
   effectiveProvider,
   formatTokens,
-  highestEffort,
   matchBudget,
   modelKey,
+  normalizeEffortChoice,
   type EffortChoice,
   type ModelSelection,
   type ProviderChoice,
@@ -61,6 +65,8 @@ export interface ComposerPanelProps {
   /** 当前权限模式：只读 / 完全权限。 */
   permission: PermissionMode;
   onPermissionChange: (next: PermissionMode) => void;
+  /** 打开权限页（当前会话设置 + 默认值 + 备份）。 */
+  onManagePermissions?: () => void;
   /** 服务器是否已连接：未连接时发送禁用并说明原因，草稿仍可编辑。 */
   connected?: boolean;
   /** 上下文范围（按会话）：当前会话 / 仅本条 / 自选。 */
@@ -87,10 +93,14 @@ export interface ComposerPanelProps {
   onSendWhileRunningChange: (mode: "steer" | "queue") => void;
   /** 正文最多几行（约聊天区三分之一），超出后在输入框内部滚动。 */
   maxRows: number;
+  /** 下栏的 MCP 能力勾选（内置技能 + 已连接 MCP）。 */
+  mcp?: McpCapabilityState;
+  onOpenMcpMarket?: () => void;
+  onManageMcp?: () => void;
 }
 
 /**
- * 「权限」入口：收起时只显示当前权限，点开才出现两项。
+ * 「权限」入口：收起时只显示当前权限，点开才出现三档。
  *
  * 用统一 `Select`（Prompt Bar 同款）；`tone="warning"` 保留「完全权限」的
  * 警示色 —— 这是一个一旦误设就会直接改生产文件的开关。
@@ -98,9 +108,11 @@ export interface ComposerPanelProps {
 function PermissionSelect({
   permission,
   onChange,
+  onManage,
 }: {
   permission: PermissionMode;
   onChange: (next: PermissionMode) => void;
+  onManage: () => void;
 }) {
   const { t } = useTranslation();
   /*
@@ -117,19 +129,37 @@ function PermissionSelect({
       ariaLabel={t("权限")}
       title={permissionHint}
       value={permission}
-      onChange={(value) => onChange(value as PermissionMode)}
+      onChange={(value) => {
+        if (value === "manage") {
+          onManage();
+          return;
+        }
+        onChange(value as PermissionMode);
+      }}
       options={[
         {
           value: "readonly",
           label: t("只读"),
-          hint: t("查询直接执行；写 / 改 / 删确认一次，sudo 禁用"),
+          hint: t("只执行查询；写入 / 删除会被拒绝，提权禁用"),
           icon: <Lock size={11} />,
         },
         {
-          value: "full",
-          label: t("完全权限"),
-          hint: t("写入 / 修改 / 删除直接执行，不再逐条确认"),
+          value: "ask",
+          label: t("按需确认"),
+          hint: t("查询直接执行；写 / 改 / 删逐条确认"),
           icon: <ShieldCheck size={11} />,
+        },
+        {
+          value: "full",
+          label: t("完全访问"),
+          hint: t("写入 / 修改 / 删除直接执行；严重操作仍确认"),
+          icon: <ShieldCheck size={11} />,
+        },
+        {
+          value: "manage",
+          label: t("管理权限"),
+          hint: t("默认值、提权、备份与外部工具"),
+          icon: <Settings size={11} />,
         },
       ]}
     />
@@ -193,7 +223,7 @@ function ContextSelects({
       ) : (
         <span
           className="shrink-0 px-1 text-10 text-fg-subtle"
-          title={t("该模型未登记上下文档位：请到设置里填上下文窗口")}
+          title={t("该模型未登记上下文档位：请到左栏「设置」里填上下文窗口")}
         >
           {t("自动（由模型决定）")}
         </span>
@@ -229,6 +259,7 @@ export function ComposerPanel({
   onClearFocus,
   permission,
   onPermissionChange,
+  onManagePermissions,
   connected = true,
   contextMode,
   onContextModeChange,
@@ -243,6 +274,9 @@ export function ComposerPanel({
   sendWhileRunning,
   onSendWhileRunningChange,
   maxRows,
+  mcp,
+  onOpenMcpMarket,
+  onManageMcp,
 }: ComposerPanelProps) {
   const { t } = useTranslation();
   const usageAnchorRef = useRef<HTMLButtonElement | null>(null);
@@ -250,7 +284,14 @@ export function ComposerPanel({
   const sendModeAnchorRef = useRef<HTMLButtonElement | null>(null);
   const [sendModeOpen, setSendModeOpen] = useState(false);
   const provider = effectiveProvider(providers, providerId);
-  const setting = provider ? modelSettings[modelKey(provider.id, provider.model)] : undefined;
+  const defaultEffortChoice = useExtremeSettingsStore((state) => state.defaultEffort);
+  const defaultBudgetChoice = useExtremeSettingsStore((state) => state.defaultBudget);
+  const setting = provider
+    ? modelSettings[modelKey(provider.id, provider.model)] ?? {
+        effort: defaultEffortChoice,
+        budget: defaultBudgetChoice,
+      }
+    : undefined;
 
   const models = useMemo<PromptBarModel[]>(
     () => providers.map((item) => ({ key: item.id, name: item.model, tag: item.name })),
@@ -269,18 +310,15 @@ export function ComposerPanel({
     ];
   }, [provider, t]);
   /*
-   * 「MAX」= 该模型实际支持的最高档。
+   * 「MAX」= 该模型实际支持的最高档（对外统一叫 MAX）。
    *
-   * 换到只支持到 high 的模型时，之前存的 max 要收成 high（而不是掉回默认）：
-   * 用户选的意图是"最高"，不是"某一路枚举值"。
+   * 旧记录存的 `high` 在只到 high 的模型上也收成 MAX —— 用户选的意图是
+   * "最高"，不是某一路枚举值；planRequired 也按这个选择判定。
    */
-  const activeEffort: EffortChoice = (() => {
-    const effort = setting?.effort ?? "auto";
-    if (effort === "auto") return "auto";
-    if (provider?.efforts.includes(effort)) return effort;
-    if (effort === "max") return highestEffort(provider?.efforts ?? []) ?? "auto";
-    return "auto";
-  })();
+  const activeEffort: EffortChoice = normalizeEffortChoice(
+    setting?.effort ?? "auto",
+    provider?.efforts ?? [],
+  );
   const defaultEffort = effortChoices.find((choice) => choice.value === activeEffort)?.label ?? "";
 
   const budgets = provider ? contextOptions(provider.budgets) : [];
@@ -411,6 +449,8 @@ export function ComposerPanel({
           value={draft}
           onChange={onDraftChange}
           attachments={selectedAttachments}
+          /* 附件胶囊按扩展名给 vscode 图标：配置 / 日志 / 图片一眼分得清。 */
+          renderAttachmentIcon={(file) => <FileKindIcon name={file} size={13} />}
           onAttachmentsChange={(files) => {
             // 只同步「移除」：右栏勾选仍由页面负责。
             const removed = selectedAttachments.filter((name) => !files.includes(name));
@@ -509,7 +549,7 @@ export function ComposerPanel({
             <span
               className="rounded-full px-2 py-0.5 text-10"
               style={{ background: EC.surfaceRaised, color: "rgb(var(--warning))" }}
-              title={t("该模型未登记能力：请到设置里填上下文窗口与思考强度档位")}
+              title={t("该模型未登记能力：请到左栏「设置」里填上下文窗口与思考强度档位")}
             >
               {t("能力未登记")}
             </span>
@@ -645,7 +685,18 @@ export function ComposerPanel({
               </button>
             ))}
           </ComposerMenu>
-          <PermissionSelect permission={permission} onChange={onPermissionChange} />
+          <PermissionSelect
+            permission={permission}
+            onChange={onPermissionChange}
+            onManage={() => onManagePermissions?.()}
+          />
+          {mcp && (
+            <ComposerMcpMenu
+              state={mcp}
+              onOpenMarket={() => onOpenMcpMarket?.()}
+              onManage={() => onManageMcp?.()}
+            />
+          )}
           {/*
            * 这里不再重复显示「正在停止…」：进度由上方状态行统一说明，
            * 停止键本身就在右下角（`busy`），同一个状态不必说两遍。

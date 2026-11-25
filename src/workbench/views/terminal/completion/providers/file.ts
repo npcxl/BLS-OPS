@@ -34,6 +34,38 @@ interface FileCommandSpec {
 
 const ARCHIVE = [".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"];
 
+/** 这些选项后面的 token 是**值**，不是路径（例：`sed -e 's/a/b/' f`）。 */
+const VALUE_OPTIONS: Record<string, string[]> = {
+  sed: ["-e", "-f"],
+  grep: ["-e", "-f", "-m", "-A", "-B", "-C"],
+  head: ["-n", "-c"],
+  tail: ["-n", "-c", "-s"],
+  chmod: ["-m"],
+  openssh: [],
+  openssl: ["-in", "-out"],
+  touch: ["-d", "-r", "-t"],
+  tar: ["-f", "-C", "-T"],
+  unzip: ["-d", "-x"],
+};
+
+/**
+ * 光标所在的 token 是不是**路径操作数**。
+ *
+ * 以前按固定的 `positions` 判断参数位，`rm -rf dist.old.` 里 `-rf` 被当成
+ * 第一个参数、真正的路径在 index 2，于是永远补不出目录。这里按"选项 /
+ * 选项值 / 路径"识别：`-rf`、`--flag`、`--` 都不是路径，其余非空 token 和
+ * 行尾空参数位都算路径。
+ */
+function isPathOperand(parsed: ParsedLine): boolean {
+  const value = parsed.tokens[parsed.index]?.value ?? "";
+  if (value === "--") return false;
+  if (value.startsWith("-") && value !== "-") return false;
+  const takeValue = VALUE_OPTIONS[parsed.command] ?? [];
+  const previous = parsed.tokens[parsed.index - 1]?.value ?? "";
+  if (takeValue.includes(previous)) return false;
+  return true;
+}
+
 /** 需要文件参数的命令 → 参数位与可接受的后缀。 */
 const FILE_COMMANDS: Record<string, FileCommandSpec> = {
   cat: { positions: [1] },
@@ -103,7 +135,8 @@ export function createFileProvider(options: {
     id: "file",
     matches(parsed: ParsedLine): boolean {
       const spec = FILE_COMMANDS[parsed.command];
-      return spec !== undefined && spec.positions.includes(parsed.index);
+      // 命令在表里 + 光标落在路径操作数上（选项不算参数位）。
+      return spec !== undefined && parsed.index > 0 && isPathOperand(parsed);
     },
     async complete(ctx: CompletionContext, parsed: ParsedLine): Promise<CompletionResult> {
       const spec = FILE_COMMANDS[parsed.command]!;

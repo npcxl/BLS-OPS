@@ -35,7 +35,14 @@ import type { DesktopNotificationTone } from "@/components/ui/desktop-notificati
  */
 export type DesktopNotificationAction =
   | { kind: "update" }
-  | { kind: "extreme"; serverId: string; server?: string | null }
+  | {
+      kind: "extreme";
+      serverId: string;
+      server?: string | null;
+      /** 结果通知：点开后定位到这条任务。 */
+      taskId?: string;
+      workspaceId?: string | null;
+    }
   | { kind: "none" };
 
 export interface DesktopNotificationPayload {

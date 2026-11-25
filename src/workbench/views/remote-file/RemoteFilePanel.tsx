@@ -49,11 +49,12 @@ import { copyTextWithFeedback as copyText } from "@/lib/clipboard-feedback";
 import { cn } from "@/lib/cn";
 import type { PreviewTarget } from "@/workbench/views/preview/FilePreviewModal";
 import { useDirSizeStore } from "@/stores/dir-size-store";
+import { activityLabel, useTransferStore, useTransferSync } from "@/stores/transfer-store";
 import { FileRow } from "./FileRow";
 import { NamePromptModal } from "./NamePromptModal";
 import { PanelButton } from "./PanelButton";
 import { TrashDialog } from "./TrashDialog";
-import { TransferCenterDialog } from "./TransferCenterDialog";
+import { TransferCenterPanel } from "./TransferCenterPanel";
 import { useRemoteDirectory } from "./use-remote-directory";
 import {
   AUTO_DIR_SIZE_LIMIT,
@@ -139,6 +140,35 @@ export interface RemoteFilePanelProps {
   /** 当前目录变化（上层按对话记住，右栏重新打开时恢复）。 */
   onPathChange?: (path: string) => void;
   onClose: () => void;
+}
+
+/**
+ * 工具栏上的传输入口：活动数量 + 汇总百分比（`2 · 46%`）。
+ *
+ * 单独成组件的唯一原因：`transfer-progress` 每 250ms 一条，订阅必须停在
+ * 这一层 —— 放在 `RemoteFilePanel` 里会让整个文件列表跟着进度重渲染。
+ */
+function TransferEntry({ sessionId, onOpen }: { sessionId: string; onOpen: () => void }) {
+  const { t } = useTranslation();
+  useTransferSync();
+  const label = useTransferStore((state) => activityLabel(state.tasks, sessionId));
+  return (
+    <button
+      type="button"
+      aria-label={label ? t("Transfers · {{label}}", { label }) : t("Transfers")}
+      title={label ? t("Transfers · {{label}}", { label }) : t("Transfers")}
+      onClick={onOpen}
+      className={cn(
+        "flex h-6 shrink-0 items-center gap-1 rounded-[5px] px-1.5 text-10",
+        label
+          ? "bg-accent/12 text-accent hover:bg-accent/20"
+          : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+      )}
+    >
+      <ArrowUpDown size={13} strokeWidth={1.75} />
+      {label && <span className="tabular-nums">{label}</span>}
+    </button>
+  );
 }
 
 /**
@@ -353,8 +383,9 @@ function RemoteFilePanelImpl({
       const { save } = await import("@tauri-apps/plugin-dialog");
       const destination = await save({ title: t("Download {{name}}", { name: entry.name }), defaultPath: entry.name });
       if (!destination) return;
-      // 任务化：立刻返回，进度在传输中心看；同名默认重命名，不静默覆盖本地文件。
-      await opsApi.transferDownload(sessionId, entry.path, destination, "rename");
+      // 任务化：立刻返回，进度在传输入口看；同名默认重命名，不静默覆盖本地文件。
+      const task = await opsApi.transferDownload(sessionId, entry.path, destination, "rename");
+      useTransferStore.getState().applyRemote(task);
       setNotice(t("Download queued: {{name}}", { name: entry.name }));
     } catch (cause) {
       pushErrorToast(cause, { title: t("Download failed"), persist: false });
@@ -573,6 +604,8 @@ function RemoteFilePanelImpl({
         // 任务化：入队后立刻返回，面板不再干等整个传输。
         // 同名默认重命名（不静默覆盖服务器上的文件）。
         const tasks = await opsApi.transferUpload(sessionId, paths, cwd, "rename");
+        // 入队回执直接进共享状态：不等事件，入口角标立刻有数。
+        for (const task of tasks) useTransferStore.getState().applyRemote(task);
         const skipped = tasks.filter((task) => task.state === "skipped").length;
         const queued = tasks.length - skipped;
         setUploadNotice(
@@ -580,7 +613,8 @@ function RemoteFilePanelImpl({
             ? t("{{count}} queued, {{skipped}} skipped (already exist)", { count: queued, skipped })
             : t("{{count}} files queued for upload", { count: queued }),
         );
-        setTransferOpen(true);
+        // 刻意**不**自动展开面板：上传后用户还在当前目录继续操作，
+        // 入口上的活动数量就是"已入队"的确认。
       } catch (cause) {
         pushErrorToast(cause, { title: t("Upload failed"), persist: false });
       }
@@ -1066,6 +1100,8 @@ function RemoteFilePanelImpl({
           onBlur={() => setPathDraft(null)}
           className="h-[24px] min-w-0 flex-1 rounded-[5px] border border-transparent bg-transparent px-1.5 font-mono text-11 text-fg outline-none hover:border-line focus:border-accent focus:bg-surface-1"
         />
+        {/* 传输入口：有任务时显示数量与简短进度，点开才展开面板。 */}
+        <TransferEntry sessionId={sessionId} onOpen={() => setTransferOpen(true)} />
         <button
           type="button"
           aria-label={t("More actions")}
@@ -1171,6 +1207,11 @@ function RemoteFilePanelImpl({
         )}
       </div>
 
+      {/* 传输中心停靠在面板底部：不遮罩、不抢焦点，打开时仍能继续浏览文件。 */}
+      {transferOpen && (
+        <TransferCenterPanel sessionId={sessionId} onClose={() => setTransferOpen(false)} />
+      )}
+
       {/* Drop overlay lives outside the scroll container: inside it the
           highlight would scroll away with the file list and sit off-screen. */}
       {dragging && (
@@ -1231,8 +1272,6 @@ function RemoteFilePanelImpl({
         onClose={() => setTrashOpen(false)}
         onChanged={refreshSilently}
       />
-
-      <TransferCenterDialog open={transferOpen} onClose={() => setTransferOpen(false)} />
 
       {nameDialog && (
         <NamePromptModal

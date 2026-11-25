@@ -124,6 +124,14 @@ export function useAttachments({
         const current = useExtremeStore.getState();
         if (current.sessionId === sessionAtRead && current.workspaceId === workspaceAtRead) {
           setAttachments((attachments) => [...attachments, ...added]);
+          /*
+           * 新加进来的文件默认勾选「用于本次发送」：用户拖进来就是想让模型
+           * 看到，不该再多一步去右栏点勾。读失败的不勾（它没有内容可发）。
+           */
+          const ready = added.filter((item) => item.state === "ready").map((item) => item.id);
+          if (ready.length > 0) {
+            setSelectedAttachmentIds((ids) => [...new Set([...ids, ...ready])]);
+          }
           // 拖进来的文件要看得见：直接展开右栏的附件标签。
           openPaneTab("attachments");
         }

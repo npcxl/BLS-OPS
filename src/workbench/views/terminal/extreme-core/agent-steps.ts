@@ -52,6 +52,8 @@ function blankStep(index: number, event: AgentEvent): AgentStep {
     impact: event.impact ?? null,
     changeId: event.changeId ?? null,
     elapsedMs: 0,
+    planStepId: event.planStepId ?? null,
+    groupId: event.groupId ?? null,
   };
 }
 
@@ -110,6 +112,8 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
       ...(event.summary !== undefined ? { summary: event.summary } : {}),
       // 预览换成新版本时，步骤上的标识要跟着走（旧标识只指向作废的那条）。
       ...(event.changeId ? { changeId: event.changeId } : {}),
+      ...(event.planStepId ? { planStepId: event.planStepId } : {}),
+      ...(event.groupId ? { groupId: event.groupId } : {}),
     };
   }
 
@@ -220,6 +224,7 @@ export function toDeploySteps(steps: AgentStep[], t: Translate): DeployStep[] {
       stdout: step.stdout,
       stderr: step.stderr,
       exitCode: step.exitCode ?? null,
+      elapsedMs: step.elapsedMs > 0 ? step.elapsedMs : undefined,
       truncated: step.truncated,
     };
   });

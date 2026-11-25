@@ -120,12 +120,10 @@ fn write_commands_require_a_confirmation() {
 #[test]
 fn dangerous_commands_are_flagged() {
     for command in [
-        "sudo systemctl restart nginx",
         "rm -rf /",
         "mkfs.ext4 /dev/sdb1",
         "iptables -F",
         "shutdown -h now",
-        "echo x > /etc/profile.d/x.sh",
         "cp /tmp/passwd /etc/passwd",
         "dd if=/dev/zero of=/dev/sda",
     ] {
@@ -355,9 +353,10 @@ fn docker_exec_is_judged_by_the_command_it_runs() {
     }
 
     // 容器里真的在改东西：照样按写的档位算（写 /etc 仍是危险）。
+    // `/etc` 不再一律升级危险：明确的应用配置修改按写入处理，仍要确认。
     assert_eq!(
         classify_shell("docker exec web sh -c 'sed -i s/a/b/ /etc/nginx/nginx.conf'"),
-        ToolRisk::Danger
+        ToolRisk::Write
     );
     assert_eq!(
         classify_shell("docker exec web rm -rf /var/www/cache"),
@@ -470,9 +469,13 @@ fn shell_loops_are_judged_by_the_commands_inside() {
         classify_shell("for f in /etc/nginx/conf.d/*.conf; do sed -i s/a/b/ $f; done"),
         ToolRisk::Write
     );
-    // 同一段里既写又在 /etc 下：仍然是危险。
+    // 明确的 Nginx 配置修改按写入处理；只有 SSH / 防火墙等关键配置才危险。
     assert_eq!(
         classify_shell("sed -i s/a/b/ /etc/nginx/nginx.conf"),
+        ToolRisk::Write
+    );
+    assert_eq!(
+        classify_shell("sed -i s/a/b/ /etc/ssh/sshd_config"),
         ToolRisk::Danger
     );
     // 循环头里藏命令替换：不能因为"只是 for 头"就放过去。
@@ -1184,12 +1187,22 @@ mod loop_tests {
             }],
             provider_id: None,
             locale: None,
+            reply_language: None,
             reasoning_effort: None,
             context_budget: None,
             capability: None,
             carry_usage: None,
             allow_sudo: false,
             auto_approve_writes: false,
+            permission_mode: crate::agent::PermissionMode::Ask,
+            backup_before_write: true,
+            backup_before_delete: true,
+            backup_retention_days: 30,
+            mcp_tools: Vec::new(),
+            enabled_builtins: None,
+            db: None,
+            plan_required: false,
+            carry_plan: None,
             max_rounds,
             carry_steps: Vec::new(),
         }
@@ -1218,6 +1231,8 @@ mod loop_tests {
         sent: Mutex<Vec<Vec<Value>>>,
         connected: bool,
         server_ok: bool,
+        /// 下一次命中这些子串的命令返回失败（只消耗一次）。
+        failures: Mutex<Vec<String>>,
     }
 
     impl FakeIo {
@@ -1234,6 +1249,7 @@ mod loop_tests {
                 sent: Mutex::new(Vec::new()),
                 connected: true,
                 server_ok: true,
+                failures: Mutex::new(Vec::new()),
             }
         }
 
@@ -1315,6 +1331,24 @@ mod loop_tests {
                 if let Ok(mut list) = self.executed.lock() {
                     list.push(command.to_string());
                 }
+                let failed = self
+                    .failures
+                    .lock()
+                    .ok()
+                    .and_then(|mut list| {
+                        list.iter()
+                            .position(|needle| command.contains(needle))
+                            .map(|at| list.remove(at))
+                    })
+                    .is_some();
+                if failed {
+                    return Ok(ExecOutput {
+                        stdout: String::new(),
+                        stderr: "模拟失败：解压中断".to_string(),
+                        exit_code: Some(1),
+                        truncated: false,
+                    });
+                }
                 Ok(ExecOutput {
                     stdout: format!("ok: {command}\n"),
                     stderr: String::new(),
@@ -1394,6 +1428,24 @@ mod loop_tests {
         });
     }
 
+    /// 连续允许接下来两次挂起（callId 随轮次变化，测试不硬编码）。
+    fn allow_two_later(handle: Arc<AgentHandle>) {
+        tokio::spawn(async move {
+            let mut resolved = 0u8;
+            for _ in 0..800 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                if let Some(call_id) = handle.pending_approval() {
+                    if handle.resolve_approval(&call_id, true) {
+                        resolved += 1;
+                        if resolved >= 2 {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     fn cancel_later(handle: Arc<AgentHandle>) {
         tokio::spawn(async move {
             for _ in 0..400 {
@@ -1401,6 +1453,23 @@ mod loop_tests {
                 if handle.pending_approval().is_some() {
                     handle.cancel().cancel();
                     return;
+                }
+            }
+        });
+    }
+
+    /// 等循环挂起问题后提交回答（questionId 由后端生成，测试不硬编码）。
+    fn answer_later(handle: Arc<AgentHandle>, selected: Vec<String>, custom: Option<String>) {
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                if let Some(question) = handle.pending_question() {
+                    let answer = question
+                        .validate_answer(&selected, custom.as_deref())
+                        .expect("测试回答应通过校验");
+                    if handle.resolve_answer(&question.question_id, answer) {
+                        return;
+                    }
                 }
             }
         });
@@ -1419,11 +1488,17 @@ mod loop_tests {
         });
     }
 
+    const ASK_CALL: &str = r#"<tool name="ask_user">{"question":"查哪些环境？","kind":"multi","options":[{"id":"prod","label":"生产"},{"id":"test","label":"测试"}],"allowCustom":true}</tool>"#;
     const READ_CALL: &str = r#"<tool name="run_shell">{"command":"uname -a"}</tool>"#;
     const WRITE_CALL: &str =
         r#"<tool name="run_shell">{"command":"systemctl restart nginx"}</tool>"#;
     const SUDO_CALL: &str =
         r#"<tool name="run_shell">{"command":"sudo systemctl restart nginx"}</tool>"#;
+    const UNZIP_CALL: &str =
+        r#"<tool name="run_shell">{"command":"unzip -o /tmp/dist.zip -d /srv/app/staging"}</tool>"#;
+    const UNZIP_EQUIVALENT_CALL: &str = r#"<tool name="run_shell">{"command":"cd /srv/app && unzip -o /tmp/dist.zip -d staging"}</tool>"#;
+    const UNZIP_ONLINE_CALL: &str =
+        r#"<tool name="run_shell">{"command":"unzip -o /tmp/dist.zip -d /srv/app/online"}</tool>"#;
 
     #[tokio::test]
     async fn a_read_command_runs_without_asking_and_reports_back() {
@@ -1449,6 +1524,29 @@ mod loop_tests {
     }
 
     #[tokio::test]
+    async fn read_only_mode_rejects_writes_without_asking() {
+        let io = FakeIo::new(&[WRITE_CALL, "那我只查状态。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.permission_mode = crate::agent::PermissionMode::ReadOnly;
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert!(io.executed().is_empty(), "只读模式绝不下发写命令");
+        assert!(
+            !io.kinds().contains(&"approval_required".to_string()),
+            "只读模式不产生审批"
+        );
+        let steps = handle.snapshot().steps;
+        assert_eq!(steps[0].state, "failed");
+        assert!(
+            steps[0].stderr.contains("只读"),
+            "失败原因要说清：{}",
+            steps[0].stderr
+        );
+        assert_eq!(content, "那我只查状态。");
+    }
+
+    #[tokio::test]
     async fn a_denied_write_never_reaches_the_server() {
         let io = FakeIo::new(&[WRITE_CALL, "好的，我不改。"]);
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
@@ -1462,6 +1560,156 @@ mod loop_tests {
         assert!(steps[0].stderr.contains("拒绝"), "{}", steps[0].stderr);
         // 拒绝不是失败：模型拿到原因后可以换方案，循环继续到最终答复。
         assert_eq!(result.unwrap(), "好的，我不改。");
+    }
+
+    #[tokio::test]
+    async fn equivalent_unzip_commands_are_confirmed_and_executed_once() {
+        let io = FakeIo::new(&[
+            UNZIP_CALL,
+            UNZIP_EQUIVALENT_CALL,
+            "解压完成，已做只读验证。",
+            READ_CALL,
+            "验证完成。",
+        ]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", true);
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert!(content.contains("验证完成") || content.contains("解压完成"));
+        assert_eq!(
+            io.executed()
+                .iter()
+                .filter(|command| command.contains("unzip"))
+                .count(),
+            1,
+            "等价写法只执行一次"
+        );
+        assert_eq!(
+            io.kinds()
+                .iter()
+                .filter(|kind| kind.as_str() == "approval_required")
+                .count(),
+            1,
+            "同一个解压操作只确认一次"
+        );
+        let steps = handle.snapshot().steps;
+        let reused = steps
+            .iter()
+            .find(|step| {
+                step.summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.contains("复用"))
+            })
+            .expect("第二个等价解压应复用结果");
+        assert_eq!(reused.state, "success");
+    }
+
+    #[tokio::test]
+    async fn changing_the_unzip_target_asks_again_and_explains_the_change() {
+        let io = FakeIo::new(&[
+            UNZIP_CALL,
+            UNZIP_ONLINE_CALL,
+            "已改为解压到线上目录。",
+            READ_CALL,
+            "验证完成。",
+        ]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        allow_two_later(handle.clone());
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert!(content.contains("线上") || content.contains("验证完成"));
+        assert_eq!(
+            io.kinds()
+                .iter()
+                .filter(|kind| kind.as_str() == "approval_required")
+                .count(),
+            2,
+            "目标目录变了，必须重新确认"
+        );
+        let steps = handle.snapshot().steps;
+        let second = steps
+            .iter()
+            .find(|step| step.command.contains("online"))
+            .unwrap();
+        assert!(
+            second
+                .impact
+                .as_deref()
+                .is_some_and(|impact| impact.contains("目标目录从")),
+            "新确认卡要说明目标变化：{:?}",
+            second.impact
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_unzip_returns_the_real_error_and_allows_one_retry() {
+        let io = FakeIo::new(&[
+            UNZIP_CALL,
+            UNZIP_EQUIVALENT_CALL,
+            "第一次失败，重试成功。",
+            READ_CALL,
+            "验证完成。",
+        ]);
+        io.failures
+            .lock()
+            .expect("failures")
+            .push("unzip".to_string());
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", true);
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert!(content.contains("验证完成") || content.contains("重试成功"));
+        let unzip_runs = io
+            .executed()
+            .iter()
+            .filter(|command| command.contains("unzip"))
+            .count();
+        assert_eq!(unzip_runs, 2, "失败后允许一次真实重试");
+        let steps = handle.snapshot().steps;
+        let first = steps.first().expect("first step");
+        assert_eq!(first.state, "failed");
+        assert_eq!(first.exit_code, Some(1));
+        assert!(first.stderr.contains("模拟失败"), "{}", first.stderr);
+        assert_eq!(
+            io.kinds()
+                .iter()
+                .filter(|kind| kind.as_str() == "approval_required")
+                .count(),
+            1,
+            "重试同一操作不再重复确认"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denied_unzip_cannot_be_resubmitted_with_an_equivalent_command() {
+        let io = FakeIo::new(&[UNZIP_CALL, UNZIP_EQUIVALENT_CALL, "好的，不执行解压。"]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", false);
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "好的，不执行解压。");
+        assert!(
+            io.executed()
+                .iter()
+                .all(|command| !command.contains("unzip")),
+            "拒绝后等价写法也不能执行"
+        );
+        assert_eq!(
+            io.kinds()
+                .iter()
+                .filter(|kind| kind.as_str() == "approval_required")
+                .count(),
+            1,
+            "拒绝过的等价操作不再重新发起审批"
+        );
     }
 
     #[tokio::test]
@@ -1700,6 +1948,30 @@ mod loop_tests {
         assert_eq!(handle.snapshot().steps[0].state, "success");
     }
 
+    /// 完全权限：解压发布包属于日常部署，直接执行。
+    #[tokio::test]
+    async fn full_permission_runs_routine_unzip_without_asking() {
+        let io = FakeIo::new(&[UNZIP_CALL, "解压完成。", READ_CALL, "验证完成。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.auto_approve_writes = true;
+        input.allow_sudo = true;
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert!(content.contains("验证完成") || content.contains("解压完成"));
+        assert_eq!(
+            io.executed()
+                .iter()
+                .filter(|command| command.contains("unzip"))
+                .count(),
+            1
+        );
+        assert!(
+            !io.kinds().contains(&"approval_required".to_string()),
+            "日常解压不该再弹确认"
+        );
+    }
+
     /// 只读查询在两种权限下都是零确认（完全权限也不会把查询变成确认）。
     #[tokio::test]
     async fn read_only_queries_never_ask_even_under_full_permission() {
@@ -1718,18 +1990,17 @@ mod loop_tests {
         );
     }
 
-    /// 「完全权限」：修改范围内的危险档（删根 / 防火墙 / 改 /etc）也直接执行。
-    ///
-    /// 范围之外的写操作已经被查询边界挡住，不会因为"完全权限"被静默执行。
+    /// 「完全权限」也不能跳过防火墙这类可能失联的严重操作。
     #[tokio::test]
-    async fn full_permission_runs_danger_without_asking() {
+    async fn full_permission_still_confirms_firewall_changes() {
         let io = FakeIo::new(&[
             r#"<tool name="run_shell">{"command":"iptables -F"}</tool>"#,
             "已清空防火墙规则。",
             READ_CALL,
             "规则已确认。",
         ]);
-        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", true);
         let mut input = loop_input(None);
         input.auto_approve_writes = true;
         input.allow_sudo = true;
@@ -1737,9 +2008,13 @@ mod loop_tests {
         let content = run_loop(&handle, &input, &io, None).await.unwrap();
         assert_eq!(content, "规则已确认。");
         assert_eq!(io.executed().len(), 2, "危险操作 + 必要的只读验证");
-        assert!(
-            !io.kinds().contains(&"approval_required".to_string()),
-            "完全权限下不该再弹确认"
+        assert_eq!(
+            io.kinds()
+                .iter()
+                .filter(|kind| kind.as_str() == "approval_required")
+                .count(),
+            1,
+            "完全权限下严重操作仍要确认一次"
         );
     }
 
@@ -1790,11 +2065,7 @@ mod loop_tests {
     /// 拒绝过的操作换一种写法也不再问：直接拦下。
     #[tokio::test]
     async fn denied_operation_is_not_asked_twice_with_a_different_spelling() {
-        let io = FakeIo::new(&[
-            r#"<tool name="run_shell">{"command":"rm /opt/a.txt"}</tool>"#,
-            r#"<tool name="run_shell">{"command":"rm -f /opt/a.txt"}</tool>"#,
-            "好的，不删这个文件。",
-        ]);
+        let io = FakeIo::new(&[UNZIP_CALL, UNZIP_EQUIVALENT_CALL, "好的，不解压这个包。"]);
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
         decide_later(handle.clone(), "call-0-0", false);
 
@@ -1829,6 +2100,7 @@ mod loop_tests {
             sent: Mutex::new(Vec::new()),
             connected: true,
             server_ok: true,
+            failures: Mutex::new(Vec::new()),
         };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
 
@@ -1902,6 +2174,7 @@ mod loop_tests {
             sent: Mutex::new(Vec::new()),
             connected: true,
             server_ok: true,
+            failures: Mutex::new(Vec::new()),
         };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
 
@@ -1916,6 +2189,43 @@ mod loop_tests {
             roles.contains(&"tool".to_string()),
             "原生调用必须用 role: tool 回灌：{roles:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn ask_user_waits_pauses_execution_and_continues_with_the_answer() {
+        let io = FakeIo::new(&[ASK_CALL, "按生产环境继续。"]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        answer_later(handle.clone(), vec!["prod".to_string()], Some("  先看最近一小时  ".to_string()));
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "按生产环境继续。");
+        // 问题不是命令：挂起期间什么都不能下发。
+        assert!(io.executed().is_empty());
+        let kinds = io.kinds();
+        assert!(kinds.contains(&"question_required".to_string()));
+        assert!(kinds.contains(&"question_answered".to_string()));
+        // 回答（选项 id + 自定义文字）必须回灌给模型。
+        let sent = io.last_messages();
+        let text = serde_json::to_string(&sent).unwrap();
+        assert!(text.contains("prod"), "{text}");
+        assert!(text.contains("先看最近一小时"), "{text}");
+        assert!(handle.snapshot().pending_question.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_invalid_question_is_returned_to_the_model_without_pausing() {
+        let bad = r#"<tool name="ask_user">{"question":"","kind":"single","options":[],"allowCustom":false}</tool>"#;
+        let io = FakeIo::new(&[bad, "我改成一句普通回答。"]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "我改成一句普通回答。");
+        assert!(!io.kinds().contains(&"question_required".to_string()));
+        assert!(handle.snapshot().pending_question.is_none());
     }
 
     /// 确认卡倒计时以后端为准：事件与快照带**同一个**截止时刻，
@@ -1961,9 +2271,301 @@ mod loop_tests {
             "事件与快照必须是同一个截止时刻"
         );
     }
+
+    /* ---------------- MAX 强制计划 / 执行前说明 ---------------- */
+
+    const PLAN_CALL: &str = r#"<tool name="submit_plan">{"understanding":"查机器","summary":"先探查","steps":[{"id":"s1","title":"检查机器","action":"uname -a","verify":"拿到内核信息","kind":"probe"}]}</tool>"#;
+    const STEP_READ_CALL: &str =
+        r#"<tool name="run_shell">{"command":"uname -a","step":"s1"}</tool>"#;
+    const STEP_WRITE_CALL: &str =
+        r#"<tool name="run_shell">{"command":"systemctl restart nginx","step":"s1"}</tool>"#;
+
+    /// MAX：计划之前任何工具都不下发；提交后带 step 的工具才执行。
+    #[tokio::test]
+    async fn max_tools_wait_for_a_plan_and_then_run_the_step() {
+        let io = FakeIo::new(&[READ_CALL, PLAN_CALL, STEP_READ_CALL, "机器是 Linux。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.plan_required = true;
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert_eq!(content, "机器是 Linux。");
+        assert_eq!(io.executed().len(), 1, "计划前的那条命令绝不能下发");
+        assert!(
+            io.kinds().contains(&"plan_updated".to_string()),
+            "计划提交与状态变化都要推给界面"
+        );
+        let plan = handle.snapshot().plan.expect("快照里要有计划");
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].state, "done", "工具成功后计划步骤才算完成");
+
+        let started = io
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "tool_started")
+            .last()
+            .cloned()
+            .expect("应当有 tool_started");
+        assert_eq!(started.plan_step_id.as_deref(), Some("s1"));
+        assert_eq!(started.group_id.as_deref(), Some("p-s1"));
+        // 模型只发了工具、没有正文：执行器补一句说明，且与工具同组。
+        assert!(started.note.is_some(), "无正文时要有执行前说明");
+    }
+
+    /// 计划里不存在的 step id：命令不下发，计划状态不动。
+    #[tokio::test]
+    async fn a_tool_with_an_unknown_step_is_not_executed() {
+        let io = FakeIo::new(&[
+            PLAN_CALL,
+            r#"<tool name="run_shell">{"command":"uname -a","step":"s9"}</tool>"#,
+            "没有执行。",
+        ]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.plan_required = true;
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert_eq!(content, "没有执行。");
+        assert!(io.executed().is_empty(), "未知步骤的命令不能执行");
+        assert_eq!(handle.snapshot().plan.unwrap().steps[0].state, "pending");
+        assert!(
+            io.last_messages().iter().any(|message| message["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("缺少有效的 step")),
+            "要给模型明确原因"
+        );
+    }
+
+    /// 连续几轮都直接调工具：说明只出现一次，组 id 保持不变。
+    #[tokio::test]
+    async fn a_tool_only_run_gets_one_preamble_for_the_whole_group() {
+        let io = FakeIo::new(&[READ_CALL, READ_CALL, "完成。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+
+        run_loop(&handle, &loop_input(None), &io, None).await.unwrap();
+        assert_eq!(io.executed().len(), 2);
+        let started: Vec<_> = io
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "tool_started")
+            .cloned()
+            .collect();
+        assert_eq!(started.len(), 2);
+        assert!(started[0].note.is_some(), "第一组要有执行前说明");
+        assert!(started[1].note.is_none(), "同一组不能重复说明");
+        assert_eq!(started[0].group_id, started[1].group_id);
+    }
+
+    /// 模型自己写了说明：执行器不再补一句。
+    #[tokio::test]
+    async fn model_text_replaces_the_generated_preamble() {
+        let reply = format!("我先查看机器信息，确认系统版本。\n{READ_CALL}");
+        let io = FakeIo::new(&[reply.as_str(), "机器正常。"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+
+        run_loop(&handle, &loop_input(None), &io, None).await.unwrap();
+        let started = io
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event.kind == "tool_started")
+            .cloned()
+            .expect("应当有 tool_started");
+        assert!(started.group_id.is_some(), "说明与工具仍要共享组 id");
+        assert!(started.note.is_none(), "已有模型说明就不再补");
+    }
+
+    /// 计划 + 写入审批：提交计划本身不弹确认，写入仍按原权限策略确认。
+    #[tokio::test]
+    async fn submitting_a_plan_does_not_bypass_write_approval() {
+        let io = FakeIo::new(&[
+            PLAN_CALL,
+            STEP_WRITE_CALL,
+            "改好了。",
+            STEP_READ_CALL,
+            "验证通过。",
+        ]);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        let mut input = loop_input(None);
+        input.plan_required = true;
+        // 第 0 轮是提交计划；写入在第 1 轮、步骤 index 0。
+        decide_later(handle.clone(), "call-1-0", true);
+
+        let content = run_loop(&handle, &input, &io, None).await.unwrap();
+        assert_eq!(content, "验证通过。");
+        assert_eq!(io.executed().len(), 2, "写入 + 只读验证");
+        let approvals = io
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "approval_required")
+            .count();
+        assert_eq!(approvals, 1, "只有真实写入需要确认");
+        assert_eq!(handle.snapshot().plan.unwrap().steps[0].state, "done");
+    }
+
+    /// 修订计划：同 id 保留已完成状态，未再提的已完成步骤也保留。
+    #[test]
+    fn plan_revisions_keep_completed_steps() {
+        use super::super::protocol::{merge_plan, PlanDraft};
+
+        let draft = |value: Value| serde_json::from_value::<PlanDraft>(value).unwrap();
+        let first = merge_plan(
+            None,
+            draft(json!({
+                "understanding": "检查并重启服务",
+                "steps": [
+                    {"id":"s1","title":"检查配置","action":"nginx -t","verify":"语法通过","kind":"probe"},
+                    {"id":"s2","title":"重启","action":"systemctl restart nginx","verify":"服务 active","kind":"action"}
+                ]
+            })),
+            100,
+        )
+        .unwrap();
+        assert_eq!(first.revision, 1);
+        let mut current = first;
+        current.steps[0].state = "done".to_string();
+        current.steps[0].evidence = Some("syntax is ok".to_string());
+
+        let revised = merge_plan(
+            Some(&current),
+            draft(json!({
+                "steps": [
+                    {"id":"s2","title":"重启","action":"systemctl restart nginx","verify":"服务 active","kind":"action"},
+                    {"id":"s3","title":"验证端口","action":"ss -ltnp","verify":"80 在监听","kind":"probe"}
+                ]
+            })),
+            200,
+        )
+        .unwrap();
+        assert_eq!(revised.revision, 2);
+        let s1 = revised.steps.iter().find(|step| step.id == "s1").expect("完成记录要保留");
+        assert_eq!(s1.state, "done");
+        assert_eq!(s1.evidence.as_deref(), Some("syntax is ok"));
+        assert!(revised.steps.iter().any(|step| step.id == "s3"));
+    }
 }
 
 /// 文件变更审阅：预览 / 外部改动 / 回读 / 失败 / 未采集（独立子模块，见
 /// `src/agent/tests/change_tests.rs`）。
+#[test]
+fn question_answers_follow_single_multi_and_custom_rules() {
+    let question = super::protocol::PendingQuestion {
+        question_id: "q1".to_string(),
+        task_id: "task".to_string(),
+        workspace_id: None,
+        server_id: None,
+        question: "选哪个？".to_string(),
+        kind: "single".to_string(),
+        options: vec![
+            super::protocol::QuestionOption {
+                id: "a".to_string(),
+                label: "A".to_string(),
+            },
+            super::protocol::QuestionOption {
+                id: "b".to_string(),
+                label: "B".to_string(),
+            },
+        ],
+        allow_custom: true,
+        deadline: i64::MAX,
+    };
+    assert_eq!(
+        question
+            .validate_answer(&["a".to_string()], None)
+            .unwrap()
+            .selected,
+        vec!["a".to_string()]
+    );
+    assert_eq!(
+        question.validate_answer(&[], Some("  自定义  ")).unwrap().custom,
+        Some("自定义".to_string())
+    );
+    assert!(question.validate_answer(&["a".to_string()], Some("x")).is_err());
+    assert!(question.validate_answer(&[], None).is_err());
+    assert!(question.validate_answer(&["missing".to_string()], None).is_err());
+
+    let multi = super::protocol::PendingQuestion {
+        kind: "multi".to_string(),
+        ..question
+    };
+    let both = multi
+        .validate_answer(
+            &["a".to_string(), "b".to_string(), "a".to_string()],
+            Some("补充"),
+        )
+        .unwrap();
+    assert_eq!(both.selected, vec!["a", "b"]);
+    assert_eq!(both.custom.as_deref(), Some("补充"));
+    assert!(multi.validate_answer(&[], None).is_err());
+}
+
 #[cfg(test)]
 mod change_tests;
+
+#[cfg(test)]
+mod permission_decision_tests {
+    use super::plan_tool;
+    use super::super::runner::{permission_decision, PermissionDecision, PermissionMode};
+    use serde_json::json;
+
+    fn read() -> super::super::tools::PlannedTool {
+        plan_tool("read_file", &json!({"path": "/tmp/a"}), "/tmp", 1).unwrap()
+    }
+
+    fn write() -> super::super::tools::PlannedTool {
+        plan_tool(
+            "write_file",
+            &json!({"path": "/tmp/a", "content": "x"}),
+            "/tmp",
+            1,
+        )
+        .unwrap()
+    }
+
+    fn severe() -> super::super::tools::PlannedTool {
+        plan_tool(
+            "run_shell",
+            &json!({"command": "systemctl restart ssh"}),
+            "/tmp",
+            1,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn three_modes_follow_the_matrix() {
+        assert_eq!(
+            permission_decision(PermissionMode::ReadOnly, &read(), false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            permission_decision(PermissionMode::ReadOnly, &write(), false),
+            PermissionDecision::Block
+        );
+        assert_eq!(
+            permission_decision(PermissionMode::Ask, &read(), false),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            permission_decision(PermissionMode::Ask, &write(), false),
+            PermissionDecision::Confirm
+        );
+        assert_eq!(
+            permission_decision(PermissionMode::Full, &write(), true),
+            PermissionDecision::Allow
+        );
+        // 完全访问下严重操作仍然单独确认。
+        assert_eq!(
+            permission_decision(PermissionMode::Full, &severe(), true),
+            PermissionDecision::Confirm
+        );
+    }
+}

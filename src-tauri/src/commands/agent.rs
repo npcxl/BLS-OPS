@@ -15,9 +15,18 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter as _, State};
 
 use crate::agent::{
-    spawn_agent, AgentInput, AgentSnapshot, AgentStep, AgentTurn, FileChangeDetail,
-    FileChangeSummary, FileSnapshot, Lang, TokenUsage,
+    plan_status_block, spawn_agent, AgentInput, AgentPlan, AgentSnapshot, AgentStep, AgentTurn,
+    FileChangeDetail, FileChangeSummary, FileSnapshot, Lang, NetChangeSet, PermissionMode,
+    StoredChange, TokenUsage,
 };
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_backup_retention() -> u32 {
+    30
+}
 use crate::commands::extreme::{load_task_record, ExtremeTaskRecord};
 use crate::ops_error::{OpsError, OpsResult};
 use crate::state::AppState;
@@ -48,6 +57,22 @@ pub struct AgentStartRequest {
     /// 同上：完全权限下修改范围内的写 / 改 / 删都不再逐条确认。
     #[serde(default)]
     pub auto_approve_writes: bool,
+    /// 三档权限；旧客户端不传时按 `auto_approve_writes` 推断。
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// 备份策略（缺省沿用旧行为：修改与删除前都备份，保留 30 天）。
+    #[serde(default = "default_true")]
+    pub backup_before_write: bool,
+    #[serde(default = "default_true")]
+    pub backup_before_delete: bool,
+    #[serde(default = "default_backup_retention")]
+    pub backup_retention_days: u32,
+    /// 本轮启用的 MCP 工具（暴露名，来自 MCP 页的启用状态）。
+    #[serde(default)]
+    pub enabled_mcp_tools: Vec<String>,
+    /// 本轮勾选的内置技能；`None` = 旧客户端，全部放行。
+    #[serde(default)]
+    pub enabled_builtins: Option<Vec<String>>,
     /// 续跑同一个 taskId 时带上已知的累计用量（后端从它继续加）。
     #[serde(default)]
     pub carry_usage: Option<TokenUsage>,
@@ -57,15 +82,24 @@ pub struct AgentStartRequest {
     #[serde(default)]
     pub provider_id: Option<String>,
     /// 思考强度：`low` / `medium` / `high` / `max`；`None` / `auto` = 供应商默认。
-    /// 界面传的是**已按模型能力选好**的档位（MAX 会先映射成模型最高档）。
+    /// 界面传用户**实际选的**档位（选 MAX 就传 max），由后端按模型能力解析。
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// 本轮是否强制先提交计划（用户选 MAX = true，与供应商实际最高档无关）。
+    #[serde(default)]
+    pub plan_required: bool,
+    /// 续跑同一个 taskId 时带上上一版计划。
+    #[serde(default)]
+    pub plan: Option<AgentPlan>,
     /// 上下文输入预算（tokens）；`None` = 按模型窗口自动。
     #[serde(default)]
     pub context_budget: Option<u32>,
     /// 界面语言（`zh-CN` / `en`）：决定系统提示词用哪种语言写；不传按中文。
     #[serde(default)]
     pub locale: Option<String>,
+    /// 回复语言覆盖（`zh` / `en`）；不传 = 跟随界面语言。
+    #[serde(default)]
+    pub reply_language: Option<String>,
 }
 
 #[tauri::command]
@@ -74,6 +108,17 @@ pub async fn agent_start(
     state: State<'_, AppState>,
     request: AgentStartRequest,
 ) -> OpsResult<AgentSnapshot> {
+    let permission_mode =
+        PermissionMode::from_wire(request.permission_mode.as_deref(), request.auto_approve_writes);
+    let allow_sudo = request.allow_sudo && !permission_mode.is_read_only();
+    // 只把**本会话启用**的 MCP 工具解析成绑定；配置损坏 / 库读失败时退化为无 MCP。
+    let mcp_tools = crate::mcp::bindings_for(
+        &state.db,
+        &request.enabled_mcp_tools,
+        request.server_id.as_deref(),
+        request.workspace_id.as_deref(),
+    )
+    .unwrap_or_default();
     let input = AgentInput {
         task_id: request.task_id,
         session_id: request.session_id,
@@ -94,11 +139,21 @@ pub async fn agent_start(
         // 能力由 `spawn_agent` 从库里的提供方配置填（命令层不做第二份解析）。
         capability: None,
         carry_usage: request.carry_usage,
-        allow_sudo: request.allow_sudo,
-        auto_approve_writes: request.auto_approve_writes,
+        allow_sudo,
+        auto_approve_writes: permission_mode.is_full(),
+        permission_mode,
+        backup_before_write: request.backup_before_write,
+        backup_before_delete: request.backup_before_delete,
+        backup_retention_days: request.backup_retention_days,
+        mcp_tools,
+        enabled_builtins: request.enabled_builtins,
+        db: Some(state.db.clone()),
+        plan_required: request.plan_required,
+        carry_plan: request.plan,
         max_rounds: request.max_rounds,
         provider_id: request.provider_id,
         locale: request.locale,
+        reply_language: request.reply_language,
         carry_steps: Vec::new(),
     };
     spawn_agent(app, state.inner().clone(), input)
@@ -122,17 +177,39 @@ pub struct AgentResumeRequest {
     pub provider_id: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// 恢复同样沿用 MAX 的强制计划门控（前端按当时的任务记录带过来）。
+    #[serde(default)]
+    pub plan_required: bool,
+    /// 上次保存的计划（前端从任务 / 消息里带回来），用于继续执行。
+    #[serde(default)]
+    pub plan: Option<AgentPlan>,
     #[serde(default)]
     pub context_budget: Option<u32>,
     #[serde(default)]
     pub allow_sudo: bool,
     #[serde(default)]
     pub auto_approve_writes: bool,
+    /// 三档权限；旧客户端不传时按 `auto_approve_writes` 推断。
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default = "default_true")]
+    pub backup_before_write: bool,
+    #[serde(default = "default_true")]
+    pub backup_before_delete: bool,
+    #[serde(default = "default_backup_retention")]
+    pub backup_retention_days: u32,
+    #[serde(default)]
+    pub enabled_mcp_tools: Vec<String>,
+    #[serde(default)]
+    pub enabled_builtins: Option<Vec<String>>,
     #[serde(default)]
     pub max_rounds: Option<u32>,
     /// 界面语言（`zh-CN` / `en`）：决定系统提示词用哪种语言写；不传按中文。
     #[serde(default)]
     pub locale: Option<String>,
+    /// 回复语言覆盖（`zh` / `en`）；不传 = 跟随界面语言。
+    #[serde(default)]
+    pub reply_language: Option<String>,
 }
 
 /// 把历史 `plan_json`（DeployStep[]）还原成 Agent 步骤。
@@ -312,12 +389,21 @@ pub async fn agent_resume(
         goal = "继续完成上次未完成的任务".to_string();
     }
     let server = record.server.clone();
-    let brief = resume_brief(
-        &record,
-        &steps,
-        &cwd,
-        Lang::from_locale(request.locale.as_deref()),
-    );
+    let lang = Lang::from_locale(request.locale.as_deref());
+    let mut brief = resume_brief(&record, &steps, &cwd, lang);
+    if let Some(plan) = request.plan.as_ref() {
+        brief.push_str(&plan_status_block(plan, lang));
+    }
+    let permission_mode =
+        PermissionMode::from_wire(request.permission_mode.as_deref(), request.auto_approve_writes);
+    let allow_sudo = request.allow_sudo && !permission_mode.is_read_only();
+    let mcp_tools = crate::mcp::bindings_for(
+        &state.db,
+        &request.enabled_mcp_tools,
+        request.server_id.as_deref(),
+        request.workspace_id.as_deref(),
+    )
+    .unwrap_or_default();
     let input = AgentInput {
         task_id: task_id.to_string(),
         session_id: request.session_id,
@@ -337,12 +423,22 @@ pub async fn agent_resume(
         ],
         provider_id: request.provider_id,
         locale: request.locale,
+        reply_language: request.reply_language,
         reasoning_effort: request.reasoning_effort,
         context_budget: request.context_budget,
         capability: None,
         carry_usage: None,
-        allow_sudo: request.allow_sudo,
-        auto_approve_writes: request.auto_approve_writes,
+        allow_sudo,
+        auto_approve_writes: permission_mode.is_full(),
+        permission_mode,
+        backup_before_write: request.backup_before_write,
+        backup_before_delete: request.backup_before_delete,
+        backup_retention_days: request.backup_retention_days,
+        mcp_tools,
+        enabled_builtins: request.enabled_builtins,
+        db: Some(state.db.clone()),
+        plan_required: request.plan_required,
+        carry_plan: request.plan,
         max_rounds: request.max_rounds,
         carry_steps: steps,
     };
@@ -371,6 +467,33 @@ pub fn agent_approve(
         Some(handle) => Ok(handle.resolve_approval(&call_id, allow)),
         None => Ok(false),
     }
+}
+
+/// 回答 AI 挂起的选择题。只接受第一次提交；已回答 / 已超时返回错误。
+#[tauri::command]
+pub fn agent_answer_question(
+    state: State<'_, AppState>,
+    task_id: String,
+    question_id: String,
+    selected: Vec<String>,
+    custom: Option<String>,
+) -> OpsResult<bool> {
+    let Some(handle) = state.agents.get(&task_id) else {
+        return Err(OpsError::new("agent", "任务已经结束，无法回答"));
+    };
+    let Some(question) = handle
+        .pending_question()
+        .filter(|question| question.question_id == question_id)
+    else {
+        return Err(OpsError::new("agent", "这个问题已经回答或已过期"));
+    };
+    let answer = question
+        .validate_answer(&selected, custom.as_deref())
+        .map_err(|reason| OpsError::new("input", reason))?;
+    if !handle.resolve_answer(&question_id, answer) {
+        return Err(OpsError::new("agent", "这个问题已经回答或已过期"));
+    }
+    Ok(true)
 }
 
 /// 运行中补一句要求（「更新当前任务」）。
@@ -433,9 +556,63 @@ pub fn agent_file_changes(
     workspace_id: Option<String>,
     task_id: Option<String>,
 ) -> OpsResult<Vec<FileChangeSummary>> {
-    Ok(state
+    let mut list = state
         .changes
-        .list(workspace_id.as_deref(), task_id.as_deref()))
+        .list(workspace_id.as_deref(), task_id.as_deref());
+    /*
+     * 应用重启后内存注册表是空的：给定了任务就回落到任务历史里那份脱敏记录。
+     * 只按单个任务回落，不做全表扫描 —— 右栏"本次运行"就够用。
+     */
+    if list.is_empty() {
+        if let Some(task) = task_id.as_deref() {
+            if let Ok(Some(json)) = crate::commands::extreme::load_task_changes(state.inner(), task)
+            {
+                if let Ok(stored) = serde_json::from_str::<Vec<StoredChange>>(&json) {
+                    state.changes.remember(stored);
+                    list = state
+                        .changes
+                        .list(workspace_id.as_deref(), task_id.as_deref());
+                }
+            }
+        }
+    }
+    Ok(list)
+}
+
+/// 本轮**净变化**：同一路径只留一条（首次操作前 → 最后一次验证后）。
+///
+/// 与 `agent_file_changes` 分开是有意的：净变化为空可能表示"本轮真的没变"，
+/// 也可能表示"内存里没有本轮记录"。`available` 把这两种情况分开，界面
+/// 据此决定显示「本轮无文件净变化」还是回落到逐条历史 —— 空数组不会再
+/// 让原来的逐步记录重新冒出来。
+#[tauri::command]
+pub fn agent_file_changes_net(
+    state: State<'_, AppState>,
+    workspace_id: Option<String>,
+    task_id: String,
+) -> OpsResult<NetChangeSet> {
+    Ok(state.changes.net_changes(workspace_id.as_deref(), &task_id))
+}
+
+/// 把这轮运行的变更（摘要 + 脱敏 Diff）写进任务历史。
+///
+/// 由前端在任务进入终态时调用：跑的过程中不落库，避免每一步都写一次。
+#[tauri::command]
+pub fn agent_task_changes_save(state: State<'_, AppState>, task_id: String) -> OpsResult<usize> {
+    let stored: Vec<StoredChange> = state
+        .changes
+        .records_for_task(&task_id)
+        .iter()
+        .map(StoredChange::from_record)
+        .collect();
+    if stored.is_empty() {
+        return Ok(0);
+    }
+    let json = serde_json::to_string(&stored)
+        .map_err(|error| OpsError::new("config", format!("变更记录序列化失败：{error}")))?;
+    crate::commands::extreme::save_task_changes(state.inner(), &task_id, &json)
+        .map_err(|error| OpsError::new("db", format!("变更记录落库失败：{error}")))?;
+    Ok(stored.len())
 }
 
 /// 计划执行器 / 手工写入登记一条变更。

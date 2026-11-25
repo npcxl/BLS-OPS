@@ -7,6 +7,7 @@ import { DesktopNotificationWindow } from "@/desktop-notification/window";
 import { initTheme } from "@/hooks/use-theme";
 import { initDensity } from "@/hooks/use-density";
 import { initTerminalFont } from "@/workbench/views/terminal/terminal-font";
+import { hydrateExtremeStore } from "@/stores/extreme-store";
 import "./styles/globals.css";
 // i18n 必须在任何组件渲染前初始化（副作用导入，同步 init，见 src/i18n/index.ts）。
 import "@/i18n";
@@ -69,7 +70,8 @@ if (view !== "context-menu" && view !== "desktop-notification") {
   prepareDesktopMenu();
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const content =
   view === "shortcuts" ? (
     <ShortcutsWindow />
   ) : view === "context-menu" ? (
@@ -78,5 +80,11 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <DesktopNotificationWindow />
   ) : (
     <App />
-  ),
-);
+  );
+
+if (view === undefined) {
+  // 主窗口先在数据库恢复对话，再挂载：避免先闪一份旧 localStorage 再整页跳。
+  void hydrateExtremeStore().finally(() => root.render(content));
+} else {
+  root.render(content);
+}

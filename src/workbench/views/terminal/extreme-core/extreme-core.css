@@ -363,12 +363,177 @@
   color: rgb(var(--fg-muted));
   font-size: 13px;
 }
-.extreme-core-reply-wait > span {
+/* 小心：只给这一颗圆点设样式。加载行里嵌的是官方 LatticeLoader（span 根节点），
+ * 用 `> span` 会把它的格子压成 6px。 */
+.extreme-core-reply-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: rgb(var(--accent));
 }
+/* ---------------- 一轮回复：正文与命令按发生顺序排列 ---------------- */
+/*
+ * 正文 → 命令 → 正文 → 命令 → 结论都在这一列里。命令行是**对话的一部分**，
+ * 不是浮在旁边的卡片：收起时只占一行，展开才看命令与输出。
+ */
+.extreme-core-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.extreme-core-turn .extreme-core-markdown > :first-child { margin-top: 0; }
+.extreme-core-turn .extreme-core-markdown > :last-child { margin-bottom: 0; }
+.extreme-core-turn-stage { font-size: 12px; }
+
+/* AI 提问卡：与命令行同一列，不用浮层，不抢正文的阅读位置。 */
+.extreme-core-question {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgb(var(--line) / 0.6);
+  border-radius: 10px;
+  background: rgb(var(--surface-1) / 0.5);
+  padding: 10px 12px;
+}
+.extreme-core-question-answered {
+  border-color: rgb(var(--accent) / 0.3);
+  background: rgb(var(--accent) / 0.05);
+}
+
+/* 运行中的步骤标题：官方 ThoughtLine，占满剩余宽度、单行截断。 */
+/* MCP「可用能力」折叠：默认收起，箭头跟着开合转。 */
+.mcp-tools > summary > svg {
+  transition: transform 150ms ease;
+}
+.mcp-tools:not([open]) > summary > svg {
+  transform: rotate(-90deg);
+}
+
+.extreme-core-step-thought {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(var(--fg-muted));
+}
+
+.extreme-core-step {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgb(var(--line) / .55);
+  border-radius: 8px;
+  background: rgb(var(--surface-2) / .32);
+}
+.extreme-core-step-head,
+.extreme-core-step-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 9px;
+  color: rgb(var(--fg-muted));
+  font-size: 12px;
+  text-align: start;
+}
+.extreme-core-step-head:hover,
+.extreme-core-step-group-head:hover {
+  background: rgb(var(--surface-2) / .6);
+  color: rgb(var(--fg));
+}
+.extreme-core-step-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+.extreme-core-step-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.extreme-core-step-status,
+.extreme-core-step-duration {
+  flex: none;
+  color: rgb(var(--fg-subtle));
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.extreme-core-step-duration::before {
+  content: "·";
+  margin-inline-end: 4px;
+  color: rgb(var(--line-strong));
+}
+.extreme-core-step-chevron {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: rgb(var(--fg-subtle));
+}
+.extreme-core-step-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(var(--line-strong));
+}
+.extreme-core-step-minus { color: rgb(var(--fg-subtle)); }
+/* 失败时收起也露出一行关键原因（stderr / stdout 首行）。 */
+.extreme-core-step-reason {
+  padding: 0 9px 6px 29px;
+  color: rgb(var(--danger));
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.extreme-core-step-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 9px 8px 29px;
+  color: rgb(var(--fg-muted));
+  font-size: 11px;
+}
+.extreme-core-step-code {
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgb(var(--surface-2) / .85);
+  color: rgb(var(--fg-muted));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extreme-core-step-stderr { color: rgb(var(--danger)); }
+.extreme-core-step-meta { color: rgb(var(--fg-subtle)); font-size: 10px; }
+.extreme-core-step-with-approval {
+  border-color: transparent;
+  background: transparent;
+}
+.extreme-core-step-with-approval > .extreme-core-step-head[hidden] { display: none; }
+.extreme-core-step-approval > section { padding: 0; }
+
+.extreme-core-step-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+.extreme-core-step-group-head { padding-inline: 2px; }
+.extreme-core-step-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-inline-start: 8px;
+  border-inline-start: 1px solid rgb(var(--line) / .7);
+}
+
 .extreme-core-markdown {
   min-width: 0;
   color: rgb(var(--fg));
@@ -840,5 +1005,201 @@
   .extreme-step-sweep::after {
     animation: none;
     background: none;
+  }
+}
+
+/* ---------------- MAX 计划卡（聊天内容区右上角） ---------------- */
+
+.extreme-core-plan-card {
+  width: 288px;
+  max-width: 100%;
+  border: 1px solid rgb(var(--line));
+  border-radius: 10px;
+  background: rgb(var(--surface-1));
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.09);
+}
+
+.extreme-core-plan-card,
+.extreme-core-plan-toggle {
+  --plan-ink: rgb(var(--fg));
+  --plan-ink-muted: rgb(var(--fg-muted));
+  --plan-ink-subtle: rgb(var(--fg-subtle));
+  --plan-line: rgb(var(--line));
+  --plan-tint: rgb(var(--surface-hover));
+}
+
+.extreme-core-plan-title {
+  color: var(--plan-ink);
+}
+
+.extreme-core-plan-note-title {
+  color: var(--plan-ink-subtle);
+}
+
+.extreme-core-plan-note {
+  color: var(--plan-ink-muted);
+}
+
+.extreme-core-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 8px 3px 12px;
+}
+
+.extreme-core-plan-count {
+  flex: none;
+  padding-inline: 6px;
+  border-radius: 999px;
+  background: rgb(var(--surface-2));
+  color: var(--plan-ink-subtle);
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.extreme-core-plan-current {
+  margin: 0;
+  padding: 0 12px 7px;
+  overflow: hidden;
+  color: var(--plan-ink-muted);
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extreme-core-plan-collapse {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--plan-ink-subtle);
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.extreme-core-plan-collapse:hover,
+.extreme-core-plan-collapse:focus-visible {
+  background: var(--plan-tint);
+  color: var(--plan-ink);
+}
+
+.extreme-core-plan-scroll {
+  max-height: min(38vh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 10px 7px;
+  scrollbar-width: thin;
+}
+
+.extreme-core-plan-scroll .extreme-core-plan-tree {
+  width: 100%;
+}
+
+.extreme-core-plan-notes {
+  border-top: 1px solid var(--plan-line);
+  padding: 7px 12px;
+}
+
+.extreme-core-plan-foot {
+  margin: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--plan-line);
+  padding: 6px 12px;
+  color: var(--plan-ink-subtle);
+  font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extreme-core-plan-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding-inline: 10px;
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  background: rgb(var(--surface-1));
+  color: var(--plan-ink);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+/* 计数在胶囊里比卡片上的更需要看得清，提一档。 */
+.extreme-core-plan-toggle .extreme-core-plan-count {
+  color: var(--plan-ink-muted);
+}
+
+.extreme-core-plan-toggle:hover {
+  background: var(--plan-tint);
+}
+
+.extreme-core-plan-toggle:hover .extreme-core-plan-count {
+  color: var(--plan-ink);
+}
+
+.extreme-core-plan-toggle:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.55);
+  outline-offset: 2px;
+  color: var(--plan-ink);
+}
+
+/* 执行前说明：一句话，紧贴下面的命令。 */
+.extreme-core-turn-note {
+  margin: 0;
+  color: rgb(var(--fg));
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+/* 从计划卡点进来时短暂高亮对应的命令行。 */
+.extreme-core-step[data-plan-focus] {
+  border-color: rgb(var(--accent) / 0.55);
+  background: rgb(var(--accent) / 0.08);
+  box-shadow: 0 0 0 2px rgb(var(--accent) / 0.12);
+}
+
+.extreme-core-step[data-plan-focus] .extreme-core-step-title {
+  color: rgb(var(--fg));
+}
+
+@media (max-width: 1180px) {
+  .extreme-core-plan-card {
+    width: 268px;
+  }
+}
+
+/*
+ * 动效偏好：设置页显式“减弱动效”，或“跟随系统”且系统开启 reduce。
+ * 只压缩动画 / 过渡时长，保留最终状态，不影响功能与阅读顺序。
+ */
+.extreme-core[data-motion="reduced"] *,
+.extreme-core[data-motion="reduced"] *::before,
+.extreme-core[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core[data-motion="system"] *,
+  .extreme-core[data-motion="system"] *::before,
+  .extreme-core[data-motion="system"] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

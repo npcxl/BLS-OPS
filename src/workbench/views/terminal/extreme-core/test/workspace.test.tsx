@@ -138,7 +138,7 @@ it("shows one status per task in both layouts, prioritizing pending approval", a
     expect(statuses()).toEqual(["waiting"]);
     expect(holder.querySelector('[role="option"]')?.getAttribute("aria-label")).toContain("Pending confirmation");
 
-    const collapse = holder.querySelector<HTMLButtonElement>('[aria-label="Collapse conversation list"]')!;
+    const collapse = holder.querySelector<HTMLButtonElement>('[aria-label="Collapse sidebar"]')!;
     await act(async () => collapse.click());
     expect(statuses()).toEqual(["waiting"]);
 
@@ -211,12 +211,39 @@ it("surfaces localStorage failures instead of swallowing them", () => {
   });
   try {
     persistExtremeState();
-    expect(useExtremeStore.getState().historyError).toContain("本地历史保存失败");
+    expect(useExtremeStore.getState().historyError).toContain("本地缓存保存失败");
   } finally {
     spy.mockRestore();
   }
   persistExtremeState();
   expect(useExtremeStore.getState().historyError).toBeNull();
+});
+
+it("shows execution receipts and replies without inventing an author label", async () => {
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  vi.stubGlobal("IntersectionObserver", undefined);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    await act(async () => root.render(
+      <MessageList
+        asking={false}
+        messages={[
+          { id: "receipt", role: "assistant", local: true, text: "上传完成" },
+          { id: "old-reply", role: "assistant", text: "历史回复" },
+          { id: "model-reply", role: "assistant", model: "example-model", text: "模型回复" },
+        ]}
+      />,
+    ));
+    expect(holder.textContent).toContain("上传完成");
+    expect(holder.textContent).toContain("历史回复");
+    expect(holder.textContent).toMatch(/(?:模型|Model)：example-model/);
+    expect(holder.textContent).not.toMatch(/本机提示|Local note/);
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    vi.unstubAllGlobals();
+  }
 });
 
 it("opens sites and verified remote paths and leaves missing backups as plain text", async () => {

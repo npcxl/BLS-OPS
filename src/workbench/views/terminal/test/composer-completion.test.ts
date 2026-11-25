@@ -36,19 +36,19 @@ function item(overrides: Partial<ComposerItem> = {}): ComposerItem {
 }
 
 describe("原始输入快照：旧候选必须失效", () => {
-  it("快速输入后立刻按 Tab：候选还没跟上 → Tab 不接管", () => {
+  it("快速输入后立刻按 Tab：有草稿就接管，候选过期由快照拦掉", () => {
     // 候选是给 "doc" 算的，用户已经打到 "dock"。
     const snapshot = { text: "doc", caret: 3, sessionId: "s1" };
     const current = { text: "dock", caret: 4, sessionId: "s1" };
     expect(snapshotMatches(snapshot, current)).toBe(false);
 
-    // Tab 在候选不可用时放行（恢复正常焦点导航），不会填入旧候选。
+    // 接管并让调用方按当前输入重新请求；焦点留在命令框里。
     expect(
       resolveComposerKey(
         { key: "Tab" },
         { listOpen: false, hasUsableItems: false, hasItems: true, hasDraft: true },
       ),
-    ).toEqual({ type: "none" });
+    ).toEqual({ type: "complete" });
   });
 
   it("切换服务器后旧请求晚到：会话不同 → 整批丢弃", () => {
@@ -170,13 +170,14 @@ describe("键盘", () => {
     expect(resolveComposerKey({ key: "Escape" }, closed)).toEqual({ type: "none" });
   });
 
-  it("无候选时 Tab 走正常焦点导航", () => {
-    expect(
-      resolveComposerKey(
-        { key: "Tab" },
-        { listOpen: false, hasUsableItems: false, hasItems: false, hasDraft: true },
-      ),
-    ).toEqual({ type: "none" });
+  it("空草稿 / Shift+Tab 才走焦点导航", () => {
+    const base = { listOpen: false, hasUsableItems: false, hasItems: false };
+    expect(resolveComposerKey({ key: "Tab" }, { ...base, hasDraft: false })).toEqual({
+      type: "none",
+    });
+    expect(resolveComposerKey({ key: "Tab", shiftKey: true }, { ...base, hasDraft: true })).toEqual({
+      type: "none",
+    });
   });
 
   it("Ctrl+Space 展开列表", () => {

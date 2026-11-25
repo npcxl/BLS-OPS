@@ -5,6 +5,13 @@
  * `src/i18n/test/direct-keys.test.ts` too.
  */
 export default {
+  "上传到服务器": "Upload to server",
+  "上传中…": "Uploading…",
+  "重试上传": "Retry upload",
+  "附件只在本机；上传后模型和部署可直接按路径使用":
+    "Attachments stay local; upload them so the model and deployments can use the path directly.",
+  "{{n}} 个文件已就绪，先上传到服务器或直接生成计划。":
+    "{{n}} files are ready — upload them to the server or generate a plan directly.",
   "确认{{what}}": "Confirm {{what}}",
   "{{reason}}。可以再试一次。": "{{reason}}. You can try again.",
   "哨兵/集群模式下所有节点必须能从本机直连（不支持经 SSH 隧道），且当前版本不支持订阅（pub/sub）。":

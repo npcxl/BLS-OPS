@@ -33,7 +33,11 @@ export interface ProviderChoice {
 
 /** 与后端的默认规则一致：优先明确默认，其次最近更新。 */
 export function effectiveProvider(providers: ProviderChoice[], providerId: string | null) {
-  if (providerId !== null) return providers.find((provider) => provider.id === providerId);
+  // 选中的模型被停用 / 删除：回退到有效默认，别让下一条请求没有模型。
+  if (providerId !== null) {
+    const explicit = providers.find((provider) => provider.id === providerId);
+    if (explicit) return explicit;
+  }
   return providers.reduce<ProviderChoice | undefined>((current, provider) => {
     if (!current || (provider.isDefault && !current.isDefault)) return provider;
     if (provider.isDefault === current.isDefault && provider.updatedAt > current.updatedAt) return provider;
@@ -81,15 +85,45 @@ export function normalizeEfforts(values: readonly string[] | undefined): Reasoni
   return EFFORT_ORDER.filter((effort) => raw.includes(effort));
 }
 
-/** 只列出**模型实际支持**的档位；`max` 才叫 MAX，其余用原名。 */
+/**
+ * 只列出**模型实际支持**的档位；最高档统一叫 MAX。
+ *
+ * 供应商的最高档可能叫 `high`，但对用户来说它仍然是"最高"：选它就应该
+ * 走 MAX 的强制计划。请求里发 `max`，由后端按模型能力解析成实际档位；
+ * `planRequired` 也按**这个选择**判定，而不是按解析后的参数。
+ */
 export function effortTiers(efforts: readonly string[]): EffortTier[] {
   const supported = EFFORT_ORDER.filter((effort) => efforts.includes(effort));
   return supported.map((value, index) => {
     const top = index === supported.length - 1;
-    // 模型只支持到 `high` 时不能把它显示成 MAX：那会让用户以为已经拉到最高，
-    // 实际后端就是把 high 原样发出去 —— 名字要对得上真实档位。
-    return { value, label: value === "max" ? "MAX" : EFFORT_LABEL[value], top };
+    return top
+      ? { value: "max" as ReasoningEffort, label: "MAX", top: true }
+      : { value, label: EFFORT_LABEL[value], top: false };
   });
+}
+
+/**
+ * 把保存的档位收成当前模型菜单里的值。
+ *
+ * 旧记录可能存的是 `high`（当时最高档还不叫 MAX）：换到只到 high 的模型时
+ * 应当显示 MAX，而不是掉回「默认」——用户选的是"最高"，不是某个枚举值。
+ */
+export function normalizeEffortChoice(
+  choice: EffortChoice,
+  efforts: readonly string[],
+): EffortChoice {
+  if (choice === "auto") return "auto";
+  if (efforts.length === 0) return "auto";
+  const tiers = effortTiers(efforts);
+  if (tiers.some((tier) => tier.value === choice)) return choice;
+  if (choice === "max") return "max";
+  if (choice === highestEffort(efforts)) return "max";
+  return "auto";
+}
+
+/** 用户选的是不是 MAX（= 本轮要强制计划；与供应商实际档位无关）。 */
+export function planRequiredFor(choice: EffortChoice): boolean {
+  return choice === "max";
 }
 
 export function effortLabel(choice: EffortChoice, efforts: readonly string[]): string {
@@ -106,19 +140,15 @@ export function highestEffort(efforts: readonly string[]): ReasoningEffort | nul
 /**
  * 真正发出去的参数。
  *
- * **MAX 是"最高档"的别名**：模型支持 low/high/max 时发 max；只支持到 high 时
- * 发 high；一档都不支持就不发（沿用供应商默认）。前后端同一条规则（Rust 的
- * `Capability::resolve_effort` 也是先 find 再回落 highest）。
+ * MAX 原样发 `max`，由**后端**按模型能力解析（模型最高只到 high 就发 high）。
+ * 前端不替用户收敛：`planRequired` 要按用户的选择判定，参数解析是另一件事。
  */
 export function effortParam(
   choice: EffortChoice,
   efforts: readonly string[],
 ): ReasoningEffort | null {
   if (choice === "auto") return null;
-  if (choice === "max") {
-    const top = highestEffort(efforts);
-    return top;
-  }
+  if (choice === "max") return "max";
   return efforts.includes(choice) ? choice : null;
 }
 

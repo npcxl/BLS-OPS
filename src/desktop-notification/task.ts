@@ -7,6 +7,7 @@
  */
 import { pushDesktopNotification } from "@/desktop-notification/bridge";
 import { isMainWindowHidden } from "@/desktop-notification/visibility";
+import { notificationAllowed } from "@/stores/extreme-settings-store";
 import type { TaskCardModel } from "@/workbench/views/terminal/extreme-core/task-view";
 
 /** 每个「任务 + 终态」只提醒一次：重复事件、续跑重放都不叠通知。 */
@@ -18,6 +19,8 @@ export async function notifyTaskOutcome(task: TaskCardModel): Promise<void> {
   if (notified.has(key)) return;
   // 先在窗口可见时就记下"已处理过终态"：之后用户再最小化，也不补发旧结果。
   notified.add(key);
+  // 设置里关掉这一类：只更新会话内状态，不弹桌面通知。
+  if (!notificationAllowed(task.status === "done" ? "success" : "failed")) return;
   if (!(await isMainWindowHidden())) return;
 
   pushDesktopNotification({
@@ -33,7 +36,13 @@ export async function notifyTaskOutcome(task: TaskCardModel): Promise<void> {
         : "任务执行失败，点击回到超能模式查看详情。"),
     durationMs: 9000,
     action: task.serverId
-      ? { kind: "extreme", serverId: task.serverId, server: task.server }
+      ? {
+          kind: "extreme",
+          serverId: task.serverId,
+          server: task.server,
+          taskId: task.id,
+          workspaceId: task.workspaceId,
+        }
       : { kind: "none" },
   });
 }

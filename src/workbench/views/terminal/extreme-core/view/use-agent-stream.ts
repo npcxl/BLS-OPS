@@ -13,7 +13,7 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from "react";
-import { listen } from "@tauri-apps/api/event";
+
 import { opsApi } from "@/api/ops-api";
 import type {
   AgentApproval,
@@ -21,11 +21,25 @@ import type {
   AgentSnapshot,
   AgentStep,
 } from "@/api/types/agent";
-import { useExtremeStore } from "@/stores/extreme-store";
-import { AGENT_EVENT } from "@/lib/events";
+import { useExtremeStore, type ExtremeMessage } from "@/stores/extreme-store";
 import { notifyTaskOutcome } from "@/desktop-notification/task";
-import { cardFromAgent, mergeAgentStep } from "../agent-steps";
+import { cardFromAgent, mergeAgentStep, stepTitle } from "../agent-steps";
+import { attachAgentEvents } from "./agent-events";
 import { notifyAgentFinished, snapshotFromEvent } from "../agent-run";
+import {
+  appendText,
+  expireQuestions,
+  partsOf,
+  partsText,
+  replaceTrailingText,
+  trailingText,
+  updateQuestionPart,
+  upsertNote,
+  upsertPlanPart,
+  upsertQuestion,
+  upsertStep,
+  type MessagePart,
+} from "../message-parts";
 import { shouldBackfillPrefix, terminalReplyText } from "../reply-authority";
 import {
   createStreamFilter,
@@ -64,11 +78,38 @@ export interface AgentStreamDeps {
   upsertTask: Store["upsertTask"];
   patchMessage: Store["patchMessage"];
   patchMessageIn: Store["patchMessageIn"];
-  pushMessageTo: Store["pushMessageTo"];
-  removeMessageIn: Store["removeMessageIn"];
   mergeFileChange: Store["mergeFileChange"];
   dropApprovals: (match: (entry: ApprovalEntry) => boolean) => void;
   setApprovalEntry: (approval: AgentApproval) => void;
+}
+
+/** 指定对话的消息列表（当前对话读镜像，后台对话读它自己的记录）。 */
+function messagesOf(state: Store, ownerId: string) {
+  return state.workspaceId === ownerId
+    ? state.messages
+    : state.workspaces.find((entry) => entry.id === ownerId)?.messages ?? [];
+}
+
+/** 按对话 + 消息 ID 精确定位（后台任务也只改它自己那条）。 */
+function messageOf(state: Store, ownerId: string, messageId: string) {
+  return messagesOf(state, ownerId).find((message) => message.id === messageId);
+}
+
+/**
+ * 重进接回时，流式目标 = 发起消息之后**最后一条** assistant。
+ *
+ * 续跑 / 平台动作会往同一个 taskId 上再写一条回复，取紧接着的那条会把
+ * 结论写进已经结束的旧气泡。
+ */
+function replyAfter(
+  messages: ExtremeMessage[],
+  ownerIndex: number,
+): ExtremeMessage | undefined {
+  if (ownerIndex < 0) return undefined;
+  const tail = messages
+    .slice(ownerIndex + 1)
+    .filter((message) => message.role === "assistant");
+  return tail.length > 0 ? tail[tail.length - 1] : messages[ownerIndex + 1];
 }
 
 export function useAgentStream(deps: AgentStreamDeps) {
@@ -92,8 +133,6 @@ export function useAgentStream(deps: AgentStreamDeps) {
     upsertTask,
     patchMessage,
     patchMessageIn,
-    pushMessageTo,
-    removeMessageIn,
     mergeFileChange,
     dropApprovals,
     setApprovalEntry,
@@ -197,13 +236,23 @@ export function useAgentStream(deps: AgentStreamDeps) {
     }
     if (!out) return;
     const state = useExtremeStore.getState();
-    const messages =
-      state.workspaceId === buffer.ownerId
-        ? state.messages
-        : state.workspaces.find((entry) => entry.id === buffer.ownerId)?.messages ?? [];
-    const message = messages.find((item) => item.id === buffer.messageId);
+    const message = messageOf(state, buffer.ownerId, buffer.messageId);
     if (!message) return;
-    // 只追加这一帧新增的可见文本：整段覆盖会把过滤器压住的尾巴冲掉。
+    /*
+     * 只追加这一帧新增的可见文本：整段覆盖会把过滤器压住的尾巴冲掉。
+     *
+     * 已经进入"时间线模式"（出现过命令）时同时维护片段：末尾是正文就接着写，
+     * 上一段是命令就另起一段。还没有命令的纯文字回复不写 `parts`，历史存储
+     * 不会为每句话多存一份副本。
+     */
+    if (message.parts?.length) {
+      const parts = appendText(message.parts, out);
+      state.patchMessageIn(buffer.ownerId, buffer.messageId, {
+        text: partsText(parts),
+        parts,
+      });
+      return;
+    }
     state.patchMessageIn(buffer.ownerId, buffer.messageId, { text: message.text + out });
   }, []);
 
@@ -299,8 +348,14 @@ export function useAgentStream(deps: AgentStreamDeps) {
       buffer = { ownerId, messageId: reply.id, raw: "" };
       textBuffers.current.set(payload.taskId, buffer);
       const filter = createStreamFilter();
-      // 续接（重进 / 缓冲刚清过）：已有正文先喂进去，后面的增量直接续上。
-      if (reply.text) filter.push(reply.text);
+      /*
+       * 续接（重进 / 缓冲刚清过）：把**末尾那一段**正文喂进去。
+       *
+       * 不能喂整条消息：前面的片段属于已经结束的轮次，里面有 `[[upload]]` 之类
+       * 的内部标记也不该再参与过滤状态（命令之后的正文是一个新的片段）。
+       */
+      const known = trailingText(partsOf(reply));
+      if (known) filter.push(known);
       streamFilters.current.set(payload.taskId, filter);
     }
     buffer.raw += payload.content ?? "";
@@ -373,6 +428,116 @@ export function useAgentStream(deps: AgentStreamDeps) {
 
     const steps = snapshot?.steps ?? mergeAgentStep(agentStepsRef.current.get(payload.taskId) ?? [], payload);
     agentStepsRef.current.set(payload.taskId, steps);
+
+    /*
+     * 步骤事件 → 这一轮回复里的**位置**。
+     *
+     * 顺序只由事件到达顺序决定：`tool_started` 之前流出的正文属于命令上方；
+     * 之后的正文在 `queueTextDelta` 里另起一段。重复事件按 taskId + stepIndex
+     * 幂等合并，不会多出一行。
+     */
+    if (
+      payload.stepIndex !== undefined &&
+      reply?.role === "assistant" &&
+      (payload.kind === "tool_started" ||
+        payload.kind === "approval_required" ||
+        payload.kind === "tool_finished" ||
+        payload.kind === "tool_output")
+    ) {
+      /*
+       * 命令开始前先把正文**定稿**：压着的尾巴（可能是半个内部标记）属于
+       * 这条命令上方，不能跟着命令之后的下一轮增量继续长。
+       */
+      if (payload.kind === "tool_started" || payload.kind === "approval_required") {
+        flushStreamText(payload.taskId, true);
+      }
+      const state = useExtremeStore.getState();
+      const message = messageOf(state, ownerId, reply.id);
+      const step = steps.find((item) => item.index === payload.stepIndex);
+      if (message) {
+        // 用户拒绝的步骤要**永久**标成「未执行」：审批条目收起后还得能看出来。
+        const denied = Object.values(approvalEntriesRef.current).some(
+          (entry) =>
+            entry.approval.taskId === payload.taskId &&
+            entry.approval.stepIndex === payload.stepIndex &&
+            entry.phase === "denied",
+        );
+        let parts = partsOf(message);
+        // 执行前说明：与工具同组，放在这条命令上方；重复事件只更新不追加。
+        if (payload.note && payload.groupId) {
+          parts = upsertNote(parts, { groupId: payload.groupId, text: payload.note });
+        }
+        parts = upsertStep(parts, {
+          taskId: payload.taskId,
+          stepIndex: payload.stepIndex,
+          label: step ? stepTitle(step, t) : payload.summary ?? null,
+          denied,
+          planStepId: payload.planStepId,
+          groupId: payload.groupId,
+        });
+        if (parts !== message.parts) {
+          state.patchMessageIn(ownerId, reply.id, { parts });
+        }
+      }
+    }
+
+    /*
+     * 计划提交 / 修订 / 步骤状态：整份计划写到**这一轮回复**上。
+     *
+     * 卡片据此渲染；消息落盘后重开会话仍是同一版，切换对话也各看各的。
+     * 计划本身不改变任务卡状态，不需要重建卡片。
+     */
+    if (payload.kind === "plan_updated" && payload.plan) {
+      if (reply?.role === "assistant") {
+        const state = useExtremeStore.getState();
+        const message = messageOf(state, ownerId, reply.id);
+        if (message) {
+          const parts = upsertPlanPart(partsOf(message), {
+            taskId: payload.taskId,
+            plan: payload.plan,
+          });
+          if (parts !== message.parts) {
+            state.patchMessageIn(ownerId, reply.id, { parts });
+          }
+        }
+      }
+      return;
+    }
+
+    /*
+     * AI 提问：先把上方正文定稿，再把问题卡接到时间线；重复事件只更新问题，
+     * 不覆盖用户已经选了一半的草稿。
+     */
+    if (payload.kind === "question_required" && payload.question) {
+      flushStreamText(payload.taskId, true);
+      if (reply?.role === "assistant") {
+        const state = useExtremeStore.getState();
+        const message = messageOf(state, ownerId, reply.id);
+        if (message) {
+          const parts = upsertQuestion(partsOf(message), payload.question);
+          if (parts !== message.parts) {
+            state.patchMessageIn(ownerId, reply.id, { parts });
+          }
+        }
+      }
+    }
+    if (payload.kind === "question_answered" && payload.question) {
+      if (reply?.role === "assistant") {
+        const state = useExtremeStore.getState();
+        const message = messageOf(state, ownerId, reply.id);
+        if (message) {
+          let parts = upsertQuestion(partsOf(message), payload.question);
+          parts = updateQuestionPart(parts, payload.question.questionId, {
+            status: "answered",
+            answer: payload.answer ?? { selected: [] },
+            error: null,
+          });
+          if (parts !== message.parts) {
+            state.patchMessageIn(ownerId, reply.id, { parts });
+          }
+        }
+      }
+    }
 
     if (payload.kind === "approval_required") {
       const next: AgentApproval = {
@@ -475,15 +640,26 @@ export function useAgentStream(deps: AgentStreamDeps) {
             : payload.kind === "failed"
               ? "failed"
               : "finished";
-        const text = terminalReplyText(kind, authoritative, reply.text, t("已停止。"));
+        /*
+         * 有顺序信息时只校**最后一段**：前面几轮的正文与命令是过程记录，
+         * 用终态全文整条覆盖会把「我先检查配置」这类说明抹掉。
+         */
+        const current = reply.parts?.length ? trailingText(reply.parts) : reply.text;
+        const text =
+          kind === "cancelled" && reply.text.trim()
+            ? null
+            : terminalReplyText(kind, authoritative, current, t("已停止。"));
         if (text) {
           /*
            * **失败 / 停止也要在气泡上留痕**：用户已经看到的那半段正文不删，
            * 只标清"回复中断 + 原因"，并给重试入口（切走再回来仍然在）。
            */
           const hadText = Boolean(reply.text.trim());
+          const parts = reply.parts?.length
+            ? replaceTrailingText(reply.parts, text)
+            : undefined;
           patchMessageIn(ownerId, reply.id, {
-            text,
+            ...(parts ? { parts, text: partsText(parts) } : { text }),
             model: payload.model ?? reply.model,
             interrupted:
               kind === "failed"
@@ -499,6 +675,31 @@ export function useAgentStream(deps: AgentStreamDeps) {
                   : null,
           });
         }
+        // 终态带完整计划：把最后的状态写回消息（计划卡不会停在旧进度）。
+        if (payload.plan) {
+          const state = useExtremeStore.getState();
+          const message = messageOf(state, ownerId, reply.id);
+          if (message) {
+            const parts = upsertPlanPart(partsOf(message), {
+              taskId: payload.taskId,
+              plan: payload.plan,
+            });
+            if (parts !== message.parts) {
+              state.patchMessageIn(ownerId, reply.id, { parts });
+            }
+          }
+        }
+        // 任务结束：还挂着的提问不可能再回答，历史里改成「已失效」。
+        {
+          const state = useExtremeStore.getState();
+          const message = messageOf(state, ownerId, reply.id);
+          if (message) {
+            const parts = expireQuestions(partsOf(message));
+            if (parts !== message.parts) {
+              state.patchMessageIn(ownerId, reply.id, { parts });
+            }
+          }
+        }
       }
     }
 
@@ -509,9 +710,11 @@ export function useAgentStream(deps: AgentStreamDeps) {
           ? "failed"
           : payload.kind === "cancelled"
             ? "cancelled"
-            : payload.kind === "approval_required"
+            : payload.kind === "approval_required" ||
+                payload.kind === "question_required"
               ? "waiting"
-              : payload.kind === "approval_withdrawn"
+              : payload.kind === "approval_withdrawn" ||
+                  payload.kind === "question_answered"
                 ? "running"
                 : existing?.status ?? "running";
 
@@ -552,6 +755,13 @@ export function useAgentStream(deps: AgentStreamDeps) {
       card,
       terminal || payload.kind === "tool_finished" || payload.kind === "approval_required",
     );
+    /*
+     * 终态时把这轮的文件变更（摘要 + 脱敏 Diff）落进任务历史：应用重启后
+     * 右栏仍能打开当时的结果。只在终态写一次，跑的过程中不碰数据库。
+     */
+    if (terminal) {
+      void opsApi.aiAgentTaskChangesSave(payload.taskId).catch(() => undefined);
+    }
     /*
      * 只有**当前这条对话**的目录才驱动右栏，而且**只在任务结束时跟随一次**。
      *
@@ -639,6 +849,7 @@ export function useAgentStream(deps: AgentStreamDeps) {
         message: snapshot.error ?? undefined,
         cwd: snapshot.cwd,
         outcome: snapshot.outcome ?? null,
+        plan: snapshot.plan ?? null,
       }, snapshot);
     } finally {
       suppressTerminalNotifyRef.current = false;
@@ -646,15 +857,17 @@ export function useAgentStream(deps: AgentStreamDeps) {
     return true;
   }, []);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listen<AgentEvent>(AGENT_EVENT, (event) => agentEventHandler.current(event.payload)).then(
-      (fn) => {
-        unlisten = fn;
-      },
-    );
-    return () => unlisten?.();
-  }, [saveAgentTask, t, upsertTask]);
+  /*
+   * 订阅**只挂一次**：回调通过 ref 取最新的处理函数。
+   *
+   * 以前依赖里带着 `t` / `saveAgentTask`，切语言或函数身份变化就会重订阅；
+   * 加上 `listen()` 是异步的，注册未完成时卸载会漏掉 unlisten —— 监听越积
+   * 越多，同一个增量被处理多次，正文出现「按按方案方案」。
+   */
+  useEffect(
+    () => attachAgentEvents((payload) => agentEventHandler.current(payload)),
+    [],
+  );
 
   /**
    * 重开应用后，把**这条对话里被引用过的任务卡**从历史装回来。
@@ -828,16 +1041,43 @@ export function useAgentStream(deps: AgentStreamDeps) {
             // 重开时气泡可能是空的、也可能只有半截：success 用权威全文覆盖
             // （与实时终态同一原则）；cancelled / failed 只在空时兜底。
             const at = owner ? latest.messages.indexOf(owner) : -1;
-            const reply = at >= 0 ? latest.messages[at + 1] : undefined;
+            const reply = replyAfter(latest.messages, at);
             const text =
               stripPanelAction(parseActions(snapshot.content).clean) ||
               (snapshot.status === "cancelled" ? t("已停止。") : "");
             if (reply?.role === "assistant" && text) {
-              const overwrite =
-                snapshot.status === "success" ? reply.text !== text : !reply.text;
-              if (overwrite) {
-                patchMessage(reply.id, { text, model: snapshot.model || reply.model });
+              if (reply.parts?.length) {
+                // 有顺序信息：只校最后一段正文（前面几轮是过程记录）。
+                const current = trailingText(reply.parts);
+                const overwrite =
+                  snapshot.status === "success" ? current !== text : !reply.text;
+                if (overwrite) {
+                  const parts = replaceTrailingText(reply.parts, text);
+                  patchMessage(reply.id, {
+                    parts,
+                    text: partsText(parts),
+                    model: snapshot.model || reply.model,
+                  });
+                }
+              } else {
+                const overwrite =
+                  snapshot.status === "success" ? reply.text !== text : !reply.text;
+                if (overwrite) {
+                  patchMessage(reply.id, { text, model: snapshot.model || reply.model });
+                }
               }
+            }
+            // 计划跟着消息恢复：重开会话后计划卡仍是当时那一版。
+            if (reply?.role === "assistant" && snapshot.plan) {
+              // 正文可能刚被权威全文覆盖过：从 store 读最新那条，别拿旧片段覆盖回去。
+              const latestReply =
+                useExtremeStore.getState().messages.find((message) => message.id === reply.id) ??
+                reply;
+              const parts = upsertPlanPart(partsOf(latestReply), {
+                taskId,
+                plan: snapshot.plan,
+              });
+              if (parts !== latestReply.parts) patchMessage(reply.id, { parts });
             }
             return;
           }
@@ -853,12 +1093,57 @@ export function useAgentStream(deps: AgentStreamDeps) {
            */
           {
             const at = owner ? latest.messages.indexOf(owner) : -1;
-            const reply = at >= 0 ? latest.messages[at + 1] : undefined;
+            const reply = replyAfter(latest.messages, at);
             const prefix = visibleStream(snapshot.content ?? "");
-            if (reply?.role === "assistant" && shouldBackfillPrefix(prefix, reply.text)) {
+            if (reply?.role === "assistant" && reply.parts?.length) {
+              /*
+               * 已有顺序信息：只回填**最后一段**正文（当前这一轮），
+               * 前面几轮的正文与命令保持原位。
+               */
+              const current = trailingText(reply.parts);
+              const withPlan = snapshot.plan
+                ? upsertPlanPart(reply.parts, { taskId, plan: snapshot.plan })
+                : reply.parts;
+              if (shouldBackfillPrefix(prefix, current)) {
+                const parts = replaceTrailingText(withPlan, prefix);
+                patchMessage(reply.id, {
+                  parts,
+                  text: partsText(parts),
+                  model: snapshot.model || reply.model,
+                });
+                textBuffers.current.delete(taskId);
+                streamFilters.current.delete(taskId);
+              } else if (withPlan !== reply.parts) {
+                patchMessage(reply.id, { parts: withPlan });
+              }
+            } else if (reply?.role === "assistant" && shouldBackfillPrefix(prefix, reply.text)) {
               patchMessage(reply.id, { text: prefix, model: snapshot.model || reply.model });
               textBuffers.current.delete(taskId);
               streamFilters.current.delete(taskId);
+            } else if (reply?.role === "assistant" && !reply.parts?.length && !reply.text.trim() && steps.length > 0) {
+              /*
+               * 老气泡没有顺序信息、也还没有任何正文（应用重启后接回正在跑的
+               * 任务）：按快照里的步骤顺序重建内联行，后续增量接在它们后面。
+               * 已经有正文的旧记录不猜顺序，仍按整块折叠卡呈现。
+               */
+              let parts: MessagePart[] = [];
+              if (snapshot.plan) {
+                parts = upsertPlanPart(parts, { taskId, plan: snapshot.plan });
+              }
+              for (const step of steps) {
+                parts = upsertStep(parts, {
+                  taskId,
+                  stepIndex: step.index,
+                  label: stepTitle(step, t),
+                  planStepId: step.planStepId,
+                  groupId: step.groupId,
+                });
+              }
+              /*
+               * 顺手把 taskId 挪到回复上：任务卡从此挂在这一轮回复下面，
+               * 用户提问那条不再重复一张折叠卡。
+               */
+              if (parts.length) patchMessage(reply.id, { parts, taskId });
             }
           }
           /*
@@ -888,6 +1173,21 @@ export function useAgentStream(deps: AgentStreamDeps) {
               deadline: pending.deadline,
             });
           }
+          // 问题卡也按快照恢复；草稿在选择时已经写进 parts，不会被这里覆盖。
+          if (snapshot.pendingQuestion) {
+            const at = owner ? latest.messages.indexOf(owner) : -1;
+            const target = replyAfter(latest.messages, at);
+            if (target?.role === "assistant") {
+              const state = useExtremeStore.getState();
+              const message = state.messages.find((item) => item.id === target.id);
+              if (message) {
+                const parts = upsertQuestion(partsOf(message), snapshot.pendingQuestion);
+                if (parts !== message.parts) {
+                  state.patchMessage(target.id, { parts });
+                }
+              }
+            }
+          }
         } catch {
           /*
            * 查不到（没有这条运行 / 后端重启过）或这次查询失败：从"已接过"里
@@ -899,37 +1199,6 @@ export function useAgentStream(deps: AgentStreamDeps) {
     }
   }, [active, sessionId, workspaceId, patchMessage, t, upsertTask]);
 
-  /**
-   * 确认之后**另起一条回复气泡**。
-   *
-   * 确认回执必须留在原位；后续正文写在它下面，否则结论会跑到回执上方。
-   * 用明确的回复 ID 承接流式输出，重进时按"最后一个引用 taskId 的 assistant"恢复。
-   */
-  const startReplyAfterApproval = useCallback(
-    (taskId: string, ownerId: string) => {
-      // 先把已经收到的增量落下去，避免切气泡时丢字。
-      flushTaskNow(taskId, false);
-      const state = useExtremeStore.getState();
-      const messages =
-        state.workspaceId === ownerId
-          ? state.messages
-          : state.workspaces.find((entry) => entry.id === ownerId)?.messages ?? [];
-      const previousId = streamingReplies.current.get(taskId);
-      const previous = previousId
-        ? messages.find((message) => message.id === previousId)
-        : undefined;
-      // AI 还没说话（空占位）才删；已经有正文的留在原位。
-      if (previous && !previous.text.trim()) removeMessageIn(ownerId, previous.id);
-      const id = `msg-${crypto.randomUUID()}`;
-      pushMessageTo(ownerId, { id, role: "assistant", text: "" });
-      streamingReplies.current.set(taskId, id);
-      streamFilters.current.delete(taskId);
-      textBuffers.current.delete(taskId);
-      return id;
-    },
-    [flushTaskNow, pushMessageTo, removeMessageIn],
-  );
-
   return {
     streamingReplies,
     streamFilters,
@@ -937,6 +1206,5 @@ export function useAgentStream(deps: AgentStreamDeps) {
     applyTerminalSnapshot,
     saveAgentTask,
     flushTaskNow,
-    startReplyAfterApproval,
   };
 }

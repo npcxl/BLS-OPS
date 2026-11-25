@@ -9,12 +9,19 @@ import AeroShards from "@/components/backgrounds/aero-shards";
 import ShapeWaves from "@/components/backgrounds/shape-waves";
 import { isMacOS } from "@/lib/platform";
 import { toAppError } from "@/lib/app-error";
+import { cn } from "@/lib/cn";
 import {
-  DEFAULT_MODEL_SETTING,
+  effectiveModelSetting,
+  mergedModelSettings,
   useExtremeStore,
   type ExtremeMessage,
 } from "@/stores/extreme-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { useDomainStore } from "@/stores/domain-store";
+import {
+  effectivePermission,
+  useExtremePermissionsStore,
+} from "@/stores/extreme-permissions-store";
 import { enterExtremeForServer } from "./enter-extreme";
 import FilePreviewModal from "@/workbench/views/preview/FilePreviewModal";
 import { ComposerPanel } from "./ComposerPanel";
@@ -62,7 +69,11 @@ import {
 import { ExtremeHeader } from "./ExtremeHeader";
 import { ServiceCandidates } from "./ServiceCandidates";
 import { WelcomeIntro } from "./WelcomeIntro";
-import { TaskSidebar } from "./TaskSidebar";
+import { TaskSidebar, type RailPage } from "./TaskSidebar";
+import { ExtremeSettingsPage } from "./view/ExtremeSettingsPage";
+import { ExtremePermissionsPage } from "./view/ExtremePermissionsPage";
+import { ExtremeMcpPage } from "./view/ExtremeMcpPage";
+import { useMcpCapabilities } from "./view/use-mcp-capabilities";
 import { RemoteWorkspacePanel, type WorkspaceTarget } from "./RemoteWorkspacePanel";
 import { createScopeTracker, type RequestScope, type ScopeTracker } from "./request-scope";
 import {
@@ -101,6 +112,7 @@ import {
 import "./extreme-core.css";
 import { focusComposerEnd, quoteBlock } from "./view/helpers";
 import { approvalKeyOf, type ActionResult } from "./view/types";
+import { anchoredSteps, latestPlan, planForTask } from "./message-parts";
 import { CommandOutput } from "./view/CommandOutput";
 import { useApprovalEntries } from "./view/use-approval-entries";
 import { useApprovalActions } from "./view/use-approval-actions";
@@ -109,6 +121,7 @@ import { useAttachments } from "./view/use-attachments";
 import { useDeployActions } from "./view/use-deploy-actions";
 import { useAsk } from "./view/use-ask";
 import { ChatColumn } from "./view/ChatColumn";
+import { FileChangesPane } from "./FileChangesPane";
 import { StatusStack } from "./view/StatusStack";
 import { useAgentStream } from "./view/use-agent-stream";
 
@@ -221,6 +234,8 @@ export function ExtremeCoreView() {
     paneShown,
     pendingChangeCount,
     openPaneTab,
+    changeFocus,
+    openChanges,
     collapsePane,
     togglePane,
     rowRef,
@@ -247,18 +262,46 @@ export function ExtremeCoreView() {
     return () => window.clearTimeout(timer);
   }, [historyFocus, messages, openPaneTab, workspaceId]);
 
+  /** 桌面通知点击：切到所属对话后定位到那条任务的消息（只消费一次）。 */
+  const focusTaskId = useExtremeStore((state) => state.focusTaskId);
+  const setFocusTaskId = useExtremeStore((state) => state.setFocusTaskId);
+  useEffect(() => {
+    if (!focusTaskId || !active) return undefined;
+    const message = messages.find((item) => item.taskId === focusTaskId);
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`extreme-message-${message.id}`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 120);
+    setFocusTaskId(null);
+    return () => window.clearTimeout(timer);
+  }, [active, focusTaskId, messages, setFocusTaskId]);
+
   /** 文件变更摘要：事件与右栏查询都写进 store（正文按需加载）。 */
   const mergeFileChange = useExtremeStore((state) => state.mergeFileChange);
   const logStream = useLogStreamStore((state) => activeLogFor(state, workspaceId));
   /** 输入框底栏：上下文范围 / 输出形态 / 自选材料（按会话记忆）。 */
   const chatPrefs = useExtremeStore((state) => state.chatPrefs);
+  const followLatest = useExtremeSettingsStore((state) => state.followLatest);
+  const motionMode = useExtremeSettingsStore((state) => state.motion);
   const setContextMode = useExtremeStore((state) => state.setContextMode);
   const setOutputStyle = useExtremeStore((state) => state.setOutputStyle);
   const removePicked = useExtremeStore((state) => state.removePicked);
   const addPicked = useExtremeStore((state) => state.addPicked);
   const setProviderId = useExtremeStore((state) => state.setProviderId);
-  /** 按模型记住的上下文预算与思考强度（跨会话）。 */
-  const modelSettings = useExtremeStore((state) => state.modelSettings);
+  /** 按模型记住的上下文预算与思考强度（模型默认 + 当前会话覆盖）。 */
+  const baseModelSettings = useExtremeStore((state) => state.modelSettings);
+  const modelOverrides = useExtremeStore((state) => state.modelSettingsByWorkspace);
+  const modelSettings = useMemo(
+    () =>
+      mergedModelSettings({
+        workspaceId,
+        modelSettings: baseModelSettings,
+        modelSettingsByWorkspace: modelOverrides,
+      }),
+    [workspaceId, baseModelSettings, modelOverrides],
+  );
   const setModelSetting = useExtremeStore((state) => state.setModelSetting);
   /** 已配置且启用的模型（底栏「模型」菜单用）。 */
   const [providers, setProviders] = useState<ProviderChoice[]>([]);
@@ -458,6 +501,15 @@ export function ExtremeCoreView() {
   const [retryMessage, setRetryMessage] = useState<ExtremeMessage | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   /**
+   * 主内容区当前打开的管理页；null = 聊天。
+   *
+   * 页面在 main 里切换，但聊天组件保持挂载（用 hidden 隐藏），这样返回时
+   * 草稿、滚动位置和右栏都不重置；后台任务也照常继续。
+   */
+  const [mainView, setMainView] = useState<RailPage | null>(null);
+  /** MCP 页默认标签：从输入区「打开市场 / 管理连接」进来时直达对应页。 */
+  const [mcpTab, setMcpTab] = useState<"market" | "connections">("market");
+  /**
    * 正文最多占聊天区约三分之一（按行高 ~24px 折算）。
    *
    * 超过后在输入框**内部**滚动，底部四个控件始终留在原位。
@@ -483,6 +535,19 @@ export function ExtremeCoreView() {
     dropApprovals,
     dropClosedApprovals,
   } = useApprovalEntries(tasks, workspaceId);
+  /*
+   * 审批画在**对应步骤**上：时间线里已有的步骤不再往输入框上方放一张卡，
+   * 否则同一件事要确认两遍，状态也会两处各说各话。
+   */
+  const inlineApprovalKeys = useMemo(() => anchoredSteps(messages), [messages]);
+  const composerApprovals = useMemo(
+    () =>
+      currentApprovals.filter(
+        (entry) =>
+          !inlineApprovalKeys.has(`${entry.approval.taskId}:${entry.approval.stepIndex}`),
+      ),
+    [currentApprovals, inlineApprovalKeys],
+  );
   /**
    * 当前是否深色主题。
    *
@@ -553,7 +618,31 @@ export function ExtremeCoreView() {
    * 打开「完全权限」后写入 / 修改 / 删除直接执行（写文件仍会自动备份），
    * 并允许 sudo；"只查询"的请求由后端执行器拦下写操作（见 `permissions.ts`）。
    */
-  const [permission, setPermission] = useState<PermissionMode>("readonly");
+  const permissionDefault = useExtremePermissionsStore((state) => state.defaultMode);
+  const permissionByWorkspace = useExtremePermissionsStore((state) => state.byWorkspace);
+  const setWorkspacePermission = useExtremePermissionsStore((state) => state.setWorkspaceMode);
+  const permission = effectivePermission(
+    { defaultMode: permissionDefault, byWorkspace: permissionByWorkspace },
+    workspaceId,
+  );
+  const setPermission = useCallback(
+    (mode: PermissionMode) => {
+      if (workspaceId) setWorkspacePermission(workspaceId, mode);
+    },
+    [setWorkspacePermission, workspaceId],
+  );
+  /*
+   * 进入一条对话时把当时的权限**钉住**：之后在权限页改「新任务默认值」
+   * 只影响以后创建的对话，不会悄悄改掉正在用的这条。
+   * 用户显式点「跟随默认」会移除覆盖，那之后才随默认值走。
+   */
+  useEffect(() => {
+    if (!workspaceId) return;
+    const state = useExtremePermissionsStore.getState();
+    if (!state.byWorkspace[workspaceId]) {
+      state.setWorkspaceMode(workspaceId, state.defaultMode);
+    }
+  }, [workspaceId]);
   /**
    * 前置条件的实测结论（目录可写 / 磁盘 / 端口…）。
    *
@@ -754,7 +843,6 @@ export function ExtremeCoreView() {
     textBuffers,
     applyTerminalSnapshot,
     saveAgentTask,
-    startReplyAfterApproval,
   } = useAgentStream({
     active,
     workspaceId,
@@ -775,8 +863,6 @@ export function ExtremeCoreView() {
     upsertTask,
     patchMessage,
     patchMessageIn,
-    pushMessageTo,
-    removeMessageIn,
     mergeFileChange,
     dropApprovals,
     setApprovalEntry,
@@ -803,7 +889,7 @@ export function ExtremeCoreView() {
     restore: restoreScroll,
     atBottom,
     scrollToBottom,
-  } = useChatScroll(active);
+  } = useChatScroll(active, followLatest);
 
   /*
    * Work自己是深色，但**不改全局主题**。
@@ -930,8 +1016,8 @@ export function ExtremeCoreView() {
     const saved = workspaceId ? scrollPositionsRef.current.get(workspaceId) : undefined;
     stickToBottom.current = true;
     if (saved !== undefined) restoreScroll(saved);
-    else followBottom();
-  }, [active, workspaceId, stickToBottom, followBottom, restoreScroll]);
+    else scrollToBottom();
+  }, [active, workspaceId, stickToBottom, scrollToBottom, restoreScroll]);
 
   /*
    * 内容变了 → 跟着滚（用户翻过历史就不动）。
@@ -1124,9 +1210,10 @@ export function ExtremeCoreView() {
     const state = useExtremeStore.getState();
     const provider = effectiveProvider(providers, state.chatPrefs.providerId);
     const modelName = provider?.model ?? model ?? "";
-    const setting =
-      state.modelSettings[modelKey(provider?.id ?? state.chatPrefs.providerId, modelName)] ??
-      DEFAULT_MODEL_SETTING;
+    const setting = effectiveModelSetting(
+      state,
+      modelKey(provider?.id ?? state.chatPrefs.providerId, modelName),
+    );
     return {
       providerId: provider?.id ?? state.chatPrefs.providerId,
       model: modelName,
@@ -1144,8 +1231,6 @@ export function ExtremeCoreView() {
     decideApprovalRef,
     updateApprovalEntry,
     dropApprovals,
-    startReplyAfterApproval,
-    pushMessageTo,
     setNotice,
   });
 
@@ -1212,6 +1297,19 @@ export function ExtremeCoreView() {
     setCandidates,
   });
 
+  /*
+   * 输入区下栏的 MCP 能力：内置技能按服务器探测缓存默认勾选，外部连接
+   * 要求已连接 + 绑定当前服务器/工作区；勾选按会话+服务器独立保存。
+   */
+  const mcpCapabilities = useMcpCapabilities({
+    workspaceId,
+    serverId,
+    sessionId,
+    connected: Boolean(sessionId),
+  });
+  const mcpSelectionRef = useRef(mcpCapabilities);
+  mcpSelectionRef.current = mcpCapabilities;
+
   const { ask, cancelAsk, settleStoppedLocally } = useAsk({
     t,
     i18n,
@@ -1237,6 +1335,10 @@ export function ExtremeCoreView() {
     preflight,
     permission,
     envChecks,
+    getMcpSelection: () => ({
+      builtins: mcpSelectionRef.current.selectedBuiltins,
+      tools: mcpSelectionRef.current.selectedToolNames,
+    }),
     attachments,
     focusId,
     selectedAttachmentIds,
@@ -1424,6 +1526,22 @@ export function ExtremeCoreView() {
           (activeProvider?.budgets ?? []).includes(selection.contextBudget)
             ? selection.contextBudget
             : null;
+        /*
+         * 恢复 MAX 门控：计划在消息里（跟着这轮落盘），任务上还留着当初的
+         * `planRequired`。有任意一样就按 MAX 恢复，不能因为当前菜单切成了
+         * 普通档就悄悄绕过计划。
+         */
+        const stateNow = useExtremeStore.getState();
+        const taskMessages = [
+          ...stateNow.workspaces.flatMap((entry) => entry.messages),
+          ...stateNow.messages,
+        ];
+        const knownPlan = planForTask(taskMessages, task.id);
+        const planRequired =
+          Boolean(knownPlan) ||
+          taskMessages.some((message) => message.taskId === task.id && message.planRequired);
+        // 续跑沿用当前会话的勾选快照（与发送时同一套）。
+        const mcp = mcpSelectionRef.current;
         await opsApi.aiAgentResume({
           taskId: task.id,
           // 重连后的会话：记录里的那个 session 只用于关联。
@@ -1433,11 +1551,31 @@ export function ExtremeCoreView() {
           workspaceId: task.workspaceId ?? workspaceId,
           // 恢复也按当前界面语言：提示词不会因为"接着上次跑"就退回中文。
           locale: i18n.resolvedLanguage ?? i18n.language,
+          replyLanguage:
+            useExtremeSettingsStore.getState().replyLanguage === "auto"
+              ? null
+              : (useExtremeSettingsStore.getState().replyLanguage as "zh" | "en"),
           providerId: activeProvider?.id ?? selection.providerId,
-          reasoningEffort: effortParam(selection.effort, activeProvider?.efforts ?? []),
+          reasoningEffort: planRequired
+            ? "max"
+            : effortParam(selection.effort, activeProvider?.efforts ?? []),
+          planRequired,
+          plan: knownPlan,
           contextBudget: resumeBudget,
-          allowSudo: permission === "full",
-          autoApproveWrites: permission === "full",
+          permissionMode: permission,
+          allowSudo:
+            permission !== "readonly" &&
+            useExtremePermissionsStore.getState().allowSudo,
+          ...(() => {
+            const backup = useExtremePermissionsStore.getState().backup;
+            return {
+              backupBeforeWrite: backup.beforeWrite,
+              backupBeforeDelete: backup.beforeDelete,
+              backupRetentionDays: backup.retentionDays,
+            };
+          })(),
+          enabledMcpTools: mcp.selectedToolNames,
+          enabledBuiltins: mcp.selectedBuiltins,
         });
         const snapshot = await finished;
         if (!snapshot) {
@@ -1502,6 +1640,14 @@ export function ExtremeCoreView() {
       Object.entries(tasks).filter(([id]) => taskIds.has(id)),
     );
   }, [messages, tasks]);
+
+  /**
+   * 右上角计划卡：只认**当前对话最近一版**计划。
+   *
+   * 计划写在消息片段里（跟着这一轮落盘），所以切换会话各看各的；后台任务
+   * 更新不会把另一条对话的卡顶掉。
+   */
+  const planCard = useMemo(() => latestPlan(messages), [messages]);
 
   /**
    * **当前这条对话**有没有在跑的任务。
@@ -2206,6 +2352,7 @@ export function ExtremeCoreView() {
        */
       style={{ colorScheme: dark ? "dark" : "light" }}
       data-welcome={welcome}
+      data-motion={motionMode}
       onDragOver={(event) => {
         /*
          * 拖**文件夹**时 `dataTransfer.types` 不一定含 "Files"（不同平台与
@@ -2303,8 +2450,14 @@ export function ExtremeCoreView() {
             currentTitle={currentWorkspaceTitle}
             busy={executing || workspaceRunning || uploading || probing}
             /* 新建任务 = 主动开一条空白对话（唯一会主动建记录的地方之一）。 */
-            onNew={handleNewWorkspace}
-            onOpen={openWorkspace}
+            onNew={() => {
+              setMainView(null);
+              handleNewWorkspace();
+            }}
+            onOpen={(id) => {
+              setMainView(null);
+              openWorkspace(id);
+            }}
             onRename={renameWorkspace}
             onDelete={removeWorkspace}
             blockedIds={blockedIds}
@@ -2315,9 +2468,20 @@ export function ExtremeCoreView() {
             onOutputStyleChange={setOutputStyle}
             hasContext={hasContext}
             onClearCurrent={clearContext}
+            activePage={mainView}
+            onOpenPage={(page) => {
+              if (page === "mcp") setMcpTab("market");
+              setMainView(page);
+            }}
+            onShowChat={() => setMainView(null)}
           />
         </div>
         <main className="extreme-core-main relative flex min-w-0 flex-1 flex-col">
+          {/*
+           * 聊天区始终挂载，只用 hidden 隐藏：切到设置 / 权限 / MCP 再回来，
+           * 滚动位置、草稿和输入区状态都保持原样，后台任务继续输出。
+           */}
+          <div className={cn("flex min-h-0 flex-1 flex-col", mainView && "hidden")}>
           {/*
            * 只读提示：这条对话所属的服务器现在没有连接。
            *
@@ -2401,6 +2565,7 @@ export function ExtremeCoreView() {
             editMessage={editMessage}
             retryInterrupted={retryInterrupted}
             resendMessage={resendMessage}
+            openChanges={openChanges}
             plan={plan}
             panelOpen={panelOpen}
             setPanelOpen={setPanelOpen}
@@ -2411,15 +2576,21 @@ export function ExtremeCoreView() {
             notice={notice}
             setNotice={setNotice}
             workspaceId={workspaceId}
+            planCard={planCard}
+            approvals={approvalEntries}
+            onDecideApproval={(allow, callId, taskId) =>
+              void decideApprovalById(allow, callId, taskId)
+            }
           />
 
           <StatusStack
             askError={askError}
             retryMessage={retryMessage}
-            currentApprovals={currentApprovals}
+            currentApprovals={composerApprovals}
             tasks={tasks}
             decideApprovalById={decideApprovalById}
             openPaneTab={openPaneTab}
+            openChanges={openChanges}
             sessionId={sessionId}
             reconnect={reconnect}
             notice={notice}
@@ -2474,6 +2645,7 @@ export function ExtremeCoreView() {
             onClearFocus={() => setFocusId(null)}
             permission={permission}
             onPermissionChange={setPermission}
+            onManagePermissions={() => setMainView("permissions")}
             connected={Boolean(sessionId)}
             contextMode={chatPrefs.context}
             onContextModeChange={setContextMode}
@@ -2488,13 +2660,62 @@ export function ExtremeCoreView() {
             sendWhileRunning={sendWhileRunning}
             onSendWhileRunningChange={setSendWhileRunning}
             maxRows={composerMaxRows}
+            mcp={mcpCapabilities}
+            onOpenMcpMarket={() => {
+              setMcpTab("market");
+              setMainView("mcp");
+            }}
+            onManageMcp={() => {
+              setMcpTab("connections");
+              setMainView("mcp");
+            }}
           />
           {/*
            * 拖拽反馈只盖聊天区：右栏（尤其是文件变更面板）不能被这层半透明
            * 框罩住 —— 它同样接收 drop，但视觉上应该保持清晰可读。
            */}
-          {dragOver && (
+          {dragOver && !mainView && (
             <div className="pointer-events-none absolute inset-0 z-20 border-2 border-dashed border-accent/50 bg-accent/5" />
+          )}
+          </div>
+          {/* 管理页：只换 main 里的内容，右栏与聊天状态都不动。 */}
+          {mainView === "settings" && (
+            <ExtremeSettingsPage
+              onBack={() => setMainView(null)}
+              onManagePermissions={() => setMainView("permissions")}
+              onManageMcp={() => {
+                setMcpTab("connections");
+                setMainView("mcp");
+              }}
+            />
+          )}
+          {mainView === "permissions" && (
+            <ExtremePermissionsPage
+              workspaceId={workspaceId}
+              workspaceTitle={currentWorkspaceTitle}
+              serverId={serverId}
+              onBack={() => setMainView(null)}
+              onManageMcp={() => {
+                setMcpTab("connections");
+                setMainView("mcp");
+              }}
+              onRestoreBackup={(backupPath, originalPath) => {
+                setMainView(null);
+                void ask(
+                  `请把备份 ${backupPath} 还原到 ${originalPath}。先确认目标文件、当前版本和权限；目标不明确或备份不存在就停下说明原因，不要猜路径。`,
+                );
+              }}
+            />
+          )}
+          {mainView === "mcp" && (
+            <ExtremeMcpPage
+              initialTab={mcpTab}
+              workspaceId={workspaceId}
+              serverId={serverId}
+              serverName={server ?? ""}
+              connected={Boolean(sessionId)}
+              onBack={() => setMainView(null)}
+            />
           )}
         </main>
 
@@ -2509,6 +2730,7 @@ export function ExtremeCoreView() {
             tabs={paneLists[workspaceId ?? ""] ?? [paneTab]}
             terminalTab={terminalPane}
             onTabChange={setPaneTab}
+            onOpenPaneTab={openPaneTab}
             onCloseTab={closePane}
             onTerminalTabChange={setTerminalPane}
             logLive={logStream?.status === "connecting" || logStream?.status === "live"}
@@ -2537,6 +2759,24 @@ export function ExtremeCoreView() {
                 />
               ) : null
             }
+            changes={
+              <FileChangesPane
+                key={workspaceId ?? "none"}
+                workspaceId={workspaceId}
+                serverName={server ?? ""}
+                sessionId={sessionId}
+                focus={changeFocus}
+                onOpenRemotePath={(path) => {
+                  // 打开**所在目录**：远程面板按目录定位，文件本身由面板高亮。
+                  setWorkspaceTarget({
+                    kind: "directory",
+                    path: path.slice(0, path.lastIndexOf("/")) || "/",
+                    sessionId: sessionId ?? "",
+                  });
+                  openPaneTab("files");
+                }}
+              />
+            }
             pendingChanges={pendingChangeCount}
             // 拖到"聊天只剩 520"为止；再往里拖没有意义，宽度也存不下。
             onWidthChange={(next, persist) => setPaneWidth(next, { persist })}
@@ -2551,6 +2791,8 @@ export function ExtremeCoreView() {
             onSelectedChange={setSelectedAttachmentIds}
             onPreviewAttachment={(id) => handleAttachmentPreview({ uid: id })}
             onRetryAttachment={() => void uploadToServer(currentScope())}
+            onUploadAttachments={() => void uploadToServer(currentScope())}
+            uploadingAttachments={uploading}
             onRemoveAttachment={(id) => handleAttachmentRemove({ uid: id })}
             onOpenRemotePath={(path) => {
               setWorkspaceTarget({

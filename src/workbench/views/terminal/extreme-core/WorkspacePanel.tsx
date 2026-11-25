@@ -23,8 +23,8 @@ import type { RunRecord } from "./run-plan";
 import { cn } from "@/lib/cn";
 import { formatSize } from "@/lib/format";
 
-/** 本版先隐藏「文件变更」入口；组件、数据与 Diff 逻辑都保留，下周改回 true。 */
-const FILE_CHANGES_VISIBLE = false;
+/** 「文件变更」入口开关：组件、数据与 Diff 逻辑都在，恢复显示只改这一行。 */
+const FILE_CHANGES_VISIBLE = true;
 /**
  * 计划里的一步。
  *
@@ -62,6 +62,7 @@ export function WorkspacePanel({
   tabs,
   terminalTab,
   onTabChange,
+  onOpenPaneTab,
   onCloseTab,
   onTerminalTabChange,
   onWidthChange,
@@ -75,6 +76,7 @@ export function WorkspacePanel({
   output,
   manual,
   logs,
+  changes,
   pendingChanges = 0,
   browser,
   attachments,
@@ -82,6 +84,8 @@ export function WorkspacePanel({
   onSelectedChange,
   onPreviewAttachment,
   onRetryAttachment,
+  onUploadAttachments,
+  uploadingAttachments = false,
   onRemoveAttachment,
   onOpenRemotePath,
   runLabel,
@@ -107,6 +111,12 @@ export function WorkspacePanel({
   tabs: WorkspacePane[];
   terminalTab: TerminalPane;
   onTabChange: (tab: WorkspacePane) => void;
+  /**
+   * 快捷入口：**打开**一个标签（不存在时先加进这条会话的标签列表）。
+   *
+   * 与 `onTabChange` 分开：标签栏点已打开的标签只是切换，不该把它挪到末尾。
+   */
+  onOpenPaneTab: (tab: WorkspacePane) => void;
   /** 关掉一个标签；最后一个由页面收起右栏。 */
   onCloseTab: (tab: WorkspacePane) => void;
   onTerminalTabChange: (tab: TerminalPane) => void;
@@ -129,6 +139,8 @@ export function WorkspacePanel({
   output: ReactNode;
   manual: ReactNode;
   logs: ReactNode;
+  /** 文件变更审阅：统一 Diff + 文件树（按当前对话与运行归属）。 */
+  changes: ReactNode;
   /** 待确认的变更数量：标签上的角标。 */
   pendingChanges?: number;
   browser: ReactNode;
@@ -137,7 +149,11 @@ export function WorkspacePanel({
   selectedIds: string[];
   onSelectedChange: (ids: string[]) => void;
   onPreviewAttachment: (id: string) => void;
+  /** 上传失败后重试（只对已经读到内容、但写服务器失败的附件有效）。 */
   onRetryAttachment: (id: string) => void;
+  /** 把当前对话里可上传的附件写到服务器临时目录。 */
+  onUploadAttachments?: () => void;
+  uploadingAttachments?: boolean;
   onRemoveAttachment: (id: string) => void;
   onOpenRemotePath: (path: string) => void;
   runLabel: string;
@@ -238,7 +254,13 @@ export function WorkspacePanel({
    * 本版先隐藏「文件变更」入口（组件、数据与 Diff 逻辑都保留）。
    * 下周恢复时只改这一行；不要删 `changes` 的渲染与 store。
    */
-  const visibleTabs = FILE_CHANGES_VISIBLE
+  /*
+   * 标签集合严格按会话存档渲染：**不再每次渲染强行补回 changes**。
+   *
+   * 快捷入口走 `openPaneTab("changes")`，由 store 把标签加进这条会话的
+   * `paneLists`；用户手动关掉之后，它就该真的消失。
+   */
+  const visibleTabs: WorkspacePane[] = FILE_CHANGES_VISIBLE
     ? tabs
     : tabs.filter((id) => id !== "changes");
   const items: PaneTab[] = visibleTabs.map((id) => ({
@@ -260,11 +282,15 @@ export function WorkspacePanel({
    */
   const paneTrailing = (
     <div role="toolbar" aria-label={t("远程工作区")} className="flex shrink-0 items-center border-l border-divider/70 pl-1">
-      <ToolbarIcon label={t("远程文件")} icon={FolderOpen} onClick={() => onTabChange("files")} />
-      <ToolbarIcon label={t("服务器终端")} icon={SquareTerminal} onClick={() => onTabChange("terminal")} />
-      <ToolbarIcon label={t("日志")} icon={FileText} onClick={() => onTabChange("logs")} />
+      <ToolbarIcon label={t("远程文件")} icon={FolderOpen} onClick={() => onOpenPaneTab("files")} />
+      <ToolbarIcon
+        label={t("服务器终端")}
+        icon={SquareTerminal}
+        onClick={() => onOpenPaneTab("terminal")}
+      />
+      <ToolbarIcon label={t("日志")} icon={FileText} onClick={() => onOpenPaneTab("logs")} />
       {FILE_CHANGES_VISIBLE && (
-        <ToolbarIcon label={t("文件变更")} icon={FileDiff} onClick={() => onTabChange("changes")} />
+        <ToolbarIcon label={t("文件变更")} icon={FileDiff} onClick={() => onOpenPaneTab("changes")} />
       )}
     </div>
   );
@@ -490,6 +516,10 @@ export function WorkspacePanel({
       )}
 
       {/* `min-w-0 overflow-hidden`：长路径 / 长文件名只能在自己的区域截断，不能撑宽右栏。 */}
+      {activeTab === "changes" && (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{changes}</div>
+      )}
+
       {activeTab === "files" && (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{files}</div>
       )}
@@ -565,6 +595,8 @@ export function WorkspacePanel({
                  * 知道这一次是"已经拿到内容"还是"只有一条路径"。
                  */
                 const read = attachmentReadState(item);
+                /** 读取 / 上传失败的具体原因：不能只显示一句「读取失败」。 */
+                const detail = item.error ?? item.remoteError;
                 const status =
                   item.state === "pending"
                     ? { label: t("读取中…"), tone: "text-fg-subtle" }
@@ -602,6 +634,9 @@ export function WorkspacePanel({
                       <p className="truncate text-10 text-fg-subtle">
                         {formatSize(item.size)} · <span className={status.tone}>{status.label}</span>
                       </p>
+                      {detail && (
+                        <p className="mt-0.5 break-words text-10 text-danger/90">{detail}</p>
+                      )}
                       {item.remotePath && (
                         <button
                           type="button"
@@ -613,9 +648,9 @@ export function WorkspacePanel({
                         </button>
                       )}
                     </div>
-                    {item.state === "failed" && (
+                    {item.state === "ready" && item.remoteError && (
                       <Button variant="ghost" size="xs" onClick={() => onRetryAttachment(item.id)}>
-                        {t("重试")}
+                        {t("重试上传")}
                       </Button>
                     )}
                     <ExtremeIconButton
@@ -630,6 +665,24 @@ export function WorkspacePanel({
               })}
             </ul>
           )}
+
+          {onUploadAttachments &&
+            attachments.some(
+              (item) => item.state === "ready" && item.uploadState !== "uploaded",
+            ) && (
+              <div className="flex shrink-0 items-center gap-1 border-t border-line/70 px-2 py-1">
+                <span className="min-w-0 flex-1 truncate text-10 text-fg-subtle">
+                  {t("附件只在本机；上传后模型和部署可直接按路径使用")}
+                </span>
+                <Button
+                  size="xs"
+                  disabled={uploadingAttachments}
+                  onClick={onUploadAttachments}
+                >
+                  {uploadingAttachments ? t("上传中…") : t("上传到服务器")}
+                </Button>
+              </div>
+            )}
 
           {selectedIds.length > 0 && (
             <div className="flex shrink-0 items-center gap-1 border-t border-line/70 px-2 py-1">

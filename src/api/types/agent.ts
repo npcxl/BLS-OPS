@@ -38,6 +38,43 @@ export interface AgentOutcome {
 /** 步骤状态（与 `DeployStep` 的 state 对齐）。 */
 export type AgentStepState = "running" | "waiting" | "success" | "failed" | "skipped";
 
+/* ---------------- 执行计划（MAX 强制计划） ---------------- */
+
+/** 计划步骤状态：`done` 只由真实工具事件推进。 */
+export type AgentPlanStepState =
+  | "pending"
+  | "running"
+  | "waiting"
+  | "done"
+  | "failed"
+  | "skipped";
+
+export interface AgentPlanStep {
+  /** 稳定 id（工具调用用它归属到步骤）。 */
+  id: string;
+  title: string;
+  /** 预期动作：要看什么 / 要改什么。 */
+  action: string;
+  /** 验证条件：怎样算完成。 */
+  verify: string;
+  /** `probe` / `action` / `answer`（纯聊天用 answer）。 */
+  kind?: string;
+  state: AgentPlanStepState | string;
+  /** 执行器给出的一行证据（真实输出首行）。 */
+  evidence?: string | null;
+}
+
+export interface AgentPlan {
+  understanding: string;
+  summary: string;
+  prerequisites: string[];
+  steps: AgentPlanStep[];
+  /** 第几版计划（修订 +1）。 */
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AgentStep {
   index: number;
   callId: string;
@@ -64,6 +101,10 @@ export interface AgentStep {
   rollback?: string | null;
   impact?: string | null;
   elapsedMs: number;
+  /** 这一步属于计划的哪一步（MAX 强制计划）。 */
+  planStepId?: string | null;
+  /** 操作组：说明与工具事件共享，连续命令只显示一次说明。 */
+  groupId?: string | null;
 }
 
 /** 正在等用户确认的那一条（快照里带出来，刷新/重进后仍能继续确认）。 */
@@ -134,6 +175,32 @@ export interface ContextUsage {
   toolCalls: number;
 }
 
+/** AI 提问的一个选项。 */
+export interface AgentQuestionOption {
+  id: string;
+  label: string;
+}
+
+/** AI 挂起等待用户决定的问题。 */
+export interface AgentQuestion {
+  questionId: string;
+  taskId: string;
+  workspaceId?: string | null;
+  serverId?: string | null;
+  question: string;
+  kind: "single" | "multi";
+  options: AgentQuestionOption[];
+  allowCustom: boolean;
+  /** 等待截止时刻（毫秒时间戳）。 */
+  deadline: number;
+}
+
+/** 用户提交的回答：选项 ID + 自定义文字。 */
+export interface AgentQuestionAnswer {
+  selected: string[];
+  custom?: string | null;
+}
+
 export interface AgentSnapshot {
   taskId: string;
   status: AgentRunStatus | string;
@@ -147,10 +214,18 @@ export interface AgentSnapshot {
   steps: AgentStep[];
   /** 有值 = 这一步正在等确认，`callId` 可以直接交给 `aiAgentApprove`。 */
   pendingApproval?: PendingApproval | null;
+  /** 有值 = AI 正在等用户回答问题。 */
+  pendingQuestion?: AgentQuestion | null;
   /** 最近一轮的上下文用量；还没请求过模型时为空。 */
   context?: ContextUsage | null;
   /** 终态验证结论；没有执行过步骤时为空。 */
   outcome?: AgentOutcome | null;
+  /** 本轮的执行计划（MAX 强制计划）；普通模式为空。 */
+  plan?: AgentPlan | null;
+  /** 本轮是否强制先提交计划（用户选 MAX）。 */
+  planRequired?: boolean;
+  /** 实际发给供应商的思考强度（MAX 已按模型能力收敛，例如 high）。 */
+  effort?: string | null;
   updatedAt: number;
 }
 
@@ -162,6 +237,11 @@ export type AgentEventKind =
   | "tool_output"
   | "tool_finished"
   | "approval_required"
+  /** AI 提问 / 用户已回答（带结构化问题与答案）。 */
+  | "question_required"
+  | "question_answered"
+  /** 计划提交 / 修订 / 步骤状态变化（带完整计划）。 */
+  | "plan_updated"
   /** 文件变更记录新增 / 状态变化（只带摘要，正文按需加载）。 */
   | "file_change"
   | "approval_withdrawn"
@@ -203,6 +283,18 @@ export interface AgentEvent {
   elapsedMs?: number;
   /** 只有 `approval_required` 带：等待确认的截止时刻（毫秒）。 */
   deadline?: number;
+  /** 完整计划（`plan_updated` / 终态事件带）。 */
+  plan?: AgentPlan | null;
+  /** 这条命令属于计划的哪一步。 */
+  planStepId?: string | null;
+  /** `question_required` / `question_answered` 的结构化问题。 */
+  question?: AgentQuestion | null;
+  /** `question_answered` 的用户回答。 */
+  answer?: AgentQuestionAnswer | null;
+  /** 操作组：说明与工具事件共享。 */
+  groupId?: string | null;
+  /** 执行前说明（只有操作组第一条 `tool_started` 带）。 */
+  note?: string | null;
 }
 
 /** 思考强度（供应商原生参数；界面上的 MAX 会先映射成模型最高档）。 */
@@ -223,6 +315,15 @@ export interface AgentStartRequest {
   providerId?: string | null;
   /** 思考强度；不传 = 供应商默认。 */
   reasoningEffort?: ReasoningEffort | null;
+  /**
+   * 本轮强制先提交计划（用户选 MAX）。
+   *
+   * 与 `reasoningEffort` **分开**：供应商最高档可能只是 high，但用户选的是 MAX
+   * 仍然要走计划门控。
+   */
+  planRequired?: boolean;
+  /** 续跑同一个 taskId 时带上上一版计划（工具回执续跑会开一轮新循环）。 */
+  plan?: AgentPlan | null;
   /** 上下文输入预算（tokens）；不传 = 按模型窗口自动。 */
   contextBudget?: number | null;
   /**
@@ -231,6 +332,8 @@ export interface AgentStartRequest {
    * 不传 = 中文。只影响提示词语言，不改权限与审批。
    */
   locale?: string | null;
+  /** 回复语言覆盖：`zh` / `en`；不传 = 跟随界面语言。 */
+  replyLanguage?: "zh" | "en" | null;
   /** 续跑同一个 taskId 时带上已知的累计用量（后端从它继续加）。 */
   carryUsage?: TokenUsage | null;
   allowSudo?: boolean;
@@ -240,6 +343,16 @@ export interface AgentStartRequest {
    * 写文件仍然自动备份；sudo 由 `allowSudo` 单独控制；只查询任务由后端拦下写操作。
    */
   autoApproveWrites?: boolean;
+  /** 三档权限（与上面的布尔字段并存，新客户端按它判定）。 */
+  permissionMode?: "readonly" | "ask" | "full";
+  /** 备份策略快照：修改/覆盖前备份、删除前备份、保留天数（0=永久）。 */
+  backupBeforeWrite?: boolean;
+  backupBeforeDelete?: boolean;
+  backupRetentionDays?: number;
+  /** 本轮启用的 MCP 工具（暴露名，来自 MCP 页的启用状态）。 */
+  enabledMcpTools?: string[];
+  /** 本轮勾选的内置技能；不传 = 旧客户端，全部放行。 */
+  enabledBuiltins?: string[];
   maxRounds?: number;
 }
 
@@ -253,11 +366,24 @@ export interface AgentResumeRequest {
   workspaceId?: string | null;
   providerId?: string | null;
   reasoningEffort?: ReasoningEffort | null;
+  /** 恢复同样的 MAX 强制计划门控。 */
+  planRequired?: boolean;
+  /** 上次保存的计划（继续执行时带回去）。 */
+  plan?: AgentPlan | null;
   contextBudget?: number | null;
   /** 界面语言（`zh-CN` / `en`）：恢复时同样按它写系统提示词；不传 = 中文。 */
   locale?: string | null;
+  /** 回复语言覆盖：`zh` / `en`；不传 = 跟随界面语言。 */
+  replyLanguage?: "zh" | "en" | null;
   allowSudo?: boolean;
   autoApproveWrites?: boolean;
+  /** 三档权限（恢复时按它继续门控）。 */
+  permissionMode?: "readonly" | "ask" | "full";
+  backupBeforeWrite?: boolean;
+  backupBeforeDelete?: boolean;
+  backupRetentionDays?: number;
+  enabledMcpTools?: string[];
+  enabledBuiltins?: string[];
   maxRounds?: number;
 }
 
@@ -266,6 +392,13 @@ export interface AgentApproval {
   taskId: string;
   callId: string;
   stepIndex: number;
+  /** 归属与审批身份：workspace / server / run / step + 规范化目标与参数。 */
+  workspaceId?: string | null;
+  serverId?: string | null;
+  runId?: string;
+  stepId?: string;
+  target?: string | null;
+  params?: string;
   tool: string;
   /** 目标服务器展示名：切到别的服务器时也能看清这条命令发给谁。 */
   server: string;
@@ -312,7 +445,9 @@ export type FileChangeStatus =
   | "withdrawn"
   | "stale"
   | "uncollected"
-  | "unavailable";
+  | "unavailable"
+  /** 本轮净变化的结论是「文件被删除」（只在净变化里出现）。 */
+  | "deleted";
 
 /** 这条记录展示哪一版内容：拟修改 / 实际回读 / 没有可展示的 Diff。 */
 export type FileChangeStage = "proposed" | "actual" | "none";
@@ -345,9 +480,28 @@ export interface FileChangeSummary {
   canOpen: boolean;
   /** 普通 shell 之类的"未采集差异"说明项。 */
   uncollected: boolean;
+  /**
+   * 已确认变化、但没有逐行差异时的原因（新增空文件 / 二进制已修改 /
+   * 敏感内容已变化…）。计数为 0 时用它代替 `+0 -0`。
+   */
+  reason?: string | null;
   note?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * 一次运行的**净变化**结果。
+ *
+ * `available=false` = 内存里没有本轮记录（重启后看历史），界面应回落到逐条
+ * 历史；`available=true` + `rows=[]` = 本轮确实没有净变化，两者不能混。
+ */
+export interface NetChangeSet {
+  available: boolean;
+  /** 有净变化 / 未确认 / 未采集的条目；无净变化的后端已经剔除。 */
+  rows: FileChangeSummary[];
+  /** 被剔除的「无净变化」路径数（原样保存 / A→B→A / 写失败但没改动）。 */
+  unchanged: number;
 }
 
 export type DiffLineKind = "context" | "add" | "del";

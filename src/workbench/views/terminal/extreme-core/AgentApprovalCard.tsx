@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import LiquidGlass from "liquid-glass-react";
 import { ChevronDown, ChevronRight, Copy, FileDiff, ShieldAlert } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ExtremeIconButton } from "./ExtremeIconButton";
@@ -69,13 +68,6 @@ function useRemainingSeconds(
   return Math.max(0, Math.ceil((target - now) / 1000));
 }
 
-/**
- * Codex 式的**内联确认条**：贴在输入框上方，只占一条的高度。
- *
- * 首屏三样东西 —— 操作、服务器、真实影响；命令 / 路径 / 备份 / 回滚都在
- * 「查看命令与影响」里。允许之后原地变成「已允许 · 正在执行」，拒绝之后变成
- * 「已拒绝 · 此步骤未执行」，不跳走、不弹窗。
- */
 /** 按操作类型给一条**可执行的验证建议**（计划预审的一部分）。 */
 function verificationHint(approval: AgentApproval, t: (key: string) => string): string {
   const command = approval.command.toLowerCase();
@@ -125,6 +117,7 @@ export function AgentApprovalCard({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const danger = approval.risk === "danger";
   const pending = phase === "pending" || phase === "failed" || phase === "sending";
   const busy = phase === "sending";
@@ -146,7 +139,7 @@ export function AgentApprovalCard({
   /*
    * 已经表态之后**不再占一张卡**：收成一行操作记录。
    * 卡片只留给"还需要你决定"（pending / sending / failed）的状态，
-   * 否则一次写入会在输入框上方挂一整块玻璃卡，把对话挤没。
+   * 后续状态由执行器更新。
    */
   if (phase === "allowed" || phase === "denied") {
     const tone =
@@ -205,181 +198,124 @@ export function AgentApprovalCard({
       data-phase={phase}
       className="shrink-0 px-4 pt-2"
     >
-      <div className="glass-host mx-auto w-full max-w-3xl">
-        <LiquidGlass
-          className="w-full [&>.glass]:w-full [&>.glass>div]:w-full"
-          cornerRadius={10}
-          padding="0"
-          elasticity={0.06}
-          style={{ width: "100%" }}
-        >
-          {/* 文字颜色必须写在这一层：液体玻璃的内容层自带 `text-white`。 */}
-          <div
-            className={cn(
-              "w-full overflow-hidden rounded-[10px] border bg-surface-1/78 text-fg",
-              danger ? "border-danger/40" : "border-line/70",
-            )}
-          >
-            <div className="px-3 pb-1.5 pt-2">
-              <div className="flex items-center gap-2">
-                <ShieldAlert
-                  size={14}
-                  className={cn("shrink-0", danger ? "text-danger" : "text-warning")}
-                />
-                <span className="min-w-0 flex-1 truncate text-12 font-medium">{summary}</span>
-                {danger && (
-                  <span className="shrink-0 rounded-full border border-danger/50 px-1.5 text-10 text-danger">
-                    {t("危险")}
-                  </span>
-                )}
-                {approval.server && (
-                  <span className="shrink-0 text-10 text-fg-subtle">{approval.server}</span>
-                )}
-                {/* 倒计时：超时不是"这一步跳过"，是整个任务停止 —— 必须让用户看见。 */}
-                {pending && (
-                  <span
-                    className={cn(
-                      "shrink-0 text-10 tabular-nums",
-                      remaining <= 60 ? "text-danger" : "text-fg-subtle",
-                    )}
-                    title={t("超时后任务将停止")}
-                  >
-                    {t("剩余 {{time}}", {
-                      time: `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`,
-                    })}
-                  </span>
-                )}
-              </div>
-              {/*
-               * 影响**直接写在条上**：这是用户做决定唯一需要的信息，不该藏在
-               * 折叠里；危险操作再用强调色写一遍。
-               */}
-              <p
-                className={cn(
-                  "mt-1 break-words pl-[22px] text-11",
-                  danger ? "text-danger" : "text-fg-muted",
-                )}
-              >
-                {impact}
-              </p>
-              {pending && goal?.trim() && (
-                <p className="mt-0.5 break-words pl-[22px] text-11 text-fg-muted">
-                  {t("目标")}：{goal}
-                </p>
-              )}
-              {pending && (
-                <p className="mt-0.5 break-words pl-[22px] text-10 text-fg-subtle">
-                  {verificationHint(approval, t)}
-                </p>
-              )}
-              {pending && approval.backupPath && (
-                <p className="mt-0.5 break-all pl-[22px] font-mono text-10 text-fg-subtle">
-                  {t("改动前备份")}：{approval.backupPath}
-                </p>
-              )}
-              {phase === "failed" && (
-                <p className="mt-1 pl-[22px] text-11 text-danger">
-                  {t("没有送达服务器：{{reason}}。可以再试一次。", {
-                    reason: failure?.trim() || t("连接中断"),
-                  })}
-                </p>
-              )}
+      <div className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden rounded-lg border border-line bg-surface-1 text-fg">
+        <div className="px-3 pb-2 pt-2.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <ShieldAlert
+                size={14}
+                className={cn("shrink-0", danger ? "text-danger" : "text-warning")}
+              />
+              <span className="truncate text-12 font-medium" title={summary}>{summary}</span>
             </div>
-
-            <div className="flex items-center gap-2 border-t border-line/60 px-3 py-1.5">
-              <button
-                type="button"
-                aria-expanded={expanded}
-                className="flex items-center gap-0.5 text-11 text-fg-muted hover:text-fg"
-                onClick={() => setExpanded((value) => !value)}
-              >
-                {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                {t("查看命令与影响")}
-              </button>
-
-              {/* 真实 Diff 在右栏：这里只负责定位，不放第二个"允许"按钮。 */}
-              {approval.changeId && onOpenChanges && (
-                <button
-                  type="button"
-                  onClick={onOpenChanges}
-                  className="flex items-center gap-0.5 text-11 text-accent hover:underline"
+            <div className="flex shrink-0 items-center gap-2 text-10 text-fg-subtle">
+              {danger && <span className="text-danger">{t("危险")}</span>}
+              {approval.server && <span>{approval.server}</span>}
+              {pending && (
+                <span
+                  className={cn("tabular-nums", remaining <= 60 && "text-danger")}
+                  title={t("超时后任务将停止")}
                 >
-                  <FileDiff size={12} />
-                  {t("查看变更")}
-                </button>
-              )}
-
-              <span className="flex-1" />
-
-              {pending && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => onDecide(false)}
-                  >
-                    {t("拒绝执行")}
-                  </Button>
-                  <Button
-                    variant={danger ? "danger" : "primary"}
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => onDecide(true)}
-                  >
-                    {busy ? t("提交中…") : t("允许本次")}
-                  </Button>
-                </>
+                  {t("剩余 {{time}}", {
+                    time: Math.floor(remaining / 60) + ":" + String(remaining % 60).padStart(2, "0"),
+                  })}
+                </span>
               )}
             </div>
+          </div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-11 text-fg-muted">{impact}</p>
+          {phase === "failed" && (
+            <p className="mt-1 break-words text-11 text-danger">
+              {t("没有送达服务器：{{reason}}。可以再试一次。", {
+                reason: failure?.trim() || t("连接中断"),
+              })}
+            </p>
+          )}
+        </div>
 
-            {expanded && (
-              <div className="space-y-1.5 border-t border-line/60 px-3 py-2 text-11">
-                {approval.path && (
-                  <p className="break-all font-mono text-fg-muted">{approval.path}</p>
-                )}
-                <div className="flex items-start gap-1.5">
-                  <pre className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-[6px] bg-surface-2 px-2 py-1 font-mono text-11">
-                    {approval.command}
-                  </pre>
-                  <ExtremeIconButton
-                    label={t("复制命令")}
-                    icon={Copy}
-                    iconSize={12}
-                    className="size-6"
-                    onClick={() => void copyTextWithFeedback(approval.command)}
-                  />
-                </div>
-                {approval.backupPath && (
-                  <p className="break-all text-fg-muted">
-                    {t("备份")}：<span className="font-mono">{approval.backupPath}</span>
-                  </p>
-                )}
-                {approval.rollback && (
-                  <p className="break-all text-fg-muted">
-                    {t("回滚")}：<span className="font-mono">{approval.rollback}</span>
-                  </p>
-                )}
-                {approval.cwd && (
-                  <p className="break-all text-fg-subtle">
-                    {t("工作目录")}：<span className="font-mono">{approval.cwd}</span>
-                  </p>
-                )}
-                {/* `cd` 包装与内部标记只给调试看，默认收起。 */}
-                {approval.script && (
-                  <details>
-                    <summary className="cursor-pointer text-fg-subtle">
-                      {t("实际执行脚本（调试）")}
-                    </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-[6px] bg-surface-2 px-2 py-1 font-mono text-10 text-fg-muted">
-                      {approval.script}
-                    </pre>
-                  </details>
-                )}
-              </div>
+        {expanded && (
+          <div id={detailsId} className="space-y-1.5 border-t border-line px-3 py-2 text-11">
+            {goal?.trim() && (
+              <p className="break-words text-fg-muted">{t("目标")}：{goal}</p>
+            )}
+            {approval.path && (
+              <p className="break-all font-mono text-fg-muted">{approval.path}</p>
+            )}
+            <div className="flex items-start gap-1.5">
+              <pre className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-2 px-2 py-1 font-mono text-11">
+                {approval.command}
+              </pre>
+              <ExtremeIconButton
+                label={t("复制命令")}
+                icon={Copy}
+                iconSize={12}
+                className="size-6"
+                onClick={() => void copyTextWithFeedback(approval.command)}
+              />
+            </div>
+            <p className="break-words text-fg-subtle">{verificationHint(approval, t)}</p>
+            {approval.backupPath && (
+              <p className="break-all text-fg-muted">
+                {t("计划备份：{{path}}", { path: approval.backupPath })}
+              </p>
+            )}
+            {approval.rollback && (
+              <p className="break-all text-fg-muted">
+                {t("回滚")}：<span className="font-mono">{approval.rollback}</span>
+              </p>
+            )}
+            {approval.cwd && (
+              <p className="break-all text-fg-subtle">
+                {t("工作目录")}：<span className="font-mono">{approval.cwd}</span>
+              </p>
+            )}
+            {approval.script && (
+              <details>
+                <summary className="cursor-pointer text-fg-subtle">
+                  {t("实际执行脚本（调试）")}
+                </summary>
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-2 px-2 py-1 font-mono text-10 text-fg-muted">
+                  {approval.script}
+                </pre>
+              </details>
             )}
           </div>
-        </LiquidGlass>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={expanded ? detailsId : undefined}
+              className="flex items-center gap-0.5 text-11 text-fg-muted hover:text-fg"
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              {t("查看命令与影响")}
+            </button>
+            {approval.changeId && onOpenChanges && (
+              <button
+                type="button"
+                onClick={onOpenChanges}
+                className="flex items-center gap-0.5 text-11 text-accent hover:underline"
+              >
+                <FileDiff size={12} />
+                {t("查看变更")}
+              </button>
+            )}
+          </div>
+          {pending && (
+            <div className="ml-auto flex items-center gap-1.5">
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDecide(false)}>
+                {t("拒绝执行")}
+              </Button>
+              <Button variant={danger ? "danger" : "primary"} size="sm" disabled={busy} onClick={() => onDecide(true)}>
+                {busy ? t("提交中…") : t("允许本次")}
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

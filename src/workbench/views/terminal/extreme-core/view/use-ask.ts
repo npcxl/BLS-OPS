@@ -20,14 +20,33 @@ import { opsApi } from "@/api/ops-api";
 import type { AgentApproval, AgentStep } from "@/api/types/agent";
 import { useExtremeStore } from "@/stores/extreme-store";
 import type { ExtremeAttachment, ExtremeMessage, SentAttachment } from "@/stores/extreme-store";
+import { useExtremePermissionsStore } from "@/stores/extreme-permissions-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { toAppError } from "@/lib/app-error";
 import { scopeForeground, type ActionScope, type ScopeWorld } from "../action-scope";
 import { cardFromAgent } from "../agent-steps";
+
+/** 发起任务那一刻的备份策略快照（中途改设置不影响已发起的任务）。 */
+function backupSnapshot() {
+  const backup = useExtremePermissionsStore.getState().backup;
+  return {
+    backupBeforeWrite: backup.beforeWrite,
+    backupBeforeDelete: backup.beforeDelete,
+    backupRetentionDays: backup.retentionDays,
+  };
+}
 import { forgetAgentWait, waitForAgentRun } from "../agent-run";
 import { parseActions, type StreamFilter } from "../chat-actions";
 import { isLogIntent, matchChoice } from "../log-discovery";
 import { manualShellTail } from "../manual-shell";
-import { effectiveProvider, effortParam, type ModelSelection, type ProviderChoice } from "../model-choice";
+import {
+  effectiveProvider,
+  effortParam,
+  planRequiredFor,
+  type ModelSelection,
+  type ProviderChoice,
+} from "../model-choice";
+import { planForTask } from "../message-parts";
 import { parsePanelAction, stripPanelAction, type PanelRequest } from "../panel-target";
 import { attachmentReadState } from "../attachments";
 import { shouldAttachTerminalTail, terminalTailBlock } from "../chat-context";
@@ -82,6 +101,8 @@ export interface AskDeps {
   remoteRoot: string | null;
   preflight: PreflightResult | null;
   permission: PermissionMode;
+  /** 发送瞬间的 MCP 勾选快照：内置技能 id + 外部工具暴露名。 */
+  getMcpSelection?: () => { builtins: string[]; tools: string[] };
   envChecks: CheckItem[];
   attachments: ExtremeAttachment[];
   focusId: string | null;
@@ -185,6 +206,7 @@ export function useAsk(deps: AskDeps) {
     remoteRoot,
     preflight,
     permission,
+    getMcpSelection,
     envChecks,
     attachments,
     focusId,
@@ -677,6 +699,10 @@ export function useAsk(deps: AskDeps) {
      * 队列派发用它入队时定下的附件 / 范围 / 计划；用户直接发送则用当前这一
      * 刻的镜像。之后所有动作都从这里取值，**不再读渲染闭包**。
      */
+    // 点发送这一刻的 MCP 勾选与提权开关：后面等终端输出 / 切会话都不再重读。
+    const mcpAtRequest = getMcpSelection?.();
+    const allowSudoAtRequest = useExtremePermissionsStore.getState().allowSudo;
+    const replyLanguageAtRequest = useExtremeSettingsStore.getState().replyLanguage;
     const scopeAtRequest: ActionScope = {
       workspaceId: workspaceAtRequest,
       serverId: entryBefore?.serverId ?? serverId,
@@ -819,16 +845,49 @@ export function useAsk(deps: AskDeps) {
       };
     }
     if (depth === 0) inFlightRef.current.add(workspaceAtRequest);
+    /*
+     * 续跑同一件事（工具回执 / 平台动作）：上一版计划要带回来。
+     *
+     * 后端此时可能已经结束了上一轮循环，新循环从这份计划继续；没有它，
+     * MAX 模式下模型会被要求重新提交计划，已完成的步骤看起来像没做。
+     */
+    const taskMessages = options?.taskId
+      ? [
+          ...useExtremeStore.getState().workspaces.flatMap((entry) => entry.messages),
+          ...ownerMessages,
+        ]
+      : [];
+    const knownPlan = options?.taskId ? planForTask(taskMessages, options.taskId) : null;
+    /*
+     * MAX 门控跟着**这条任务**走：续跑（上传回执 / 平台动作）时即使用户后来
+     * 把菜单切到普通档，也不能绕过最初那份计划要求。
+     */
+    const planRequired =
+      planRequiredFor(selectionAtRequest.effort) ||
+      Boolean(knownPlan) ||
+      taskMessages.some((message) => message.taskId === options?.taskId && message.planRequired);
     /** 这次运行仍然有效（没有被同一对话里更新的一次请求取代）。 */
     const stillCurrent = () => requestId === askSeqRef.current[workspaceAtRequest];
     /** 这次运行既有效、又正好在前台（只有这时才允许动界面）。 */
     const belongsHere = () =>
       stillCurrent() && useExtremeStore.getState().workspaceId === workspaceAtRequest;
-    // 占位消息：流式文字直接追加到这里，用户一发送就能看到文字在长。
+    /*
+     * 占位消息：流式文字直接追加到这里，用户一发送就能看到文字在长。
+     *
+     * `taskId` 也写在**这条回复**上：正文与工具步骤的顺序记在它自己的
+     * `parts` 里，任务卡因此挂在这一轮回复下面，而不是用户提问下面。
+     */
     const assistantId = `msg-${crypto.randomUUID()}`;
     streamingReplies.current.set(taskId, assistantId);
     if (workspaceAtRequest) {
-      pushMessageTo(workspaceAtRequest, { id: assistantId, role: "assistant", text: "" });
+      pushMessageTo(workspaceAtRequest, {
+        id: assistantId,
+        role: "assistant",
+        text: "",
+        taskId,
+        planRequired,
+        effort: selectionAtRequest.effort,
+      });
     }
     /**
      * 终态写回的目标：确认后可能已经换到新的回复气泡，必须以**当前**目标为准。
@@ -926,6 +985,8 @@ export function useAsk(deps: AskDeps) {
           ? selectionAtRequest.contextBudget
           : null;
 
+      // 本轮勾选在点击发送时定下来：运行中改勾选只影响下一条。
+      const mcp = mcpAtRequest;
       await opsApi.aiAgentRun({
         taskId,
         sessionId: sessionAtRequest,
@@ -940,6 +1001,9 @@ export function useAsk(deps: AskDeps) {
          * 否则模型会顺着中文的"工具协议 / 操作范围"继续用中文回答。
          */
         locale: i18n.resolvedLanguage ?? i18n.language,
+        // 回复语言是独立偏好：auto = 跟随界面语言。
+        replyLanguage:
+          replyLanguageAtRequest === "auto" ? null : replyLanguageAtRequest,
         // 锁定界面显示的提供方，确保档位和上下文预算发给该模型。
         providerId: activeProvider?.id ?? selectionAtRequest.providerId,
         // 模型不支持的档位发 null（不猜、不硬塞）。
@@ -947,10 +1011,17 @@ export function useAsk(deps: AskDeps) {
           selectionAtRequest.effort,
           activeProvider?.efforts ?? [],
         ),
+        // 用户选了 MAX 就必须先计划：与供应商实际解析成 high 与否无关。
+        planRequired,
+        plan: knownPlan,
         contextBudget: requestBudget,
-        allowSudo: scopeAtRequest.permission === "full",
-        // 完全权限 = 修改范围内不再确认；只查询范围由后端拦下写操作。
-        autoApproveWrites: scopeAtRequest.permission === "full",
+        // 三档权限 + 布尔兼容字段：新后端按 permissionMode 判定。
+        permissionMode: scopeAtRequest.permission,
+        // 只读模式无论如何都不提权；其余模式再看独立开关。
+        allowSudo: scopeAtRequest.permission !== "readonly" && allowSudoAtRequest,
+        ...backupSnapshot(),
+        enabledMcpTools: mcp?.tools ?? [],
+        ...(mcp ? { enabledBuiltins: mcp.builtins } : {}),
         // 续跑同一个 taskId：后端从已知累计继续加，不把之前几轮清零。
         carryUsage: useExtremeStore.getState().taskUsage[taskId]?.cumulative ?? null,
       });
@@ -1136,7 +1207,14 @@ export function useAsk(deps: AskDeps) {
           ? latest.messages
           : latest.workspaces.find((entry) => entry.id === workspaceAtRequest)?.messages ?? [];
       const reply = ownerMessages.find((message) => message.id === replyId);
-      if (reply && reply.text.trim()) {
+      /*
+       * 只有正文、没有工具命令的空占位才删掉。
+       *
+       * 纯命令的一轮（模型直接调工具、没写正文）已经记下了执行顺序，
+       * 删掉它等于把"跑过什么"从对话里抹掉。
+       */
+      const hasRun = Boolean(reply?.parts?.some((part) => part.kind === "step"));
+      if (reply && (reply.text.trim() || hasRun)) {
         patchMessageIn(workspaceAtRequest, replyId, {
           interrupted: "failed",
           interruptReason: reason,

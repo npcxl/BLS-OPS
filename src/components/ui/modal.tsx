@@ -37,6 +37,14 @@ interface ModalProps {
   size?: ModalSize;
   /** Opt-in viewport layout; existing form dialogs retain their dimensions. */
   fullscreen?: boolean;
+  /**
+   * 扁平卡片外观（确认框用）：无描边与分隔线、24px 圆角、更宽的留白、
+   * 标题放大一号，且不显示右上角关闭键（用底部的取消按钮 / Esc）。
+   *
+   * 参考 Material 3 的确认框：一张干净的卡 + 右下角两颗胶囊按钮，不做
+   * "标题栏 + 分隔线 + 内容 + 分隔线 + 按钮" 的九宫格。
+   */
+  bare?: boolean;
   className?: string;
   /**
    * 关闭入口。`undefined` = 不可关闭（保存中 / 执行中），此时 Esc 与点遮罩
@@ -68,6 +76,7 @@ export function Modal({
   width,
   size = "md",
   fullscreen = false,
+  bare = false,
   className,
   onClose,
   footer,
@@ -124,7 +133,9 @@ export function Modal({
         aria-busy={busy || undefined}
         tabIndex={-1}
         className={cn(
-          "glass-panel-strong flex max-h-[85vh] flex-col overflow-hidden rounded-[14px] outline-none",
+          "flex max-h-[85vh] flex-col overflow-hidden outline-none",
+          // 默认：带描边与分隔线的玻璃面板；bare：一张干净的确认卡。
+          bare ? "dialog-plain rounded-[24px]" : "glass-panel-strong rounded-[14px]",
           className,
           exiting
             ? "opacity-0 translate-y-2 scale-[0.985] transition-[opacity,transform] duration-150 ease-out"
@@ -134,18 +145,36 @@ export function Modal({
           ? { width: "calc(100vw - 32px)", height: "calc(100vh - 32px)", maxHeight: "calc(100vh - 32px)" }
           : { width: width ?? SIZE_WIDTH[size] }}
       >
-        <div className="flex items-start gap-2 border-b border-line px-4 py-3">
+        <div
+          className={cn(
+            "flex items-start gap-2",
+            bare ? "px-6 pb-1 pt-6" : "border-b border-line px-4 py-3",
+          )}
+        >
           <div className="min-w-0 flex-1">
-            <h2 id={titleId} className="text-13 font-semibold text-fg">
+            <h2
+              id={titleId}
+              className={cn(
+                "font-semibold text-fg",
+                bare ? "text-[18px] leading-6" : "text-13",
+              )}
+            >
               {title}
             </h2>
             {description && (
-              <p id={descriptionId} className="mt-0.5 text-11 leading-relaxed text-fg-muted">
+              <p
+                id={descriptionId}
+                className={cn(
+                  "text-fg-muted",
+                  bare ? "mt-1.5 text-[13px] leading-6" : "mt-0.5 text-11 leading-relaxed",
+                )}
+              >
                 {description}
               </p>
             )}
           </div>
-          {onClose && (
+          {/* bare：不画右上角关闭键（参考的确认卡没有），Esc / 取消按钮仍在。 */}
+          {onClose && !bare && (
             <button
               type="button"
               aria-label={t("Close")}
@@ -162,14 +191,24 @@ export function Modal({
         </div>
 
         {/* 弹窗内部再开的浮层深度 +1：Esc 先给它，层级也压在上面。 */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto",
+            bare ? "px-6 pb-6 pt-3" : "px-4 py-3",
+          )}
+        >
           <OverlayDepthContext.Provider value={layer.childDepth}>
             {children}
           </OverlayDepthContext.Provider>
         </div>
 
         {footer && (
-          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-4 py-3">
+          <div
+            className={cn(
+              "flex shrink-0 items-center justify-end gap-2",
+              bare ? "px-6 pb-6 pt-1" : "border-t border-line px-4 py-3",
+            )}
+          >
             {footer}
           </div>
         )}

@@ -26,6 +26,7 @@ import type { EditorLanguage } from "@/lib/file-kind";
 import { editorCursorTheme, useEditorTheme } from "@/lib/cm-theme";
 import { opsSearch } from "@/lib/cm-search";
 import { useActivityTicket } from "@/stores/activity-store";
+import { useExtremeStore } from "@/stores/extreme-store";
 import { useInspectionMode } from "@/stores/inspection-store";
 import { comboFromKey } from "@/stores/shortcut-store";
 
@@ -123,6 +124,24 @@ export default function FileEditorModal({
   const extensions = useMemo(() => buildExtensions(language), [language]);
 
   /**
+   * 这次保存属于哪条超能对话。
+   *
+   * 后端据此把变更记录挂到 workspace / server 上；独立远程面板里没有绑定，
+   * 返回 `undefined` 即可（记录仍会生成，只是不在右栏里显示）。
+   */
+  const ownerOf = () => {
+    const state = useExtremeStore.getState();
+    const workspace = state.workspaces.find((entry) => entry.sessionId === sessionId);
+    return workspace
+      ? {
+          workspaceId: workspace.id,
+          server: workspace.server,
+          serverId: workspace.serverId ?? null,
+        }
+      : undefined;
+  };
+
+  /**
    * 保存。`expected` 默认是打开时的版本；冲突后用户选择「覆盖」时传**当前**
    * 版本，这样若这期间又变了会再弹一次 —— 绝不静默盖掉别人的修改。
    */
@@ -141,6 +160,8 @@ export default function FileEditorModal({
         path,
         content,
         expected === undefined ? version : expected,
+        // 归属：同一会话只属于一条对话；右栏按 workspaceId 筛得到这次保存。
+        ownerOf(),
       );
       if (outcome.status === "saved") {
         setVersion(outcome.version);

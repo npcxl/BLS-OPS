@@ -22,7 +22,6 @@ import { useWindowMaterial, useWindowTransparency } from "@/lib/window-material"
 import { useLocale } from "@/i18n/use-locale";
 import { KnownHostsPanel } from "./host-key-dialog";
 import { UpdateSection } from "./updater/UpdateSection";
-import { AiProviderSettings } from "./settings-ai";
 import { EmptyRow, Group, ListGroup, Switch } from "./settings-parts";
 import { SegmentedControl } from "./page-layout";
 import { setInspectionMode, useInspectionMode } from "@/stores/inspection-store";
@@ -70,6 +69,7 @@ function CollapsibleList<T>({
   getKey: (row: T) => string;
   children: (row: T) => React.ReactNode;
 }) {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<T[] | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -103,7 +103,7 @@ function CollapsibleList<T>({
       {open && (
         <div className="divide-y divide-line/60 border-t border-line">
           {rows === null ? (
-            <EmptyRow>正在加载…</EmptyRow>
+            <EmptyRow>{t("正在加载…")}</EmptyRow>
           ) : rows.length === 0 ? (
             <EmptyRow>{empty}</EmptyRow>
           ) : (
@@ -118,7 +118,7 @@ function CollapsibleList<T>({
 const loadHistory = () => opsApi.listHistory(200);
 const loadAuditLogs = () => opsApi.listAuditLogs(200);
 
-export type SettingsCategory = "general" | "terminal" | "security" | "data" | "ai" | "updates" | "about";
+export type SettingsCategory = "general" | "terminal" | "security" | "data" | "updates" | "about";
 
 /** Existing settings sections, filtered by the settings page navigation. */
 export function SettingsContextSidebar({ category }: { category?: SettingsCategory }) {
@@ -338,9 +338,6 @@ export function SettingsContextSidebar({ category }: { category?: SettingsCatego
           )}
         </ListGroup>
       </Group>)}
-
-      {/* P5.5.1：AI 模型提供方（密钥只进钥匙串；没有"读取 API Key"的入口）。 */}
-      {visible("ai") && <AiProviderSettings />}
 
       {visible("security") && (<Group title={t("Known hosts")} hint={t("Fingerprints you confirmed on first connect are listed here.")}>
         <ListGroup>

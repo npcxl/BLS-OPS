@@ -7,7 +7,7 @@
 //! 上限：单任务 [`MAX_ROUNDS`] 轮、单命令 [`MAX_COMMAND_SECONDS`] 秒、
 //! 总计 [`MAX_TOTAL_SECONDS`] 秒；超限以 `failed` 结束并说明停在哪条命令。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -23,22 +23,32 @@ use super::changes::{
     FileSnapshot,
 };
 use super::protocol::{
-    intent_guidance, looks_like_tool_call, parse_tool_calls, redact, reply_language_rule,
+    intent_guidance, looks_like_tool_call, merge_plan, parse_tool_calls, plan_guidance,
+    plan_status_block, preamble_guidance, preamble_text, redact, reply_language_rule,
     strip_tool_calls, tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome,
-    AgentStep, Lang, PendingApproval, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS, MAX_TOTAL_SECONDS,
-    MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
+    AgentPlan, AgentStep, AskUserDraft, Lang, PendingApproval, PendingQuestion, PlanDraft,
+    QuestionAnswer, QuestionOption, ToolCall, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS,
+    MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
 };
 use super::state::{AgentHandle, AgentSnapshot, ContextBreakdown, ContextUsage, TokenUsage};
-use super::tools::{has_sudo, plan_tool, strip_markers, tool_schemas, PlannedTool};
+use tokio::sync::oneshot;
+use super::tools::{
+    builtin_tool_allowed, filter_tool_schemas, has_sudo, parse_archive_operation,
+    plan_tool_with_backup, requires_confirmation, severe_operation_reason, strip_markers,
+    tool_schemas, ArchiveOperation, BackupPolicy, PlannedTool,
+};
 use crate::deployment::ai::model::AiCancel;
 use crate::deployment::ai::{AiProviderError, OpenAiCompatibleAdvisor, ToolReply};
 use crate::ssh::utf8_stream::Utf8StreamDecoder;
-use crate::ssh::ExecChunk;
-use crate::ssh::ExecOutput;
+use crate::ssh::{ExecChunk, ExecOutput};
 use crate::state::AppState;
 
 /// 一条命令**边跑边回显**的总上限（超过后只由结束事件给完整输出）。
 const LIVE_OUTPUT_LIMIT: usize = 256 * 1024;
+/// 等用户回答问题的上限（比审批长：用户可能离开一会儿）。
+const QUESTION_SECONDS: u64 = 10 * 60;
+/// 文本协议没有 call id：用它给问题生成稳定且唯一的 id。
+static QUESTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 事件名（前端 `src/lib/events.ts` 里是同一个字符串）。
 pub const AGENT_EVENT: &str = "agent-event";
@@ -48,6 +58,64 @@ pub const AGENT_EVENT: &str = "agent-event";
 pub struct AgentTurn {
     pub role: String,
     pub content: String,
+}
+
+/// 三档操作权限。与旧的 `allow_sudo` / `auto_approve_writes` 布尔字段并存：
+/// 新客户端传 `permission_mode`，旧客户端按布尔推断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    /// 只读：只执行 Read 工具；写 / 危险操作直接拒绝，不产生审批。
+    ReadOnly,
+    /// 按需确认：写 / 危险操作逐条审批。
+    Ask,
+    /// 完全访问：写 / 改 / 删直接执行；严重操作仍审批。
+    Full,
+}
+
+/// 执行器对一条操作的统一裁决：允许 / 需要确认 / 拦截。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    Allow,
+    Confirm,
+    Block,
+}
+
+/// 三档权限 + 风险 + 严重操作的唯一判定入口。
+pub fn permission_decision(
+    mode: PermissionMode,
+    planned: &PlannedTool,
+    auto_approve_writes: bool,
+) -> PermissionDecision {
+    let needs = planned.call.risk.needs_approval();
+    if mode.is_read_only() && needs {
+        return PermissionDecision::Block;
+    }
+    let full = mode == PermissionMode::Full || auto_approve_writes;
+    if requires_confirmation(planned, full) {
+        PermissionDecision::Confirm
+    } else {
+        PermissionDecision::Allow
+    }
+}
+
+impl PermissionMode {
+    pub fn from_wire(value: Option<&str>, auto_approve_writes: bool) -> Self {
+        match value.map(str::trim) {
+            Some("readonly") | Some("read_only") | Some("read-only") => Self::ReadOnly,
+            Some("full") => Self::Full,
+            Some("ask") => Self::Ask,
+            _ if auto_approve_writes => Self::Full,
+            _ => Self::Ask,
+        }
+    }
+
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+
+    pub fn is_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
 }
 
 /// 启动参数。
@@ -70,6 +138,8 @@ pub struct AgentInput {
      * 再拿中文的"操作范围 / 工具协议"当默认约定。
      */
     pub locale: Option<String>,
+    /// 回复语言覆盖（`zh` / `en`）；`None` = 跟随界面语言。
+    pub reply_language: Option<String>,
     /// 思考强度（已由界面按模型能力选好）；`None` / `auto` = 供应商默认。
     pub reasoning_effort: Option<String>,
     /// 上下文输入预算（tokens）；`None` = 按模型窗口自动。
@@ -83,10 +153,33 @@ pub struct AgentInput {
     pub capability: Option<crate::deployment::ai::CapabilityOverride>,
     /// 续跑（同一任务换一次 run_loop）时从上一段带过来的累计用量。
     pub carry_usage: Option<TokenUsage>,
-    /// 允许 sudo（用户在界面上显式打开「完全权限」才为 true）。
+    /// 允许 sudo（只读模式下恒为 false）。
     pub allow_sudo: bool,
     /// 「完全权限」下修改范围内的写入 / 修改 / 删除**都不再确认**。
     pub auto_approve_writes: bool,
+    /// 三档权限（新客户端显式传；旧客户端由上面的布尔推断）。
+    pub permission_mode: PermissionMode,
+    /// 修改 / 覆盖前备份。
+    pub backup_before_write: bool,
+    /// 删除前备份。
+    pub backup_before_delete: bool,
+    /// 备份保留天数；0 = 永久。
+    pub backup_retention_days: u32,
+    /// 本轮启用的 MCP 工具（配置在启动时解析好，执行时不再查库）。
+    pub mcp_tools: Vec<crate::mcp::McpBinding>,
+    /// 本轮勾选的内置技能；`None` = 旧客户端，全部放行。
+    pub enabled_builtins: Option<Vec<String>>,
+    /// 执行时复查 MCP 服务/工具是否仍启用（测试里可以为 None）。
+    pub db: Option<std::sync::Arc<crate::db::AppDb>>,
+    /**
+     * 本轮是否强制先提交计划（用户选择 MAX）。
+     *
+     * 与 `reasoning_effort` **分开**：供应商最高档可能叫 high，但用户选的是
+     * MAX 仍然要走计划门控。
+     */
+    pub plan_required: bool,
+    /// 恢复 / 续跑时带到本轮的计划（用于系统提示词与快照恢复）。
+    pub carry_plan: Option<AgentPlan>,
     pub max_rounds: Option<u32>,
     /**
      * 恢复中断任务时带进来的历史步骤。
@@ -373,6 +466,9 @@ pub async fn spawn_agent(
     );
     // 恢复执行：把上次的步骤带进快照，界面/历史不会从 0 步重新开始。
     snapshot.steps = input.carry_steps.clone();
+    snapshot.plan = input.carry_plan.clone();
+    snapshot.plan_required = input.plan_required;
+    snapshot.effort = reasoning_effort.clone();
     let Some(handle) = state.agents.register(snapshot.clone(), cancel) else {
         state.ai_reviews.forget(&input.task_id);
         return Err("这条任务还在执行，等它结束或先停止".to_string());
@@ -421,6 +517,25 @@ pub async fn spawn_agent(
                 ("failed", Some(message))
             }
         };
+        /*
+         * 终态收尾：计划里还在执行 / 等确认的步骤不能永远停在"进行中"。
+         * 成功时把最后一步收成完成；失败 → 失败；停止 → 跳过。
+         */
+        handle.update(|snapshot| {
+            if let Some(plan) = snapshot.plan.as_mut() {
+                let terminal_state = match snapshot.status.as_str() {
+                    "success" => "done",
+                    "failed" => "failed",
+                    _ => "skipped",
+                };
+                for step in plan.steps.iter_mut() {
+                    if step.state == "running" || step.state == "waiting" {
+                        step.state = terminal_state.to_string();
+                    }
+                }
+                plan.updated_at = crate::db::AppDb::now();
+            }
+        });
         let snapshot = handle.snapshot();
         let mut event = AgentEvent::new(&task_id, kind);
         event.message = message;
@@ -429,6 +544,7 @@ pub async fn spawn_agent(
         event.cwd = Some(snapshot.cwd);
         event.outcome = snapshot.outcome.clone();
         event.context = snapshot.context;
+        event.plan = snapshot.plan.clone();
         emit(&app_for_run, event);
         // 正常收尾已经写过终态：不要让 Drop 再补一条 failed 事件。
         guard.armed = false;
@@ -1077,43 +1193,25 @@ fn resource_key(input: &AgentInput, planned: &PlannedTool) -> String {
 ///
 /// 不直接拿原始命令：`rm /opt/a`、`rm -f /opt/a`、`sudo rm /opt/a` 是同一件事。
 /// 先把 `cd … &&` 前缀、`sudo` 与 `-x` 这类参数去掉，再拼命令名与目标。
-fn operation_signature(planned: &PlannedTool) -> String {
-    let basis = planned.path.clone().unwrap_or_else(|| {
-        let normalized = normalize_operation_text(&planned.display);
-        if normalized.is_empty() {
-            planned.display.trim().to_lowercase()
-        } else {
-            normalized
-        }
-    });
-    format!("{}\u{1}{}", planned.call.name, basis)
-}
-
-fn normalize_operation_text(text: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for segment in text
-        .split("&&")
-        .flat_map(|part| part.split("||"))
-        .flat_map(|part| part.split(';'))
-    {
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
-        let Some(first) = tokens.first() else {
-            continue;
-        };
-        // 切目录只是改变工作目录，不构成"另一个操作"。
-        if matches!(*first, "cd" | "pushd" | "popd") {
-            continue;
-        }
-        let kept: Vec<&str> = tokens
-            .iter()
-            .copied()
-            .filter(|token| *token != "sudo" && !token.starts_with('-'))
-            .collect();
-        if !kept.is_empty() {
-            parts.push(kept.join(" "));
-        }
+/// 审批身份。
+///
+/// * 能可靠解析的归档操作：归档路径、目标目录、覆盖策略（大小写敏感）；
+/// * 其他操作：**精确的用户可读命令**，不再去掉参数 / 小写化。Linux 路径与
+///   覆盖策略不能靠模糊文本混为一谈。
+fn operation_signature(planned: &PlannedTool, cwd: &str) -> String {
+    // MCP 工具的"同一次操作"必须带上参数：同一个工具查 A 和删 B 不是一件事。
+    if let Some(binding) = &planned.mcp {
+        return format!(
+            "mcp\u{1}{}\u{1}{}\u{1}{}",
+            binding.server_id,
+            binding.tool,
+            serde_json::to_string(&planned.call.args).unwrap_or_default()
+        );
     }
-    parts.join(" && ").to_lowercase()
+    if let Some(archive) = parse_archive_operation(&planned.display, cwd) {
+        return archive.signature();
+    }
+    format!("{}\u{1}{}", planned.call.name, planned.display.trim())
 }
 
 /// 把前端传来的消息整理成 OpenAI 兼容的会话：合并 system，再追加工具说明、
@@ -1124,6 +1222,12 @@ fn normalize_operation_text(text: &str) -> String {
 /// "界面选 MAX、模型只支持 high，行为段却按 max"这种错位。
 fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> Vec<Value> {
     let lang = Lang::from_locale(input.locale.as_deref());
+    // 回复语言是独立偏好：界面可以是英文，但用户要求用中文回答。
+    let reply_lang = match input.reply_language.as_deref() {
+        Some(value) if value.eq_ignore_ascii_case("en") => Lang::En,
+        Some(value) if value.eq_ignore_ascii_case("zh") => Lang::Zh,
+        _ => lang,
+    };
     let mut system = String::new();
     let mut turns: Vec<Value> = Vec::new();
     for turn in &input.messages {
@@ -1157,6 +1261,16 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
     system.push('\n');
     system.push_str(thinking_guidance(effort, lang));
     system.push('\n');
+    // 执行前说明：MAX 与普通模式都适用（先说什么、验证什么）。
+    system.push_str(preamble_guidance(lang));
+    system.push('\n');
+    if input.plan_required {
+        system.push_str(plan_guidance(lang));
+        system.push('\n');
+    }
+    if let Some(plan) = input.carry_plan.as_ref() {
+        system.push_str(&plan_status_block(plan, lang));
+    }
     system.push_str(intent_guidance(lang));
     if query_only {
         system.push_str(match lang {
@@ -1170,7 +1284,7 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
     }
     // 放最后：模型对末尾指令最敏感，前面的中英混杂材料不能把回复语言带偏。
     system.push('\n');
-    system.push_str(reply_language_rule(lang));
+    system.push_str(reply_language_rule(reply_lang));
     let mut out = vec![json!({ "role": "system", "content": system })];
     out.extend(turns);
     out
@@ -1752,6 +1866,12 @@ pub(crate) async fn run_loop(
 ) -> Result<String, StopReason> {
     let started = Instant::now();
     let rounds = input.max_rounds.unwrap_or(MAX_ROUNDS).clamp(1, MAX_ROUNDS);
+    // 备份策略在运行开始时定下来：中途改权限页不影响已发起的任务。
+    let backup_policy = BackupPolicy {
+        before_write: input.backup_before_write,
+        before_delete: input.backup_before_delete,
+        retention_days: input.backup_retention_days,
+    };
     // 范围在**这次运行开始时**定下来：同一次运行里不随模型换说法漂移。
     let query_only = is_query_only(&input.messages);
     let mut conversation = conversation(input, resolved_effort, query_only);
@@ -1761,14 +1881,24 @@ pub(crate) async fn run_loop(
     let goal = task_goal(&input.messages);
     let mut cumulative = input.carry_usage.clone().unwrap_or_default();
     let mut tool_calls: usize = 0;
+    let lang = Lang::from_locale(input.locale.as_deref());
+    // 计划跟着任务快照走：提交 / 恢复后马上用它校验工具归属。
+    let mut plan = handle.snapshot().plan.clone();
+    // 普通模式下的"操作组"：模型没写说明、连续几轮直接调命令时共用一句说明。
+    let mut group_open: Option<String> = None;
+    // 已经有过说明（模型自己写的或执行器补的）的操作组。
+    let mut noted_groups: HashSet<String> = HashSet::new();
     /*
-     * 本次运行里**已经提交过**的命令签名（tool + 用户可读命令）。
+     * 本次运行里**已执行的操作**与结果。
      *
-     * 模型遇到报错时很容易把同一条命令原样再发一次；执行器不陪它重试 ——
-     * 第二次直接拦下，把"已经执行过"回给它，逼它读错误、换一种做法。
+     * 同一操作（解压按归档 + 目标 + 覆盖策略识别，其他按精确命令）成功过，
+     * 后续等价提交直接复用原结果，逼模型做只读验证而不是重复解压；
+     * 失败最多重试一次，第二次失败就把真实退出码和错误摘要回给它。
      */
-    let mut executed_signatures: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut completed_ops: HashMap<String, (bool, String)> = HashMap::new();
+    let mut op_attempts: HashMap<String, u32> = HashMap::new();
+    /** 上一次归档操作：目标 / 覆盖策略变了要写在新的确认卡上。 */
+    let mut last_archive: Option<ArchiveOperation> = None;
     // 续跑：新步骤从历史步骤之后编号，不能把旧步骤按 index 覆盖。
     let mut next_index: u32 = input
         .carry_steps
@@ -1842,13 +1972,13 @@ pub(crate) async fn run_loop(
         let on_delta: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |delta: &str| {
             sink(AgentEvent::text_delta(&delta_task, delta));
         });
+        let schemas = crate::mcp::append_tool_schemas(
+            filter_tool_schemas(tool_schemas(input.plan_required), input.enabled_builtins.as_deref()),
+            &input.mcp_tools,
+            input.plan_required,
+        );
         let reply = match io
-            .chat(
-                conversation.clone(),
-                tool_schemas(),
-                handle.cancel(),
-                on_delta,
-            )
+            .chat(conversation.clone(), schemas, handle.cancel(), on_delta)
             .await
         {
             Ok(reply) => reply,
@@ -1958,6 +2088,8 @@ pub(crate) async fn run_loop(
                 continue;
             }
             handle.update(|snapshot| snapshot.outcome = outcome);
+            // 纯聊天 / 单步回答计划：整轮成功才算这一步完成。
+            finish_answer_plan(io, handle, &input.task_id);
             return Ok(strip_tool_calls(&reply.content));
         }
 
@@ -1968,8 +2100,133 @@ pub(crate) async fn run_loop(
             }
         });
 
+        let visible_text = visible_reply_text(&reply.content, native);
+        // 模型自己写了执行前说明：这是一组的开头，后续工具沿用这句说明。
+        if !visible_text.is_empty() {
+            group_open = None;
+        }
         let mut tool_messages: Vec<Value> = Vec::new();
         for raw in &mut calls {
+            /*
+             * 本轮没勾选的能力不下发：前端下栏的 MCP 菜单决定模型能看到哪些
+             * 内置工具；这里再拦一次，防止模型凭历史记忆硬调。
+             */
+            if !builtin_tool_allowed(raw.name.trim(), input.enabled_builtins.as_deref()) {
+                tool_messages.push(tool_error_message(
+                    &raw.id,
+                    raw.native,
+                    &raw.name,
+                    "该能力没有在本轮启用：这次调用没有执行。请让用户在下栏 MCP 菜单里勾选对应能力，或改用已启用的工具。",
+                ));
+                continue;
+            }
+            /*
+             * `submit_plan` 是**计划登记**，不是服务器操作：
+             * 不占步骤号、不执行命令、不弹确认；提交成功后模型才能继续调用工具。
+             */
+            if input.plan_required && raw.name.trim() == "submit_plan" {
+                let merged = serde_json::from_str::<PlanDraft>(raw.body.trim())
+                    .map_err(|error| format!("submit_plan 参数不合法：{error}"))
+                    .and_then(|draft| merge_plan(plan.as_ref(), draft, crate::db::AppDb::now()));
+                match merged {
+                    Ok(next) => {
+                        plan = Some(next.clone());
+                        handle.update(|snapshot| snapshot.plan = Some(next.clone()));
+                        let mut event = AgentEvent::new(&input.task_id, "plan_updated");
+                        event.plan = Some(next.clone());
+                        io.emit(event);
+                        tool_messages.push(tool_ok_message(
+                            &raw.id,
+                            raw.native,
+                            &raw.name,
+                            &plan_ack_text(&next, lang),
+                        ));
+                    }
+                    Err(reason) => {
+                        tool_messages.push(tool_error_message(
+                            &raw.id, raw.native, &raw.name, &reason,
+                        ));
+                    }
+                }
+                continue;
+            }
+            /*
+             * `ask_user` 是交互控制工具：不占步骤、不执行命令、不弹权限确认；
+             * 任务在这里暂停，等用户提交选择后再把答案作为工具结果回给模型。
+             */
+            if raw.name.trim() == "ask_user" {
+                let question = match prepare_question(&input, raw, round) {
+                    Ok(question) => question,
+                    Err(reason) => {
+                        tool_messages.push(tool_error_message(
+                            &raw.id, raw.native, &raw.name, &reason,
+                        ));
+                        continue;
+                    }
+                };
+                let mut receiver = handle.wait_answer(&question.question_id);
+                handle.update(|snapshot| {
+                    snapshot.pending_question = Some(question.clone());
+                    snapshot.status = "waiting".to_string();
+                    snapshot.updated_at = crate::db::AppDb::now();
+                });
+                let mut event = AgentEvent::new(&input.task_id, "question_required");
+                event.question = Some(question.clone());
+                io.emit(event);
+
+                match wait_question(handle, &question.question_id, question.deadline, &mut receiver)
+                    .await
+                {
+                    QuestionDecision::Answered(answer) => {
+                        handle.update(|snapshot| {
+                            snapshot.pending_question = None;
+                            if snapshot.status == "waiting" {
+                                snapshot.status = "running".to_string();
+                            }
+                            snapshot.updated_at = crate::db::AppDb::now();
+                        });
+                        let mut event = AgentEvent::new(&input.task_id, "question_answered");
+                        event.question = Some(question.clone());
+                        event.answer = Some(answer.clone());
+                        io.emit(event);
+                        tool_messages.push(tool_ok_message(
+                            &raw.id,
+                            raw.native,
+                            &raw.name,
+                            &question_answer_text(&question, &answer),
+                        ));
+                        continue;
+                    }
+                    QuestionDecision::Cancelled => {
+                        handle.forget_answer(&question.question_id);
+                        handle.update(|snapshot| snapshot.pending_question = None);
+                        return Err(StopReason::Cancelled(
+                            "等待用户回答时任务被停止".to_string(),
+                        ));
+                    }
+                    QuestionDecision::Timeout => {
+                        handle.forget_answer(&question.question_id);
+                        handle.update(|snapshot| snapshot.pending_question = None);
+                        return Err(StopReason::Failed(format!(
+                            "等待用户回答超过 {} 分钟，任务已停止",
+                            QUESTION_SECONDS / 60
+                        )));
+                    }
+                }
+            }
+            /*
+             * MAX 强制计划：没有有效计划之前，任何工具都不下发。
+             * 模型会拿到「请先提交计划」并改发 submit_plan，服务器不会被动到。
+             */
+            if input.plan_required && plan.is_none() {
+                tool_messages.push(tool_error_message(
+                    &raw.id,
+                    raw.native,
+                    &raw.name,
+                    plan_required_message(lang),
+                ));
+                continue;
+            }
             let index = next_index;
             next_index += 1;
             if raw.id.is_empty() {
@@ -2010,33 +2267,124 @@ pub(crate) async fn run_loop(
                 }
             };
 
+            /*
+             * 计划模式下，每次工具调用都必须说清它属于哪一步。
+             * id 必须是**当前计划**里存在的步骤；否则命令不下发。
+             */
+            let plan_step_id = if input.plan_required {
+                let requested = args
+                    .get("step")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string();
+                let known: Vec<String> = plan
+                    .as_ref()
+                    .map(|plan| plan.steps.iter().map(|step| step.id.clone()).collect())
+                    .unwrap_or_default();
+                if requested.is_empty() || plan.as_ref().and_then(|plan| plan.step(&requested)).is_none() {
+                    let reason = plan_step_message(lang, &known);
+                    fail_step(io, handle, index, &reason);
+                    tool_messages.push(tool_error_message(
+                        &raw.id, raw.native, &raw.name, &reason,
+                    ));
+                    continue;
+                }
+                Some(requested)
+            } else {
+                None
+            };
+            /*
+             * 操作组：计划模式按计划步骤分组（同一步的多条命令共用一句说明）；
+             * 普通模式按"连续工具轮次"分组，模型写了正文就另起一组。
+             */
+            let group_id = match plan_step_id.as_deref() {
+                Some(id) => format!("p-{id}"),
+                None => group_open
+                    .get_or_insert_with(|| format!("g-{}-{round}", input.task_id))
+                    .clone(),
+            };
+
             // sudo 默认禁用：连命令都不构造，直接告诉模型与用户。
             let sudo = args
                 .get("command")
                 .and_then(Value::as_str)
                 .is_some_and(has_sudo);
             if sudo && !input.allow_sudo {
-                let reason = "sudo 默认禁用。请给出不需要 root 的方案，或让用户打开「完全权限」。"
-                    .to_string();
+                let reason =
+                    "sudo 不可用：当前是只读模式，或未开启「允许提权」。请给出不需要 root 的方案。"
+                        .to_string();
                 fail_step(io, handle, index, &reason);
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
 
-            let planned = match plan_tool(
-                &raw.name,
-                &args,
-                &handle.snapshot().cwd,
-                crate::db::AppDb::now() as u64,
-            ) {
-                Ok(mut planned) => {
-                    planned.call.id = call_id.clone();
-                    planned
+            /*
+             * MCP 工具走自己的执行分支：工具定义在启动时已绑定，`step` 参数
+             * 只用于计划校验，不能透给服务端。
+             */
+            let mcp_binding = input
+                .mcp_tools
+                .iter()
+                .find(|item| item.exposed_name == raw.name)
+                .cloned();
+            let mut planned = if let Some(binding) = mcp_binding {
+                let mut call_args = args.clone();
+                if let Some(object) = call_args.as_object_mut() {
+                    object.remove("step");
                 }
-                Err(reason) => {
-                    fail_step(io, handle, index, &reason);
-                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
-                    continue;
+                let args_json = serde_json::to_string(&call_args).unwrap_or_default();
+                let args_text: String = args_json.chars().take(300).collect();
+                let risk = if binding.read_only {
+                    ToolRisk::Read
+                } else {
+                    ToolRisk::Write
+                };
+                PlannedTool {
+                    call: ToolCall {
+                        id: call_id.clone(),
+                        name: binding.exposed_name.clone(),
+                        args: call_args,
+                        risk,
+                    },
+                    command: format!("mcp://{}/{}", binding.server_id, binding.tool),
+                    display: format!("MCP · {} · {}", binding.server_name, binding.tool),
+                    summary: Some(
+                        binding
+                            .description
+                            .chars()
+                            .take(120)
+                            .collect::<String>(),
+                    ),
+                    timeout: Duration::from_secs(120),
+                    path: None,
+                    impact: Some(format!(
+                        "调用 MCP 服务「{}」的工具；参数：{args_text}",
+                        binding.server_name
+                    )),
+                    rollback: None,
+                    backup_path: None,
+                    write_content: None,
+                    mcp: Some(binding),
+                }
+            } else {
+                match plan_tool_with_backup(
+                    &raw.name,
+                    &args,
+                    &handle.snapshot().cwd,
+                    crate::db::AppDb::now() as u64,
+                    &backup_policy,
+                ) {
+                    Ok(mut planned) => {
+                        planned.call.id = call_id.clone();
+                        planned
+                    }
+                    Err(reason) => {
+                        fail_step(io, handle, index, &reason);
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                        continue;
+                    }
                 }
             };
 
@@ -2060,22 +2408,87 @@ pub(crate) async fn run_loop(
              * 操作标识与"已经表过态"：同一操作只问一次，换写法也不再问。
              * 拒绝过的直接拦下；允许过的直接放行。
              */
-            let op_signature = operation_signature(&planned);
+            let op_signature = operation_signature(&planned, &handle.snapshot().cwd);
             let decided = decided_ops.get(&op_signature).copied();
             let out_of_scope = query_only && risk != ToolRisk::Read;
             /*
-             * 「完全权限」= 用户已经接下写入 / 修改 / 删除的后果：本次**修改范围**
-             * 里的操作全部不再逐条确认（含 sudo / 改 /etc / 删除）。范围之外的
-             * 写操作已被下面的查询边界挡住，不会走到这里。
-             *
-             * 已经允许过的同一操作也不再问；sudo 另有独立开关。
+             * 「完全权限」不再等于"跳过所有写入确认"：
+             * 日常部署（上传 / mkdir / 解压 / 明确目标配置修改）直接执行；
+             * 大范围删除、磁盘写入、SSH / 防火墙改动、关机重启等。
              */
-            let skip_approval = input.auto_approve_writes || decided == Some(true);
+            /*
+             * 归档操作换了目标 / 覆盖策略：确认卡要说清和上一版差在哪，
+             * 不能只重复一句「解压归档」。
+             */
+            let archive_now = parse_archive_operation(&planned.display, &handle.snapshot().cwd);
+            if let (Some(previous), Some(current)) = (&last_archive, &archive_now) {
+                if previous.archive == current.archive
+                    && (previous.target != current.target
+                        || previous.overwrite != current.overwrite
+                        || previous.listing != current.listing)
+                {
+                    let mut changes: Vec<String> = Vec::new();
+                    if previous.target != current.target {
+                        changes.push(format!(
+                            "目标目录从 {} 改为 {}",
+                            previous.target.as_deref().unwrap_or("当前目录"),
+                            current.target.as_deref().unwrap_or("当前目录")
+                        ));
+                    }
+                    if previous.overwrite != current.overwrite {
+                        changes.push(format!(
+                            "覆盖策略从 {} 改为 {}",
+                            previous.overwrite.label(),
+                            current.overwrite.label()
+                        ));
+                    }
+                    if previous.listing != current.listing {
+                        changes.push(if current.listing {
+                            "从解压改为只查看归档内容".to_string()
+                        } else {
+                            "从查看归档改为真正解压".to_string()
+                        });
+                    }
+                    let before = planned.impact.take().unwrap_or_default();
+                    planned.impact = Some(if before.is_empty() {
+                        changes.join("；")
+                    } else {
+                        format!("{before}；与上次相比：{}", changes.join("；"))
+                    });
+                }
+            }
+            if archive_now.is_some() {
+                last_archive = archive_now;
+            }
+
+            let severe = severe_operation_reason(&planned);
+            /*
+             * 只读模式不是"每次都确认"，而是**直接拒绝**写 / 危险操作：
+             * 不产生审批，也不下发命令；模型拿到原因后应改用只读方案。
+             */
+            let decision = permission_decision(
+                input.permission_mode,
+                &planned,
+                input.auto_approve_writes,
+            );
+            let read_only_blocked = decision == PermissionDecision::Block;
+            let needs_approval =
+                decision == PermissionDecision::Confirm && decided != Some(true);
+            if let Some(reason) = &severe {
+                planned.impact = Some(match planned.impact.take() {
+                    Some(impact) if !impact.is_empty() => {
+                        format!("{impact}；需要二次确认：{reason}")
+                    }
+                    _ => format!("需要二次确认：{reason}"),
+                });
+            }
             handle.patch_step(index, |step| {
-                step.state = if out_of_scope {
+                step.state = if read_only_blocked {
+                    "failed".to_string()
+                } else if out_of_scope {
                     // 马上会被范围拦下：别让界面闪一下"等待确认"。
                     "running".to_string()
-                } else if risk.needs_approval() && !skip_approval {
+                } else if needs_approval {
                     "waiting".to_string()
                 } else {
                     "running".to_string()
@@ -2088,9 +2501,51 @@ pub(crate) async fn run_loop(
                 step.impact = planned.impact.clone();
                 step.backup_path = planned.backup_path.clone();
                 step.rollback = planned.rollback.clone();
+                step.plan_step_id = plan_step_id.clone();
+                step.group_id = Some(group_id.clone());
             });
+            // 计划状态跟着真实事件走：等确认 / 执行中（在任何输出之前）。
+            if !read_only_blocked {
+                sync_plan_step(
+                    io,
+                    handle,
+                    &input.task_id,
+                    index,
+                    if needs_approval { "waiting" } else { "running" },
+                    None,
+                );
+            }
             if let Some(step) = handle.step(index) {
-                io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
+                let mut event = AgentEvent::from_step(&input.task_id, "tool_started", &step);
+                /*
+                 * 执行前说明：模型这一轮**没有写正文**时由执行器补一句，
+                 * 内容来自已校验的 summary / 路径 / 命令首行；同一个操作组
+                 * 只补一次。说明与工具事件同组 id，前端按组去重。
+                 */
+                if !noted_groups.contains(&group_id) {
+                    if visible_text.is_empty() {
+                        event.note = Some(preamble_text(
+                            lang,
+                            planned.summary.as_deref(),
+                            &planned.call.name,
+                            planned.path.as_deref(),
+                            &planned.display,
+                        ));
+                    }
+                    noted_groups.insert(group_id.clone());
+                }
+                io.emit(event);
+            }
+
+            if read_only_blocked {
+                let reason = match lang {
+                    Lang::Zh => "只读模式：这条命令会写 / 删除，已拒绝执行。切到「按需确认」后才能执行。",
+                    Lang::En => "Read-only mode: this command may write or delete, so it was not executed. Switch to Ask to run it.",
+                }
+                .to_string();
+                fail_step(io, handle, index, &reason);
+                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                continue;
             }
 
             /*
@@ -2119,21 +2574,55 @@ pub(crate) async fn run_loop(
             }
 
             /*
-             * **同一命令不在一次运行里执行第二遍。**
+             * **同一操作不在一次运行里盲目重跑。**
              *
-             * 这是执行器的硬约束，不靠模型自觉：重复提交不会有不同结果，
-             * 正确做法是读上一条 stderr 判断原因（权限 / 路径 / 服务名 /
-             * 文件已存在），换一种做法。
+             * 成功过 → 把真实输出原样回给模型，并要求做只读验证，避免重新解压；
+             * 失败过 → 只允许再试一次，第二次仍失败就把真实退出码 / 错误摘要交回去。
+             * 解压按归档 + 目标 + 覆盖策略识别，换 `cd`/绝对路径写法也算同一个操作。
              */
-            let signature = format!("{}\u{1}{}", planned.call.name, display_command);
-            if executed_signatures.contains(&signature) {
-                let reason = "这条命令本次已经执行过，重复跑不会有不同结果。\
-                    先看上一条工具输出：成功就据此继续，失败就判断原因\
-                    （权限 / 路径 / 服务名 / 文件已存在）后换一种做法。"
-                    .to_string();
-                skip_step(io, handle, &input.task_id, index, &reason);
-                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
-                continue;
+            if risk != ToolRisk::Read {
+                if let Some((ok, result)) = completed_ops.get(&op_signature).cloned() {
+                    if ok {
+                        let cached = format!(
+                            "{result}\n（同一操作已成功执行，直接复用上次结果；请做只读验证，不要重复解压或写入。）"
+                        );
+                        handle.patch_step(index, |step| {
+                            step.state = "success".to_string();
+                            step.summary = Some("复用上次成功结果（未重复执行）".to_string());
+                            step.exit_code = Some(0);
+                        });
+                        sync_plan_step(
+                            io,
+                            handle,
+                            &input.task_id,
+                            index,
+                            "done",
+                            Some("复用上次成功结果"),
+                        );
+                        if let Some(step) = handle.step(index) {
+                            io.emit(AgentEvent::from_step(
+                                &input.task_id,
+                                "tool_finished",
+                                &step,
+                            ));
+                        }
+                        tool_messages.push(if raw.native {
+                            json!({ "role": "tool", "tool_call_id": raw.id, "content": cached })
+                        } else {
+                            json!({ "role": "user", "content": cached })
+                        });
+                        continue;
+                    }
+                    if op_attempts.get(&op_signature).copied().unwrap_or(0) >= 2 {
+                        let reason = "同一操作已执行两次且都失败；不要再用等价命令重试。\
+                            请先读上一条真实错误，向用户说明失败原因。"
+                            .to_string();
+                        skip_step(io, handle, &input.task_id, index, &reason);
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                        continue;
+                    }
+                }
             }
 
             /*
@@ -2150,7 +2639,7 @@ pub(crate) async fn run_loop(
                 handle.patch_step(index, |step| step.change_id = Some(id.clone()));
             }
 
-            if risk.needs_approval() && !skip_approval {
+            if needs_approval {
                 /*
                  * 一轮确认 = 登记挂起 → 等用户表态 → 核对文件版本。
                  *
@@ -2177,6 +2666,17 @@ pub(crate) async fn run_loop(
                         snapshot.pending_approval = Some(PendingApproval {
                             call_id: call_id.clone(),
                             step_index: index,
+                            workspace_id: input.workspace_id.clone(),
+                            server_id: input.server_id.clone(),
+                            run_id: input.task_id.clone(),
+                            step_id: call_id.clone(),
+                            target: Some(format!(
+                                "{}\u{1}{}",
+                                planned.call.name,
+                                planned.display.trim()
+                            )),
+                            params: serde_json::to_string(&planned.call.args)
+                                .unwrap_or_default(),
                             tool: planned.call.name.clone(),
                             path: planned.path.clone(),
                             risk: risk.as_str().to_string(),
@@ -2256,6 +2756,15 @@ pub(crate) async fn run_loop(
                             decided_ops.insert(op_signature.clone(), false);
                             let reason = "用户拒绝执行这条命令".to_string();
                             fail_step(io, handle, index, &reason);
+                            // 计划里这一步是「未执行」，不是命令失败。
+                            sync_plan_step(
+                                io,
+                                handle,
+                                &input.task_id,
+                                index,
+                                "skipped",
+                                Some("用户拒绝执行"),
+                            );
                             if let Some(id) = &change_id {
                                 io.changes().update(id, |record| {
                                     record.status = "rejected".to_string();
@@ -2284,9 +2793,14 @@ pub(crate) async fn run_loop(
                             )));
                         }
                         Decision::Timeout => {
-                            mark_step_aborted(io, handle, index, "等待确认超时，命令没有执行");
+                            mark_step_aborted(
+                                io,
+                                handle,
+                                index,
+                                "确认已过期，命令没有执行",
+                            );
                             return Err(StopReason::Failed(format!(
-                                "等待确认超过 {} 分钟，已停止（停在「{}」）",
+                                "确认已过期（等待超过 {} 分钟），已停止（停在「{}」）",
                                 APPROVAL_SECONDS / 60,
                                 describe_step(&raw.name, &args)
                             )));
@@ -2337,13 +2851,16 @@ pub(crate) async fn run_loop(
                     continue;
                 }
                 handle.patch_step(index, |step| step.state = "running".to_string());
+                sync_plan_step(io, handle, &input.task_id, index, "running", None);
                 if let Some(step) = handle.step(index) {
                     io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
                 }
             }
 
-            // 到这一步才真的会执行：记下"这条命令跑过"，重复提交直接跳过。
-            executed_signatures.insert(signature);
+            // 到这一步才真的会执行：记一次尝试；成功 / 失败结果在下面回填。
+            if risk != ToolRisk::Read {
+                *op_attempts.entry(op_signature.clone()).or_insert(0) += 1;
+            }
 
             /*
              * 普通 shell 的写操作：拿不到明确目标与前后快照。
@@ -2430,50 +2947,109 @@ pub(crate) async fn run_loop(
              * 时界面不会一直白着）。转发上限 256 KB —— 再多的部分由结束事件的
              * 完整输出兜底，不拿事件通道去搬几兆。
              */
-            let (sink, mut chunks) = tokio::sync::mpsc::unbounded_channel::<ExecChunk>();
-            let forward = {
-                let emitter = io.sink();
-                let task_id = input.task_id.clone();
-                let step_cwd = handle.snapshot().cwd;
-                tokio::spawn(async move {
-                    let mut decoder = Utf8StreamDecoder::new();
-                    let mut sent = 0usize;
-                    while let Some(chunk) = chunks.recv().await {
-                        let (to_stderr, bytes) = match chunk {
-                            ExecChunk::Stdout(bytes) => (false, bytes),
-                            ExecChunk::Stderr(bytes) => (true, bytes),
-                        };
-                        let text = decoder.feed(&bytes);
-                        if text.is_empty() || sent >= LIVE_OUTPUT_LIMIT {
+            let output = if let Some(mut binding) = planned.mcp.clone() {
+                /*
+                 * 执行前复查：服务被停用 / 工具被取消启用 / 授权撤销后，
+                 * 本轮剩余调用立即禁止。库里读不到（测试）时按启动时绑定继续。
+                 */
+                if let Some(db) = input.db.as_ref() {
+                    match crate::mcp::load_config(db.as_ref(), &binding.server_id) {
+                        Ok(fresh) => {
+                            if !fresh.enabled
+                                || fresh.status != "connected"
+                                || !crate::mcp::binding_allows(
+                                    &fresh.binding,
+                                    input.server_id.as_deref(),
+                                    input.workspace_id.as_deref(),
+                                )
+                                || !fresh
+                                    .tools
+                                    .iter()
+                                    .any(|tool| tool.name == binding.tool && tool.enabled)
+                            {
+                                fail_step(
+                                    io,
+                                    handle,
+                                    index,
+                                    "MCP 实例已停用、未通过验证、绑定变更或授权已撤销，这次调用没有执行。",
+                                );
+                                continue;
+                            }
+                            binding.config = fresh;
+                        }
+                        Err(error) => {
+                            fail_step(
+                                io,
+                                handle,
+                                index,
+                                &format!("MCP 配置已不可用：{error}"),
+                            );
                             continue;
                         }
-                        let mut take = text.len().min(LIVE_OUTPUT_LIMIT - sent);
-                        while take < text.len() && !text.is_char_boundary(take) {
-                            take -= 1;
-                        }
-                        if take == 0 {
-                            continue;
-                        }
-                        sent += take;
-                        let mut event = AgentEvent::new(&task_id, "tool_output");
-                        event.step_index = Some(index);
-                        event.cwd = Some(step_cwd.clone());
-                        // 字节切片按字符边界切过，`take` 处一定是合法边界。
-                        let piece = text[..take].to_string();
-                        if to_stderr {
-                            event.stderr = Some(piece);
-                        } else {
-                            event.stdout = Some(piece);
-                        }
-                        emitter(event);
                     }
-                })
+                }
+                // MCP 没有 SSH 流式输出：一次调用结束后把结果交给现有步骤。
+                match crate::mcp::call_tool(&binding, &planned.call.args).await {
+                    Ok(text) => Ok(ExecOutput {
+                        stdout: text,
+                        stderr: String::new(),
+                        exit_code: Some(0),
+                        truncated: false,
+                    }),
+                    Err(error) => Ok(ExecOutput {
+                        stdout: String::new(),
+                        stderr: format!("MCP 调用失败：{error}"),
+                        exit_code: Some(1),
+                        truncated: false,
+                    }),
+                }
+            } else {
+                let (sink, mut chunks) = tokio::sync::mpsc::unbounded_channel::<ExecChunk>();
+                let forward = {
+                    let emitter = io.sink();
+                    let task_id = input.task_id.clone();
+                    let step_cwd = handle.snapshot().cwd;
+                    tokio::spawn(async move {
+                        let mut decoder = Utf8StreamDecoder::new();
+                        let mut sent = 0usize;
+                        while let Some(chunk) = chunks.recv().await {
+                            let (to_stderr, bytes) = match chunk {
+                                ExecChunk::Stdout(bytes) => (false, bytes),
+                                ExecChunk::Stderr(bytes) => (true, bytes),
+                            };
+                            let text = decoder.feed(&bytes);
+                            if text.is_empty() || sent >= LIVE_OUTPUT_LIMIT {
+                                continue;
+                            }
+                            let mut take = text.len().min(LIVE_OUTPUT_LIMIT - sent);
+                            while take < text.len() && !text.is_char_boundary(take) {
+                                take -= 1;
+                            }
+                            if take == 0 {
+                                continue;
+                            }
+                            sent += take;
+                            let mut event = AgentEvent::new(&task_id, "tool_output");
+                            event.step_index = Some(index);
+                            event.cwd = Some(step_cwd.clone());
+                            // 字节切片按字符边界切过，`take` 处一定是合法边界。
+                            let piece = text[..take].to_string();
+                            if to_stderr {
+                                event.stderr = Some(piece);
+                            } else {
+                                event.stdout = Some(piece);
+                            }
+                            emitter(event);
+                        }
+                    })
+                };
+                let output = io
+                    .exec(&input.session_id, &planned.command, timeout, sink)
+                    .await;
+                // `exec_stream` 拿走 sink，返回时它已被 drop → 转发任务自然结束。
+                let _ = forward.await;
+                output
             };
-            let output = io
-                .exec(&input.session_id, &planned.command, timeout, sink)
-                .await;
-            // `exec_stream` 拿走 sink，返回时它已被 drop → 转发任务自然结束。
-            let _ = forward.await;
             let elapsed_ms = began.elapsed().as_millis() as u64;
 
             let (ok, stdout, stderr, exit_code, cwd, truncated, backup) = match output {
@@ -2528,6 +3104,20 @@ pub(crate) async fn run_loop(
                 }
                 step.elapsed_ms = elapsed_ms;
             });
+            // 计划步骤的状态只认这条真实结果：成功 / 失败，证据取真实输出首行。
+            let plan_evidence = if ok {
+                first_line(&stdout, 120)
+            } else {
+                first_line(&stderr, 120)
+            };
+            sync_plan_step(
+                io,
+                handle,
+                &input.task_id,
+                index,
+                if ok { "done" } else { "failed" },
+                Some(&plan_evidence),
+            );
 
             /*
              * 写入之后回读一次：**实际 Diff 只来自服务器上的回读结果**。
@@ -2624,6 +3214,9 @@ pub(crate) async fn run_loop(
             if let Some(backup) = &backup {
                 result.push_str(&format!("\n（原文件已备份到：{backup}）"));
             }
+            if risk != ToolRisk::Read {
+                completed_ops.insert(op_signature.clone(), (ok, result.clone()));
+            }
             tool_messages.push(if raw.native {
                 // 标准 function calling：结果必须以 `role: tool` + 原 call id 回灌。
                 json!({ "role": "tool", "tool_call_id": raw.id, "content": result })
@@ -2651,6 +3244,130 @@ enum Decision {
     Deny,
     Cancelled,
     Timeout,
+}
+
+enum QuestionDecision {
+    Answered(QuestionAnswer),
+    Cancelled,
+    Timeout,
+}
+
+async fn wait_question(
+    handle: &AgentHandle,
+    question_id: &str,
+    deadline: i64,
+    receiver: &mut oneshot::Receiver<QuestionAnswer>,
+) -> QuestionDecision {
+    let remaining = (deadline - crate::db::AppDb::now()).max(0) as u64;
+    tokio::select! {
+        _ = handle.cancel().cancelled() => {
+            handle.forget_answer(question_id);
+            QuestionDecision::Cancelled
+        }
+        result = tokio::time::timeout(Duration::from_millis(remaining), &mut *receiver) => {
+            match result {
+                Ok(Ok(answer)) => QuestionDecision::Answered(answer),
+                // 通道 drop（任务结束 / 进程退出）按超时处理。
+                Ok(Err(_)) | Err(_) => QuestionDecision::Timeout,
+            }
+        }
+    }
+}
+
+fn prepare_question(
+    input: &AgentInput,
+    // 调用方拿到的是**待执行的调用**（`PendingCall`：原生 tool_calls 与文本
+    // `<tool>` 统一后的形态），参数原文在 `body` 里，不是解析后的 `ToolCall.args`。
+    raw: &PendingCall,
+    round: u32,
+) -> Result<PendingQuestion, String> {
+    let draft: AskUserDraft =
+        serde_json::from_str(raw.body.trim()).map_err(|error| format!("ask_user 参数不合法：{error}"))?;
+    let question = draft.question.trim();
+    if question.is_empty() {
+        return Err("ask_user 需要提供问题内容".to_string());
+    }
+    if question.chars().count() > 2000 {
+        return Err("ask_user 的问题过长（上限 2000 字）".to_string());
+    }
+    let kind = draft.kind.trim().to_ascii_lowercase();
+    if kind != "single" && kind != "multi" {
+        return Err("ask_user 的 kind 只能是 single 或 multi".to_string());
+    }
+    if draft.options.len() > 20 {
+        return Err("ask_user 最多提供 20 个选项".to_string());
+    }
+    let mut options = Vec::with_capacity(draft.options.len());
+    let mut seen = std::collections::HashSet::new();
+    for option in draft.options {
+        let id = option.id.trim();
+        let label = option.label.trim();
+        if id.is_empty() || label.is_empty() {
+            return Err("ask_user 的每个选项都需要 id 和名称".to_string());
+        }
+        if id.chars().count() > 120 || label.chars().count() > 200 {
+            return Err("ask_user 的选项 id 或名称过长".to_string());
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(format!("ask_user 的选项 id 重复：{id}"));
+        }
+        options.push(QuestionOption {
+            id: id.to_string(),
+            label: label.to_string(),
+        });
+    }
+    if options.is_empty() && !draft.allow_custom {
+        return Err("ask_user 至少需要一个预设选项，或允许自定义回答".to_string());
+    }
+    let question_id = if raw.id.trim().is_empty() {
+        let seq = QUESTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("q-{}-{round}-{seq}", input.task_id)
+    } else {
+        format!("q-{}-{round}-{}", input.task_id, raw.id)
+    };
+    let deadline = crate::db::AppDb::now() + (QUESTION_SECONDS as i64) * 1000;
+    Ok(PendingQuestion {
+        question_id,
+        task_id: input.task_id.clone(),
+        workspace_id: input.workspace_id.clone(),
+        server_id: input.server_id.clone(),
+        question: question.to_string(),
+        kind,
+        options,
+        allow_custom: draft.allow_custom,
+        deadline,
+    })
+}
+
+fn question_answer_text(question: &PendingQuestion, answer: &QuestionAnswer) -> String {
+    let selected = if answer.selected.is_empty() {
+        "无".to_string()
+    } else {
+        answer
+            .selected
+            .iter()
+            .map(|id| {
+                let label = question
+                    .options
+                    .iter()
+                    .find(|option| &option.id == id)
+                    .map(|option| option.label.as_str())
+                    .unwrap_or(id.as_str());
+                format!("{label}（id: {id}）")
+            })
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    let custom = answer
+        .custom
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("无");
+    format!(
+        "用户已回答问题「{}」。\n已选选项：{selected}\n自定义内容：{custom}\n请根据这个实际选择继续当前任务。",
+        question.question
+    )
 }
 
 async fn wait_approval(handle: &AgentHandle, call_id: &str, deadline: i64) -> Decision {
@@ -2686,8 +3403,94 @@ fn start_step(handle: &AgentHandle, index: u32, call_id: &str, tool: &str) {
     });
 }
 
+/// 计划状态只从**真实工具事件**推进：这里更新快照并广播完整计划。
+fn update_plan_step(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    task_id: &str,
+    plan_step_id: &str,
+    state: &str,
+    evidence: Option<&str>,
+) {
+    let mut updated: Option<AgentPlan> = None;
+    handle.update(|snapshot| {
+        let Some(plan) = snapshot.plan.as_mut() else {
+            return;
+        };
+        let Some(step) = plan.steps.iter_mut().find(|step| step.id == plan_step_id) else {
+            return;
+        };
+        let mut changed = false;
+        if step.state != state {
+            step.state = state.to_string();
+            changed = true;
+        }
+        if let Some(evidence) = evidence.map(str::trim).filter(|text| !text.is_empty()) {
+            if step.evidence.as_deref() != Some(evidence) {
+                step.evidence = Some(evidence.chars().take(160).collect());
+                changed = true;
+            }
+        }
+        if changed {
+            plan.updated_at = crate::db::AppDb::now();
+            updated = Some(plan.clone());
+        }
+    });
+    if let Some(plan) = updated {
+        let mut event = AgentEvent::new(task_id, "plan_updated");
+        event.plan = Some(plan);
+        io.emit(event);
+    }
+}
+
+/// 按某条工具步骤绑定的计划 id 推进状态（没有计划 / 没绑定 → 静默跳过）。
+fn sync_plan_step(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    task_id: &str,
+    index: u32,
+    state: &str,
+    evidence: Option<&str>,
+) {
+    let Some(step) = handle.step(index) else {
+        return;
+    };
+    let Some(plan_step_id) = step.plan_step_id else {
+        return;
+    };
+    update_plan_step(io, handle, task_id, &plan_step_id, state, evidence);
+}
+
+/// 纯聊天 / 单步回答计划：整轮成功时把唯一一步标成完成。
+///
+/// 多步计划不套用这条规则 —— 没有工具事件的步骤不能假装做完了。
+fn finish_answer_plan(io: &dyn AgentIo, handle: &AgentHandle, task_id: &str) {
+    let snapshot = handle.snapshot();
+    let Some(plan) = snapshot.plan.as_ref() else {
+        return;
+    };
+    // 只完成**纯回答**步骤：动作 / 探查步骤没有真实工具事件就不算做完。
+    let answers: Vec<String> = plan
+        .steps
+        .iter()
+        .filter(|step| step.kind == "answer" && step.state != "done")
+        .map(|step| step.id.clone())
+        .collect();
+    for id in answers {
+        update_plan_step(io, handle, task_id, &id, "done", None);
+    }
+}
+
 fn fail_step(io: &dyn AgentIo, handle: &AgentHandle, index: u32, reason: &str) {
     mark_step_aborted(io, handle, index, reason);
+    sync_plan_step(
+        io,
+        handle,
+        &handle.snapshot().task_id,
+        index,
+        "failed",
+        Some(reason),
+    );
 }
 
 /// 一步"没有执行"（范围不允许 / 已拒绝 / 重复）：标成跳过并广播给界面。
@@ -2699,6 +3502,7 @@ fn skip_step(io: &dyn AgentIo, handle: &AgentHandle, task_id: &str, index: u32, 
     if let Some(step) = handle.step(index) {
         io.emit(AgentEvent::from_step(task_id, "tool_finished", &step));
     }
+    sync_plan_step(io, handle, task_id, index, "skipped", Some(reason));
 }
 
 /// 把一步标成失败并广播（命令没有真的执行时也走它：用户拒绝 / 超时 / 取消）。
@@ -2729,6 +3533,84 @@ fn tool_error_message(id: &str, native: bool, tool: &str, reason: &str) -> Value
         json!({ "role": "tool", "tool_call_id": id, "content": reason })
     } else {
         tool_error(tool, reason)
+    }
+}
+
+/// 工具成功回执（原生调用继续用 `role: tool`，文本协议用 `<tool_result>`）。
+fn tool_ok_message(id: &str, native: bool, tool: &str, content: &str) -> Value {
+    if native {
+        json!({ "role": "tool", "tool_call_id": id, "content": content })
+    } else {
+        json!({
+            "role": "user",
+            "content": format!("<tool_result tool=\"{tool}\" ok=\"true\">\n{content}\n</tool_result>")
+        })
+    }
+}
+
+/// 模型这一轮**真正说给用户**的话（去掉工具块与内部平台标记）。
+fn visible_reply_text(content: &str, native: bool) -> String {
+    let text = if native {
+        content.to_string()
+    } else {
+        strip_tool_calls(content)
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("[[") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("]]") {
+            Some(end) => rest = &rest[start + 2 + end + 2..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+fn plan_required_message(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => "请先提交计划：这次调用没有执行。请先调用 submit_plan 提交计划（每步含 id / title / action / verify），再按步骤调用工具；需要先了解服务器时，可以把只读探查写成第一步。",
+        Lang::En => "Submit a plan first: this call was not executed. Call submit_plan (each step needs id / title / action / verify), then call tools per step. If you need to understand the server first, make the read-only probe step 1.",
+    }
+}
+
+fn plan_step_message(lang: Lang, known: &[String]) -> String {
+    let known = if known.is_empty() {
+        "（空）".to_string()
+    } else {
+        known.join(", ")
+    };
+    match lang {
+        Lang::Zh => format!(
+            "这次调用没有执行：缺少有效的 step（当前计划步骤：{known}）。请把调用归到其中一步；需要新步骤时先用 submit_plan 更新计划。"
+        ),
+        Lang::En => format!(
+            "This call was not executed: it has no valid step (current plan steps: {known}). Bind the call to one of them, or update the plan with submit_plan first."
+        ),
+    }
+}
+
+fn plan_ack_text(plan: &AgentPlan, lang: Lang) -> String {
+    let ids = plan
+        .steps
+        .iter()
+        .map(|step| step.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match lang {
+        Lang::Zh => format!(
+            "计划已登记（rev {}，{} 步）：{ids}。现在按步骤执行：每个工具调用都必须带 \"step\": \"<步骤 id>\"。",
+            plan.revision,
+            plan.steps.len()
+        ),
+        Lang::En => format!(
+            "Plan recorded (rev {}, {} steps): {ids}. Execute per step from now on: every tool call must include \"step\": \"<step id>\".",
+            plan.revision,
+            plan.steps.len()
+        ),
     }
 }
 

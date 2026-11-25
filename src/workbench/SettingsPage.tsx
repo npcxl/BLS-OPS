@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Database, FileDescriptionIcon, Info, Monitor, RefreshCw, ShieldCheck, TerminalIcon, type IconComponent } from "@/components/icons";
+import { Database, FileDescriptionIcon, Info, Monitor, RefreshCw, ShieldCheck, TerminalIcon, type IconComponent } from "@/components/icons";
 import { PageHeader, PageScroll, PageSurface } from "./page-layout";
 import { SettingsContextSidebar } from "./settings-context-sidebar";
 import { ReleaseNotesPanel } from "./updater/ReleaseNotesPanel";
@@ -13,7 +13,6 @@ const CATEGORIES: {id: Category; title: string; icon: IconComponent; divider?: b
   {id:"terminal", title:"Terminal & shortcuts", icon:TerminalIcon},
   {id:"security", title:"Security & credentials", icon:ShieldCheck},
   {id:"data", title:"Data & backups", icon:Database},
-  {id:"ai", title:"AI providers", icon:Bot},
   {id:"updates", title:"App update", icon:RefreshCw, divider:true},
   {id:"release-notes", title:"Release notes", icon:FileDescriptionIcon},
   {id:"about", title:"About BLS-OPS", icon:Info},
@@ -26,8 +25,12 @@ export function SettingsPage() {
   const setCategory = useSettingsNavigation(state => state.setCategory);
   const release = useUpdaterStore(state => state.release);
   const viewport = useRef<HTMLDivElement>(null);
-  const active = CATEGORIES.find(item=>item.id===category)!;
+  // 旧版本可能把分类停在已移除的 "ai"：先回退到第一项，再异步纠正导航状态。
+  const active = CATEGORIES.find(item=>item.id===category) ?? CATEGORIES[0];
   useEffect(()=>{if(viewport.current) viewport.current.scrollTop=0;},[category]);
+  useEffect(()=>{
+    if(!CATEGORIES.some(item=>item.id===category)) setCategory("general");
+  },[category, setCategory]);
   return <PageSurface className="settings-page" data-selectable>
     <div className="settings-layout">
       <aside className="settings-navigation">

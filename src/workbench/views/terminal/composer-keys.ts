@@ -83,7 +83,13 @@ export function resolveComposerKey(
   if (event.ctrlKey && event.code === "Space") return { type: "list-toggle" };
 
   if (event.key === "Tab") {
-    // 没候选（或候选已过期）就放行，让 Tab 恢复正常的焦点导航。
+    // Shift+Tab 永远留给焦点导航。
+    if (event.shiftKey) return { type: "none" };
+    /*
+     * 有草稿就像终端一样接管（候选没跟上也一样，调用方会立即补一次）。
+     * 空草稿保持原语义：有候选时仍然可以填入（历史/路径列表常驻）。
+     */
+    if (state.hasDraft) return { type: "complete" };
     return state.hasUsableItems ? { type: "complete" } : { type: "none" };
   }
 

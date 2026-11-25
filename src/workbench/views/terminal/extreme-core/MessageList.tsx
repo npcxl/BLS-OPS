@@ -16,10 +16,21 @@ import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { formatSize } from "@/lib/format";
 import type { ExtremeAttachment, ExtremeMessage } from "@/stores/extreme-store";
+import LatticeLoader from "@/components/reactbits/LatticeLoader";
 import { AgentActivity, isAgentActivity } from "./AgentActivity";
+import { AgentStepRun, type AgentStepItem } from "./AgentStepRow";
 import { chatTime } from "./format-time";
+import { QuestionCard } from "./QuestionCard";
+import {
+  hasStepParts,
+  type MessageNotePart,
+  type MessagePart,
+  type MessageQuestionPart,
+  type MessageTextPart,
+} from "./message-parts";
 import { splitStreamingMarkdown } from "./stream-markdown";
 import { EC } from "./theme";
+import type { ApprovalEntry } from "./view/types";
 import { TaskCardView } from "./TaskCardView";
 import type { TaskArtifact, TaskCardModel } from "./task-view";
 import type { WorkspaceTarget } from "./RemoteWorkspacePanel";
@@ -157,6 +168,175 @@ const MarkdownBody = memo(function MarkdownBody({
 /** 任务卡与执行活动也是"历史"，没必要跟着每个 token 重算。 */
 const MemoAgentActivity = memo(AgentActivity);
 const MemoTaskCardView = memo(TaskCardView);
+
+/* ---------------- 一轮回复里的有序片段 ---------------- */
+
+type TurnBlock =
+  | { kind: "text"; part: MessageTextPart }
+  | { kind: "note"; part: MessageNotePart }
+  | { kind: "question"; part: MessageQuestionPart }
+  | { kind: "steps"; items: AgentStepItem[] };
+
+/**
+ * 把片段切成「正文块」与「相邻步骤组」：中间隔着正文就不再合并。
+ *
+ * 步骤按片段自带的 `taskId` 找任务卡（不依赖"这条消息是不是任务归属"）：
+ * 旧记录里任务卡挂在用户消息上，回复上的步骤行仍要能读到状态与输出。
+ */
+function turnBlocks(
+  parts: MessagePart[],
+  stepTask: TaskCardModel | undefined,
+  approvalByStep: Map<string, ApprovalEntry>,
+): TurnBlock[] {
+  const blocks: TurnBlock[] = [];
+  for (const part of parts) {
+    if (part.kind === "text") {
+      blocks.push({ kind: "text", part });
+      continue;
+    }
+    // 计划是卡片数据，不占聊天正文的位置。
+    if (part.kind === "plan") continue;
+    if (part.kind === "note") {
+      blocks.push({ kind: "note", part });
+      continue;
+    }
+    if (part.kind === "question") {
+      blocks.push({ kind: "question", part });
+      continue;
+    }
+    const step = stepTask?.steps.find((item) => item.id === `agent-${part.stepIndex}`);
+    const approval = approvalByStep.get(`${part.taskId}:${part.stepIndex}`);
+    const previous = blocks[blocks.length - 1];
+    const item: AgentStepItem = { part, step, approval };
+    if (previous?.kind === "steps") previous.items.push(item);
+    else blocks.push({ kind: "steps", items: [item] });
+  }
+  return blocks;
+}
+
+/**
+ * 200ms 内就结束的等待不显示加载行 —— 否则快回复会"闪一下"。
+ *
+ * 只在等待确实持续时才出现；`active` 一变 false 立刻收起（正文流出、
+ * 工具开始执行、任务结束都走这条）。
+ */
+function useDelayedFlag(active: boolean, delay = 200): boolean {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setVisible(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setVisible(true), delay);
+    return () => window.clearTimeout(timer);
+  }, [active, delay]);
+  return active && visible;
+}
+
+const ACTIVE_STEP = new Set(["running", "waiting"]);
+
+function stepIsActive(item: AgentStepItem): boolean {
+  if (item.approval?.phase === "denied") return false;
+  if (item.approval && !item.approval.closed) return true;
+  return Boolean(item.step && ACTIVE_STEP.has(item.step.state));
+}
+
+/**
+ * 正文与步骤按发生顺序渲染。
+ *
+ * 任何时刻最多一个「当前阶段」：
+ * * 有步骤在跑 / 等确认 → 步骤行自己就是提示，不再加字；
+ * * 步骤刚结束、模型还没开始写 → 末尾一行「正在整理结果」，正文一出就收起。
+ */
+function TurnTimeline({
+  messageId,
+  parts,
+  streaming,
+  stepTask,
+  approvalByStep,
+  sessionId,
+  onOpen,
+  onDecideApproval,
+  onOpenOutput,
+  onOpenChanges,
+}: {
+  messageId: string;
+  parts: MessagePart[];
+  streaming: boolean;
+  /** 这一轮命令所属的任务卡（消息上的步骤片段都来自同一次运行）。 */
+  stepTask?: TaskCardModel;
+  approvalByStep: Map<string, ApprovalEntry>;
+  sessionId?: string;
+  onOpen?: OpenTarget;
+  onDecideApproval?: (entry: ApprovalEntry, allow: boolean) => void;
+  onOpenOutput?: () => void;
+  onOpenChanges?: (task: TaskCardModel) => void;
+}) {
+  const { t } = useTranslation();
+  const blocks = turnBlocks(parts, stepTask, approvalByStep);
+  const last = blocks[blocks.length - 1];
+  const active = blocks.some(
+    (block) => block.kind === "steps" && block.items.some(stepIsActive),
+  );
+  const stage = streaming && last?.kind === "steps" && !active;
+  /** 步骤刚结束、模型还没吐字的短暂空窗：超过 200ms 才提示，避免闪一下。 */
+  const stageVisible = useDelayedFlag(stage);
+
+  return (
+    <div className="extreme-core-turn">
+      {blocks.map((block) => {
+        if (block.kind === "text") {
+          const isLast = block === last;
+          return (
+            <MarkdownBody
+              key={block.part.id}
+              content={block.part.text}
+              streaming={streaming && isLast}
+              sessionId={sessionId}
+              onOpen={onOpen}
+            />
+          );
+        }
+        if (block.kind === "note") {
+          // 执行前说明：模型只发了工具时由后端补的一句，紧跟下面的命令。
+          return (
+            <p key={block.part.id} className="extreme-core-turn-note">
+              {block.part.text}
+            </p>
+          );
+        }
+        if (block.kind === "question") {
+          return (
+            <QuestionCard
+              key={block.part.id}
+              part={block.part}
+              messageId={messageId}
+            />
+          );
+        }
+        return (
+          <AgentStepRun
+            key={block.items[0].part.id}
+            items={block.items}
+            goal={stepTask?.goal}
+            onDecide={onDecideApproval}
+            onOpenOutput={onOpenOutput}
+            onOpenChanges={
+              stepTask && onOpenChanges ? () => onOpenChanges(stepTask) : undefined
+            }
+          />
+        );
+      })}
+      {stageVisible && (
+        <div className="extreme-core-reply-wait extreme-core-turn-stage" role="status">
+          <span aria-hidden="true" className="extreme-core-reply-dot" />
+          {t("正在整理结果")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // GFM handles bare URLs. POSIX paths in prose also enter the same verified-link renderer.
 const plainPath = String.raw`/[a-zA-Z0-9._~+@%=-]+(?:/[a-zA-Z0-9._~+@%=-]+)*/?`;
@@ -305,11 +485,15 @@ const MessageRow = memo(function MessageRow({
   attachmentById,
   streaming,
   task,
+  stepTask,
+  approvalByStep,
   sessionId,
   onPreview,
   onOpenWorkspaceTarget,
   onResumeTask,
   onOpenChanges,
+  onDecideApproval,
+  onOpenOutput,
   onQuote,
   onEdit,
   onRetryMessage,
@@ -319,12 +503,20 @@ const MessageRow = memo(function MessageRow({
   attachmentById: Map<string, ExtremeAttachment>;
   streaming: boolean;
   task?: TaskCardModel;
+  /** 这一轮命令所属的任务卡：步骤行按它解析状态与输出。 */
+  stepTask?: TaskCardModel;
+  /** `<taskId>:<stepIndex>` → 这一步挂起 / 已表态的审批。 */
+  approvalByStep: Map<string, ApprovalEntry>;
   sessionId?: string;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
   onOpenWorkspaceTarget?: OpenTarget;
   onResumeTask?: (task: TaskCardModel) => void;
   /** 「查看实际变更」：在右栏打开这次运行的文件变更。 */
   onOpenChanges?: (task: TaskCardModel) => void;
+  /** 审批表态：按同一步骤的 taskId + callId 原地更新。 */
+  onDecideApproval?: (entry: ApprovalEntry, allow: boolean) => void;
+  /** 展开的命令：在右侧终端查看真实输出。 */
+  onOpenOutput?: () => void;
   onQuote?: (message: ExtremeMessage) => void;
   onEdit?: (message: ExtremeMessage) => void;
   /** 回复中断：用原问题重新跑一次。 */
@@ -334,14 +526,26 @@ const MessageRow = memo(function MessageRow({
 }) {
   const { t } = useTranslation();
   const mine = message.role === "user";
-  // 还没有任何正文：给一个轻量占位，避免气泡突然出现又跳高度。
-  const waiting = !mine && message.text === "";
+  /** 这一轮记下了正文与步骤的顺序：按发生顺序内联渲染。 */
+  const timeline = !mine && message.parts?.length ? message.parts : null;
+  const inlineSteps = timeline
+    ? hasStepParts(timeline) || timeline.some((part) => part.kind === "question")
+    : false;
+  /*
+   * 还没有任何正文：给一个轻量占位，避免气泡突然出现又跳高度。
+   * 有内联步骤时由步骤行 / 「正在整理结果」承担提示，不再重复。
+   */
+  const waiting = !mine && !timeline && message.text === "" && streaming;
+  /** 首段回复的等待：200ms 后才出「思考中」，正文一开始流出就收起。 */
+  const thinking = useDelayedFlag(waiting);
   /*
    * 气泡下的操作条：统一用项目的 `ExtremeIconButton` + `Tooltip`：
    * 模型回复「复制 / 引用」，自己发的「复制 / 编辑」；占位气泡没有正文，
    * 不给按钮。复制走项目剪贴板插件，失败会提示，不会假装成功。
    */
   const canAct = !waiting && !streaming && message.text.trim().length > 0;
+  const author = mine ? t("你") : message.model ? `${t("模型")}：${message.model}` : null;
+  const time = chatTime(message.createdAt, t);
   /**
    * 气泡上的文件条：**消息快照优先**。
    *
@@ -417,10 +621,22 @@ const MessageRow = memo(function MessageRow({
         </div>
       )}
       {waiting ? (
-        <div className="extreme-core-reply-wait" role="status">
-          <span aria-hidden="true" />
-          {t("正在回答…")}
-        </div>
+        thinking ? (
+          <div
+            className="extreme-core-reply-wait extreme-core-turn-stage"
+            role="status"
+            data-testid="extreme-thinking"
+          >
+            {/* 官方 LatticeLoader：格子波浪动效保留，文案由业务层传入。 */}
+            <LatticeLoader
+              label={t("思考中")}
+              cellSize={3}
+              gap={1}
+              fontSize={12}
+              showTimer={false}
+            />
+          </div>
+        ) : null
       ) : (
         <div
           id={`extreme-message-${message.id}`}
@@ -431,6 +647,19 @@ const MessageRow = memo(function MessageRow({
         >
           {mine ? (
             message.text
+          ) : inlineSteps && timeline ? (
+            <TurnTimeline
+              messageId={message.id}
+              parts={timeline}
+              streaming={streaming}
+              stepTask={stepTask}
+              approvalByStep={approvalByStep}
+              sessionId={sessionId}
+              onOpen={onOpenWorkspaceTarget}
+              onDecideApproval={onDecideApproval}
+              onOpenOutput={onOpenOutput}
+              onOpenChanges={onOpenChanges}
+            />
           ) : (
             <MarkdownBody
               content={message.text}
@@ -489,18 +718,14 @@ const MessageRow = memo(function MessageRow({
         </div>
       )}
       {/* 署名与操作同一行：自己的靠右（操作在左），模型靠左（操作在右）。 */}
-      {!waiting && <div className={cn("extreme-core-message-meta flex items-center gap-1", mine && "flex-row-reverse")}>
-        <span className="px-1 text-10" style={{ color: EC.fgSubtle }}>
-          {mine
-            ? t("你")
-            : message.model
-              ? `${t("模型")}：${message.model}`
-              : t("本机提示")}
-        </span>
+      {!waiting && (author || time || canAct) && <div className={cn("extreme-core-message-meta flex items-center gap-1", mine && "flex-row-reverse")}>
+        {author && (
+          <span className="px-1 text-10" style={{ color: EC.fgSubtle }}>{author}</span>
+        )}
         {/* 消息时间：旧记录没有 createdAt 时整段不出现，不拿"现在"冒充。 */}
-        {chatTime(message.createdAt, t) && (
+        {time && (
           <span className="text-10" style={{ color: EC.fgSubtle }}>
-            {chatTime(message.createdAt, t)}
+            {time}
           </span>
         )}
         {canAct && (
@@ -529,8 +754,18 @@ const MessageRow = memo(function MessageRow({
       {task && (
         isAgentActivity(task)
           ? (
+            /*
+             * 有内联顺序时步骤已经画在正文之间：这里只保留产物、执行结果与
+             * 「查看实际变更 / 继续执行」这些入口，不再重复一份步骤列表。
+             */
             <MemoAgentActivity
               task={task}
+              /*
+               * 有内联步骤 = 步骤已经画在正文之间，不再重复整块折叠卡。
+               * 正在等第一句话（还没有步骤）时也只留产物 / 执行结果这类
+               * 入口，不用「正在分析请求」再抢一个阶段提示。
+               */
+              hideSteps={inlineSteps || (streaming && task.steps.length === 0)}
               onPreview={onPreview}
               onOpenTarget={onOpenWorkspaceTarget}
               onResume={onResumeTask}
@@ -562,11 +797,14 @@ export const MessageList = memo(function MessageList({
   asking,
   tasks = {},
   attachments = [],
+  approvals,
   onPreview,
   sessionId,
   onOpenWorkspaceTarget,
   onResumeTask,
   onOpenChanges,
+  onDecideApproval,
+  onOpenOutput,
   onQuote,
   onEdit,
   onRetryMessage,
@@ -578,6 +816,8 @@ export const MessageList = memo(function MessageList({
   attachments?: ExtremeAttachment[];
   /** 按 taskId 索引的任务卡：挂在发起它的那条消息下面。 */
   tasks?: Record<string, TaskCardModel>;
+  /** 挂起中的审批：贴在对应步骤上，不再单独占一条确认栏。 */
+  approvals?: Record<string, ApprovalEntry>;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
   sessionId?: string;
   onOpenWorkspaceTarget?: OpenTarget;
@@ -585,6 +825,10 @@ export const MessageList = memo(function MessageList({
   onResumeTask?: (task: TaskCardModel) => void;
   /** 「查看实际变更」：在右栏打开这次运行的文件变更。 */
   onOpenChanges?: (task: TaskCardModel) => void;
+  /** 审批表态（允许 / 拒绝）：原地更新同一步骤的状态。 */
+  onDecideApproval?: (allow: boolean, callId: string, taskId: string) => void;
+  /** 展开的命令：在右侧终端查看。 */
+  onOpenOutput?: () => void;
   /** 引用这条回复：把原文带进输入框，接着问。 */
   onQuote?: (message: ExtremeMessage) => void;
   /** 编辑自己发过的那句：把原文回填输入框重写。 */
@@ -594,11 +838,24 @@ export const MessageList = memo(function MessageList({
   /** 用户消息没送达：把原文放回输入框。 */
   onResendMessage?: (message: ExtremeMessage) => void;
 }) {
-  const { t } = useTranslation();
   const attachmentById = useMemo(
     () => new Map(attachments.map((item) => [item.id, item])),
     [attachments],
   );
+  /**
+   * 审批按**步骤**索引。
+   *
+   * 同一步骤可能留着一条已拒绝的旧记录、又挂起一条新的：未关闭的优先。
+   */
+  const approvalByStep = useMemo(() => {
+    const map = new Map<string, ApprovalEntry>();
+    for (const entry of Object.values(approvals ?? {})) {
+      const key = `${entry.approval.taskId}:${entry.approval.stepIndex}`;
+      const known = map.get(key);
+      if (!known || (known.closed && !entry.closed)) map.set(key, entry);
+    }
+    return map;
+  }, [approvals]);
   /*
    * 父组件的回调有的是 `useCallback`，有的依赖草稿（每敲一个字就换一份）。
    * 这里统一转成稳定引用，否则 `MessageRow` 的 memo 永远命中不了。
@@ -608,6 +865,8 @@ export const MessageList = memo(function MessageList({
     onOpenWorkspaceTarget,
     onResumeTask,
     onOpenChanges,
+    onDecideApproval,
+    onOpenOutput,
     onQuote,
     onEdit,
     onRetryMessage,
@@ -618,6 +877,8 @@ export const MessageList = memo(function MessageList({
     onOpenWorkspaceTarget,
     onResumeTask,
     onOpenChanges,
+    onDecideApproval,
+    onOpenOutput,
     onQuote,
     onEdit,
     onRetryMessage,
@@ -639,6 +900,16 @@ export const MessageList = memo(function MessageList({
     (task: TaskCardModel) => handlers.current.onOpenChanges?.(task),
     [],
   );
+  const decideApproval = useCallback(
+    (entry: ApprovalEntry, allow: boolean) =>
+      handlers.current.onDecideApproval?.(
+        allow,
+        entry.approval.callId,
+        entry.approval.taskId,
+      ),
+    [],
+  );
+  const openOutput = useCallback(() => handlers.current.onOpenOutput?.(), []);
   const quote = useCallback((message: ExtremeMessage) => handlers.current.onQuote?.(message), []);
   const edit = useCallback((message: ExtremeMessage) => handlers.current.onEdit?.(message), []);
   const retry = useCallback(
@@ -652,58 +923,37 @@ export const MessageList = memo(function MessageList({
 
   const linked = new Set(messages.map((message) => message.taskId).filter(Boolean) as string[]);
   /**
-   * 每个任务只归属**第一条**带它的消息。
+   * 任务归属哪条消息。
    *
-   * 任务被复用（「开始吧」/「重新检查」）时可能有多条消息指向同一个 taskId，
-   * 逐条渲染就会看到两张一模一样的卡片。
+   * 优先**这一轮的 assistant 回复**（正文与步骤顺序都记在它身上，任务卡因此
+   * 跟在命令后面，而不是跑到用户提问下面）；没有 assistant 引用的旧记录才
+   * 退回第一条带 taskId 的消息。同一 taskId 的多条 assistant 取最后一条
+   * （续跑 / 平台动作会接着写一条新的回复）。
    */
   const owner = new Map<string, string>();
   for (const message of messages) {
-    if (message.taskId && !owner.has(message.taskId)) owner.set(message.taskId, message.id);
+    if (!message.taskId) continue;
+    const current = owner.get(message.taskId);
+    if (!current || message.role === "assistant") owner.set(message.taskId, message.id);
   }
   /** 没有对应消息的任务（例如直接由按钮发起）统一排在对话末尾。 */
   const orphans = Object.values(tasks).filter((task) => !linked.has(task.id));
-
-  /*
-   * 末尾的「仍在执行」：任务在跑、正文却已经写了一轮时，界面上最容易误判成
-   * "跑完了" —— 顶部活动块离得远，最后一段表格/结论看上去就是收尾。
-   *
-   * 只有当末尾那条消息自己会渲染「正在回答…」（未吐字的占位气泡）时才不加，
-   * 避免同一句提示出现两遍。占位气泡被"紧跟活动块"规则隐藏时，这里必须补上。
-   */
-  const lastMessage = messages[messages.length - 1];
-  const previousTaskId = messages[messages.length - 2]?.taskId;
-  const previousTask = previousTaskId ? tasks[previousTaskId] : undefined;
-  const lastPlaceholder = Boolean(
-    lastMessage && lastMessage.role !== "user" && lastMessage.text === "",
-  );
-  const lastHidden =
-    lastPlaceholder && Boolean(previousTask && isAgentActivity(previousTask));
-  /** 还在跑的那条任务：文案用它区分"在调工具"和"在等模型"。 */
-  const liveTask = Object.values(tasks).find(
-    (task) =>
-      task.status === "running" || task.status === "waiting" || task.status === "confirming",
-  );
-  /*
-   * 后台跑着的任务同样要提示：切走再回来时 `asking` 已经是 false，但卡片
-   * 还在"正在使用工具"，正文底部不能看起来像结束了。
-   */
-  const showLive = (asking || Boolean(liveTask)) && !(lastPlaceholder && !lastHidden);
 
   return (
     <>
       <div className="extreme-core-messages">
         {messages.map((message, index) => {
           const mine = message.role === "user";
-          const previousTaskId = messages[index - 1]?.taskId;
-          const previousTask = previousTaskId ? tasks[previousTaskId] : undefined;
-          // 还没吐字的占位：紧跟在一张"正在跑"的卡片后面时不必占位。
-          if (!mine && message.text === "" && previousTask && isAgentActivity(previousTask)) {
-            return null;
-          }
           const task = message.taskId && owner.get(message.taskId) === message.id
             ? tasks[message.taskId]
             : undefined;
+          /*
+           * 步骤行只认**这条消息片段里的 taskId**：旧记录的任务卡挂在用户消息
+           * 上，回复上的命令仍要能读到状态。按单个任务卡传入而不是整个 tasks
+           * 对象，纯文字的历史气泡在别的任务刷新时仍可被 memo 跳过。
+           */
+          const stepTaskId = message.parts?.find((part) => part.kind === "step")?.taskId;
+          const stepTask = stepTaskId ? tasks[stepTaskId] : undefined;
           // 只有"最后一条 + 正在等回复"才是流式；历史消息一次性渲染。
           const streaming = !mine && asking && index === messages.length - 1;
           return (
@@ -713,11 +963,15 @@ export const MessageList = memo(function MessageList({
               attachmentById={attachmentById}
               streaming={streaming}
               task={task}
+              stepTask={stepTask}
+              approvalByStep={approvalByStep}
               sessionId={sessionId}
               onPreview={preview}
               onOpenWorkspaceTarget={openTarget}
               onResumeTask={resumeTask}
               onOpenChanges={openChanges}
+              onDecideApproval={decideApproval}
+              onOpenOutput={openOutput}
               onQuote={quote}
               onEdit={edit}
               onRetryMessage={retry}
@@ -743,12 +997,6 @@ export const MessageList = memo(function MessageList({
             />
           </div>
         ))}
-        {showLive && (
-          <div className="extreme-core-reply-wait" role="status" data-testid="extreme-run-live">
-            <span aria-hidden="true" />
-            {liveTask ? t("仍在执行…") : t("正在回答…")}
-          </div>
-        )}
       </div>
     </>
   );

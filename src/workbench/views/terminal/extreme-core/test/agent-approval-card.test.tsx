@@ -117,3 +117,45 @@ it("hides the countdown once the user has decided", async () => {
     await i18n.changeLanguage(language);
   }
 });
+
+it("keeps the impact and decisions visible while folding the command and backup", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const onDecide = vi.fn();
+  const onOpenChanges = vi.fn();
+  const { holder, cleanup } = await renderCard(
+    <AgentApprovalCard
+      approval={approval({
+        risk: "danger",
+        summary: "更新站点配置",
+        impact: "将覆盖站点配置",
+        backupPath: "/srv/app/site.conf.bak",
+        changeId: "change-1",
+      })}
+      goal="发布静态站点"
+      phase="pending"
+      onDecide={onDecide}
+      onOpenChanges={onOpenChanges}
+    />,
+  );
+  const button = (label: string) =>
+    [...holder.querySelectorAll("button")].find((item) => item.textContent?.trim() === label);
+  try {
+    expect(holder.textContent).toContain("将覆盖站点配置");
+    expect(holder.textContent).not.toContain("发布静态站点");
+    expect(holder.textContent).not.toContain("/srv/app/site.conf.bak");
+    expect(holder.querySelector("pre")).toBeNull();
+    const details = button("查看命令与影响");
+    expect(details).toBeDefined();
+    await act(async () => details?.click());
+    expect(holder.querySelector("pre")?.textContent).toContain("systemctl restart nginx");
+    expect(holder.textContent).toContain("/srv/app/site.conf.bak");
+    await act(async () => button("查看变更")?.click());
+    expect(onOpenChanges).toHaveBeenCalledOnce();
+    await act(async () => button("允许本次")?.click());
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith(true);
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});

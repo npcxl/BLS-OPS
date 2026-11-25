@@ -198,7 +198,7 @@ export function ServerPanel({
           </div>
           {snapshot?.system && (
             <p className="truncate text-10 text-fg-subtle" title={snapshot.system.hostname}>
-              {snapshot.system.os_name} {snapshot.system.os_version} · 已运行{" "}
+              {snapshot.system.os_name} {snapshot.system.os_version} · {t("已运行")}{" "}
               {formatUptime(snapshot.system.uptime_seconds)}
             </p>
           )}

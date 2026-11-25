@@ -1,7 +1,8 @@
 import { Think } from "@ant-design/x";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FileDiff, FileText } from "@/components/icons";
+import { FileDiff } from "@/components/icons";
+import { FileKindIcon } from "./FileKindIcon";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
@@ -84,6 +85,7 @@ export function AgentActivity({
   onOpenTarget,
   onResume,
   onOpenChanges,
+  hideSteps = false,
 }: {
   task: TaskCardModel;
   onPreview?: (artifact: TaskArtifact, sessionId: string) => void;
@@ -93,6 +95,11 @@ export function AgentActivity({
   onResume?: (task: TaskCardModel) => void;
   /** 「查看实际变更」：在右栏打开这次运行的文件变更（回读后的 Diff）。 */
   onOpenChanges?: (task: TaskCardModel) => void;
+  /**
+   * 步骤已经按发生顺序画在正文之间：这里只保留产物 / 结果 / 变更入口，
+   * 不再重复一份折叠的步骤列表。
+   */
+  hideSteps?: boolean;
 }) {
   const { t } = useTranslation();
   /*
@@ -110,6 +117,73 @@ export function AgentActivity({
    * 稳定），不能在这里写 `?? []` —— 每次渲染一个新数组会让 zustand 反复重渲。
    */
   const reports = useExtremeStore((state) => state.reports[task.id]);
+  /*
+   * 步骤已经在时间线里：这里不再画折叠卡，只保留仍然有用的入口。
+   * 没有产物 / 结果 / 变更 / 续跑时整块不渲染（也不留常驻计数）。
+   */
+  if (hideSteps) {
+    const canResume = Boolean(
+      onResume &&
+        (task.status === "interrupted" ||
+          (task.status === "failed" && task.steps.length > 0)),
+    );
+    const canChanges = Boolean(onOpenChanges && hasFileWrites(task) && settled(task));
+    const hasArtifacts = Boolean(onPreview && task.artifacts.length > 0);
+    if (!reports?.length && !canResume && !canChanges && !hasArtifacts) return null;
+    return (
+      <>
+        {hasArtifacts && onPreview && (
+          <div className="flex flex-wrap gap-1 px-1">
+            {task.artifacts.map((artifact) => (
+              <Button
+                key={artifact.path}
+                variant="ghost"
+                size="xs"
+                title={artifact.path}
+                onClick={() => onPreview(artifact, task.sessionId)}
+              >
+                <FileKindIcon name={artifact.name} size={13} /> {artifact.name}
+              </Button>
+            ))}
+          </div>
+        )}
+        {canChanges && onOpenChanges && (
+          <div className="px-1">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="gap-1 text-accent"
+              title={t("打开右栏的文件变更：服务器实际回读的差异")}
+              onClick={() => onOpenChanges(task)}
+            >
+              <FileDiff size={12} />
+              {t("查看实际变更")}
+            </Button>
+          </div>
+        )}
+        {canResume && onResume && (
+          <div className="px-1">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="gap-1 text-accent"
+              onClick={() => onResume(task)}
+            >
+              {t("继续执行")}
+            </Button>
+          </div>
+        )}
+        {reports && reports.length > 0 && (
+          <ExecutionResults
+            reports={reports}
+            sessionId={task.sessionId}
+            serverId={task.serverId}
+            onOpenTarget={onOpenTarget}
+          />
+        )}
+      </>
+    );
+  }
   if (!showAgentActivity(task)) {
     // 没有工具步骤、任务也结束了：只剩"执行结果"可能还有内容（例如上传）。
     return reports?.length ? (
@@ -164,7 +238,7 @@ export function AgentActivity({
             <div className="flex flex-wrap gap-1 px-3 pb-2">
               {task.artifacts.map((artifact) => (
                 <Button key={artifact.path} variant="ghost" size="xs" title={artifact.path} onClick={() => onPreview(artifact, task.sessionId)}>
-                  <FileText size={12} /> {artifact.name}
+                  <FileKindIcon name={artifact.name} size={13} /> {artifact.name}
                 </Button>
               ))}
             </div>

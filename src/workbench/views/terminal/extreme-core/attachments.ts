@@ -10,8 +10,13 @@ import type { ExtremeAttachment } from "@/stores/extreme-store";
 
 /** 文本文件读取上限：再大就不该整份塞进上下文。 */
 export const MAX_READ_BYTES = 512 * 1024;
-/** 二进制附件上限：base64 走 IPC 会膨胀约 1/3，8 MB 是稳妥范围。 */
-export const MAX_BINARY_BYTES = 8 * 1024 * 1024;
+/**
+ * 二进制附件**不设业务上限**。
+ *
+ * 之前 8 MB 的硬限制把常见的 `dist.zip`（刚过 8 MB，界面还显示 8.0 MB）
+ * 直接判成「读取失败」，用户完全不知道为什么。现在能读多大就读多大，
+ * 真正的边界只有 WebView / 进程内存；读失败会把系统错误原样显示出来。
+ */
 /** 单个文本附件发给模型的字符上限。 */
 export const MAX_ATTACH_CHARS = 8_000;
 /** 焦点附件（右键「添加到对话」选中）的额度，比普通附件大。 */
@@ -70,13 +75,6 @@ export async function readAttachment(
   };
 
   if (!isTextFile(file.name)) {
-    if (file.size > MAX_BINARY_BYTES) {
-      return {
-        ...base,
-        state: "failed",
-        error: t("二进制文件超过 {{size}}，无法上传", { size: formatSize(MAX_BINARY_BYTES) }),
-      };
-    }
     try {
       return {
         ...base,

@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::protocol::{AgentOutcome, AgentStep, PendingApproval, MAX_TOTAL_SECONDS};
+use super::protocol::{
+    AgentOutcome, AgentPlan, AgentStep, PendingApproval, PendingQuestion, QuestionAnswer,
+    MAX_TOTAL_SECONDS,
+};
 use super::runner::PruneReport;
 use crate::deployment::ai::model::AiCancel;
 
@@ -89,10 +92,18 @@ pub struct AgentSnapshot {
     pub steps: Vec<AgentStep>,
     /// 正在等确认的那条操作（没有就是 `None`）。
     pub pending_approval: Option<PendingApproval>,
+    /// 正在等用户回答的问题（没有就是 `None`）。
+    pub pending_question: Option<PendingQuestion>,
     /// 最近一轮的上下文用量；还没请求过模型时为 `None`。
     pub context: Option<ContextUsage>,
     /// 验证结论：`verified` / `partial` / `needs_info`；没执行过步骤时为 `None`。
     pub outcome: Option<AgentOutcome>,
+    /// 本轮的结构化计划（MAX 强制计划）；普通模式为 `None`。
+    pub plan: Option<AgentPlan>,
+    /// 本轮是否要求先提交计划（由用户选择的 MAX 决定，与供应商实际档位无关）。
+    pub plan_required: bool,
+    /// 实际发给供应商的思考强度（`max` 已按模型能力收敛，例如 high）。
+    pub effort: Option<String>,
     pub updated_at: i64,
 }
 
@@ -109,8 +120,12 @@ impl AgentSnapshot {
             session_id: session_id.to_string(),
             steps: Vec::new(),
             pending_approval: None,
+            pending_question: None,
             context: None,
             outcome: None,
+            plan: None,
+            plan_required: false,
+            effort: None,
             updated_at: crate::db::AppDb::now(),
         }
     }
@@ -126,6 +141,8 @@ pub struct AgentHandle {
     cancel: AiCancel,
     /// callId → 等待审批的回复通道。
     approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// questionId → 等待用户回答的通道。
+    answers: Mutex<HashMap<String, oneshot::Sender<QuestionAnswer>>>,
     /**
      * 运行中用户补充的指令（「更新当前任务」）。
      *
@@ -150,6 +167,7 @@ impl AgentHandle {
             snapshot: Mutex::new(snapshot),
             cancel,
             approvals: Mutex::new(HashMap::new()),
+            answers: Mutex::new(HashMap::new()),
             steers: Mutex::new(Vec::new()),
             withdrawn: Mutex::new(HashSet::new()),
             finished_at: Mutex::new(None),
@@ -229,6 +247,39 @@ impl AgentHandle {
         if let Ok(mut approvals) = self.approvals.lock() {
             approvals.remove(call_id);
         }
+    }
+
+    /// 登记一次“等待用户回答”；返回的接收端被 drop 时按超时处理。
+    pub fn wait_answer(&self, question_id: &str) -> oneshot::Receiver<QuestionAnswer> {
+        let (sender, receiver) = oneshot::channel();
+        if let Ok(mut answers) = self.answers.lock() {
+            answers.insert(question_id.to_string(), sender);
+        }
+        receiver
+    }
+
+    /// 提交回答。只认第一次：问题已回答 / 已超时后返回 false。
+    pub fn resolve_answer(&self, question_id: &str, answer: QuestionAnswer) -> bool {
+        let sender = self
+            .answers
+            .lock()
+            .ok()
+            .and_then(|mut answers| answers.remove(question_id));
+        match sender {
+            Some(sender) => sender.send(answer).is_ok(),
+            None => false,
+        }
+    }
+
+    pub fn forget_answer(&self, question_id: &str) {
+        if let Ok(mut answers) = self.answers.lock() {
+            answers.remove(question_id);
+        }
+    }
+
+    /// 当前挂起的问题（带完整选项，命令层据此校验回答）。
+    pub fn pending_question(&self) -> Option<PendingQuestion> {
+        self.snapshot().pending_question
     }
 
     /**
@@ -322,6 +373,7 @@ impl AgentHandle {
                         .to_string(),
                 );
                 snapshot.pending_approval = None;
+                snapshot.pending_question = None;
                 snapshot.updated_at = now;
                 reaped = true;
             }
@@ -342,6 +394,7 @@ impl AgentHandle {
         self.cancel.cancel();
         self.update(|snapshot| {
             snapshot.pending_approval = None;
+            snapshot.pending_question = None;
             if !snapshot.terminal() {
                 snapshot.status = "cancelled".to_string();
                 snapshot.error = Some(reason.to_string());
@@ -408,8 +461,9 @@ impl AgentRegistry {
         if let Some(handle) = self.get(task_id) {
             handle.mark_finished();
             handle.update(|snapshot| {
-                // 结束了就不该再有"等你确认"：否则重进会画出一个点不动的确认条。
+                // 结束了就不该再有"等你确认 / 回答"：否则重进会画出点不动的卡片。
                 snapshot.pending_approval = None;
+                snapshot.pending_question = None;
                 if !snapshot.terminal() {
                     snapshot.status = "cancelled".to_string();
                 }

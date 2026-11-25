@@ -369,17 +369,113 @@ pub async fn sftp_write_file(
     Ok(())
 }
 
+/// 与 Agent 完全同一条快照命令：size / 规范化路径 / base64 正文。
+///
+/// 编辑器保存也走它，二进制 / 过大 / 读不到三种情况得到的结果与 AI 写入一致，
+/// 右栏的说法才不会两套。
+async fn read_change_snapshot(
+    state: &AppState,
+    session_id: &str,
+    path: &str,
+) -> Result<crate::agent::FileSnapshot, String> {
+    let output = state
+        .ssh
+        .exec(
+            session_id,
+            &crate::agent::snapshot_command(path),
+            Duration::from_secs(30),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.truncated {
+        return Err("文件太大，单条命令的输出被截断（不生成逐行 Diff）".to_string());
+    }
+    crate::agent::parse_snapshot(&output.stdout, path)
+}
+
+/// 编辑器保存 → 一条真实变更记录（保存后以**服务器回读**为准）。
+async fn record_editor_change(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    path: &str,
+    before: Option<crate::agent::FileSnapshot>,
+    workspace_id: Option<String>,
+    server: Option<String>,
+    server_id: Option<String>,
+) {
+    // 手动编辑归到同一条"编辑器保存"批次：面板的"运行"选择器里能认出来。
+    let task_id = "editor".to_string();
+    let registry = state.changes.clone();
+    let id = uuid::Uuid::new_v4().to_string();
+    registry.create(
+        crate::agent::ChangeDraft {
+            id: id.clone(),
+            task_id: task_id.clone(),
+            call_id: "editor-save".to_string(),
+            step_index: 0,
+            workspace_id,
+            server_id,
+            server: server.unwrap_or_default(),
+            tool: "editor".to_string(),
+            path: path.to_string(),
+        },
+        "written",
+        "actual",
+    );
+    let actual = read_change_snapshot(state, session_id, path).await;
+    registry.update(&id, |record| {
+        record.before = before.clone();
+        match &actual {
+            Ok(snapshot) => {
+                let unchanged = before
+                    .as_ref()
+                    .is_some_and(|item| item.exists && item.sha == snapshot.sha);
+                record.actual = Some(snapshot.clone());
+                if unchanged {
+                    record.status = "unchanged".to_string();
+                    record.note = Some("保存的内容与服务器上一致：没有产生改动".to_string());
+                }
+            }
+            Err(reason) => {
+                // 保存本身可能已经成功：改写结论是不对的，只把"证明不了"说清楚。
+                record.stage = "none".to_string();
+                record.status = "readback_failed".to_string();
+                record.note = Some(format!("保存成功，但回读失败，无法证明实际内容：{reason}"));
+            }
+        }
+        if record.before.is_none() && record.stage != "none" {
+            record.stage = "none".to_string();
+            record.note = Some("读取修改前的内容失败：只能看到保存后的结果".to_string());
+        }
+        record.recount();
+    });
+    if let Some(summary) = registry.get(&id) {
+        let mut event = crate::agent::AgentEvent::new(&task_id, "file_change");
+        event.change_id = Some(summary.id.clone());
+        event.change = Some(summary);
+        let _ = app.emit(crate::agent::AGENT_EVENT, event);
+    }
+}
+
 /// 编辑器保存：带版本冲突检测，并在覆盖前留一份本机历史。
 ///
 /// `expected` 是打开文件时拿到的版本；不一致时**不写**，把当前版本回给前端，
 /// 由用户选择重新加载 / 另存 / 明确覆盖。
+///
+/// 保存成功后登记一条文件变更：修改前/后都来自服务器快照，不拿前端提交的
+/// `content` 当"实际结果"。
 #[tauri::command]
 pub async fn sftp_save_editor_file(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     path: String,
     content: String,
     expected: Option<crate::ssh::RemoteFileVersion>,
+    workspace_id: Option<String>,
+    server: Option<String>,
+    server_id: Option<String>,
 ) -> OpsResult<crate::ssh::SaveFileOutcome> {
     const MAX_EDIT_SIZE: u64 = 2 * 1024 * 1024;
     // 覆盖之前先把**旧内容**存到本机：保存错了还能捞回来。
@@ -395,6 +491,8 @@ pub async fn sftp_save_editor_file(
             }
         }
     }
+    // 修改前的快照：读不到只影响 Diff，不影响保存。
+    let before = read_change_snapshot(&state, &session_id, &path).await.ok();
     let outcome = state
         .ssh
         .save_text_file(&session_id, &path, &content, expected.as_ref())
@@ -403,6 +501,17 @@ pub async fn sftp_save_editor_file(
     // 冲突时并没有写入，但审计里记一条"尝试保存"没有意义 —— 只在真正落盘后记录。
     if matches!(outcome, crate::ssh::SaveFileOutcome::Saved { .. }) {
         record_audit(&state, "sftp_write_file", None, None, &path);
+        record_editor_change(
+            &app,
+            &state,
+            &session_id,
+            &path,
+            before,
+            workspace_id,
+            server,
+            server_id,
+        )
+        .await;
     }
     Ok(outcome)
 }

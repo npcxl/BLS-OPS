@@ -14,10 +14,13 @@ import { FileChangesPane } from "../FileChangesPane";
  */
 const list = vi.fn();
 const detail = vi.fn();
+/** 本轮净变化：默认「没有可用数据」，让老用例继续走逐条历史。 */
+const net = vi.fn();
 
 vi.mock("@/api/ops-api", () => ({
   opsApi: {
     aiAgentFileChanges: (...args: unknown[]) => list(...args),
+    aiAgentFileChangesNet: (...args: unknown[]) => net(...args),
     aiAgentFileChangeDetail: (...args: unknown[]) => detail(...args),
   },
 }));
@@ -109,6 +112,9 @@ async function renderPane(node: React.ReactElement) {
 beforeEach(() => {
   list.mockReset();
   detail.mockReset();
+  net.mockReset();
+  // 默认：内存里没有本轮记录（重启后看历史），面板回落逐条记录。
+  net.mockResolvedValue({ available: false, rows: [], unchanged: 0 });
   useExtremeStore.setState({ fileChanges: {}, changeViews: {}, tasks: {} });
   // happy-dom 没有实现滚动：点文件时不能因此抛错。
   Element.prototype.scrollIntoView = vi.fn();
@@ -317,6 +323,168 @@ it("offers a pending view and jumps to a file from the tree", async () => {
     // 切到待确认：只剩还没放行的那份，已写入的不再混进来。
     expect(text).toContain("ops.conf");
     expect(text).not.toContain("index.html");
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/** 列表接口失败：显示「加载失败」+ 原因 + 重试，不能吞成"暂无变更"。 */
+it("shows the list failure with a retry instead of an empty panel", async () => {
+  list.mockRejectedValueOnce(new Error("连接已断开"));
+  list.mockResolvedValue([]);
+
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const { holder, cleanup } = await renderPane(
+    <FileChangesPane
+      workspaceId="w1"
+      serverName="prod"
+      sessionId="ssh-1"
+      onOpenRemotePath={() => undefined}
+    />,
+  );
+  try {
+    const text = holder.textContent ?? "";
+    expect(text).toContain("加载失败");
+    expect(text).toContain("连接已断开");
+    expect(text).not.toContain("暂无变更");
+
+    const retry = [...holder.querySelectorAll("button")].find((node) =>
+      (node.textContent ?? "").includes("重试"),
+    ) as HTMLButtonElement | undefined;
+    expect(retry).toBeTruthy();
+    await act(async () => {
+      retry!.click();
+    });
+    for (let index = 0; index < 6; index += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(holder.textContent ?? "").toContain("暂无变更");
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/**
+ * 净变化成功但为空：明确说「本轮无文件净变化」，**不能**再把逐步记录画出来。
+ *
+ * 这正是 `available` 存在的理由：空数组 ≠ 算不出来。
+ */
+it("shows the empty net result instead of falling back to step records", async () => {
+  const untouched = change({
+    id: "c1",
+    status: "unchanged",
+    stage: "actual",
+    additions: 0,
+    deletions: 0,
+    diffReady: false,
+  });
+  useExtremeStore.setState({ fileChanges: { c1: untouched } });
+  list.mockResolvedValue([untouched]);
+  net.mockResolvedValue({ available: true, rows: [], unchanged: 1 });
+
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const { holder, cleanup } = await renderPane(
+    <FileChangesPane
+      workspaceId="w1"
+      serverName="prod"
+      sessionId="ssh-1"
+      onOpenRemotePath={() => undefined}
+    />,
+  );
+  try {
+    const text = holder.textContent ?? "";
+    expect(text).toContain("本轮无文件净变化");
+    expect(text).toContain("原样保存或改回原样");
+    // 关键：被隐藏的那条记录不能再冒出来。
+    expect(holder.querySelector("[data-change-id]")).toBeNull();
+    expect(text).not.toContain("ops.conf");
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/** 零行变化：不画 `+0 -0`，改成原因文字（新增空文件 / 二进制已修改…）。 */
+it("never renders +0 / -0 and uses the reason text instead", async () => {
+  const record = change({ id: "c1" });
+  useExtremeStore.setState({ fileChanges: { c1: record } });
+  list.mockResolvedValue([record]);
+  const empty = change({
+    id: "net:task-1:/etc/nginx/conf.d/ops.conf",
+    status: "written",
+    created: true,
+    additions: 0,
+    deletions: 0,
+    diffReady: true,
+    reason: "新增空文件",
+  });
+  net.mockResolvedValue({ available: true, rows: [empty], unchanged: 0 });
+  detail.mockResolvedValue({
+    ...detailOf(empty),
+    diff: { additions: 0, deletions: 0, unchanged: 0, tooLarge: false, hunks: [], note: null },
+  });
+
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const { holder, cleanup } = await renderPane(
+    <FileChangesPane
+      workspaceId="w1"
+      serverName="prod"
+      sessionId="ssh-1"
+      onOpenRemotePath={() => undefined}
+    />,
+  );
+  try {
+    const text = holder.textContent ?? "";
+    expect(text).toContain("新增空文件");
+    expect(text).not.toContain("+0");
+    expect(text).not.toContain("-0");
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/** 确认后 actual Diff 到达（updatedAt 变大）：详情必须重新拉，不能留旧预览。 */
+it("refetches the detail when the actual diff supersedes the preview", async () => {
+  const proposed = change({ id: "c9", stage: "proposed", status: "proposed", updatedAt: 2 });
+  useExtremeStore.setState({ fileChanges: { [proposed.id]: proposed } });
+  list.mockResolvedValue([proposed]);
+  detail.mockResolvedValue(detailOf(proposed));
+
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const { holder, cleanup } = await renderPane(
+    <FileChangesPane
+      workspaceId="w1"
+      serverName="prod"
+      sessionId="ssh-1"
+      onOpenRemotePath={() => undefined}
+    />,
+  );
+  try {
+    expect(detail).toHaveBeenCalledTimes(1);
+
+    const actual = change({ id: "c9", stage: "actual", status: "written", updatedAt: 9 });
+    detail.mockResolvedValue(detailOf(actual));
+    // 净变化由后端按最新记录重算：这轮返回的就是 actual 那一版。
+    list.mockResolvedValue([actual]);
+    await act(async () => {
+      useExtremeStore.getState().mergeFileChange(actual);
+    });
+    for (let index = 0; index < 6; index += 1) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+    expect(detail).toHaveBeenCalledTimes(2);
+    expect(holder.textContent ?? "").toContain("实际变更");
   } finally {
     await cleanup();
     await i18n.changeLanguage(language);

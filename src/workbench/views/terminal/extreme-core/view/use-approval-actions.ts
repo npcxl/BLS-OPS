@@ -27,9 +27,6 @@ export interface ApprovalActionsDeps {
   >;
   updateApprovalEntry: (key: string, patch: Partial<ApprovalEntry>) => void;
   dropApprovals: (match: (entry: ApprovalEntry) => boolean) => void;
-  /** 确认后另起一条回复气泡（由事件管线提供）。 */
-  startReplyAfterApproval: (taskId: string, ownerId: string) => string;
-  pushMessageTo: Store["pushMessageTo"];
   setNotice: Store["setNotice"];
 }
 
@@ -41,8 +38,6 @@ export function useApprovalActions(deps: ApprovalActionsDeps) {
     decideApprovalRef,
     updateApprovalEntry,
     dropApprovals,
-    startReplyAfterApproval,
-    pushMessageTo,
     setNotice,
   } = deps;
 
@@ -80,25 +75,10 @@ export function useApprovalActions(deps: ApprovalActionsDeps) {
           return;
         }
         /*
-         * **确认送达就收起确认条**：用户表过态之后，这里不该再挂一条"已允许"。
-         * 操作折成一行历史记录（"已允许执行：… · 正在执行"），进度看任务卡与
-         * 右栏「计划」；执行失败由执行器事件回写，不靠这条横幅。
+         * **确认送达后不再另起气泡**：这一步就在时间线里，状态更新直接落在
+         * 同一个步骤上（执行中 → 成功 / 失败；拒绝 → 未执行）。另发一条聊天
+         * 回执会把结论推到回执下方，顺序就乱了。
          */
-        const what =
-          entry.approval.summary?.trim() ||
-          entry.approval.command.split("\n")[0]?.trim() ||
-          entry.approval.path ||
-          "";
-        pushMessageTo(ownerId, {
-          id: `msg-${crypto.randomUUID()}`,
-          role: "assistant",
-          local: true,
-          text: `${allow ? t("已允许执行") : t("已拒绝执行")}：${what} · ${
-            allow ? t("正在执行") : t("此步骤未执行")
-          }`,
-        });
-        // 回执留在原位；后续正文另起一条回复，结论才会写在回执下面。
-        startReplyAfterApproval(taskId, ownerId);
         /*
          * 后端收下了决定：把结果状态从"正在提交"推进到最终态。
          *
@@ -118,7 +98,7 @@ export function useApprovalActions(deps: ApprovalActionsDeps) {
         updateApprovalEntry(key, { phase: "failed", failure: toAppError(cause).message });
       }
     },
-    [dropApprovals, pushMessageTo, setNotice, startReplyAfterApproval, t, updateApprovalEntry],
+    [dropApprovals, setNotice, t, updateApprovalEntry],
   );
   decideApprovalRef.current = decideApprovalById;
 

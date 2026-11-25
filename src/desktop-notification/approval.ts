@@ -33,6 +33,7 @@ import {
   type DesktopNotificationPayload,
 } from "@/desktop-notification/bridge";
 import { isWindowHidden, setCollapsed } from "@/desktop-notification/visibility";
+import { notificationAllowed } from "@/stores/extreme-settings-store";
 
 export type ApprovalNoticePhase = "pending" | "sending" | "allowed" | "denied" | "failed";
 
@@ -194,8 +195,8 @@ export function syncApprovalNotifications(
     shown.delete(id);
   }
 
-  if (!isWindowHidden()) {
-    // 前台：确认条在眼前，通知不该同时可点。
+  if (!isWindowHidden() || !notificationAllowed("approval")) {
+    // 前台 / 用户关掉了审批通知：确认条已在会话里，通知不该同时可点。
     dismissShown();
     return;
   }
@@ -249,6 +250,7 @@ export function installApprovalNotifications(
 
   void listen("app:collapsed", () => {
     setCollapsed(true);
+    if (!notificationAllowed("approval")) return;
     // 先有确认条、后收起：**每一条**都补发一次。
     for (const [id, notice] of current) {
       shown.add(id);
@@ -266,6 +268,7 @@ export function installApprovalNotifications(
       clearExtremeNotifications();
       return;
     }
+    if (!notificationAllowed("approval")) return;
     for (const [id, notice] of current) {
       shown.add(id);
       pushDesktopNotification({ id, ...compose(notice, t) });

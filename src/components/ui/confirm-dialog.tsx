@@ -22,6 +22,15 @@ export type ConfirmRisk = "normal" | "danger" | "irreversible";
 /** 连点保护窗口：双击间隔通常 < 300ms，取 400ms 足够且不挡用户重试。 */
 const SUBMIT_GUARD_MS = 400;
 
+/**
+ * 确认卡宽度。
+ *
+ * 参考的 Material 3 确认框只有 320px，中文长句（"将用备份覆盖 /srv/... 并按
+ * 当前权限重新核对版本"）会被拆成五六行；这里放到 520px —— 说明仍是一段，
+ * 但不会把弹窗拉成竖条。窄窗口由 `max-w-[calc(100vw-32px)]` 兜住。
+ */
+const CONFIRM_WIDTH = 520;
+
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
@@ -117,35 +126,39 @@ export function ConfirmDialog({
   return (
     <Modal
       open={open}
-      size="sm"
+      width={CONFIRM_WIDTH}
+      bare
+      className="max-w-[calc(100vw-32px)]"
       title={title}
       onClose={pending ? undefined : onCancel}
       busy={pending}
       closeOnBackdrop={!pending}
     >
       <div className="flex flex-col gap-3" onKeyDown={onContentKeyDown}>
+        {/*
+         * 风险提示只占一行：图标 + 一句话，不画背景块。
+         * 整块红底会把"这次真的危险"喊成噪音，也把确认卡撑得零碎。
+         */}
         {level !== "normal" && (
-          <div
+          <p
             className={cn(
-              "flex items-start gap-2 rounded-[8px] border px-2.5 py-2 text-11 leading-relaxed",
-              level === "irreversible"
-                ? "border-danger/40 bg-danger/10 text-danger"
-                : "border-warning/35 bg-warning/10 text-warning",
+              "flex items-start gap-1.5 text-12 leading-5",
+              level === "irreversible" ? "text-danger" : "text-warning",
             )}
           >
-            <TriangleAlert size={14} strokeWidth={1.9} className="mt-px shrink-0" />
+            <TriangleAlert size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
             <span className="min-w-0 flex-1 break-words">
               {level === "irreversible"
                 ? t("This action cannot be undone.")
                 : t("This action changes data. Please check the target before continuing.")}
             </span>
-          </div>
+          </p>
         )}
 
-        <div className="text-12 leading-relaxed break-words text-fg-muted">{description}</div>
+        <div className="text-[13px] leading-6 break-words text-fg-muted">{description}</div>
 
         {consequences && consequences.length > 0 && (
-          <ul className="flex list-disc flex-col gap-0.5 rounded-[8px] border border-line bg-surface-2/60 py-1.5 pl-6 pr-2 text-11 leading-relaxed text-fg-muted">
+          <ul className="flex list-disc flex-col gap-0.5 pl-5 text-12 leading-6 text-fg-subtle">
             {consequences.map((item) => (
               <li key={item} className="break-words">
                 {item}
@@ -181,13 +194,15 @@ export function ConfirmDialog({
           </ErrorText>
         )}
 
-        <div className="mt-1 flex items-center justify-end gap-2">
+        {/* 右下角两颗胶囊：取消是浅色无描边，确认按风险上色（红 / 主色）。 */}
+        <div className="mt-2 flex items-center justify-end gap-2">
           <Button
             variant="ghost"
             size="sm"
             disabled={pending}
             data-autofocus={destructive ? true : undefined}
             onClick={onCancel}
+            className="h-9 rounded-full bg-surface-2 px-4 text-12 font-medium text-fg hover:bg-surface-3"
           >
             {cancelText}
           </Button>
@@ -198,6 +213,7 @@ export function ConfirmDialog({
             aria-busy={pending || undefined}
             data-autofocus={destructive ? undefined : true}
             onClick={submit}
+            className="h-9 rounded-full px-4 text-12 font-medium"
           >
             {pending && <Loader2 size={12} className="animate-spin" />}
             {pending ? t("Processing") : confirmText}

@@ -14,6 +14,8 @@ export function changeStatusLabel(status: string, t: Translate): string {
       return t("拟修改");
     case "written":
       return t("已写入");
+    case "deleted":
+      return t("已删除");
     case "unchanged":
       return t("无变化");
     case "write_failed":
@@ -43,6 +45,7 @@ export function changeTone(status: string): ChangeTone {
     case "proposed":
       return "info";
     case "written":
+    case "deleted":
       return "success";
     case "unchanged":
       return "neutral";
@@ -64,28 +67,68 @@ export function isPending(status: string): boolean {
 }
 
 /**
+ * 已确认落地的净变化：只有这类才算进「已更改的文件」。
+ *
+ * `uncollected` / `readback_failed` / `unavailable` 是"没有可靠快照"的条目，
+ * 照常列出（要能核对），但不能算已确认变更。
+ */
+export function isConfirmedChange(change: FileChangeSummary): boolean {
+  return change.status === "written" || change.status === "deleted";
+}
+
+/**
+ * 计数为 0 时替代 `+0 -0` 的文字。
+ *
+ * 净变化条目由后端给出具体原因（新增空文件 / 二进制已修改 / 敏感内容已变化…）；
+ * 逐条历史没有这个字段，就按状态与已知标记推一句。
+ */
+export function changeReasonLabel(change: FileChangeSummary, t: Translate): string {
+  // 后端给的是具体原因（新增空文件 / 二进制已修改…）：当成文案 key 交给 i18n，
+  // 没有对应翻译时原样返回，不会丢信息。
+  if (change.reason) return t(change.reason);
+  if (change.uncollected || change.status === "uncollected") return t("未采集差异");
+  if (change.status === "readback_failed") return t("回读失败");
+  if (change.status === "unavailable") return t("无法对比");
+  if (change.status === "write_failed") return t("写入失败");
+  if (change.binary) return t("二进制已修改");
+  if (change.created && change.additions === 0) return t("新增空文件");
+  if (change.status === "deleted" && change.deletions === 0) return t("删除空文件");
+  return changeStatusLabel(change.status, t);
+}
+
+/**
  * 一批变更的整体结论。
  *
  * **不能用某个文件的成功替整批背书**：只要有一个失败，整批就是"部分成功"或
  * "失败"，不会显示成"已写入"。
  */
 export interface BatchSummary {
+  /** 展示的条目数（含未确认 / 未采集）。 */
   files: number;
+  /** 已确认发生净变化的文件数：未确认 / 未采集**不计入**。 */
+  changed: number;
   additions: number;
   deletions: number;
   pending: number;
   written: number;
   failed: number;
   skipped: number;
-  /** `pending` / `written` / `partial` / `failed` / `skipped` / `empty`。 */
-  state: "pending" | "written" | "partial" | "failed" | "skipped" | "empty";
+  /** `pending` / `written` / `partial` / `failed` / `skipped` / `empty` / `nochange`。 */
+  state: "pending" | "written" | "partial" | "failed" | "skipped" | "empty" | "nochange";
   /** 所有记录都属于同一台服务器时给名字，否则 `null`（界面显示"多台服务器"）。 */
   server: string | null;
 }
 
-export function batchSummary(changes: FileChangeSummary[]): BatchSummary {
+/**
+ * 一批变更的整体结论。
+ *
+ * `net=true` 表示这批是**净变化**：此时空列表 = "本轮确实没有变化"，
+ * 界面显示「本轮无文件净变化」，而不是"没有可展示的变更"。
+ */
+export function batchSummary(changes: FileChangeSummary[], net = false): BatchSummary {
   const summary: BatchSummary = {
     files: changes.length,
+    changed: 0,
     additions: 0,
     deletions: 0,
     pending: 0,
@@ -98,13 +141,23 @@ export function batchSummary(changes: FileChangeSummary[]): BatchSummary {
   const servers = new Set<string>();
   for (const change of changes) {
     servers.add(change.server);
-    summary.additions += Math.max(0, change.additions);
-    summary.deletions += Math.max(0, change.deletions);
     switch (change.status) {
       case "proposed":
+        /*
+         * 待确认预览**独立统计**：行数按预览本身算（用户要看的正是"改了哪些行"），
+         * 但不计入「已更改的文件」—— 它还没有落地。
+         */
         summary.pending += 1;
+        summary.additions += Math.max(0, change.additions);
+        summary.deletions += Math.max(0, change.deletions);
         break;
       case "written":
+      case "deleted":
+        summary.written += 1;
+        summary.changed += 1;
+        summary.additions += Math.max(0, change.additions);
+        summary.deletions += Math.max(0, change.deletions);
+        break;
       case "unchanged":
         summary.written += 1;
         break;
@@ -117,10 +170,10 @@ export function batchSummary(changes: FileChangeSummary[]): BatchSummary {
     }
   }
   if (servers.size !== 1) summary.server = null;
-  if (summary.files === 0) summary.state = "empty";
+  if (summary.files === 0) summary.state = net ? "nochange" : "empty";
   else if (summary.pending > 0) summary.state = "pending";
-  else if (summary.failed > 0) summary.state = summary.written > 0 ? "partial" : "failed";
-  else if (summary.written > 0) summary.state = "written";
+  else if (summary.failed > 0) summary.state = summary.changed > 0 ? "partial" : "failed";
+  else if (summary.changed > 0) summary.state = "written";
   else summary.state = "skipped";
   return summary;
 }
@@ -132,6 +185,8 @@ export function batchTone(state: BatchSummary["state"]): ChangeTone {
       return "info";
     case "written":
       return "success";
+    case "nochange":
+      return "neutral";
     case "partial":
       return "warning";
     case "failed":
@@ -145,6 +200,8 @@ export function batchStateLabel(state: BatchSummary["state"], t: Translate): str
   switch (state) {
     case "pending":
       return t("待确认");
+    case "nochange":
+      return t("无净变化");
     case "written":
       return t("已写入");
     case "partial":

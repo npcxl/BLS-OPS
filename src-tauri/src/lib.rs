@@ -40,6 +40,8 @@ pub mod env_probe;
 /// journald log querying (P3-1.2).
 pub mod journal;
 mod keyring;
+/// MCP 服务管理 + 最小客户端（stdio / HTTP JSON-RPC）。
+pub mod mcp;
 /// Public so the integration tests in `tests/` can drive the real monitoring
 /// layer against an in-process SSH server.
 pub mod monitor;
@@ -443,15 +445,28 @@ pub fn run() {
             commands::agent_start,
             commands::agent_snapshot,
             commands::agent_approve,
+            commands::agent_answer_question,
             commands::agent_steer,
             commands::agent_resume,
             commands::agent_cancel,
             commands::agent_abandon,
+            // MCP 服务管理：配置 / 测试连接 / 能力刷新 / 工具启停
+            commands::mcp_server_list,
+            commands::mcp_server_save,
+            commands::mcp_server_delete,
+            commands::mcp_server_test,
+            commands::mcp_server_test_draft,
+            commands::mcp_registry_search,
+            commands::mcp_tool_set_enabled,
             // 文件变更审阅：列表只给摘要，Diff 正文按需加载
             commands::agent_file_changes,
+            commands::agent_file_changes_net,
             commands::agent_file_change_record,
             commands::agent_file_change_detail,
+            commands::agent_task_changes_save,
             commands::extreme_task_save,
+            commands::extreme_workspace_list,
+            commands::extreme_workspace_sync,
             // ---- 极核：实时日志（独立于问答任务的 SSH 长连接） ----
             commands::extreme_log_start,
             commands::extreme_log_stop,

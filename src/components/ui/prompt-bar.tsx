@@ -148,6 +148,13 @@ export interface PromptBarProps {
    * 由这里渲染，保住发送键永远在最后一个。
    */
   trailing?: ReactNode;
+  /**
+   * 附件胶囊左侧的图标（本项目的适配点，官方写死一个通用文件图标）。
+   *
+   * 超能模式按扩展名给 vscode-icons（.conf / .log / Dockerfile / 图片…），
+   * 组件本身不依赖任何图标集，由调用方决定。
+   */
+  renderAttachmentIcon?: (file: string) => ReactNode;
 }
 
 type Row = {
@@ -252,7 +259,8 @@ const PromptBar: React.FC<PromptBarProps> = ({
   maxRows = 5,
   pressScale = 0.96,
   className = '',
-  trailing
+  trailing,
+  renderAttachmentIcon
 }) => {
   const { t } = useTranslation();
   const reduce = useReducedMotion();
@@ -785,7 +793,11 @@ const PromptBar: React.FC<PromptBarProps> = ({
                 key={`${file}-${i}`}
                 className="inline-flex h-[26px] items-center gap-1.5 rounded-lg pr-1 pl-2 text-[12px] [animation:prompt-bar-pop_200ms_cubic-bezier(0.23,1,0.32,1)_both] [background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] motion-reduce:[animation:none]"
               >
-                <HugeiconsIcon icon={File02Icon} size={12} strokeWidth={2} />
+                {renderAttachmentIcon ? (
+                  renderAttachmentIcon(file)
+                ) : (
+                  <HugeiconsIcon icon={File02Icon} size={12} strokeWidth={2} />
+                )}
                 <span className="max-w-[144px] truncate">{file}</span>
                 <button
                   type="button"

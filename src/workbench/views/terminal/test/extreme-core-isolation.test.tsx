@@ -5,6 +5,7 @@ import { i18n } from "@/i18n";
 import { opsApi } from "@/api/ops-api";
 import type { AgentSnapshot } from "@/api/types/agent";
 import { useExtremeStore } from "@/stores/extreme-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { ExtremeCoreView } from "../extreme-core/ExtremeCoreView";
 
 /**
@@ -135,6 +136,8 @@ it("A 查日志的探测结果不会打开 B 的右栏；切回 A 才看到结�
 
     // 用户切到 B（新建一条对话）。
     await act(async () => {
+      // 这个用例验证“A 的探测不会打开 B 的右栏”：B 的新任务默认设为收起。
+      useExtremeSettingsStore.getState().update({ newTaskPane: "closed" });
       useExtremeStore.getState().addWorkspace([]);
       root.render(<ExtremeCoreView />);
     });
@@ -213,6 +216,8 @@ it("B 里的短回复不会被当成在回答 A 的日志候选", async () => {
 
     // 切到 B，回一句 "1"：不是 A 的候选，必须照常走问答。
     await act(async () => {
+      // 这个用例验证“A 的探测不会打开 B 的右栏”：B 的新任务默认设为收起。
+      useExtremeSettingsStore.getState().update({ newTaskPane: "closed" });
       useExtremeStore.getState().addWorkspace([]);
       root.render(<ExtremeCoreView />);
     });

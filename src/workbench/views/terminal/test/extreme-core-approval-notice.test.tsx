@@ -181,11 +181,11 @@ it("收起后推通知：在通知里点「拒绝执行」，回到会话看到�
     await flush();
     expect(approve).toHaveBeenCalledWith(taskId, "call-0-0", false);
 
-    // 会话里确认条收起（记录折成一行）；推送仍更新成结果。
+    // 会话里确认条收起；不再追加一条停在“已允许 / 已拒绝”的气泡。
     expect(
       holder.querySelector('[data-testid="agent-approval"]')?.closest("[hidden]"),
     ).not.toBeNull();
-    expect(holder.textContent).toContain("已拒绝执行");
+    expect(holder.textContent).not.toContain("已拒绝执行");
 
     // 通知同步更新成结果：同 id、无按钮、几秒后自己收起。
     const calls = bridge.push.mock.calls;

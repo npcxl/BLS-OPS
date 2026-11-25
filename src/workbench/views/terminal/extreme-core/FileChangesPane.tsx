@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { FileKindIcon } from "./FileKindIcon";
 import { useTranslation } from "react-i18next";
 import {
   Check,
@@ -14,7 +15,12 @@ import {
 import { StatusBadge } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
-import type { DiffHunk, FileChangeDetail, FileChangeSummary } from "@/api/types/agent";
+import type {
+  DiffHunk,
+  FileChangeDetail,
+  FileChangeSummary,
+  NetChangeSet,
+} from "@/api/types/agent";
 import { opsApi } from "@/api/ops-api";
 import { useExtremeStore, type ChangeViewState } from "@/stores/extreme-store";
 import {
@@ -24,6 +30,7 @@ import {
   batchTone,
   buildChangeTree,
   canOpenInRemote,
+  changeReasonLabel,
   changeStatusLabel,
   countInDir,
   diffSegments,
@@ -71,7 +78,15 @@ export function FileChangesPane({
   const flushChangeViews = useExtremeStore((state) => state.flushChangeViews);
 
   const [details, setDetails] = useState<Record<string, FileChangeDetail>>({});
+  /** 详情（Diff 正文）加载失败：与"列表加载失败"分开，重试范围也不同。 */
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** 摘要列表加载失败：**不能吞掉**后显示"暂无变更"。 */
+  const [listError, setListError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  /** 重试计数：变化时重新拉一次列表。 */
+  const [reloadNonce, setReloadNonce] = useState(0);
+  /** 一次性提示（比如"文件已不在服务器上"）：不打断阅读，可手动关掉。 */
+  const [notice, setNotice] = useState<string | null>(null);
   const [narrow, setNarrow] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -115,6 +130,8 @@ export function FileChangesPane({
 
   const labelOfRun = useCallback(
     (taskId: string) => {
+      // 手动编辑不是一次"运行"：单独给个名字，别显示成"运行 editor"。
+      if (taskId === "editor") return t("编辑器保存");
       const task = tasks[taskId];
       const goal = task?.goal?.trim() || task?.title?.trim();
       return goal ? goal.slice(0, 60) : t("运行 {{id}}", { id: taskId.slice(0, 8) });
@@ -153,15 +170,71 @@ export function FileChangesPane({
 
   const mode: "pending" | "run" = view.mode;
 
+  /**
+   * 本轮**净变化**：同一路径一条，比较首次操作前与最后一次验证后的版本。
+   *
+   * 后端把"算出来是空的"和"算不出来"分开返回（`available`）：前者显示
+   * 「本轮无文件净变化」，后者才回落到逐条历史 —— 空数组不会再让原来的
+   * 逐步记录重新冒出来。
+   */
+  const [netSet, setNetSet] = useState<{ taskId: string; set: NetChangeSet } | null>(null);
+  useEffect(() => {
+    if (!workspaceId || mode !== "run" || !activeTaskId) {
+      setNetSet(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void opsApi
+      .aiAgentFileChangesNet(workspaceId, activeTaskId)
+      .then((set) => {
+        if (cancelled || !set || !Array.isArray(set.rows)) return;
+        setNetSet({ taskId: activeTaskId, set });
+      })
+      .catch(() => {
+        if (!cancelled) setNetSet(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, activeTaskId, mode, mine]);
+
+  const netReady = Boolean(netSet && netSet.taskId === activeTaskId);
+  const netAvailable = netReady && Boolean(netSet?.set.available);
+
+  /**
+   * 当前批次要渲染的行。
+   *
+   * - 有净变化数据：**只**渲染后端算出来的净变化，空就是空（不再回退）；
+   * - 没有（重启后看历史）：回落逐条记录，但把"原样保存"的藏起来。
+   */
+  const runRows = useMemo(() => {
+    if (netReady && netSet?.set.available) return netSet.set.rows;
+    return mine.filter(
+      (change) => change.taskId === activeTaskId && change.status !== "unchanged",
+    );
+  }, [netReady, netSet, activeTaskId, mine]);
+
+  /** 被隐藏的「无净变化」文件数：空态和页脚要说明它们去哪了。 */
+  const hiddenUnchanged = useMemo(() => {
+    if (netAvailable) return netSet?.set.unchanged ?? 0;
+    return mine.filter(
+      (change) => change.taskId === activeTaskId && change.status === "unchanged",
+    ).length;
+  }, [netAvailable, netSet, activeTaskId, mine]);
+
   const visible = useMemo(() => {
-    const base = mode === "pending" ? pending : mine.filter((change) => change.taskId === activeTaskId);
+    const base = mode === "pending" ? pending : runRows;
     return filterChanges(base, view.filter);
-  }, [mode, pending, mine, activeTaskId, view.filter]);
+  }, [mode, pending, runRows, view.filter]);
 
   const batch = useMemo(
-    () => batchSummary(mode === "pending" ? pending : mine.filter((c) => c.taskId === activeTaskId)),
-    [mode, pending, mine, activeTaskId],
+    () => batchSummary(mode === "pending" ? pending : runRows, mode === "run" && netAvailable),
+    [mode, pending, runRows, netAvailable],
   );
+
+  /** 「已确认发生净变化」的文件数；未确认 / 未采集的条目单独标出来。 */
+  const confirmedFiles = mode === "pending" ? batch.files : batch.changed;
+  const unconfirmedFiles = Math.max(0, batch.files - batch.changed);
 
   const serverLabel = batch.server ?? (batch.files === 0 ? serverName : t("多台服务器"));
 
@@ -175,54 +248,123 @@ export function FileChangesPane({
 
   /* ---------------- 摘要水合：事件只覆盖"变化过"的那几条 ---------------- */
 
+  /** 历史回落用的任务 id：重启后内存为空时按它去任务历史里取那份脱敏记录。 */
+  const historyTaskId = view.taskId ?? focus?.taskId ?? null;
+  /** 旧请求的返回不能覆盖新对话：回来时比对一次归属。 */
+  const contextRef = useRef(workspaceId);
+  contextRef.current = workspaceId;
+
   useEffect(() => {
     if (!workspaceId) return;
     let cancelled = false;
-    void opsApi
-      .aiAgentFileChanges(workspaceId, null)
-      .then((list) => {
-        if (cancelled || !Array.isArray(list)) return;
-        mergeFileChanges(list);
-      })
-      .catch(() => undefined);
+    setLoading(true);
+    setListError(null);
+    void (async () => {
+      try {
+        const list = await opsApi.aiAgentFileChanges(workspaceId, null);
+        if (cancelled) return;
+        if (Array.isArray(list) && list.length > 0) {
+          mergeFileChanges(list);
+          return;
+        }
+        /*
+         * 内存里没有记录：多半是重启后打开历史任务 —— 按任务读回落库的那份。
+         * 只回落到**当前选中的那次运行**，不做全表扫描。
+         */
+        if (!historyTaskId) return;
+        const stored = await opsApi.aiAgentFileChanges(workspaceId, historyTaskId);
+        if (cancelled) return;
+        if (Array.isArray(stored) && stored.length > 0) {
+          mergeFileChanges(stored);
+          return;
+        }
+        /*
+         * 还有一种"面板明明有记录却空白"：那批记录的 `workspaceId` 是空的
+         * （旧版本 / 排队发送时归属没带上）。taskId 唯一对应一次运行，按它
+         * 单独取回来再归到当前对话，既修好显示也不会串到别的对话。
+         */
+        const orphan = await opsApi.aiAgentFileChanges(null, historyTaskId);
+        if (cancelled || !Array.isArray(orphan)) return;
+        mergeFileChanges(
+          orphan.map((item) => ({ ...item, workspaceId: item.workspaceId ?? workspaceId })),
+        );
+      } catch (cause) {
+        if (cancelled) return;
+        setListError(cause instanceof Error ? cause.message : t("变更列表加载失败"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, mergeFileChanges]);
+  }, [workspaceId, historyTaskId, reloadNonce, mergeFileChanges, t]);
 
   /* ---------------- 正文按需加载 ---------------- */
 
+  /** 已取到的正文对应摘要的哪一版：实际 Diff 到达（updatedAt 变大）后必须重新拉。 */
+  const detailStamps = useRef(new Map<string, number>());
+  /** 正在飞的请求：effect 重跑时不能把同一条重复拉一遍。 */
+  const detailInFlight = useRef(new Set<string>());
+
+  /**
+   * 取一条变更的正文。
+   *
+   * 缓存键是 `id + updatedAt`：确认后 actual Diff 会以新的 `updatedAt` 推过来，
+   * 旧预览（proposed）不能继续留在详情里冒充实际结果。
+   */
   const ensureDetail = useCallback(
-    (changeId: string) => {
-      if (details[changeId]) return;
+    (change: FileChangeSummary) => {
+      if (detailStamps.current.get(change.id) === change.updatedAt && details[change.id]) {
+        return;
+      }
+      const key = `${change.id}:${change.updatedAt}`;
+      if (detailInFlight.current.has(key)) return;
+      detailInFlight.current.add(key);
+      detailStamps.current.set(change.id, change.updatedAt);
+      const owner = workspaceId;
       void opsApi
-        .aiAgentFileChangeDetail(changeId)
+        .aiAgentFileChangeDetail(change.id)
         .then((detail) => {
-          setDetails((current) => (current[changeId] ? current : { ...current, [changeId]: detail }));
+          if (contextRef.current !== owner) return;
+          setDetails((current) => ({ ...current, [change.id]: detail }));
+          setLoadError(null);
         })
         .catch((cause: unknown) => {
+          // 版本记回去：下次重新进来还能再试一次。
+          detailStamps.current.delete(change.id);
+          if (contextRef.current !== owner) return;
           setLoadError(
             cause instanceof Error ? cause.message : t("变更内容加载失败（可能已超出保留范围）"),
           );
+        })
+        .finally(() => {
+          detailInFlight.current.delete(key);
         });
     },
-    [details, t],
+    [details, t, workspaceId],
   );
 
   /** 当前批次里的文件都载入正文：文件头要显示增删行数，点开也要能立刻看。 */
-  useEffect(() => {
-    for (const change of visible) {
-      if (change.diffReady) ensureDetail(change.id);
-    }
-  }, [visible, ensureDetail]);
-
-  // 换了对话 / 运行：旧对话的正文不能留在界面上。
+  /*
+   * 换了对话 / 运行：旧对话的正文不能留在界面上。
+   *
+   * 必须排在下面"载入正文"之前：挂载时这项先跑，缓存表是空的，正文只取一次；
+   * 反过来会先把刚发出的请求的版本标记清掉，白白多拉一遍。
+   */
   useEffect(() => {
     setDetails({});
+    detailStamps.current.clear();
     setLoadError(null);
     setPickerOpen(false);
     setActiveId(null);
   }, [workspaceId, activeTaskId, mode]);
+
+  useEffect(() => {
+    for (const change of visible) {
+      if (change.diffReady) ensureDetail(change);
+    }
+  }, [visible, ensureDetail]);
 
   /* ---------------- 窄面板：文件树收成选择器 ---------------- */
 
@@ -379,6 +521,32 @@ export function FileChangesPane({
     scrollToChange(change.id);
   };
 
+  /**
+   * 「在远程文件中打开」前**重新确认**目标还在。
+   *
+   * 变更记录是历史的：文件可能已被删除或改名。确认不到时只提示一句，
+   * 历史 Diff 与路径都保留 —— 那正是用户此时唯一能看的东西。
+   */
+  const openRemote = async (path: string) => {
+    if (sessionId) {
+      try {
+        const quoted = `'${path.replace(/'/g, `'\\''`)}'`;
+        const probe = await opsApi.sshExec(
+          sessionId,
+          `test -e ${quoted} && echo yes || echo no`,
+          8_000,
+        );
+        if (probe.stdout.trim() !== "yes") {
+          setNotice(t("文件在服务器上已不存在：历史 Diff 与路径仍保留。"));
+          return;
+        }
+      } catch {
+        // 探测失败不阻断打开：让远程面板自己报错，比这里静默吞掉强。
+      }
+    }
+    onOpenRemotePath(path);
+  };
+
   if (!workspaceId) {
     return (
       <p className="px-3 py-2 text-11 text-fg-subtle">
@@ -389,19 +557,42 @@ export function FileChangesPane({
 
   if (mine.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
         <FileDiff size={20} className="text-fg-subtle" />
-        {/* 空态也标明所属服务器：面板永远回答"这是哪台机器上的变更"。 */}
-        <p className="text-11 text-fg">
-          {serverName || t("未关联服务器")}
-          <span className="text-fg-subtle"> · {t("暂无变更")}</span>
-        </p>
-        <p className="max-w-[300px] text-11 text-fg-subtle">
-          {t("这次对话还没有文件变更：AI 用 write_file 改文件时，这里会显示预览与实际差异。")}
-        </p>
-        <p className="max-w-[300px] text-10 text-fg-subtle">
-          {t("普通 shell 命令（sed / tee / 脚本）拿不到明确目标与前后快照，不会生成 Diff。")}
-        </p>
+        {loading ? (
+          <p className="text-11 text-fg-subtle" role="status">
+            {t("正在加载变更…")}
+          </p>
+        ) : listError ? (
+          <>
+            <p className="text-11 text-fg">
+              {serverName || t("未关联服务器")}
+              <span className="text-fg-subtle"> · {t("加载失败")}</span>
+            </p>
+            <p className="max-w-[320px] break-words text-11 text-danger">{listError}</p>
+            <button
+              type="button"
+              className="rounded-md border border-line/70 px-2.5 py-1 text-11 text-fg transition-colors hover:bg-surface-hover"
+              onClick={() => setReloadNonce((value) => value + 1)}
+            >
+              {t("重试")}
+            </button>
+          </>
+        ) : (
+          <>
+            {/* 空态也标明所属服务器：面板永远回答"这是哪台机器上的变更"。 */}
+            <p className="text-11 text-fg">
+              {serverName || t("未关联服务器")}
+              <span className="text-fg-subtle"> · {t("暂无变更")}</span>
+            </p>
+            <p className="max-w-[300px] text-11 text-fg-subtle">
+              {t("这次对话还没有文件变更：AI 写入、编辑器保存或计划上传后，这里会显示预览与实际差异。")}
+            </p>
+            <p className="max-w-[300px] text-10 text-fg-subtle">
+              {t("能确定目标、读得到前后内容的改动生成逐行 Diff；其余操作只标注路径。")}
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -440,8 +631,13 @@ export function FileChangesPane({
               menuOpen && "rotate-180",
             )}
           />
-          <span className="shrink-0 font-mono text-10 text-success">+{batch.additions}</span>
-          <span className="shrink-0 font-mono text-10 text-danger">-{batch.deletions}</span>
+          {/* 只显示非零的增删：0 行不占位置，也不写成 +0 -0。 */}
+          {batch.additions > 0 && (
+            <span className="shrink-0 font-mono text-10 text-success">+{batch.additions}</span>
+          )}
+          {batch.deletions > 0 && (
+            <span className="shrink-0 font-mono text-10 text-danger">-{batch.deletions}</span>
+          )}
         </button>
 
         {narrow && (
@@ -455,7 +651,11 @@ export function FileChangesPane({
             className="flex h-7 max-w-[170px] min-w-0 items-center gap-1.5 rounded-full border border-line/70 bg-surface-2/70 px-2 text-11 text-fg-muted transition-colors hover:bg-surface-3"
             title={t("选择文件")}
           >
-            <FileText size={11} className="shrink-0 text-fg-subtle" />
+            {selectedChange ? (
+              <FileKindIcon name={fileLabel(selectedChange)} size={12} />
+            ) : (
+              <FileText size={11} className="shrink-0 text-fg-subtle" />
+            )}
             <span className="min-w-0 truncate">
               {selectedChange ? fileLabel(selectedChange) : t("选择文件")}
             </span>
@@ -499,23 +699,33 @@ export function FileChangesPane({
             </MenuRow>
             <div className="my-1 h-px bg-line/60" />
             <p className="px-2.5 pb-0.5 pt-1 text-10 text-fg-subtle">{t("更改所在运行")}</p>
-            {runs.map((run) => (
-              <MenuRow
-                key={run.taskId}
-                selected={mode === "run" && run.taskId === activeTaskId}
-                onClick={() => {
-                  cancelFocusJump();
-                  remember({ mode: "run", taskId: run.taskId, changeId: undefined });
-                  setMenuOpen(false);
-                }}
-              >
-                <span className="min-w-0 flex-1 truncate" title={labelOfRun(run.taskId)}>
-                  {labelOfRun(run.taskId)}
-                </span>
-                <span className="shrink-0 font-mono text-10 text-success">+{run.additions}</span>
-                <span className="shrink-0 font-mono text-10 text-danger">-{run.deletions}</span>
-              </MenuRow>
-            ))}
+            {runs.map((run) => {
+              const active = mode === "run" && run.taskId === activeTaskId;
+              // 当前这一轮用净变化统计（和面板主体同一把尺子），历史轮次沿用记录累计。
+              const adds = active && netAvailable ? batch.additions : run.additions;
+              const dels = active && netAvailable ? batch.deletions : run.deletions;
+              return (
+                <MenuRow
+                  key={run.taskId}
+                  selected={active}
+                  onClick={() => {
+                    cancelFocusJump();
+                    remember({ mode: "run", taskId: run.taskId, changeId: undefined });
+                    setMenuOpen(false);
+                  }}
+                >
+                  <span className="min-w-0 flex-1 truncate" title={labelOfRun(run.taskId)}>
+                    {labelOfRun(run.taskId)}
+                  </span>
+                  {adds > 0 && (
+                    <span className="shrink-0 font-mono text-10 text-success">+{adds}</span>
+                  )}
+                  {dels > 0 && (
+                    <span className="shrink-0 font-mono text-10 text-danger">-{dels}</span>
+                  )}
+                </MenuRow>
+              );
+            })}
           </div>
         )}
 
@@ -543,13 +753,33 @@ export function FileChangesPane({
           data-testid="file-change-diff"
         >
           {visible.length === 0 ? (
-            <p className="px-3 py-4 text-11 text-fg-subtle">
-              {view.filter.trim()
-                ? t("没有匹配「{{filter}}」的文件。", { filter: view.filter })
-                : mode === "pending"
-                  ? t("没有待确认的变更。")
-                  : t("这次运行没有可展示的文件变更。")}
-            </p>
+            view.filter.trim() ? (
+              <p className="px-3 py-4 text-11 text-fg-subtle">
+                {t("没有匹配「{{filter}}」的文件。", { filter: view.filter })}
+              </p>
+            ) : mode === "pending" ? (
+              <p className="px-3 py-4 text-11 text-fg-subtle">{t("没有待确认的变更。")}</p>
+            ) : netAvailable ? (
+              /*
+               * 净变化成功但为空：**不能**回落到逐条记录。这里明确说"本轮没变"，
+               * 并交代被隐藏的那些文件去哪了（要核对过程就看步骤历史）。
+               */
+              <div className="px-3 py-4">
+                <p className="text-11 text-fg">{t("本轮无文件净变化")}</p>
+                <p className="mt-1 max-w-[320px] text-10 leading-4 text-fg-subtle">
+                  {hiddenUnchanged > 0
+                    ? t(
+                        "另有 {{n}} 个文件原样保存或改回原样，已从列表隐藏；需要核对过程请在步骤历史里查看。",
+                        { n: hiddenUnchanged },
+                      )
+                    : t("这次运行没有产生可确认的文件变化。")}
+                </p>
+              </div>
+            ) : (
+              <p className="px-3 py-4 text-11 text-fg-subtle">
+                {t("这次运行没有可展示的文件变更。")}
+              </p>
+            )
           ) : (
             visible.map((change) => (
               <section
@@ -565,7 +795,7 @@ export function FileChangesPane({
                   change={change}
                   detail={details[change.id]}
                   runLabel={mode === "pending" ? labelOfRun(change.taskId) : null}
-                  onOpenRemote={() => onOpenRemotePath(change.path)}
+                  onOpenRemote={() => void openRemote(change.path)}
                 />
                 <FileChangeBody
                   change={change}
@@ -576,7 +806,34 @@ export function FileChangesPane({
               </section>
             ))
           )}
-          {loadError && <p className="px-3 py-2 text-11 text-danger">{loadError}</p>}
+          {notice && (
+            <div className="mx-2 mb-2 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-11 text-warning">
+              <span className="min-w-0 flex-1">{notice}</span>
+              <button
+                type="button"
+                className="shrink-0 underline underline-offset-2"
+                onClick={() => setNotice(null)}
+              >
+                {t("知道了")}
+              </button>
+            </div>
+          )}
+          {loadError && (
+            <div className="flex items-start gap-2 px-3 py-2 text-11 text-danger">
+              <span className="min-w-0 break-words">{loadError}</span>
+              <button
+                type="button"
+                className="shrink-0 underline underline-offset-2 hover:text-fg"
+                onClick={() => {
+                  setDetails({});
+                  detailStamps.current.clear();
+                  setLoadError(null);
+                }}
+              >
+                {t("重试")}
+              </button>
+            </div>
+          )}
         </div>
 
         {!narrow && (
@@ -592,7 +849,13 @@ export function FileChangesPane({
             </div>
             <div className="flex items-center gap-1.5 px-2.5 py-0.5">
               <span className="text-10 text-fg-muted">{t("已更改的文件")}</span>
-              <span className="text-10 text-fg-subtle">{batch.files}</span>
+              {/* 未确认 / 未采集的条目照常列出，但不计入已确认变更。 */}
+              <span className="text-10 text-fg-subtle">{confirmedFiles}</span>
+              {unconfirmedFiles > 0 && (
+                <span className="shrink-0 text-10 text-warning">
+                  {t("{{n}} 条未确认", { n: unconfirmedFiles })}
+                </span>
+              )}
               <span className="flex-1" />
               <span className="size-1.5 rounded-full bg-accent" />
             </div>
@@ -609,7 +872,10 @@ export function FileChangesPane({
           {serverLabel || t("未关联服务器")}
         </span>
         <span>·</span>
-        <span className="shrink-0">{t("{{n}} 个文件", { n: batch.files })}</span>
+        <span className="shrink-0">{t("{{n}} 个文件", { n: confirmedFiles })}</span>
+        {hiddenUnchanged > 0 && mode === "run" && (
+          <span className="shrink-0">· {t("{{n}} 个无净变化", { n: hiddenUnchanged })}</span>
+        )}
         <StatusBadge tone={batchTone(batch.state)}>{batchStateLabel(batch.state, t)}</StatusBadge>
         <span className="flex-1" />
         {!sessionId && (
@@ -718,16 +984,22 @@ function FileChangeHeader({
   detail,
   runLabel,
   onOpenRemote,
+  onOpenBackup,
 }: {
   change: FileChangeSummary;
   detail?: FileChangeDetail;
   /** 「待确认」视图里标明这条属于哪次运行。 */
   runLabel: string | null;
   onOpenRemote: () => void;
+  /** 已验证存在的备份才给入口（打开的是服务器上的备份文件）。 */
+  onOpenBackup?: () => void;
 }) {
   const { t } = useTranslation();
   const additions = detail?.summary.additions ?? change.additions;
   const deletions = detail?.summary.deletions ?? change.deletions;
+  const reason = detail?.summary.reason ?? change.reason ?? null;
+  /** 只有真的能画 `+N / -N` 时才占位置；0 行改成一句状态文字。 */
+  const hasCounts = additions > 0 || deletions > 0;
   const [copied, setCopied] = useState(false);
   const copy = (value: string) => {
     void copyTextWithFeedback(value).then((ok) => {
@@ -741,9 +1013,9 @@ function FileChangeHeader({
   const dir = slash > 0 ? change.path.slice(0, slash) : "";
   const name = slash >= 0 ? change.path.slice(slash + 1) : change.path;
   const stage = stageLabel(detail ?? { summary: change }, t);
-  // 正常写入不额外占用位置：只有"不合预期"的状态才需要在这里点明。
+  // 正常写入 / 删除不额外占用位置：只有"不合预期"的状态才需要在这里点明。
   const abnormal =
-    change.status !== "written" && change.status !== "proposed"
+    change.status !== "written" && change.status !== "deleted" && change.status !== "proposed"
       ? changeStatusLabel(change.status, t)
       : null;
 
@@ -763,8 +1035,12 @@ function FileChangeHeader({
           )}
           <span className="shrink-0">{name || t("（无文件路径）")}</span>
         </span>
-        <span className="shrink-0 font-mono text-10 text-success">+{additions}</span>
-        <span className="shrink-0 font-mono text-10 text-danger">-{deletions}</span>
+        {additions > 0 && (
+          <span className="shrink-0 font-mono text-10 text-success">+{additions}</span>
+        )}
+        {deletions > 0 && (
+          <span className="shrink-0 font-mono text-10 text-danger">-{deletions}</span>
+        )}
         <span
           className={cn(
             "shrink-0 rounded border px-1 text-[10px] leading-4",
@@ -775,8 +1051,15 @@ function FileChangeHeader({
         >
           {stage}
         </span>
-        {abnormal && (
-          <span className="shrink-0 text-10 text-fg-subtle">{abnormal}</span>
+        {hasCounts ? (
+          abnormal && <span className="shrink-0 text-10 text-fg-subtle">{abnormal}</span>
+        ) : (
+          <span
+            className="min-w-0 truncate text-10 text-fg-subtle"
+            title={reason ?? changeReasonLabel(change, t)}
+          >
+            {reason ?? changeReasonLabel(change, t)}
+          </span>
         )}
         <span className="flex-1" />
         {runLabel && (
@@ -809,20 +1092,36 @@ function FileChangeHeader({
       {(change.backupPath || change.note) && (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 px-2 pb-1 pl-[22px] text-10 text-fg-subtle">
           {change.backupPath && (
-            /* 备份路径只给可复制文本：没有验证过就不假装能打开。 */
-            <button
-              type="button"
-              onClick={() => copy(change.backupPath!)}
-              className="inline-flex min-w-0 items-center gap-0.5 text-left hover:text-fg"
-              title={t("复制备份路径")}
-            >
-              <span className="max-w-[260px] truncate font-mono">
-                {backupVerified(change)
-                  ? t("已备份：{{path}}", { path: change.backupPath })
-                  : t("计划备份：{{path}}", { path: change.backupPath })}
-              </span>
-              <Copy size={9} className="shrink-0" />
-            </button>
+            /*
+             * 备份路径可复制；只有 `backup_verified`（服务器上真的 `cp` 成功并
+             * 打印了标记）才给"打开备份"入口 —— 计划中的路径不假装存在。
+             */
+            <span className="inline-flex min-w-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => copy(change.backupPath!)}
+                className="inline-flex min-w-0 items-center gap-0.5 text-left hover:text-fg"
+                title={t("复制备份路径")}
+              >
+                <span className="max-w-[260px] truncate font-mono">
+                  {backupVerified(change)
+                    ? t("已备份：{{path}}", { path: change.backupPath })
+                    : t("计划备份：{{path}}", { path: change.backupPath })}
+                </span>
+                <Copy size={9} className="shrink-0" />
+              </button>
+              {onOpenBackup && (
+                <button
+                  type="button"
+                  onClick={onOpenBackup}
+                  aria-label={t("打开备份文件")}
+                  title={t("打开备份文件")}
+                  className="flex size-4 shrink-0 items-center justify-center rounded text-fg-subtle hover:bg-surface-hover hover:text-fg"
+                >
+                  <ExternalLink size={9} />
+                </button>
+              )}
+            </span>
           )}
           {change.note && <span className="min-w-0 break-words">{change.note}</span>}
         </div>
@@ -866,17 +1165,21 @@ function FileChangeBody({
   );
 
   if (detail.diff.hunks.length === 0) {
+    // 零行变化（新增 / 删除空文件、二进制、脱敏后看不出差异）：正文直接写原因。
+    const reason = detail.summary.reason ?? change.reason ?? null;
     return (
       <div className="py-1">
         {limits}
         <p className="px-3 py-1.5 text-11 text-fg-subtle">
-          {detail.diff.tooLarge
-            ? t("文件过大：没有逐行比较，改动的规模见上方状态。")
-            : detail.summary.status === "unchanged"
-              ? t("写入完成，但回读内容与写入前完全一致：没有差异。")
-              : detail.summary.stage === "none"
-                ? t("这次操作没有采集到可比对的正文。")
-                : t("没有差异。")}
+          {reason
+            ? t(reason)
+            : detail.diff.tooLarge
+              ? t("文件过大：没有逐行比较，改动的规模见上方状态。")
+              : detail.summary.status === "unchanged"
+                ? t("写入完成，但回读内容与写入前完全一致：没有差异。")
+                : detail.summary.stage === "none"
+                  ? t("这次操作没有采集到可比对的正文。")
+                  : t("没有差异。")}
         </p>
       </div>
     );
@@ -1043,19 +1346,25 @@ function ChangeTree({
                     : "border-transparent text-fg-muted hover:bg-surface-hover hover:text-fg",
                 )}
               >
-                <FileText
-                  size={11}
-                  className={cn("shrink-0", selected ? "text-accent" : "text-fg-subtle")}
-                />
+                {/* 变更树按文件类型给图：nginx.conf / Dockerfile / .log 一眼分得清。 */}
+                <FileKindIcon name={fileLabel(change)} size={12} />
                 <span className="min-w-0 flex-1 truncate">{fileLabel(change)}</span>
-                {change.diffReady ? (
+                {change.additions > 0 || change.deletions > 0 ? (
                   <span className="shrink-0 font-mono text-10">
-                    <span className="text-success">+{change.additions}</span>
-                    <span className="text-danger"> -{change.deletions}</span>
+                    {change.additions > 0 && (
+                      <span className="text-success">+{change.additions}</span>
+                    )}
+                    {change.additions > 0 && change.deletions > 0 && " "}
+                    {change.deletions > 0 && (
+                      <span className="text-danger">-{change.deletions}</span>
+                    )}
                   </span>
                 ) : (
-                  <span className="shrink-0 text-10 text-fg-subtle">
-                    {change.uncollected ? t("未采集") : t("无 Diff")}
+                  <span
+                    className="max-w-[92px] shrink-0 truncate text-10 text-fg-subtle"
+                    title={changeReasonLabel(change, t)}
+                  >
+                    {changeReasonLabel(change, t)}
                   </span>
                 )}
                 {selected && <span className="mr-0.5 size-1.5 shrink-0 rounded-full bg-accent" />}

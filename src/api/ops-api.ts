@@ -10,6 +10,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
 import type { ExtremeTaskFilter, ExtremeTaskRecord } from "@/api/types/extreme";
+import type {
+  McpRegistryResult,
+  McpServerInput,
+  McpServerView,
+  McpTestResult,
+} from "@/api/types/mcp";
 import type { LogEvent, LogStartRequest } from "@/api/types/panel";
 import type {
   AgentResumeRequest,
@@ -17,6 +23,7 @@ import type {
   AgentStartRequest,
   FileChangeDetail,
   FileChangeSummary,
+  NetChangeSet,
 } from "@/api/types/agent";
 
 import type {
@@ -741,12 +748,22 @@ export const opsApi = {
     path: string,
     content: string,
     expected?: RemoteFileVersion | null,
+    /**
+     * 归属：编辑器保存也算一次文件变更，右栏要能按对话筛选。
+     *
+     * 不传（例如独立远程面板）就只按会话归属 —— 记录仍然生成，只是在
+     * 超能右栏里看不到。
+     */
+    owner?: { workspaceId?: string | null; server?: string | null; serverId?: string | null },
   ) =>
     invoke<SaveFileOutcome>("sftp_save_editor_file", {
       sessionId,
       path,
       content,
       expected: expected ?? null,
+      workspaceId: owner?.workspaceId ?? null,
+      server: owner?.server ?? null,
+      serverId: owner?.serverId ?? null,
     }),
   /** 某个远程文件在本机的历史版本（最近的在前）。 */
   editorHistoryList: (path: string) =>
@@ -1242,6 +1259,26 @@ export const opsApi = {
   /** 未保存配置的连接测试：表单里先测再存，不落库、不写钥匙串。 */
   aiProviderTestDraft: (request: AiProviderSaveRequest) =>
     invoke<AiProviderTestResult>("ai_provider_test_draft", { request }),
+
+  // -- MCP 服务 -------------------------------------------------------------
+  mcpServerList: () => invoke<McpServerView[]>("mcp_server_list"),
+  mcpServerSave: (request: McpServerInput) =>
+    invoke<McpServerView>("mcp_server_save", { request }),
+  mcpServerDelete: (id: string) => invoke<void>("mcp_server_delete", { id }),
+  /** 测试连接并刷新能力（会更新服务状态与工具列表）。 */
+  mcpServerTest: (id: string) => invoke<McpTestResult>("mcp_server_test", { id }),
+  /** 未保存配置的连接测试：表单里先测再存。 */
+  mcpServerTestDraft: (request: McpServerInput) =>
+    invoke<McpTestResult>("mcp_server_test_draft", { request }),
+  /** 官方 MCP Registry 搜索。 */
+  mcpRegistrySearch: (query: string, cursor?: string | null, limit?: number) =>
+    invoke<McpRegistryResult>("mcp_registry_search", {
+      query,
+      cursor: cursor ?? null,
+      limit: limit ?? 20,
+    }),
+  mcpToolSetEnabled: (id: string, tool: string, enabled: boolean) =>
+    invoke<void>("mcp_tool_set_enabled", { id, tool, enabled }),
   /**
    * 超能模式的对话入口：走**默认** AI 提供方（Key 由后端从钥匙串读）。
    *
@@ -1329,6 +1366,19 @@ export const opsApi = {
     invoke<AgentSnapshot | null>("agent_snapshot", { taskId }),
   aiAgentApprove: (taskId: string, callId: string, allow: boolean) =>
     invoke<boolean>("agent_approve", { taskId, callId, allow }),
+  /** 回答 AI 挂起的选择题：选项 ID + 可选自定义文字。 */
+  aiAgentAnswer: (
+    taskId: string,
+    questionId: string,
+    selected: string[],
+    custom: string | null,
+  ) =>
+    invoke<boolean>("agent_answer_question", {
+      taskId,
+      questionId,
+      selected,
+      custom,
+    }),
   /**
    * 运行中补一句要求（「更新当前任务」）：下一步开始前生效。
    *
@@ -1357,6 +1407,17 @@ export const opsApi = {
       taskId: taskId ?? null,
     }),
   /**
+   * 本轮**净变化**：同一路径只留一条（首次操作前 → 最后一次验证后）。
+   *
+   * 返回 `available` 与 `rows` 两个字段：空数组只代表"本轮真的没变"，
+   * 没有本轮记录时 `available=false`，界面才回落到逐条历史。
+   */
+  aiAgentFileChangesNet: (workspaceId: string | null, taskId: string) =>
+    invoke<NetChangeSet>("agent_file_changes_net", {
+      workspaceId,
+      taskId,
+    }),
+  /**
    * 登记一条变更（计划执行器 / 手工写入用）。
    *
    * Agent 的 `write_file` 有前后回读；计划里的上传由前端知道目标与正文，
@@ -1379,6 +1440,13 @@ export const opsApi = {
   aiAgentFileChangeDetail: (changeId: string) =>
     invoke<FileChangeDetail>("agent_file_change_detail", { changeId }),
   /**
+   * 把这轮运行的变更（摘要 + 脱敏 Diff）写进任务历史。
+   *
+   * 终态时调用一次：重启后右栏仍能打开当时的结果。
+   */
+  aiAgentTaskChangesSave: (taskId: string) =>
+    invoke<number>("agent_task_changes_save", { taskId }),
+  /**
    * 强制结束：后端迟迟不确认停止时的最后手段。
    *
    * 只停止跟踪，**撤回不了**已经发到服务器上的命令；返回的快照里带着这条
@@ -1392,6 +1460,12 @@ export const opsApi = {
    * 只存任务（步骤 + 每步真实输出 + 结果），不存对话内容。
    */
   extremeTaskSave: (task: ExtremeTaskRecord) => invoke<void>("extreme_task_save", { task }),
+  /** 对话正文 / 草稿 / 上下文的完整快照（数据库是长期来源）。 */
+  extremeWorkspaceList: () =>
+    invoke<Record<string, unknown>[]>("extreme_workspace_list"),
+  /** 用当前全量快照覆盖对话表（事务内先清后写）。 */
+  extremeWorkspaceSync: (workspaces: Record<string, unknown>[]) =>
+    invoke<void>("extreme_workspace_sync", { workspaces }),
   /** 任务历史：按类型 / 状态 / 服务器筛选（不传即全部），新的在前。 */
   extremeTaskList: (filter: ExtremeTaskFilter = {}) =>
     invoke<ExtremeTaskRecord[]>("extreme_task_list", {

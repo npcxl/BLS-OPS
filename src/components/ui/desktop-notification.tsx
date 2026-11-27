@@ -24,6 +24,7 @@ import type { RefObject } from "react";
 import GlassSurface from "@/components/ui/glass-surface";
 import { X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { i18n } from "@/i18n";
 import { cn } from "@/lib/cn";
 
 export type DesktopNotificationTone = "info" | "success" | "warning" | "danger";
@@ -214,7 +215,7 @@ export function DesktopNotificationCard({
         {item.onDismiss && (
           <button
             type="button"
-            aria-label="dismiss"
+            aria-label={i18n.t("关闭通知")}
             className="-mr-0.5 -mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-[5px] text-black transition-colors hover:bg-black/8"
             onClick={(event) => {
               event.stopPropagation();

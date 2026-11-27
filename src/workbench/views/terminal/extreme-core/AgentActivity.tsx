@@ -200,8 +200,16 @@ export function AgentActivity({
         : task.status === "interrupted"
           ? t("已中断")
           : running
-            ? t(task.steps.length ? "正在使用工具" : "正在分析请求")
+            ? t(task.steps.length ? "正在执行" : "正在分析请求")
             : t("处理过程");
+  /*
+   * 计数只说用户关心的两件事：真正执行过几次、几次没有执行。
+   * 内部纠错不能算进"执行过"，也不能被悄悄丢掉（它们确实没有跑）。
+   */
+  const executedCount = task.steps.filter(
+    (step) => step.category !== "internal" && step.category !== "denied",
+  ).length;
+  const skippedCount = task.steps.length - executedCount;
   return (
     <>
       <Think
@@ -216,7 +224,10 @@ export function AgentActivity({
           <button type="button" aria-expanded={expanded} aria-controls={detailsId} className="extreme-core-agent-activity-toggle">
             <span>{label}</span>
             {task.steps.length > 0 && (
-              <span className="text-fg-muted">{t("工具调用 · {{n}} 次", { n: task.steps.length })}</span>
+              <span className="text-fg-muted">
+                {t("{{n}} 个操作", { n: executedCount })}
+                {skippedCount > 0 && ` · ${t("{{n}} 次未执行", { n: skippedCount })}`}
+              </span>
             )}
             {/* 完成后显示**真实执行耗时**（createdAt → 最后一次 updatedAt），不是当前时刻减开始。 */}
             {settled(task) && task.updatedAt > task.createdAt && (

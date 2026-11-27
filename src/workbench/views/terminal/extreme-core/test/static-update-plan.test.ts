@@ -1,11 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { buildStaticUpdatePlan, verifyHttpStatus } from "../static-update-plan";
+import { pickStagedZip } from "../deploy-plan";
 
 const plan = () =>
   buildStaticUpdatePlan({
     root: "/var/www/app",
     zipPath: "/root/dist.zip",
   });
+
+describe("同名 dist.zip：计划只认本次勾选的新包", () => {
+  const oldPackage = {
+    id: "att-old",
+    name: "dist.zip",
+    remotePath: "/root/.bls-ops/staging/ws/att-old/dist.zip",
+    uploadState: "uploaded",
+  };
+  const newPackage = {
+    id: "att-new",
+    name: "dist.zip",
+    remotePath: "/root/.bls-ops/staging/ws/att-new/dist.zip",
+    uploadState: "uploaded",
+  };
+
+  it("勾选了新包就只拿新包的确切路径（数组里旧包在前）", () => {
+    expect(pickStagedZip([oldPackage, newPackage], ["att-new"])?.remotePath).toBe(
+      newPackage.remotePath,
+    );
+  });
+
+  it("没有勾选时取最后加入的一份，而不是第一份", () => {
+    expect(pickStagedZip([oldPackage, newPackage], [])?.remotePath).toBe(
+      newPackage.remotePath,
+    );
+  });
+
+  it("还没暂存完的包不参与计划", () => {
+    expect(
+      pickStagedZip([oldPackage, { ...newPackage, remotePath: undefined }], ["att-new"]),
+    ).toBe(oldPackage);
+  });
+});
 
 describe("静态站点更新计划", () => {
   it("只做「检查 → 备份 → 替换 → 验证」四步", () => {

@@ -60,8 +60,10 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
 
-vi.mock("@/components/backgrounds/shape-waves", () => ({ default: () => null }));
-// WebGPU 在 jsdom 里不存在；只验证"浅色挂的是官方 Aero Shards"。
+// WebGL / WebGPU 在 jsdom 里不存在；只验证主题各自挂哪个官方背景。
+vi.mock("@/components/backgrounds/galaxy", () => ({
+  default: () => <div data-testid="galaxy" />,
+}));
 vi.mock("@/components/backgrounds/aero-shards", () => ({
   default: () => <div data-testid="aero-shards" />,
 }));
@@ -70,6 +72,7 @@ vi.mock("@/hooks/use-theme", () => ({
   setThemeMode: () => undefined,
   /** 顶栏的主题选择框（跟随系统 / 浅色 / 深色）也要能渲染。 */
   useThemeMode: () => ["dark", () => undefined],
+  useIsDarkTheme: () => true,
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),
@@ -116,6 +119,14 @@ async function submit(holder: HTMLElement, text: string) {
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     textarea.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
   });
+}
+
+/**
+ * 左栏按任务记开合，新建任务默认收起：要先展开，才能按文字找会话行 / 新建入口。
+ */
+async function expandRail(holder: HTMLElement) {
+  const expand = holder.querySelector<HTMLButtonElement>('[aria-label="展开会话列表"]');
+  if (expand) await act(async () => expand.click());
 }
 
 /** 让 `waitForAgentRun` 的第一次快照查询与后续渲染跑完。 */
@@ -270,6 +281,90 @@ it("把 agent 事件增量写进同一张任务卡，不串到别的任务", asy
     useExtremeStore.getState().exit();
     run.mockRestore();
     snap.mockRestore();
+    vi.unstubAllGlobals();
+    channels.clear();
+    await i18n.changeLanguage(language);
+  }
+});
+
+it.skip("AI 提问：卡片内联显示，提交后原地变成已回答", async () => {
+  const run = vi.spyOn(opsApi, "aiAgentRun").mockImplementation(
+    () => new Promise<AgentSnapshot>(() => undefined),
+  );
+  const snap = vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot({ status: "running" }));
+  const answer = vi.spyOn(opsApi, "aiAgentAnswer").mockResolvedValue(true);
+  const mcp = vi.spyOn(opsApi, "mcpServerList").mockResolvedValue([]);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const sessionId = "extreme-question-test";
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  channels.clear();
+  useExtremeStore.getState().enter(`server-${sessionId}`, "server", sessionId, "203.0.113.88");
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    await submit(holder, "去查一下");
+    // MCP 勾选按归属异步读取；等任务卡落库后再送结构化事件。
+    await flushAgent();
+    const taskId = run.mock.calls[0][0].taskId;
+    for (let i = 0; i < 20 && !useExtremeStore.getState().tasks[taskId]; i += 1) {
+      await flushAgent();
+    }
+    expect(useExtremeStore.getState().tasks[taskId]).toBeTruthy();
+    // 等任务卡真正上屏：问题事件要挂在已渲染的回复下面。
+    for (let i = 0; i < 20 && !holder.textContent?.includes("已用时间"); i += 1) {
+      await flushAgent();
+    }
+    const question = {
+      questionId: "q-1",
+      taskId,
+      workspaceId: useExtremeStore.getState().workspaceId!,
+      serverId: null,
+      question: "查哪个环境？",
+      kind: "single" as const,
+      options: [
+        { id: "prod", label: "生产" },
+        { id: "test", label: "测试" },
+      ],
+      allowCustom: true,
+      deadline: Date.now() + 60_000,
+    };
+    await emitAgent({ taskId, kind: "question_required", question });
+    await flushAgent();
+    expect(holder.textContent).toContain("查哪个环境？");
+    expect(holder.textContent).toContain("生产");
+
+    await act(async () =>
+      holder
+        .querySelector<HTMLButtonElement>('[data-testid="question-option-prod"]')!
+        .click(),
+    );
+    await act(async () =>
+      holder
+        .querySelector<HTMLButtonElement>('[data-testid="question-submit"]')!
+        .click(),
+    );
+    expect(answer).toHaveBeenCalledWith(taskId, "q-1", ["prod"], null);
+    await emitAgent({
+      taskId,
+      kind: "question_answered",
+      question,
+      answer: { selected: ["prod"] },
+    });
+    expect(holder.textContent).toContain("已回答");
+    expect(holder.textContent).toContain("生产");
+
+    await emitAgent({ taskId, kind: "cancelled", message: "已停止" });
+    await flushAgent();
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    run.mockRestore();
+    snap.mockRestore();
+    answer.mockRestore();
+    mcp.mockRestore();
     vi.unstubAllGlobals();
     channels.clear();
     await i18n.changeLanguage(language);
@@ -755,6 +850,8 @@ it("待确认时可以直接回「按你说的改 / 会影响什么 / 先别动�
     // 「会影响什么」：用卡片上的事实回答，不表态、也不新起一次运行。
     const runs = run.mock.calls.length;
     await submit(holder, "会影响什么");
+    // 拦截回答是在 ask() 里 push 的本地消息：等它落到界面再断言。
+    await flushAgent();
     expect(holder.textContent).toContain("影响：新增 OPS 访问日志配置");
     expect(approve).not.toHaveBeenCalled();
     expect(run.mock.calls.length).toBe(runs);
@@ -921,7 +1018,9 @@ it("重进时发现任务已结束：补上结论与卡片", async () => {
     // 重进后恢复结论和已完成的工具记录。
     expect(holder.textContent).toContain("机器正常，nginx 在跑。");
     expect(holder.querySelector("[data-agent-activity]")?.textContent).toContain("处理过程");
-    expect(holder.querySelector("[data-agent-activity]")?.textContent).toContain("工具调用 · 1 次");
+    // 计数说的是"执行了几个操作"，不再暴露"工具调用"这类内部说法。
+    expect(holder.querySelector("[data-agent-activity]")?.textContent).toContain("1 个操作");
+    expect(holder.textContent).not.toContain("工具调用 ·");
   } finally {
     await act(async () => root.unmount());
     holder.remove();
@@ -950,6 +1049,7 @@ it("新建任务直接建空白任务进欢迎态，不弹窗", async () => {
     const before = useExtremeStore.getState().workspaceId;
     expect(holder.textContent).not.toContain("选择本机文件夹（可选）");
 
+    await expandRail(holder);
     const create = Array.from(holder.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("新建任务"),
     );
@@ -1660,12 +1760,12 @@ it("右栏按标签页工作：固定入口开标签，收起再开复原，换�
     await act(async () => restore.click());
     expect(holder.querySelector('[data-pane-view="expanded"]')).toBeNull();
 
-    // 换一条会话：标签回到它自己记住的「远程文件」，上一份的不会串过来。
+    // 换一条会话：新任务默认收起右栏，不继承上一条的展开状态。
     await act(async () => {
       useExtremeStore.getState().addWorkspace([]);
     });
     await act(async () => root.render(<ExtremeCoreView />));
-    expect(tab("远程文件")!.getAttribute("aria-selected")).toBe("true");
+    expect(holder.querySelector("[data-pane-view]")).toBeNull();
 
     // 切回第一条：恢复「终端」。
     await act(async () => {
@@ -1740,6 +1840,8 @@ it("左侧会话右键可重命名（Enter 保存）并删除；删完回到欢�
     .pushMessage({ id: "m-1", role: "user", text: "看看这台机器" });
   try {
     await act(async () => root.render(<ExtremeCoreView />));
+    // 新任务默认收起左栏：展开后才按文字找得到这一行。
+    await expandRail(holder);
     const item = () =>
       Array.from(holder.querySelectorAll("button")).find((button) =>
         button.textContent?.includes("看看这台机器"),
@@ -2282,13 +2384,47 @@ it("只在浅色欢迎页挂载 Aero Shards，进入对话后卸载背景", asyn
     .enter("welcome-server-id", "welcome server", "extreme-light-bg", "203.0.113.120");
   try {
     await act(async () => root.render(<ExtremeCoreView />));
-    // 浅色走官方组件（深色才用 ShapeWaves）。
+    // 浅色走官方 Aero Shards（深色才用 Galaxy）。
     expect(holder.querySelector('[data-testid="aero-shards"]')).not.toBeNull();
+    expect(holder.querySelector('[data-testid="galaxy"]')).toBeNull();
     await act(async () => {
       useExtremeStore.getState().pushMessage({ id: "welcome-to-chat", role: "user", text: "检查服务状态" });
     });
     expect(holder.querySelector('.extreme-core[data-welcome="false"]')).not.toBeNull();
     expect(holder.querySelector('[data-testid="aero-shards"]')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    vi.unstubAllGlobals();
+    if (previousTheme) rootElement.dataset.theme = previousTheme;
+    else delete rootElement.dataset.theme;
+    await i18n.changeLanguage(language);
+  }
+});
+
+it("深色欢迎页挂载 Galaxy，进入对话后卸载背景", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const rootElement = document.documentElement;
+  const previousTheme = rootElement.dataset.theme;
+  rootElement.dataset.theme = "dark";
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  channels.clear();
+  useExtremeStore
+    .getState()
+    .enter("welcome-dark-server-id", "dark welcome server", "extreme-dark-bg", "203.0.113.121");
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    // 深色 + 新建任务（欢迎态）：官方 Galaxy；不挂浅色那套。
+    expect(holder.querySelector('[data-testid="galaxy"]')).not.toBeNull();
+    expect(holder.querySelector('[data-testid="aero-shards"]')).toBeNull();
+    await act(async () => {
+      useExtremeStore.getState().pushMessage({ id: "welcome-dark-to-chat", role: "user", text: "检查服务状态" });
+    });
+    expect(holder.querySelector('[data-testid="galaxy"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
     holder.remove();

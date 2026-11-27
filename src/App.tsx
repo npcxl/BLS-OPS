@@ -6,6 +6,7 @@ import { Workbench } from "@/workbench/Workbench";
 import { ExtremeCoreView } from "@/workbench/views/terminal/extreme-core/ExtremeCoreView";
 import { DetachedSqlWindow } from "@/workbench/views/database/DetachedSqlWindow";
 import { isDetachedSqlWindow } from "@/workbench/views/database/detached-sql";
+import { useExtremeStore } from "@/stores/extreme-store";
 
 /** App root — spec §72. */
 export default function App() {
@@ -26,10 +27,13 @@ function MainApp() {
   // 开屏动画盖在 Workbench 上：Workbench 照常挂载加载数据，动画结束淡出
   // 后卸载 Splash，不阻塞启动。
   const [splash, setSplash] = useState(true);
+  const extremeActive = useExtremeStore((state) => state.active);
   return (
     <ErrorBoundary>
       {splash && <SplashScreen onFinished={() => setSplash(false)} />}
-      <Workbench />
+      <div className={extremeActive ? "invisible h-full" : "h-full"} aria-hidden={extremeActive || undefined}>
+        <Workbench />
+      </div>
       {/*
        * 超能模式是**应用级工作台**：整窗覆盖在 Workbench 之上，而不是塞进
        * 某个标签页里。底层 Workbench 保持挂载 —— SSH 会话、滚动位置、草稿

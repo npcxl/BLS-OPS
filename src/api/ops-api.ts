@@ -9,9 +9,10 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
-import type { ExtremeTaskFilter, ExtremeTaskRecord } from "@/api/types/extreme";
+import type { ExtremeMemory, ExtremeTaskFilter, ExtremeTaskRecord } from "@/api/types/extreme";
 import type {
   McpRegistryResult,
+  McpRuntimeReport,
   McpServerInput,
   McpServerView,
   McpTestResult,
@@ -740,6 +741,21 @@ export const opsApi = {
   sftpWriteBytes: (sessionId: string, path: string, contentBase64: string) =>
     invoke<void>("sftp_write_bytes", { sessionId, path, contentBase64 }),
   /**
+   * 附件暂存：追加一块内容（`offset === 0` 重建）。
+   *
+   * 返回累计写入字节数。前端按 1 MiB 一块调用，既能报进度，也不用把整个
+   * 大文件做成 base64 常驻 React 状态。
+   */
+  sftpWriteChunk: (
+    sessionId: string,
+    path: string,
+    offset: number,
+    contentBase64: string,
+  ) => invoke<number>("sftp_write_chunk", { sessionId, path, offset, contentBase64 }),
+  /** 暂存收尾：`.part` 原子改名为正式文件名。 */
+  sftpStageFinish: (sessionId: string, partPath: string, target: string) =>
+    invoke<void>("sftp_stage_finish", { sessionId, partPath, target }),
+  /**
    * 编辑器保存：带版本校验。`expected` 与远程当前内容不一致时后端**不写**，
    * 返回 `conflict` 与当前版本，由用户决定重新加载 / 另存 / 覆盖。
    */
@@ -1270,6 +1286,14 @@ export const opsApi = {
   /** 未保存配置的连接测试：表单里先测再存。 */
   mcpServerTestDraft: (request: McpServerInput) =>
     invoke<McpTestResult>("mcp_server_test_draft", { request }),
+  /**
+   * 重新检测本机运行环境（uv / uvx / Node / npx / Docker）。
+   *
+   * 每次都重新读 PATH 与用户级 / 系统级 PATH，装完环境后不需要重启应用；
+   * 传 `command` 时额外探测这条自定义命令（绝对路径也支持）。
+   */
+  mcpRuntimeStatus: (command?: string | null) =>
+    invoke<McpRuntimeReport>("mcp_runtime_status", { command: command ?? null }),
   /** 官方 MCP Registry 搜索。 */
   mcpRegistrySearch: (query: string, cursor?: string | null, limit?: number) =>
     invoke<McpRegistryResult>("mcp_registry_search", {
@@ -1460,6 +1484,12 @@ export const opsApi = {
    * 只存任务（步骤 + 每步真实输出 + 结果），不存对话内容。
    */
   extremeTaskSave: (task: ExtremeTaskRecord) => invoke<void>("extreme_task_save", { task }),
+  extremeMemoryList: () => invoke<ExtremeMemory[]>("extreme_memory_list"),
+  extremeMemoryContext: (serverId: string | null, workspaceId: string) => invoke<ExtremeMemory[]>("extreme_memory_context", { serverId, workspaceId }),
+  extremeMemorySave: (memory: ExtremeMemory) => invoke<void>("extreme_memory_save", { memory }),
+  extremeMemoryDelete: (id: string) => invoke<void>("extreme_memory_delete", { id }),
+  extremeMemoryClear: () => invoke<void>("extreme_memory_clear"),
+  extremeContextTasks: (workspaceId: string, ids: string[]) => invoke<ExtremeTaskRecord[]>("extreme_context_tasks", { workspaceId, ids }),
   /** 对话正文 / 草稿 / 上下文的完整快照（数据库是长期来源）。 */
   extremeWorkspaceList: () =>
     invoke<Record<string, unknown>[]>("extreme_workspace_list"),

@@ -42,6 +42,8 @@ pub mod journal;
 mod keyring;
 /// MCP 服务管理 + 最小客户端（stdio / HTTP JSON-RPC）。
 pub mod mcp;
+/// 本机 MCP 运行环境解析（uv / uvx / Node / npx / Docker），检测与启动共用。
+pub mod mcp_runtime;
 /// Public so the integration tests in `tests/` can drive the real monitoring
 /// layer against an in-process SSH server.
 pub mod monitor;
@@ -119,6 +121,22 @@ pub fn run() {
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
+                    // Keep the larger default within the current display's usable area.
+                    if let Some(monitor) = window
+                        .current_monitor()
+                        .ok()
+                        .flatten()
+                        .or_else(|| window.primary_monitor().ok().flatten())
+                    {
+                        let scale = monitor.scale_factor();
+                        let work = monitor.work_area();
+                        let width =
+                            1440.0_f64.min((work.size.width as f64 / scale - 32.0).max(980.0));
+                        let height =
+                            820.0_f64.min((work.size.height as f64 / scale - 32.0).max(620.0));
+                        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+                        let _ = window.center();
+                    }
                     let state = window_material::apply(&window, "light", true);
                     eprintln!(
                         "[setup] window material: {} ({:?}, build {})",
@@ -268,6 +286,8 @@ pub fn run() {
             commands::sftp_upload,
             commands::sftp_write_file,
             commands::sftp_write_bytes,
+            commands::sftp_write_chunk,
+            commands::sftp_stage_finish,
             commands::sftp_remove,
             commands::sftp_rename,
             commands::sftp_copy,
@@ -457,6 +477,7 @@ pub fn run() {
             commands::mcp_server_test,
             commands::mcp_server_test_draft,
             commands::mcp_registry_search,
+            commands::mcp_runtime_status,
             commands::mcp_tool_set_enabled,
             // 文件变更审阅：列表只给摘要，Diff 正文按需加载
             commands::agent_file_changes,
@@ -467,6 +488,12 @@ pub fn run() {
             commands::extreme_task_save,
             commands::extreme_workspace_list,
             commands::extreme_workspace_sync,
+            commands::extreme_memory_list,
+            commands::extreme_memory_context,
+            commands::extreme_memory_save,
+            commands::extreme_memory_delete,
+            commands::extreme_memory_clear,
+            commands::extreme_context_tasks,
             // ---- 极核：实时日志（独立于问答任务的 SSH 长连接） ----
             commands::extreme_log_start,
             commands::extreme_log_stop,

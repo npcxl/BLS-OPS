@@ -37,12 +37,12 @@ const ANSWER_LIMIT = 180;
 function TurnPreview({ turn }: { turn: Turn }) {
   const { t } = useTranslation();
   return (
-    <span className="flex w-[240px] flex-col gap-1">
-      <span className="line-clamp-2 text-11 leading-4 font-medium text-fg">
+    <span className="flex w-[240px] max-w-full flex-col gap-1.5 py-0.5">
+      <span className="line-clamp-2 text-11 leading-[1.45] font-medium text-fg">
         {turn.question || t("新任务")}
       </span>
       {(turn.answer || turn.live) && (
-        <span className="line-clamp-3 text-10 leading-4 text-fg-muted">
+        <span className="line-clamp-3 text-10 leading-[1.5] text-fg-muted">
           {turn.answer || t("回复中")}
         </span>
       )}
@@ -283,7 +283,7 @@ export function MessageTimeline({
             onPointerLeave={stopEdgeScroll}
             // flex + 子项 my-auto：轮次少时整条刻度在可视高度里上下居中；
             // 轮次多到溢出时 auto margin 归零，仍然从顶部开始滚，不会裁掉第一根。
-            className="relative flex max-h-full flex-col overflow-y-auto py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="extreme-core-timeline-rail relative flex max-h-full flex-col overflow-y-auto py-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             <LineSidebar
               className="my-auto"

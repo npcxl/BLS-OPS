@@ -3,6 +3,7 @@ import {
   contextOptions,
   effortParam,
   effortTiers,
+  formatTokens,
   highestEffort,
   matchBudget,
   normalizeEffortChoice,
@@ -31,6 +32,14 @@ describe("上下文档位", () => {
     const options = contextOptions([1048576]);
     expect(matchBudget(1200000, options)).toBe(1048576);
     expect(matchBudget(300 * 1024, options)).toBeNull();
+  });
+
+  it("formatTokens 对小于 1K 的用量显示真实数量而不是 0K", () => {
+    expect(formatTokens(0)).toBe("0");
+    expect(formatTokens(380)).toBe("380");
+    expect(formatTokens(1024)).toBe("1K");
+    expect(formatTokens(307200)).toBe("300K");
+    expect(formatTokens(1048576)).toBe("1M");
   });
 });
 

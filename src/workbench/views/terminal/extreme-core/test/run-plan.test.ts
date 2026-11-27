@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import {
   canContinue,
   headlineFor,
@@ -13,6 +14,11 @@ const step = (patch: Partial<RunStep> & { id: string }): RunStep => ({
   title: patch.id,
   state: "pending",
   ...patch,
+});
+
+// 进展文案走全局 i18n；这组断言按中文界面写。
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
 });
 
 describe("步骤状态", () => {

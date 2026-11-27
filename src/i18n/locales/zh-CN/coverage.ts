@@ -6,6 +6,7 @@
  * `src/i18n/test/direct-keys.test.ts` 一起维护；模块内已有译文的 key 不重复。
  */
 export default {
+  "MCP": "MCP",
   "Planned sections": "计划中的分区",
   "The same shortcuts apply in the main window.": "主窗口使用相同的快捷键。",
   "Unsaved changes": "未保存的更改",

@@ -75,9 +75,7 @@ describe("MCP 页", () => {
 
     try {
       expect(list).toHaveBeenCalled();
-      const connections = holder.querySelector<HTMLButtonElement>(
-        '[data-testid="mcp-tab-connections"]',
-      )!;
+      const connections = Array.from(holder.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent?.includes("我的连接"))!;
       await act(async () => connections.click());
       expect(holder.textContent).toContain("Demo MCP");
       expect(holder.textContent).toContain("未验证");
@@ -101,53 +99,20 @@ describe("MCP 页", () => {
     }
   });
 
-  it("从市场直接添加 Kubernetes 并自动发现工具", async () => {
+  it("市场不显示运维精选，已有连接仍可管理", async () => {
     const kubernetes = { ...server(), id: "k8s", name: "Kubernetes", catalogId: "kubernetes" };
-    vi.spyOn(opsApi, "mcpServerList").mockResolvedValue([]);
-    const save = vi.spyOn(opsApi, "mcpServerSave").mockResolvedValue(kubernetes);
-    const test = vi.spyOn(opsApi, "mcpServerTest").mockResolvedValue({
-      ok: true,
-      latencyMs: 12,
-      status: "connected",
-      tools: kubernetes.tools,
-      resources: [],
-      prompts: [],
-    });
+    vi.spyOn(opsApi, "mcpServerList").mockResolvedValue([kubernetes]);
     const holder = document.body.appendChild(document.createElement("div"));
     const root = createRoot(holder);
     try {
       await act(async () => root.render(
         <ExtremeMcpPage workspaceId="w" serverId="s" serverName="demo" connected onBack={() => undefined} />,
       ));
-      const card = holder.querySelector('[data-testid="mcp-market-kubernetes"]');
-      const add = Array.from(card?.querySelectorAll("button") ?? []).find(
-        (button) => button.textContent?.trim() === "添加",
-      );
-      expect(add).toBeDefined();
-      await act(async () => add?.click());
-      expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        catalogId: "kubernetes",
-        command: "npx",
-      }));
-      expect(test).toHaveBeenCalledExactlyOnceWith("k8s");
-      expect(card?.textContent).toContain("已连接");
-      expect(card?.textContent).toContain("管理");
-      expect(document.body.textContent).not.toContain("安装本地运行环境");
-
-      const manage = Array.from(card?.querySelectorAll("button") ?? []).find(
-        (button) => button.textContent === "管理",
-      );
-      await act(async () => manage?.click());
-      const edit = holder.querySelector<HTMLButtonElement>(
-        '[data-testid="mcp-server-k8s"] button[aria-label="编辑"]',
-      )!;
-      await act(async () => edit.click());
-      const submit = Array.from(document.querySelectorAll("[role=dialog] button")).find(
-        (button): button is HTMLButtonElement => button.textContent?.trim() === "保存",
-      );
-      expect(submit).toBeDefined();
-      await act(async () => submit?.click());
-      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: "k8s", catalogId: "kubernetes" }));
+      expect(holder.textContent).not.toContain("运维精选");
+      expect(holder.querySelector('[data-testid="mcp-market-kubernetes"]')).toBeNull();
+      expect(holder.querySelector('[data-testid="mcp-registry-search"]')).toBeTruthy();
+      await act(async () => Array.from(holder.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent?.includes("我的连接"))!.click());
+      expect(holder.querySelector('[data-testid="mcp-server-k8s"]')).toBeTruthy();
     } finally {
       await act(async () => root.unmount());
       holder.remove();
@@ -220,13 +185,200 @@ describe("MCP 页", () => {
       );
     });
     try {
-      const connections = holder.querySelector<HTMLButtonElement>(
-        '[data-testid="mcp-tab-connections"]',
-      )!;
+      const connections = Array.from(holder.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent?.includes("我的连接"))!;
       await act(async () => connections.click());
       expect(holder.textContent).toContain("已连接但无可用工具");
       expect(holder.textContent).toContain("工具发现失败");
       expect(holder.textContent).toContain("tools/list 返回 500");
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
+  });
+
+  it("运行环境缺失时阻止添加，重新检测后保留搜索结果并解锁", async () => {
+    vi.spyOn(opsApi, "mcpServerList").mockResolvedValue([]);
+    const search = vi.spyOn(opsApi, "mcpRegistrySearch").mockResolvedValue({
+      servers: [
+        {
+          id: "registry:uvx-demo",
+          name: "UVX Demo",
+          description: "需要 uvx 的服务",
+          publisher: "Demo",
+          version: "1.0.0",
+          repositoryUrl: "",
+          websiteUrl: "",
+          remotes: [],
+          packages: [
+            {
+              registryType: "pypi",
+              identifier: "demo-mcp",
+              version: "1.0.0",
+              transport: "stdio",
+            },
+          ],
+        },
+      ],
+      runtimes: { uvx: "missing", npx: "ready", docker: "ready" },
+      runtimeDetails: [
+        {
+          id: "uvx",
+          label: "uvx",
+          status: "missing",
+          message: "未安装 uvx",
+          detail: "查找范围：应用 PATH 12 个目录，用户 PATH 4 个",
+          durationMs: 4,
+        },
+      ],
+    });
+    const runtime = vi.spyOn(opsApi, "mcpRuntimeStatus").mockResolvedValue({
+      checkedAt: 2,
+      statuses: { uvx: "ready", npx: "ready", docker: "ready" },
+      runtimes: [
+        {
+          id: "uvx",
+          label: "uvx",
+          status: "ready",
+          path: "~\\.local\\bin\\uvx.EXE",
+          version: "uvx 0.13.10",
+          source: "user-path",
+          message: "已安装 uvx（uvx 0.13.10）",
+          detail: "路径：~\\.local\\bin\\uvx.EXE；退出码 0",
+          durationMs: 30,
+        },
+      ],
+    });
+    const save = vi.spyOn(opsApi, "mcpServerSave").mockImplementation(async (input) => ({
+      ...server(),
+      ...input,
+      id: "uvx-instance",
+      status: "connected",
+      error: null,
+      updatedAt: 2,
+    }));
+    const test = vi.spyOn(opsApi, "mcpServerTest").mockResolvedValue({
+      ok: true,
+      latencyMs: 3,
+      status: "connected",
+      error: null,
+      tools: [],
+      resources: [],
+      prompts: [],
+    });
+
+    const holder = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(holder);
+    try {
+      await act(async () => root.render(
+        <ExtremeMcpPage workspaceId="w" serverId="s" serverName="demo" connected onBack={() => undefined} />,
+      ));
+      const input = holder.querySelector<HTMLInputElement>('[data-testid="mcp-registry-search"]')!;
+      await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      expect(search).toHaveBeenCalled();
+
+      // 运行环境缺失：卡片仍在市场里，但"添加"按钮被禁用。
+      const row = holder.querySelector('[data-testid="mcp-market-registry:uvx-demo"]')!;
+      expect(row).toBeTruthy();
+      const addButton = () =>
+        Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find(
+          (button) => button.textContent?.trim() === "添加",
+        )!;
+      expect(addButton().disabled).toBe(true);
+      expect(row.textContent).toContain("未安装");
+
+      // 重新检测：只刷新运行环境，不清空搜索结果。
+      const recheck = holder.querySelector<HTMLButtonElement>('[data-testid="mcp-runtime-recheck"]')!;
+      await act(async () => recheck.click());
+      expect(runtime).toHaveBeenCalled();
+      expect(holder.querySelector('[data-testid="mcp-market-registry:uvx-demo"]')).toBeTruthy();
+      expect(holder.querySelector('[data-testid="mcp-runtime-uvx"]')?.textContent).toContain("已就绪");
+      expect(addButton().disabled).toBe(false);
+
+      await act(async () => addButton().click());
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(test).toHaveBeenCalledWith("uvx-instance");
+
+      // 再检测一次不应再保存（不会产生重复连接）。
+      const recheckAgain = holder.querySelector<HTMLButtonElement>('[data-testid="mcp-runtime-recheck"]')!;
+      await act(async () => recheckAgain.click());
+      expect(save).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
+  });
+
+  it("修复弹窗重新检测后直接重试，不重复保存连接", async () => {
+    vi.spyOn(opsApi, "mcpServerList").mockResolvedValue([
+      {
+        ...server(),
+        id: "broken",
+        command: "uvx",
+        args: ["demo-mcp"],
+        error: "找不到可执行文件：uvx",
+        status: "error",
+      },
+    ]);
+    const runtime = vi.spyOn(opsApi, "mcpRuntimeStatus").mockResolvedValue({
+      checkedAt: 3,
+      statuses: { uvx: "ready" },
+      runtimes: [
+        {
+          id: "uvx",
+          label: "uvx",
+          status: "ready",
+          path: "~\\.local\\bin\\uvx.EXE",
+          version: "uvx 0.13.10",
+          source: "user-path",
+          message: "已安装 uvx（uvx 0.13.10）",
+          durationMs: 20,
+        },
+      ],
+      command: {
+        command: "uvx",
+        resolved: true,
+        status: "ready",
+        path: "~\\.local\\bin\\uvx.EXE",
+        version: "uvx 0.13.10",
+        message: "已找到并确认可运行：uvx",
+        detail: "路径：~\\.local\\bin\\uvx.EXE；退出码 0",
+        durationMs: 20,
+      },
+    });
+    const save = vi.spyOn(opsApi, "mcpServerSave");
+    const test = vi.spyOn(opsApi, "mcpServerTest").mockResolvedValue({
+      ok: true,
+      latencyMs: 2,
+      status: "connected",
+      error: null,
+      tools: server().tools,
+      resources: [],
+      prompts: [],
+    });
+
+    const holder = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(holder);
+    try {
+      await act(async () => root.render(
+        <ExtremeMcpPage workspaceId="w" serverId="s" serverName="demo" connected onBack={() => undefined} />,
+      ));
+      const connections = Array.from(holder.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(
+        (tab) => tab.textContent?.includes("我的连接"),
+      )!;
+      await act(async () => connections.click());
+      const install = Array.from(holder.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "安装运行环境",
+      )!;
+      await act(async () => install.click());
+      expect(runtime).toHaveBeenCalledWith("uvx");
+      expect(document.body.textContent).toContain("已找到并确认可运行：uvx");
+      expect(document.body.textContent).toContain("不需要重启应用");
+
+      const retry = document.querySelector<HTMLButtonElement>('[data-testid="mcp-repair-retry"]')!;
+      await act(async () => retry.click());
+      // 重试只走连接测试，不会再保存一条新连接。
+      expect(test).toHaveBeenCalledWith("broken");
+      expect(save).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       holder.remove();
@@ -303,6 +455,7 @@ describe("MCP 页", () => {
         transport: "stdio",
         command: "npx",
         enabled: true,
+        binding: { scope: "global" },
       });
       // 保存后自动握手：用户不需要再点一次「测试连接」。
       expect(test).toHaveBeenCalledWith("new-id");

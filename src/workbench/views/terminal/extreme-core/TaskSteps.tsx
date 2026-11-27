@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import type { DeployStep } from "./deploy-plan";
+import { useStepTitle } from "./step-title-i18n";
 
 /** 六种步骤状态都要有映射：`waiting` / `skipped` 在真实执行里会出现。 */
 const STEP_STATUS = {
@@ -37,12 +38,17 @@ export function groupSteps(steps: DeployStep[]): StepGroup[] {
   const groups: StepGroup[] = [];
   for (const step of steps) {
     const previous = groups[groups.length - 1];
+    /*
+     * 只合并**显示上完全相同**的相邻步骤。类别必须一起比较：一次内部纠错
+     * 和一次真实执行即使命令相同，也不是同一条记录（审计与状态都要保留）。
+     */
     const same =
       previous &&
       previous.step.title === step.title &&
       (previous.step.command ?? "") === (step.command ?? "") &&
       (previous.step.detail ?? "") === (step.detail ?? "") &&
-      (previous.step.risk ?? "") === (step.risk ?? "");
+      (previous.step.risk ?? "") === (step.risk ?? "") &&
+      (previous.step.category ?? "") === (step.category ?? "");
     if (same) {
       // 保留最新一条（状态/输出/退出码以最后这次为准）。
       previous.step = step;
@@ -54,8 +60,17 @@ export function groupSteps(steps: DeployStep[]): StepGroup[] {
   return groups;
 }
 
-export function TaskSteps({ steps }: { steps: DeployStep[] }) {
+export function TaskSteps({
+  steps,
+  onLocateStep,
+}: {
+  steps: DeployStep[];
+  /** 点步骤标题：定位到聊天里对应的那条命令（按 taskId + 步骤 id）。 */
+  onLocateStep?: (stepId: string) => void;
+}) {
   const { t } = useTranslation();
+  // 步骤标题是 Rust 拼的（"解压归档" / "重启服务 nginx"），英文界面要兜底。
+  const localize = useStepTitle();
   return (
     <ThoughtChain
       className="px-3 py-2.5"
@@ -63,20 +78,32 @@ export function TaskSteps({ steps }: { steps: DeployStep[] }) {
       items={groupSteps(steps).map(({ step, repeat }) => ({
         key: step.id,
         title: (
-          <span
+          <button
+            type="button"
+            title={t("在聊天里定位这一步")}
+            onClick={(event) => {
+              // ThoughtChain 自己会展开/收起，这里只拦点击、不再冒泡。
+              event.stopPropagation();
+              onLocateStep?.(step.id);
+            }}
             className={cn(
-              "relative inline-block max-w-full overflow-hidden truncate rounded-[4px] align-baseline",
+              "relative inline-block max-w-full overflow-hidden truncate rounded-[4px] align-baseline text-left hover:text-fg",
               // 当前步骤扫光：一眼看出"正在刷新的是这一步"，不是整列一起动。
               step.state === "running" && "extreme-step-sweep",
             )}
           >
-            {repeat > 1 ? `${t(step.title)} ×${repeat}` : t(step.title)}
-          </span>
+            {repeat > 1 ? `${localize(step.title)} ×${repeat}` : localize(step.title)}
+          </button>
         ),
-        description: step.detail,
-        status: STEP_STATUS[step.state],
+        // `detail` 是执行器拼好的整句（已按当前语言写过），不能当成 key 再查一次。
+        description: step.detail || undefined,
+        // 内部纠错 / 被拦下不是"执行失败"：面板里保留记录，但不上红色错误态。
+        status:
+          step.category === "internal" || step.category === "denied"
+            ? undefined
+            : STEP_STATUS[step.state],
         collapsible: Boolean(
-          step.command || step.script || step.stdout || step.stderr || step.rollback || step.backupPath,
+          step.command || step.script || step.stdout || step.stderr || step.rollback || step.backupPath || step.childUsage,
         ),
         content: (
           <div className="min-w-0 space-y-1 text-11 text-fg-muted">
@@ -99,6 +126,7 @@ export function TaskSteps({ steps }: { steps: DeployStep[] }) {
               </details>
             )}
             {step.exitCode != null && <p>exit {step.exitCode}</p>}
+            {step.childUsage && <p>{t("子任务累计用量（估算）：输入 {{input}}，输出 {{output}}", { input: step.childUsage.inputTokens.toLocaleString(), output: step.childUsage.outputTokens.toLocaleString() })}</p>}
             {(step.stdout || step.stderr) && (
               <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-md bg-surface-2 px-2 py-1">
                 {[step.stdout, step.stderr].filter(Boolean).join("\n")}

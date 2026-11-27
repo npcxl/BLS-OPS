@@ -37,6 +37,7 @@ export interface ExtremeSettings {
   followLatest: boolean;
   newTaskPane: NewTaskPane;
   motion: MotionMode;
+  memoryEnabled: boolean;
 }
 
 export const DEFAULT_EXTREME_SETTINGS: ExtremeSettings = {
@@ -50,8 +51,14 @@ export const DEFAULT_EXTREME_SETTINGS: ExtremeSettings = {
   toolDetails: "collapsed",
   notifications: { enabled: true, approval: true, success: true, failed: true },
   followLatest: true,
-  newTaskPane: "open",
+  /*
+   * 新任务默认**收起右栏**：空白对话没有可看的内容，右侧工作区一旦默认
+   * 打开就会把正文挤窄，也容易让人以为"这次任务带了什么"。
+   * 需要时用户自己展开（设置里仍可改成默认打开）。
+   */
+  newTaskPane: "closed",
   motion: "system",
+  memoryEnabled: true,
 };
 
 const STORAGE_KEY = "bls-ops.extreme-settings.v1";
@@ -94,8 +101,10 @@ function normalize(raw: unknown): ExtremeSettings {
       failed: notifications.failed !== false,
     },
     followLatest: value.followLatest !== false,
-    newTaskPane: value.newTaskPane === "closed" ? "closed" : "open",
+    // 缺字段（旧版本存下来的设置）按收起处理：默认不替用户打开右栏。
+    newTaskPane: value.newTaskPane === "open" ? "open" : "closed",
     motion: value.motion === "reduced" ? "reduced" : "system",
+    memoryEnabled: value.memoryEnabled !== false,
   };
 }
 

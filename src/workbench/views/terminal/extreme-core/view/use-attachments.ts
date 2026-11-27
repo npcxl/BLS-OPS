@@ -19,6 +19,10 @@ import {
 } from "../attachments";
 import { manualShellTail } from "../manual-shell";
 import type { TaskArtifact } from "../task-view";
+import { isAttachmentUploading, stageWorkspaceAttachment } from "../attachments/staging";
+import { attachmentSource, dropAttachmentFile } from "../attachments/payload";
+import { dropStaleCleanup } from "../attachments/cleanup";
+import { effectivePermission, useExtremePermissionsStore } from "@/stores/extreme-permissions-store";
 
 type Store = ReturnType<typeof useExtremeStore.getState>;
 
@@ -42,6 +46,32 @@ export function useAttachments({
   openPaneTab,
 }: AttachmentDeps) {
   const attachments = useExtremeStore((state) => state.attachments);
+  const serverId = useExtremeStore((state) => state.serverId);
+  const defaultMode = useExtremePermissionsStore((state) => state.defaultMode);
+  const byWorkspace = useExtremePermissionsStore((state) => state.byWorkspace);
+  const permission = effectivePermission({ defaultMode, byWorkspace }, workspaceId);
+
+  /*
+   * 自动暂存：一份一份来（同一台服务器上的并发 SFTP 写入反而更慢），
+   * 统一走 `stageWorkspaceAttachment`。只读模式不自动传 —— 但要给一次
+   * 明确说明，不能让人以为文件已经上去了。
+   */
+  useEffect(() => {
+    if (!workspaceId || !sessionId) return;
+    if (permission === "readonly") {
+      if (attachments.some((item) => item.state === "ready" && !item.remotePath && !item.remoteError)) {
+        const message = t("只读模式：附件只在本机读取，不会暂存到服务器。调整权限后才能上传。");
+        if (useExtremeStore.getState().notice !== message) setNotice(message);
+      }
+      return;
+    }
+    const next = attachments.find((item) => item.state === "ready" && !item.remotePath &&
+      !item.remoteError && item.uploadState !== "uploading" && item.uploadState !== "cleaned" &&
+      (attachmentSource(item) !== null));
+    if (next && !attachments.some((item) => item.uploadState === "uploading")) {
+      void stageWorkspaceAttachment({ workspaceId, serverId, sessionId, attachment: next });
+    }
+  }, [attachments, permission, serverId, sessionId, setNotice, t, workspaceId]);
 
   /**
    * 右栏「附件」里勾选「用于本次发送」的附件。
@@ -111,19 +141,16 @@ export function useAttachments({
           : entry,
       );
       if (list.length === 0) return;
-      /*
-       * **只在本机读取，不碰服务器。**
-       *
-       * 附件先进入工作区，内容随消息发给模型做分析；真正写服务器是部署计划
-       * 里的「上传」步骤 —— 必须由用户确认后才发生。自动往 `/tmp` 写一份会
-       * 造成"还没确认就改了服务器"，也容易被误认为是部署的一部分。
-       */
-      const workspaceAtRead = useExtremeStore.getState().workspaceId;
-      const sessionAtRead = useExtremeStore.getState().sessionId;
+      if (permission === "readonly") {
+        // 仍然允许读进本机上下文（只读分析是合法的），只是不会暂存到服务器。
+        setNotice(t("只读模式：附件只在本机读取，不会暂存到服务器。"));
+      }
+      const workspaceAtRead = useExtremeStore.getState().ensureWorkspace();
+      if (!workspaceAtRead) return;
       void Promise.all(list.map((entry) => readFile(entry.file, entry.path))).then((added) => {
         const current = useExtremeStore.getState();
-        if (current.sessionId === sessionAtRead && current.workspaceId === workspaceAtRead) {
-          setAttachments((attachments) => [...attachments, ...added]);
+        current.setAttachmentsIn(workspaceAtRead, (items) => [...items, ...added]);
+        if (current.workspaceId === workspaceAtRead) {
           /*
            * 新加进来的文件默认勾选「用于本次发送」：用户拖进来就是想让模型
            * 看到，不该再多一步去右栏点勾。读失败的不勾（它没有内容可发）。
@@ -137,7 +164,7 @@ export function useAttachments({
         }
       });
     },
-    [openPaneTab, readFile, setAttachments],
+    [openPaneTab, permission, readFile, setNotice, t],
   );
 
   /**
@@ -168,13 +195,43 @@ export function useAttachments({
     openPreviewRef.current?.(id);
   }, []);
 
-  const handleRemoveAttachment = useCallback(
+  /**
+   * 移除附件：只从工作区移除，**不碰服务器上的任何文件**。
+   *
+   * 正在上传的那一份先拦住：后台上传还在写它自己的暂存目录，这时移除会让
+   * "写完了却没有归属"。等结束后再删，或者先点重试/取消。
+   */
+  const removeAttachment = useCallback(
     (id: string) => {
-      // 只从工作区移除，服务器上的文件不动（那只能由部署步骤改）。
+      const state = useExtremeStore.getState();
+      const item = state.attachments.find((entry) => entry.id === id);
+      if (!item) return;
+      if (workspaceId && isAttachmentUploading(workspaceId, id)) {
+        setNotice(t("「{{name}}」正在上传：等上传结束后再删除。", { name: item.name }));
+        return;
+      }
+      // 只从工作区移除，服务器上的文件不动（那只能由清理动作改）。
       setAttachments((current) => current.filter((entry) => entry.id !== id));
       setPreview((current) => (current === id ? null : current));
+      /*
+       * 已经排队的那条消息还引用这份附件：**保留本机句柄**，否则派发时
+       * 会变成"内容没了 → 发不出去"。队列本身只在内存里，句柄跟着它一起
+       * 活到派发结束即可。
+       */
+      const queued = useExtremeStore
+        .getState()
+        .queuedSends.some((send) => send.attachments.some((item) => item.id === id));
+      if (!queued) {
+        dropAttachmentFile(id);
+        if (workspaceId) dropStaleCleanup(workspaceId, id);
+      }
     },
-    [setAttachments],
+    [setAttachments, setNotice, t, workspaceId],
+  );
+
+  const handleRemoveAttachment = useCallback(
+    (id: string) => removeAttachment(id),
+    [removeAttachment],
   );
 
   /**
@@ -189,13 +246,15 @@ export function useAttachments({
    */
   const handleAttachmentRemove = useCallback(
     (file: { uid: string }) => {
-      setAttachments((current) => current.filter((entry) => entry.id !== file.uid));
-      setPreview((current) => (current === file.uid ? null : current));
+      const before = useExtremeStore.getState().attachments.length;
+      removeAttachment(file.uid);
+      // 被"上传中"拦住时列表没变：不能顺手清掉焦点。
+      if (useExtremeStore.getState().attachments.length === before) return false;
       setFocusId((current) => (current === file.uid ? null : current));
       // 返回 false：列表由我们自己维护，不让 antd 内部改动。
       return false;
     },
-    [setAttachments],
+    [removeAttachment],
   );
 
   /**
@@ -230,7 +289,27 @@ export function useAttachments({
         });
         return;
       }
-      setNotice(item.error ?? t("这个附件没有可预览的内容（读取失败或已被清理）。"));
+      /*
+       * 大二进制不在 store 里留 base64：预览按块/整份读本机句柄。句柄没了
+       * （重启 / 已清理）就明确说"重新选择文件"，不拿历史副本冒充。
+       */
+      const source = attachmentSource(item);
+      if (source) {
+        void (async () => {
+          try {
+            const bytes = await source.read(0, source.total);
+            setFilePreview({ kind: "local", name: item.name, size: item.size, bytes });
+          } catch (cause) {
+            setNotice(toAppError(cause).message);
+          }
+        })();
+        return;
+      }
+      setNotice(
+        item.uploadState === "cleaned"
+          ? t("这份暂存副本已清理：重新上传或重新选择文件后才能预览。")
+          : item.error ?? t("这个附件没有可预览的内容（读取失败或已被清理）。"),
+      );
     },
     [sessionId, setNotice, t],
   );

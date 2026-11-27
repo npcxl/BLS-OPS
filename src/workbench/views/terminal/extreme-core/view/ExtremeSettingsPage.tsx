@@ -295,7 +295,7 @@ export function ExtremeSettingsPage({
         >
           <Row
             label={t("默认上下文范围")}
-            hint={t("当前会话含本任务历史、工具结果与已纳入的附件；仅本条只带这句话；自选只带勾选材料。")}
+            hint={t("当前会话带上本对话历史、工具结果与附件；仅本条不带历史；自选带勾选材料。启用时，全局记忆独立生效。")}
           >
             <SelectBox
               testId="default-context"
@@ -543,8 +543,8 @@ export function ExtremeSettingsPage({
               testId="new-task-pane"
               value={settings.newTaskPane}
               options={[
-                { value: "open", label: t("打开") },
                 { value: "closed", label: t("收起") },
+                { value: "open", label: t("打开") },
               ]}
               onChange={(value: NewTaskPane) => settings.update({ newTaskPane: value })}
             />

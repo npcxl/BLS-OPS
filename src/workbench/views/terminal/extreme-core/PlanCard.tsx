@@ -14,6 +14,7 @@ import type { AgentPlan, AgentPlanStep } from "@/api/types/agent";
 import { cn } from "@/lib/cn";
 import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { EC } from "./theme";
+import { isTerminal, type TaskStatus } from "./task";
 
 /** 窄窗口：默认只留一个「计划」按钮。 */
 const NARROW_MAX = 1180;
@@ -45,11 +46,15 @@ function clip(value: string, limit = 26): string {
   return text.length <= limit ? text : `${text.slice(0, limit)}…`;
 }
 
-function stepIcon(step: AgentPlanStep) {
+function stepIcon(step: AgentPlanStep, taskEnded: boolean) {
+  if (taskEnded && (step.state === "running" || step.state === "verifying" || step.state === "waiting")) {
+    return <span className="size-1.5 rounded-full bg-warning" />;
+  }
   switch (step.state) {
     case "done":
       return <Check size={12} className="text-success" />;
     case "running":
+    case "verifying":
       return <Loader2 size={12} className="animate-spin text-accent" />;
     case "waiting":
       return <span className="size-1.5 rounded-full bg-warning" />;
@@ -62,10 +67,11 @@ function stepIcon(step: AgentPlanStep) {
   }
 }
 
-/** 当前该看哪一步：运行 / 等确认 > 失败 > 第一条未完成。 */
+/** 当前需要关注的步骤：运行 / 验证 / 等确认 > 失败 > 第一条未完成。 */
 function currentStep(plan: AgentPlan): AgentPlanStep | undefined {
   return (
     plan.steps.find((step) => step.state === "running") ??
+    plan.steps.find((step) => step.state === "verifying") ??
     plan.steps.find((step) => step.state === "waiting") ??
     plan.steps.find((step) => step.state === "failed") ??
     plan.steps.find((step) => step.state !== "done" && step.state !== "skipped")
@@ -74,14 +80,22 @@ function currentStep(plan: AgentPlan): AgentPlanStep | undefined {
 
 export function PlanCard({
   taskId,
-  plan,
+  plan: rawPlan,
+  taskStatus,
   onFocusStep,
 }: {
   taskId: string;
   plan: AgentPlan;
+  taskStatus?: TaskStatus;
   onFocusStep: (planStepId: string) => void;
 }) {
   const { t } = useTranslation();
+  /*
+   * 修订后的计划只把**当前有效步骤**计入进度；被替换掉的历史步骤单独列出，
+   * 既不假装没发生过，也不再拖累 "done/total"。
+   */
+  const plan = useMemo(() => ({ ...rawPlan, steps: rawPlan.steps.filter((step) => !step.superseded) }), [rawPlan]);
+  const historySteps = useMemo(() => rawPlan.steps.filter((step) => step.superseded), [rawPlan]);
   const narrow = useNarrow();
   const narrowRef = useRef(narrow);
   narrowRef.current = narrow;
@@ -109,19 +123,33 @@ export function PlanCard({
   const done = plan.steps.filter((step) => step.state === "done").length;
   const total = plan.steps.length;
   const current = currentStep(plan);
-  const selected = current?.id ?? "";
+  const taskEnded = taskStatus ? isTerminal(taskStatus) : true;
+  const statusUnknown = !taskStatus;
+  const skipped = plan.steps.filter((step) => step.state === "skipped").length;
+  // 终态不再显示运行动画；证据不足的步骤保留原状态，提示用户核对。
+  const selected = !taskEnded && current && (current.state === "running" || current.state === "verifying" || current.state === "waiting")
+    ? current.id
+    : "";
   const items = useMemo<BranchedMenuItem[]>(
     () => [
       {
         label: t("步骤 {{n}}", { n: total }),
-        children: plan.steps.map((step) => ({
-          value: step.id,
-          label: clip(step.title || step.action || step.id),
-          icon: stepIcon(step),
-        })),
+        children: [
+          ...plan.steps.map((step) => ({
+            value: step.id,
+            label: clip(step.title || step.action || step.id),
+            icon: stepIcon(step, taskEnded),
+          })),
+          // 修订时被替换的步骤：保留可追溯，但不参与计数。
+          ...historySteps.map((step) => ({
+            value: step.id,
+            label: t("历史 · {{title}}", { title: clip(step.title || step.action || step.id) }),
+            icon: <Minus size={12} className="text-fg-subtle" />,
+          })),
+        ],
       },
     ],
-    [plan.steps, t, total],
+    [historySteps, plan.steps, t, total, taskEnded],
   );
 
   const setCollapsedPersisted = (value: boolean) => {
@@ -159,6 +187,11 @@ export function PlanCard({
             <span className="extreme-core-plan-count">
               {done}/{total}
             </span>
+            {plan.revision > 1 && (
+              <span className="shrink-0 text-10 text-fg-subtle">
+                {t("第 {{n}} 版", { n: plan.revision })}
+              </span>
+            )}
           </div>
           <button
             type="button"
@@ -171,7 +204,11 @@ export function PlanCard({
         </header>
 
         <p className="extreme-core-plan-current" title={current?.title || plan.summary}>
-          {current ? current.title : t("已全部完成")}
+          {current
+            ? statusUnknown
+              ? t("任务状态待核对")
+              : taskEnded ? t("任务已结束，部分步骤状态待核对") : current.title
+            : skipped > 0 ? t("已结束，{{count}} 步未执行", { count: skipped }) : t("已全部完成")}
         </p>
 
         <div className="extreme-core-plan-scroll">

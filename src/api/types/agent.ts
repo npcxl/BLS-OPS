@@ -38,6 +38,14 @@ export interface AgentOutcome {
 /** 步骤状态（与 `DeployStep` 的 state 对齐）。 */
 export type AgentStepState = "running" | "waiting" | "success" | "failed" | "skipped";
 
+/**
+ * 步骤类别：把"平台内部纠错"和"服务器上真实发生的事"分开。
+ *
+ * 旧后端 / 旧历史没有这个字段：`undefined` 必须按真实执行保守展示，
+ * 不能因为缺字段就当成内部纠错隐藏。
+ */
+export type AgentStepCategory = "internal" | "executed" | "denied";
+
 /* ---------------- 执行计划（MAX 强制计划） ---------------- */
 
 /** 计划步骤状态：`done` 只由真实工具事件推进。 */
@@ -50,6 +58,7 @@ export type AgentPlanStepState =
   | "skipped";
 
 export interface AgentPlanStep {
+  superseded?: boolean;
   /** 稳定 id（工具调用用它归属到步骤）。 */
   id: string;
   title: string;
@@ -101,10 +110,33 @@ export interface AgentStep {
   rollback?: string | null;
   impact?: string | null;
   elapsedMs: number;
+  /** Estimated child-agent usage; separate from the parent context window. */
+  childUsage?: TokenUsage | null;
+  /** 子任务绑定的服务器；主 Agent 自己的步骤为空。 */
+  server?: string | null;
+  serverId?: string | null;
+  sessionId?: string | null;
+  /** 子任务在父任务里的稳定 id（模型给的 id）。 */
+  childId?: string | null;
+  /** 子任务目标原文：只有 id + goal + server 一致才允许复用旧结果。 */
+  childGoal?: string | null;
+  /** 依赖的子任务 id。 */
+  childDependsOn?: string[];
+  /** 结果来自中断前，服务器状态可能已变化：界面显示「需重新核实」。 */
+  stale?: boolean;
   /** 这一步属于计划的哪一步（MAX 强制计划）。 */
   planStepId?: string | null;
   /** 操作组：说明与工具事件共享，连续命令只显示一次说明。 */
   groupId?: string | null;
+  /** 步骤类别；缺失 = 旧记录，按真实执行展示。 */
+  category?: AgentStepCategory | string | null;
+  /**
+   * 没有执行的结构化原因代码（`read_only` / `query_only` / `user_denied`…）。
+   *
+   * 界面据此写一句可行动的话；完整原因仍在 `stderr` 里，展开可核对。
+   * 缺失 = 旧记录，只说「未执行」，不猜原因。
+   */
+  blocked?: string | null;
 }
 
 /** 正在等用户确认的那一条（快照里带出来，刷新/重进后仍能继续确认）。 */
@@ -281,6 +313,14 @@ export interface AgentEvent {
   outcome?: AgentOutcome | null;
   message?: string;
   elapsedMs?: number;
+  childUsage?: TokenUsage | null;
+  /** 子任务所属服务器（主 Agent 步骤为空）。 */
+  server?: string | null;
+  serverId?: string | null;
+  sessionId?: string | null;
+  childId?: string | null;
+  /** 结果来自中断前、需要重新核实。 */
+  stale?: boolean;
   /** 只有 `approval_required` 带：等待确认的截止时刻（毫秒）。 */
   deadline?: number;
   /** 完整计划（`plan_updated` / 终态事件带）。 */
@@ -293,6 +333,10 @@ export interface AgentEvent {
   answer?: AgentQuestionAnswer | null;
   /** 操作组：说明与工具事件共享。 */
   groupId?: string | null;
+  /** 步骤类别；实时事件与快照使用同一套分类。 */
+  category?: AgentStepCategory | string | null;
+  /** 没有执行的结构化原因代码（与 `AgentStep.blocked` 同值）。 */
+  blocked?: string | null;
   /** 执行前说明（只有操作组第一条 `tool_started` 带）。 */
   note?: string | null;
 }

@@ -13,6 +13,7 @@ import {
   mcpSessionKey,
   useExtremeMcpSelection,
 } from "@/stores/extreme-mcp-selection";
+import { useExtremeStore } from "@/stores/extreme-store";
 import {
   BUILTIN_MCP_SKILLS,
   MCP_PROBE_SCRIPT,
@@ -20,7 +21,7 @@ import {
   parseMcpProbe,
   type McpEnvProbe,
 } from "../mcp-capabilities";
-import { useMcpDataVersion } from "../mcp-events";
+import { bumpMcpHealth, checkMcpServer, useMcpDataVersion } from "../mcp-events";
 import { enabledMcpToolNames } from "../mcp-tools";
 
 const PROBE_KEY = "bls-ops.extreme-mcp-probe.v1";
@@ -37,17 +38,34 @@ export interface McpCapabilityRow {
   /** 状态文案需要的原始信息。 */
   status: "ready" | "unavailable" | "disconnected" | "off" | "error" | "untested" | "bound-away" | "no-tools";
   toolCount?: number;
+  /** bound-away 时具体绑在哪个服务器 / 任务。 */
+  bindingTarget?: string;
+  canEditBinding?: boolean;
 }
+
+export type McpSelectionResult =
+  | { status: "ready"; builtins: string[]; tools: string[] }
+  | { status: "loading" | "error"; message: string };
 
 export interface McpCapabilityState {
   ready: boolean;
   probing: boolean;
+  serversLoading: boolean;
+  serversError: string | null;
   rows: McpCapabilityRow[];
   selectedBuiltins: string[];
   selectedToolNames: string[];
   toggle: (id: string, on: boolean) => void;
   refresh: () => void;
+  /** 按请求归属读取勾选；连接列表仍在加载时会短暂等待，失败返回可展示原因。 */
+  ensureSelection: (
+    workspaceId: string | null,
+    serverId: string | null,
+  ) => Promise<McpSelectionResult>;
   enabledCount: number;
+  checkingMcp?: boolean;
+  checkMcp?: (id?: string) => Promise<void>;
+  checkErrors?: Record<string, string>;
 }
 
 function readProbes(): Record<string, McpEnvProbe> {
@@ -71,22 +89,58 @@ function writeProbe(serverId: string, probe: McpEnvProbe) {
   }
 }
 
+/**
+ * 纯函数版本的勾选计算：测试和首条消息都按传入的归属计算，不读 React 闭包。
+ */
+export function selectionForScope(input: {
+  workspaceId: string | null;
+  serverId: string | null;
+  servers: McpServerView[];
+  bySession: Record<string, Record<string, boolean>>;
+  probe: McpEnvProbe | null;
+  connected: boolean;
+}): McpSelectionResult {
+  const key = mcpSessionKey(input.workspaceId, input.serverId);
+  const builtins = BUILTIN_MCP_SKILLS.filter((skill) => {
+    const available = builtinAvailable(skill, input.probe, input.connected);
+    return (
+      available &&
+      chosen({ bySession: input.bySession }, key, `builtin:${skill.id}`, available)
+    );
+  }).map((skill) => skill.id);
+  const selected = new Set(
+    input.servers
+      .filter(
+        (server) =>
+          server.enabled &&
+          server.status === "connected" &&
+          server.tools.some((tool) => tool.enabled) &&
+          bindingMatches(server, input.serverId, input.workspaceId),
+      )
+      .filter((server) =>
+        chosen(
+          { bySession: input.bySession },
+          key,
+          `mcp:${server.id}`,
+          server.defaultEnabled,
+        ),
+      )
+      .map((server) => server.id),
+  );
+  return {
+    status: "ready",
+    builtins,
+    tools: enabledMcpToolNames(input.servers, selected),
+  };
+}
+
+/** MCP 现在只有全局作用域；保留函数签名兼容调用方与旧测试。 */
 export function bindingMatches(
-  server: McpServerView,
-  serverId: string | null,
-  workspaceId: string | null,
+  _server: McpServerView,
+  _serverId: string | null,
+  _workspaceId: string | null,
 ): boolean {
-  const binding = server.binding;
-  if (!binding) return true;
-  if (binding.scope === "global") return true;
-  if (binding.scope === "server") {
-    // 旧记录没有绑定 id：按"全局"兼容，不让升级后旧连接直接消失。
-    return binding.serverId ? binding.serverId === serverId : true;
-  }
-  if (binding.scope === "workspace") {
-    return binding.workspaceId ? binding.workspaceId === workspaceId : true;
-  }
-  return false;
+  return true;
 }
 
 export function useMcpCapabilities(input: {
@@ -94,35 +148,105 @@ export function useMcpCapabilities(input: {
   serverId: string | null;
   sessionId: string | null;
   connected: boolean;
+  active?: boolean;
 }): McpCapabilityState {
-  const { workspaceId, serverId, sessionId, connected } = input;
+  const { workspaceId, serverId, sessionId, connected, active = true } = input;
   const version = useMcpDataVersion();
   const bySession = useExtremeMcpSelection((state) => state.bySession);
   const setChoice = useExtremeMcpSelection((state) => state.setChoice);
   const [servers, setServers] = useState<McpServerView[] | null>(null);
+  const [serversLoading, setServersLoading] = useState(true);
+  const [serversError, setServersError] = useState<string | null>(null);
+  const [checkingMcp, setCheckingMcp] = useState(false);
+  const [checkErrors, setCheckErrors] = useState<Record<string, string>>({});
+  const checkRun = useRef(false);
   const [probe, setProbe] = useState<McpEnvProbe | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeTick, setProbeTick] = useState(0);
   const probeRef = useRef<McpEnvProbe | null>(null);
   probeRef.current = probe;
+  const serversRef = useRef<McpServerView[] | null>(null);
+  serversRef.current = servers;
+  const loadRef = useRef<Promise<McpServerView[]> | null>(null);
 
   const sessionKey = mcpSessionKey(workspaceId, serverId);
 
-  // 连接列表：保存/测试/启停后由 `bumpMcpData()` 触发刷新。
-  useEffect(() => {
-    let alive = true;
-    opsApi
+  const loadServers = useCallback(async () => {
+    setServersLoading(true);
+    setServersError(null);
+    const request = opsApi
       .mcpServerList()
       .then((list) => {
-        if (alive) setServers(Array.isArray(list) ? list : []);
+        const next = Array.isArray(list) ? list : [];
+        // 先写 ref：首条消息会在 await 之后立刻读它，不能等下一帧重渲染。
+        serversRef.current = next;
+        setServers(next);
+        return next;
       })
-      .catch(() => {
-        if (alive) setServers([]);
+      .catch((cause: unknown) => {
+        setServersError(
+          cause instanceof Error ? cause.message : String(cause),
+        );
+        throw cause;
+      })
+      .finally(() => {
+        setServersLoading(false);
       });
-    return () => {
-      alive = false;
+    loadRef.current = request;
+    return request;
+  }, []);
+
+  // 连接列表：保存/测试/启停后由 `bumpMcpData()` 触发刷新。
+  useEffect(() => {
+    void loadServers().catch(() => undefined);
+  }, [version, loadServers]);
+
+  const checkMcp = useCallback(async (id?: string) => {
+    if (checkRun.current) return;
+    checkRun.current = true;
+    setCheckingMcp(true);
+    try {
+      const list = serversRef.current ?? await loadServers();
+      for (const server of list) {
+        if (!server.enabled || (id && server.id !== id)) continue;
+        try {
+          await checkMcpServer(server.id);
+          setCheckErrors((current) => {
+            const next = { ...current };
+            delete next[server.id];
+            return next;
+          });
+        } catch (cause) {
+          setCheckErrors((current) => ({ ...current, [server.id]: cause instanceof Error ? cause.message : String(cause) }));
+        }
+      }
+    } catch {
+      // loadServers exposes the list failure separately.
+    } finally {
+      checkRun.current = false;
+      setCheckingMcp(false);
+      bumpMcpHealth();
+    }
+  }, [loadServers]);
+
+  useEffect(() => {
+    if (!active || import.meta.env.MODE === "test") return undefined;
+    let lastCheck = 0;
+    const run = () => {
+      if (document.visibilityState === "hidden" || Date.now() - lastCheck < 10 * 60_000) return;
+      lastCheck = Date.now();
+      void checkMcp();
     };
-  }, [version]);
+    run();
+    const timer = window.setInterval(run, 60_000);
+    window.addEventListener("focus", run);
+    document.addEventListener("visibilitychange", run);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", run);
+      document.removeEventListener("visibilitychange", run);
+    };
+  }, [active, checkMcp]);
 
   // 环境探测：同一会话 10 分钟内复用；重连（sessionId 变了）重新探测。
   useEffect(() => {
@@ -181,6 +305,72 @@ export function useMcpCapabilities(input: {
       alive = false;
     };
   }, [connected, serverId, sessionId, probeTick]);
+
+  /**
+   * 按**目标对话 / 服务器**计算勾选，而不是读当前渲染的 sessionKey。
+   * 新任务首条消息、排队任务和恢复执行都靠它拿到归属正确的工具。
+   */
+  const selectionFor = useCallback(
+    (
+      targetWorkspaceId: string | null,
+      targetServerId: string | null,
+      list: McpServerView[],
+    ): McpSelectionResult => {
+      const targetConnected = Boolean(
+        targetServerId
+          ? useExtremeStore.getState().connections[targetServerId]?.sessionId
+          : null,
+      );
+      const targetProbe =
+        targetServerId && targetServerId === serverId
+          ? probeRef.current
+          : targetServerId
+            ? (readProbes()[targetServerId] ?? null)
+            : null;
+      return selectionForScope({
+        workspaceId: targetWorkspaceId,
+        serverId: targetServerId,
+        servers: list,
+        bySession: useExtremeMcpSelection.getState().bySession,
+        probe: targetProbe,
+        connected: targetConnected || (targetServerId === serverId && connected),
+      });
+    },
+    [connected, serverId],
+  );
+
+  const ensureSelection = useCallback(
+    async (
+      targetWorkspaceId: string | null,
+      targetServerId: string | null,
+    ): Promise<McpSelectionResult> => {
+      if (serversRef.current === null && !serversError) {
+        try {
+          await (loadRef.current ?? loadServers());
+        } catch (cause) {
+          return {
+            status: "error",
+            message:
+              cause instanceof Error
+                ? cause.message
+                : "MCP 连接列表读取失败，请稍后重试",
+          };
+        }
+      }
+      if (serversError) {
+        return {
+          status: "error",
+          message: `MCP 连接列表读取失败：${serversError}`,
+        };
+      }
+      const list = serversRef.current;
+      if (list === null) {
+        return { status: "loading", message: "正在加载 MCP 连接…" };
+      }
+      return selectionFor(targetWorkspaceId, targetServerId, list);
+    },
+    [loadServers, selectionFor, serversError],
+  );
 
   const rows = useMemo<McpCapabilityRow[]>(() => {
     const builtinRows: McpCapabilityRow[] = BUILTIN_MCP_SKILLS.map((skill) => {
@@ -271,16 +461,24 @@ export function useMcpCapabilities(input: {
 
   const refresh = useCallback(() => {
     setProbeTick((value) => value + 1);
-  }, []);
+    void loadServers().catch(() => undefined);
+  }, [loadServers]);
 
   return {
-    ready: servers !== null && (!connected || probe !== null || !probing),
+    // 列表加载完成才算 ready；加载失败仍保留错误态，不能当成“没有工具”。
+    ready: servers !== null && !serversLoading && !serversError,
     probing,
+    serversLoading,
+    serversError,
     rows,
     selectedBuiltins,
     selectedToolNames,
     toggle,
     refresh,
-    enabledCount: rows.filter((row) => row.enabled).length,
+    checkingMcp,
+    checkMcp,
+    checkErrors,
+    ensureSelection,
+    enabledCount: rows.filter((row) => row.enabled && row.available).length,
   };
 }

@@ -162,12 +162,26 @@ export interface ExtremeAttachment {
   error?: string;
   /** 文本文件内容（供模型阅读）。 */
   text?: string;
+  /**
+   * `text` 只是前一段（大文本为上下文截断）。
+   *
+   * 应用重启后本机句柄没了，这份截断文本**不能**当成完整文件重传 ——
+   * 否则服务器上的完整副本会被半截内容覆盖。
+   */
+  textPartial?: boolean;
   /** 二进制文件的 base64 内容（只用于上传，不发给模型）。 */
   data?: string;
   /** 是否为二进制（模型只看到元信息）。 */
   binary?: boolean;
   /** 已写到服务器临时目录后的绝对路径（AI 与部署计划引用它）。 */
   remotePath?: string;
+  /**
+   * 平台暂存副本的绝对路径。
+   *
+   * `remotePath` 会在部署后被改写成**线上目标**；清理只能删暂存副本，必须
+   * 单独记住它在哪 —— 两者混用会把站点文件当成临时文件删掉。
+   */
+  stagedPath?: string;
   /**
    * 这个附件走到哪一步了。
    *
@@ -178,7 +192,15 @@ export interface ExtremeAttachment {
    *
    * 和 `state`（读取状态）分开：读取成功不代表传上去了，传上去也不代表部署过。
    */
-  uploadState?: "local" | "uploading" | "uploaded" | "deployed";
+  uploadState?: "local" | "uploading" | "uploaded" | "deployed" | "cleaned";
+  /** 由平台创建、可按附件 ID 清理的远程副本。 */
+  staged?: boolean;
+  /** 暂存副本已清理（部署后的线上文件仍在，不能当成"附件没了"）。 */
+  stagedCleaned?: boolean;
+  /** 暂存副本所在服务器（`serverId`）：切服务器 / 重连时据此判断能不能用。 */
+  remoteServerId?: string | null;
+  /** 上传进度（0–100）。`undefined` = 还没开始或已完成。 */
+  remoteProgress?: number;
   /** 写服务器失败的原因（本机读取成功但上传失败时保留）。 */
   remoteError?: string;
 }
@@ -244,6 +266,10 @@ const PANE_KEY = "bls-ops.extreme-pane.v1";
 const PANE_VIEW_KEY = "bls-ops.extreme-pane-view.v1";
 /** 每条对话自己的右栏开合；新任务默认值只写进新条目。 */
 const PANE_VIEWS_KEY = "bls-ops.extreme-pane-views.v1";
+/** 每条对话自己的左栏开合。 */
+const RAIL_VIEWS_KEY = "bls-ops.extreme-rail-views.v1";
+/** 旧版全局左栏偏好：只作为"没有专属记录"时的回退值。 */
+const RAIL_COLLAPSED_KEY = "bls-ops.extreme-task-rail-collapsed.v1";
 const CHAT_PREFS_KEY = "bls-ops.extreme-chat-prefs.v1";
 const MODEL_SETTINGS_KEY = "bls-ops.extreme-model-settings.v1";
 /** 按会话覆盖的模型档位 / 预算；没有条目时沿用上面的模型默认值。 */
@@ -645,8 +671,15 @@ const emptyContext = (): ExtremeSessionContext => ({
   executing: false,
 });
 
-interface ExtremeState {
+export interface ExtremeState {
   active: boolean;
+  /**
+   * 计划卡定位期间要临时展开的那一组（按 taskId + 计划步骤 id 精确匹配）。
+   *
+   * 只展开命中的组：同名步骤在别的任务里时不能被顺带展开/滚动。定位结束
+   * 后由页面复位，不改变用户手动展开/收起的结果。
+   */
+  stepReveal: { workspaceId: string; taskId: string; planStepId: string } | null;
   /** 当前服务器配置 id（`null` = 这条对话未关联任何服务器）。 */
   serverId: string | null;
   /** 进入超能时绑定的服务器展示名。 */
@@ -793,6 +826,17 @@ interface ExtremeState {
   setBrowserUrl: (workspaceId: string, url: string) => void;
   /** 记下某条会话日志标签的来源。 */
   setLogSource: (workspaceId: string, source: LogSource) => void;
+  /**
+   * 左栏（会话列表）是否收起。
+   *
+   * 只是当前这条对话的镜像：真正的来源是 `railByWorkspace`，切换任务时从
+   * 对应记录恢复。新建任务由创建入口写一次默认值（收起），重新打开不重置。
+   */
+  railCollapsed: boolean;
+  /** 每条对话自己的左栏开合；没有记录时回退到旧全局偏好。 */
+  railByWorkspace: Record<string, boolean>;
+  /** 手动收起 / 展开左栏：写当前对话的记录（欢迎态只改镜像）。 */
+  setRailCollapsed: (collapsed: boolean) => void;
   /** 收起 / 分栏 / 展开视图。 */
   paneView: WorkspacePaneView;
   /** 每条对话自己的右栏开合；切换时恢复，不互相覆盖。 */
@@ -1128,10 +1172,75 @@ function writePaneViews(map: Record<string, WorkspacePaneView>) {
   }
 }
 
+/**
+ * 旧版的**全局**左栏偏好。
+ *
+ * 新逻辑按任务记录；这一份只用于两件事：
+ * 1. 升级前就存在的任务没有专属记录时，按它恢复（明确的回退策略）；
+ * 2. 用户手动调整时继续写一份，降级回旧版本仍能保持上次的样子。
+ */
+function readLegacyRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLegacyRailCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 存不了就只在本次会话里生效。
+  }
+}
+
+function readRailViews(): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RAIL_VIEWS_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, boolean> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "boolean") out[id] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeRailViews(map: Record<string, boolean>) {
+  try {
+    localStorage.setItem(RAIL_VIEWS_KEY, JSON.stringify(map));
+  } catch {
+    // 存不了就只在本次会话里生效。
+  }
+}
+
 const INITIAL_PANE = readPaneState();
+/** 升级前没有"按任务记录"时，右栏按这个旧全局值恢复。 */
+const LEGACY_PANE_VIEW = readPaneView();
+const LEGACY_RAIL_COLLAPSED = readLegacyRailCollapsed();
+
+/** 一条已有任务该用哪个右栏状态：优先自己的记录，其次旧全局偏好。 */
+function paneViewFor(
+  paneViews: Record<string, WorkspacePaneView>,
+  workspaceId: string,
+): WorkspacePaneView {
+  return paneViews[workspaceId] ?? LEGACY_PANE_VIEW;
+}
+
+/** 一条已有任务该用哪个左栏状态：优先自己的记录，其次旧全局偏好。 */
+function railCollapsedFor(
+  rails: Record<string, boolean>,
+  workspaceId: string,
+): boolean {
+  return rails[workspaceId] ?? LEGACY_RAIL_COLLAPSED;
+}
 
 export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   active: false,
+  stepReveal: null,
   serverId: null,
   server: null,
   serverHost: null,
@@ -1167,7 +1276,9 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
   remotePathByWorkspace: {},
   fileChanges: {},
   changeViews: readChangeViews(),
-  paneView: readPaneView(),
+  railCollapsed: LEGACY_RAIL_COLLAPSED,
+  railByWorkspace: readRailViews(),
+  paneView: LEGACY_PANE_VIEW,
   paneViewByWorkspace: readPaneViews(),
   paneWidth: INITIAL_PANE.width,
   paneDragging: false,
@@ -1200,6 +1311,15 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
     const paneMap = { ...state.paneViewByWorkspace, [entry.id]: newPane };
     writePaneViews(paneMap);
+    /*
+     * 左栏默认收起，**只写在这次真正新建的任务上**。
+     *
+     * 不能由 TaskSidebar 的"welcome 就收起"来兜：空白任务切走再切回时
+     * welcome 仍是 true，那会把用户手动展开的左栏又折回去。
+     */
+    const railMap = { ...state.railByWorkspace, [entry.id]: true };
+    writeRailViews(railMap);
+    writeLegacyRailCollapsed(true);
     set({
       ...emptyContext(),
       attachments,
@@ -1210,8 +1330,11 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       workspaceId: entry.id,
       paneTab: "files",
       paneLists: { ...state.paneLists, [entry.id]: ["files"] },
+      paneMru: { ...state.paneMru, [entry.id]: ["files"] },
       paneView: newPane,
       paneViewByWorkspace: paneMap,
+      railCollapsed: true,
+      railByWorkspace: railMap,
       rightTab: null,
       lastWorkspaceByServer: state.serverId
         ? { ...state.lastWorkspaceByServer, [state.serverId]: entry.id }
@@ -1251,11 +1374,29 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     const entryTab = state.paneByWorkspace[id] ?? "files";
     const entryList = state.paneLists[id]?.length ? state.paneLists[id] : [entryTab];
     const nextPrefs = state.chatPrefsByWorkspace[id] ?? defaultChatPrefs();
+    /*
+     * 打开**已有**任务只恢复，不初始化：空白任务也算已有任务。
+     * 没有专属记录的旧任务按升级前的全局偏好恢复，并立刻落成记录，
+     * 之后用户再怎么调整都只影响它自己。
+     */
+    const paneView = paneViewFor(state.paneViewByWorkspace, id);
+    const paneMap = state.paneViewByWorkspace[id]
+      ? state.paneViewByWorkspace
+      : { ...state.paneViewByWorkspace, [id]: paneView };
+    if (paneMap !== state.paneViewByWorkspace) writePaneViews(paneMap);
+    const rail = railCollapsedFor(state.railByWorkspace, id);
+    const railMap = Object.prototype.hasOwnProperty.call(state.railByWorkspace, id)
+      ? state.railByWorkspace
+      : { ...state.railByWorkspace, [id]: rail };
+    if (railMap !== state.railByWorkspace) writeRailViews(railMap);
     set({
       ...loadWorkspace(entry),
       chatPrefs: nextPrefs,
       // 右栏开合按对话恢复：A 收起、B 打开，切回去仍是各自的样子。
-      paneView: state.paneViewByWorkspace[id] ?? "hidden",
+      paneView,
+      paneViewByWorkspace: paneMap,
+      railCollapsed: rail,
+      railByWorkspace: railMap,
       sessionId: sessionId || null,
       // 右栏标签跟着对话走：A 开着文件和日志，切到 B 显示 B 自己的。
       paneTab: entryTab,
@@ -1361,6 +1502,8 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         draft: "",
         chatPrefs: defaultChatPrefs(),
         paneView: "hidden",
+        // 全新的空白态：左栏先收起，把画面让给输入框（这不是"已有任务"）。
+        railCollapsed: true,
         rightTab: null,
         panelShown: false,
       });
@@ -1368,11 +1511,25 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     }
 
     const targetTab = state.paneByWorkspace[target.id] ?? "files";
+    // 已有任务恢复自己的布局；旧任务没有记录才回退到旧全局偏好。
+    const targetPaneView = paneViewFor(state.paneViewByWorkspace, target.id);
+    const targetPaneMap = state.paneViewByWorkspace[target.id]
+      ? state.paneViewByWorkspace
+      : { ...state.paneViewByWorkspace, [target.id]: targetPaneView };
+    if (targetPaneMap !== state.paneViewByWorkspace) writePaneViews(targetPaneMap);
+    const targetRail = railCollapsedFor(state.railByWorkspace, target.id);
+    const targetRailMap = Object.prototype.hasOwnProperty.call(state.railByWorkspace, target.id)
+      ? state.railByWorkspace
+      : { ...state.railByWorkspace, [target.id]: targetRail };
+    if (targetRailMap !== state.railByWorkspace) writeRailViews(targetRailMap);
     set({
       active: true,
       ...loadWorkspace(target),
       chatPrefs: state.chatPrefsByWorkspace[target.id] ?? defaultChatPrefs(),
-      paneView: state.paneViewByWorkspace[target.id] ?? "hidden",
+      paneView: targetPaneView,
+      paneViewByWorkspace: targetPaneMap,
+      railCollapsed: targetRail,
+      railByWorkspace: targetRailMap,
       server,
       serverHost: serverHost ?? null,
       sessionId,
@@ -1417,6 +1574,9 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
     const paneMap = { ...state.paneViewByWorkspace, [entry.id]: lazyPane };
     writePaneViews(paneMap);
+    const railMap = { ...state.railByWorkspace, [entry.id]: true };
+    writeRailViews(railMap);
+    writeLegacyRailCollapsed(true);
     set({
       workspaceId: entry.id,
       chatPrefs: prefs,
@@ -1428,6 +1588,9 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       // 懒创建也是新任务：按“新任务默认”决定右栏，已有会话切回时仍用各自的值。
       paneView: lazyPane,
       paneViewByWorkspace: paneMap,
+      // 左栏同样只在这条新记录上写一次默认值。
+      railCollapsed: true,
+      railByWorkspace: railMap,
       lastWorkspaceByServer: {
         ...state.lastWorkspaceByServer,
         [state.serverId]: entry.id,
@@ -1464,10 +1627,13 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       writeModelOverrides(modelMap);
       const paneMap = drop(state.paneViewByWorkspace);
       writePaneViews(paneMap);
+      const railMap = drop(state.railByWorkspace);
+      writeRailViews(railMap);
       return {
         chatPrefsByWorkspace: chatMap,
         modelSettingsByWorkspace: modelMap,
         paneViewByWorkspace: paneMap,
+        railByWorkspace: railMap,
         paneByWorkspace: drop(state.paneByWorkspace),
         paneLists: drop(state.paneLists),
         paneMru: drop(state.paneMru),
@@ -1508,15 +1674,33 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       });
       return;
     }
+    const gone = forgetPane();
+    // 切到剩下那条：恢复它自己的布局（旧任务没有记录时按旧全局偏好，并落成记录）。
+    const nextView = paneViewFor(gone.paneViewByWorkspace, next.id);
+    const nextRails = railCollapsedFor(gone.railByWorkspace, next.id);
+    const nextPaneMap = Object.prototype.hasOwnProperty.call(
+      gone.paneViewByWorkspace,
+      next.id,
+    )
+      ? gone.paneViewByWorkspace
+      : { ...gone.paneViewByWorkspace, [next.id]: nextView };
+    const nextRailMap = Object.prototype.hasOwnProperty.call(gone.railByWorkspace, next.id)
+      ? gone.railByWorkspace
+      : { ...gone.railByWorkspace, [next.id]: nextRails };
+    if (nextPaneMap !== gone.paneViewByWorkspace) writePaneViews(nextPaneMap);
+    if (nextRailMap !== gone.railByWorkspace) writeRailViews(nextRailMap);
     set({
       workspaces: rest,
       queuedSends,
       ...loadWorkspace(next),
+      ...gone,
       chatPrefs: state.chatPrefsByWorkspace[next.id] ?? defaultChatPrefs(),
-      paneView: state.paneViewByWorkspace[next.id] ?? "hidden",
+      paneView: nextView,
+      paneViewByWorkspace: nextPaneMap,
+      railCollapsed: nextRails,
+      railByWorkspace: nextRailMap,
       sessionId: state.sessionId,
       lastWorkspaceByServer,
-      ...forgetPane(),
     });
   },
 
@@ -1749,11 +1933,16 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         width: state.paneWidth,
       });
       writePaneView(view);
+      // 自动展开（AI 打开文件 / 日志 / 附件）同样算这条任务的布局：
+      // 只改全局值的话，切走再切回会按旧的 "hidden" 把右栏折回去。
+      const views = ws ? { ...state.paneViewByWorkspace, [ws]: view } : state.paneViewByWorkspace;
+      if (views !== state.paneViewByWorkspace) writePaneViews(views);
       return {
         rightTab: "panel",
         panelShown: true,
         // 收起态才展开；占满视图保持原样，不把展开缩回分栏。
         paneView: view,
+        paneViewByWorkspace: views,
         paneTab: pane,
         paneByWorkspace: active,
         paneLists: lists,
@@ -1791,10 +1980,13 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       const view: WorkspacePaneView =
         state.paneView === "hidden" ? "split" : state.paneView;
       writePaneView(view);
+      const views = ws ? { ...state.paneViewByWorkspace, [ws]: view } : state.paneViewByWorkspace;
+      if (views !== state.paneViewByWorkspace) writePaneViews(views);
       const terminalPane = terminal ?? state.terminalPane;
       return {
         // 收起态才展开；占满视图（expanded）保持不变。
         paneView: view,
+        paneViewByWorkspace: views,
         paneTab: tab,
         paneByWorkspace: active,
         paneLists: lists,
@@ -1856,8 +2048,11 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
         width: state.paneWidth,
       });
       writePaneView(view);
+      const views = { ...state.paneViewByWorkspace, [ws]: view };
+      writePaneViews(views);
       return {
         paneView: view,
+        paneViewByWorkspace: views,
         paneTab: nextTab,
         paneByWorkspace: active,
         paneLists: lists,
@@ -1929,6 +2124,15 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       return { changeViews: next };
     }),
   flushChangeViews: () => writeChangeViews(get().changeViews),
+  setRailCollapsed: (collapsed) => {
+    writeLegacyRailCollapsed(collapsed);
+    set((state) => {
+      if (!state.workspaceId) return { railCollapsed: collapsed };
+      const map = { ...state.railByWorkspace, [state.workspaceId]: collapsed };
+      writeRailViews(map);
+      return { railCollapsed: collapsed, railByWorkspace: map };
+    });
+  },
   setPaneView: (view) => {
     writePaneView(view);
     set((state) => {

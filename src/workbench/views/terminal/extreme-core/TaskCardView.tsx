@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import { cn } from "@/lib/cn";
 import { FileKindIcon } from "./FileKindIcon";
+import { useStepTitle } from "./step-title-i18n";
 import { TaskSteps } from "./TaskSteps";
 import { isTerminal, statusLabel, type TaskStatus } from "./task";
 import { verificationStep } from "./task-bridge";
@@ -39,6 +40,12 @@ const KIND_ICON = {
   automation: Play,
 } as const;
 
+/** 摘要只留能判断的前几行；完整报错在各步骤的详情里。 */
+function clipText(value: string | undefined, limit: number): string {
+  const text = (value ?? "").trim();
+  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+}
+
 /**
  * 统一任务卡：部署 / 查询 / 检测 / 构建 / 传输**共用**同一个外壳。
  *
@@ -59,7 +66,10 @@ export function TaskCardView({
   defaultExpanded?: boolean;
 }) {
   const { t } = useTranslation();
+  // 步骤标题是 Rust 拼的中文：英文界面按"动词 + 目标"改写成英文，不能直接 t()。
+  const localize = useStepTitle();
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const detailsId = useId();
   const Icon = KIND_ICON[task.kind] ?? Container;
   const progress = stepProgress(task.steps);
   const failedStep = task.steps.find((step) => step.state === "failed");
@@ -73,10 +83,10 @@ export function TaskCardView({
   const elapsed = task.updatedAt - task.createdAt;
 
   return (
-    <section className="overflow-hidden rounded-[10px] border border-line bg-surface-1/95">
-      <header className="flex items-center gap-2 px-3 py-2">
-        <Icon size={13} className="shrink-0 text-fg-subtle" />
-        <span className="min-w-0 flex-1 truncate text-12 font-medium">{task.title}</span>
+    <section className="min-w-0 overflow-hidden rounded-2xl border border-line/60 bg-surface-2 text-fg shadow-[0_2px_12px_rgb(0_0_0/0.04)]">
+      <header className="flex flex-wrap items-center gap-2 px-5 pb-1 pt-4">
+        <Icon size={14} className="shrink-0 text-fg-subtle" />
+        <span className="min-w-0 flex-1 break-words text-13 font-medium leading-5">{task.title}</span>
         {isTerminal(task.status) && elapsed > 0 && (
           <span className="shrink-0 text-10 text-fg-subtle">
             {t("用时 {{duration}}", { duration: durationText(elapsed, t) })}
@@ -87,22 +97,22 @@ export function TaskCardView({
         </StatusBadge>
       </header>
 
-      <div className="space-y-1 border-t border-line px-3 py-2">
-        {task.goal && <p className="truncate text-11 text-fg-muted">{t("目标")}：{task.goal}</p>}
+      <div className="space-y-1.5 px-5 pb-2 pt-2">
+        {task.goal && task.goal !== task.title && <p className="break-words text-12 leading-5 text-fg-muted">{t("目标")}：{task.goal}</p>}
         {writes.length > 0 && (
           <p
             className="truncate text-11 text-fg-subtle"
-            title={writes.map((step) => t(step.title)).join(t("、"))}
+            title={writes.map((step) => localize(step.title)).join(t("、"))}
           >
-            {t("拟改动")}：{writes.map((step) => t(step.title)).join(t("、"))}
+            {t("拟改动")}：{writes.map((step) => localize(step.title)).join(t("、"))}
           </p>
         )}
-        <p className="text-12">
+        {progress.total > 0 && <p className="text-12 text-fg-muted">
           {t("当前")}：
           {progress.total > 0 ? `${progress.done}/${progress.total}` : "—"}
-          {progress.current ? ` · ${t(progress.current.title)}` : ""}
-        </p>
-        <p className={cn("text-12", task.status === "failed" ? "text-danger" : "text-fg-muted")}>{task.result}</p>
+          {progress.current ? ` · ${localize(progress.current.title)}` : ""}
+        </p>}
+        <p className={cn("whitespace-pre-wrap break-words text-12 leading-5", task.status === "failed" ? "text-danger" : "text-fg-muted")}>{task.result}</p>
         {/* 关键结果按任务类型取不同字段，避免每种任务一个卡片组件。 */}
         {/*
          * Agent 任务（`tool` 步骤）没有"部署验证"这一步：显示"未执行验证"
@@ -133,7 +143,19 @@ export function TaskCardView({
         )}
         {task.kind === "probe" && (
           <p className="text-11 text-fg-muted">
-            {t("异常项")}：{task.steps.filter((step) => step.state === "failed").length}
+            {/*
+             * 只数**真正执行失败**的步骤：内部纠错 / 用户拒绝都不是"异常项"，
+             * 否则一次被拦下的写操作会让"查服务"看起来出了问题。
+             */}
+            {t("异常项")}：
+            {
+              task.steps.filter(
+                (step) =>
+                  step.state === "failed" &&
+                  step.category !== "internal" &&
+                  step.category !== "denied",
+              ).length
+            }
           </p>
         )}
         {task.kind === "query" && progress.current?.stdout && (
@@ -160,21 +182,21 @@ export function TaskCardView({
         )}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-line px-3 py-1.5">
-        <Button variant="ghost" size="xs" className="gap-1" onClick={() => setExpanded((value) => !value)}>
+      <div className="flex flex-wrap items-center gap-2 px-5 pb-4 pt-2">
+        <Button variant="ghost" size="xs" className="gap-1 text-fg-muted" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded((value) => !value)}>
           {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           {expanded ? t("收起详情") : t("查看步骤")}
         </Button>
-        <span className="text-11 text-fg-subtle">
+        {progress.total > 0 && <span className="text-11 text-fg-subtle">
           {progress.done}/{progress.total}
-        </span>
+        </span>}
         {onResume &&
           (task.status === "interrupted" ||
             (task.status === "failed" && task.steps.length > 0)) && (
           <Button
             variant="ghost"
             size="xs"
-            className="ml-auto gap-1 text-accent"
+            className="ml-auto rounded-full bg-accent/10 px-3 text-accent hover:bg-accent/20"
             onClick={() => onResume(task)}
           >
             {t("继续执行")}
@@ -183,16 +205,22 @@ export function TaskCardView({
       </div>
 
       {expanded && (
-        <div className="border-t border-line">
+        <div id={detailsId} className="mx-5 mb-4 overflow-hidden rounded-xl bg-surface-1">
           {task.steps.length === 0 ? (
             <p className="px-3 py-2 text-11 text-fg-subtle">{t("这条记录没有保存步骤")}</p>
           ) : (
             <TaskSteps steps={task.steps} />
           )}
           {failedStep && (
+            /*
+             * 这里只放**一层摘要**：完整 stderr 在下面每一步的详情里，
+             * 整段原始报错铺在提示条里会盖住后面的步骤审计。
+             */
             <StatusNotice tone="danger" icon className="m-2">
-              <span className="font-medium">{t(failedStep.title)}</span>
-              <span className="ml-1 text-fg-muted">{failedStep.stderr?.trim() || failedStep.detail}</span>
+              <span className="font-medium">{localize(failedStep.title)}</span>
+              <span className="ml-1 text-fg-muted">
+                {clipText(failedStep.stderr?.trim() || failedStep.detail, 400)}
+              </span>
             </StatusNotice>
           )}
           {task.outcome && task.outcome.evidence.length > 0 && (

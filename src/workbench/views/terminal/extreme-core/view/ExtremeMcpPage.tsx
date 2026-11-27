@@ -4,22 +4,25 @@
  * 市场只提供**候选连接配置**（本地点目录 + 官方 Registry），真实能力以
  * 连接测试发现的工具为准；添加后配置与令牌分别落 SQLite 和系统钥匙串。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
   Globe,
+  Loader2,
   Plug,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { PaneTabBar } from "@/components/ui/pane-tab-bar";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
 import { Field, Modal, fieldClass } from "@/components/ui/modal";
-import { Select } from "@/components/ui/select";
 import { useActionError } from "@/hooks/use-action-error";
+import { i18n } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import { openExternal } from "@/lib/open-external";
@@ -28,26 +31,42 @@ import {
   mcpSessionKey,
   useExtremeMcpSelection,
 } from "@/stores/extreme-mcp-selection";
+
 import { opsApi } from "@/api/ops-api";
 import type {
   McpRegistryEntry,
+  McpRuntimeDetail,
+  McpRuntimeId,
+  McpRuntimeReport,
+  McpRuntimeStatus,
   McpScope,
   McpServerInput,
   McpServerView,
 } from "@/api/types/mcp";
 import { BUILTIN_MCP_SKILLS } from "../mcp-capabilities";
+import { backendChangeText } from "../file-changes";
 import {
-  CURATED_MCP_CATALOG,
-  MCP_MARKET_CATEGORIES,
   catalogInstances,
   catalogToInput,
-  filterCatalog,
   registryToCatalog,
   type McpCatalogEntry,
-  type McpMarketCategory,
 } from "../mcp-catalog";
-import { bumpMcpData } from "../mcp-events";
+import { bumpMcpData, checkMcpServer, useMcpHealthVersion } from "../mcp-events";
 import { ExtremePageShell } from "./ExtremePageShell";
+import {
+  CommandProbeSummary,
+  RuntimeDiagnostics,
+  RuntimeStatusStrip,
+  runtimeBlocksAdd,
+  runtimeStatusLabel,
+} from "./McpRuntimePanel";
+
+function MarketIcon({ entry }: { entry: McpCatalogEntry }) {
+  const [failed, setFailed] = useState(false);
+  const iconUrl = entry.iconUrl;
+  if (!iconUrl || !/^https:\/\//i.test(iconUrl) || failed) return null;
+  return <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-active/55"><img src={iconUrl} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-7 object-contain" onError={() => setFailed(true)} /></span>;
+}
 
 type Tab = "market" | "connections";
 
@@ -110,7 +129,8 @@ function draftFromServer(server: McpServerView): Draft {
     headersText: pairsText(server.headers),
     enabled: server.enabled,
     defaultEnabled: server.defaultEnabled,
-    binding: server.binding,
+    // MCP 只有全局作用域；旧记录打开编辑时也统一成 global。
+    binding: { scope: "global", workspaceId: null, serverId: null },
     tools: server.tools,
     resources: server.resources,
     prompts: server.prompts,
@@ -146,7 +166,7 @@ function catalogDraft(
 }
 
 function emptyCustom(
-  scope: { workspaceId: string | null; serverId: string | null },
+  _scope: { workspaceId: string | null; serverId: string | null },
   transport: "http" | "stdio" = "http",
 ): Draft {
   return {
@@ -161,7 +181,7 @@ function emptyCustom(
     headersText: "",
     enabled: true,
     defaultEnabled: true,
-    binding: { scope: "workspace", workspaceId: scope.workspaceId, serverId: null },
+    binding: { scope: "global", workspaceId: null, serverId: null },
     tools: [],
     resources: [],
     prompts: [],
@@ -271,17 +291,27 @@ function runtimeForCommand(
     };
   }
   return {
-    name: commandRaw || "本地运行环境",
+    name: commandRaw || i18n.t("本地运行环境"),
     installUrl: docsUrl,
     command: commandRaw,
   };
+}
+
+/** 连接命令 → 市场里的运行时 id（只用于筛选诊断信息，不做安装判断）。 */
+function runtimeIdForCommand(commandRaw: string): McpRuntimeId | null {
+  const file = commandRaw.trim().toLowerCase().split(/[\\/]/).pop() ?? "";
+  const base = file.replace(/\.(exe|cmd|bat)$/, "");
+  if (base === "uv" || base === "uvx") return base;
+  if (base === "npx" || base === "npm" || base === "node") return "npx";
+  if (base.startsWith("docker")) return "docker";
+  return null;
 }
 
 function missingRuntime(server: McpServerView): boolean {
   return (
     server.transport === "stdio" &&
     // 404 日志里也有 "Not Found"，不要把它误判成运行环境缺失。
-    /启动 MCP 服务失败|not recognized|command not found|ENOENT|不是内部或外部命令/i.test(
+    /启动 MCP 服务失败|找不到可执行文件|not recognized|command not found|ENOENT|不是内部或外部命令/i.test(
       server.error ?? "",
     )
   );
@@ -314,7 +344,27 @@ function connectionState(server: McpServerView): ConnectionState {
   return "unknown";
 }
 
-function connectionLabel(state: ConnectionState, t: (key: string) => string): string {
+/** 失败细分：包下载 / 进程启动 / 握手 / 权限，避免都显示成"连接失败"。 */
+function failureLabel(error: string | null | undefined, t: (key: string) => string): string {
+  const text = error ?? "";
+  if (/失败阶段：初始化握手/.test(text)) return t("服务握手失败");
+  if (/失败阶段：读取服务能力/.test(text)) return t("工具发现失败");
+  if (/失败阶段：启动 MCP 进程/.test(text)) {
+    if (/Docker 已安装，但服务尚未启动/.test(text)) return t("Docker 服务未启动");
+    if (/找不到可执行文件/.test(text)) return t("运行环境未就绪");
+    return t("MCP 进程启动失败");
+  }
+  if (/包下载失败/.test(text)) return t("包下载失败");
+  if (/包不存在或版本不可用|这个 npm 包不存在/.test(text)) return t("包不存在");
+  if (/Docker 已安装，但服务尚未启动/.test(text)) return t("Docker 服务未启动");
+  return t("连接失败");
+}
+
+function connectionLabel(
+  state: ConnectionState,
+  t: (key: string) => string,
+  error?: string | null,
+): string {
   switch (state) {
     case "disabled":
       return t("已停用");
@@ -327,7 +377,7 @@ function connectionLabel(state: ConnectionState, t: (key: string) => string): st
     case "tools_error":
       return t("工具发现失败");
     case "error":
-      return t("连接失败");
+      return failureLabel(error, t);
     default:
       return t("未验证");
   }
@@ -362,7 +412,7 @@ function McpProgress({
       : seconds < 12
         ? t("正在握手并读取服务能力…")
         : local
-          ? t("等待工具发现（首次运行可能正在下载依赖包）…")
+          ? t("等待工具发现（首次运行可能正在下载依赖包或拉取镜像）…")
           : t("等待工具列表…");
   return (
     <div className="mt-1.5" role="status" aria-live="polite">
@@ -446,7 +496,7 @@ function ConnectionForm({
         </>
       }
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-5">
         {draft.catalog && (
           <div className="rounded-lg border border-line/60 p-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -621,51 +671,33 @@ function ConnectionForm({
           </>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={t("绑定范围")}>
-            <Select
-              className="w-full"
-              testId="mcp-binding"
-              value={draft.binding.scope}
-              options={[
-                { value: "workspace", label: t("当前工作区") },
-                { value: "server", label: t("当前服务器") },
-                { value: "global", label: t("全局") },
-              ]}
-              onChange={(next) =>
-                onChange({
-                  ...draft,
-                  binding: {
-                    scope: next as McpScope["scope"],
-                    serverId: next === "server" ? scope.serverId : null,
-                    workspaceId: next === "workspace" ? scope.workspaceId : null,
-                  },
-                })
+        <div className="rounded-md border border-line/60 bg-surface-1/40 px-2.5 py-2">
+          <p className="text-11 font-medium text-fg">{t("作用范围：全局")}</p>
+          <p className="mt-0.5 text-10 leading-4 text-fg-subtle">
+            {t("所有服务器的任务都可以使用这个连接；实际调用仍受会话权限、连接状态和工具级权限约束，不绑定到某台服务器。")}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-4 text-11 text-fg-muted">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              data-testid="mcp-enabled"
+              checked={draft.enabled}
+              onChange={(event) => onChange({ ...draft, enabled: event.target.checked })}
+            />
+            {t("启用这个连接")}
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              data-testid="mcp-default-enabled"
+              checked={draft.defaultEnabled}
+              onChange={(event) =>
+                onChange({ ...draft, defaultEnabled: event.target.checked })
               }
             />
-          </Field>
-          <div className="flex flex-col justify-end gap-1 text-11 text-fg-muted">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                data-testid="mcp-enabled"
-                checked={draft.enabled}
-                onChange={(event) => onChange({ ...draft, enabled: event.target.checked })}
-              />
-              {t("启用这个连接")}
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                data-testid="mcp-default-enabled"
-                checked={draft.defaultEnabled}
-                onChange={(event) =>
-                  onChange({ ...draft, defaultEnabled: event.target.checked })
-                }
-              />
-              {t("连接成功后默认勾选")}
-            </label>
-          </div>
+            {t("连接成功后默认勾选")}
+          </label>
         </div>
 
       </div>
@@ -690,9 +722,8 @@ export function ExtremeMcpPage({
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>(initialTab);
+  const mcpVersion = useMcpHealthVersion();
   const [servers, setServers] = useState<McpServerView[] | null>(null);
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<McpMarketCategory>("all");
   const [detail, setDetail] = useState<{ entry: McpCatalogEntry; values: Record<string, string> } | null>(
     null,
   );
@@ -703,6 +734,10 @@ export function ExtremeMcpPage({
   const [saving, setSaving] = useState(false);
   /** 已存在的 stdio 连接启动失败时，给出本机运行环境的安装入口。 */
   const [repairServer, setRepairServer] = useState<McpServerView | null>(null);
+  /** 安装弹窗里的实时检测结果（含脱敏路径 / 版本 / 失败原因）。 */
+  const [repairReport, setRepairReport] = useState<McpRuntimeReport | null>(null);
+  const [repairChecking, setRepairChecking] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [importPreview, setImportPreview] = useState<
@@ -714,7 +749,31 @@ export function ExtremeMcpPage({
     cursor: string | null;
     loading: boolean;
     error: string | null;
-  }>({ query: "", entries: [], cursor: null, loading: false, error: null });
+    searched: boolean;
+    resultQuery: string;
+    loadingMore: boolean;
+    runtimes: Partial<Record<McpRuntimeId, McpRuntimeStatus>>;
+    runtimeDetails: McpRuntimeDetail[];
+    runtimeCheckedAt: number | null;
+    runtimeChecking: boolean;
+    runtimeError: string | null;
+  }>({
+    query: "",
+    entries: [],
+    cursor: null,
+    loading: false,
+    error: null,
+    searched: false,
+    resultQuery: "",
+    loadingMore: false,
+    runtimes: {},
+    runtimeDetails: [],
+    runtimeCheckedAt: null,
+    runtimeChecking: false,
+    runtimeError: null,
+  });
+  const registryRequest = useRef(0);
+  useEffect(() => () => { registryRequest.current += 1; }, []);
   const { error, fail, clear, retry } = useActionError();
   const bySession = useExtremeMcpSelection((state) => state.bySession);
   const setChoice = useExtremeMcpSelection((state) => state.setChoice);
@@ -732,7 +791,7 @@ export function ExtremeMcpPage({
 
   useEffect(() => {
     void load().catch((cause) => fail(cause, () => void load()));
-  }, [load, fail]);
+  }, [load, fail, mcpVersion]);
 
   useEffect(() => {
     setTab(initialTab);
@@ -743,37 +802,72 @@ export function ExtremeMcpPage({
     [workspaceId, serverId, serverName],
   );
 
-  const curated = useMemo(
-    () => filterCatalog(CURATED_MCP_CATALOG, query, category),
-    [query, category],
-  );
+  const visibleRegistryEntries = useMemo(() => {
+    const seen = new Set<string>();
+    return registry.entries.map(registryToCatalog).filter((entry) => {
+      if (entry.availability === "unsupported" || seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    });
+  }, [registry.entries]);
 
   const searchRegistry = async (nextQuery: string, cursor: string | null, append: boolean) => {
-    setRegistry((current) => ({ ...current, loading: true, error: null, query: nextQuery }));
+    const requestId = ++registryRequest.current;
+    const query = nextQuery.trim();
+    setRegistry((current) => ({ ...current, loading: true, loadingMore: append, error: null, searched: true, resultQuery: query, ...(append ? {} : { entries: [], cursor: null }) }));
     try {
-      const result = await opsApi.mcpRegistrySearch(nextQuery, cursor, 20);
+      const result = await opsApi.mcpRegistrySearch(query, cursor, 20);
+      if (requestId !== registryRequest.current) return;
       setRegistry((current) => ({
-        query: nextQuery,
+        ...current,
         entries: append ? [...current.entries, ...result.servers] : result.servers,
         cursor: result.nextCursor ?? null,
         loading: false,
-        error: null,
+        loadingMore: false,
+        runtimes: result.runtimes ?? {},
+        runtimeDetails: result.runtimeDetails ?? [],
+        runtimeCheckedAt: result.runtimeCheckedAt ?? null,
       }));
+    } catch (cause) {
+      if (requestId !== registryRequest.current) return;
+      setRegistry((current) => ({ ...current, loading: false, loadingMore: false, error: cause instanceof Error ? cause.message : String(cause) }));
+    }
+  };
+
+  /**
+   * 重新检测运行环境：只刷新状态，不清空搜索结果、不动已有连接。
+   *
+   * 用户装完 uv / Node / Docker 后点这里就能继续添加，不需要重启应用：
+   * 后端每次检测都会重新读用户级与系统级 PATH。
+   */
+  const recheckRuntimes = useCallback(async (): Promise<McpRuntimeReport | null> => {
+    setRegistry((current) => ({ ...current, runtimeChecking: true, runtimeError: null }));
+    try {
+      const report = await opsApi.mcpRuntimeStatus();
+      setRegistry((current) => ({
+        ...current,
+        runtimeChecking: false,
+        runtimes: report.statuses ?? {},
+        runtimeDetails: report.runtimes ?? [],
+        runtimeCheckedAt: report.checkedAt ?? null,
+      }));
+      return report;
     } catch (cause) {
       setRegistry((current) => ({
         ...current,
-        loading: false,
-        error: cause instanceof Error ? cause.message : String(cause),
+        runtimeChecking: false,
+        runtimeError: cause instanceof Error ? cause.message : String(cause),
       }));
+      return null;
     }
-  };
+  }, []);
 
   const testServer = async (server: McpServerView) => {
     setBusyId(server.id);
     setBusyStartedAt(Date.now());
     clear();
     try {
-      const result = await opsApi.mcpServerTest(server.id);
+      const result = await checkMcpServer(server.id);
       setServers((current) =>
         (current ?? []).map((item) =>
           item.id === server.id
@@ -796,6 +890,44 @@ export function ExtremeMcpPage({
     } finally {
       setBusyId(null);
       setBusyStartedAt(null);
+    }
+  };
+
+  /** 打开修复弹窗时先检测一次：直接告诉用户"装在哪、能不能跑"。 */
+  const openRepair = (server: McpServerView) => {
+    setRepairServer(server);
+    setRepairReport(null);
+    setRepairError(null);
+    void runRepairCheck(server.command);
+  };
+
+  const runRepairCheck = async (command: string): Promise<McpRuntimeReport | null> => {
+    setRepairChecking(true);
+    setRepairError(null);
+    try {
+      const report = await opsApi.mcpRuntimeStatus(command);
+      setRepairReport(report);
+      return report;
+    } catch (cause) {
+      setRepairError(cause instanceof Error ? cause.message : String(cause));
+      return null;
+    } finally {
+      setRepairChecking(false);
+    }
+  };
+
+  /**
+   * 安装完点这里：先重新检测，确认能跑再重试连接。
+   * 只调用连接测试，不重复保存配置，也不会创建第二条连接。
+   */
+  const retryWithRecheck = async () => {
+    if (!repairServer) return;
+    const target = repairServer;
+    const report = await runRepairCheck(target.command);
+    if (report?.command?.status === "ready") {
+      setRepairServer(null);
+      setRepairReport(null);
+      await testServer(target);
     }
   };
 
@@ -863,7 +995,7 @@ export function ExtremeMcpPage({
   };
 
   const addFromMarket = async (entry: McpCatalogEntry) => {
-    if (entry.availability === "local-runtime" && !entry.configFields.some((field) => field.required)) {
+    if (entry.availability !== "unsupported" && !entry.configFields.some((field) => field.required)) {
       await saveCatalog(entry, {});
       return;
     }
@@ -1030,9 +1162,19 @@ export function ExtremeMcpPage({
     const state = primary ? connectionState(primary) : null;
     const pending = Boolean(primary && primary.id === busyId && primary.enabled);
     const canRetry = state === "error" || state === "tools_error";
+    const runtime = entry.transport === "stdio" && (entry.command === "npx" || entry.command === "uvx" || entry.command === "docker")
+      ? (entry.command as McpRuntimeId)
+      : null;
+    const runtimeState: McpRuntimeStatus | null = runtime
+      ? registry.runtimes[runtime] ?? "unknown"
+      : null;
+    const runtimeBlocked = runtimeBlocksAdd(runtimeState);
+    const runtimeDetail = runtime
+      ? registry.runtimeDetails.find((item) => item.id === runtime) ?? null
+      : null;
     const status = pending ? t("正在连接服务…")
       : state === "unknown" ? t("已添加 · 未验证")
-        : state ? connectionLabel(state, t) : null;
+        : state ? connectionLabel(state, t, primary?.error) : null;
     const action = pending ? t("测试中…")
       : canRetry ? t("重试")
         : primary ? t("管理")
@@ -1040,28 +1182,60 @@ export function ExtremeMcpPage({
             : entry.availability === "local-runtime" ? t("添加") : t("连接");
 
     return (
-      <div
+      <article
         key={entry.id}
         data-testid={`mcp-market-${entry.id}`}
-        className="flex min-w-0 items-center gap-3 px-3 py-2.5 transition-colors hover:bg-surface-hover/50"
+        className="min-w-0 overflow-hidden rounded-2xl border border-line/60 bg-surface-2 text-fg shadow-[0_2px_12px_rgb(0_0_0/0.04)] transition-colors duration-150 hover:border-line-strong"
       >
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-active/55 text-fg-muted">
-          {entry.transport === "http" ? <Globe size={15} /> : <Plug size={15} />}
-        </span>
-        <button type="button" onClick={() => openDetail(entry)} className="min-w-0 flex-1 rounded-sm text-left">
-          <span className="block truncate text-13 font-medium text-fg">{entry.name}</span>
-          <span className="block truncate text-11 text-fg-muted" title={t(entry.summary)}>
-            {t(entry.summary)}
-          </span>
-          <span className="mt-0.5 block truncate text-10 text-fg-subtle">
-            {entry.publisher}{entry.version ? ` · v${entry.version}` : ""}
-          </span>
-        </button>
-        <div className="flex shrink-0 flex-col items-end gap-1">
+        <div className="flex min-w-0 items-start gap-3 px-5 pb-2 pt-4">
+          <MarketIcon key={entry.iconUrl ?? entry.id} entry={entry} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="min-w-0 break-words text-13 font-medium leading-5">{entry.name}</h3>
+              {status && <span className="flex items-center gap-1 text-11 text-fg-subtle" role="status">
+                {state && !pending && <ConnectionDot state={state} />}{status}
+              </span>}
+            </div>
+            <p className="mt-1 break-words text-12 leading-5 text-fg-muted">{t(entry.summary)}</p>
+            <p className="mt-2 break-all text-11 text-fg-subtle">{entry.publisher}{entry.version ? ` · v${entry.version}` : ""}</p>
+            {runtime && runtimeState && <p className={cn("mt-2 text-11", runtimeBlocked ? "text-warning" : "text-fg-subtle")} role="status">
+              {runtime === "docker" ? t("运行方式：Docker 镜像") : t("运行方式：{{runtime}} 自动下载", { runtime })} ·{" "}
+              {runtimeState === "ready"
+                ? t("本机环境已就绪")
+                : runtimeState === "not_running"
+                  ? t("Docker 已安装，服务尚未启动")
+                  : runtimeStatusLabel(runtimeState, t)}
+            </p>}
+            {runtime && runtimeBlocked && (
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <button type="button" className="text-11 text-accent hover:underline" onClick={() => void openExternal(runtimeForCommand(runtime, "").installUrl)}>
+                  {t("查看运行环境安装说明")}
+                </button>
+                <button
+                  type="button"
+                  className="text-11 text-accent hover:underline disabled:opacity-60"
+                  disabled={registry.runtimeChecking}
+                  onClick={() => void recheckRuntimes()}
+                >
+                  {registry.runtimeChecking ? t("检测中…") : t("重新检测")}
+                </button>
+              </div>
+            )}
+            {runtime && runtimeBlocked && runtimeDetail && (
+              <details className="mt-1">
+                <summary className="cursor-pointer select-none text-10 text-fg-subtle hover:text-fg">{t("诊断详情")}</summary>
+                <RuntimeDiagnostics details={[runtimeDetail]} />
+              </details>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2 px-5 pb-4 pt-2">
+          <Button size="sm" variant="ghost" className="rounded-full" onClick={() => openDetail(entry)}>{t("查看详情")}</Button>
           <Button
-            size="xs"
-            variant={primary || entry.availability === "unsupported" ? "ghost" : "secondary"}
-            disabled={servers === null || saving || pending || (canRetry && busyId !== null)}
+            size="sm"
+            className="rounded-full"
+            variant={primary || entry.availability === "unsupported" ? "secondary" : "primary"}
+            disabled={servers === null || saving || pending || (!primary && runtimeBlocked) || (canRetry && busyId !== null)}
             onClick={() => {
               if (!primary) void addFromMarket(entry);
               else if (canRetry) void testServer(primary);
@@ -1070,14 +1244,8 @@ export function ExtremeMcpPage({
           >
             {action}
           </Button>
-          {status && (
-            <span className="flex items-center gap-1 text-10 text-fg-muted" role="status">
-              {state && !pending && <ConnectionDot state={state} />}
-              {status}
-            </span>
-          )}
         </div>
-      </div>
+      </article>
     );
   };
 
@@ -1098,109 +1266,66 @@ export function ExtremeMcpPage({
       }
     >
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-1 border-b border-line/60 pb-2">
-          {(
-            [
-              ["market", t("市场")],
-              ["connections", t("我的连接")],
-            ] as [Tab, string][]
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              data-testid={`mcp-tab-${id}`}
-              aria-current={tab === id ? "page" : undefined}
-              onClick={() => setTab(id)}
-              className={cn(
-                "rounded-[6px] px-2.5 py-1 text-11 transition-colors",
-                tab === id
-                  ? "bg-surface-active/65 text-fg"
-                  : "text-fg-muted hover:bg-surface-hover hover:text-fg",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <PaneTabBar
+          ariaLabel={t("MCP")}
+          value={tab}
+          onChange={(value) => setTab(value as Tab)}
+          tabs={[{ id: "market", label: t("市场"), icon: Globe }, { id: "connections", label: t("我的连接"), icon: Plug }]}
+        />
 
         {error ? <ErrorState error={error} compact onRetry={retry} /> : null}
 
         {tab === "market" ? (
           <>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                className={cn(fieldClass, "h-8 min-w-[180px] flex-1")}
-                data-testid="mcp-market-search"
-                placeholder={t("搜索服务、发布者或用途")}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-              <div className="flex flex-wrap gap-1">
-                {MCP_MARKET_CATEGORIES.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    data-testid={`mcp-category-${item.id}`}
-                    className={cn(
-                      "rounded-md px-2 py-1 text-11 transition-colors",
-                      category === item.id
-                        ? "bg-surface-active/70 text-fg"
-                        : "text-fg-muted hover:bg-surface-hover hover:text-fg",
-                    )}
-                    aria-pressed={category === item.id}
-                    onClick={() => setCategory(item.id)}
-                  >
-                    {t(item.label)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
+            <RuntimeStatusStrip
+              statuses={registry.runtimes}
+              details={registry.runtimeDetails}
+              checking={registry.runtimeChecking}
+              error={registry.runtimeError}
+              onRecheck={() => void recheckRuntimes()}
+            />
             <section>
-              <div className="mb-1.5 flex items-center gap-1.5">
-                <h2 className="text-12 font-medium text-fg">{t("运维精选")}</h2>
+              <div className="mb-3 flex items-center gap-2">
+                <h2 className="text-13 font-medium text-fg">{t("官方 MCP Registry")}</h2>
               </div>
-              {curated.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-line/60 px-3 py-6 text-center text-11 text-fg-subtle">
-                  {t("没有匹配的服务")}
-                </p>
-              ) : (
-                <div className="divide-y divide-line/60 overflow-hidden rounded-xl border border-line/60">
-                  {curated.map(renderMarketEntry)}
-                </div>
-              )}
-            </section>
-
-            <section className="mt-2">
-              <div className="mb-1.5 flex items-center gap-1.5">
-                <h2 className="text-12 font-medium text-fg">{t("搜索更多")}</h2>
-                <span className="text-10 text-fg-subtle">{t("官方 MCP Registry")}</span>
-              </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 rounded-2xl border border-line/60 bg-surface-2 p-2 shadow-[0_2px_12px_rgb(0_0_0/0.04)] focus-within:border-accent/60">
+                <Search size={16} className="ml-2 shrink-0 text-fg-subtle" />
                 <input
-                  className={cn(fieldClass, "h-8 min-w-[180px] flex-1")}
+                  className="h-8 min-w-0 flex-1 bg-transparent px-1 text-12 text-fg outline-none placeholder:text-fg-subtle"
                   data-testid="mcp-registry-search"
                   placeholder={t("关键词，例如 postgres、github")}
                   value={registry.query}
-                  onChange={(event) =>
-                    setRegistry((current) => ({ ...current, query: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    const query = event.target.value;
+                    registryRequest.current += 1;
+                    setRegistry((current) => ({ ...current, query, entries: [], cursor: null, loading: false, loadingMore: false, error: null, searched: false }));
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") void searchRegistry(registry.query, null, false);
                   }}
                 />
                 <Button
-                  variant="ghost"
-                  size="xs"
+                  variant="secondary"
+                  size="sm"
+                  className="rounded-xl"
                   disabled={registry.loading}
                   onClick={() => void searchRegistry(registry.query, null, false)}
                 >
-                  {registry.loading ? t("搜索中…") : t("搜索")}
+                  {registry.loading && !registry.loadingMore ? <><Loader2 size={13} className="animate-spin motion-reduce:animate-none" /> {t("搜索中…")}</> : t("搜索")}
                 </Button>
               </div>
+              {registry.loading && !registry.loadingMore && (
+                <div className="mt-3 rounded-2xl border border-line/60 bg-surface-2 px-4 py-4 shadow-[0_2px_12px_rgb(0_0_0/0.04)]" role="status" aria-live="polite" data-testid="mcp-registry-loading">
+                  <div className="mb-3 flex items-center gap-2 text-11 text-fg-muted"><Loader2 size={13} className="animate-spin motion-reduce:animate-none" />{t("正在搜索 MCP 服务…")}</div>
+                  {[0, 1, 2].map((row) => <div key={row} className="flex items-center gap-3 py-2 motion-safe:animate-pulse"><span className="size-9 rounded-lg bg-surface-active/60" /><span className="flex flex-1 flex-col gap-2"><span className="h-2.5 w-1/3 rounded bg-surface-active/60" /><span className="h-2 w-2/3 rounded bg-surface-active/40" /></span></div>)}
+                </div>
+              )}
+              {!registry.loading && !registry.error && registry.searched && visibleRegistryEntries.length === 0 && <p className="mt-3 rounded-2xl border border-line/60 bg-surface-2 px-5 py-6 text-12 text-fg-muted shadow-[0_2px_12px_rgb(0_0_0/0.04)]">{t("没有找到匹配的 MCP 服务，请尝试其他关键词。")}</p>}
               {registry.error && (
                 <div className="mt-2 flex items-center gap-2 text-10 text-danger">
-                  <span className="min-w-0 flex-1 break-words">{registry.error}</span>
+                  <span className="min-w-0 flex-1 break-words">
+                    {backendChangeText(registry.error, t)}
+                  </span>
                   <button
                     type="button"
                     className="shrink-0 underline underline-offset-2"
@@ -1210,10 +1335,10 @@ export function ExtremeMcpPage({
                   </button>
                 </div>
               )}
-              {registry.entries.length > 0 && (
-                <div className="mt-2 flex flex-col gap-1">
-                  <div className="divide-y divide-line/60 overflow-hidden rounded-xl border border-line/60">
-                    {registry.entries.map((item) => renderMarketEntry(registryToCatalog(item)))}
+              {(visibleRegistryEntries.length > 0 || registry.cursor) && (
+                <div className="mt-3 flex flex-col gap-3">
+                  <div className="flex flex-col gap-3">
+                    {visibleRegistryEntries.map(renderMarketEntry)}
                   </div>
                   {registry.cursor && (
                     <Button
@@ -1221,10 +1346,10 @@ export function ExtremeMcpPage({
                       size="xs"
                       disabled={registry.loading}
                       onClick={() =>
-                        void searchRegistry(registry.query, registry.cursor, true)
+                        void searchRegistry(registry.resultQuery, registry.cursor, true)
                       }
                     >
-                      {t("加载更多")}
+                      {registry.loadingMore ? <><Loader2 size={13} className="animate-spin motion-reduce:animate-none" /> {t("加载中…")}</> : t("加载更多")}
                     </Button>
                   )}
                 </div>
@@ -1241,14 +1366,14 @@ export function ExtremeMcpPage({
                   name: serverName || t("未连接"),
                 })}
               </p>
-              <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {BUILTIN_MCP_SKILLS.map((skill) => {
                   const id = `builtin:${skill.id}`;
                   const on = chosen({ bySession }, sessionKey, id, connected);
                   return (
                     <label
                       key={skill.id}
-                      className="flex cursor-pointer items-start gap-2 rounded-md border border-line/50 px-2 py-1.5 hover:bg-surface-hover/40"
+                      className="flex cursor-pointer items-start gap-3 rounded-2xl border border-line/60 bg-surface-2 px-4 py-3 shadow-[0_2px_12px_rgb(0_0_0/0.04)] transition-colors hover:border-line-strong hover:bg-surface-hover/40"
                     >
                       <input
                         type="checkbox"
@@ -1303,9 +1428,9 @@ export function ExtremeMcpPage({
                   <section
                     key={server.id}
                     data-testid={`mcp-server-${server.id}`}
-                    className="rounded-lg border border-line/60"
+                    className="overflow-hidden rounded-2xl border border-line/60 bg-surface-2 text-fg shadow-[0_2px_12px_rgb(0_0_0/0.04)]"
                   >
-                    <header className="flex items-start gap-2 px-3 py-2.5">
+                    <header className="flex items-start gap-3 px-5 py-4">
                       <span className="mt-1">
                         <ConnectionDot state={connectionState(server)} />
                       </span>
@@ -1329,7 +1454,7 @@ export function ExtremeMcpPage({
                                     : "text-fg-subtle",
                             )}
                           >
-                            {connectionLabel(connectionState(server), t)}
+                            {connectionLabel(connectionState(server), t, server.error)}
                           </span>
                           {server.defaultEnabled && (
                             <span className="text-9 text-fg-subtle">{t("默认勾选")}</span>
@@ -1341,27 +1466,20 @@ export function ExtremeMcpPage({
                             : server.url}
                         </p>
                         <p className="mt-0.5 truncate text-9 text-fg-subtle">
-                          {t("绑定：{{scope}}", {
-                            scope:
-                              server.binding?.scope === "server"
-                                ? t("当前服务器")
-                                : server.binding?.scope === "global"
-                                  ? t("全局")
-                                  : t("工作区"),
-                          })}
+                          {t("绑定：全局")}
                           {" · "}
                           {server.id}
                         </p>
                         {server.error && (
                           <div className="mt-1 flex flex-wrap items-baseline gap-2">
                             <p className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-10 text-danger">
-                              {server.error}
+                              {backendChangeText(server.error, t)}
                             </p>
                             {missingRuntime(server) && (
                               <button
                                 type="button"
                                 className="shrink-0 text-10 text-accent hover:underline"
-                                onClick={() => setRepairServer(server)}
+                                onClick={() => openRepair(server)}
                               >
                                 {t("安装运行环境")}
                               </button>
@@ -1370,7 +1488,7 @@ export function ExtremeMcpPage({
                         )}
                         {(server.warnings ?? []).map((warning) => (
                           <p key={warning} className="mt-1 break-words text-10 text-warning">
-                            {warning}
+                            {backendChangeText(warning, t)}
                           </p>
                         ))}
                         {server.protocolVersion && (
@@ -1616,8 +1734,7 @@ export function ExtremeMcpPage({
                     : "border-warning/40 bg-warning/10 text-warning",
                 )}
               >
-                {detail.entry.availabilityNote ??
-                  t("当前客户端不支持这个传输方式。")}
+                {detail.entry.availabilityNote ? t(detail.entry.availabilityNote) : detail.entry.availability === "local-runtime" ? t("需要本机安装对应的运行环境。") : t("当前客户端不支持这个传输方式。")}
               </p>
             )}
             {(() => {
@@ -1694,15 +1811,30 @@ export function ExtremeMcpPage({
         const command = /win/i.test(navigator.platform)
           ? runtime.commandWindows ?? runtime.command
           : runtime.command;
+        const probe = repairReport?.command ?? null;
+        const relatedId = runtimeIdForCommand(repairServer.command);
+        const related = (repairReport?.runtimes ?? []).filter((item) => item.id === relatedId);
         return (
           <Modal
             open
-            width={520}
+            width={560}
             title={t("安装运行环境 · {{name}}", { name: repairServer.name })}
-            onClose={() => setRepairServer(null)}
+            onClose={() => {
+              setRepairServer(null);
+              setRepairReport(null);
+              setRepairError(null);
+            }}
             footer={
               <>
-                <Button variant="ghost" size="sm" onClick={() => setRepairServer(null)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setRepairServer(null);
+                    setRepairReport(null);
+                    setRepairError(null);
+                  }}
+                >
                   {t("取消")}
                 </Button>
                 {command && (
@@ -1715,14 +1847,21 @@ export function ExtremeMcpPage({
                   </Button>
                 )}
                 <Button
+                  variant="secondary"
                   size="sm"
-                  onClick={() => {
-                    const target = repairServer;
-                    setRepairServer(null);
-                    void testServer(target);
-                  }}
+                  disabled={repairChecking}
+                  data-testid="mcp-repair-recheck"
+                  onClick={() => void runRepairCheck(repairServer.command)}
                 >
-                  {t("已安装，重试")}
+                  {repairChecking ? t("检测中…") : t("重新检测")}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={repairChecking}
+                  data-testid="mcp-repair-retry"
+                  onClick={() => void retryWithRecheck()}
+                >
+                  {t("重新检测并重试")}
                 </Button>
               </>
             }
@@ -1731,9 +1870,12 @@ export function ExtremeMcpPage({
               <p>
                 {t("这个连接需要本机具备 {{runtime}}。", { runtime: runtime.name })}
               </p>
-              <p className="rounded-md border border-warning/35 bg-warning/10 px-2.5 py-2 text-10 text-warning">
-                {repairServer.error}
-              </p>
+              <CommandProbeSummary probe={probe} checking={repairChecking} error={repairError} />
+              {repairServer.error && (
+                <p className="rounded-md border border-warning/35 bg-warning/10 px-2.5 py-2 break-words text-10 text-warning">
+                  {backendChangeText(repairServer.error, t)}
+                </p>
+              )}
               {runtime.installUrl && (
                 <div>
                   <p className="text-10 text-fg-subtle">{t("安装页面")}</p>
@@ -1755,8 +1897,16 @@ export function ExtremeMcpPage({
                 </div>
               )}
               <p className="text-10 text-fg-subtle">
-                {t("安装后请重启 BLS-OPS（让新的 PATH 生效），再点「已安装，重试」。")}
+                {t("安装后点「重新检测」即可，不需要重启应用：每次检测和启动都会重新读取用户级与系统级 PATH。")}
               </p>
+              {related.length > 0 && (
+                <details>
+                  <summary className="cursor-pointer select-none text-10 text-fg-subtle hover:text-fg">
+                    {t("诊断详情")}
+                  </summary>
+                  <RuntimeDiagnostics details={related} />
+                </details>
+              )}
             </div>
           </Modal>
         );

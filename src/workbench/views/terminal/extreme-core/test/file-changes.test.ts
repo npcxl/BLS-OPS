@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { FileChangeSummary, FileDiff } from "@/api/types/agent";
+import { i18n } from "@/i18n";
 import {
+  backendChangeText,
   batchSummary,
   buildChangeTree,
   canOpenInRemote,
@@ -242,5 +244,39 @@ describe("文件变更：状态文案与打开条件", () => {
     expect(canOpenInRemote(change())).toBe(true);
     expect(canOpenInRemote(change({ canOpen: false }))).toBe(false);
     expect(canOpenInRemote(change({ path: "" }))).toBe(false);
+  });
+});
+
+describe("后端带回的变更说明按界面语言显示", () => {
+  const t = (key: string) => i18n.t(key);
+
+  it("精确命中的说明直接翻；带数字的模式也翻成英文", async () => {
+    const before = i18n.language;
+    await i18n.changeLanguage("en");
+    try {
+      expect(backendChangeText("新增空文件", t)).toBe("New empty file");
+      expect(backendChangeText("文件超过 256 KB：只确认了大小，未逐行比较", t)).toBe(
+        "File exceeds 256 KB: only the size was confirmed, no line-by-line diff",
+      );
+      expect(backendChangeText("文件超过 3000 行，未逐行比较", t)).toBe(
+        "File exceeds 3000 lines; no line-by-line diff",
+      );
+      expect(backendChangeText("符号链接 → /etc/nginx/sites-enabled/app", t)).toBe(
+        "Symlink → /etc/nginx/sites-enabled/app",
+      );
+    } finally {
+      await i18n.changeLanguage(before);
+    }
+  });
+
+  it("中文界面原样返回", async () => {
+    const before = i18n.language;
+    await i18n.changeLanguage("zh-CN");
+    try {
+      const text = "文件超过 3000 行，未逐行比较";
+      expect(backendChangeText(text, t)).toBe(text);
+    } finally {
+      await i18n.changeLanguage(before);
+    }
   });
 });

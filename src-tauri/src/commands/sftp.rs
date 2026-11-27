@@ -243,6 +243,44 @@ pub async fn sftp_write_bytes(
         .map_err(|error| OpsError::from_stage("sftp", error))
 }
 
+/// 附件暂存：追加一块内容（`offset == 0` 重建）。
+///
+/// 前端按块上传，既能显示每个文件的进度，也不再把整个大文件 base64 常驻
+/// 在 React 状态里。返回累计写入字节数，由调用方与本地大小核对。
+#[tauri::command]
+pub async fn sftp_write_chunk(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    offset: u64,
+    content_base64: String,
+) -> OpsResult<u64> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|_| "附件的二进制内容无法解码（base64 无效）".to_string())?;
+    state
+        .ssh
+        .sftp_write_bytes_chunk(&session_id, &path, offset, &bytes)
+        .await
+        .map_err(|error| OpsError::from_stage("sftp", error))
+}
+
+/// 暂存收尾：`.part` 原子改名为正式文件名。
+#[tauri::command]
+pub async fn sftp_stage_finish(
+    state: State<'_, AppState>,
+    session_id: String,
+    part_path: String,
+    target: String,
+) -> OpsResult<()> {
+    state
+        .ssh
+        .sftp_stage_finish(&session_id, &part_path, &target)
+        .await
+        .map_err(|error| OpsError::from_stage("sftp", error))
+}
+
 #[tauri::command]
 pub async fn sftp_remove(
     state: State<'_, AppState>,

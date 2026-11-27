@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { canContinue, type RunRecord, type RunStep } from "./run-plan";
+import { useStepTitle } from "./step-title-i18n";
 
 /**
  * 「计划」标签的内容。
@@ -16,6 +17,8 @@ export function RunPlanPanel({
   onFocusStep: (step: RunStep) => void;
 }) {
   const { t } = useTranslation();
+  // 步骤标题由执行器拼好（中文），英文界面按动词 + 目标改写。
+  const localize = useStepTitle();
   const total = record.steps.length;
   const done = record.steps.filter((step) => step.state === "done").length;
 
@@ -77,8 +80,8 @@ export function RunPlanPanel({
                   )}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-11 text-fg" title={t(step.title)}>
-                    {index + 1}. {t(step.title)}
+                  <span className="block truncate text-11 text-fg" title={localize(step.title)}>
+                    {index + 1}. {localize(step.title)}
                   </span>
                   {(step.detail || step.command) && (
                     <span className="block truncate font-mono text-10 text-fg-subtle">

@@ -50,6 +50,7 @@ import { planForTask } from "../message-parts";
 import { parsePanelAction, stripPanelAction, type PanelRequest } from "../panel-target";
 import { attachmentReadState } from "../attachments";
 import { shouldAttachTerminalTail, terminalTailBlock } from "../chat-context";
+import { explicitMemory } from "../memory-intent";
 import { approvalIntent, isRetryIntent, isStopIntent, routeIntent } from "../intent";
 import type { LogSource } from "@/api/types/panel";
 import type { CheckItem } from "../checks";
@@ -57,10 +58,12 @@ import type { DeployStep } from "../deploy-plan";
 import type { PermissionMode } from "../permissions";
 import type { PreflightResult } from "../preflight";
 import { nextSend, queuedSend as newQueuedSend, type QueuedSend } from "../send-queue";
+import { stageWorkspaceAttachment, verifyStagedAttachment } from "../attachments/staging";
+import { attachmentSource } from "../attachments/payload";
 import type { RequestScope, ScopeTracker } from "../request-scope";
 import type { ServiceCandidate } from "../update-plan";
 import { contextsOfTasks } from "../task-bridge";
-import type { TaskCardModel } from "../task-view";
+import { cardFromRecord, type TaskCardModel } from "../task-view";
 import { explainApproval } from "./helpers";
 import { buildMessages } from "./prompt";
 import type { ActionResult } from "./types";
@@ -101,8 +104,17 @@ export interface AskDeps {
   remoteRoot: string | null;
   preflight: PreflightResult | null;
   permission: PermissionMode;
-  /** 发送瞬间的 MCP 勾选快照：内置技能 id + 外部工具暴露名。 */
-  getMcpSelection?: () => { builtins: string[]; tools: string[] };
+  /**
+   * 按**本次请求归属**读取 MCP 勾选：内置技能 id + 外部工具暴露名。
+   * 连接列表未加载完时返回 loading，不能当成“没有工具”静默发送。
+   */
+  getMcpSelection?: (target: {
+    workspaceId: string;
+    serverId: string | null;
+  }) => Promise<
+    | { status: "ready"; builtins: string[]; tools: string[] }
+    | { status: "loading" | "error"; message: string }
+  >;
   envChecks: CheckItem[];
   attachments: ExtremeAttachment[];
   focusId: string | null;
@@ -117,6 +129,7 @@ export interface AskDeps {
   currentScope: () => ActionScope;
   setDraft: (value: string) => void;
   setNotice: Store["setNotice"];
+  offerAttachmentCleanup: (scope: ActionScope, attachments: ExtremeAttachment[]) => void;
   setAskError: (value: string | null) => void;
   setRetryMessage: (value: ExtremeMessage | null) => void;
   setAsking: Dispatch<SetStateAction<boolean>>;
@@ -193,7 +206,6 @@ export function useAsk(deps: AskDeps) {
     sendWhileRunning,
     logChoices,
     setLogChoices,
-    messages,
     tasks,
     queuedSends,
     connections,
@@ -219,6 +231,7 @@ export function useAsk(deps: AskDeps) {
     currentScope,
     setDraft,
     setNotice,
+    offerAttachmentCleanup,
     setAskError,
     setRetryMessage,
     setAsking,
@@ -285,6 +298,8 @@ export function useAsk(deps: AskDeps) {
     options?: {
       taskId?: string;
       selection?: ModelSelection;
+      /** 运行中临时覆盖发送方式（如 Alt+Enter 在排队与补充之间即时切换）。 */
+      sendMode?: "steer" | "queue";
       /** 队列派发：目标对话 / 附件 / 模型都来自入队那一刻的快照。 */
       queued?: QueuedSend;
       /** 动作续跑：明确回到发起它的那条对话（可能已在后台）。 */
@@ -358,6 +373,16 @@ export function useAsk(deps: AskDeps) {
       return false;
     }
     /*
+     * 排队项锁定了**入队时那台服务器**：对话被重新绑定到别处（或服务器被删）
+     * 时不能把这条消息 + 附件快照发到新机器上。保留队列项，让用户处理。
+     */
+    if (queued && queued.serverId !== undefined && (entryBefore?.serverId ?? null) !== queued.serverId) {
+      const reason = t("这条对话的服务器已经更换：队列表中的附件属于原服务器，请重新入队。");
+      failSend(queued.id, reason);
+      setNotice(reason);
+      return false;
+    }
+    /*
      * `asking` 只在**用户主动发起**时拦：动作执行完要自动续问一轮，那一轮
      * 是自己触发的，不该被上一次请求的 loading 状态挡住。
      */
@@ -401,6 +426,7 @@ export function useAsk(deps: AskDeps) {
       queueSend(
         newQueuedSend({
           workspaceId: askWorkspace,
+          serverId: entryBefore?.serverId ?? serverId,
           text,
           attachments: composerAttachments.map((item) => ({
             id: item.id,
@@ -408,6 +434,12 @@ export function useAsk(deps: AskDeps) {
             size: item.size,
             path: item.path,
             remotePath: item.remotePath,
+            stagedPath: item.stagedPath,
+            staged: item.staged,
+            uploadState: item.uploadState,
+            serverId: entryBefore?.serverId ?? serverId,
+            text: item.text,
+            binary: item.binary,
           })),
           selection: selectionAtRequest,
           context: chatPrefs.context,
@@ -470,7 +502,8 @@ export function useAsk(deps: AskDeps) {
        * 撤回只属于「补充给当前任务」—— 那是明确要改这一步；排队只是"等它
        * 结束再发"，把审批撤掉会让正在等确认的任务白等。
        */
-      if (sendWhileRunning === "queue") {
+      const effectiveSendMode = options?.sendMode ?? sendWhileRunning;
+      if (effectiveSendMode === "queue") {
         enqueueHere();
         return true;
       }
@@ -536,6 +569,8 @@ export function useAsk(deps: AskDeps) {
         return true;
       }
       const bubble = pushUserMessage(text);
+      // 这条"重试"已经受理：发送锁可以放开，重复回车交给下面的 busy 分支说明。
+      options?.onAccepted?.();
       inFlightRef.current.add(askWorkspace);
       try {
         const source = resolveRetrySource();
@@ -596,7 +631,8 @@ export function useAsk(deps: AskDeps) {
          * 「完成后发送」：进这条对话的队列，等它空闲后按顺序发。
          * 入队时已锁定模型 / 附件 / 范围，之后改选不影响这一条。
          */
-        if (sendWhileRunning === "queue") {
+        const effectiveSendMode = options?.sendMode ?? sendWhileRunning;
+        if (effectiveSendMode === "queue" || composerAttachments.length > 0) {
           enqueueHere();
           return true;
         }
@@ -649,7 +685,7 @@ export function useAsk(deps: AskDeps) {
      * 动作链用的是**整条对话的附件**（上传 / 计划要看全部材料），两者分开：
      * `outgoing` 只决定气泡与清单，`attachmentsAtRequest` 是执行器的输入。
      */
-    const outgoing: ExtremeAttachment[] = queued
+    let outgoing: ExtremeAttachment[] = queued
       ? queued.attachments.map(
           (snap) =>
             ownedAttachments.find((item) => item.id === snap.id) ?? {
@@ -658,20 +694,127 @@ export function useAsk(deps: AskDeps) {
               size: snap.size,
               path: snap.path,
               remotePath: snap.remotePath,
+              stagedPath: snap.stagedPath,
+              staged: snap.staged,
+              uploadState: snap.uploadState as ExtremeAttachment["uploadState"],
+              text: snap.text,
+              binary: snap.binary,
               state: "ready" as const,
             },
         )
       : composerAttachments;
     /*
+     * 发送前的附件核对，**一律走同一个传输服务**：
+     * 1. 已清理 / 本机内容丢了 → 明确要求重新上传或重新选择，不静默换旧包；
+     * 2. 有暂存路径 → 先核验服务器上那份还在、字节数对得上；
+     * 3. 没有路径或核验失败且有本机内容 → 按 `workspaceId + serverId + id`
+     *    暂存（重连只会在原服务器上继续，绝不借用当前前台那条连接）。
+     */
+    const report = (reason: string) => {
+      if (queued) failSend(queued.id, reason);
+      if (useExtremeStore.getState().workspaceId === workspaceAtRequest) setNotice(reason);
+    };
+    const cleaned = outgoing.find((item) => item.uploadState === "cleaned");
+    if (cleaned) {
+      report(t("「{{name}}」的暂存副本已清理：请重新上传或重新选择文件。", { name: cleaned.name }));
+      return false;
+    }
+    /*
+     * 渲染闭包里的附件可能还停在上传前：自动暂存是后台写的。发之前按
+     * **当前会话**重读一次，否则同一份文件会被"再传一遍"（同名新包尤其
+     * 危险：第二次写会覆盖掉刚核验过的那份）。
+     */
+    const liveNow = useExtremeStore.getState();
+    const liveById = new Map(
+      (liveNow.workspaceId === workspaceAtRequest
+        ? liveNow.attachments
+        : entryBefore?.context?.attachments ?? []
+      ).map((item) => [item.id, item]),
+    );
+    const readyOutgoing = outgoing
+      .filter((item) => item.state === "ready")
+      .map((item) => liveById.get(item.id) ?? item);
+    const invalid = readyOutgoing.filter(
+      (item) => !item.remotePath && !attachmentSource(item),
+    );
+    if (invalid.length > 0) {
+      const names = invalid.map((item) => item.name).join("、");
+      report(t("{{names}} 的本机内容已不可用：请重新选择文件后再发送。", { names }));
+      return false;
+    }
+    // 服务器上那份是否还在：只对平台暂存的副本严格比对字节数。
+    const verified = new Map<string, boolean>();
+    for (const item of readyOutgoing) {
+      if (!item.remotePath || !item.staged) continue;
+      verified.set(item.id, await verifyStagedAttachment(sessionAtRequest, item));
+    }
+    const needsStage = readyOutgoing.filter(
+      (item) => !item.remotePath || verified.get(item.id) === false,
+    );
+    if (needsStage.length > 0) {
+      if (permission === "readonly") {
+        report(t("只读模式下无法暂存附件。请调整权限或取消勾选。"));
+        return false;
+      }
+      if (inFlightRef.current.has(workspaceAtRequest)) return false;
+      inFlightRef.current.add(workspaceAtRequest);
+      if (useExtremeStore.getState().workspaceId === workspaceAtRequest) setNotice(t("等待附件上传…"));
+      try {
+        for (const item of needsStage) {
+          const result = await stageWorkspaceAttachment({
+            workspaceId: workspaceAtRequest,
+            serverId: entryBefore?.serverId ?? serverId,
+            sessionId: sessionAtRequest,
+            // 暂存路径失效时清掉旧值：新的一次必须写到它自己的附件目录。
+            attachment: verified.get(item.id) === false
+              ? { ...item, remotePath: undefined }
+              : item,
+          });
+          // 用**传完的结果**替换本次快照里的同一份（气泡显示核验过的路径）。
+          const index = readyOutgoing.findIndex((entry) => entry.id === item.id);
+          if (index >= 0) readyOutgoing[index] = result;
+        }
+      } finally {
+        inFlightRef.current.delete(workspaceAtRequest);
+      }
+      const failed = needsStage
+        .map((item) => readyOutgoing.find((entry) => entry.id === item.id) ?? item)
+        .find((item) => !item.remotePath);
+      if (failed) {
+        report(`${failed.name} · ${failed.remoteError ?? t("上传失败")}`);
+        return false;
+      }
+      const now = useExtremeStore.getState();
+      const connection = now.workspaceId === workspaceAtRequest ? now.sessionId
+        : entryBefore?.serverId ? now.connections[entryBefore.serverId]?.sessionId : null;
+      if (connection !== sessionAtRequest ||
+        (now.workspaceId !== workspaceAtRequest && !now.workspaces.some((entry) => entry.id === workspaceAtRequest))) {
+        report(t("连接已切换，请在原任务中重新发送。"));
+        return false;
+      }
+      if (now.workspaceId === workspaceAtRequest) setNotice(null);
+    }
+    // 快照统一用**核验过 / 刚传完**的那一份（含自动暂存先完成的情形）。
+    const refreshedById = new Map(readyOutgoing.map((item) => [item.id, item]));
+    outgoing = outgoing.map((item) => refreshedById.get(item.id) ?? item);
+    /*
      * 整条对话的附件快照。队列项里选中的附件即使已经被移出会话，也补回清单：
      * 入队时定下的材料不能因为后来删掉就静默消失。
      */
-    const attachmentsAtRequest: ExtremeAttachment[] = queued
-      ? [
-          ...ownedAttachments,
-          ...outgoing.filter((item) => !ownedAttachments.some((live) => live.id === item.id)),
-        ]
-      : attachments;
+    const selectedById = new Map(outgoing.map((item) => [item.id, item]));
+    /*
+     * 暂存是**异步写回 store** 的：渲染时的 `ownedAttachments` 可能还没带上
+     * `remotePath`。组装执行器输入前按当前工作区重读一次，避免模型拿到
+     * 没有路径的旧副本（勾选的那几个仍以本次快照为准）。
+     */
+    const liveAttachments =
+      useExtremeStore.getState().workspaceId === workspaceAtRequest
+        ? useExtremeStore.getState().attachments
+        : ownedAttachments;
+    const attachmentsAtRequest = [
+      ...liveAttachments.map((item) => selectedById.get(item.id) ?? item),
+      ...outgoing.filter((item) => !liveAttachments.some((live) => live.id === item.id)),
+    ];
     const sentAttachments: SentAttachment[] = outgoing.map((item) => ({
       id: item.id,
       name: item.name,
@@ -699,10 +842,9 @@ export function useAsk(deps: AskDeps) {
      * 队列派发用它入队时定下的附件 / 范围 / 计划；用户直接发送则用当前这一
      * 刻的镜像。之后所有动作都从这里取值，**不再读渲染闭包**。
      */
-    // 点发送这一刻的 MCP 勾选与提权开关：后面等终端输出 / 切会话都不再重读。
-    const mcpAtRequest = getMcpSelection?.();
     const allowSudoAtRequest = useExtremePermissionsStore.getState().allowSudo;
     const replyLanguageAtRequest = useExtremeSettingsStore.getState().replyLanguage;
+    const memoryEnabledAtRequest = useExtremeSettingsStore.getState().memoryEnabled;
     const scopeAtRequest: ActionScope = {
       workspaceId: workspaceAtRequest,
       serverId: entryBefore?.serverId ?? serverId,
@@ -729,13 +871,32 @@ export function useAsk(deps: AskDeps) {
       candidates: queued ? null : candidates,
       remoteRoot,
     };
+    /*
+     * 按归属读取 MCP 勾选。新任务的首条消息也走这里：调用方已先
+     * `ensureWorkspace()`，所以 workspaceId 是真实任务，而不是 no-workspace。
+     * 列表正在加载时等待；读取失败就提示，不能静默发送空的 enabledMcpTools。
+     */
+    const mcpAtRequest = getMcpSelection
+      ? await getMcpSelection({
+          workspaceId: workspaceAtRequest,
+          serverId: scopeAtRequest.serverId ?? null,
+        })
+      : null;
+    if (mcpAtRequest && mcpAtRequest.status !== "ready") {
+      const message =
+        mcpAtRequest.status === "loading"
+          ? t("MCP 连接列表还在加载，请稍后再发送。")
+          : t("MCP 连接读取失败：{{error}}", { error: mcpAtRequest.message });
+      if (queued) failSend(queued.id, message);
+      setNotice(message);
+      return false;
+    }
     /** 这条对话正显示在眼前：只有此时才允许动草稿 / 滚动 / 输入状态。 */
     const foregroundHere = () => scopeForeground(scopeAtRequest, scopeWorld());
-    const ownerMessages = queued
-      ? stateBefore.workspaceId === workspaceAtRequest
-        ? stateBefore.messages
-        : entryBefore?.messages ?? []
-      : messages;
+    // 统一使用发起时的归属快照，避免渲染闭包落后时丢掉刚完成的对话。
+    const ownerMessages = stateBefore.workspaceId === workspaceAtRequest
+      ? stateBefore.messages
+      : entryBefore?.messages ?? [];
     /*
      * **先路由，再决定要不要请求模型**。
      *
@@ -968,8 +1129,64 @@ export function useAsk(deps: AskDeps) {
         workspaceAtRequest
           ? await manualShellTail(workspaceAtRequest, 120)
           : "";
+      let memories: Awaited<ReturnType<typeof opsApi.extremeMemoryList>> = [];
+      const requestedMemory = isNew ? explicitMemory(text) : null;
+      let memoryStatus = "";
+      if (!memoryEnabledAtRequest && requestedMemory) {
+        memoryStatus = t("长期记忆已关闭，这条内容未保存。");
+      }
+      if (memoryEnabledAtRequest) {
+        try {
+          memories = await opsApi.extremeMemoryContext(scopeAtRequest.serverId, scopeAtRequest.workspaceId);
+        } catch {
+          memoryStatus = t("长期记忆读取失败，无法确认或保存本次记忆。");
+          if (foregroundHere()) setNotice(t("长期记忆暂不可用，本次将使用会话历史。"));
+        }
+      }
+      if (requestedMemory && !memoryStatus) {
+        if (requestedMemory.scope !== "global") {
+          memoryStatus = t("记忆现在只支持全局共享，这条指定范围的记忆未保存。");
+        } else {
+          const existing = memories.find((item) => item.scope === "global" &&
+            item.serverId === null && item.workspaceId === null &&
+            item.content.trim() === requestedMemory.content);
+          try {
+            if (!existing) {
+              await opsApi.extremeMemorySave({ id: crypto.randomUUID(), scope: "global",
+                serverId: null,
+                workspaceId: null,
+                content: requestedMemory.content, source: "user", updatedAt: Date.now() });
+            }
+            memoryStatus = t("用户表达的长期记忆已保存。");
+          } catch {
+            memoryStatus = t("这条记忆未保存，请检查内容和范围后在设置中重试。");
+          }
+        }
+      }
+      if (requestedMemory && memoryStatus && foregroundHere()) setNotice(memoryStatus);
+      const historicalTasks = { ...stateBefore.tasks };
+      let historyWarning = "";
+      if (scopeAtRequest.prefs.context === "session") {
+        const ids = [...new Set(ownerMessages.flatMap((item) =>
+          (item.parts ?? []).filter((part) => part.kind === "step").map((part) => part.taskId),
+        ))].filter((id) => !historicalTasks[id]);
+        if (ids.length) {
+          try {
+            const records = await opsApi.extremeContextTasks(scopeAtRequest.workspaceId, ids);
+            for (const record of records) historicalTasks[record.id] = cardFromRecord(record, "", "");
+            if (records.length < ids.length) historyWarning = t("部分历史操作记录已不存在，无法加入本次上下文。");
+          } catch {
+            historyWarning = t("历史操作记录加载失败，本次上下文可能不完整。");
+          }
+          if (historyWarning && foregroundHere()) setNotice(historyWarning);
+        }
+      }
       const messages = buildMessages(promptMessage, scopeAtRequest, ownerMessages, {
         locale: i18n.resolvedLanguage ?? i18n.language,
+        historicalTasks,
+        memories,
+        memoryStatus,
+        historyWarning,
       });
       const tailBlock = terminalTailBlock(terminalTail);
       if (tailBlock) messages.unshift({ role: "system", content: tailBlock });
@@ -1088,6 +1305,20 @@ export function useAsk(deps: AskDeps) {
        * 标记从正文里删掉，用户只看到人话。
        */
       const { clean, actions } = parseActions(reply.content);
+      if (actions.length === 0 && snapshot.outcome?.level === "verified" &&
+        snapshot.steps.some((step) => step.state === "success" && (step.risk === "write" || step.risk === "danger"))) {
+        /*
+         * 只询问**这次真正用到**的暂存副本（队列项按入队快照）。用当前会话里
+         * 的实时条目而不是渲染闭包：上传是异步写回 store 的，闭包里可能还
+         * 没有 `staged`/`remotePath`。
+         */
+        const liveById = new Map(attachmentsAtRequest.map((item) => [item.id, item]));
+        const staged = outgoing
+          .map((item) => liveById.get(item.id) ?? item)
+          .filter((item) => item.staged && item.stagedPath &&
+            (item.uploadState === "uploaded" || item.uploadState === "deployed"));
+        if (staged.length > 0) offerAttachmentCleanup(scopeAtRequest, staged);
+      }
       /*
        * 服务器命令面板：模型用 `[[panel:…]]` 请求打开右栏。
        * 先探测目标是否真实存在，再把这句话从气泡里剥掉（只留人话）。
@@ -1193,7 +1424,13 @@ export function useAsk(deps: AskDeps) {
         upsertTask(failed);
         saveAgentTask(failed, true);
       }
-      const reason = error.detail ? `${error.message} · ${error.detail}` : error.message;
+      /*
+       * **错误分两层**：卡片与气泡只放第一层 —— 用户能据此行动的那句话。
+       * `detail` 最多 8KB（后端原始报错），拼进一行摘要会把"为什么失败"淹掉；
+       * 它留在控制台 / 诊断里，需要排查时再看。
+       */
+      if (error.detail) console.warn("[extreme] ask failed:", error.detail);
+      const reason = error.message;
       /*
        * **只移除空占位**。
        *
@@ -1305,7 +1542,9 @@ export function useAsk(deps: AskDeps) {
            * 没受理（断连 / 这条对话已经不可用）：**保留**队列项并写明原因。
            * 静默丢掉等于用户排的那句话凭空消失。
            */
-          failSend(item.id, t("这条消息没有发出：检查连接后可以重试。"));
+          if (!useExtremeStore.getState().queuedSends.find((entry) => entry.id === item.id)?.error) {
+            failSend(item.id, t("这条消息没有发出：检查连接后可以重试。"));
+          }
         } finally {
           dispatchingRef.current.delete(item.id);
         }

@@ -19,7 +19,7 @@ import type { ExtremeAttachment, ExtremeMessage } from "@/stores/extreme-store";
 import LatticeLoader from "@/components/reactbits/LatticeLoader";
 import { AgentActivity, isAgentActivity } from "./AgentActivity";
 import { AgentStepRun, type AgentStepItem } from "./AgentStepRow";
-import { chatTime } from "./format-time";
+import { chatTime, durationText } from "./format-time";
 import { QuestionCard } from "./QuestionCard";
 import {
   hasStepParts,
@@ -86,6 +86,42 @@ const MarkdownBody = memo(function MarkdownBody({
   onOpen?: OpenTarget;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [visibleContent, setVisibleContent] = useState(() => streaming ? "" : content);
+  const displayed = useRef(visibleContent);
+  const target = useRef(content);
+  target.current = content;
+
+  useEffect(() => {
+    if (!streaming) {
+      displayed.current = target.current;
+      setVisibleContent(target.current);
+      return;
+    }
+    let frame = 0;
+    let previous = 0;
+    let credit = 0;
+    const tick = (time: number) => {
+      if (!previous) previous = time;
+      if (!target.current.startsWith(displayed.current)) {
+        displayed.current = target.current;
+        setVisibleContent(target.current);
+      }
+      const remaining = Array.from(target.current.slice(displayed.current.length));
+      if (!remaining.length) credit = 0;
+      // 积压时加速追赶，避免网络突发数据造成长时间显示延迟。
+      if (remaining.length) credit += Math.min(time - previous, 100) * Math.max(0.07, remaining.length / 900);
+      previous = time;
+      const count = Math.min(remaining.length, Math.floor(credit));
+      if (count > 0) {
+        credit -= count;
+        displayed.current += remaining.slice(0, count).join("");
+        setVisibleContent(displayed.current);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [streaming]);
   /**
    * 只有**接近视口**的回复才真正解析 Markdown。
    *
@@ -130,7 +166,7 @@ const MarkdownBody = memo(function MarkdownBody({
   }
 
   if (streaming) {
-    const { stable, tail } = splitStreamingMarkdown(content);
+    const { stable, tail } = splitStreamingMarkdown(visibleContent);
     return (
       <div ref={ref}>
         {stable && <StableMarkdown content={stable} sessionId={sessionId} onOpen={onOpen} />}
@@ -175,7 +211,9 @@ type TurnBlock =
   | { kind: "text"; part: MessageTextPart }
   | { kind: "note"; part: MessageNotePart }
   | { kind: "question"; part: MessageQuestionPart }
-  | { kind: "steps"; items: AgentStepItem[] };
+  | { kind: "steps"; items: AgentStepItem[] }
+  /** 平台内部纠错：命令没有执行，收纳成一条可展开的记录。 */
+  | { kind: "internal"; items: AgentStepItem[] };
 
 /**
  * 把片段切成「正文块」与「相邻步骤组」：中间隔着正文就不再合并。
@@ -208,7 +246,21 @@ function turnBlocks(
     const approval = approvalByStep.get(`${part.taskId}:${part.stepIndex}`);
     const previous = blocks[blocks.length - 1];
     const item: AgentStepItem = { part, step, approval };
-    if (previous?.kind === "steps") previous.items.push(item);
+    /*
+     * 内部纠错（声明冲突 / 看不懂 / 参数不合法）不是用户要读的操作：
+     * 相邻的几次合并成一条默认收起的记录，展开仍能看到完整原因（审计不丢）。
+     * 判定优先用消息上落盘的标记，任务卡还没装回来时也能正确分类；
+     * 两者都没有 = 旧记录，按真实执行展示。
+     */
+    if (part.internal || step?.category === "internal") {
+      if (previous?.kind === "internal") previous.items.push(item);
+      else blocks.push({ kind: "internal", items: [item] });
+      continue;
+    }
+    const childGroup = part.groupId?.startsWith("children-") ? part.groupId : undefined;
+    const previousGroup = previous?.kind === "steps" ? previous.items[0]?.part.groupId : undefined;
+    const previousChildGroup = previousGroup?.startsWith("children-") ? previousGroup : undefined;
+    if (previous?.kind === "steps" && childGroup === previousChildGroup) previous.items.push(item);
     else blocks.push({ kind: "steps", items: [item] });
   }
   return blocks;
@@ -233,6 +285,53 @@ function useDelayedFlag(active: boolean, delay = 200): boolean {
   return active && visible;
 }
 
+/**
+ * 本轮**已用时间**：跟在回复最后，运行中每秒走一次，结束后定格。
+ *
+ * 只在"这一轮在本会话里真的跑过"时出现（`seenRunning`）：重新打开的历史
+ * 对话没有结束时刻，拿 `createdAt` 减现在只会显示几十小时，宁可不显示。
+ */
+function ElapsedTime({
+  startedAt,
+  running,
+  executedSteps = 0,
+}: {
+  startedAt: number;
+  running: boolean;
+  executedSteps?: number;
+}) {
+  const { t } = useTranslation();
+  const [now, setNow] = useState(() => Date.now());
+  const [frozen, setFrozen] = useState<number | null>(null);
+  const [seenRunning, setSeenRunning] = useState(running);
+  useEffect(() => {
+    if (!running) {
+      setSeenRunning((seen) => {
+        if (seen) setFrozen((value) => value ?? Date.now());
+        return seen;
+      });
+      return undefined;
+    }
+    setSeenRunning(true);
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (!seenRunning) return null;
+  const duration = durationText((frozen ?? now) - startedAt, t);
+  if (!duration) return null;
+  return (
+    <div className="extreme-core-elapsed" role="note">
+      <span>{t("已用时间 {{duration}}", { duration })}</span>
+      {executedSteps > 0 && (
+        <span className="extreme-core-elapsed-sep">
+          · {t("{{n}} 个操作", { n: executedSteps })}
+        </span>
+      )}
+    </div>
+  );
+}
+
 const ACTIVE_STEP = new Set(["running", "waiting"]);
 
 function stepIsActive(item: AgentStepItem): boolean {
@@ -248,6 +347,10 @@ function stepIsActive(item: AgentStepItem): boolean {
  * * 有步骤在跑 / 等确认 → 步骤行自己就是提示，不再加字；
  * * 步骤刚结束、模型还没开始写 → 末尾一行「正在整理结果」，正文一出就收起。
  */
+function ReplyLoader({ label }: { label: string }) {
+  return <LatticeLoader label={label} cellSize={3} gap={1} fontSize={12} showTimer={false} />;
+}
+
 function TurnTimeline({
   messageId,
   parts,
@@ -314,6 +417,58 @@ function TurnTimeline({
             />
           );
         }
+        if (block.kind === "internal") {
+          /*
+           * 一条默认收起的「内部调整」：默认聊天正文只说明平台改过执行方式，
+           * 不逐条铺开"平台识别错了"的过程；需要诊断时展开就是完整原因。
+           */
+          return (
+            <details
+              key={block.items[0].part.id}
+              className="extreme-core-attempts extreme-core-internal-bounces"
+              data-internal-bounces={block.items.length}
+            >
+              <summary>
+                {t("{{count}} 次命令未执行（展开查看原因）", {
+                  count: block.items.length,
+                })}
+              </summary>
+              <div className="extreme-core-attempts-content">
+                {block.items.map((item) => (
+                  <AgentStepRun
+                    key={item.part.id}
+                    items={[item]}
+                    goal={stepTask?.goal}
+                    onOpenOutput={onOpenOutput}
+                  />
+                ))}
+              </div>
+            </details>
+          );
+        }
+        /*
+         * 只有**真正执行失败**的一组才收成「N 次操作失败」。
+         * 拒绝 / 权限拦下的步骤是"未执行"，混进来会把"没跑"说成"跑失败了"。
+         */
+        const failedAttempts = block.items.every(
+          (item) =>
+            item.step?.state === "failed" &&
+            !item.approval &&
+            item.step?.category !== "denied" &&
+            item.step?.category !== "internal",
+        );
+        if (failedAttempts) {
+          return (
+            <details key={block.items[0].part.id} className="extreme-core-attempts">
+              <summary>{t("{{count}} 次操作失败（展开查看原因）", { count: block.items.length })}</summary>
+              <div className="extreme-core-attempts-content">
+                {block.items.map((item) => (
+                  <AgentStepRun key={item.part.id} items={[item]} goal={stepTask?.goal} onOpenOutput={onOpenOutput} />
+                ))}
+              </div>
+            </details>
+          );
+        }
         return (
           <AgentStepRun
             key={block.items[0].part.id}
@@ -329,8 +484,7 @@ function TurnTimeline({
       })}
       {stageVisible && (
         <div className="extreme-core-reply-wait extreme-core-turn-stage" role="status">
-          <span aria-hidden="true" className="extreme-core-reply-dot" />
-          {t("正在整理结果")}
+          <ReplyLoader label={t("正在整理结果")} />
         </div>
       )}
     </div>
@@ -484,6 +638,7 @@ const MessageRow = memo(function MessageRow({
   message,
   attachmentById,
   streaming,
+  isLast = false,
   task,
   stepTask,
   approvalByStep,
@@ -502,6 +657,8 @@ const MessageRow = memo(function MessageRow({
   message: ExtremeMessage;
   attachmentById: Map<string, ExtremeAttachment>;
   streaming: boolean;
+  /** 最后一条消息：已用时间只挂在它后面。 */
+  isLast?: boolean;
   task?: TaskCardModel;
   /** 这一轮命令所属的任务卡：步骤行按它解析状态与输出。 */
   stepTask?: TaskCardModel;
@@ -516,7 +673,7 @@ const MessageRow = memo(function MessageRow({
   /** 审批表态：按同一步骤的 taskId + callId 原地更新。 */
   onDecideApproval?: (entry: ApprovalEntry, allow: boolean) => void;
   /** 展开的命令：在右侧终端查看真实输出。 */
-  onOpenOutput?: () => void;
+  onOpenOutput?: (taskId: string) => void;
   onQuote?: (message: ExtremeMessage) => void;
   onEdit?: (message: ExtremeMessage) => void;
   /** 回复中断：用原问题重新跑一次。 */
@@ -535,7 +692,16 @@ const MessageRow = memo(function MessageRow({
    * 还没有任何正文：给一个轻量占位，避免气泡突然出现又跳高度。
    * 有内联步骤时由步骤行 / 「正在整理结果」承担提示，不再重复。
    */
-  const waiting = !mine && !timeline && message.text === "" && streaming;
+  /*
+   * 本轮还在等模型：没有可见正文、也没有命令在跑。
+   *
+   * 只看 `!timeline` 不够 —— 先收到计划/空白增量时 timeline 已经有片段，
+   * 但屏幕上什么都还没出现，用户只能干等。
+   */
+  const visibleText = message.text.trim().length > 0;
+  const hasSteps = timeline ? timeline.some((part) => part.kind === "step") : false;
+  const hasQuestion = timeline ? timeline.some((part) => part.kind === "question") : false;
+  const waiting = !mine && streaming && !visibleText && !hasSteps && !hasQuestion;
   /** 首段回复的等待：200ms 后才出「思考中」，正文一开始流出就收起。 */
   const thinking = useDelayedFlag(waiting);
   /*
@@ -562,6 +728,7 @@ const MessageRow = memo(function MessageRow({
         path: item.path,
         remotePath: item.remotePath,
         uploadState: attachmentById.get(item.id)?.uploadState,
+        stagedCleaned: attachmentById.get(item.id)?.stagedCleaned,
       }));
     }
     return (message.attachmentIds ?? [])
@@ -574,6 +741,7 @@ const MessageRow = memo(function MessageRow({
         path: item.path,
         remotePath: item.remotePath,
         uploadState: item.uploadState,
+        stagedCleaned: item.stagedCleaned,
       }));
   }, [message.attachmentSnapshot, message.attachmentIds, attachmentById]);
 
@@ -615,6 +783,10 @@ const MessageRow = memo(function MessageRow({
                     {t("已上传")}
                   </span>
                 )}
+                {/* 暂存副本可能被清理：历史里保留名称与这个状态，不装作还在。 */}
+                {(item.uploadState === "cleaned" || item.stagedCleaned) && (
+                  <span className="shrink-0 text-fg-subtle">{t("暂存已清理")}</span>
+                )}
               </span>
             );
           })}
@@ -627,14 +799,7 @@ const MessageRow = memo(function MessageRow({
             role="status"
             data-testid="extreme-thinking"
           >
-            {/* 官方 LatticeLoader：格子波浪动效保留，文案由业务层传入。 */}
-            <LatticeLoader
-              label={t("思考中")}
-              cellSize={3}
-              gap={1}
-              fontSize={12}
-              showTimer={false}
-            />
+            <ReplyLoader label={t("思考中")} />
           </div>
         ) : null
       ) : (
@@ -657,7 +822,7 @@ const MessageRow = memo(function MessageRow({
               sessionId={sessionId}
               onOpen={onOpenWorkspaceTarget}
               onDecideApproval={onDecideApproval}
-              onOpenOutput={onOpenOutput}
+              onOpenOutput={stepTask && onOpenOutput ? () => onOpenOutput(stepTask.id) : undefined}
               onOpenChanges={onOpenChanges}
             />
           ) : (
@@ -778,6 +943,17 @@ const MessageRow = memo(function MessageRow({
             </div>
           )
       )}
+      {isLast && !mine && !message.local && message.createdAt ? (
+        <ElapsedTime
+          startedAt={message.createdAt}
+          running={streaming}
+          executedSteps={
+            (stepTask ?? task)?.steps.filter(
+              (step) => step.category !== "internal" && step.category !== "denied",
+            ).length ?? 0
+          }
+        />
+      ) : null}
     </div>
   );
 });
@@ -828,7 +1004,7 @@ export const MessageList = memo(function MessageList({
   /** 审批表态（允许 / 拒绝）：原地更新同一步骤的状态。 */
   onDecideApproval?: (allow: boolean, callId: string, taskId: string) => void;
   /** 展开的命令：在右侧终端查看。 */
-  onOpenOutput?: () => void;
+  onOpenOutput?: (taskId: string) => void;
   /** 引用这条回复：把原文带进输入框，接着问。 */
   onQuote?: (message: ExtremeMessage) => void;
   /** 编辑自己发过的那句：把原文回填输入框重写。 */
@@ -909,7 +1085,7 @@ export const MessageList = memo(function MessageList({
       ),
     [],
   );
-  const openOutput = useCallback(() => handlers.current.onOpenOutput?.(), []);
+  const openOutput = useCallback((taskId: string) => handlers.current.onOpenOutput?.(taskId), []);
   const quote = useCallback((message: ExtremeMessage) => handlers.current.onQuote?.(message), []);
   const edit = useCallback((message: ExtremeMessage) => handlers.current.onEdit?.(message), []);
   const retry = useCallback(
@@ -954,14 +1130,20 @@ export const MessageList = memo(function MessageList({
            */
           const stepTaskId = message.parts?.find((part) => part.kind === "step")?.taskId;
           const stepTask = stepTaskId ? tasks[stepTaskId] : undefined;
-          // 只有"最后一条 + 正在等回复"才是流式；历史消息一次性渲染。
-          const streaming = !mine && asking && index === messages.length - 1;
+          /*
+           * 只有"最后一条 + 正在等回复"才是流式；历史消息一次性渲染。
+           * 本机生成的提示（`local`）推送时就是全文，不能按流式逐字补间 ——
+           * 否则平台刚写的一条说明只会显示前几个字。
+           */
+          const streaming =
+            !mine && !message.local && asking && index === messages.length - 1;
           return (
             <MessageRow
               key={message.id}
               message={message}
               attachmentById={attachmentById}
               streaming={streaming}
+              isLast={index === messages.length - 1}
               task={task}
               stepTask={stepTask}
               approvalByStep={approvalByStep}
@@ -971,7 +1153,7 @@ export const MessageList = memo(function MessageList({
               onResumeTask={resumeTask}
               onOpenChanges={openChanges}
               onDecideApproval={decideApproval}
-              onOpenOutput={openOutput}
+              onOpenOutput={onOpenOutput ? openOutput : undefined}
               onQuote={quote}
               onEdit={edit}
               onRetryMessage={retry}

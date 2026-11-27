@@ -7,7 +7,7 @@ const GlassIcons = GlassIconsSource as unknown as (
 ) => ReactElement;
 
 /** 简洁的向下箭头（不是下载图标）。 */
-function ScrollDownIcon({ size = 18 }: { size?: number }) {
+export function ScrollDownIcon({ size = 18 }: { size?: number }) {
   return (
     <svg
       width={size}

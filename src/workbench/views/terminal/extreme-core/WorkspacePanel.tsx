@@ -14,6 +14,7 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import type { IconComponent } from "@/components/icons";
+import { useStepTitle } from "./step-title-i18n";
 import { PaneTabBar, type PaneTab } from "@/components/ui/pane-tab-bar";
 import { ToolbarIcon } from "@/workbench/views/terminal/ToolbarIcon";
 import { RunPlanPanel } from "./RunPlanPanel";
@@ -87,6 +88,9 @@ export function WorkspacePanel({
   onUploadAttachments,
   uploadingAttachments = false,
   onRemoveAttachment,
+  cleanupRequests = [],
+  onRunCleanup,
+  onDismissCleanup,
   onOpenRemotePath,
   runLabel,
   steps,
@@ -155,6 +159,10 @@ export function WorkspacePanel({
   onUploadAttachments?: () => void;
   uploadingAttachments?: boolean;
   onRemoveAttachment: (id: string) => void;
+  /** 部署成功后的暂存清理询问（按任务持久化，多个任务互不覆盖）。 */
+  cleanupRequests?: import("./attachments/cleanup").CleanupRequest[];
+  onRunCleanup?: (request: import("./attachments/cleanup").CleanupRequest) => void;
+  onDismissCleanup?: (taskId: string) => void;
   onOpenRemotePath: (path: string) => void;
   runLabel: string;
   steps: PaneStep[];
@@ -166,6 +174,8 @@ export function WorkspacePanel({
   logLive?: boolean;
 }) {
   const { t } = useTranslation();
+  // 步骤标题由执行器拼好（中文），英文界面按动词 + 目标改写。
+  const localize = useStepTitle();
   const asideRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
     startX: number;
@@ -579,6 +589,30 @@ export function WorkspacePanel({
 
       {activeTab === "attachments" && (
         <div className="flex min-h-0 flex-1 flex-col">
+          {cleanupRequests.length > 0 && (
+            <div className="shrink-0 space-y-1 border-b border-line/70 px-2 py-1.5">
+              {cleanupRequests.map((request) => (
+                <div key={request.taskId} className="rounded-md px-1 py-1 text-10">
+                  <p className="text-fg-muted">
+                    {t("部署完成：删除这次任务的 {{n}} 个暂存副本？", {
+                      n: request.items.length,
+                    })}
+                  </p>
+                  {request.error && (
+                    <p className="mt-0.5 break-words text-danger/90">{request.error}</p>
+                  )}
+                  <div className="mt-1 flex items-center gap-1">
+                    <Button size="xs" onClick={() => onRunCleanup?.(request)}>
+                      {request.error ? t("重试删除") : t("删除暂存")}
+                    </Button>
+                    <Button variant="ghost" size="xs" onClick={() => onDismissCleanup?.(request.taskId)}>
+                      {t("保留")}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {attachments.length === 0 ? (
             <p className="px-3 py-2 text-11 text-fg-subtle">
               {t("这次会话还没有附件：从输入框的 ＋ 或直接拖进来。")}
@@ -603,16 +637,26 @@ export function WorkspacePanel({
                     : item.state === "failed"
                       ? { label: t("读取失败"), tone: "text-danger" }
                       : item.uploadState === "uploading"
-                        ? { label: t("上传中…"), tone: "text-accent" }
-                        : remote
-                          ? read === "failed"
-                            ? { label: t("读取失败 · 按路径使用"), tone: "text-warning" }
-                            : read === "binary"
-                              ? { label: t("二进制 · 按路径使用"), tone: "text-fg-subtle" }
-                              : read === "pending"
-                                ? { label: t("读取中…"), tone: "text-accent" }
-                                : { label: t("已读取 · 在服务器上"), tone: "text-success" }
-                          : { label: t("待上传"), tone: "text-fg-subtle" };
+                        ? {
+                            label:
+                              item.remoteProgress != null
+                                ? t("上传中 {{n}}%", { n: item.remoteProgress })
+                                : t("上传中…"),
+                            tone: "text-accent",
+                          }
+                        : item.uploadState === "cleaned"
+                          ? { label: t("暂存已清理 · 需重新上传"), tone: "text-warning" }
+                          : item.stagedCleaned && remote
+                            ? { label: t("已部署 · 暂存已清理"), tone: "text-fg-subtle" }
+                            : remote
+                            ? read === "failed"
+                              ? { label: t("读取失败 · 按路径使用"), tone: "text-warning" }
+                              : read === "binary"
+                                ? { label: t("二进制 · 按路径使用"), tone: "text-fg-subtle" }
+                                : read === "pending"
+                                  ? { label: t("读取中…"), tone: "text-accent" }
+                                  : { label: t("已读取 · 在服务器上"), tone: "text-success" }
+                            : { label: t("待上传"), tone: "text-fg-subtle" };
                 return (
                   <li key={item.id} className="flex items-start gap-1.5 rounded-md px-1 py-1">
                     <input
@@ -648,11 +692,12 @@ export function WorkspacePanel({
                         </button>
                       )}
                     </div>
-                    {item.state === "ready" && item.remoteError && (
-                      <Button variant="ghost" size="xs" onClick={() => onRetryAttachment(item.id)}>
-                        {t("重试上传")}
-                      </Button>
-                    )}
+                    {item.state === "ready" &&
+                      (item.remoteError || item.uploadState === "cleaned") && (
+                        <Button variant="ghost" size="xs" onClick={() => onRetryAttachment(item.id)}>
+                          {item.uploadState === "cleaned" ? t("重新上传") : t("重试上传")}
+                        </Button>
+                      )}
                     <ExtremeIconButton
                       label={t("移除 {{name}}", { name: item.name })}
                       icon={X}
@@ -728,8 +773,8 @@ export function WorkspacePanel({
                     >
                       <span className={cn("mt-1 size-1.5 shrink-0 rounded-full", tone)} />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-11 text-fg" title={t(step.title)}>
-                          {index + 1}. {t(step.title)}
+                        <span className="block truncate text-11 text-fg" title={localize(step.title)}>
+                          {index + 1}. {localize(step.title)}
                         </span>
                         {(step.detail || step.command) && (
                           <span className="block truncate font-mono text-10 text-fg-subtle">

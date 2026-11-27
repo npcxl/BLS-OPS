@@ -23,12 +23,30 @@ export interface QueueAttachment {
   size: number;
   path?: string;
   remotePath?: string;
+  /** 入队时的暂存副本路径（清理 / 核验都按它，而不是部署后的线上目标）。 */
+  stagedPath?: string;
+  /** 入队时的暂存状态：派发时据此判断"已被清理 / 需要重新上传"。 */
+  staged?: boolean;
+  uploadState?: string;
+  /** 暂存副本所属服务器（serverId）。 */
+  serverId?: string | null;
+  /**
+   * 文本正文快照。
+   *
+   * 队列只在内存里活着，不会落盘；带上它，用户入队后把附件从会话里删掉，
+   * 这条消息仍能按**入队时的那份材料**暂存与发送。
+   */
+  text?: string;
+  /** 二进制标记（大文件内容仍走 payload 缓存，不复制进队列）。 */
+  binary?: boolean;
 }
 
 export interface QueuedSend {
   /** 队列项自己的 id：取消 / 定位都按它，不用下标。 */
   id: string;
   workspaceId: string;
+  /** 入队时这条对话绑定的服务器（serverId）：派发前要确认没被换绑。 */
+  serverId?: string | null;
   text: string;
   /** 入队那一刻选中的附件（顺序即用户勾选顺序）。 */
   attachments: QueueAttachment[];
@@ -59,6 +77,7 @@ export function queuedSend(
   return {
     id: input.id ?? `queue-${crypto.randomUUID()}`,
     workspaceId: input.workspaceId,
+    serverId: input.serverId,
     text: input.text,
     attachments: input.attachments,
     selection: input.selection,

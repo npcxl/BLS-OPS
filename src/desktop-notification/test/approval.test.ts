@@ -175,7 +175,18 @@ describe("审批通知", () => {
     hideApprovalNotification();
     expect(bridge.dismiss).toHaveBeenCalledTimes(1);
 
+    /*
+     * 同一个后台周期内不重复弹（用户刚关掉的那条不该立刻又冒出来）；
+     * 真正回到前台、再收起，才是一个新周期，仍然有效的那条再提醒一次。
+     */
     bridge.push.mockClear();
+    channels.emit("app:collapsed");
+    expect(bridge.push).not.toHaveBeenCalled();
+
+    setHidden(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    syncApprovalNotification(pending, t);
+
     setHidden(true);
     channels.emit("app:collapsed");
     expect(bridge.push).toHaveBeenCalledTimes(1);
@@ -194,6 +205,73 @@ describe("审批通知", () => {
     risk: "danger",
     phase: "pending",
   };
+
+  it("收起事件与页面可见性同时触发：同一条审批只显示一次", () => {
+    setHidden(true);
+    syncApprovalNotification(pending, t);
+    bridge.push.mockClear();
+
+    // 同一次收起的两种通知来源（原生 + WebView）。
+    channels.emit("app:collapsed");
+    document.dispatchEvent(new Event("visibilitychange"));
+    channels.emit("app:collapsed");
+
+    expect(bridge.push).not.toHaveBeenCalled();
+  });
+
+  it("已允许 / 已拒绝 / 已过期且从未显示：收起时不补发", () => {
+    setHidden(true);
+    syncApprovalNotifications(
+      [
+        { ...pending, phase: "allowed", closed: true },
+        { ...other, phase: "denied", closed: true },
+        { ...other, taskId: "task-3", callId: "call-3", deadline: Date.now() - 1000 },
+      ],
+      t,
+    );
+    channels.emit("app:collapsed");
+    expect(bridge.push).not.toHaveBeenCalled();
+  });
+
+  it("已经显示过的结果只就地更新，不再作为新提醒", () => {
+    setHidden(true);
+    syncApprovalNotification(pending, t);
+    bridge.push.mockClear();
+    bridge.dismiss.mockClear();
+
+    // 用户允许后回到前台：通知更新成结果；再收起不能重新弹。
+    syncApprovalNotification({ ...pending, phase: "allowed", closed: true }, t);
+    expect(bridge.push).toHaveBeenCalledTimes(1);
+    expect(bridge.push.mock.calls[0][0].buttons).toBeUndefined();
+
+    setHidden(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    bridge.push.mockClear();
+    setHidden(true);
+    channels.emit("app:collapsed");
+    expect(bridge.push).not.toHaveBeenCalled();
+  });
+
+  it("已处理的通知即使还能收到点击，也不再提交审批", () => {
+    setHidden(true);
+    syncApprovalNotification(pending, t);
+    syncApprovalNotification({ ...pending, phase: "denied", closed: true }, t);
+    channels.emit("desktop-notification:decide", {
+      id: "extreme-approval-task-1|call-1",
+      key: "allow",
+    });
+    expect(decide).not.toHaveBeenCalled();
+  });
+
+  it("两个任务同时有效：只有真正待确认的进入通知，处理 A 不影响 B", () => {
+    setHidden(true);
+    syncApprovalNotifications(
+      [{ ...pending, closed: true, phase: "allowed" }, other],
+      t,
+    );
+    const ids = bridge.push.mock.calls.map((call) => call[0].id);
+    expect(ids).toEqual(["extreme-approval-task-2|call-9"]);
+  });
 
   it("A / B 同时待确认：两条通知都在，处理 A 不动 B", () => {
     setHidden(true);
@@ -239,5 +317,31 @@ describe("审批通知", () => {
     syncApprovalNotifications([pending], t);
     expect(bridge.dismiss).toHaveBeenCalledWith("extreme-approval-task-2|call-9");
     expect(bridge.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  /*
+   * 多任务并存时点通知必须回到**这条审批所在的对话**：
+   * 只带 serverId 会把用户送到当前对话，看起来就是"通知串台"。
+   */
+  it("通知带归属：点开回到发起这条审批的对话与任务", () => {
+    setHidden(true);
+    syncApprovalNotification(
+      { ...pending, serverId: "srv-1", workspaceId: "ws-9" },
+      t,
+    );
+    const payload = bridge.push.mock.calls[0][0];
+    expect(payload.action).toEqual({
+      kind: "extreme",
+      serverId: "srv-1",
+      server: "aliyun",
+      taskId: "task-1",
+      workspaceId: "ws-9",
+    });
+  });
+
+  it("没有 serverId 时不猜服务器，只唤回主窗口", () => {
+    setHidden(true);
+    syncApprovalNotification(pending, t);
+    expect(bridge.push.mock.calls[0][0].action).toEqual({ kind: "none" });
   });
 });

@@ -23,7 +23,7 @@ const at = () => (clock += 1000);
 function started(overrides: Partial<AgentEvent> = {}): AgentEvent {
   return {
     taskId: "task-1",
-    kind: "step_started",
+    kind: "tool_started",
     stepIndex: 0,
     callId: "call-0-0",
     tool: "run_shell",
@@ -73,18 +73,87 @@ describe("Agent 事件合并", () => {
     expect(steps[0].stdout).toBe("Linux web-01\n");
   });
 
-  it("不同 index 各自独立，迟到的事件不会覆盖新步骤", () => {
+  it("不同 index 各自独立，迟到的事件不会覆盖旧步骤", () => {
     let steps = mergeAgentStep([], started());
+    steps = mergeAgentStep(steps, finished({ stepIndex: 0, stdout: "Linux web-01\n" }));
     steps = mergeAgentStep(steps, started({ stepIndex: 1, callId: "call-0-1", command: "df -h" }));
     steps = mergeAgentStep(steps, finished({ stepIndex: 1, stdout: "/dev/sda1 40G\n" }));
     steps = mergeAgentStep(
       steps,
-      started({ stepIndex: 0, state: "failed", risk: "write", command: "rm -f /tmp/x" }),
+      started({ stepIndex: 2, callId: "call-0-2", state: "failed", risk: "write", command: "rm -f /tmp/x" }),
     );
-    expect(steps.map((step) => step.command)).toEqual(["rm -f /tmp/x", "df -h"]);
-    expect(steps[0].state).toBe("failed");
+    expect(steps.map((step) => step.command)).toEqual(["uname -a", "df -h", "rm -f /tmp/x"]);
+    expect(steps[0].state).toBe("success");
     expect(steps[1].state).toBe("success");
     expect(steps[1].stdout).toContain("/dev/sda1");
+    expect(steps[2].state).toBe("failed");
+  });
+
+  it("终态之后到达的开始 / 输出 / 非终态完成事件不能把步骤改回运行中", () => {
+    let steps = mergeAgentStep([], started());
+    steps = mergeAgentStep(steps, finished({ stdout: "done\n" }));
+    // 重复 / 乱序的 tool_started：命令与状态都不该被改写。
+    steps = mergeAgentStep(steps, started({ state: "running", command: "rm -f /tmp/x" }));
+    expect(steps[0].state).toBe("success");
+    expect(steps[0].command).toBe("uname -a");
+    // 迟到的增量不能追加到已完成输出后面。
+    steps = mergeAgentStep(steps, {
+      taskId: "task-1",
+      kind: "tool_output",
+      stepIndex: 0,
+      stdout: "late chunk",
+    });
+    expect(steps[0].stdout).toBe("done\n");
+    // 不合法的"完成但仍运行"事件也不能回退状态。
+    steps = mergeAgentStep(steps, finished({ state: "running" }));
+    expect(steps[0].state).toBe("success");
+  });
+
+  it("子任务服务器、依赖与待核实标记跟到卡片历史", () => {
+    const steps = mergeAgentStep(
+      [],
+      finished({
+        tool: "child_agent",
+        groupId: "children-0",
+        server: "test",
+        serverId: "srv-b",
+        childId: "memory",
+        stale: true,
+      }),
+    );
+    const card = toDeploySteps(steps, t)[0];
+    expect(card.server).toBe("test");
+    expect(card.serverId).toBe("srv-b");
+    expect(card.childId).toBe("memory");
+    expect(card.stale).toBe(true);
+    // JSON 落盘 / 恢复不能丢掉这些身份字段。
+    expect(JSON.parse(JSON.stringify(card))).toMatchObject({
+      server: "test",
+      serverId: "srv-b",
+      childId: "memory",
+      stale: true,
+    });
+  });
+
+  it("并行子任务的迟到开始事件不会覆盖终态", () => {
+    let steps = mergeAgentStep([], started({ kind: "tool_started", groupId: "children-2", state: "pending" }));
+    steps = mergeAgentStep(steps, started({ kind: "tool_started", groupId: "children-2", state: "running" }));
+    steps = mergeAgentStep(steps, started({ kind: "tool_started", groupId: "children-2", state: "pending" }));
+    expect(steps[0].state).toBe("running");
+    steps = mergeAgentStep(steps, finished({ groupId: "children-2", state: "success" }));
+    steps = mergeAgentStep(steps, started({ kind: "tool_started", groupId: "children-2", state: "running" }));
+    expect(steps[0].state).toBe("success");
+    expect(toDeploySteps(steps, t)[0].groupId).toBe("children-2");
+  });
+
+  it("子任务的估算用量与来源跟随事件及历史卡片", () => {
+    const usage = { requests: 2, inputTokens: 1000, outputTokens: 250 };
+    const steps = mergeAgentStep([], finished({ tool: "child_agent", groupId: "children-0", childUsage: usage }));
+    expect(steps[0].childUsage).toEqual(usage);
+    const cardStep = toDeploySteps(steps, t)[0];
+    expect(cardStep.sourceTool).toBe("child_agent");
+    expect(cardStep.childUsage).toEqual(usage);
+    expect(JSON.parse(JSON.stringify(cardStep)).childUsage).toEqual(usage);
   });
 
   it("等待确认的步骤保留命令与影响说明", () => {
@@ -329,5 +398,113 @@ describe("一句话结论", () => {
   it("运行中显示正在执行的命令", () => {
     const steps = mergeAgentStep([], started());
     expect(agentSummary(steps, "running", null, t)).toBe("正在执行：uname -a");
+  });
+});
+
+describe("内部纠错 / 权限拦截的分类", () => {
+  it("平台打回的命令落成内部调整，不是执行失败", () => {
+    let steps = mergeAgentStep([], started({ state: "running" }));
+    steps = mergeAgentStep(
+      steps,
+      finished({
+        state: "skipped",
+        category: "internal",
+        stderr: "你声明这一步是只读，但命令里有写操作",
+        exitCode: null,
+      }),
+    );
+    expect(steps[0].category).toBe("internal");
+
+    const [deploy] = toDeploySteps(steps, t);
+    expect(deploy.category).toBe("internal");
+    expect(deploy.state).toBe("skipped");
+    // 说明"没发到服务器"，而不是把平台内部措辞写成标题。
+    expect(deploy.detail).toContain("命令没有发到服务器");
+    expect(deploy.detail).not.toContain("执行失败");
+    // 真实原因仍保留在可展开的详情里（审计不丢）。
+    expect(deploy.stderr).toContain("只读");
+  });
+
+  it("旧记录没有类别时按真实执行展示，不能当成内部纠错隐藏", () => {
+    const legacy: AgentStep = {
+      index: 0,
+      callId: "call-0-0",
+      tool: "run_shell",
+      risk: "write",
+      state: "failed",
+      command: "systemctl restart nginx",
+      stdout: "",
+      stderr: "Job for nginx.service failed",
+      cwd: "/root",
+      truncated: false,
+      elapsedMs: 10,
+    };
+    const [deploy] = toDeploySteps([legacy], t);
+    expect(deploy.category).toBeUndefined();
+    expect(deploy.state).toBe("failed");
+    expect(deploy.stderr).toContain("failed");
+  });
+
+  it("未执行的原因用结构化代码说人话，不回显内部代码", () => {
+    let steps = mergeAgentStep([], started({ state: "waiting", risk: "write" }));
+    steps = mergeAgentStep(
+      steps,
+      finished({
+        state: "skipped",
+        category: "denied",
+        blocked: "read_only",
+        exitCode: null,
+      }),
+    );
+
+    const [deploy] = toDeploySteps(steps, t);
+    expect(deploy.blocked).toBe("read_only");
+    expect(deploy.detail).toContain("只读模式");
+    expect(deploy.detail).toContain("没有执行");
+    // 代码本身不是给用户看的文案。
+    expect(deploy.detail).not.toContain("read_only");
+    expect(deploy.state).toBe("skipped");
+  });
+
+  it("未登记的代码只说未执行，不猜原因", () => {
+    const [deploy] = toDeploySteps(
+      [
+        {
+          index: 0,
+          callId: "call-0-0",
+          tool: "run_shell",
+          risk: "write",
+          state: "skipped",
+          command: "systemctl restart nginx",
+          stdout: "",
+          stderr: "",
+          cwd: "/root",
+          truncated: false,
+          elapsedMs: 0,
+          category: "denied",
+          blocked: "something_new",
+        },
+      ],
+      t,
+    );
+    expect(deploy.detail).toContain("未执行（权限或确认拦住）");
+    expect(deploy.detail).not.toContain("something_new");
+  });
+
+  it("成功步数 / 失败定位只算真正执行过的步骤", () => {
+    let steps = mergeAgentStep([], started({ state: "running" }));
+    steps = mergeAgentStep(
+      steps,
+      finished({ state: "skipped", category: "internal", exitCode: null }),
+    );
+    steps = mergeAgentStep(
+      steps,
+      started({ stepIndex: 1, callId: "call-0-1", command: "uname -a" }),
+    );
+    steps = mergeAgentStep(steps, finished({ stepIndex: 1 }));
+
+    expect(agentSummary(steps, "success", null, t)).toBe("已完成 1 步");
+    // 内部纠错的 write 不该把任务归成"自动化"。
+    expect(kindOfSteps(steps)).toBe("probe");
   });
 });

@@ -60,6 +60,10 @@ it("首次轻量展开；手动收起后计划更新不重新弹开；点步骤�
     expect(holder.textContent).toContain("执行计划");
     expect(holder.textContent).toContain("0/2");
     expect(holder.textContent).toContain("更新配置");
+    const pendingStep = Array.from(holder.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("检查 Nginx 配置"),
+    );
+    expect(pendingStep?.getAttribute("aria-current")).not.toBe("true");
 
     const collapse = Array.from(holder.querySelectorAll("button")).find(
       (button) => button.getAttribute("aria-label") === "收起计划",
@@ -88,6 +92,19 @@ it("首次轻量展开；手动收起后计划更新不重新弹开；点步骤�
     expect(step).toBeTruthy();
     await act(async () => step!.click());
     expect(onFocus).toHaveBeenCalledWith("s2");
+    const endedPlan = planOf(3, "done");
+    endedPlan.steps[1].state = "verifying";
+    await act(async () => {
+      root.render(<PlanCard taskId="task-1" plan={endedPlan} taskStatus="done" onFocusStep={onFocus} />);
+    });
+    expect(holder.textContent).toContain("任务已结束，部分步骤状态待核对");
+    expect(holder.querySelector(".animate-spin")).toBeNull();
+    endedPlan.steps[1].state = "skipped";
+    await act(async () => {
+      root.render(<PlanCard taskId="task-1" plan={{ ...endedPlan, steps: [...endedPlan.steps] }} taskStatus="done" onFocusStep={onFocus} />);
+    });
+    expect(holder.textContent).toContain("1 步未执行");
+    expect(holder.textContent).not.toContain("已全部完成");
   } finally {
     await act(async () => root.unmount());
     holder.remove();

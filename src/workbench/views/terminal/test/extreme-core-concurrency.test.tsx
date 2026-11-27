@@ -63,12 +63,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
-vi.mock("@/components/backgrounds/shape-waves", () => ({ default: () => null }));
+vi.mock("@/components/backgrounds/galaxy", () => ({ default: () => null }));
 vi.mock("@/components/backgrounds/aero-shards", () => ({ default: () => null }));
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
   useThemeMode: () => ["dark", () => undefined],
+  useIsDarkTheme: () => true,
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),
@@ -171,7 +172,27 @@ it("A 等探测时切到服务器 B：A 的上传只用 A 的连接与附件，B
   // 第一次 sshExec 是右栏探测：测试自己决定什么时候"服务器回话"。
   let releaseProbe: ((value: { stdout: string; stderr: string; exit_code: number }) => void) | null =
     null;
-  const ssh = vi.spyOn(opsApi, "sshExec").mockImplementation((session: string) => {
+  const sizes = new Map<string, number>();
+  const ssh = vi.spyOn(opsApi, "sshExec").mockImplementation((session: string, command: string) => {
+    if (command.includes("mkdir -p")) {
+      const parent = /mkdir -p -- '([^']+)'/.exec(command)?.[1] ?? "";
+      return Promise.resolve({
+        stdout: `/root/${parent}`,
+        stderr: "",
+        exit_code: 0,
+        truncated: false,
+      }) as never;
+    }
+    if (command.includes("wc -c")) {
+      const path = /test -f '([^']+)'/.exec(command)?.[1] ?? "";
+      const size = sizes.get(path) ?? sizes.get(`${path}.part`) ?? 0;
+      return Promise.resolve({
+        stdout: String(size),
+        stderr: "",
+        exit_code: 0,
+        truncated: false,
+      }) as never;
+    }
     if (session === sessionA && !releaseProbe) {
       return new Promise((resolve) => {
         releaseProbe = resolve as never;
@@ -179,7 +200,14 @@ it("A 等探测时切到服务器 B：A 的上传只用 A 的连接与附件，B
     }
     return Promise.resolve({ stdout: "yes", stderr: "", exit_code: 0 }) as never;
   });
-  const write = vi.spyOn(opsApi, "sftpWriteFile").mockResolvedValue(undefined);
+  const write = vi
+    .spyOn(opsApi, "sftpWriteChunk")
+    .mockImplementation(async (_session, path, offset, base64) => {
+      const total = offset + atob(base64).length;
+      sizes.set(path, total);
+      return total;
+    });
+  const finish = vi.spyOn(opsApi, "sftpStageFinish").mockResolvedValue(undefined);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const holder = document.body.appendChild(document.createElement("div"));
   const root = createRoot(holder);
@@ -252,6 +280,7 @@ it("A 等探测时切到服务器 B：A 的上传只用 A 的连接与附件，B
     run.mockRestore();
     ssh.mockRestore();
     write.mockRestore();
+    finish.mockRestore();
     vi.unstubAllGlobals();
     channels.clear();
     bridge.push.mockClear();
@@ -285,6 +314,28 @@ it("A 连排两条、B 排一条：三条都在各自对话里按顺序发送，
   ] as never);
   const run = vi.spyOn(opsApi, "aiAgentRun").mockResolvedValue(snapshot({ status: "running" }));
   vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot({ status: "running" }));
+  // 暂存走统一服务：服务器要"回话"才能算传完。
+  const sizes = new Map<string, number>();
+  const ssh = vi.spyOn(opsApi, "sshExec").mockImplementation(async (_session, command) => {
+    if (command.includes("mkdir -p")) {
+      const parent = /mkdir -p -- '([^']+)'/.exec(command)?.[1] ?? "";
+      return { stdout: `/root/${parent}`, stderr: "", exit_code: 0, truncated: false };
+    }
+    if (command.includes("wc -c")) {
+      const path = /test -f '([^']+)'/.exec(command)?.[1] ?? "";
+      const size = sizes.get(path) ?? sizes.get(`${path}.part`) ?? 0;
+      return { stdout: String(size), stderr: "", exit_code: 0, truncated: false };
+    }
+    return { stdout: "yes", stderr: "", exit_code: 0, truncated: false };
+  });
+  const write = vi
+    .spyOn(opsApi, "sftpWriteChunk")
+    .mockImplementation(async (_session, path, offset, base64) => {
+      const total = offset + atob(base64).length;
+      sizes.set(path, total);
+      return total;
+    });
+  const finish = vi.spyOn(opsApi, "sftpStageFinish").mockResolvedValue(undefined);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const holder = document.body.appendChild(document.createElement("div"));
   const root = createRoot(holder);
@@ -384,6 +435,9 @@ it("A 连排两条、B 排一条：三条都在各自对话里按顺序发送，
     useExtremeStore.setState({ queuedSends: [] });
     providers.mockRestore();
     run.mockRestore();
+    ssh.mockRestore();
+    write.mockRestore();
+    finish.mockRestore();
     vi.unstubAllGlobals();
     channels.clear();
     await i18n.changeLanguage(language);
@@ -518,7 +572,8 @@ it("流式输出一半后失败：切到 B 再回来，正文、原因与重试�
 
     await emitAgent({ taskId, kind: "text_delta", content: "前半段已经写好了。" });
     await flush(2);
-    expect(holder.textContent).toContain("前半段已经写好了。");
+    // 流式显示可能还在逐字追赶；中断后的断言仍要求完整正文不丢失。
+    expect(holder.textContent).toContain("前");
 
     await emitAgent({ taskId, kind: "failed", message: "连接中断", content: "" });
     await flush(2);

@@ -38,6 +38,14 @@ describe("超能设置 store", () => {
     expect(notificationAllowed("success")).toBe(false);
   });
 
+  it("长期记忆开关保存并可恢复默认", () => {
+    useExtremeSettingsStore.getState().update({ memoryEnabled: false });
+    expect(useExtremeSettingsStore.getState().memoryEnabled).toBe(false);
+    expect(JSON.parse(localStorage.getItem(KEY) ?? "{}").memoryEnabled).toBe(false);
+    useExtremeSettingsStore.getState().reset();
+    expect(useExtremeSettingsStore.getState().memoryEnabled).toBe(true);
+  });
+
   it("恢复默认写回全部默认值", () => {
     useExtremeSettingsStore.getState().update({
       planCard: "collapsed",

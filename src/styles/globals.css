@@ -494,6 +494,17 @@
     overflow: hidden;
   }
 
+  .ops-tooltip {
+    box-shadow: 0 6px 20px rgb(15 23 42 / 0.12), 0 1px 4px rgb(15 23 42 / 0.08);
+  }
+
+  :root[data-theme="dark"] .ops-tooltip {
+    background: rgb(var(--surface-2));
+    border-color: rgb(var(--line-strong) / 0.75);
+    color: rgb(var(--fg));
+    box-shadow: 0 10px 28px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18);
+  }
+
   @keyframes ops-tooltip-in {
     from {
       opacity: 0;

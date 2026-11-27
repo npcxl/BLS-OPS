@@ -292,8 +292,8 @@ export function TerminalComposer({
    * **唯一"可接受"状态**：候选栏或灰字真的显示在屏幕上。
    *
    * Tab 只看这个值 —— 空格后候选被收起（`autoAllowed=false`），即使 `items`
-   * 里还有上一轮结果、`usable` 仍为 true，也**不能**被 Tab 选中；此时 Tab
-   * 恢复浏览器的正常焦点导航。
+   * 里还有上一轮结果、`usable` 仍为 true，也**不能**被 Tab 选中；此时按键被
+   * 吞掉（草稿一字不动，焦点也不跳）。
    */
   const canAccept = barVisible || ghost !== "";
 
@@ -400,7 +400,7 @@ export function TerminalComposer({
           },
           {
             listOpen: barVisible,
-            // 只有屏幕上真有候选或灰字，Tab 才填入；否则放行给焦点导航。
+            // 只有屏幕上真有候选或灰字，Tab 才填入；否则走下面的 none 分支吞掉。
             hasUsableItems: canAccept,
             hasItems: visible.length > 0,
             hasDraft: text.length > 0,
@@ -410,6 +410,17 @@ export function TerminalComposer({
 
         switch (action.type) {
           case "none":
+            /*
+             * 普通模式里 Tab 只服务命令补全：能补就补，补不了也**吞掉按键**，
+             * 不再让浏览器把焦点跳到下一个输入框（用户裁决 2026-11-25）。
+             *
+             * 两个例外保持原语义：
+             * - Shift+Tab：反向焦点导航，留给键盘用户离开输入框；
+             * - 输入法组词中：Tab 可能是上屏 / 选字，交给输入法。
+             */
+            if (event.key === "Tab" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+            }
             return;
           case "complete": {
             event.preventDefault();

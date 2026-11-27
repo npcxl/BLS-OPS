@@ -59,6 +59,13 @@ export interface MessageStepPart {
    * 重开会话仍然是「未执行」。
    */
   denied?: boolean;
+  /**
+   * 平台内部纠错（命令没有执行）：默认收纳成一条「内部调整」，不刷失败卡。
+   *
+   * 与任务卡上的 `category` 是同一个事实；记在消息上是为了任务卡还没装回来
+   * （历史恢复 / 切换对话）时也能按分类渲染。旧记录没有这个字段 = 真实执行。
+   */
+  internal?: boolean;
   /** 计划里的哪一步（MAX 强制计划）：点击计划卡时据此定位。 */
   planStepId?: string;
   /** 操作组：说明与工具事件共享，连续命令只显示一次说明。 */
@@ -198,6 +205,7 @@ export function upsertStep(
     stepIndex: number;
     label?: string | null;
     denied?: boolean;
+    internal?: boolean;
     planStepId?: string | null;
     groupId?: string | null;
   },
@@ -215,11 +223,13 @@ export function upsertStep(
     const current = parts[position] as MessageStepPart;
     const nextLabel = current.label || label;
     const denied = current.denied || input.denied || undefined;
+    const internal = current.internal || input.internal || undefined;
     const nextPlanStepId = current.planStepId || planStepId;
     const nextGroupId = current.groupId || groupId;
     if (
       (current.label ?? "") === (nextLabel ?? "") &&
       current.denied === denied &&
+      current.internal === internal &&
       (current.planStepId ?? "") === (nextPlanStepId ?? "") &&
       (current.groupId ?? "") === (nextGroupId ?? "")
     ) {
@@ -230,6 +240,7 @@ export function upsertStep(
       ...current,
       label: nextLabel,
       ...(denied ? { denied } : {}),
+      ...(internal ? { internal } : {}),
       ...(nextPlanStepId ? { planStepId: nextPlanStepId } : {}),
       ...(nextGroupId ? { groupId: nextGroupId } : {}),
     };
@@ -244,6 +255,7 @@ export function upsertStep(
       stepIndex: input.stepIndex,
       ...(label ? { label } : {}),
       ...(input.denied ? { denied: true } : {}),
+      ...(input.internal ? { internal: true } : {}),
       ...(planStepId ? { planStepId } : {}),
       ...(groupId ? { groupId } : {}),
     },

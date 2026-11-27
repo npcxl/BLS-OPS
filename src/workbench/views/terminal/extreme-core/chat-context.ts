@@ -101,8 +101,8 @@ export function outputInstruction(style: OutputStyle): string | null {
   switch (style) {
     case "brief":
       return en
-        ? "**Output style**: conclusion and next step only, three sentences at most; details, commands and logs stay in the right pane — do not repeat them."
-        : "**输出要求**：只给结论与下一步，最多三句话；细节、命令与日志留在右栏，不要复述。";
+        ? "**Output style**: favor a concise conclusion and next step, preferably within three sentences. Include material failures, changes, risks and unresolved issues even when more detail is needed; avoid repeating raw logs."
+        : "**输出要求**：优先简洁地说明结论与下一步，尽量最多三句话；重要失败、实际变更、风险和未完成事项必须如实说明，必要时可展开，不重复原始日志。";
     case "detailed":
       return en
         ? "**Output style**: after the conclusion, give the reasoning and what you actually did (why, and what you saw), still without filler."

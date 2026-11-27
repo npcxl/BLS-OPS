@@ -10,6 +10,8 @@
  * 3. 步骤 id 稳定：同一 id 的新事件覆盖旧字段，但**已完成的不会被回退**。
  */
 
+import { i18n } from "@/i18n";
+
 export type RunComplexity = "simple" | "plan";
 
 export type RunStepState = "pending" | "running" | "done" | "failed" | "skipped";
@@ -125,20 +127,29 @@ export function headlineFor(record: Omit<RunRecord, "headline">): string {
   const done = record.steps.filter((step) => step.state === "done").length;
   switch (record.status) {
     case "waiting":
-      return current ? `等待确认：${current.title}` : "等待你确认";
+      return current
+        ? i18n.t("等待确认：{{title}}", { title: current.title })
+        : i18n.t("等待你确认");
     case "failed":
-      return failed ? `停在第 ${done + 1} 步：${failed.title}` : "执行失败";
+      return failed
+        ? i18n.t("停在第 {{n}} 步：{{title}}", { n: done + 1, title: failed.title })
+        : i18n.t("执行失败");
     case "cancelled":
-      return "已停止";
+      return i18n.t("已停止");
     case "done":
       return record.steps.length > 0
-        ? `已完成 ${done}/${record.steps.length} 步`
-        : "已完成";
+        ? i18n.t("已完成 {{done}}/{{total}} 步", {
+            done,
+            total: record.steps.length,
+          })
+        : i18n.t("已完成");
     case "stale":
-      return "状态待核对";
+      return i18n.t("状态待核对");
     default:
-      if (current) return `正在执行：${current.title}`;
-      return record.steps.length > 0 ? `准备执行（${record.steps.length} 步）` : "正在分析";
+      if (current) return i18n.t("正在执行：{{title}}", { title: current.title });
+      return record.steps.length > 0
+        ? i18n.t("准备执行（{{n}} 步）", { n: record.steps.length })
+        : i18n.t("正在分析");
   }
 }
 

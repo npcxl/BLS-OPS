@@ -51,12 +51,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
-vi.mock("@/components/backgrounds/shape-waves", () => ({ default: () => null }));
+vi.mock("@/components/backgrounds/galaxy", () => ({ default: () => null }));
 vi.mock("@/components/backgrounds/aero-shards", () => ({ default: () => null }));
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
   useThemeMode: () => ["dark", () => undefined],
+  useIsDarkTheme: () => true,
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),

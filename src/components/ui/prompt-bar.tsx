@@ -88,6 +88,8 @@ export interface PromptBarCommand {
   key: string;
   name: string;
   description?: string;
+  /** 直接执行的快捷指令（如 /diff、/clear）；不传时按文本模板插入输入框。 */
+  action?: () => void;
 }
 
 export interface PromptBarModel {
@@ -127,7 +129,11 @@ export interface PromptBarProps {
   /** 外部原因禁止发送（如服务器未连接）：按钮禁用并给出原因，草稿仍可编辑。 */
   sendDisabled?: boolean;
   sendDisabledReason?: string;
+  /** 运行中输入正文时，发送键的语义提示（如「加入队列」/「补充给当前任务」）。 */
+  busySendLabel?: string;
   onSend?: (text: string, detail: PromptBarSendDetail) => void;
+  /** 运行中按 Alt/Ctrl/Cmd+Enter 触发另一模式（排队 ↔ 补充）。 */
+  onAltSend?: (text: string, detail: PromptBarSendDetail) => void;
   onStop?: () => void;
   onAttach?: () => string | string[] | void | Promise<string | string[] | void>;
   onDictate?: () => string | void | Promise<string | void>;
@@ -164,11 +170,12 @@ type Row = {
   tag?: string;
   icon?: ReactNode | IconSvgElement;
   attach?: boolean;
+  action?: () => void;
 };
 type Token = { kind: 'at' | 'slash'; query: string; start: number };
 type Latest = Pick<
   PromptBarProps,
-  'onSend' | 'onStop' | 'onAttach' | 'onDictate' | 'onEffortChange' | 'onModelChange'
+  'onSend' | 'onAltSend' | 'onStop' | 'onAttach' | 'onDictate' | 'onEffortChange' | 'onModelChange'
 >;
 type Spark = {
   x: number;
@@ -224,6 +231,12 @@ const renderIcon = (icon: ReactNode | IconSvgElement, size: number) =>
 const STYLE = `
 @keyframes prompt-bar-pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
 @keyframes prompt-bar-eq { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+@keyframes prompt-effort-flow { from { transform: translateX(-45%); } to { transform: translateX(45%); } }
+@keyframes prompt-effort-pulse { 0%, 100% { opacity: .35; transform: scale(.9); } 50% { opacity: .85; transform: scale(1.12); } }
+.prompt-effort-flow { animation: prompt-effort-flow var(--effort-speed, 4s) ease-in-out infinite alternate; }
+.prompt-effort-pulse { animation: prompt-effort-pulse var(--effort-speed, 4s) ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .prompt-effort-flow, .prompt-effort-pulse { animation: none; } }
+[data-motion="reduced"] .prompt-effort-flow, [data-motion="reduced"] .prompt-effort-pulse { animation: none; }
 `;
 
 const PromptBar: React.FC<PromptBarProps> = ({
@@ -241,7 +254,9 @@ const PromptBar: React.FC<PromptBarProps> = ({
   busy = false,
   sendDisabled = false,
   sendDisabledReason,
+  busySendLabel,
   onSend,
+  onAltSend,
   onStop,
   onAttach,
   onDictate,
@@ -274,7 +289,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
   const lastOpen = useRef<string | null>(null);
   const dictation = useRef(0);
   const latest = useRef<Latest>({});
-  latest.current = { onSend, onStop, onAttach, onDictate, onEffortChange, onModelChange };
+  latest.current = { onSend, onAltSend, onStop, onAttach, onDictate, onEffortChange, onModelChange };
 
   const [draftState, setDraftState] = useState('');
   const [attachmentState, setAttachmentState] = useState<string[]>([]);
@@ -310,8 +325,28 @@ const PromptBar: React.FC<PromptBarProps> = ({
   const open = plusOpen ? 'at' : (token?.kind ?? (modelOpen ? 'model' : effortOpen ? 'effort' : null));
   const query = plusOpen ? '' : (token?.query ?? '');
   const list = useMemo<Row[]>(() => {
-    if (open === 'at') return sources.filter(s => s.name.toLowerCase().includes(query));
-    if (open === 'slash') return commands.filter(c => c.name.replace(/^\//, '').toLowerCase().startsWith(query));
+    if (open === 'at') return sources.filter(s => s.name.toLowerCase().includes(query) || s.key.toLowerCase().includes(query));
+    if (open === 'slash') {
+      if (!query) return commands;
+      const scored = commands
+        .map(c => {
+          const key = c.key.toLowerCase();
+          const name = c.name.replace(/^\//, '').toLowerCase();
+          const desc = (c.description ?? '').toLowerCase();
+          const rank =
+            key.startsWith(query) || name.startsWith(query)
+              ? 0
+              : key.includes(query) || name.includes(query)
+                ? 1
+                : desc.includes(query)
+                  ? 2
+                  : -1;
+          return { c, rank };
+        })
+        .filter(item => item.rank >= 0)
+        .sort((a, b) => a.rank - b.rank);
+      return scored.map(item => item.c);
+    }
     if (open === 'model') return models;
     return [];
   }, [open, query, sources, commands, models]);
@@ -530,7 +565,10 @@ const PromptBar: React.FC<PromptBarProps> = ({
       return;
     }
     const head = token ? draft.slice(0, token.start) : draft;
-    if (row.attach) {
+    if (row.action) {
+      setDraft(head);
+      row.action();
+    } else if (row.attach) {
       setDraft(head);
       Promise.resolve(latest.current.onAttach?.()).then(files => {
         if (!files) return;
@@ -546,14 +584,14 @@ const PromptBar: React.FC<PromptBarProps> = ({
     focusInput();
   };
 
-  const send = () => {
+  const send = (alternate = false) => {
     /*
      * 本项目允许「执行中来消息」：确认条没处理完时用户可以直接补一句，
-     * 由页面判断是补充条件还是被挡下（并给出说明）。所以这里不拦 busy，
-     * 只有发送键在 busy 时切成了「停止」，不会一键两用。
+     * 由页面判断是补充条件还是被挡下（并给出说明）。所以这里不拦 busy。
      */
     if (!canSend) return;
-    latest.current.onSend?.(draft.trim(), { attachments, model, effort: level });
+    const handler = alternate && latest.current.onAltSend ? latest.current.onAltSend : latest.current.onSend;
+    handler?.(draft.trim(), { attachments, model, effort: level });
     /*
      * 受控时由页面决定是否清空：执行中/停止中的消息会被页面挡下并保留草稿，
      * 组件自己清空会让用户"打了一半的话"凭空消失。
@@ -612,13 +650,17 @@ const PromptBar: React.FC<PromptBarProps> = ({
         e.preventDefault();
         setDismissed(true);
         closeMenus();
+      } else if (busy && draft.trim().length === 0) {
+        // Codex 交互：输入为空、无弹层时按 Esc 停止当前运行。
+        e.preventDefault();
+        latest.current.onStop?.();
       }
       return;
     }
     // 组合态已经在函数开头统一放行了，这里只剩"真的按了回车"。
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      send();
+      send(busy && (e.altKey || e.ctrlKey || e.metaKey));
     }
   };
 
@@ -660,7 +702,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
             <>
               <div className="flex items-center gap-2 text-[13px] leading-[18px]">
                 <span className="[color:color-mix(in_srgb,var(--pb-ink)_55%,transparent)]">{t('Effort')}</span>
-                <span className="font-medium">{level}</span>
+                <span className="rounded-md px-1.5 py-0.5 font-semibold [color:var(--pb-spark)] [background:color-mix(in_srgb,var(--pb-spark)_10%,transparent)]">{level}</span>
                 <span
                   className="ml-auto inline-flex [color:color-mix(in_srgb,var(--pb-ink)_55%,transparent)]"
                   title={t('Higher effort thinks longer before answering')}
@@ -670,12 +712,12 @@ const PromptBar: React.FC<PromptBarProps> = ({
               </div>
               {efforts.length > 1 ? (
                 <>
-                  <div className="mt-3 flex justify-between text-[12px] leading-4 [color:color-mix(in_srgb,var(--pb-ink)_55%,transparent)]">
+                  <div className="mt-3 flex justify-between text-[12px] leading-4 [color:color-mix(in_srgb,var(--pb-ink)_60%,transparent)]">
                     <span>{t('Faster')}</span>
                     <span>{t('Smarter')}</span>
                   </div>
                   <div
-                    className="relative mt-2 h-[22px] cursor-pointer touch-none rounded-[11px] outline-none select-none [background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)]"
+                    className="relative mt-2 h-[22px] cursor-pointer touch-none rounded-full outline-none select-none [background:color-mix(in_srgb,var(--pb-ink)_8%,transparent)] focus-visible:ring-2 focus-visible:ring-[var(--pb-spark)] focus-visible:ring-offset-2"
                     role="slider"
                     tabIndex={0}
                     aria-label={t('Effort')}
@@ -684,7 +726,7 @@ const PromptBar: React.FC<PromptBarProps> = ({
                     aria-valuenow={activeEffortIndex}
                     aria-valuetext={level}
                     style={
-                      { '--pb-effort-x': stepAt(activeEffortIndex), '--pb-effort-fill': fillAt(activeEffortIndex) } as CSSProperties
+                      { '--pb-effort-x': stepAt(activeEffortIndex), '--pb-effort-fill': fillAt(activeEffortIndex), '--effort-speed': `${5 - 2 * (activeEffortIndex / (efforts.length - 1))}s`, '--effort-opacity': 0.15 + 0.35 * (activeEffortIndex / (efforts.length - 1)) } as CSSProperties
                     }
                     onPointerDown={e => {
                       if (e.button !== 0) return;
@@ -699,15 +741,19 @@ const PromptBar: React.FC<PromptBarProps> = ({
                     }}
                     onKeyDown={onEffortKey}
                   >
-                    <span className="absolute inset-y-0 left-0 rounded-[11px] [width:var(--pb-effort-fill)] [background:color-mix(in_srgb,var(--pb-ink)_18%,transparent)] [transition:width_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] motion-reduce:[transition:background-color_300ms_ease]" />
+                    <span className="pointer-events-none absolute inset-y-0 left-0 overflow-hidden rounded-full [width:var(--pb-effort-fill)] [background:color-mix(in_srgb,var(--pb-spark)_18%,transparent)] [transition:width_220ms_cubic-bezier(0.23,1,0.32,1)] motion-reduce:[transition:none]">
+                      <span className="prompt-effort-flow absolute inset-y-0 -left-1/2 w-full [opacity:var(--effort-opacity)] [background:linear-gradient(90deg,transparent,var(--pb-spark),transparent)]" />
+                    </span>
                     {efforts.map((label, i) => (
                       <i
                         key={label}
-                        className="absolute top-1/2 -mt-0.5 -ml-0.5 h-1 w-1 rounded-full [background:color-mix(in_srgb,var(--pb-ink)_30%,transparent)]"
+                        className="absolute top-1/2 -mt-0.5 -ml-0.5 h-1 w-1 rounded-full [background:color-mix(in_srgb,var(--pb-ink)_40%,transparent)]"
                         style={{ left: stepAt(i) }}
                       />
                     ))}
-                    <span className="absolute -top-[3px] -ml-[7px] h-7 w-3.5 rounded-[7px] shadow-[0_2px_6px_rgba(0,0,0,0.25)] [left:var(--pb-effort-x)] [background:var(--pb-ink)] [transition:left_220ms_cubic-bezier(0.23,1,0.32,1),background-color_300ms_ease] motion-reduce:[transition:background-color_300ms_ease]" />
+                    <span className="absolute -top-[3px] -ml-[7px] h-7 w-3.5 rounded-[7px] shadow-[0_2px_6px_rgba(0,0,0,0.25)] [left:var(--pb-effort-x)] [background:var(--pb-ink)] [transition:left_220ms_cubic-bezier(0.23,1,0.32,1)] motion-reduce:[transition:none]">
+                      <span className="prompt-effort-pulse absolute inset-0 rounded-[7px] [background:var(--pb-spark)] [opacity:var(--effort-opacity)]" />
+                    </span>
                   </div>
                 </>
               ) : (
@@ -750,6 +796,11 @@ const PromptBar: React.FC<PromptBarProps> = ({
                   {row.description ? (
                     <span className="min-w-0 flex-auto truncate text-[12px] [color:color-mix(in_srgb,var(--pb-ink)_55%,transparent)]">
                       {row.description}
+                    </span>
+                  ) : null}
+                  {open === 'slash' ? (
+                    <span className="ml-auto flex-none rounded px-1.5 py-0.5 font-mono text-[11px] [background:color-mix(in_srgb,var(--pb-ink)_6%,transparent)] [color:color-mix(in_srgb,var(--pb-ink)_55%,transparent)]">
+                      /{row.key}
                     </span>
                   ) : null}
                   {open === 'model' ? (
@@ -916,61 +967,118 @@ const PromptBar: React.FC<PromptBarProps> = ({
               </button>
             </Tooltip>
           ) : null}
-          {          /*
-           * Ant Design X Sender 风格的发送键：
-           * * 32px 圆形主按钮，向上箭头 = 发送；
-           * * 执行中同一位置切成白色方形 = 停止；
-           * * 空草稿 = 中性淡底并禁用。
-           *
-           * 不再做箭头↔方块的粘性形变，图标直接切换，点击反馈只用轻微缩放。
+          {/*
+           * Codex 风格发送/停止区：
+           * * 空闲或无正文：单按钮（发送 / 停止）；
+           * * 运行中且已输入正文：停止键与发送键并列，点发送不会误停当前任务。
            */}
-          <Tooltip label={busy ? t('Stop') : sendDisabled ? sendDisabledReason : t('Send')}>
-          <button
-            type="button"
-            className={[
-              'relative inline-grid h-6 w-6 flex-none touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
-              '[-webkit-tap-highlight-color:transparent]',
-              'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
-              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-              'active:[transform:scale(var(--pb-press))] motion-reduce:active:[transform:none]',
-              armed
-                ? 'cursor-pointer bg-accent text-white hover:bg-accent/90'
-                : 'cursor-not-allowed bg-fg/8 text-fg-subtle',
-            ].join(' ')}
-            disabled={!armed}
-            aria-label={busy ? t('Stop') : t('Send')}
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => {
-              if (busy) latest.current.onStop?.();
-              else send();
-            }}
-          >
-            {busy ? (
-              <svg
-                className="block h-3 w-3"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <rect x="7" y="7" width="10" height="10" rx="2" />
-              </svg>
-            ) : (
-              <svg
-                className="block h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 19V5" />
-                <path d="m6 11 6-6 6 6" />
-              </svg>
-            )}
-          </button>
-          </Tooltip>
+          {busy && canSend ? (
+            <div className="flex flex-none items-center gap-1">
+              <Tooltip label={t('Stop')}>
+                <button
+                  type="button"
+                  className={[
+                    'relative inline-grid h-6 w-6 flex-none cursor-pointer touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
+                    '[-webkit-tap-highlight-color:transparent]',
+                    'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
+                    'bg-fg/12 text-fg hover:bg-danger/15 hover:text-danger',
+                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    'active:[transform:scale(var(--pb-press))] motion-reduce:active:[transform:none]',
+                  ].join(' ')}
+                  aria-label={t('Stop')}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => latest.current.onStop?.()}
+                >
+                  <svg
+                    className="block h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <rect x="7" y="7" width="10" height="10" rx="2" />
+                  </svg>
+                </button>
+              </Tooltip>
+              <Tooltip label={busySendLabel ?? t('Send')}>
+                <button
+                  type="button"
+                  className={[
+                    'relative inline-grid h-6 w-6 flex-none cursor-pointer touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
+                    '[-webkit-tap-highlight-color:transparent]',
+                    'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
+                    'bg-accent text-white hover:bg-accent/90',
+                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    'active:[transform:scale(var(--pb-press))] motion-reduce:active:[transform:none]',
+                  ].join(' ')}
+                  aria-label={busySendLabel ?? t('Send')}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => send(false)}
+                >
+                  <svg
+                    className="block h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 19V5" />
+                    <path d="m6 11 6-6 6 6" />
+                  </svg>
+                </button>
+              </Tooltip>
+            </div>
+          ) : (
+            <Tooltip label={busy ? t('Stop') : sendDisabled ? sendDisabledReason : t('Send')}>
+            <button
+              type="button"
+              className={[
+                'relative inline-grid h-6 w-6 flex-none touch-manipulation place-items-center rounded-full border-0 p-0 outline-none select-none',
+                '[-webkit-tap-highlight-color:transparent]',
+                'transition-[background-color,color,box-shadow,transform] duration-150 ease-out',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                'active:[transform:scale(var(--pb-press))] motion-reduce:active:[transform:none]',
+                armed
+                  ? 'cursor-pointer bg-accent text-white hover:bg-accent/90'
+                  : 'cursor-not-allowed bg-fg/8 text-fg-subtle',
+              ].join(' ')}
+              disabled={!armed}
+              aria-label={busy ? t('Stop') : t('Send')}
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                if (busy) latest.current.onStop?.();
+                else send(false);
+              }}
+            >
+              {busy ? (
+                <svg
+                  className="block h-3 w-3"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <rect x="7" y="7" width="10" height="10" rx="2" />
+                </svg>
+              ) : (
+                <svg
+                  className="block h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 19V5" />
+                  <path d="m6 11 6-6 6 6" />
+                </svg>
+              )}
+            </button>
+            </Tooltip>
+          )}
         </div>
       </div>
     </div>

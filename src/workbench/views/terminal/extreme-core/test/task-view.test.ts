@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExtremeTaskRecord } from "@/api/types/extreme";
+import { i18n } from "@/i18n";
 import type { DeployStep } from "../deploy-plan";
 import {
   artifactsOf,
@@ -44,6 +45,20 @@ describe("任务卡视图模型", () => {
     expect(statusForRecord("failed")).toBe("failed");
   });
 
+  it("历史中断的子任务不再显示运行中", () => {
+    const steps = [
+      { id: "agent-1", kind: "tool", title: "进行中", detail: "", groupId: "children-0", state: "running" },
+      { id: "agent-2", kind: "tool", title: "排队", detail: "", groupId: "children-0", state: "pending" },
+      { id: "agent-3", kind: "tool", title: "完成", detail: "", groupId: "children-0", state: "success" },
+    ];
+    const card = cardFromRecord(record({ status: "running", planJson: JSON.stringify(steps) }));
+    expect(card.status).toBe("interrupted");
+    expect(card.steps.map((step) => step.state)).toEqual(["failed", "skipped", "success"]);
+    expect(card.steps[0].stderr).toBe(i18n.t("任务中断，子任务结果未知"));
+    // 中断前已完成的结果只能当线索：必须标记为需要重新核实。
+    expect(card.steps[2].stale).toBe(true);
+  });
+
   it("从历史记录恢复步骤与产物（产物用 remotePath）", () => {
     const steps: DeployStep[] = [
       step({ id: "a", remotePath: "/srv/app/compose.yaml" }),
@@ -60,7 +75,10 @@ describe("任务卡视图模型", () => {
   it("库里的 running / waiting 是上次进程留下的：标成已中断并可恢复", () => {
     const card = cardFromRecord(record({ status: "running" }));
     expect(card.status).toBe("interrupted");
-    expect(card.result).toContain("核对");
+    // 中断结论要如实说"结果未知、先核对"，且跟随界面语言。
+    expect(card.result).toBe(
+      i18n.t("上次运行已中断：最后一步是否生效需要先在服务器上核对。"),
+    );
     expect(cardFromRecord(record({ status: "waiting" })).status).toBe("interrupted");
     // 真正完成 / 失败 / 取消的记录保持原状态。
     expect(cardFromRecord(record({ status: "success" })).status).toBe("done");
@@ -197,8 +215,12 @@ describe("任务卡视图模型", () => {
       sessionId: "ssh-1",
       kind: "deploy",
     });
-    expect(card.title).toContain("部署");
-    expect(card.result).toBe("1/2 步完成");
+    // 标题与进度跟随界面语言（测试固定英文）。
+    expect(card.title).toContain(i18n.t("部署"));
+    expect(card.result).toBe(
+      i18n.t("{{done}}/{{total}} 步完成", { done: 1, total: 2 }),
+    );
     expect(artifactsOf(card.steps)).toHaveLength(1);
   });
 });
+

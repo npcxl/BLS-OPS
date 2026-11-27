@@ -1,27 +1,31 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUp, ChevronDown, ChevronRight, ListTodo, Pencil, Trash2 } from "@/components/icons";
+import { ArrowUp, ChevronDown, ChevronRight, CornerDownLeft, ListTodo, Pencil, Trash2 } from "@/components/icons";
 import type { QueuedSend } from "./send-queue";
 import { ExtremeIconButton } from "./ExtremeIconButton";
 
 /**
- * 输入框下方的发送队列。
+ * 输入框上方的发送队列（Codex 式：可排序、可编辑、可一键立即插队补充）。
  *
  * 只在**当前对话**有排队项时出现，按入队顺序排列；一次只派发队首。
  * 中止当前任务后，队列 effect 会把下一条接着派发出去。
  */
 export function SendQueuePanel({
   items,
+  running = false,
   onMoveUp,
   onEdit,
   onDrop,
   onRetry,
+  onSteerNow,
 }: {
   items: QueuedSend[];
+  running?: boolean;
   onMoveUp: (id: string) => void;
   onEdit: (item: QueuedSend) => void;
   onDrop: (id: string) => void;
   onRetry: (id: string) => void;
+  onSteerNow?: (item: QueuedSend) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
@@ -55,8 +59,15 @@ export function SendQueuePanel({
               >
                 <ListTodo size={12} className="shrink-0 text-fg-subtle" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-12 text-fg" title={item.text}>
-                    {item.text}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 truncate text-12 text-fg" title={item.text}>
+                      {item.text}
+                    </span>
+                    {item.attachments.length > 0 && (
+                      <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-10 text-fg-subtle">
+                        {t("{{n}} 个附件", { n: item.attachments.length })}
+                      </span>
+                    )}
                   </span>
                   {item.error && (
                     <span className="block truncate text-10 text-danger" title={item.error}>
@@ -73,6 +84,15 @@ export function SendQueuePanel({
                   >
                     {t("Retry")}
                   </button>
+                )}
+                {running && !item.error && item.attachments.length === 0 && onSteerNow && (
+                  <ExtremeIconButton
+                    label={t("立即补充给当前任务")}
+                    icon={CornerDownLeft}
+                    iconSize={12}
+                    className="size-6 text-accent"
+                    onClick={() => onSteerNow(item)}
+                  />
                 )}
                 <ExtremeIconButton
                   label={t("Move up")}

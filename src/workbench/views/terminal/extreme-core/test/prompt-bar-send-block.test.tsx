@@ -149,3 +149,102 @@ it("keeps the stop button usable while disconnected", async () => {
     await i18n.changeLanguage(language);
   }
 });
+
+it("matches slash commands by key and runs direct action commands", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const onChange = vi.fn();
+  const onDiff = vi.fn();
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    await act(async () =>
+      root.render(
+        <PromptBar
+          value="/dif"
+          onChange={onChange}
+          commands={[
+            { key: "inspect", name: "巡检这台服务器", description: "CPU 与磁盘" },
+            { key: "diff", name: "查看文件变更", description: "打开 Diff 面板", action: onDiff },
+          ]}
+        />,
+      ),
+    );
+    const options = [...holder.querySelectorAll('[role="option"]')];
+    expect(options).toHaveLength(1);
+    expect(options[0].textContent).toContain("/diff");
+    await act(async () => {
+      holder.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onDiff).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("");
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    vi.unstubAllGlobals();
+    await i18n.changeLanguage(language);
+  }
+});
+
+it("shows both stop and send buttons when busy with typed text and supports Alt+Enter / Esc", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const onSend = vi.fn();
+  const onAltSend = vi.fn();
+  const onStop = vi.fn();
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  try {
+    await act(async () =>
+      root.render(
+        <PromptBar
+          value="顺便查一下内存"
+          onChange={() => undefined}
+          busy
+          busySendLabel="加入队列"
+          onSend={onSend}
+          onAltSend={onAltSend}
+          onStop={onStop}
+        />,
+      ),
+    );
+    const stopBtn = holder.querySelector<HTMLButtonElement>('button[aria-label="停止"]');
+    const queueBtn = holder.querySelector<HTMLButtonElement>('button[aria-label="加入队列"]');
+    expect(stopBtn).toBeTruthy();
+    expect(queueBtn).toBeTruthy();
+
+    await act(async () => queueBtn!.click());
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      holder.querySelector("textarea")!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", altKey: true, bubbles: true }),
+      );
+    });
+    expect(onAltSend).toHaveBeenCalledTimes(1);
+
+    await act(async () => stopBtn!.click());
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    // 输入为空时按 Esc 直接停止当前运行。
+    await act(async () =>
+      root.render(
+        <PromptBar value="" onChange={() => undefined} busy onSend={onSend} onStop={onStop} />,
+      ),
+    );
+    await act(async () => {
+      holder.querySelector("textarea")!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(onStop).toHaveBeenCalledTimes(2);
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    vi.unstubAllGlobals();
+    await i18n.changeLanguage(language);
+  }
+});

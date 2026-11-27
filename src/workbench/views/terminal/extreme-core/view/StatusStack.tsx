@@ -101,6 +101,7 @@ export function StatusStack({
            * 确认条：**当前对话的每一条**都排在输入框上方（按步骤顺序）。
            * 别的对话的审批不出现在这里，只在左栏标「待确认」+ 桌面通知。
            */}
+          <div className="max-h-[min(40vh,360px)] shrink-0 overflow-y-auto">
           {currentApprovals.map((entry) => (
             <div key={approvalKeyOf(entry.approval.taskId, entry.approval.callId)}>
               <AgentApprovalCard
@@ -132,6 +133,7 @@ export function StatusStack({
               />
             </div>
           ))}
+          </div>
 
           {/*
            * 这一段是连接状态：超能的命令都绑在一条 SSH 会话上，会话没了就必须
@@ -219,8 +221,11 @@ export function StatusStack({
           {/*
            * 普通运行进度不在这里：聊天里的操作链已经显示。
            * 只有「停止请求还没落地」需要一句说明 —— 那是用户刚做的动作。
+           *
+           * `showStopOverdue` 时不再显示这一行：同一个停止动作已经有一条
+           * 「停止还没有被后端确认」，两句话并排只会让用户不知道该信哪条。
            */}
-          {!hasApprovals && (stopPending || executing) && statusLine && (
+          {!hasApprovals && !showStopOverdue && (stopPending || executing) && statusLine && (
             <div
               role="status"
               aria-live="polite"

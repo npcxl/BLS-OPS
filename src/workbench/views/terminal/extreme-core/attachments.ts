@@ -7,6 +7,7 @@
 import type { TFunction } from "i18next";
 import { formatSize } from "@/lib/format";
 import type { ExtremeAttachment } from "@/stores/extreme-store";
+import { INLINE_BINARY_MAX, keepAttachmentFile } from "./attachments/payload";
 
 /** 文本文件读取上限：再大就不该整份塞进上下文。 */
 export const MAX_READ_BYTES = 512 * 1024;
@@ -57,8 +58,10 @@ export function isTextFile(name: string): boolean {
 /**
  * 读一个文件成工作区条目。
  *
- * 文本：读内容（供模型阅读）。二进制：读成 base64（只用于上传，模型只看
- * 清单），因为图片 / 字体 / jar 没有可分析的文字，但仍然必须能部署上去。
+ * 文本：读内容（供模型阅读；超大文本只留前 512 KB 作上下文，**整份文件仍可
+ * 上传**）。二进制：内容不进 store，只把 `File` 句柄放进 payload 缓存；小文件
+ * 额外留一份 base64 供预览，大文件不留 —— 8 MB 的 zip 不应该变成 11 MB 的
+ * 字符串常驻副本。
  */
 export async function readAttachment(
   file: File,
@@ -75,12 +78,15 @@ export async function readAttachment(
   };
 
   if (!isTextFile(file.name)) {
+    // 句柄先记住：后面上传按块读它，store 里不再有整份 base64。
+    keepAttachmentFile(id, file);
     try {
+      const inline = file.size <= INLINE_BINARY_MAX;
       return {
         ...base,
         state: "ready",
         binary: true,
-        data: toBase64(await file.arrayBuffer()),
+        ...(inline ? { data: toBase64(await file.arrayBuffer()) } : {}),
       };
     } catch (cause) {
       return {
@@ -91,12 +97,33 @@ export async function readAttachment(
     }
   }
 
+  /*
+   * 文本也保留本机句柄：上下文只取前 512 KB，但**上传必须是完整文件**。
+   * 按 `text` 重编码还会改掉 BOM / CRLF / 非法 UTF-8，字节数对不上。
+   */
+  keepAttachmentFile(id, file);
+  /*
+   * 大文本不再整份判失败。
+   *
+   * 之前超过 512 KB 直接 `state: failed`，用户拖进来一个日志文件就"读取失败"，
+   * 也无法上传。现在只截取上下文，文件本身仍通过 payload 缓存完整上传。
+   */
   if (file.size > MAX_READ_BYTES) {
-    return {
-      ...base,
-      state: "failed",
-      error: t("超过 {{size}}，只显示元信息", { size: formatSize(MAX_READ_BYTES) }),
-    };
+    try {
+      const head = await file.slice(0, MAX_READ_BYTES).text();
+      return {
+        ...base,
+        state: "ready",
+        textPartial: true,
+        text: `${head}\n…（超过 ${formatSize(MAX_READ_BYTES)}，只显示前一段；完整文件仍会上传）`,
+      };
+    } catch (cause) {
+      return {
+        ...base,
+        state: "failed",
+        error: cause instanceof Error ? cause.message : t("读取失败"),
+      };
+    }
   }
   try {
     return { ...base, state: "ready", text: await file.text() };

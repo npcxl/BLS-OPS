@@ -39,7 +39,7 @@ export interface ComposerPanelProps {
   draft: string;
   onDraftChange: (value: string) => void;
   /** 点击发送那一刻锁定模型 / 强度 / 预算，页面后续只认这份快照。 */
-  onSend: (text: string, selection: ModelSelection) => void;
+  onSend: (text: string, selection: ModelSelection, modeOverride?: "steer" | "queue") => void;
   /** 停止：整个聊天区**唯一**的停止入口（Prompt Bar 右下角那个键）。 */
   onCancel: () => void;
   /**
@@ -50,6 +50,14 @@ export interface ComposerPanelProps {
   busy: boolean;
   /** ＋：打开右栏的「附件」标签。 */
   onOpenAttachments: () => void;
+  /** /diff 或快捷入口：打开右栏「文件变更」。 */
+  onOpenChangesPane?: () => void;
+  /** /clear 或上下文面板快捷入口：清空当前对话上下文。 */
+  onClearContext?: () => void;
+  /** /new 或上下文面板快捷入口：新开对话。 */
+  onNewWorkspace?: () => void;
+  /** 当前对话是否有可清空内容。 */
+  hasContext?: boolean;
   /** 最近一轮请求的上下文用量（Rust 裁剪后的估算）。 */
   contextUsage?: ContextUsage | null;
   /** 本任务实际带入的附件名（用量面板里的材料构成）。 */
@@ -250,6 +258,10 @@ export function ComposerPanel({
   onCancel,
   busy,
   onOpenAttachments,
+  onOpenChangesPane,
+  onClearContext,
+  onNewWorkspace,
+  hasContext = false,
   contextUsage,
   attachmentNames = [],
   planSteps = 0,
@@ -333,8 +345,27 @@ export function ComposerPanel({
    */
   const taskTokens = usage ? usage.report.beforeTokens : 0;
   const sentTokens = usage ? usage.report.afterTokens : 0;
-  const trimmed = Boolean(usage && sentTokens < taskTokens);
+  const trimmed = Boolean(
+    usage &&
+      (sentTokens < taskTokens ||
+        usage.report.slimmed > 0 ||
+        usage.report.folded > 0 ||
+        usage.report.droppedUnits > 0),
+  );
   const usagePercent = usage ? (taskTokens / usage.budget) * 100 : 0;
+  const usageTone = !usage
+    ? undefined
+    : usagePercent >= 92
+      ? "rgb(var(--danger))"
+      : usagePercent >= 75 || trimmed
+        ? "rgb(var(--warning))"
+        : undefined;
+  const breakdownTotal = usage
+    ? Math.max(1, usage.breakdown.system + usage.breakdown.history + usage.breakdown.tools)
+    : 1;
+  const systemShare = usage ? Math.round((usage.breakdown.system / breakdownTotal) * 100) : 0;
+  const historyShare = usage ? Math.round((usage.breakdown.history / breakdownTotal) * 100) : 0;
+  const toolsShare = usage ? Math.max(0, 100 - systemShare - historyShare) : 0;
   const usageSummary = usage
     ? trimmed
       ? t("任务对话 {{used}} / {{budget}} token（已占 {{percent}}%）；本轮实际发送 {{sent}}", {
@@ -368,8 +399,58 @@ export function ComposerPanel({
       { key: "inspect", name: t("巡检这台服务器，给出结论"), description: t("CPU、内存、磁盘与关键服务") },
       { key: "logs", name: t("排查最近的错误日志"), description: t("定位报错并说明原因") },
       { key: "deploy", name: t("生成更新部署计划"), description: t("只生成计划，不执行") },
+      ...(onOpenChangesPane
+        ? [
+            {
+              key: "diff",
+              name: t("查看文件变更"),
+              description: t("打开右侧文件变更与 Diff 面板"),
+              action: onOpenChangesPane,
+            },
+          ]
+        : []),
+      ...(onManagePermissions
+        ? [
+            {
+              key: "permissions",
+              name: t("管理权限"),
+              description: t("调整只读 / 确认 / 完全访问与备份策略"),
+              action: onManagePermissions,
+            },
+          ]
+        : []),
+      ...(onManageMcp
+        ? [
+            {
+              key: "mcp",
+              name: t("管理 MCP 连接"),
+              description: t("配置外部工具与内置能力"),
+              action: onManageMcp,
+            },
+          ]
+        : []),
+      ...(onClearContext && hasContext && !busy
+        ? [
+            {
+              key: "clear",
+              name: t("清空对话"),
+              description: t("清空当前会话消息，重新开始上下文"),
+              action: onClearContext,
+            },
+          ]
+        : []),
+      ...(onNewWorkspace && !busy
+        ? [
+            {
+              key: "new",
+              name: t("新建任务"),
+              description: t("开启一条全新上下文的对话"),
+              action: onNewWorkspace,
+            },
+          ]
+        : []),
     ],
-    [t],
+    [t, onOpenChangesPane, onManagePermissions, onManageMcp, onClearContext, onNewWorkspace, hasContext, busy],
   );
 
   /**
@@ -378,16 +459,27 @@ export function ComposerPanel({
    * 模型 / 强度 / 预算在菜单里选中时已经写进当前 workspace 的设置；点击发送
    * 后页面拿这份快照发请求，之后等终端输出、附件或切对话都不会改它。
    */
+  const buildSelection = (): ModelSelection => ({
+    providerId: provider?.id ?? providerId,
+    model: provider?.model ?? "",
+    effort: activeEffort,
+    contextBudget: budget,
+  });
+
   const handleSend = (text: string, _detail: PromptBarSendDetail) => {
     // 未连接时不受理（按钮已禁用，这里是回车等路径的最后防线）。
     if (!connected) return;
-    onSend(text, {
-      providerId: provider?.id ?? providerId,
-      model: provider?.model ?? "",
-      effort: activeEffort,
-      contextBudget: budget,
-    });
+    onSend(text, buildSelection());
   };
+
+  const handleAltSend = (text: string, _detail: PromptBarSendDetail) => {
+    if (!connected) return;
+    const alt: "steer" | "queue" = sendWhileRunning === "steer" ? "queue" : "steer";
+    onSend(text, buildSelection(), alt);
+  };
+
+  const emptyPickedWarning =
+    contextMode === "picked" && picked.length === 0 && selectedAttachments.length === 0;
 
   return (
     <div className="extreme-core-composer-wrap shrink-0">
@@ -395,8 +487,13 @@ export function ComposerPanel({
       {/* 与正文同一把尺子：不封顶，随容器铺满（两侧留白由 `extreme-core-composer` 的内边距控制）。 */}
       <div data-extreme-composer className="extreme-core-composer mx-auto w-full">
         {/* 材料在任何范围下都会发出去，所以在任何范围下都要显示（发送前能看到）。 */}
-        {(focusLabel || picked.length > 0) && (
+        {(focusLabel || picked.length > 0 || emptyPickedWarning) && (
           <div className="flex flex-wrap items-center gap-1.5 px-1 pb-1.5">
+            {emptyPickedWarning && (
+              <span className="flex max-w-full items-center gap-1 rounded-full border border-warning/35 bg-warning/10 px-2.5 py-0.5 text-11 text-warning">
+                {t("自选模式未勾选材料：本次仅发送输入的文字")}
+              </span>
+            )}
             {focusLabel && (
               <span className="flex max-w-full items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-11 text-fg-muted">
                 <span className="truncate" title={focusLabel}>
@@ -480,7 +577,13 @@ export function ComposerPanel({
           busy={busy}
           sendDisabled={!connected}
           sendDisabledReason={t("服务器未连接，重新连接后才能发送")}
+          busySendLabel={
+            sendWhileRunning === "steer"
+              ? t("Enter 补充给当前任务 · Alt+Enter 加入队列")
+              : t("Enter 加入队列 · Alt+Enter 立即补充")
+          }
           onSend={handleSend}
+          onAltSend={handleAltSend}
           onStop={onCancel}
           trailing={
             <>
@@ -488,8 +591,8 @@ export function ComposerPanel({
                 <Tooltip
                   label={
                     sendWhileRunning === "steer"
-                      ? t("执行中：补充给当前任务")
-                      : t("执行中：任务完成后发送")
+                      ? t("Enter 补充给当前任务 · Alt+Enter 加入队列")
+                      : t("Enter 加入队列 · Alt+Enter 立即补充")
                   }
                   side="top"
                 >
@@ -500,9 +603,15 @@ export function ComposerPanel({
                     aria-expanded={sendModeOpen}
                     aria-haspopup="menu"
                     onClick={() => setSendModeOpen((value) => !value)}
-                    className="grid size-7 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                    className={cn(
+                      "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-11 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-accent",
+                      sendWhileRunning === "steer"
+                        ? "border-accent/40 bg-accent/10 text-accent hover:bg-accent/15"
+                        : "border-line/70 bg-surface-2/80 text-fg-muted hover:bg-surface-hover hover:text-fg",
+                    )}
                   >
-                    <CornerDownLeft size={13} />
+                    <CornerDownLeft size={11} />
+                    <span>{sendWhileRunning === "steer" ? t("补充") : t("排队")}</span>
                   </button>
                 </Tooltip>
               )}
@@ -514,19 +623,24 @@ export function ComposerPanel({
                 aria-expanded={usageOpen}
                 aria-haspopup="menu"
                 onClick={() => setUsageOpen((value) => !value)}
-                className="grid size-7 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
-                /* 超过预算 = 这段对话已经放不进模型窗口，本轮会裁剪最旧的部分。 */
-                style={usage && usagePercent > 100 ? { color: "rgb(var(--warning))" } : undefined}
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 text-11 tabular-nums text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                /* 接近或超过预算 / 已发生裁剪时给清晰视觉提醒。 */
+                style={usageTone ? { color: usageTone } : undefined}
               >
                 <span
                   aria-hidden="true"
-                  className="grid size-3.5 place-items-center rounded-full"
+                  className="grid size-3.5 shrink-0 place-items-center rounded-full"
                   style={{
                     background: `conic-gradient(currentColor ${Math.min(100, Math.max(0, usagePercent))}%, rgb(var(--line-strong)) 0)`,
                   }}
                 >
                   <span className="size-2.5 rounded-full bg-surface-1" />
                 </span>
+                {usage && (
+                  <span className="text-10 font-medium leading-none">
+                    {Math.round(usagePercent)}%
+                  </span>
+                )}
               </button>
             </Tooltip>
             </>
@@ -571,7 +685,35 @@ export function ComposerPanel({
             label={t("本任务上下文与用量")}
             opaque
           >
-            <p className="px-2 pb-1 pt-1.5 text-11 text-fg-muted">{usageSummary}</p>
+            <div className="px-2 pb-1 pt-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-11 text-fg-muted">{usageSummary}</p>
+                {trimmed && (
+                  <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-10 font-medium text-warning">
+                    {t("已压缩")}
+                  </span>
+                )}
+              </div>
+              {usage && (
+                <div
+                  className="mt-1.5 flex h-1.5 w-full overflow-hidden rounded-full bg-surface-3"
+                  aria-hidden="true"
+                >
+                  <span
+                    className="h-full bg-fg-subtle/60"
+                    style={{ width: `${Math.min(100, (usage.breakdown.system / usage.budget) * 100)}%` }}
+                  />
+                  <span
+                    className="h-full bg-accent/80"
+                    style={{ width: `${Math.min(100, (usage.breakdown.history / usage.budget) * 100)}%` }}
+                  />
+                  <span
+                    className="h-full bg-warning/80"
+                    style={{ width: `${Math.min(100, (usage.breakdown.tools / usage.budget) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
             {contextUsage && (
               <div className="space-y-2 px-2 py-1.5 text-11">
                 <div>
@@ -588,9 +730,27 @@ export function ComposerPanel({
                     {t("本次材料")}
                   </p>
                   <ul className="mt-1 space-y-0.5 text-fg-muted">
-                    <li>{t("系统提示 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.system) })}</li>
-                    <li>{t("会话历史 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.history) })}</li>
-                    <li>{t("工具调用与结果 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.tools) })}</li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-1.5 rounded-full bg-fg-subtle/60" aria-hidden="true" />
+                        {t("系统提示 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.system) })}
+                      </span>
+                      <span className="text-10 tabular-nums text-fg-subtle">{systemShare}%</span>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-1.5 rounded-full bg-accent/80" aria-hidden="true" />
+                        {t("会话历史 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.history) })}
+                      </span>
+                      <span className="text-10 tabular-nums text-fg-subtle">{historyShare}%</span>
+                    </li>
+                    <li className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-1.5 rounded-full bg-warning/80" aria-hidden="true" />
+                        {t("工具调用与结果 {{tokens}}", { tokens: formatTokens(contextUsage.breakdown.tools) })}
+                      </span>
+                      <span className="text-10 tabular-nums text-fg-subtle">{toolsShare}%</span>
+                    </li>
                     <li>
                       {t("附件 {{n}} 个（内容已计入历史）", { n: attachmentNames.length })}
                       {attachmentNames.length > 0 && (
@@ -640,6 +800,42 @@ export function ComposerPanel({
                 </div>
               </div>
             )}
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-line/60 px-2 pb-1.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onContextModeChange(contextMode === "only" ? "session" : "only");
+                  setUsageOpen(false);
+                }}
+                className="rounded-md bg-surface-2 px-2 py-1 text-11 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
+              >
+                {contextMode === "only" ? t("恢复当前会话上下文") : t("仅带本条发送")}
+              </button>
+              {onNewWorkspace && !busy && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsageOpen(false);
+                    onNewWorkspace();
+                  }}
+                  className="rounded-md bg-surface-2 px-2 py-1 text-11 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
+                >
+                  {t("新开干净上下文")}
+                </button>
+              )}
+              {onClearContext && hasContext && !busy && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsageOpen(false);
+                    onClearContext();
+                  }}
+                  className="rounded-md bg-surface-2 px-2 py-1 text-11 text-fg-muted transition-colors hover:bg-surface-hover hover:text-danger"
+                >
+                  {t("清空对话")}
+                </button>
+              )}
+            </div>
           </ComposerMenu>
           <ComposerMenu
             open={sendModeOpen}

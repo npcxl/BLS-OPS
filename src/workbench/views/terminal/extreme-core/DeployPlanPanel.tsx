@@ -3,7 +3,14 @@ import { ChevronDown, ChevronUp, Container } from "@/components/icons";
 
 import { StatusBadge, StatusNotice } from "@/components/ui/status";
 import type { DeployStep } from "./deploy-plan";
+import { useStepTitle } from "./step-title-i18n";
 import { TaskSteps } from "./TaskSteps";
+
+/** 摘要只留能判断的前几行；完整报错在展开的步骤里。 */
+function clipText(value: string | undefined, limit: number): string {
+  const text = (value ?? "").trim();
+  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+}
 
 export interface DeployPlanPanelProps {
   plan: DeployStep[];
@@ -15,6 +22,8 @@ export interface DeployPlanPanelProps {
   currentStep?: DeployStep;
   failedStep?: DeployStep;
   notice: string | null;
+  /** 点某一步：在聊天里定位对应的命令（按 taskId + 步骤 id）。 */
+  onLocateStep?: (stepId: string) => void;
   /** 执行中：置位停止标记，当前步骤跑完即停。 */
 
   /** 待确认 / 继续：派发执行。 */
@@ -38,9 +47,12 @@ export function DeployPlanPanel({
   currentStep,
   failedStep,
   notice,
+  onLocateStep,
   onRollbackCopied,
 }: DeployPlanPanelProps) {
   const { t } = useTranslation();
+  // 步骤标题来自执行器（中文），英文界面按动词 + 目标改写，不能直接 t()。
+  const localize = useStepTitle();
   if (plan.length === 0) return null;
   const rollback = plan.find((step) => step.rollback)?.rollback;
 
@@ -56,7 +68,7 @@ export function DeployPlanPanel({
           {t("部署计划")}
           <span className="ml-1 text-fg-subtle">
             {doneCount}/{plan.length}
-            {currentStep && ` · ${t(currentStep.title)}`}
+            {currentStep && ` · ${localize(currentStep.title)}`}
           </span>
         </span>
         {/* 状态取自真实步骤结果，不靠 "2/5" 让用户自己猜。 */}
@@ -82,14 +94,16 @@ export function DeployPlanPanel({
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
 
-      {open && <TaskSteps steps={plan} />}
+      {open && <TaskSteps steps={plan} onLocateStep={onLocateStep} />}
 
       {failedStep && (
         <div className="border-t border-line px-2.5 py-1.5">
           <StatusNotice tone="warning" icon>
-            <span className="font-medium">{t("待处理")}：</span>
-            {t(failedStep.title)}
-            <span className="ml-1 text-fg-muted">{failedStep.stderr?.trim() || failedStep.detail}</span>
+            <span className="font-medium">{t("这一步失败")}：</span>
+            {localize(failedStep.title)}
+            <span className="ml-1 text-fg-muted">
+              {clipText(failedStep.stderr || failedStep.detail, 400)}
+            </span>
           </StatusNotice>
           {/* 回滚命令只展示、不自动执行：让用户看清原因后自己决定。 */}
           {rollback && (

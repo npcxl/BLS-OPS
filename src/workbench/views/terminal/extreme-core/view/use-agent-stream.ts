@@ -24,6 +24,7 @@ import type {
 import { useExtremeStore, type ExtremeMessage } from "@/stores/extreme-store";
 import { notifyTaskOutcome } from "@/desktop-notification/task";
 import { cardFromAgent, mergeAgentStep, stepTitle } from "../agent-steps";
+import { interruptedChildSteps } from "../task-view";
 import { attachAgentEvents } from "./agent-events";
 import { notifyAgentFinished, snapshotFromEvent } from "../agent-run";
 import {
@@ -472,6 +473,8 @@ export function useAgentStream(deps: AgentStreamDeps) {
           stepIndex: payload.stepIndex,
           label: step ? stepTitle(step, t) : payload.summary ?? null,
           denied,
+          // 内部纠错要跟着消息落盘：重开 / 切换后仍按"内部调整"收纳。
+          internal: step?.category === "internal" || payload.category === "internal",
           planStepId: payload.planStepId,
           groupId: payload.groupId,
         });
@@ -984,12 +987,15 @@ export function useAgentStream(deps: AgentStreamDeps) {
            */
           const markInterrupted = (reason: string) => {
             if (existing && (existing.status === "running" || existing.status === "confirming")) {
-              upsertTask({
+              const interrupted = {
                 ...existing,
-                status: "interrupted",
+                status: "interrupted" as const,
                 result: reason,
+                steps: interruptedChildSteps(existing.steps, (key) => t(key)),
                 updatedAt: Date.now(),
-              });
+              };
+              upsertTask(interrupted);
+              saveAgentTask(interrupted, true);
             }
             if (taskIdRef.current === taskId) {
               setAsking(false);
@@ -1135,6 +1141,7 @@ export function useAgentStream(deps: AgentStreamDeps) {
                   taskId,
                   stepIndex: step.index,
                   label: stepTitle(step, t),
+                  internal: step.category === "internal",
                   planStepId: step.planStepId,
                   groupId: step.groupId,
                 });
@@ -1181,7 +1188,19 @@ export function useAgentStream(deps: AgentStreamDeps) {
               const state = useExtremeStore.getState();
               const message = state.messages.find((item) => item.id === target.id);
               if (message) {
-                const parts = upsertQuestion(partsOf(message), snapshot.pendingQuestion);
+                let parts = upsertQuestion(partsOf(message), snapshot.pendingQuestion);
+                const card = parts.find(
+                  (item) =>
+                    item.kind === "question" &&
+                    item.question.questionId === snapshot.pendingQuestion!.questionId,
+                );
+                // 上次停在"提交中"但任务仍在等待：说明提交没送达，恢复成可重试。
+                if (card?.kind === "question" && card.status === "submitting") {
+                  parts = updateQuestionPart(parts, card.question.questionId, {
+                    status: "pending",
+                    error: null,
+                  });
+                }
                 if (parts !== message.parts) {
                   state.patchMessage(target.id, { parts });
                 }

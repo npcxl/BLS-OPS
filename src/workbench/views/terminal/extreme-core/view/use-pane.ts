@@ -129,7 +129,8 @@ export function usePane({ workspaceId, setAskError }: PaneDeps) {
     if (!row) return undefined;
     const measure = () => {
       const rail = railRef.current?.clientWidth ?? 0;
-      setRoomWidth(Math.max(0, row.clientWidth - rail));
+      // The workspace card has an 8px margin on each side.
+      setRoomWidth(Math.max(0, row.clientWidth - rail - 16));
     };
     measure();
     if (typeof ResizeObserver === "undefined") {

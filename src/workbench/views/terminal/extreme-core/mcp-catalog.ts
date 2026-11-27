@@ -1,11 +1,9 @@
 /**
  * MCP 市场目录。
  *
- * 运维精选放在 `mcp-catalog.json`（可维护的本地清单）；官方 Registry 的结果
- * 归一化成同一形状，详情与添加表单共用。目录只提供**候选连接配置**，真实
+ * 官方 Registry 的结果归一化成同一形状，详情与添加表单共用。目录只提供**候选连接配置**，真实
  * 工具永远以连接测试发现的结果为准。
  */
-import raw from "./mcp-catalog.json";
 import type {
   McpRegistryEntry,
   McpScope,
@@ -15,15 +13,6 @@ import type {
 } from "@/api/types/mcp";
 
 export type McpMarketCategory = "all" | "monitor" | "container" | "cloud" | "cicd" | "database";
-
-export const MCP_MARKET_CATEGORIES: { id: McpMarketCategory; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "monitor", label: "监控与日志" },
-  { id: "container", label: "容器与集群" },
-  { id: "cloud", label: "云服务与 DNS" },
-  { id: "cicd", label: "CI/CD" },
-  { id: "database", label: "数据库" },
-];
 
 export type McpCatalogField = {
   key: string;
@@ -63,42 +52,24 @@ export interface McpCatalogEntry {
   /** 官方 Registry 来源时才有的元信息。 */
   source: "curated" | "registry";
   registryName?: string;
+  iconUrl?: string;
   version?: string;
-}
-
-type CatalogFile = { version: number; entries: Omit<McpCatalogEntry, "source">[] };
-
-export const CURATED_MCP_CATALOG: McpCatalogEntry[] = (raw as CatalogFile).entries.map(
-  (entry) => ({ ...entry, source: "curated" as const }),
-);
-
-export function filterCatalog(
-  entries: McpCatalogEntry[],
-  query: string,
-  category: McpMarketCategory,
-): McpCatalogEntry[] {
-  const keyword = query.trim().toLowerCase();
-  return entries.filter((entry) => {
-    if (category !== "all" && entry.category !== category) return false;
-    if (!keyword) return true;
-    return [entry.name, entry.publisher, entry.summary, entry.detail, entry.registryName ?? ""]
-      .join(" ")
-      .toLowerCase()
-      .includes(keyword);
-  });
 }
 
 /** 目录条目 + 用户填写值 → 连接表单初始值。 */
 export function catalogToInput(
   entry: McpCatalogEntry,
   values: Record<string, string>,
-  scope: { workspaceId: string | null; serverId: string | null; serverName: string },
+  _scope: { workspaceId: string | null; serverId: string | null; serverName: string },
 ): McpServerInput {
-  const bindingScope = entry.defaultBinding ?? "workspace";
+  /*
+   * MCP 只有全局作用域：添加后对所有服务器的后续任务都可用，
+   * 实际能否调用由任务权限、连接状态和工具级权限决定。
+   */
   const binding: McpScope = {
-    scope: bindingScope,
-    serverId: bindingScope === "server" ? scope.serverId : null,
-    workspaceId: bindingScope === "workspace" ? scope.workspaceId : null,
+    scope: "global",
+    serverId: null,
+    workspaceId: null,
   };
   const instance = values.instance?.trim() || values.endpoint?.trim() || "";
   const name =
@@ -145,37 +116,43 @@ export function catalogToInput(
 
 /** 官方 Registry 结果 → 同一种目录条目（只映射，不猜配置）。 */
 export function registryToCatalog(entry: McpRegistryEntry): McpCatalogEntry {
-  const remote =
-    entry.remotes.find((item) => item.url && !item.url.endsWith("/sse") && item.type !== "sse") ??
-    null;
-  const pkg =
-    entry.packages.find((item) => item.transport === "stdio") ?? entry.packages[0] ?? null;
-  const unsupportedNote = remote
-    ? undefined
-    : entry.remotes.some((item) => item.type === "sse" || item.url.endsWith("/sse"))
+  const remote = entry.remotes.find((item) => {
+    if (item.type !== "streamable-http" || item.requiresConfiguration || /[{}]/.test(item.url)) return false;
+    try { return new URL(item.url).protocol === "https:"; } catch { return false; }
+  }) ?? null;
+  const pkg = entry.packages.find((item) =>
+    item.transport === "stdio" && !item.requiresConfiguration && Boolean(item.identifier.trim()) &&
+    ["npm", "pypi", "oci"].includes(item.registryType.toLowerCase()),
+  ) ?? null;
+  const unsupportedNote = !remote && !pkg
+    ? entry.remotes.some((item) => item.type === "sse")
       ? "该服务只提供旧版 SSE 传输，当前客户端暂不支持。"
-      : pkg
-        ? undefined
-        : "目录没有提供可用的远程地址或 stdio 启动信息，暂不支持。";
+      : "目录没有提供客户端可直接配置的连接方式。"
+    : undefined;
 
   let command = "";
   let args: string[] = [];
   if (!remote && pkg) {
-    const type = pkg.registryType.toLowerCase();
-    if (type.includes("npm")) {
-      command = "npx";
-      args = ["-y", pkg.identifier];
-    } else if (type.includes("pypi") || type.includes("uv")) {
-      command = "uvx";
-      args = [pkg.identifier];
-    } else if (type.includes("oci") || type.includes("docker")) {
-      command = "docker";
-      args = ["run", "-i", "--rm", pkg.identifier];
+    const version = pkg.version.trim();
+    switch (pkg.registryType.toLowerCase()) {
+      case "npm":
+        command = "npx";
+        args = ["-y", `${pkg.identifier}${version ? `@${version}` : ""}`];
+        break;
+      case "pypi":
+        command = "uvx";
+        args = [`${pkg.identifier}${version ? `==${version}` : ""}`];
+        break;
+      case "oci":
+        command = "docker";
+        args = ["run", "-i", "--rm", `${pkg.identifier}${version ? `:${version}` : ""}`];
+        break;
     }
   }
 
   return {
     id: entry.id,
+    iconUrl: entry.iconUrl,
     name: entry.name || entry.registryName || "MCP 服务",
     publisher: entry.publisher || "官方 Registry",
     category: "cloud",

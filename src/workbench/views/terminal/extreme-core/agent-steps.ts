@@ -11,6 +11,22 @@ import { kindOfGoal, titleOf, type TaskCardModel } from "./task-view";
 import type { TaskKind, TaskStatus } from "./task";
 
 export type Translate = (key: string, options?: Record<string, unknown>) => string;
+export type StepCategory = "internal" | "executed" | "denied";
+
+/**
+ * 步骤类别（缺失 = 旧记录）。
+ *
+ * 缺字段时**不能**当成 `internal`：老数据没有分类，必须按"真实执行"保守展示，
+ * 否则一次正常的历史失败会被当成平台内部纠错隐藏掉。
+ */
+export function stepCategory(step: Pick<AgentStep, "category"> | undefined): StepCategory | undefined {
+  const value = step?.category;
+  return value === "internal" || value === "executed" || value === "denied" ? value : undefined;
+}
+
+export function isInternalStep(step: Pick<AgentStep, "category"> | undefined): boolean {
+  return stepCategory(step) === "internal";
+}
 
 /** 步骤在卡片上的状态（`waiting` 表示等用户确认）。 */
 function stepState(state: string | undefined): StepState {
@@ -52,8 +68,18 @@ function blankStep(index: number, event: AgentEvent): AgentStep {
     impact: event.impact ?? null,
     changeId: event.changeId ?? null,
     elapsedMs: 0,
+    childUsage: event.childUsage ?? null,
+    server: event.server ?? null,
+    serverId: event.serverId ?? null,
+    sessionId: event.sessionId ?? null,
+    childId: event.childId ?? null,
+    childGoal: null,
+    childDependsOn: [],
+    stale: event.stale ?? false,
     planStepId: event.planStepId ?? null,
     groupId: event.groupId ?? null,
+    category: stepCategory(event),
+    blocked: event.blocked ?? null,
   };
 }
 
@@ -69,6 +95,16 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
   const index = event.stepIndex;
   const position = steps.findIndex((step) => step.index === index);
   const current = position >= 0 ? steps[position] : blankStep(index, event);
+  /*
+   * 完成事件可能乱序 / 重复到达（子任务并发结束时尤其明显）：
+   * * 终态之后不再接受 `tool_started` / `tool_output`，不能把完成改回运行中；
+   * * 运行中收到旧的 `pending` 也不回退到队列；
+   * * `tool_finished` 里不合法的 running/pending 不覆盖已有状态。
+   */
+  const terminal = ["success", "failed", "skipped"].includes(current.state);
+  if (position >= 0 && event.kind === "tool_started" &&
+      (terminal || (current.state === "running" && event.state === "pending"))) return steps;
+  if (position >= 0 && event.kind === "tool_output" && terminal) return steps;
 
   let next: AgentStep;
   if (event.kind === "tool_output") {
@@ -80,7 +116,11 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
   } else if (event.kind === "tool_finished") {
     next = {
       ...current,
-      state: event.state ?? "success",
+      // 终态事件不能把步骤改回 running/pending（乱序 / 重复事件防护）。
+      state:
+        event.state === "running" || event.state === "pending"
+          ? current.state
+          : (event.state ?? "success"),
       stdout:
         event.stdout !== undefined && event.stdout !== null ? event.stdout : current.stdout,
       stderr:
@@ -95,6 +135,19 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
       summary: event.summary ?? current.summary,
       changeId: event.changeId ?? current.changeId,
       elapsedMs: event.elapsedMs ?? current.elapsedMs,
+      childUsage: event.childUsage ?? current.childUsage,
+      server: event.server ?? current.server,
+      serverId: event.serverId ?? current.serverId,
+      sessionId: event.sessionId ?? current.sessionId,
+      childId: event.childId ?? current.childId,
+      stale: event.stale ?? current.stale,
+      // 分类跟着终态事件走；旧后端没带就保留已有值（不猜成内部纠错）。
+      category:
+        event.category === undefined || event.category === null
+          ? current.category
+          : stepCategory(event),
+      // 同一条命令的终态才是"没执行"的权威来源；没带就保留原值。
+      blocked: event.blocked ?? current.blocked,
     };
   } else {
     next = {
@@ -114,6 +167,15 @@ export function mergeAgentStep(steps: AgentStep[], event: AgentEvent): AgentStep
       ...(event.changeId ? { changeId: event.changeId } : {}),
       ...(event.planStepId ? { planStepId: event.planStepId } : {}),
       ...(event.groupId ? { groupId: event.groupId } : {}),
+      ...(event.server ? { server: event.server } : {}),
+      ...(event.serverId ? { serverId: event.serverId } : {}),
+      ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      ...(event.childId ? { childId: event.childId } : {}),
+      ...(event.stale !== undefined ? { stale: event.stale } : {}),
+      ...(event.category !== undefined && event.category !== null
+        ? { category: stepCategory(event) }
+        : {}),
+      ...(event.blocked !== undefined ? { blocked: event.blocked } : {}),
     };
   }
 
@@ -135,6 +197,14 @@ export function stepsFromSnapshot(steps: AgentStep[] | undefined): AgentStep[] {
     script: step.script ?? null,
     summary: step.summary ?? null,
     changeId: step.changeId ?? null,
+    blocked: step.blocked ?? null,
+    server: step.server ?? null,
+    serverId: step.serverId ?? null,
+    sessionId: step.sessionId ?? null,
+    childId: step.childId ?? null,
+    childGoal: step.childGoal ?? null,
+    childDependsOn: step.childDependsOn ?? [],
+    stale: step.stale ?? false,
   }));
 }
 
@@ -174,6 +244,42 @@ export function riskLabel(risk: string | undefined, t: Translate): string {
   }
 }
 
+/**
+ * "没有执行"的原因代码 → 一句用户能行动的话。
+ *
+ * 键是后端 `AgentStep.blocked` 的取值；未登记的代码不外露原文，统一说
+ * 「未执行」——宁可少说，也不把内部代码或猜测写给用户。
+ */
+const BLOCKED_HINT: Record<string, string> = {
+  read_only: "当前是只读模式，写操作没有执行",
+  query_only: "这次只做查询，写操作没有执行",
+  user_denied: "你拒绝了这个操作，没有执行",
+  expired: "等待确认超时，没有执行",
+  cancelled: "任务已停止，没有执行",
+  sudo: "这一步需要提权（sudo），当前未允许，没有执行",
+  permission: "权限或授权不足，没有执行",
+  withdrawn: "已按你补充的新要求撤回，没有执行",
+  dependency: "前置子任务未完成，未执行",
+  preview_stale: "确认期间文件被改动，这次写入没有执行",
+  duplicate: "同一操作已连续失败两次，没有再重试",
+  uncertain: "上一处写入结果未知，先核对再继续",
+  interrupted_pending: "任务中断，子任务未开始",
+  interrupted_unknown: "任务中断，子任务结果未知；恢复后先核实服务器状态",
+  server_disconnected: "目标服务器已断开，子任务没有执行",
+  mcp_unavailable: "MCP 服务或配置当前不可用，这次调用没有执行（不是权限拒绝）",
+};
+
+/** 未执行原因的那一句（没有代码 / 代码未登记时返回空串）。 */
+export function blockedNote(
+  step: Pick<AgentStep, "blocked"> | undefined,
+  t: Translate,
+): string {
+  const code = step?.blocked?.trim();
+  if (!code) return "";
+  const hint = BLOCKED_HINT[code];
+  return hint ? t(hint) : "";
+}
+
 /** 步骤状态的一句话（卡片上区分"已确认 / 已拒绝 / 等待确认"）。 */
 function stateNote(state: string, t: Translate): string {
   switch (state) {
@@ -193,7 +299,19 @@ function stateNote(state: string, t: Translate): string {
 /** Agent 步骤 → 任务卡步骤。 */
 export function toDeploySteps(steps: AgentStep[], t: Translate): DeployStep[] {
   return steps.map((step) => {
-    const note = stateNote(step.state, t);
+    const category = stepCategory(step);
+    /*
+     * 内部纠错 / 被拦下都不是"执行失败"：状态文案按类别说人话。
+     * 具体原因优先用后端的结构化代码（只读 / 只查询 / 用户拒绝 / 超时…），
+     * 没有代码时退到类别说明；给模型看的完整原因仍留在 stderr 里，
+     * 展开就能看到（审计不丢）。
+     */
+    const note =
+      category === "internal"
+        ? blockedNote(step, t) || t("平台在执行前退回了这一步，命令没有发到服务器")
+        : category === "denied"
+          ? blockedNote(step, t) || t("未执行（权限或确认拦住）")
+          : stateNote(step.state, t);
     const waiting = step.state === "waiting";
     /*
      * 待确认的那一步：完整命令与影响都在确认卡里，链上只留一句"在下方确认"，
@@ -211,6 +329,16 @@ export function toDeploySteps(steps: AgentStep[], t: Translate): DeployStep[] {
     return {
       id: `agent-${step.index}`,
       kind: "tool",
+      groupId: step.groupId ?? undefined,
+      sourceTool: step.tool,
+      childUsage: step.childUsage ?? undefined,
+      server: step.server ?? undefined,
+      serverId: step.serverId ?? undefined,
+      sessionId: step.sessionId ?? undefined,
+      childId: step.childId ?? undefined,
+      childGoal: step.childGoal ?? undefined,
+      childDependsOn: step.childDependsOn ?? undefined,
+      stale: step.stale ?? undefined,
       title: stepTitle(step, t),
       detail,
       command,
@@ -221,6 +349,9 @@ export function toDeploySteps(steps: AgentStep[], t: Translate): DeployStep[] {
       backupPath: step.backupPath ?? undefined,
       rollback: step.rollback ?? undefined,
       state: stepState(step.state),
+      category,
+      // 历史 / 恢复要保留同一个"没执行"原因，否则重开后就只剩一句"未执行"。
+      blocked: step.blocked ?? undefined,
       stdout: step.stdout,
       stderr: step.stderr,
       exitCode: step.exitCode ?? null,
@@ -246,9 +377,20 @@ export function taskStatusOf(status: string): TaskStatus {
   }
 }
 
-/** 有一处写 / 危险操作就是"自动化"任务，全只读则是"检测"。 */
+/**
+ * 有一处**真正执行过**的写 / 危险操作就是"自动化"任务，全只读则是"检测"。
+ *
+ * 内部纠错与被拦下的步骤没有真正改动服务器，不能拿它们把任务归成自动化。
+ */
 export function kindOfSteps(steps: AgentStep[]): TaskKind {
-  return steps.some((step) => step.risk !== "read") ? "automation" : "probe";
+  return steps.some(
+    (step) =>
+      stepCategory(step) !== "internal" &&
+      stepCategory(step) !== "denied" &&
+      step.risk !== "read",
+  )
+    ? "automation"
+    : "probe";
 }
 
 /** 卡片上那句话：说清现在卡在哪、下一步是什么。 */
@@ -258,25 +400,37 @@ export function agentSummary(
   error: string | null | undefined,
   t: Translate,
 ): string {
-  const failed = [...steps].reverse().find((step) => step.state === "failed");
+  /** 只算真正执行过的步骤：内部纠错 / 被拦下的不是"第 N 步失败"。 */
+  const executed = steps.filter(
+    (step) => stepCategory(step) !== "internal" && stepCategory(step) !== "denied",
+  );
+  const failed = [...executed].reverse().find((step) => step.state === "failed");
   const waiting = [...steps].reverse().find((step) => step.state === "waiting");
   const running = [...steps].reverse().find((step) => step.state === "running");
-  const last = steps[steps.length - 1];
+  // 只有内部纠错时退回最后一步，别显示"停在「」"。
+  const last = executed[executed.length - 1] ?? steps[steps.length - 1];
   switch (status) {
     case "waiting":
       return t("等待你确认：{{command}}", {
         command: truncate(waiting?.summary ?? waiting?.command ?? "", 80),
       });
-    case "success":
-      return t("已完成 {{n}} 步", { n: steps.length });
-    case "failed":
-      return error?.trim() ||
-        (failed
-          ? t("第 {{n}} 步失败：{{detail}}", {
-              n: failed.index + 1,
-              detail: firstLine(failed.stderr) || firstLine(failed.stdout),
-            })
-          : t("执行失败"));
+    case "success": {
+      const completed = executed.filter((step) => step.state === "success" && !step.stale);
+      return completed.length > 0
+        ? t("已完成 {{n}} 步", { n: completed.length })
+        : t("已完成");
+    }
+    case "failed": {
+      // 这里只承担"第一层摘要"：完整原因在展开的步骤详情里，不把整段错误铺进卡片。
+      const reason = error?.trim();
+      if (reason) return truncate(reason, 240);
+      return failed
+        ? t("第 {{n}} 步失败：{{detail}}", {
+            n: failed.index + 1,
+            detail: truncate(firstLine(failed.stderr) || firstLine(failed.stdout), 140),
+          })
+        : t("执行失败");
+    }
     case "cancelled":
       return t("已停止（停在「{{step}}」）", {
         step: truncate(last?.summary || last?.command || last?.tool || "", 80),
@@ -336,7 +490,9 @@ export function cardFromAgent(input: {
     originMessageId: input.existing?.originMessageId ?? input.originMessageId,
     goal: input.existing?.goal || input.goal,
     status: taskStatusOf(status),
-    result: agentSummary(input.steps, status, input.error, input.t),
+    result: status === "success" && input.outcome && input.outcome.level !== "verified"
+      ? input.outcome.reason
+      : agentSummary(input.steps, status, input.error, input.t),
     server: input.server,
     sessionId: input.sessionId,
     cwd: input.cwd ?? input.existing?.cwd,

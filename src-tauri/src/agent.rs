@@ -28,13 +28,17 @@ pub use changes::{
     MAX_SNAPSHOT_BYTES,
 };
 pub use protocol::{
-    merge_plan, parse_tool_calls, plan_guidance, plan_status_block, preamble_guidance, preamble_text,
-    redact, strip_tool_calls, tail_truncate, tool_prompt, AgentEvent, AgentOutcome, AgentPlan,
-    AgentStep, AskUserDraft, Lang, PendingQuestion, PlanDraft, PlanStep, PlanStepDraft,
-    QuestionAnswer, QuestionOption, ToolCall, ToolResult, ToolRisk, MAX_COMMAND_SECONDS,
-    MAX_PLAN_STEPS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
+    merge_plan, parse_tool_calls, plan_guidance, plan_status_block, preamble_guidance,
+    preamble_text, redact, strip_tool_calls, tail_truncate, tool_prompt, AgentEvent, AgentOutcome,
+    AgentPlan, AgentStep, AskUserDraft, Lang, PendingQuestion, PlanDraft, PlanStep, PlanStepDraft,
+    QuestionAnswer, QuestionOption, StepCategory, ToolCall, ToolResult, ToolRisk,
+    MAX_COMMAND_SECONDS, MAX_PLAN_STEPS, MAX_ROUNDS, MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT,
+    STEP_OUTPUT_LIMIT,
 };
-pub use runner::{spawn_agent, AgentInput, AgentTurn, PermissionMode, AGENT_EVENT};
+pub use runner::{
+    normalize_carried_steps, spawn_agent, AgentInput, AgentServerRef, AgentTurn, PermissionMode,
+    AGENT_EVENT,
+};
 pub use state::{AgentRegistry, AgentSnapshot, ContextUsage, TokenUsage};
 
 #[cfg(test)]

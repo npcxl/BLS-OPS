@@ -23,7 +23,7 @@ export function ExtremePageShell({
 }) {
   const { t } = useTranslation();
   return (
-    <section className="flex min-h-0 flex-1 flex-col" aria-label={title}>
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-content text-fg" aria-label={title}>
       <div className="flex shrink-0 items-center gap-2 border-b border-line/60 px-4 py-2.5">
         <button
           type="button"

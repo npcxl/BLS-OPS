@@ -6,6 +6,17 @@
  */
 export type ExtremeTaskKind = "deploy" | "query" | "probe" | "build" | "automation" | "transfer";
 
+export interface ExtremeMemory {
+  id: string;
+  scope: "global" | "server" | "conversation";
+  serverId: string | null;
+  workspaceId: string | null;
+  content: string;
+  title?: string;
+  source: string;
+  updatedAt: number;
+}
+
 /** 历史里的状态：执行中的 `running` / `waiting` 也可能被写进去。 */
 export type ExtremeTaskStatus = "running" | "waiting" | "success" | "failed" | "cancelled";
 

@@ -27,26 +27,32 @@ use super::protocol::{
     plan_status_block, preamble_guidance, preamble_text, redact, reply_language_rule,
     strip_tool_calls, tail_truncate, thinking_guidance, tool_prompt, AgentEvent, AgentOutcome,
     AgentPlan, AgentStep, AskUserDraft, Lang, PendingApproval, PendingQuestion, PlanDraft,
-    QuestionAnswer, QuestionOption, ToolCall, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS,
+    QuestionAnswer, QuestionOption, StepCategory, ToolCall, ToolRisk, APPROVAL_SECONDS, MAX_ROUNDS,
     MAX_TOTAL_SECONDS, MODEL_OUTPUT_LIMIT, STEP_OUTPUT_LIMIT,
 };
 use super::state::{AgentHandle, AgentSnapshot, ContextBreakdown, ContextUsage, TokenUsage};
-use tokio::sync::oneshot;
 use super::tools::{
-    builtin_tool_allowed, filter_tool_schemas, has_sudo, parse_archive_operation,
-    plan_tool_with_backup, requires_confirmation, severe_operation_reason, strip_markers,
-    tool_schemas, ArchiveOperation, BackupPolicy, PlannedTool,
+    archive_error_hint_lang, archive_read_is_empty, builtin_tool_allowed, filter_tool_schemas,
+    has_sudo, parse_archive_operation, plan_tool_for_locale, requires_confirmation,
+    severe_operation_reason_lang, strip_markers, tool_schemas_lang, ArchiveOperation, BackupPolicy,
+    PlannedTool,
 };
 use crate::deployment::ai::model::AiCancel;
 use crate::deployment::ai::{AiProviderError, OpenAiCompatibleAdvisor, ToolReply};
 use crate::ssh::utf8_stream::Utf8StreamDecoder;
 use crate::ssh::{ExecChunk, ExecOutput};
 use crate::state::AppState;
+use tokio::sync::oneshot;
 
 /// 一条命令**边跑边回显**的总上限（超过后只由结束事件给完整输出）。
 const LIVE_OUTPUT_LIMIT: usize = 256 * 1024;
 /// 等用户回答问题的上限（比审批长：用户可能离开一会儿）。
 const QUESTION_SECONDS: u64 = 10 * 60;
+/// 单个只读子任务的墙钟上限。超时后结果可能不确定，只能报"未验证"。
+#[cfg(not(test))]
+const CHILD_TIMEOUT: Duration = Duration::from_secs(180);
+#[cfg(test)]
+const CHILD_TIMEOUT: Duration = Duration::from_secs(1);
 /// 文本协议没有 call id：用它给问题生成稳定且唯一的 id。
 static QUESTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -118,6 +124,17 @@ impl PermissionMode {
     }
 }
 
+/// 一次运行里**允许子任务选择**的服务器。
+///
+/// 只由命令层从"数据库里标记 connected 且当前 SSH 真的活着"的会话生成；
+/// 模型不能凭名字创建一个不存在的目标。子任务必须落在其中一条上。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentServerRef {
+    pub server_id: String,
+    pub server_name: String,
+    pub session_id: String,
+}
+
 /// 启动参数。
 #[derive(Debug, Clone)]
 pub struct AgentInput {
@@ -165,8 +182,10 @@ pub struct AgentInput {
     pub backup_before_delete: bool,
     /// 备份保留天数；0 = 永久。
     pub backup_retention_days: u32,
-    /// 本轮启用的 MCP 工具（配置在启动时解析好，执行时不再查库）。
+    /// 本轮启用的 MCP 工具（配置在启动时解析好，执行时仍逐次复查）。
     pub mcp_tools: Vec<crate::mcp::McpBinding>,
+    /// 可委派的服务器清单（只包含当前真正连着的已授权会话）。
+    pub servers: Vec<AgentServerRef>,
     /// 本轮勾选的内置技能；`None` = 旧客户端，全部放行。
     pub enabled_builtins: Option<Vec<String>>,
     /// 执行时复查 MCP 服务/工具是否仍启用（测试里可以为 None）。
@@ -181,6 +200,8 @@ pub struct AgentInput {
     /// 恢复 / 续跑时带到本轮的计划（用于系统提示词与快照恢复）。
     pub carry_plan: Option<AgentPlan>,
     pub max_rounds: Option<u32>,
+    /// Internal child runs are read-only and cannot delegate recursively.
+    pub(crate) child_run: bool,
     /**
      * 恢复中断任务时带进来的历史步骤。
      *
@@ -237,6 +258,12 @@ pub(crate) trait AgentIo: Send + Sync {
         on_delta: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> IoFuture<'a, Result<ToolReply, AiProviderError>>;
 
+    /// MCP transport is injectable in tests; production uses the ordinary
+    /// connection and the same permission revalidation as the main agent.
+    fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+        Box::pin(async move { crate::mcp::call_tool(binding, args).await.map_err(|error| error.to_string()) })
+    }
+
     /// 文件变更记录的存储。生产实现用 `AppState` 里的注册表；测试默认拿到的
     /// 是一份空表（记录不会跨调用保留，但流程照走）。
     fn changes(&self) -> ChangeRegistry {
@@ -257,6 +284,205 @@ pub(crate) trait AgentIo: Send + Sync {
     }
 }
 
+/// Child events stay inside their own run: only the parent publishes the
+/// aggregated task state. The parent cancellation token is shared by every child.
+struct ChildIo<'a> { inner: &'a dyn AgentIo }
+impl AgentIo for ChildIo<'_> {
+    fn emit(&self, _: AgentEvent) {}
+    fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { Arc::new(|_| {}) }
+    fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.inner.connected(id) }
+    fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.inner.verify_server(id, server) }
+    fn exec<'a>(&'a self, id: &'a str, command: &'a str, budget: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.inner.exec(id, command, budget, sink) }
+    fn chat<'a>(&'a self, messages: Vec<Value>, tools: Value, cancel: &'a AiCancel, delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> { self.inner.chat(messages, tools, cancel, delta) }
+    fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, args: &'a Value) -> IoFuture<'a, Result<String, String>> { self.inner.call_mcp(binding, args) }
+}
+
+#[derive(Clone, Debug)]
+struct ChildSpec {
+    id: String,
+    title: String,
+    goal: String,
+    depends_on: Vec<String>,
+    /// 目标服务器 id 或**精确**名称；`None` = 当前服务器。
+    server: Option<String>,
+    /// 用户明确要求重新检查：即使上次运行有完成结果，也不复用。
+    recheck: bool,
+}
+
+fn parse_child_specs(args: &Value) -> Result<Vec<ChildSpec>, &'static str> {
+    let items = args.get("tasks").and_then(Value::as_array).filter(|v| (2..=6).contains(&v.len())).ok_or("Provide 2–6 child tasks")?;
+    let mut specs = Vec::new();
+    for (index, task) in items.iter().enumerate() {
+        let id = task.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| format!("child-{}", index + 1));
+        let title = task.get("title").and_then(Value::as_str).unwrap_or("").trim();
+        let goal = task.get("goal").and_then(Value::as_str).unwrap_or("").trim();
+        if id.len() > 80 || title.is_empty() || title.len() > 200 || goal.is_empty() || goal.len() > 2000 { return Err("Invalid child task title, goal or id"); }
+        let depends_on = match task.get("depends_on") {
+            None => Vec::new(),
+            Some(Value::Array(values)) => values.iter().map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).ok_or("Invalid child dependency")).collect::<Result<Vec<_>, _>>()?,
+            _ => return Err("Invalid child dependencies"),
+        };
+        let server = match task.get("server") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => {
+                let value = value.trim();
+                if value.len() > 200 {
+                    return Err("Invalid child server");
+                }
+                (!value.is_empty()).then(|| value.to_string())
+            }
+            _ => return Err("Invalid child server"),
+        };
+        let recheck = match task.get("recheck") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err("Invalid child recheck flag"),
+        };
+        specs.push(ChildSpec { id, title: title.to_string(), goal: goal.to_string(), depends_on, server, recheck });
+    }
+    let ids: HashSet<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+    if ids.len() != specs.len() || specs.iter().any(|task| task.depends_on.iter().any(|dep| dep == &task.id || !ids.contains(dep.as_str()))) { return Err("Duplicate task id or invalid dependency"); }
+    let mut done = HashSet::new();
+    loop {
+        let before = done.len();
+        for task in &specs {
+            if task.depends_on.iter().all(|id| done.contains(id)) { done.insert(task.id.clone()); }
+        }
+        if done.len() == specs.len() { return Ok(specs); }
+        if before == done.len() { return Err("Cyclic child-task dependencies"); }
+    }
+}
+
+/// 严格解析子任务目标服务器。
+///
+/// * 省略 = 当前服务器（保持单服务器对话的默认行为）；
+/// * 只接受**授权清单里**的 serverId 或唯一精确名称；
+/// * 同名服务器 / 未知名称一律报错，交给模型改用 id 或先问用户，绝不猜。
+fn resolve_child_server(
+    requested: Option<&str>,
+    parent_id: Option<&str>,
+    parent_name: &str,
+    parent_session: &str,
+    servers: &[AgentServerRef],
+) -> Result<AgentServerRef, String> {
+    let parent = AgentServerRef {
+        server_id: parent_id.unwrap_or("").trim().to_string(),
+        server_name: parent_name.chars().take(200).collect(),
+        session_id: parent_session.to_string(),
+    };
+    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(parent);
+    };
+    // 当前服务器的 id / 名称优先：用户让"这台"机器做子任务时不该被同名实例挡住。
+    if parent_id.is_some_and(|id| id == requested) {
+        return Ok(parent);
+    }
+    let matches_id: Vec<&AgentServerRef> = servers
+        .iter()
+        .filter(|server| !server.server_id.is_empty() && server.server_id == requested)
+        .collect();
+    if let Some(server) = unique_server(matches_id, requested)? {
+        return Ok(server);
+    }
+    let matches_name: Vec<&AgentServerRef> = servers
+        .iter()
+        .filter(|server| server.server_name == requested)
+        .collect();
+    if let Some(server) = unique_server(matches_name, requested)? {
+        return Ok(server);
+    }
+    let known = servers
+        .iter()
+        .map(|server| format!("{} (id: {})", server.server_name, server.server_id))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "Unknown server \"{requested}\". Use an authorized connected server id/name: {}. \
+         If the user did not name a specific target or the names are ambiguous, ask the user with ask_user before delegating.",
+        if known.is_empty() { "none".to_string() } else { known }
+    ))
+}
+
+fn unique_server(
+    matches: Vec<&AgentServerRef>,
+    requested: &str,
+) -> Result<Option<AgentServerRef>, String> {
+    let mut ids: Vec<&str> = matches.iter().map(|server| server.server_id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    match ids.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches[0].clone())),
+        _ => Err(format!(
+            "Server \"{requested}\" is ambiguous across ids: {}. Pass the exact server id.",
+            ids.join(", ")
+        )),
+    }
+}
+
+fn is_child_step(step: &AgentStep) -> bool {
+    step.tool == "child_agent" || step.group_id.as_deref().is_some_and(|id| id.starts_with("children-"))
+}
+
+/// 中断恢复时**不猜**子任务的结局：
+/// * 未开始 → 未执行；
+/// * 运行中 / 等待中 → 结果未知（不能当成成功，也不能当成服务器失败）；
+/// * 已完成 → 保留结果，但标记为"来自上次运行，需重新核实"。
+///
+/// 非子任务步骤维持原有语义（命令是否已发出由各自的 `blocked` / `stderr` 说明）。
+pub fn normalize_carried_steps(steps: &mut [AgentStep]) {
+    for step in steps {
+        if !is_child_step(step) {
+            continue;
+        }
+        match step.state.as_str() {
+            "pending" => {
+                step.state = "skipped".to_string();
+                step.blocked = Some("interrupted_pending".to_string());
+                step.stderr = "任务中断，子任务未开始".to_string();
+            }
+            "running" | "waiting" => {
+                step.state = "failed".to_string();
+                step.blocked = Some("interrupted_unknown".to_string());
+                step.category = None;
+                step.stderr = "任务中断，子任务结果未知；恢复后先核实服务器状态".to_string();
+            }
+            "success" => {
+                step.stale = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn child_cache_key(server_id: &str, id: &str, goal: &str) -> String {
+    format!("{server_id}\u{1}{id}\u{1}{goal}")
+}
+
+/// 上次运行里**已经成功**的子任务结果。只用于避免无意义重跑；
+/// 复用时会显式标成"需重新核实"，不会当成当前事实。
+fn carried_child_results(steps: &[AgentStep]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for step in steps {
+        let Some(id) = step.child_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let Some(goal) = step.child_goal.as_deref().filter(|goal| !goal.is_empty()) else {
+            continue;
+        };
+        if step.state != "success" {
+            continue;
+        }
+        let Some(server_id) = step.server_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if step.tool == "child_agent" && !step.stdout.trim().is_empty() {
+            out.insert(child_cache_key(server_id, id, goal), step.stdout.clone());
+        }
+    }
+    out
+}
+
 /// 待执行的一次调用（原生 `tool_calls` 与文本 `<tool>` 统一成这个形态）。
 struct PendingCall {
     /// 原生调用 id（回灌 `role: tool` 用）；文本协议先留空，按序号生成。
@@ -274,6 +500,8 @@ struct LiveIo<'a> {
     /// **启动时**解析好的思考强度：同一次运行里的工具续请求沿用它，
     /// 中途改设置只影响下一条消息。
     reasoning_effort: Option<String>,
+    /// 界面语言：绑定校验等用户可见错误按它生成。
+    lang: Lang,
 }
 
 impl AgentIo for LiveIo<'_> {
@@ -291,7 +519,7 @@ impl AgentIo for LiveIo<'_> {
     }
 
     fn verify_server(&self, session_id: &str, server: &str) -> Result<(), String> {
-        verify_session_server(self.state, session_id, server)
+        verify_session_server(self.state, session_id, server, self.lang)
     }
 
     fn exec<'a>(
@@ -350,7 +578,11 @@ impl AgentIo for LiveIo<'_> {
                 .map_err(|error| error.to_string())?;
             // 输出被截断 = base64 不完整：此时**绝不能**当成文件正文去比较。
             if output.truncated {
-                return Err("文件太大，单条命令的输出被截断（不生成逐行 Diff）".to_string());
+                return Err(ui(
+                    self.lang,
+                    "文件太大，单条命令的输出被截断（不生成逐行 Diff）",
+                    "The file is too large and the command output was truncated (no line-by-line diff generated)",
+                ));
             }
             parse_snapshot(&output.stdout, path).map(Some)
         })
@@ -371,6 +603,7 @@ struct RunGuard {
     handle: Arc<AgentHandle>,
     task_id: String,
     armed: bool,
+    lang: Lang,
 }
 
 impl Drop for RunGuard {
@@ -381,10 +614,11 @@ impl Drop for RunGuard {
         if !self.handle.snapshot().terminal() {
             self.handle.update(|snapshot| {
                 snapshot.status = "failed".to_string();
-                snapshot.error = Some(
-                    "任务异常终止：执行循环退出但没有留下结果，请核对服务器状态后重试。"
-                        .to_string(),
-                );
+                snapshot.error = Some(ui(
+                    self.lang,
+                    "任务异常终止：执行循环退出但没有留下结果，请核对服务器状态后重试。",
+                    "The task ended unexpectedly: the loop exited without a result. Check the server state and retry.",
+                ));
                 snapshot.pending_approval = None;
             });
             let snapshot = self.handle.snapshot();
@@ -399,30 +633,57 @@ impl Drop for RunGuard {
 }
 
 /// 启动一个 Agent 任务（立刻返回初始快照；真正的循环在后台跑）。
+/// 用户可见错误按界面语言二选一（启动校验、兜底终止等）。
+fn ui(lang: Lang, zh: &str, en: &str) -> String {
+    match lang {
+        Lang::Zh => zh.to_string(),
+        Lang::En => en.to_string(),
+    }
+}
+
 pub async fn spawn_agent(
     app: AppHandle,
     state: AppState,
     mut input: AgentInput,
 ) -> Result<AgentSnapshot, String> {
+    let lang = Lang::from_locale(input.locale.as_deref());
     if input.task_id.trim().is_empty() {
-        return Err("taskId 不能为空".to_string());
+        return Err(ui(lang, "taskId 不能为空", "taskId must not be empty"));
     }
     if input.session_id.trim().is_empty() {
-        return Err("没有可用的 SSH 会话".to_string());
+        return Err(ui(
+            lang,
+            "没有可用的 SSH 会话",
+            "No SSH session is available",
+        ));
     }
     if !state.ssh.is_connected(&input.session_id).await {
-        return Err("SSH 会话已断开，先重新连接再让 AI 操作服务器".to_string());
+        return Err(ui(
+            lang,
+            "SSH 会话已断开，先重新连接再让 AI 操作服务器",
+            "The SSH session is disconnected; reconnect before letting the AI operate the server",
+        ));
     }
     // 防切服务器误发：库里的会话绑定必须与前端声明的服务器一致。
-    verify_session_server(&state, &input.session_id, &input.server)?;
+    verify_session_server(&state, &input.session_id, &input.server, lang)?;
+    // 恢复进来的子任务先归一化：未开始 / 结果未知不能被当成成功或仍在运行。
+    normalize_carried_steps(&mut input.carry_steps);
     let config = {
         let conn = state.db.open().map_err(|error| error.to_string())?;
         crate::db::provider_for(&conn, input.provider_id.as_deref())
             .map_err(|error| error.to_string())?
             .ok_or_else(|| match input.provider_id.as_deref() {
                 // 指定的模型被停用/删除了：明确说出来，不静默换回默认。
-                Some(_) => "选择的模型已停用或被删除，请重新选择".to_string(),
-                None => "还没有配置 AI 模型".to_string(),
+                Some(_) => ui(
+                    lang,
+                    "选择的模型已停用或被删除，请重新选择",
+                    "The selected model is disabled or deleted; choose another one",
+                ),
+                None => ui(
+                    lang,
+                    "还没有配置 AI 模型",
+                    "No AI model has been configured yet",
+                ),
             })?
     };
     let model = config.model.clone();
@@ -437,8 +698,13 @@ pub async fn spawn_agent(
     );
     // 行为段用的是**解析后**的档位；请求参数仍由 `LiveIo` 带着同一份值。
     let guidance_effort = reasoning_effort.clone();
-    let api_key = crate::keyring::read_secret(&config.keyring_account())
-        .map_err(|_| "这个提供方还没有保存可用的 API Key".to_string())?;
+    let api_key = crate::keyring::read_secret(&config.keyring_account()).map_err(|_| {
+        ui(
+            lang,
+            "这个提供方还没有保存可用的 API Key",
+            "No usable API key has been saved for this provider",
+        )
+    })?;
     let advisor =
         OpenAiCompatibleAdvisor::new(config, api_key).map_err(|error| error.user_message())?;
 
@@ -451,7 +717,11 @@ pub async fn spawn_agent(
      */
     if let Some(existing) = state.agents.get(&input.task_id) {
         if !existing.snapshot().terminal() {
-            return Err("这条任务还在执行，等它结束或先停止".to_string());
+            return Err(ui(
+                lang,
+                "这条任务还在执行，等它结束或先停止",
+                "This task is still running; wait for it to finish or stop it first",
+            ));
         }
     }
 
@@ -471,7 +741,11 @@ pub async fn spawn_agent(
     snapshot.effort = reasoning_effort.clone();
     let Some(handle) = state.agents.register(snapshot.clone(), cancel) else {
         state.ai_reviews.forget(&input.task_id);
-        return Err("这条任务还在执行，等它结束或先停止".to_string());
+        return Err(ui(
+            lang,
+            "这条任务还在执行，等它结束或先停止",
+            "This task is still running; wait for it to finish or stop it first",
+        ));
     };
 
     let task_id = input.task_id.clone();
@@ -485,12 +759,14 @@ pub async fn spawn_agent(
             handle: handle.clone(),
             task_id: task_id.clone(),
             armed: true,
+            lang,
         };
         let io = LiveIo {
             app: &app_for_run,
             state: &state,
             advisor: &advisor,
             reasoning_effort,
+            lang,
         };
         let outcome = run_loop(&guard.handle, &input, &io, guidance_effort.as_deref()).await;
         let (kind, message) = match outcome {
@@ -560,7 +836,12 @@ pub async fn spawn_agent(
 /// `ssh_sessions` 里记着这条会话连的是哪台（名字 / 主机）。前端声明的
 /// `server` 与它不一致时**直接拒绝**：切服务器后旧面板还在发命令，是最容易
 /// 把 `rm` 打到生产机上的路径。
-fn verify_session_server(state: &AppState, session_id: &str, server: &str) -> Result<(), String> {
+fn verify_session_server(
+    state: &AppState,
+    session_id: &str,
+    server: &str,
+    lang: Lang,
+) -> Result<(), String> {
     let server = server.trim();
     if server.is_empty() {
         return Ok(());
@@ -580,8 +861,12 @@ fn verify_session_server(state: &AppState, session_id: &str, server: &str) -> Re
             if name.is_empty() || name == server || host.trim() == server {
                 Ok(())
             } else {
-                Err(format!(
-                    "会话属于「{name}」，不是「{server}」；已拒绝执行，避免把命令发错机器"
+                Err(ui(
+                    lang,
+                    &format!("会话属于「{name}」，不是「{server}」；已拒绝执行，避免把命令发错机器"),
+                    &format!(
+                        "The session belongs to \"{name}\", not \"{server}\"; the command was rejected to avoid hitting the wrong machine"
+                    ),
                 ))
             }
         }
@@ -655,8 +940,9 @@ fn conversation_units(messages: &[Value]) -> Vec<std::ops::Range<usize>> {
 
 /// 单条消息超过预算时保留尾部（报错与结论通常在最后），并标出省略。
 fn clamp_unit(messages: &mut [Value], range: std::ops::Range<usize>, budget_tokens: usize) {
-    // 至少留 1 KB：再少就等于这条消息没发。
-    let limit = budget_tokens.max(1024);
+    // 估算上 1 token 约对应 2~4 字节（中文 ~3 字节 / ASCII ~4 字节），按 2x 折算字节上限
+    // 既避免中文消息被腰斩到预算的 1/3，又保证裁剪后不会明显越过 token 预算。
+    let limit = budget_tokens.saturating_mul(2).max(1024);
     for message in &mut messages[range] {
         let Some(content) = message.get("content").and_then(Value::as_str) else {
             continue;
@@ -726,7 +1012,7 @@ fn last_line(text: &str, max: usize) -> String {
     line.chars().take(max).collect()
 }
 
-/// L1：旧工具结果只留首尾各 10 行。
+/// L1：旧工具结果（含文本协议 `<tool_result>` 与历史 `操作记录`）只留首尾各 10 行。
 ///
 /// 头行带 `exit` / `cwd`，尾部依次是 stderr 与结论，两段都原样保留；
 /// 中间只写 `…（省略 N 行）…`。最近 [`KEEP_RECENT_UNITS`] 个单元不动。
@@ -736,12 +1022,16 @@ fn slim_old_tool_results(messages: &mut [Value]) -> usize {
     let mut slimmed = 0;
     for unit in units.iter().take(keep_from) {
         for message in &mut messages[unit.clone()] {
-            if role_of(message) != "tool" {
-                continue;
-            }
+            let role = role_of(message);
             let Some(content) = message.get("content").and_then(Value::as_str) else {
                 continue;
             };
+            let is_slimmable = role == "tool"
+                || (role == "user" && content.trim_start().starts_with("<tool_result"))
+                || (role == "assistant" && content.contains("操作记录（"));
+            if !is_slimmable {
+                continue;
+            }
             if let Some(next) = slim_tool_content(content) {
                 message["content"] = Value::String(next);
                 slimmed += 1;
@@ -873,6 +1163,9 @@ fn append_summary(conversation: &mut [Value], line: &str) {
 /// 当前的问题）。被折的单元整组进摘要，不会留下孤立的 `role: tool`。
 fn fold_old_units(messages: &mut Vec<Value>, budget_tokens: usize) -> usize {
     let mut folded = 0;
+    // 摘要段上限：避免折很多短轮次时把 system 自己撑爆，最多占预算的 1/4（下限 2K tokens）。
+    let max_summary_tokens = (budget_tokens / 4).max(2048);
+    let mut summary_tokens = 0usize;
     loop {
         if conversation_tokens(messages) <= budget_tokens {
             break;
@@ -893,11 +1186,18 @@ fn fold_old_units(messages: &mut Vec<Value>, budget_tokens: usize) -> usize {
                     && !(unit.start..unit.end).contains(&last_user)
             })
             .map(|(index, unit)| (index, unit.clone()));
-        let Some((index, unit)) = candidate else {
+        let Some((_index, unit)) = candidate else {
             break;
         };
-        let line = summary_line(&messages[unit.clone()], index + 1, index + 1);
-        append_summary(messages, &line);
+        let unit_no = folded + 1;
+        let unit_tokens: usize = messages[unit.clone()].iter().map(estimate_tokens).sum();
+        let line = summary_line(&messages[unit.clone()], unit_no, unit_no);
+        let line_tokens = estimate_text_tokens(&line) + 1;
+        // 只有摘要确实比原单元更省且未超出摘要预算时才写入 system，防止越折越胖。
+        if line_tokens < unit_tokens && summary_tokens + line_tokens <= max_summary_tokens {
+            append_summary(messages, &line);
+            summary_tokens += line_tokens;
+        }
         messages.drain(unit);
         folded += 1;
     }
@@ -984,116 +1284,252 @@ pub(crate) fn prune_conversation(
     report
 }
 
-/// 本次任务是否"只查询"。
+/// 明确的"只读"限定词：只约束它所在的这一句。
+const QUERY_SCOPE_WORDS: &[&str] = &[
+    "只查",
+    "只看",
+    "只列",
+    "只要看",
+    "只读",
+    "不要改",
+    "别改",
+    "不要动",
+    "别动",
+    "不要修改",
+    "别修改",
+    "无需修改",
+    "不用改",
+];
+
+/// 明确要求改动的动词（中文 + 常见英文）。
+const MODIFY_WORDS: &[&str] = &[
+    "重启",
+    "启动",
+    "停止",
+    "关闭",
+    "删除",
+    "删掉",
+    "移除",
+    "修改",
+    "改成",
+    "改一下",
+    "改下",
+    "调整",
+    "修复",
+    "修一下",
+    "修好",
+    "处理",
+    "写入",
+    "写到",
+    "创建",
+    "新建",
+    "部署",
+    "更新",
+    "升级",
+    "回滚",
+    "清空",
+    "清理",
+    "清掉",
+    "停掉",
+    "关掉",
+    "杀掉",
+    "改掉",
+    "换成",
+    "覆盖",
+    "替换",
+    "迁移",
+    "扩容",
+    "上传",
+    "安装",
+    "卸载",
+    "授权",
+    "restart",
+    "start",
+    "stop",
+    "reload",
+    "install",
+    "uninstall",
+    "remove",
+    "delete",
+    "write",
+    "create",
+    "deploy",
+    "update",
+    "upgrade",
+    "rollback",
+    "chmod",
+    "chown",
+    "kill",
+    "flush",
+    "rm ",
+];
+
+/// 查询动词 / 查询对象。
+const QUERY_WORDS: &[&str] = &[
+    "查",
+    "看",
+    "列出",
+    "列一下",
+    "哪些",
+    "状态",
+    "日志",
+    "有没有",
+    "是否",
+    "检查",
+    "分析",
+    "诊断",
+    "排查",
+    "统计",
+    "怎么样",
+    "情况",
+    "正常",
+    "多少",
+    "show",
+    "list",
+    "status",
+    "log",
+    "check",
+    "inspect",
+    "docker ps",
+    "systemctl status",
+    "ps ",
+    "top",
+    "df ",
+    "du ",
+    "grep",
+    "cat ",
+    "find",
+];
+
+/// 分句连接词：出现在改动动词前面时，说明它是一条**新的动作**。
+const ACTION_CONNECTORS: &[&str] = &[
+    "然后",
+    "接着",
+    "之后",
+    "最后",
+    "顺便",
+    "同时",
+    "并且",
+    "并",
+    "再",
+    "另外",
+    "then ",
+    "and then",
+    "after that",
+];
+
+/// 否定词：紧跟在它后面的动词不是指令。
+const NEGATIONS: &[&str] = &[
+    "不要",
+    "别",
+    "不用",
+    "无需",
+    "不需要",
+    "禁止",
+    "勿",
+    "不必",
+    "don't",
+    "dont",
+    "no ",
+];
+
+/// 本次任务是否"只查询"（执行器的硬边界：查询范围里写 / 改 / 删会被直接拦下）。
 ///
-/// 判据是**最后一条真人 user 消息**（跳过 `【执行结果】` 这类平台回执）：
-/// 明确说"只看 / 别改"→ 查询；出现改动动词（重启 / 删除 / 更新…）→ 修改；
-/// 否则看到"查 / 看 / 状态 / 日志…"→ 查询；都没有则按修改处理（保守：范围
-/// 不放大，但也不会把一次改动误判成查询）。
-///
-/// 这是执行器的硬边界：查询范围里写 / 改 / 删会被直接拦下，不靠模型自觉。
+/// 判据是**最后一条真人 user 消息**（跳过 `【执行结果】` 这类平台回执）。
 pub(crate) fn is_query_only(messages: &[AgentTurn]) -> bool {
     let Some(text) = last_human_text(messages) else {
         return false;
     };
+    query_only_request(text)
+}
+
+/// 按**分句**判断这次请求是不是"只查询"。
+///
+/// 单个关键词的硬判断会把两类真实请求判错：
+/// * `只查 A，然后修改 B`：一个"只查"就把整条消息锁成只读，B 永远改不了；
+/// * `查一下最近的重启记录`：一个"重启"就把一次纯查询当成改动。
+///
+/// 所以逐句看：范围词只约束自己那一句；改动动词只有落在"动作位置"（句首、
+/// 连接词之后，或前面根本没有查询词）才算指令；被否定的动词不算。任何一句
+/// 真的要改，整体就不是只查询 —— 写操作照常走权限与审批，由用户决定。
+///
+/// 反之，纯查询请求里一句写指令都没有才返回 `true`，执行器据此硬拦写操作，
+/// 不让模型"顺手"改；完全没有线索时按修改处理（范围不放大）。
+fn query_only_request(text: &str) -> bool {
     let lower = text.to_lowercase();
-    // 明确限定范围：句子里就算有"更新"这类词也按查询。
-    if ["只查", "只看", "只读", "不要改", "别改", "不要动", "别动"]
-        .iter()
-        .any(|word| lower.contains(word))
+    let mut saw_query = false;
+    let mut saw_write = false;
+    for clause in lower.split(['，', '。', '；', ';', '、', '！', '!', '？', '?', '\n', ','])
     {
-        return true;
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        // 这一句自己说了"只查 / 只看 / 只读"：里面的动词当宾语，不当指令。
+        let scoped = QUERY_SCOPE_WORDS.iter().any(|word| clause.contains(word));
+        if QUERY_WORDS.iter().any(|word| clause.contains(word)) {
+            saw_query = true;
+        }
+        if !scoped && write_intent(clause) {
+            saw_write = true;
+        }
     }
-    const MODIFY: &[&str] = &[
-        "重启",
-        "启动",
-        "停止",
-        "关闭",
-        "删除",
-        "删掉",
-        "移除",
-        "修改",
-        "改成",
-        "改一下",
-        "改下",
-        "调整",
-        "修复",
-        "修一下",
-        "修好",
-        "处理",
-        "写入",
-        "写到",
-        "创建",
-        "新建",
-        "部署",
-        "更新",
-        "升级",
-        "回滚",
-        "清空",
-        "清理",
-        "上传",
-        "安装",
-        "卸载",
-        "授权",
-        "restart",
-        "start",
-        "stop",
-        "reload",
-        "install",
-        "uninstall",
-        "remove",
-        "delete",
-        "write",
-        "create",
-        "deploy",
-        "update",
-        "upgrade",
-        "rollback",
-        "chmod",
-        "chown",
-        "kill",
-        "flush",
-        "rm ",
-    ];
-    if MODIFY.iter().any(|word| lower.contains(word)) {
+    if saw_write {
         return false;
     }
-    const QUERY: &[&str] = &[
-        "查",
-        "看",
-        "列出",
-        "列一下",
-        "哪些",
-        "状态",
-        "日志",
-        "有没有",
-        "是否",
-        "检查",
-        "分析",
-        "诊断",
-        "排查",
-        "统计",
-        "怎么样",
-        "情况",
-        "正常",
-        "多少",
-        "show",
-        "list",
-        "status",
-        "log",
-        "check",
-        "inspect",
-        "docker ps",
-        "systemctl status",
-        "ps ",
-        "top",
-        "df ",
-        "du ",
-        "grep",
-        "cat ",
-        "find",
-    ];
-    QUERY.iter().any(|word| lower.contains(word))
+    if saw_query {
+        return true;
+    }
+    // 没有查询动词，但明确说了"不要动 / 只读"：仍然按只读范围处理。
+    [
+        "不要动",
+        "别动",
+        "不要改",
+        "别改",
+        "只读",
+        "不要修改",
+        "别修改",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// 这一句里有没有"要改东西"的指令。
+fn write_intent(clause: &str) -> bool {
+    MODIFY_WORDS.iter().any(|verb| {
+        clause.match_indices(verb).any(|(at, _)| {
+            if negated_at(clause, at) {
+                return false;
+            }
+            // 句首、连接词之后，或前面根本没有查询词：都是在说动作。
+            at == 0 || introduced_at(clause, at) || !query_before(clause, at)
+        })
+    })
+}
+
+fn query_before(clause: &str, at: usize) -> bool {
+    let head = &clause[..at];
+    QUERY_WORDS.iter().any(|word| head.contains(word))
+}
+
+fn introduced_at(clause: &str, at: usize) -> bool {
+    let head = clause[..at].trim_end();
+    ACTION_CONNECTORS.iter().any(|word| {
+        // 连接词后面可能还跟着宾语（`然后把旧日志清掉`），中文按"出现过"判断；
+        // 英文（`then `）仍要求紧贴动词，避免 `command ` 里的 `and ` 误伤。
+        if word.is_ascii() {
+            head.ends_with(word)
+        } else {
+            head.contains(word)
+        }
+    })
+}
+
+fn negated_at(clause: &str, at: usize) -> bool {
+    let head = clause[..at].trim_end();
+    // `不要再重启` / `别再重启`：中间的"再"不影响否定。
+    let head = head.strip_suffix('再').unwrap_or(head);
+    NEGATIONS.iter().any(|word| head.ends_with(word))
 }
 
 /// 最后一条**真人**用户消息（跳过 `【执行结果】` 这类平台回执）。
@@ -1140,6 +1576,17 @@ fn context_breakdown(messages: &[Value]) -> ContextBreakdown {
  * 覆盖同一条 SSH 连接上的多条对话 —— 这正是"同一服务上两个任务不能同时改"
  * 需要拦住的场景。
  */
+// Limit child agents across conversations sharing the same server identity.
+static CHILD_SLOTS: OnceLock<AsyncMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> = OnceLock::new();
+pub(crate) async fn child_slot(session: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let map = CHILD_SLOTS.get_or_init(|| AsyncMutex::new(HashMap::new()));
+    let semaphore = {
+        let mut guard = map.lock().await;
+        guard.entry(session.to_string()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(3))).clone()
+    };
+    semaphore.acquire_owned().await.ok()
+}
+
 static RESOURCE_LOCKS: OnceLock<AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
 
 async fn acquire_resource(key: String) -> OwnedMutexGuard<()> {
@@ -1259,6 +1706,43 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
     system.push_str(&head);
     system.push_str(tool_prompt(lang));
     system.push('\n');
+    if !input.child_run {
+        let server_list = if input.servers.is_empty() {
+            match lang {
+                Lang::Zh => "当前服务器（没有其他已授权且连通的会话）".to_string(),
+                Lang::En => "the current server (no other authorized live session)".to_string(),
+            }
+        } else {
+            input
+                .servers
+                .iter()
+                .map(|server| {
+                    if server.server_id.trim().is_empty() {
+                        format!("{} (current session)", server.server_name)
+                    } else {
+                        format!("{} (id: {})", server.server_name, server.server_id)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        system.push_str(&match lang {
+            Lang::Zh => format!(
+                "复杂任务可按需调用 parallel_readonly_agents 执行 2 至 6 个只读调查；相互独立的任务并行，有依赖的任务通过 id 和 depends_on 串行；简单任务不必拆分。\
+                 子任务默认在当前服务器；要检查其他机器时，server 必须是下列**已授权且当前连通**的精确 id 或唯一名称，不能凭名字猜测或编造：{server_list}。\
+                 用户没有明确目标、或出现同名服务器时，先用 ask_user 问清，不要自行选择一个。不同服务器可以在总并发预算内并行，同一服务器仍受并发上限限制。\
+                 子任务只能使用本轮启用的只读 MCP 工具，不能写入或询问用户；需要写入或使用不可用的 MCP 工具时，让它返回 WRITE_REQUEST，由你按原有确认流程执行。\
+                 请依据各子任务的真实证据汇总，不要假装未验证的步骤已完成。文本工具协议示例：<tool name=\"parallel_readonly_agents\">{{\"tasks\":[{{\"title\":\"检查磁盘\",\"goal\":\"检查磁盘使用量\"}},{{\"title\":\"检查服务\",\"goal\":\"检查运行中的服务\",\"server\":\"<id>\"}}]}}</tool>。计划模式还须提供 step；用户明确要求重新检查时对相应子任务设 recheck=true。\n"
+            ),
+            Lang::En => format!(
+                "For complex tasks only, parallel_readonly_agents can run 2–6 read-only investigations, with task IDs and depends_on for dependent work. \
+                 Children default to the current server; to inspect another machine, `server` must be an exact id or unique name from this **authorized and currently connected** list — never guess or invent one: {server_list}. \
+                 If the user did not name explicit targets, or names are ambiguous, use ask_user first; do not pick one yourself. Different servers may run in parallel within the total budget; the same server still obeys its concurrency limit. \
+                 Children may use enabled read-only MCP tools, but cannot write or ask questions. If a write or an unavailable MCP tool is needed, have the child return a WRITE_REQUEST and run it through the normal approval flow yourself. \
+                 Summarize actual evidence and do not claim unverified work is complete. In the text tool protocol use <tool name=\"parallel_readonly_agents\">{{\"tasks\":[{{\"title\":\"Disk\",\"goal\":\"Check disk usage\"}},{{\"title\":\"Services\",\"goal\":\"Check running services\",\"server\":\"<id>\"}}]}}</tool>. In plan mode include step; set recheck=true when the user explicitly asks to check again.\n"
+            ),
+        });
+    }
     system.push_str(thinking_guidance(effort, lang));
     system.push('\n');
     // 执行前说明：MAX 与普通模式都适用（先说什么、验证什么）。
@@ -1339,10 +1823,14 @@ pub(crate) fn evaluate_outcome(
         .filter(|step| step.risk != "read")
         .collect();
     let last_write = writes.iter().map(|step| step.index).max();
-    let verified_after_writes = last_write.is_none_or(|last| {
-        succeeded
-            .iter()
-            .any(|step| step.index > last && step.risk == "read")
+    // Child results may come from another host or describe a different check.
+    let verification = last_write.and_then(|last| {
+        succeeded.iter().rev().find(|step| {
+            step.index > last
+                && step.risk == "read"
+                && !step.stale
+                && !matches!(step.tool.as_str(), "child_agent" | "parallel_readonly_agents")
+        })
     });
 
     let mut evidence: Vec<String> = writes
@@ -1351,16 +1839,11 @@ pub(crate) fn evaluate_outcome(
         .take(3)
         .map(|step| step_label(step))
         .collect();
-    if let Some(check) = last_write.and_then(|last| {
-        succeeded
-            .iter()
-            .filter(|step| step.index > last && step.risk == "read")
-            .next_back()
-    }) {
+    if let Some(check) = verification {
         evidence.push(step_label(check));
     }
 
-    if !writes.is_empty() && !verified_after_writes {
+    if last_write.is_some() && verification.is_none() {
         return Some(AgentOutcome::partial(
             if en {
                 "Changes were applied, but no read-only verification followed."
@@ -1384,6 +1867,53 @@ pub(crate) fn evaluate_outcome(
                 .map(|step| step_label(step))
                 .collect(),
         ));
+    }
+    /*
+     * 子任务的结果必须进入父任务结论：
+     * * 任一批并行委派失败 → 不能被后续无关的成功批次覆盖；
+     * * 复用了中断前的结果 → 只能算部分完成，必须重新核实当前状态。
+     */
+    if let Some(dispatch) = steps.iter().rev().find(|step| {
+        step.tool == "parallel_readonly_agents"
+            && (step.state == "failed" || step.stale)
+    }) {
+        let mut child_evidence: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                step.tool == "child_agent"
+                    && (step.state == "failed" || step.stale)
+            })
+            .rev()
+            .take(3)
+            .map(|step| {
+                format!(
+                    "#{} {}",
+                    step.index + 1,
+                    step.summary.as_deref().unwrap_or("child_agent")
+                )
+            })
+            .collect();
+        child_evidence.extend(evidence.iter().cloned());
+        if dispatch.state == "failed" {
+            return Some(AgentOutcome::partial(
+                if en {
+                    "Some child investigations failed or remain unverified; the task is not fully successful."
+                } else {
+                    "有子任务失败或未取得可验证结果，任务不能算全部成功。"
+                },
+                child_evidence,
+            ));
+        }
+        if dispatch.stale {
+            return Some(AgentOutcome::partial(
+                if en {
+                    "Some child results came from before the interruption; re-verify current server state before treating them as facts."
+                } else {
+                    "部分子任务结果来自中断前，必须先重新核实服务器当前状态，不能直接当成事实。"
+                },
+                child_evidence,
+            ));
+        }
     }
     let last_failure = steps
         .iter()
@@ -1512,10 +2042,15 @@ async fn create_preview(
                 "unavailable",
                 "none",
             );
+            let en = matches!(Lang::from_locale(input.locale.as_deref()), Lang::En);
             registry.update(&id, |record| {
                 record.proposed = sanitized;
                 record.backup_path = planned.backup_path.clone();
-                record.note = Some(format!("未能读取修改前的文件：{reason}"));
+                record.note = Some(if en {
+                    format!("Could not read the file before the change: {reason}")
+                } else {
+                    format!("未能读取修改前的文件：{reason}")
+                });
             });
         }
     }
@@ -1556,9 +2091,14 @@ async fn verify_preview(
         Ok(None) => return PreviewCheck::Verified,
         Ok(Some(snapshot)) => snapshot,
         Err(reason) => {
-            return PreviewCheck::Failed(format!(
-                "确认前无法重新核对文件版本：{reason}。这一步没有执行，请重新发起修改"
-            ))
+            return PreviewCheck::Failed(match Lang::from_locale(input.locale.as_deref()) {
+                Lang::Zh => format!(
+                    "确认前无法重新核对文件版本：{reason}。这一步没有执行，请重新发起修改"
+                ),
+                Lang::En => format!(
+                    "Could not re-check the file version before confirmation: {reason}. This step did not run; start the change again"
+                ),
+            })
         }
     };
     if before.exists == current.exists && before.sha == current.sha {
@@ -1568,7 +2108,11 @@ async fn verify_preview(
     // 旧确认只能用于它当时看到的那一版：作废并生成新预览。
     registry.update(change_id, |item| {
         item.status = "stale".to_string();
-        item.note = Some("文件在确认前被外部修改，这份预览已作废".to_string());
+        item.note = Some(ui(
+            Lang::from_locale(input.locale.as_deref()),
+            "文件在确认前被外部修改，这份预览已作废",
+            "The file changed externally before confirmation; this preview is void",
+        ));
     });
     if let Some(summary) = registry.get(change_id) {
         emit_change(io, &input.task_id, summary);
@@ -1764,11 +2308,18 @@ fn record_uncollected(
     );
     registry.create(draft, "uncollected", "none");
     let command: String = planned.display.chars().take(200).collect();
+    let en = matches!(Lang::from_locale(input.locale.as_deref()), Lang::En);
     registry.update(&id, |record| {
         record.uncollected = true;
-        record.note = Some(format!(
-            "普通 shell 命令无法可靠取得明确目标与前后快照，该操作未采集文件差异：{command}"
-        ));
+        record.note = Some(if en {
+            format!(
+                "A plain shell command has no reliable target/read-back snapshot, so no file diff was collected: {command}"
+            )
+        } else {
+            format!(
+                "普通 shell 命令无法可靠取得明确目标与前后快照，该操作未采集文件差异：{command}"
+            )
+        });
     });
     if let Some(summary) = registry.get(&id) {
         emit_change(io, &input.task_id, summary);
@@ -1811,6 +2362,7 @@ async fn record_shell_changes(
         return;
     }
     let registry = io.changes();
+    let en = matches!(Lang::from_locale(input.locale.as_deref()), Lang::En);
     for (path, before) in baseline {
         let readback = io.read_snapshot(&input.session_id, &path).await;
         let after = readback.as_ref().ok().and_then(|item| item.clone());
@@ -1839,14 +2391,30 @@ async fn record_shell_changes(
                 None => record.stage = "none".to_string(),
             }
             record.note = if !ok {
-                Some(match failure {
-                    Some(line) => format!("命令执行失败：{line}"),
-                    None => "命令执行失败".to_string(),
+                Some(match (failure, en) {
+                    (Some(line), false) => format!("命令执行失败：{line}"),
+                    (None, false) => "命令执行失败".to_string(),
+                    (Some(line), true) => format!("Command failed: {line}"),
+                    (None, true) => "Command failed".to_string(),
                 })
             } else if readback.is_err() {
-                Some("写入后无法回读目标文件，不能证明实际改动".to_string())
+                Some(
+                    if en {
+                        "Could not read the target back after writing, so the actual change cannot be proven"
+                    } else {
+                        "写入后无法回读目标文件，不能证明实际改动"
+                    }
+                    .to_string(),
+                )
             } else if unchanged {
-                Some("命令执行后回读与执行前一致：这次没有产生改动".to_string())
+                Some(
+                    if en {
+                        "The read-back matched the pre-run state: this command produced no change"
+                    } else {
+                        "命令执行后回读与执行前一致：这次没有产生改动"
+                    }
+                    .to_string(),
+                )
             } else {
                 None
             };
@@ -1877,6 +2445,20 @@ pub(crate) async fn run_loop(
     let mut conversation = conversation(input, resolved_effort, query_only);
     // 已表态的操作：true = 允许过，false = 拒绝过；两种都不再第二次弹确认。
     let mut decided_ops: HashMap<String, bool> = HashMap::new();
+    /// 已经因为"看不懂"被打回给模型的命令（同一条只打回一次，第二次交用户）。
+    let mut asked_unknown: HashSet<String> = HashSet::new();
+    /// 打回次数上限：模型每次都换个新写法时，不能无限打回（超出就直接问用户）。
+    let mut unknown_bounces: usize = 0;
+    /**
+     * 结果**不确定**的写操作（签名 → 发生时的轮次）。
+     *
+     * SSH 中断 / 超时会让"命令到底执行了没有"没有答案。这种写操作不能直接
+     * 自动重放：要求模型先做一次只读核对（`read_ok_round` 之后才允许重试），
+     * 避免同一次部署做两遍。
+     */
+    let mut uncertain_ops: HashMap<String, u32> = HashMap::new();
+    /// 最近一次**只读**操作成功的轮次：用于判断"不确定的写"之前是否已核对过。
+    let mut read_ok_round: u32 = 0;
     // 用量归到**这个 taskId**：续跑时从上一段带过来，不重新从 0 开始。
     let goal = task_goal(&input.messages);
     let mut cumulative = input.carry_usage.clone().unwrap_or_default();
@@ -1907,6 +2489,7 @@ pub(crate) async fn run_loop(
         .max()
         .unwrap_or(0);
     let mut total_bytes: usize = 0;
+    let mut delegated_children: usize = 0;
     /// 改写后是否已经催过一次"先验证再收尾"（只催一次，避免来回拉扯）。
     let mut verification_nudged = false;
     // 预算来自**这次启动的模型**：切模型只影响下一条消息。
@@ -1923,11 +2506,18 @@ pub(crate) async fn run_loop(
             ));
         }
         if started.elapsed() > Duration::from_secs(MAX_TOTAL_SECONDS) {
-            return Err(StopReason::Failed(format!(
-                "总时长超过 {} 分钟，已停止{}",
-                MAX_TOTAL_SECONDS / 60,
-                last_step_hint(handle)
-            )));
+            return Err(StopReason::Failed(match lang {
+                Lang::Zh => format!(
+                    "总时长超过 {} 分钟，已停止{}",
+                    MAX_TOTAL_SECONDS / 60,
+                    last_step_hint(handle, lang)
+                ),
+                Lang::En => format!(
+                    "Total time exceeded {} minutes; stopped{}",
+                    MAX_TOTAL_SECONDS / 60,
+                    last_step_hint(handle, lang)
+                ),
+            }));
         }
 
         /*
@@ -1972,18 +2562,34 @@ pub(crate) async fn run_loop(
         let on_delta: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |delta: &str| {
             sink(AgentEvent::text_delta(&delta_task, delta));
         });
-        let schemas = crate::mcp::append_tool_schemas(
-            filter_tool_schemas(tool_schemas(input.plan_required), input.enabled_builtins.as_deref()),
+        let mut schemas = crate::mcp::append_tool_schemas(
+            filter_tool_schemas(
+                tool_schemas_lang(input.plan_required, lang),
+                input.enabled_builtins.as_deref(),
+            ),
             &input.mcp_tools,
             input.plan_required,
+            lang,
         );
+        if let Some(items) = schemas.as_array_mut() {
+            if input.child_run {
+                items.retain(|item| item.pointer("/function/name").and_then(Value::as_str) != Some("ask_user"));
+            } else {
+                let mut parameters = json!({"type":"object","properties":{"tasks":{"type":"array","minItems":2,"maxItems":6,"items":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"goal":{"type":"string"},"server":{"type":"string","description":"Exact authorized server id or unique name; omit for the current server. Never guess."},"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of prerequisite tasks; omit for independent investigations"},"recheck":{"type":"boolean","description":"Set true only when the user explicitly asks to check again instead of reusing a previous completed result."}},"required":["title","goal"]}}},"required":["tasks"]});
+                if input.plan_required {
+                    parameters["properties"]["step"] = json!({"type":"string","description":"Existing plan step ID"});
+                    parameters["required"].as_array_mut().unwrap().push(json!("step"));
+                }
+                items.push(json!({"type":"function","function":{"name":"parallel_readonly_agents","description":"For complex requests only, run 2–6 read-only investigations. Independent tasks run in parallel; use depends_on with task IDs for dependencies. Use server only with an exact id/name from the authorized list; omit for the current server, and ask the user when targets are unclear or ambiguous. Each child returns evidence; writes and questions are unavailable. Do not use for simple queries.","parameters":parameters}}));
+            }
+        }
         let reply = match io
             .chat(conversation.clone(), schemas, handle.cancel(), on_delta)
             .await
         {
             Ok(reply) => reply,
             Err(AiProviderError::Cancelled) if handle.is_cancelled() => {
-                return Err(StopReason::Cancelled("已停止".to_string()));
+                return Err(StopReason::Cancelled(ui(lang, "已停止", "Stopped")));
             }
             Err(error) => return Err(StopReason::Failed(error.user_message())),
         };
@@ -2041,9 +2647,11 @@ pub(crate) async fn run_loop(
         if calls.is_empty() {
             if looks_like_tool_call(&reply.content) {
                 // 模型写了调用标记但解析不出来：不能当成"完成 0 步"。
-                return Err(StopReason::Failed(
-                    "模型返回了无法识别的工具调用格式，已停止；请把这句话换个说法再试".to_string(),
-                ));
+                return Err(StopReason::Failed(ui(
+                    lang,
+                    "模型这次的回复没有被识别为可执行操作，任务已停止；可以换个说法再发一次",
+                    "The model's reply could not be read as an executable action, so the task stopped. Try rephrasing the request",
+                )));
             }
             /*
              * 收尾这一轮正好收到补充要求：不能把任务标成功、把这句话吞掉。
@@ -2107,6 +2715,9 @@ pub(crate) async fn run_loop(
         }
         let mut tool_messages: Vec<Value> = Vec::new();
         for raw in &mut calls {
+            if handle.is_cancelled() {
+                return Err(StopReason::Cancelled(ui(lang, "已停止", "Stopped")));
+            }
             /*
              * 本轮没勾选的能力不下发：前端下栏的 MCP 菜单决定模型能看到哪些
              * 内置工具；这里再拦一次，防止模型凭历史记忆硬调。
@@ -2116,7 +2727,11 @@ pub(crate) async fn run_loop(
                     &raw.id,
                     raw.native,
                     &raw.name,
-                    "该能力没有在本轮启用：这次调用没有执行。请让用户在下栏 MCP 菜单里勾选对应能力，或改用已启用的工具。",
+                    &ui(
+                        lang,
+                        "该能力没有在本轮启用：这次调用没有执行。请让用户在下栏 MCP 菜单里勾选对应能力，或改用已启用的工具。",
+                        "This capability is not enabled for this run, so the call was not executed. Ask the user to tick it in the MCP menu below, or use an enabled tool.",
+                    ),
                 ));
                 continue;
             }
@@ -2126,7 +2741,10 @@ pub(crate) async fn run_loop(
              */
             if input.plan_required && raw.name.trim() == "submit_plan" {
                 let merged = serde_json::from_str::<PlanDraft>(raw.body.trim())
-                    .map_err(|error| format!("submit_plan 参数不合法：{error}"))
+                    .map_err(|error| match lang {
+                        Lang::Zh => format!("submit_plan 参数不合法：{error}"),
+                        Lang::En => format!("Invalid submit_plan arguments: {error}"),
+                    })
                     .and_then(|draft| merge_plan(plan.as_ref(), draft, crate::db::AppDb::now()));
                 match merged {
                     Ok(next) => {
@@ -2143,9 +2761,8 @@ pub(crate) async fn run_loop(
                         ));
                     }
                     Err(reason) => {
-                        tool_messages.push(tool_error_message(
-                            &raw.id, raw.native, &raw.name, &reason,
-                        ));
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                     }
                 }
                 continue;
@@ -2155,12 +2772,15 @@ pub(crate) async fn run_loop(
              * 任务在这里暂停，等用户提交选择后再把答案作为工具结果回给模型。
              */
             if raw.name.trim() == "ask_user" {
+                if input.child_run {
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, "Child agents cannot ask the user directly; return the missing information to the parent."));
+                    continue;
+                }
                 let question = match prepare_question(&input, raw, round) {
                     Ok(question) => question,
                     Err(reason) => {
-                        tool_messages.push(tool_error_message(
-                            &raw.id, raw.native, &raw.name, &reason,
-                        ));
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                         continue;
                     }
                 };
@@ -2174,8 +2794,13 @@ pub(crate) async fn run_loop(
                 event.question = Some(question.clone());
                 io.emit(event);
 
-                match wait_question(handle, &question.question_id, question.deadline, &mut receiver)
-                    .await
+                match wait_question(
+                    handle,
+                    &question.question_id,
+                    question.deadline,
+                    &mut receiver,
+                )
+                .await
                 {
                     QuestionDecision::Answered(answer) => {
                         handle.update(|snapshot| {
@@ -2200,17 +2825,25 @@ pub(crate) async fn run_loop(
                     QuestionDecision::Cancelled => {
                         handle.forget_answer(&question.question_id);
                         handle.update(|snapshot| snapshot.pending_question = None);
-                        return Err(StopReason::Cancelled(
-                            "等待用户回答时任务被停止".to_string(),
-                        ));
+                        return Err(StopReason::Cancelled(ui(
+                            lang,
+                            "等待用户回答时任务被停止",
+                            "The task was stopped while waiting for the user's answer",
+                        )));
                     }
                     QuestionDecision::Timeout => {
                         handle.forget_answer(&question.question_id);
                         handle.update(|snapshot| snapshot.pending_question = None);
-                        return Err(StopReason::Failed(format!(
-                            "等待用户回答超过 {} 分钟，任务已停止",
-                            QUESTION_SECONDS / 60
-                        )));
+                        return Err(StopReason::Failed(match lang {
+                            Lang::Zh => format!(
+                                "等待用户回答超过 {} 分钟，任务已停止",
+                                QUESTION_SECONDS / 60
+                            ),
+                            Lang::En => format!(
+                                "Waited more than {} minutes for the user's answer; the task stopped",
+                                QUESTION_SECONDS / 60
+                            ),
+                        }));
                     }
                 }
             }
@@ -2242,10 +2875,13 @@ pub(crate) async fn run_loop(
              * 跳过并把原因回给它，下一轮开头新要求会追加进对话。
              */
             if handle.has_steers() {
-                let reason = "用户补充了新要求：这条命令没有执行。\
-                    等新要求生效后重新判断要做什么，不要按原计划继续。"
-                    .to_string();
-                skip_step(io, handle, &input.task_id, index, &reason);
+                let reason = ui(
+                    lang,
+                    "用户补充了新要求：这条命令没有执行。\
+                     等新要求生效后重新判断要做什么，不要按原计划继续。",
+                    "The user added a new requirement, so this command was not executed. Re-evaluate what to do once it takes effect; do not continue with the old plan.",
+                );
+                skip_step(io, handle, &input.task_id, index, &reason, "withdrawn");
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
@@ -2254,14 +2890,22 @@ pub(crate) async fn run_loop(
             let args = match serde_json::from_str::<Value>(raw.body.trim()) {
                 Ok(value) if value.is_object() => value,
                 Ok(_) => {
-                    let reason = "参数必须是一个 JSON 对象".to_string();
-                    fail_step(io, handle, index, &reason);
+                    let reason = ui(
+                        lang,
+                        "参数必须是一个 JSON 对象",
+                        "Arguments must be a JSON object",
+                    );
+                    // 模型自己的参数错误：内部纠正，不是服务器执行失败。
+                    bounce_step(io, handle, &input.task_id, index, &reason);
                     tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                     continue;
                 }
                 Err(error) => {
-                    let reason = format!("参数不是合法 JSON：{error}");
-                    fail_step(io, handle, index, &reason);
+                    let reason = match lang {
+                        Lang::Zh => format!("参数不是合法 JSON：{error}"),
+                        Lang::En => format!("Arguments are not valid JSON: {error}"),
+                    };
+                    bounce_step(io, handle, &input.task_id, index, &reason);
                     tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                     continue;
                 }
@@ -2280,20 +2924,366 @@ pub(crate) async fn run_loop(
                     .to_string();
                 let known: Vec<String> = plan
                     .as_ref()
-                    .map(|plan| plan.steps.iter().map(|step| step.id.clone()).collect())
+                    .map(|plan| {
+                        plan.steps
+                            .iter()
+                            .filter(|step| !step.superseded)
+                            .map(|step| step.id.clone())
+                            .collect()
+                    })
                     .unwrap_or_default();
-                if requested.is_empty() || plan.as_ref().and_then(|plan| plan.step(&requested)).is_none() {
+                if requested.is_empty()
+                    || plan
+                        .as_ref()
+                        .and_then(|plan| plan.step(&requested))
+                        .is_none()
+                {
                     let reason = plan_step_message(lang, &known);
-                    fail_step(io, handle, index, &reason);
-                    tool_messages.push(tool_error_message(
-                        &raw.id, raw.native, &raw.name, &reason,
-                    ));
+                    bounce_step(io, handle, &input.task_id, index, &reason);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                     continue;
                 }
                 Some(requested)
             } else {
                 None
             };
+            if raw.name.trim() == "parallel_readonly_agents" {
+                if input.child_run {
+                    let reason = "Child agents cannot create child agents.";
+                    bounce_step(io, handle, &input.task_id, index, reason);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
+                    continue;
+                }
+                let specs = match parse_child_specs(&args) {
+                    Ok(specs) => specs,
+                    Err(reason) => {
+                        bounce_step(io, handle, &input.task_id, index, reason);
+                        tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
+                        continue;
+                    }
+                };
+                /*
+                 * 先把每台目标服务器解析出来，再创建步骤 / 并发执行。
+                 * 只接受本轮授权清单里的 id 或唯一名称；未知 / 同名直接退回
+                 * 让模型改用 id 或先问用户，绝不按名字猜一台机器。
+                 */
+                let mut resolved = Vec::with_capacity(specs.len());
+                let mut resolve_error = None;
+                for spec in specs {
+                    match resolve_child_server(
+                        spec.server.as_deref(),
+                        input.server_id.as_deref(),
+                        &input.server,
+                        &input.session_id,
+                        &input.servers,
+                    ) {
+                        Ok(server) => resolved.push((spec, server)),
+                        Err(reason) => {
+                            resolve_error = Some(reason);
+                            break;
+                        }
+                    }
+                }
+                if let Some(reason) = resolve_error {
+                    bounce_step(io, handle, &input.task_id, index, &reason);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                    continue;
+                }
+                if delegated_children + resolved.len() > 6 {
+                    let reason = "The child-agent budget for this run is exhausted; continue with the available results.";
+                    bounce_step(io, handle, &input.task_id, index, reason);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
+                    continue;
+                }
+                delegated_children += resolved.len();
+                let group_id = format!("children-{index}");
+                handle.patch_step(index, |step| {
+                    step.summary = Some(ui(lang, "并行检查", "Parallel investigation"));
+                    step.group_id = Some(group_id.clone());
+                    step.plan_step_id = plan_step_id.clone();
+                    step.category = Some(StepCategory::Executed);
+                });
+                if let Some(step) = handle.step(index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step)); }
+                /*
+                 * 子任务能看到本轮启用的 MCP 工具，但**声明可写 / 影响未知**的
+                 * 名字会写进子任务说明，并在每次调用前被 `child_run` 复查拦下；
+                 * 需要时由子任务回报主 Agent，不能因为"被禁止"就静默少做一步。
+                 */
+                let blocked_mcp: Vec<String> = input
+                    .mcp_tools
+                    .iter()
+                    .filter(|binding| binding.effect() != crate::mcp::McpEffect::DeclaredReadOnly)
+                    .map(|binding| format!("{} · {}", binding.server_name, binding.tool))
+                    .collect();
+                let carried = carried_child_results(&input.carry_steps);
+                let prerequisites: HashSet<String> = resolved.iter()
+                    .flat_map(|(spec, _)| spec.depends_on.iter().cloned())
+                    .collect();
+                let child_io = ChildIo { inner: io };
+                let mut remaining: Vec<(usize, ChildSpec, AgentServerRef, u32, String)> = Vec::new();
+                let mut completed: HashMap<String, (bool, String)> = HashMap::new();
+                for (n, (spec, server)) in resolved.into_iter().enumerate() {
+                    let child_index = next_index;
+                    next_index += 1;
+                    let child_call = format!("{}:child:{}", call_id, n);
+                    let child_cwd = if server.session_id == input.session_id {
+                        input.cwd.clone()
+                    } else {
+                        // 另一台机器上的路径与当前目录无关：从根目录重新确认。
+                        "/".to_string()
+                    };
+                    start_step(handle, child_index, &child_call, "child_agent");
+                    handle.patch_step(child_index, |step| {
+                        step.state = "pending".into();
+                        step.summary = Some(spec.title.clone());
+                        step.group_id = Some(group_id.clone());
+                        step.server = Some(server.server_name.clone());
+                        step.server_id = Some(server.server_id.clone()).filter(|id| !id.is_empty());
+                        step.session_id = Some(server.session_id.clone());
+                        step.child_id = Some(spec.id.clone());
+                        step.child_goal = Some(spec.goal.clone());
+                        step.child_depends_on = spec.depends_on.clone();
+                    });
+                    if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step)); }
+                    // 上次运行已经成功过、目标 / id / goal 都一致：不重复花模型与命令预算，
+                    // 但结果明确标成"需重新核实"，不能当成当前事实。
+                    // Cached evidence is historical. A task participating in the
+                    // current dependency graph must run against current evidence.
+                    if !spec.recheck && spec.depends_on.is_empty() && !prerequisites.contains(&spec.id) {
+                        let key = child_cache_key(&server.server_id, &spec.id, &spec.goal);
+                        if let Some(prior) = carried.get(&key) {
+                            let text = format!(
+                                "{}: cached from the previous run; revalidate current server state before relying on it\n{}",
+                                spec.title, prior
+                            );
+                            handle.patch_step(child_index, |step| {
+                                step.state = "success".into();
+                                step.category = Some(StepCategory::Executed);
+                                step.stale = true;
+                                step.stdout = text.clone();
+                            });
+                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                            completed.insert(spec.id.clone(), (true, text));
+                            continue;
+                        }
+                    }
+                    remaining.push((n, spec, server, child_index, child_cwd));
+                }
+                let mut stalled = 0usize;
+                while !remaining.is_empty() {
+                    let before = remaining.len();
+                    let mut wave = Vec::new();
+                    let mut waiting = Vec::new();
+                    for (n, spec, server, child_index, child_cwd) in remaining {
+                        if spec.depends_on.iter().any(|id| completed.get(id).is_some_and(|(ok, _)| !ok)) {
+                            let text = format!("{}: prerequisite failed; not executed", spec.title);
+                            handle.patch_step(child_index, |step| {
+                                step.state = "skipped".into();
+                                step.category = Some(StepCategory::Denied);
+                                step.blocked = Some("dependency".into());
+                                step.stderr = text.clone();
+                            });
+                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                            completed.insert(spec.id.clone(), (false, text));
+                        } else if spec.depends_on.iter().all(|id| completed.contains_key(id)) {
+                            let evidence = spec.depends_on.iter().filter_map(|id| completed.get(id).map(|(_, text)| text.as_str())).collect::<Vec<_>>().join("\n");
+                            wave.push((n, spec, server, child_index, child_cwd, evidence));
+                        } else { waiting.push((n, spec, server, child_index, child_cwd)); }
+                    }
+                    remaining = waiting;
+                    if wave.is_empty() {
+                        /*
+                         * 依赖图在解析时已经校验过无环、无缺失；走到这里说明
+                         * 中间状态异常（例如依赖被并发终态覆盖）。不无限空转：
+                         * 把剩下的标成未执行并说明原因。
+                         */
+                        if remaining.len() == before {
+                            stalled += 1;
+                            if stalled >= 2 {
+                                for (_, spec, _, child_index, _) in remaining.drain(..) {
+                                    let text = format!("{}: dependency state could not be resolved; not executed", spec.title);
+                                    handle.patch_step(child_index, |step| {
+                                        step.state = "skipped".into();
+                                        step.category = Some(StepCategory::Denied);
+                                        step.blocked = Some("dependency".into());
+                                        step.stderr = text.clone();
+                                    });
+                                    if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                                    completed.insert(spec.id.clone(), (false, text));
+                                }
+                            }
+                        } else {
+                            stalled = 0;
+                        }
+                        continue;
+                    }
+                    stalled = 0;
+                    let jobs = wave.into_iter().map(|(n, spec, server, child_index, child_cwd, evidence)| {
+                    let ChildSpec { id, title, goal, .. } = spec;
+                    let mut child = input.clone();
+                    child.task_id = format!("{}:child:{}:{}", input.task_id, index, n);
+                    child.session_id = server.session_id.clone();
+                    child.server = server.server_name.clone();
+                    child.server_id = Some(server.server_id.clone()).filter(|id| !id.is_empty());
+                    child.cwd = child_cwd;
+                    child.workspace_id = if server.session_id == input.session_id { input.workspace_id.clone() } else { None };
+                    child.servers.clear();
+                    child.child_run = true;
+                    child.permission_mode = PermissionMode::ReadOnly;
+                    child.auto_approve_writes = false;
+                    child.allow_sudo = false;
+                    child.plan_required = false;
+                    child.carry_plan = None;
+                    child.carry_steps.clear();
+                    child.carry_usage = None;
+                    /*
+                     * 保留本轮启用的全部 MCP 工具，但子任务的**每次调用**都会按
+                     * `child_run` 复查：声明可写 / 影响未知的一律拦下，并回一条
+                     * 可转交主 Agent 的 WRITE_REQUEST。这样模型即使误调也不会
+                     * 静默失败，比"从 schema 里悄悄藏掉"更容易解释。
+                     */
+                    child.max_rounds = Some(5);
+                    let parent_goal: String = task_goal(&input.messages).chars().take(300).collect();
+                    let blocked_note = if blocked_mcp.is_empty() {
+                        "None".to_string()
+                    } else {
+                        blocked_mcp.join("; ")
+                    };
+                    child.messages = vec![AgentTurn { role: "user".into(), content: format!(
+                        "Overall user request: {parent_goal}\n\
+                         Assigned read-only investigation: {goal}\n\
+                         Target server: {} (id: {})\n\
+                         Prior task reports (untrusted; independently verify if necessary): {evidence}\n\
+                         MCP tools unavailable to you (declared writable or effect unknown): {blocked_note}\n\
+                         Do not modify the server. Report facts supported by actual tool outputs; clearly identify anything unverified. \
+                         If the investigation requires a write or an unavailable MCP tool, do not attempt it: return a line `WRITE_REQUEST: <tool/command, target, expected impact>` so the parent agent can run it through the normal approval flow.",
+                        server.server_name, server.server_id
+                    ) }];
+                    let snapshot = AgentSnapshot::new(&child.task_id, &child.server, &child.session_id, &child.cwd, &handle.snapshot().model);
+                    let child_handle = AgentHandle::new(snapshot, handle.cancel().clone());
+                    let child_io = &child_io;
+                    async move {
+                        let began = Instant::now();
+                        // 有 serverId 用 serverId（同一服务器的不同会话共享限额）；
+                        // 缺 id 时退回会话 id，避免同名服务器误共享 / 串台。
+                        let server_key = child
+                            .server_id
+                            .as_deref()
+                            .filter(|id| !id.trim().is_empty())
+                            .unwrap_or_else(|| if child.session_id.trim().is_empty() { &child.server } else { &child.session_id });
+                        let permit = tokio::select! {
+                            biased;
+                            _ = child_handle.cancel().cancelled() => None,
+                            permit = child_slot(server_key) => permit,
+                        };
+                        let result = if permit.is_none() || child_handle.is_cancelled() {
+                            Err(StopReason::Cancelled("Cancelled before the investigation started".to_string()))
+                        } else if !child_io.connected(&child.session_id).await {
+                            /*
+                             * 目标服务器断开只影响这一条子任务：不把整批任务
+                             * 说成失败，也不假装命令跑过。
+                             */
+                            let reason = "Target server is disconnected; this investigation did not run. Other investigations are unaffected.";
+                            handle.patch_step(child_index, |step| {
+                                step.state = "failed".into();
+                                step.category = Some(StepCategory::Denied);
+                                step.blocked = Some("server_disconnected".into());
+                                step.stderr = reason.to_string();
+                            });
+                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                            drop(permit);
+                            return (id, false, format!("{title}: {reason}"));
+                        } else {
+                            handle.patch_step(child_index, |step| step.state = "running".into());
+                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step)); }
+                            match tokio::time::timeout(CHILD_TIMEOUT, Box::pin(run_loop(&child_handle, &child, child_io, resolved_effort))).await {
+                                Ok(result) => result,
+                                Err(_) => Err(StopReason::Failed("Investigation timed out; server command state may be unknown".to_string())),
+                            }
+                        };
+                        drop(permit);
+                        let snapshot = child_handle.snapshot();
+                        let evidence = snapshot.steps.iter().filter(|s| s.category == Some(StepCategory::Executed) && s.state == "success").count();
+                        let executed_failures = snapshot.steps.iter().any(|s| s.category == Some(StepCategory::Executed) && s.state == "failed");
+                        let details = snapshot.steps.iter().filter(|s| s.category == Some(StepCategory::Executed)).map(|s| format!("{} [{}]: {}", redact(&s.command), s.state, redact(if s.state == "success" { &s.stdout } else { &s.stderr }).chars().take(500).collect::<String>())).collect::<Vec<_>>().join("\n");
+                        /*
+                         * 被只读边界拦下的写操作 / MCP 调用要显式回传主 Agent，
+                         * 否则子任务会因为"没权限"静默少做一步。
+                         */
+                        let mut write_requests: Vec<String> = snapshot.steps.iter()
+                            .filter(|s| matches!(s.blocked.as_deref(), Some("read_only" | "permission")) && s.risk != "read")
+                            .map(|s| format!("- {}: {}", s.tool, redact(&s.command)))
+                            .collect();
+                        write_requests.dedup();
+                        let request_block = if write_requests.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "\n\nWRITE_REQUEST (not executed; parent must handle through the normal approval flow):\n{}",
+                                write_requests.join("\n")
+                            )
+                        };
+                        let (mut ok, mut text) = match result {
+                            Ok(content) if evidence > 0 && !executed_failures => (true, format!("{}\n\nEvidence:\n{}{}", redact(&content), details, request_block)),
+                            Ok(content) if evidence > 0 => (false, format!("Partial result: {}\n\nEvidence:\n{}{}", redact(&content), details, request_block)),
+                            Ok(_) => (false, format!("No successful tool evidence; unverified{request_block}")),
+                            Err(StopReason::Cancelled(_)) => (false, format!("Cancelled; verify server state if needed{request_block}")),
+                            Err(StopReason::Failed(reason)) => (false, format!("Failed: {}{}", redact(&reason), request_block)),
+                        };
+                        /*
+                         * 被只读边界拦下的写操作说明这次调查**没有完成**：
+                         * 不能因为前面的只读命令成功就把子任务标成全部成功，
+                         * 否则父任务会把"还差一步写"当成已完成。
+                         */
+                        if !request_block.is_empty() {
+                            ok = false;
+                            text = format!(
+                                "Incomplete: the read-only boundary blocked a required step; the parent must handle it through the normal approval flow.\n{text}"
+                            );
+                        }
+                        let text: String = text.chars().take(MODEL_OUTPUT_LIMIT).collect();
+                        handle.patch_step(child_index, |step| {
+                            step.state = if ok { "success" } else if handle.is_cancelled() { "skipped" } else { "failed" }.into();
+                            step.category = Some(StepCategory::Executed);
+                            step.child_usage = snapshot.context.as_ref().map(|context| context.cumulative.clone());
+                            step.elapsed_ms = began.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            if ok { step.stdout = text.clone(); } else { step.stderr = text.clone(); }
+                        });
+                        if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                        (id, ok, format!("{title} [{} / {}]: {text}", server.server_name, server.server_id))
+                    }
+                });
+                    for (id, ok, text) in futures_util::future::join_all(jobs).await {
+                        completed.insert(id, (ok, text));
+                    }
+                }
+                let mut outcomes: Vec<_> = completed.into_values().collect();
+                outcomes.sort_by(|a, b| a.1.cmp(&b.1));
+                let all_ok = outcomes.iter().all(|(ok, _)| *ok);
+                let any_stale = handle.snapshot().steps.iter().any(|step| step.group_id.as_deref() == Some(group_id.as_str()) && step.stale);
+                let results = outcomes.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n\n");
+                handle.patch_step(index, |step| {
+                    step.state = if handle.is_cancelled() { "skipped" } else if all_ok { "success" } else { "failed" }.into();
+                    step.stale = any_stale;
+                    if all_ok { step.stdout = results.clone(); } else { step.stderr = results.clone(); }
+                });
+                if let Some(step) = handle.step(index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                let plan_state = plan_step_id.as_deref().and_then(|id| {
+                    let plan = handle.snapshot().plan?;
+                    let step = plan.step(id)?;
+                    if step.kind == "action" || handle.is_cancelled() {
+                        return None;
+                    }
+                    if any_stale && all_ok {
+                        return Some("pending");
+                    }
+                    plan.next_step_state(id, all_ok, true)
+                });
+                if let Some(state) = plan_state { sync_plan_step(io, handle, &input.task_id, index, state, Some(if all_ok && !any_stale { "Read-only investigations completed" } else { "Some investigations failed or remain unverified" })); }
+                tool_messages.push(if all_ok { tool_ok_message(&raw.id, raw.native, &raw.name, &results) } else { tool_error_message(&raw.id, raw.native, &raw.name, &results) });
+                if handle.is_cancelled() { return Err(StopReason::Cancelled(ui(lang, "已停止", "Stopped"))); }
+                continue;
+            }
             /*
              * 操作组：计划模式按计划步骤分组（同一步的多条命令共用一句说明）；
              * 普通模式按"连续工具轮次"分组，模型写了正文就另起一组。
@@ -2314,7 +3304,7 @@ pub(crate) async fn run_loop(
                 let reason =
                     "sudo 不可用：当前是只读模式，或未开启「允许提权」。请给出不需要 root 的方案。"
                         .to_string();
-                fail_step(io, handle, index, &reason);
+                fail_step_denied(io, handle, index, &reason, "sudo");
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
@@ -2322,12 +3312,36 @@ pub(crate) async fn run_loop(
             /*
              * MCP 工具走自己的执行分支：工具定义在启动时已绑定，`step` 参数
              * 只用于计划校验，不能透给服务端。
+             *
+             * **风险按调用前的实时声明重算**，不沿用启动时的 `read_only`：
+             * 服务停用 / 工具停用 / 授权撤销 / 只读声明被改掉后，这一步必须
+             * 重新走确认或直接拦下，不能靠旧绑定"已经是只读"放行。
              */
-            let mcp_binding = input
+            let mut mcp_binding = input
                 .mcp_tools
                 .iter()
                 .find(|item| item.exposed_name == raw.name)
                 .cloned();
+            if let Some(binding) = mcp_binding.as_mut() {
+                if let Err(reject) = crate::mcp::revalidate_binding(
+                    input.db.as_deref(),
+                    binding,
+                    input.child_run,
+                ) {
+                    let reason = reject.reason_lang(lang, input.child_run);
+                    let blocked = reject.blocked_code();
+                    // 先把这次调用的目标写进步骤：子任务回传写需求 / 展开审计时要看得到。
+                    handle.patch_step(index, |step| {
+                        step.risk = "write".into();
+                        step.command = format!("mcp://{}/{}", binding.server_id, binding.tool);
+                        step.summary = Some(binding.description.chars().take(120).collect());
+                        step.server = Some(binding.server_name.clone());
+                    });
+                    fail_step_denied(io, handle, index, &reason, blocked);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                    continue;
+                }
+            }
             let mut planned = if let Some(binding) = mcp_binding {
                 let mut call_args = args.clone();
                 if let Some(object) = call_args.as_object_mut() {
@@ -2335,10 +3349,31 @@ pub(crate) async fn run_loop(
                 }
                 let args_json = serde_json::to_string(&call_args).unwrap_or_default();
                 let args_text: String = args_json.chars().take(300).collect();
-                let risk = if binding.read_only {
-                    ToolRisk::Read
-                } else {
-                    ToolRisk::Write
+                let effect = binding.effect();
+                let risk = match effect {
+                    crate::mcp::McpEffect::DeclaredReadOnly => ToolRisk::Read,
+                    // 写入 / 影响未知都按写处理：只读模式直接拦，其他模式走确认。
+                    crate::mcp::McpEffect::Write | crate::mcp::McpEffect::Unknown => {
+                        ToolRisk::Write
+                    }
+                };
+                let basis = match effect {
+                    crate::mcp::McpEffect::DeclaredReadOnly => Some(match lang {
+                        Lang::Zh => "只读依据：MCP 服务声明（平台未独立验证）",
+                        Lang::En => {
+                            "Read-only basis: declared by the MCP service (not independently verified)"
+                        }
+                    }),
+                    crate::mcp::McpEffect::Write => Some(match lang {
+                        Lang::Zh => "MCP 服务声明该工具可能写入",
+                        Lang::En => "The MCP service declares that this tool may write",
+                    }),
+                    crate::mcp::McpEffect::Unknown => Some(match lang {
+                        Lang::Zh => "MCP 只读声明与工具名称 / 参数冲突，影响未知",
+                        Lang::En => {
+                            "The MCP read-only claim conflicts with the tool name/parameters; effect unknown"
+                        }
+                    }),
                 };
                 PlannedTool {
                     call: ToolCall {
@@ -2349,38 +3384,51 @@ pub(crate) async fn run_loop(
                     },
                     command: format!("mcp://{}/{}", binding.server_id, binding.tool),
                     display: format!("MCP · {} · {}", binding.server_name, binding.tool),
-                    summary: Some(
-                        binding
-                            .description
-                            .chars()
-                            .take(120)
-                            .collect::<String>(),
-                    ),
+                    summary: Some(binding.description.chars().take(120).collect::<String>()),
                     timeout: Duration::from_secs(120),
                     path: None,
-                    impact: Some(format!(
-                        "调用 MCP 服务「{}」的工具；参数：{args_text}",
-                        binding.server_name
-                    )),
+                    impact: Some(match (lang, basis) {
+                        (Lang::Zh, Some(basis)) => format!(
+                            "调用 MCP 服务「{}」的工具；参数：{args_text}。{basis}",
+                            binding.server_name
+                        ),
+                        (Lang::En, Some(basis)) => format!(
+                            "Calls an MCP tool on server \"{}\"; arguments: {args_text}. {basis}",
+                            binding.server_name
+                        ),
+                        (Lang::Zh, None) => format!(
+                            "调用 MCP 服务「{}」的工具；参数：{args_text}",
+                            binding.server_name
+                        ),
+                        (Lang::En, None) => format!(
+                            "Calls an MCP tool on server \"{}\"; arguments: {args_text}",
+                            binding.server_name
+                        ),
+                    }),
                     rollback: None,
                     backup_path: None,
+                    // MCP 的影响来自第三方声明，不是平台解析出的命令。
+                    unknown: None,
+                    declared: None,
                     write_content: None,
                     mcp: Some(binding),
                 }
             } else {
-                match plan_tool_with_backup(
+                match plan_tool_for_locale(
                     &raw.name,
                     &args,
                     &handle.snapshot().cwd,
                     crate::db::AppDb::now() as u64,
                     &backup_policy,
+                    lang,
                 ) {
                     Ok(mut planned) => {
                         planned.call.id = call_id.clone();
                         planned
                     }
                     Err(reason) => {
-                        fail_step(io, handle, index, &reason);
+                        // 工具参数不合法：模型自己修正，不属于服务器失败。
+                        bounce_step(io, handle, &input.task_id, index, &reason);
                         tool_messages
                             .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                         continue;
@@ -2429,31 +3477,66 @@ pub(crate) async fn run_loop(
                 {
                     let mut changes: Vec<String> = Vec::new();
                     if previous.target != current.target {
-                        changes.push(format!(
-                            "目标目录从 {} 改为 {}",
-                            previous.target.as_deref().unwrap_or("当前目录"),
-                            current.target.as_deref().unwrap_or("当前目录")
-                        ));
-                    }
-                    if previous.overwrite != current.overwrite {
-                        changes.push(format!(
-                            "覆盖策略从 {} 改为 {}",
-                            previous.overwrite.label(),
-                            current.overwrite.label()
-                        ));
-                    }
-                    if previous.listing != current.listing {
-                        changes.push(if current.listing {
-                            "从解压改为只查看归档内容".to_string()
-                        } else {
-                            "从查看归档改为真正解压".to_string()
+                        let previous_target = previous.target.as_deref().unwrap_or(match lang {
+                            Lang::Zh => "当前目录",
+                            Lang::En => "the current directory",
+                        });
+                        let current_target = current.target.as_deref().unwrap_or(match lang {
+                            Lang::Zh => "当前目录",
+                            Lang::En => "the current directory",
+                        });
+                        changes.push(match lang {
+                            Lang::Zh => {
+                                format!("目标目录从 {previous_target} 改为 {current_target}")
+                            }
+                            Lang::En => {
+                                format!("target changed from {previous_target} to {current_target}")
+                            }
                         });
                     }
+                    if previous.overwrite != current.overwrite {
+                        changes.push(match lang {
+                            Lang::Zh => format!(
+                                "覆盖策略从 {} 改为 {}",
+                                previous.overwrite.label_lang(lang),
+                                current.overwrite.label_lang(lang)
+                            ),
+                            Lang::En => format!(
+                                "overwrite policy changed from {} to {}",
+                                previous.overwrite.label_lang(lang),
+                                current.overwrite.label_lang(lang)
+                            ),
+                        });
+                    }
+                    if previous.listing != current.listing {
+                        changes.push(match (lang, current.listing) {
+                            (Lang::Zh, true) => "从解压改为只查看归档内容".to_string(),
+                            (Lang::Zh, false) => "从查看归档改为真正解压".to_string(),
+                            (Lang::En, true) => {
+                                "changed from extracting to listing only".to_string()
+                            }
+                            (Lang::En, false) => {
+                                "changed from listing to actually extracting".to_string()
+                            }
+                        });
+                    }
+                    let separator = match lang {
+                        Lang::Zh => "；",
+                        Lang::En => "; ",
+                    };
                     let before = planned.impact.take().unwrap_or_default();
                     planned.impact = Some(if before.is_empty() {
-                        changes.join("；")
+                        changes.join(separator)
                     } else {
-                        format!("{before}；与上次相比：{}", changes.join("；"))
+                        match lang {
+                            Lang::Zh => {
+                                format!("{before}；与上次相比：{}", changes.join(separator))
+                            }
+                            Lang::En => format!(
+                                "{before}; compared with the previous attempt: {}",
+                                changes.join(separator)
+                            ),
+                        }
                     });
                 }
             }
@@ -2461,27 +3544,107 @@ pub(crate) async fn run_loop(
                 last_archive = archive_now;
             }
 
-            let severe = severe_operation_reason(&planned);
+            let severe = severe_operation_reason_lang(&planned, lang);
             /*
              * 只读模式不是"每次都确认"，而是**直接拒绝**写 / 危险操作：
              * 不产生审批，也不下发命令；模型拿到原因后应改用只读方案。
              */
-            let decision = permission_decision(
-                input.permission_mode,
-                &planned,
-                input.auto_approve_writes,
-            );
+            let decision =
+                permission_decision(input.permission_mode, &planned, input.auto_approve_writes);
             let read_only_blocked = decision == PermissionDecision::Block;
-            let needs_approval =
-                decision == PermissionDecision::Confirm && decided != Some(true);
+            let needs_approval = decision == PermissionDecision::Confirm && decided != Some(true);
             if let Some(reason) = &severe {
                 planned.impact = Some(match planned.impact.take() {
-                    Some(impact) if !impact.is_empty() => {
-                        format!("{impact}；需要二次确认：{reason}")
-                    }
-                    _ => format!("需要二次确认：{reason}"),
+                    Some(impact) if !impact.is_empty() => match lang {
+                        Lang::Zh => format!("{impact}；需要二次确认：{reason}"),
+                        Lang::En => format!("{impact}; extra confirmation required: {reason}"),
+                    },
+                    _ => match lang {
+                        Lang::Zh => format!("需要二次确认：{reason}"),
+                        Lang::En => format!("Extra confirmation required: {reason}"),
+                    },
                 });
             }
+            /*
+             * AI 自述"这一步只读"，但平台解析出写操作：**先把冲突回给模型**。
+             *
+             * 权限判定不变（写操作照旧要确认），只是不让用户在确认卡上看到
+             * "AI 说是查询、平台说是删除"的矛盾，也让模型自己修正判断。
+             */
+            if let Some(declaration) = planned.declared.as_ref() {
+                if declaration.claims_read()
+                    && risk != ToolRisk::Read
+                    && needs_approval
+                    && !out_of_scope
+                    && !read_only_blocked
+                    && unknown_bounces < 3
+                    && asked_unknown.insert(format!("intent:{op_signature}"))
+                {
+                    unknown_bounces += 1;
+                    let summary = planned.summary.clone().unwrap_or_default();
+                    let zh = format!(
+                        "你声明这一步是只读（intent=read），但命令里有写操作：{summary}。\
+                         请改用纯只读命令（例如 docker ps / sha256sum / stat），\
+                         或把 intent 改成 change 再提交。"
+                    );
+                    let en = format!(
+                        "You declared this step as read-only (intent=read), but the command contains a write: {summary}. \
+                         Use a purely read-only command (e.g. docker ps / sha256sum / stat), or submit with intent=change."
+                    );
+                    let reason = ui(lang, &zh, &en);
+                    handle.patch_step(index, |step| {
+                        step.risk = risk.as_str().to_string();
+                        step.command = display_command.clone();
+                        step.summary = planned.summary.clone();
+                        step.impact = planned.impact.clone();
+                    });
+                    // 内部纠错：命令没有执行，用户不需要看到红色失败卡。
+                    bounce_step(io, handle, &input.task_id, index, &reason);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                    continue;
+                }
+            }
+
+            /*
+             * 看不懂的命令：**先让模型自己改**。
+             *
+             * 平台解析不了这条命令时直接弹确认，等于把"猜"的锅甩给用户。先把
+             * 具体片段和原因回给模型，让它拆成多条可核对的命令 / 换成明确的
+             * 工具；同一条签名第二次出现说明它确实改不了，才按正常审批交给
+             * 用户决定（不反复问同一个问题）。
+             */
+            if planned.unknown.is_some()
+                && needs_approval
+                && !out_of_scope
+                && !read_only_blocked
+                && unknown_bounces < 3
+                && asked_unknown.insert(op_signature.clone())
+            {
+                unknown_bounces += 1;
+                let fragment = planned.unknown.clone().unwrap_or_default();
+                let zh = format!(
+                    "无法判断这条命令会做什么：`{fragment}`。\
+                     请拆成多条可核对的命令，或改用明确的绝对路径 / 专用工具后重试；\
+                     确实必须原样执行时，说明原因，平台会让用户确认。"
+                );
+                let en = format!(
+                    "Cannot determine what this command does: `{fragment}`. \
+                     Split it into verifiable commands, or use explicit absolute paths / a dedicated tool and retry; \
+                     if it must run as-is, explain why and the platform will ask the user."
+                );
+                let reason = ui(lang, &zh, &en);
+                handle.patch_step(index, |step| {
+                    step.risk = risk.as_str().to_string();
+                    step.command = display_command.clone();
+                    step.summary = planned.summary.clone();
+                    step.impact = planned.impact.clone();
+                });
+                // 看不懂的命令同样是内部纠正：先让模型改写，不当作服务器失败。
+                bounce_step(io, handle, &input.task_id, index, &reason);
+                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                continue;
+            }
+
             handle.patch_step(index, |step| {
                 step.state = if read_only_blocked {
                     "failed".to_string()
@@ -2504,6 +3667,13 @@ pub(crate) async fn run_loop(
                 step.plan_step_id = plan_step_id.clone();
                 step.group_id = Some(group_id.clone());
             });
+            // 运行态只是展示状态；保留开始前的状态，判断只读操作是否真的在验证写入。
+            let prior_plan_state = handle.snapshot().plan.as_ref().and_then(|plan| {
+                plan_step_id
+                    .as_deref()
+                    .and_then(|id| plan.step(id))
+                    .map(|step| step.state.clone())
+            });
             // 计划状态跟着真实事件走：等确认 / 执行中（在任何输出之前）。
             if !read_only_blocked {
                 sync_plan_step(
@@ -2524,13 +3694,23 @@ pub(crate) async fn run_loop(
                  */
                 if !noted_groups.contains(&group_id) {
                     if visible_text.is_empty() {
-                        event.note = Some(preamble_text(
-                            lang,
-                            planned.summary.as_deref(),
-                            &planned.call.name,
-                            planned.path.as_deref(),
-                            &planned.display,
-                        ));
+                        // AI 自己说明了这一步的目的就用它；没写才由平台补一句。
+                        event.note = Some(
+                            match planned
+                                .declared
+                                .as_ref()
+                                .and_then(|item| item.purpose.as_deref())
+                            {
+                                Some(purpose) => purpose.to_string(),
+                                None => preamble_text(
+                                    lang,
+                                    planned.summary.as_deref(),
+                                    &planned.call.name,
+                                    planned.path.as_deref(),
+                                    &planned.display,
+                                ),
+                            },
+                        );
                     }
                     noted_groups.insert(group_id.clone());
                 }
@@ -2538,12 +3718,19 @@ pub(crate) async fn run_loop(
             }
 
             if read_only_blocked {
-                let reason = match lang {
-                    Lang::Zh => "只读模式：这条命令会写 / 删除，已拒绝执行。切到「按需确认」后才能执行。",
-                    Lang::En => "Read-only mode: this command may write or delete, so it was not executed. Switch to Ask to run it.",
+                let reason = if input.child_run {
+                    match lang {
+                        Lang::Zh => "子任务只读：这条命令会写 / 删除，已拒绝执行。请把目标、命令与预期影响作为 WRITE_REQUEST 返回主 Agent，由主 Agent 走确认流程。",
+                        Lang::En => "Child agents are read-only: this command may write or delete, so it was not executed. Return the target, command and expected impact as a WRITE_REQUEST for the parent agent to run through its approval flow.",
+                    }
+                } else {
+                    match lang {
+                        Lang::Zh => "只读模式：这条命令会写 / 删除，已拒绝执行。切到「按需确认」后才能执行。",
+                        Lang::En => "Read-only mode: this command may write or delete, so it was not executed. Switch to Ask to run it.",
+                    }
                 }
                 .to_string();
-                fail_step(io, handle, index, &reason);
+                fail_step_denied(io, handle, index, &reason, "read_only");
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
@@ -2553,11 +3740,14 @@ pub(crate) async fn run_loop(
              * 不弹确认（两种权限都一样）。模型拿到原因后应改用只读命令。
              */
             if out_of_scope {
-                let reason = "这次任务只要求查询：写 / 改 / 删被拦下。\
-                    改用只读命令（ps、docker ps、systemctl status、df…）；\
-                    确实需要改动时，先请用户明确说明。"
-                    .to_string();
-                skip_step(io, handle, &input.task_id, index, &reason);
+                let reason = ui(
+                    lang,
+                    "这次任务只要求查询：写 / 改 / 删被拦下。\
+                     改用只读命令（ps、docker ps、systemctl status、df…）；\
+                     确实需要改动时，先请用户明确说明。",
+                    "This task is query-only, so writes/changes/deletes were blocked. Use read-only commands (ps, docker ps, systemctl status, df...); if a change is really needed, ask the user to confirm it explicitly.",
+                );
+                skip_step(io, handle, &input.task_id, index, &reason, "query_only");
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
@@ -2565,10 +3755,13 @@ pub(crate) async fn run_loop(
              * 拒绝过的操作换写法也不再问：直接告给模型，别再试探。
              */
             if decided == Some(false) {
-                let reason = "用户已经拒绝过这个操作：换一种写法也不会执行。\
-                    先按已有信息汇报，或请用户明确改变要求。"
-                    .to_string();
-                skip_step(io, handle, &input.task_id, index, &reason);
+                let reason = ui(
+                    lang,
+                    "用户已经拒绝过这个操作：换一种写法也不会执行。\
+                     先按已有信息汇报，或请用户明确改变要求。",
+                    "The user already rejected this operation; a different spelling will not run either. Report what you know, or ask the user to change the requirement explicitly.",
+                );
+                skip_step(io, handle, &input.task_id, index, &reason, "user_denied");
                 tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                 continue;
             }
@@ -2583,21 +3776,59 @@ pub(crate) async fn run_loop(
             if risk != ToolRisk::Read {
                 if let Some((ok, result)) = completed_ops.get(&op_signature).cloned() {
                     if ok {
-                        let cached = format!(
-                            "{result}\n（同一操作已成功执行，直接复用上次结果；请做只读验证，不要重复解压或写入。）"
+                        let cached = match lang {
+                            Lang::Zh => format!(
+                                "{result}\n（同一操作已成功执行，直接复用上次结果；请做只读验证，不要重复解压或写入。）"
+                            ),
+                            Lang::En => format!(
+                                "{result}\n(The same operation already succeeded; reuse that result and do a read-only verification instead of extracting or writing again.)"
+                            ),
+                        };
+                        let summary = ui(
+                            lang,
+                            "复用上次成功结果（未重复执行）",
+                            "Reused the previous successful result (not executed again)",
                         );
                         handle.patch_step(index, |step| {
                             step.state = "success".to_string();
-                            step.summary = Some("复用上次成功结果（未重复执行）".to_string());
+                            // 复用成功结果 = 这次写入确实发生过（只是没有重跑）。
+                            step.category = Some(StepCategory::Executed);
+                            step.summary = Some(summary.clone());
                             step.exit_code = Some(0);
                         });
+                        let evidence = ui(
+                            lang,
+                            "复用上次成功结果",
+                            "Reused the previous successful result",
+                        );
+                        // 复用写入结果并不等于验证通过：保留此前的完成/待验证
+                        // 状态；新的写入步骤仍按其验证要求进入待验证。
+                        let reused_plan_state = match prior_plan_state.as_deref() {
+                            Some("done") => "done",
+                            Some("verifying") => "verifying",
+                            _ => handle
+                                .snapshot()
+                                .plan
+                                .as_ref()
+                                .and_then(|plan| {
+                                    plan_step_id.as_deref().and_then(|id| plan.step(id))
+                                })
+                                .map(|step| {
+                                    if step.kind == "action" && !step.verify.trim().is_empty() {
+                                        "verifying"
+                                    } else {
+                                        "done"
+                                    }
+                                })
+                                .unwrap_or("done"),
+                        };
                         sync_plan_step(
                             io,
                             handle,
                             &input.task_id,
                             index,
-                            "done",
-                            Some("复用上次成功结果"),
+                            reused_plan_state,
+                            Some(&evidence),
                         );
                         if let Some(step) = handle.step(index) {
                             io.emit(AgentEvent::from_step(
@@ -2614,14 +3845,45 @@ pub(crate) async fn run_loop(
                         continue;
                     }
                     if op_attempts.get(&op_signature).copied().unwrap_or(0) >= 2 {
-                        let reason = "同一操作已执行两次且都失败；不要再用等价命令重试。\
-                            请先读上一条真实错误，向用户说明失败原因。"
-                            .to_string();
-                        skip_step(io, handle, &input.task_id, index, &reason);
+                        let reason = ui(
+                            lang,
+                            "同一操作已执行两次且都失败；不要再用等价命令重试。\
+                             请先读上一条真实错误，向用户说明失败原因。",
+                            "This operation failed twice; do not retry with an equivalent command. Read the real error and explain the failure to the user.",
+                        );
+                        skip_step_internal(io, handle, &input.task_id, index, &reason, "duplicate");
                         tool_messages
                             .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                         continue;
                     }
+                }
+            }
+
+            /*
+             * **结果不确定的写操作不自动重放。**
+             *
+             * SSH 中断 / 超时会让"命令到底执行了没有"没有答案；此时直接重试
+             * 可能把同一次部署做两遍。要求先跑一次只读核对（`read_ok_round`
+             * 必须晚于那次不确定的失败），模型拿到真实状态后再决定是否重试。
+             */
+            if risk != ToolRisk::Read {
+                if let Some(failed_round) = uncertain_ops.get(&op_signature).copied() {
+                    if read_ok_round <= failed_round {
+                        let reason = ui(
+                            lang,
+                            "上一次写入的连接中断，无法确认服务器上是否已经执行。\
+                             直接重试可能重复写入；请先做只读核对（查看目标文件 / 目录 / 服务状态），\
+                             确认实际结果后再决定是否重试。",
+                            "The previous write lost its connection, so it is unknown whether it ran. \
+                             Retrying now could apply it twice; first verify the target file, directory or service (read-only), then decide whether to retry.",
+                        );
+                        skip_step_internal(io, handle, &input.task_id, index, &reason, "uncertain");
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                        continue;
+                    }
+                    // 已经核对过真实状态：这次按证据重试，不再算"不确定"。
+                    uncertain_ops.remove(&op_signature);
                 }
             }
 
@@ -2675,8 +3937,7 @@ pub(crate) async fn run_loop(
                                 planned.call.name,
                                 planned.display.trim()
                             )),
-                            params: serde_json::to_string(&planned.call.args)
-                                .unwrap_or_default(),
+                            params: serde_json::to_string(&planned.call.args).unwrap_or_default(),
                             tool: planned.call.name.clone(),
                             path: planned.path.clone(),
                             risk: risk.as_str().to_string(),
@@ -2726,12 +3987,16 @@ pub(crate) async fn run_loop(
                         let reason = "用户补充了新要求，这一步已撤回；\
                             按新要求重新评估后再决定要不要做。"
                             .to_string();
-                        skip_step(io, handle, &input.task_id, index, &reason);
+                        skip_step(io, handle, &input.task_id, index, &reason, "withdrawn");
                         if let Some(id) = &change_id {
                             io.changes().update(id, |record| {
                                 record.status = "withdrawn".to_string();
                                 // 保留预览：撤回也要能看到当时准备改什么（但绝不执行）。
-                                record.note = Some("按新的要求撤回，这一步没有执行".to_string());
+                                record.note = Some(ui(
+                                    lang,
+                                    "按新的要求撤回，这一步没有执行",
+                                    "Withdrawn per the new requirement; this step did not run",
+                                ));
                             });
                             if let Some(summary) = io.changes().get(id) {
                                 emit_change(io, &input.task_id, summary);
@@ -2742,7 +4007,11 @@ pub(crate) async fn run_loop(
                         let mut event = AgentEvent::new(&input.task_id, "approval_withdrawn");
                         event.call_id = Some(call_id.clone());
                         event.step_index = Some(index);
-                        event.message = Some("已收到新的要求，撤回了这条待确认操作。".to_string());
+                        event.message = Some(ui(
+                            lang,
+                            "已收到新的要求，撤回了这条待确认操作。",
+                            "New requirement received; the pending operation was withdrawn.",
+                        ));
                         io.emit(event);
                         skip_this = true;
                         break;
@@ -2754,22 +4023,30 @@ pub(crate) async fn run_loop(
                         Decision::Deny => {
                             // 记住"这个操作被拒绝过"：换写法也不再弹第二次。
                             decided_ops.insert(op_signature.clone(), false);
-                            let reason = "用户拒绝执行这条命令".to_string();
-                            fail_step(io, handle, index, &reason);
+                            let reason = ui(
+                                lang,
+                                "用户拒绝执行这条命令",
+                                "The user rejected this command",
+                            );
+                            fail_step_denied(io, handle, index, &reason, "user_denied");
                             // 计划里这一步是「未执行」，不是命令失败。
+                            let rejected = ui(lang, "用户拒绝执行", "Rejected by the user");
                             sync_plan_step(
                                 io,
                                 handle,
                                 &input.task_id,
                                 index,
                                 "skipped",
-                                Some("用户拒绝执行"),
+                                Some(&rejected),
                             );
                             if let Some(id) = &change_id {
                                 io.changes().update(id, |record| {
                                     record.status = "rejected".to_string();
-                                    record.note =
-                                        Some("用户拒绝执行：服务器上的文件没有改动".to_string());
+                                    record.note = Some(ui(
+                                        lang,
+                                        "用户拒绝执行：服务器上的文件没有改动",
+                                        "Rejected by the user; the server file was not changed",
+                                    ));
                                 });
                                 if let Some(summary) = io.changes().get(id) {
                                     emit_change(io, &input.task_id, summary);
@@ -2781,29 +4058,60 @@ pub(crate) async fn run_loop(
                             break;
                         }
                         Decision::Cancelled => {
+                            // 用户主动停止：不是执行失败，也不是服务器故障。
+                            handle.patch_step(index, |step| {
+                                step.category = Some(StepCategory::Denied);
+                                step.blocked = Some("cancelled".to_string());
+                            });
                             mark_step_aborted(
                                 io,
                                 handle,
                                 index,
-                                "已取消（用户停止），命令没有执行",
+                                &ui(
+                                    lang,
+                                    "已取消（用户停止），命令没有执行",
+                                    "Cancelled by the user; the command did not run",
+                                ),
                             );
-                            return Err(StopReason::Cancelled(format!(
-                                "已停止：等待确认时收到停止信号（停在「{}」）",
-                                describe_step(&raw.name, &args)
-                            )));
+                            return Err(StopReason::Cancelled(match lang {
+                                Lang::Zh => format!(
+                                    "已停止：等待确认时收到停止信号（停在「{}」）",
+                                    describe_step(&raw.name, &args)
+                                ),
+                                Lang::En => format!(
+                                    "Stopped: a stop signal arrived while waiting for approval (stopped at \"{}\")",
+                                    describe_step(&raw.name, &args)
+                                ),
+                            }));
                         }
                         Decision::Timeout => {
+                            // 确认过期：命令没有执行，不是服务器失败。
+                            handle.patch_step(index, |step| {
+                                step.category = Some(StepCategory::Denied);
+                                step.blocked = Some("expired".to_string());
+                            });
                             mark_step_aborted(
                                 io,
                                 handle,
                                 index,
-                                "确认已过期，命令没有执行",
+                                &ui(
+                                    lang,
+                                    "确认已过期，命令没有执行",
+                                    "The approval expired; the command did not run",
+                                ),
                             );
-                            return Err(StopReason::Failed(format!(
-                                "确认已过期（等待超过 {} 分钟），已停止（停在「{}」）",
-                                APPROVAL_SECONDS / 60,
-                                describe_step(&raw.name, &args)
-                            )));
+                            return Err(StopReason::Failed(match lang {
+                                Lang::Zh => format!(
+                                    "确认已过期（等待超过 {} 分钟），已停止（停在「{}」）",
+                                    APPROVAL_SECONDS / 60,
+                                    describe_step(&raw.name, &args)
+                                ),
+                                Lang::En => format!(
+                                    "The approval expired after {} minutes; stopped (at \"{}\")",
+                                    APPROVAL_SECONDS / 60,
+                                    describe_step(&raw.name, &args)
+                                ),
+                            }));
                         }
                     }
 
@@ -2813,8 +4121,12 @@ pub(crate) async fn run_loop(
                      */
                     if let Some(id) = change_id.clone() {
                         if attempt >= 2 {
-                            let reason = "文件在确认期间被反复修改，已停止这次写入".to_string();
-                            fail_step(io, handle, index, &reason);
+                            let reason = ui(
+                                lang,
+                                "文件在确认期间被反复修改，已停止这次写入",
+                                "The file kept changing during approval, so the write was stopped",
+                            );
+                            fail_step_denied(io, handle, index, &reason, "preview_stale");
                             tool_messages
                                 .push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
                             skip_this = true;
@@ -2898,8 +4210,13 @@ pub(crate) async fn run_loop(
                 None
             } else {
                 let key = resource_key(input, &planned);
+                let waiting_summary = ui(
+                    lang,
+                    "等待该服务上的操作完成",
+                    "Waiting for the operation on this service to finish",
+                );
                 handle.patch_step(index, |step| {
-                    step.summary = Some("等待该服务上的操作完成".to_string());
+                    step.summary = Some(waiting_summary);
                 });
                 if let Some(step) = handle.step(index) {
                     io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
@@ -2912,8 +4229,12 @@ pub(crate) async fn run_loop(
                         Some(guard)
                     }
                     _ = handle.cancel().cancelled() => {
-                        let reason = "等待该服务上的操作完成时被取消，这一步没有执行。".to_string();
-                        skip_step(io, handle, &input.task_id, index, &reason);
+                        let reason = ui(
+                            lang,
+                            "等待该服务上的操作完成时被取消，这一步没有执行。",
+                            "Cancelled while waiting for the operation on this service; this step did not run.",
+                        );
+                        skip_step(io, handle, &input.task_id, index, &reason, "cancelled");
                         tool_messages.push(tool_error_message(
                             &raw.id,
                             raw.native,
@@ -2926,7 +4247,15 @@ pub(crate) async fn run_loop(
             };
 
             if !io.connected(&input.session_id).await {
-                let reason = "SSH 会话已断开，任务停止".to_string();
+                /*
+                 * 连接中断 ≠ 命令失败：断开时这条命令可能已经发出去了。
+                 * 不伪装成"执行失败"，也不假装确定，直接说明结果未知。
+                 */
+                let reason = ui(
+                    lang,
+                    "连接已中断：无法确认这一步是否已经在服务器上执行。重新连接后先核对目标文件 / 服务状态，再决定是否重试。",
+                    "The connection was lost: it is unknown whether this step already ran on the server. Reconnect, verify the target file or service, then decide whether to retry.",
+                );
                 fail_step(io, handle, index, &reason);
                 return Err(StopReason::Failed(reason));
             }
@@ -2936,6 +4265,11 @@ pub(crate) async fn run_loop(
                 return Err(StopReason::Failed(reason));
             }
 
+            if input.child_run && handle.is_cancelled() {
+                let reason = ui(lang, "任务已停止，这一步未执行。", "Stopped before this operation was sent.");
+                skip_step(io, handle, &input.task_id, index, &reason, "cancelled");
+                return Err(StopReason::Cancelled(reason));
+            }
             let remaining = Duration::from_secs(MAX_TOTAL_SECONDS)
                 .saturating_sub(started.elapsed())
                 .max(Duration::from_secs(1));
@@ -2949,47 +4283,41 @@ pub(crate) async fn run_loop(
              */
             let output = if let Some(mut binding) = planned.mcp.clone() {
                 /*
-                 * 执行前复查：服务被停用 / 工具被取消启用 / 授权撤销后，
-                 * 本轮剩余调用立即禁止。库里读不到（测试）时按启动时绑定继续。
+                 * 执行前复查（TOCTOU）：服务被停用 / 工具被取消启用 / 授权撤销 /
+                 * 只读声明变化后，本轮剩余调用立即禁止。
+                 *
+                 * 这里必须给模型回一条 tool 结果：原生 tool_calls 少一条
+                 * `role: tool` 会让下一轮请求直接 400，也会让子任务「静默失败」。
                  */
-                if let Some(db) = input.db.as_ref() {
-                    match crate::mcp::load_config(db.as_ref(), &binding.server_id) {
-                        Ok(fresh) => {
-                            if !fresh.enabled
-                                || fresh.status != "connected"
-                                || !crate::mcp::binding_allows(
-                                    &fresh.binding,
-                                    input.server_id.as_deref(),
-                                    input.workspace_id.as_deref(),
-                                )
-                                || !fresh
-                                    .tools
-                                    .iter()
-                                    .any(|tool| tool.name == binding.tool && tool.enabled)
-                            {
-                                fail_step(
-                                    io,
-                                    handle,
-                                    index,
-                                    "MCP 实例已停用、未通过验证、绑定变更或授权已撤销，这次调用没有执行。",
-                                );
-                                continue;
-                            }
-                            binding.config = fresh;
-                        }
-                        Err(error) => {
-                            fail_step(
-                                io,
-                                handle,
-                                index,
-                                &format!("MCP 配置已不可用：{error}"),
-                            );
-                            continue;
+                let declared_read = binding.effect() == crate::mcp::McpEffect::DeclaredReadOnly;
+                let mut rejected: Option<(String, &'static str)> = None;
+                match crate::mcp::revalidate_binding(
+                    input.db.as_deref(),
+                    &mut binding,
+                    input.child_run,
+                ) {
+                    Ok(()) => {
+                        // 批准的是"只读"，执行时却变成了写入 / 未知：不能放行。
+                        if declared_read && binding.effect() != crate::mcp::McpEffect::DeclaredReadOnly {
+                            rejected = Some((
+                                ui(
+                                    lang,
+                                    "该 MCP 工具在确认后改变了只读声明：这次调用没有执行，请重新评估。",
+                                    "This MCP tool changed its read-only declaration after approval, so the call did not run; re-evaluate before retrying.",
+                                ),
+                                "permission",
+                            ));
                         }
                     }
+                    Err(reject) => rejected = Some((reject.reason_lang(lang, input.child_run), reject.blocked_code())),
+                }
+                if let Some((reason, blocked)) = rejected {
+                    fail_step_denied(io, handle, index, &reason, blocked);
+                    tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                    continue;
                 }
                 // MCP 没有 SSH 流式输出：一次调用结束后把结果交给现有步骤。
-                match crate::mcp::call_tool(&binding, &planned.call.args).await {
+                match io.call_mcp(&binding, &planned.call.args).await {
                     Ok(text) => Ok(ExecOutput {
                         stdout: text,
                         stderr: String::new(),
@@ -2998,7 +4326,10 @@ pub(crate) async fn run_loop(
                     }),
                     Err(error) => Ok(ExecOutput {
                         stdout: String::new(),
-                        stderr: format!("MCP 调用失败：{error}"),
+                        stderr: match lang {
+                            Lang::Zh => format!("MCP 调用失败：{error}"),
+                            Lang::En => format!("MCP call failed: {error}"),
+                        },
                         exit_code: Some(1),
                         truncated: false,
                     }),
@@ -3061,15 +4392,58 @@ pub(crate) async fn run_loop(
                     }
                     let mut stderr = output.stderr.clone();
                     if marked.pwd_failed {
-                        stderr.push_str(
-                            "\n目标目录不存在或不可进入，命令未执行（先用 list_dir 确认路径）",
-                        );
+                        stderr.push_str(match lang {
+                            Lang::Zh => "\n目标目录不存在或不可进入，命令未执行（先用 list_dir 确认路径）",
+                            Lang::En => "\nThe working directory does not exist or cannot be entered; the command did not run (confirm the path with list_dir first).",
+                        });
                     }
                     if marked.backup_failed {
-                        stderr.push_str("\n备份失败，已取消写入（没有改动原文件）");
+                        stderr.push_str(match lang {
+                            Lang::Zh => "\n备份失败，已取消写入（没有改动原文件）",
+                            Lang::En => "\nBackup failed; the write was cancelled (the original file was not changed).",
+                        });
                     }
-                    let ok =
-                        output.exit_code == Some(0) && !marked.pwd_failed && !marked.backup_failed;
+                    /*
+                     * 归档失败不能只看退出码里的一个特征串：
+                     * * 管道会吞掉 `unzip` 的退出码 —— 由 `wrap_with_cwd` 的
+                     *   `pipefail` 把失败传回来（缺包 / 坏包 / 非零退出）；
+                     * * `Usage: unzip` 是参数错误的一种表现，仍然保留这层兜底；
+                     * * `unzip -p` 以 0 退出却没有任何输出，同样不是"读到了"。
+                     */
+                    let archive_usage = planned.display.contains("unzip")
+                        && (marked.stdout.contains("Usage: unzip")
+                            || stderr.contains("Usage: unzip"));
+                    if archive_usage {
+                        stderr.push_str(match lang {
+                            Lang::Zh => "\n未能打开归档，请检查归档路径和参数。",
+                            Lang::En => {
+                                "\nThe archive could not be opened; check its path and flags."
+                            }
+                        });
+                    }
+                    let archive_empty = archive_read_is_empty(&planned.display, &marked.stdout);
+                    if archive_empty {
+                        stderr.push_str(match lang {
+                            Lang::Zh => "\n没有从归档里读到内容（可能条目不存在或归档损坏）。",
+                            Lang::En => "\nNothing was read from the archive (the entry may not exist, or the archive is corrupt).",
+                        });
+                    }
+                    // 退出码被管道吞掉时，stderr 仍然是缺包 / 坏包的证据。
+                    let archive_hint = archive_error_hint_lang(&planned.display, &stderr, lang);
+                    if let Some(reason) = archive_hint {
+                        stderr.push('\n');
+                        stderr.push_str(reason);
+                        stderr.push_str(match lang {
+                            Lang::Zh => "，这一步没有完成。",
+                            Lang::En => "; this step did not complete.",
+                        });
+                    }
+                    let ok = output.exit_code == Some(0)
+                        && !marked.pwd_failed
+                        && !marked.backup_failed
+                        && !archive_usage
+                        && !archive_empty
+                        && archive_hint.is_none();
                     total_bytes += marked.stdout.len() + stderr.len();
                     (
                         ok,
@@ -3094,6 +4468,8 @@ pub(crate) async fn run_loop(
 
             handle.patch_step(index, |step| {
                 step.state = if ok { "success" } else { "failed" }.to_string();
+                // 工具真的跑过：成功 / 失败由 state 与退出码说明，类别不再是内部纠错。
+                step.category = Some(StepCategory::Executed);
                 step.stdout = stdout.clone();
                 step.stderr = stderr.clone();
                 step.exit_code = exit_code;
@@ -3104,20 +4480,62 @@ pub(crate) async fn run_loop(
                 }
                 step.elapsed_ms = elapsed_ms;
             });
+            /*
+             * 结果是否"确定"：
+             * * 只读成功 → 记下轮次，供"不确定的写"判断是否已经核对过；
+             * * 写操作没有退出码（连接中断 / 超时）→ 记成不确定，禁止自动重放；
+             * * 明确的退出码 → 无论成功失败，结果都已知，不再是"不确定"。
+             */
+            if risk == ToolRisk::Read {
+                if ok {
+                    read_ok_round = round;
+                }
+            } else if exit_code.is_none() {
+                uncertain_ops.insert(op_signature.clone(), round);
+            } else {
+                uncertain_ops.remove(&op_signature);
+            }
             // 计划步骤的状态只认这条真实结果：成功 / 失败，证据取真实输出首行。
             let plan_evidence = if ok {
                 first_line(&stdout, 120)
             } else {
                 first_line(&stderr, 120)
             };
-            sync_plan_step(
-                io,
-                handle,
-                &input.task_id,
-                index,
-                if ok { "done" } else { "failed" },
-                Some(&plan_evidence),
-            );
+            /*
+             * 计划步骤按**真实执行 + 验证证据**推进（见 `AgentPlan::next_step_state`）：
+             * 探测成功不能完成写入步骤；写入成功停在 `verifying`，等这一步要求
+             * 的只读核对真的跑过一次才算完成。
+             */
+            let next_state = {
+                let snapshot = handle.snapshot();
+                plan_step_id.as_deref().and_then(|id| {
+                    snapshot
+                        .plan
+                        .map(|mut current| {
+                            if let (Some(previous), Some(step)) = (
+                                prior_plan_state.as_deref(),
+                                current
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == id && !step.superseded),
+                            ) {
+                                step.state = previous.to_string();
+                            }
+                            current.next_step_state(id, ok, risk == ToolRisk::Read)
+                        })
+                        .flatten()
+                })
+            };
+            if let Some(state) = next_state {
+                sync_plan_step(
+                    io,
+                    handle,
+                    &input.task_id,
+                    index,
+                    state,
+                    Some(&plan_evidence),
+                );
+            }
 
             /*
              * 写入之后回读一次：**实际 Diff 只来自服务器上的回读结果**。
@@ -3164,7 +4582,10 @@ pub(crate) async fn run_loop(
                 let mut event = AgentEvent::new(&input.task_id, "tool_output");
                 event.step_index = Some(index);
                 event.cwd = Some(cwd.clone());
-                event.stderr = Some("\n…（输出过长，已截断）\n".to_string());
+                event.stderr = Some(match lang {
+                    Lang::Zh => "\n…（输出过长，已截断）\n".to_string(),
+                    Lang::En => "\n… (output too long; truncated)\n".to_string(),
+                });
                 io.emit(event);
             }
             if let Some(step) = handle.step(index) {
@@ -3232,11 +4653,18 @@ pub(crate) async fn run_loop(
         conversation.extend(tool_messages);
     }
 
-    Err(StopReason::Failed(format!(
-        "已达 {} 轮工具调用上限，已停止{}",
-        rounds,
-        last_step_hint(handle)
-    )))
+    Err(StopReason::Failed(match lang {
+        Lang::Zh => format!(
+            "这次任务已经尝试了 {} 轮，仍未得出结论，先停在这里{}",
+            rounds,
+            last_step_hint(handle, lang)
+        ),
+        Lang::En => format!(
+            "This task ran {} rounds without reaching a conclusion; stopping here{}",
+            rounds,
+            last_step_hint(handle, lang)
+        ),
+    }))
 }
 
 enum Decision {
@@ -3281,21 +4709,41 @@ fn prepare_question(
     raw: &PendingCall,
     round: u32,
 ) -> Result<PendingQuestion, String> {
+    let lang = Lang::from_locale(input.locale.as_deref());
     let draft: AskUserDraft =
-        serde_json::from_str(raw.body.trim()).map_err(|error| format!("ask_user 参数不合法：{error}"))?;
+        serde_json::from_str(raw.body.trim()).map_err(|error| match lang {
+            Lang::Zh => format!("ask_user 参数不合法：{error}"),
+            Lang::En => format!("Invalid ask_user arguments: {error}"),
+        })?;
     let question = draft.question.trim();
     if question.is_empty() {
-        return Err("ask_user 需要提供问题内容".to_string());
+        return Err(ui(
+            lang,
+            "ask_user 需要提供问题内容",
+            "ask_user requires the question text",
+        ));
     }
     if question.chars().count() > 2000 {
-        return Err("ask_user 的问题过长（上限 2000 字）".to_string());
+        return Err(ui(
+            lang,
+            "ask_user 的问题过长（上限 2000 字）",
+            "The ask_user question is too long (limit 2000 characters)",
+        ));
     }
     let kind = draft.kind.trim().to_ascii_lowercase();
     if kind != "single" && kind != "multi" {
-        return Err("ask_user 的 kind 只能是 single 或 multi".to_string());
+        return Err(ui(
+            lang,
+            "ask_user 的 kind 只能是 single 或 multi",
+            "ask_user kind must be single or multi",
+        ));
     }
     if draft.options.len() > 20 {
-        return Err("ask_user 最多提供 20 个选项".to_string());
+        return Err(ui(
+            lang,
+            "ask_user 最多提供 20 个选项",
+            "ask_user accepts at most 20 options",
+        ));
     }
     let mut options = Vec::with_capacity(draft.options.len());
     let mut seen = std::collections::HashSet::new();
@@ -3303,13 +4751,24 @@ fn prepare_question(
         let id = option.id.trim();
         let label = option.label.trim();
         if id.is_empty() || label.is_empty() {
-            return Err("ask_user 的每个选项都需要 id 和名称".to_string());
+            return Err(ui(
+                lang,
+                "ask_user 的每个选项都需要 id 和名称",
+                "Every ask_user option needs both an id and a label",
+            ));
         }
         if id.chars().count() > 120 || label.chars().count() > 200 {
-            return Err("ask_user 的选项 id 或名称过长".to_string());
+            return Err(ui(
+                lang,
+                "ask_user 的选项 id 或名称过长",
+                "An ask_user option id or label is too long",
+            ));
         }
         if !seen.insert(id.to_string()) {
-            return Err(format!("ask_user 的选项 id 重复：{id}"));
+            return Err(match lang {
+                Lang::Zh => format!("ask_user 的选项 id 重复：{id}"),
+                Lang::En => format!("Duplicate ask_user option id: {id}"),
+            });
         }
         options.push(QuestionOption {
             id: id.to_string(),
@@ -3317,7 +4776,11 @@ fn prepare_question(
         });
     }
     if options.is_empty() && !draft.allow_custom {
-        return Err("ask_user 至少需要一个预设选项，或允许自定义回答".to_string());
+        return Err(ui(
+            lang,
+            "ask_user 至少需要一个预设选项，或允许自定义回答",
+            "ask_user needs at least one preset option, or must allow a custom answer",
+        ));
     }
     let question_id = if raw.id.trim().is_empty() {
         let seq = QUESTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3473,7 +4936,7 @@ fn finish_answer_plan(io: &dyn AgentIo, handle: &AgentHandle, task_id: &str) {
     let answers: Vec<String> = plan
         .steps
         .iter()
-        .filter(|step| step.kind == "answer" && step.state != "done")
+        .filter(|step| !step.superseded && step.kind == "answer" && step.state != "done")
         .map(|step| step.id.clone())
         .collect();
     for id in answers {
@@ -3493,16 +4956,92 @@ fn fail_step(io: &dyn AgentIo, handle: &AgentHandle, index: u32, reason: &str) {
     );
 }
 
-/// 一步"没有执行"（范围不允许 / 已拒绝 / 重复）：标成跳过并广播给界面。
-fn skip_step(io: &dyn AgentIo, handle: &AgentHandle, task_id: &str, index: u32, reason: &str) {
+/// 平台把命令退回给模型（声明冲突 / 无法判断 / 参数不合法）：**没有执行**。
+///
+/// 这不是服务器失败：步骤落成 `skipped` + `internal`，界面收纳成一条内部调整，
+/// 不刷红色失败卡；完整原因仍写进 `stderr`（诊断记录）并原样回给模型。
+fn bounce_step(io: &dyn AgentIo, handle: &AgentHandle, task_id: &str, index: u32, reason: &str) {
     handle.patch_step(index, |step| {
         step.state = "skipped".to_string();
-        step.summary = Some(reason.to_string());
+        step.category = Some(StepCategory::Internal);
+        step.stderr = reason.to_string();
     });
     if let Some(step) = handle.step(index) {
         io.emit(AgentEvent::from_step(task_id, "tool_finished", &step));
     }
     sync_plan_step(io, handle, task_id, index, "skipped", Some(reason));
+}
+
+/// 一步"没有执行"（范围不允许 / 用户拒绝）：标成跳过并广播给界面。
+///
+/// `blocked` 是**结构化原因代码**（`read_only` / `query_only` / `user_denied`…），
+/// 界面按当前语言写一句可行动的话；`reason` 是给模型和诊断看的完整说明。
+fn skip_step(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    task_id: &str,
+    index: u32,
+    reason: &str,
+    blocked: &str,
+) {
+    skip_step_with(io, handle, task_id, index, reason, StepCategory::Denied, blocked);
+}
+
+/// 平台自身的去重 / 重试边界拦下的步骤：属于内部决策，不是权限拒绝。
+fn skip_step_internal(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    task_id: &str,
+    index: u32,
+    reason: &str,
+    blocked: &str,
+) {
+    skip_step_with(io, handle, task_id, index, reason, StepCategory::Internal, blocked);
+}
+
+fn skip_step_with(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    task_id: &str,
+    index: u32,
+    reason: &str,
+    category: StepCategory,
+    blocked: &str,
+) {
+    handle.patch_step(index, |step| {
+        step.state = "skipped".to_string();
+        step.category = Some(category);
+        /*
+         * **不把原因写进 `summary`**：`summary` 是界面上的操作名，原来这里写的是
+         * 给模型看的指令（"改用只读命令…"），用户会把它当成这一步的标题读一遍。
+         * 完整原因留在 `stderr`（展开可见）与计划步骤 evidence 里，审计不丢。
+         */
+        if !blocked.trim().is_empty() {
+            step.blocked = Some(blocked.to_string());
+        }
+        step.stderr = reason.to_string();
+    });
+    if let Some(step) = handle.step(index) {
+        io.emit(AgentEvent::from_step(task_id, "tool_finished", &step));
+    }
+    sync_plan_step(io, handle, task_id, index, "skipped", Some(reason));
+}
+
+/// 权限 / 审批 / 安全边界拦下的失败：可见，但类别不是"执行失败"。
+fn fail_step_denied(
+    io: &dyn AgentIo,
+    handle: &AgentHandle,
+    index: u32,
+    reason: &str,
+    blocked: &str,
+) {
+    handle.patch_step(index, |step| {
+        step.category = Some(StepCategory::Denied);
+        if !blocked.trim().is_empty() {
+            step.blocked = Some(blocked.to_string());
+        }
+    });
+    fail_step(io, handle, index, reason);
 }
 
 /// 把一步标成失败并广播（命令没有真的执行时也走它：用户拒绝 / 超时 / 取消）。
@@ -3622,7 +5161,7 @@ fn describe_step(tool: &str, args: &Value) -> String {
         .unwrap_or_else(|| tool.to_string())
 }
 
-fn last_step_hint(handle: &AgentHandle) -> String {
+fn last_step_hint(handle: &AgentHandle, lang: Lang) -> String {
     handle
         .snapshot()
         .steps
@@ -3630,10 +5169,140 @@ fn last_step_hint(handle: &AgentHandle) -> String {
         .rev()
         .find(|step| !step.command.is_empty())
         .map(|step| {
-            format!(
-                "（停在「{}」）",
-                step.command.chars().take(80).collect::<String>()
-            )
+            let command = step.command.chars().take(80).collect::<String>();
+            match lang {
+                Lang::Zh => format!("（停在「{command}」）"),
+                Lang::En => format!(" (stopped at \"{command}\")"),
+            }
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod child_graph_tests {
+    use super::parse_child_specs;
+    use serde_json::json;
+
+    fn binding(tool: &str, read_only: bool) -> crate::mcp::McpBinding {
+        crate::mcp::McpBinding {
+            exposed_name: format!("mcp__s__{tool}"),
+            server_id: "server".into(),
+            server_name: "server".into(),
+            tool: tool.into(),
+            description: String::new(),
+            input_schema: json!({}),
+            read_only,
+            config: crate::mcp::McpServerConfig::default(),
+        }
+    }
+
+    #[test]
+    fn child_mcp_requires_declared_read_only_without_write_signals() {
+        // 声明只读、名称无写入信号：子任务可用（仍会在调用前复查声明）。
+        let mut inspect = binding("inspect", true);
+        assert!(crate::mcp::revalidate_binding(None, &mut inspect, true).is_ok());
+
+        // 声明只读但名称是删除：影响未知，子任务不能执行。
+        let mut delete = binding("delete_file", true);
+        assert_eq!(
+            crate::mcp::revalidate_binding(None, &mut delete, true),
+            Err(crate::mcp::McpReject::EffectUnknown)
+        );
+
+        // 没有只读声明：子任务直接拒绝，主 Agent 仍可按写入流程走。
+        let mut write = binding("write_file", false);
+        assert_eq!(
+            crate::mcp::revalidate_binding(None, &mut write, true),
+            Err(crate::mcp::McpReject::ReadOnlyRevoked)
+        );
+        assert!(crate::mcp::revalidate_binding(None, &mut write, false).is_ok());
+
+        // 只读声明被撤销后，即便名称看起来无害也不能再当只读用。
+        let mut revoked = binding("inspect", false);
+        assert!(crate::mcp::revalidate_binding(None, &mut revoked, true).is_err());
+    }
+
+    #[test]
+    fn child_server_must_be_in_the_authorized_list() {
+        let servers = vec![
+            super::AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
+            super::AgentServerRef { server_id: "srv-b".into(), server_name: "test".into(), session_id: "ssh-b".into() },
+        ];
+        let resolved = super::resolve_child_server(Some("srv-b"), Some("srv-a"), "prod", "ssh-a", &servers).unwrap();
+        assert_eq!(resolved.session_id, "ssh-b");
+        assert_eq!(resolved.server_name, "test");
+        // 省略 = 当前服务器。
+        let parent = super::resolve_child_server(None, Some("srv-a"), "prod", "ssh-a", &servers).unwrap();
+        assert_eq!(parent.session_id, "ssh-a");
+        // 未知 / 伪造的会话 id 不能被当成目标。
+        assert!(super::resolve_child_server(Some("ssh-evil"), Some("srv-a"), "prod", "ssh-a", &servers).is_err());
+        assert!(super::resolve_child_server(Some("unknown"), Some("srv-a"), "prod", "ssh-a", &servers).is_err());
+    }
+
+    #[test]
+    fn ambiguous_server_names_are_rejected_instead_of_guessed() {
+        let servers = vec![
+            super::AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
+            super::AgentServerRef { server_id: "srv-b".into(), server_name: "prod".into(), session_id: "ssh-b".into() },
+        ];
+        let error = super::resolve_child_server(Some("prod"), Some("srv-c"), "other", "ssh-c", &servers).unwrap_err();
+        assert!(error.contains("ambiguous"), "{error}");
+        // 用精确 id 仍然可以选中。
+        assert_eq!(
+            super::resolve_child_server(Some("srv-b"), Some("srv-c"), "other", "ssh-c", &servers).unwrap().session_id,
+            "ssh-b"
+        );
+    }
+
+    #[test]
+    fn carried_child_steps_are_not_reported_as_completed_or_running() {
+        let mut steps = vec![
+            crate::agent::AgentStep { index: 0, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "running".into(), ..Default::default() },
+            crate::agent::AgentStep { index: 1, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "pending".into(), ..Default::default() },
+            crate::agent::AgentStep { index: 2, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "success".into(), child_id: Some("disk".into()), child_goal: Some("check disk".into()), ..Default::default() },
+        ];
+        super::normalize_carried_steps(&mut steps);
+        assert_eq!(steps[0].state, "failed");
+        assert_eq!(steps[0].blocked.as_deref(), Some("interrupted_unknown"));
+        assert_eq!(steps[1].state, "skipped");
+        assert_eq!(steps[1].blocked.as_deref(), Some("interrupted_pending"));
+        assert_eq!(steps[2].state, "success");
+        assert!(steps[2].stale, "completed results must be marked for re-verification");
+    }
+
+    #[test]
+    fn carried_child_results_only_reuse_matching_id_goal_and_server() {
+        let steps = vec![crate::agent::AgentStep {
+            index: 0,
+            tool: "child_agent".into(),
+            group_id: Some("children-0".into()),
+            state: "success".into(),
+            child_id: Some("disk".into()),
+            child_goal: Some("check disk".into()),
+            server_id: Some("srv-a".into()),
+            stdout: "df output".into(),
+            ..Default::default()
+        }];
+        let carried = super::carried_child_results(&steps);
+        assert!(carried.contains_key(&super::child_cache_key("srv-a", "disk", "check disk")));
+        assert!(!carried.contains_key(&super::child_cache_key("srv-b", "disk", "check disk")));
+        assert!(!carried.contains_key(&super::child_cache_key("srv-a", "disk", "check memory")));
+    }
+
+    #[test]
+    fn validates_child_dependencies_and_rejects_cycles() {
+        let tasks = json!({"tasks":[{"id":"disk","title":"Disk","goal":"check"},{"id":"logs","title":"Logs","goal":"read","depends_on":["disk"],"server":"srv-b","recheck":true}]});
+        let parsed = parse_child_specs(&tasks).unwrap();
+        assert_eq!(parsed[1].depends_on, vec!["disk"]);
+        assert_eq!(parsed[1].server.as_deref(), Some("srv-b"));
+        assert!(parsed[1].recheck);
+        let cyclic = json!({"tasks":[{"id":"a","title":"A","goal":"x","depends_on":["b"]},{"id":"b","title":"B","goal":"y","depends_on":["a"]}]});
+        assert!(parse_child_specs(&cyclic).is_err());
+        let missing = json!({"tasks":[{"id":"a","title":"A","goal":"x","depends_on":["missing"]},{"id":"b","title":"B","goal":"y"}]});
+        assert!(parse_child_specs(&missing).is_err());
+        let duplicate = json!({"tasks":[{"id":"a","title":"A","goal":"x"},{"id":"a","title":"B","goal":"y"}]});
+        assert!(parse_child_specs(&duplicate).is_err());
+        let self_dependency = json!({"tasks":[{"id":"a","title":"A","goal":"x","depends_on":["a"]},{"id":"b","title":"B","goal":"y"}]});
+        assert!(parse_child_specs(&self_dependency).is_err());
+    }
 }

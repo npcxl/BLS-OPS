@@ -9,6 +9,13 @@ function state(overrides: Partial<McpCapabilityState> = {}): McpCapabilityState 
   return {
     ready: true,
     probing: false,
+    serversLoading: false,
+    serversError: null,
+    ensureSelection: vi.fn().mockResolvedValue({
+      status: "ready",
+      builtins: [],
+      tools: [],
+    }),
     rows: [
       {
         id: "builtin:docker",
@@ -58,6 +65,67 @@ describe("输入区 MCP 菜单", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("连接列表读取失败时说明原因并提供重试", async () => {
+    const refresh = vi.fn();
+    const data = state({
+      ready: false,
+      serversError: "IPC 断开",
+      refresh,
+    });
+    const holder = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(holder);
+    await act(async () =>
+      root.render(
+        <ComposerMcpMenu
+          state={data}
+          onOpenMarket={() => undefined}
+          onManage={() => undefined}
+        />,
+      ),
+    );
+    try {
+      await act(async () =>
+        holder.querySelector<HTMLButtonElement>('[data-testid="composer-mcp"]')!.click(),
+      );
+      expect(document.body.textContent).toContain("MCP 连接读取失败：IPC 断开");
+      const retry = Array.from(
+        document.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.trim() === "重试")!;
+      await act(async () => retry.click());
+      expect(refresh).toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
+  });
+
+  it("连接失效时在入口显示异常并允许单独重新检测", async () => {
+    const checkMcp = vi.fn().mockResolvedValue(undefined);
+    const data = state({
+      checkMcp,
+      rows: [{ id: "mcp:k8s", kind: "mcp", name: "Kubernetes", source: "本地进程",
+        detail: "启动失败", available: false, enabled: true, status: "error" }],
+      enabledCount: 0,
+    });
+    const holder = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(holder);
+    try {
+      await act(async () => root.render(<ComposerMcpMenu state={data} onOpenMarket={() => undefined} onManage={() => undefined} />));
+      const menu = holder.querySelector<HTMLButtonElement>('[data-testid="composer-mcp"]')!;
+      expect(menu.textContent).toContain("1 项异常");
+      await act(async () => menu.click());
+      expect(document.body.textContent).toContain("启动失败");
+      const retry = Array.from(document.querySelectorAll("button")).find((button) =>
+        button.textContent?.trim() === "重新检测" && button.closest("div")?.textContent?.includes("连接失败"));
+      expect(retry).toBeDefined();
+      await act(async () => retry?.click());
+      expect(checkMcp).toHaveBeenCalledWith("k8s");
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
   });
 
   it("显示已启用数量，按来源分组并回传勾选", async () => {

@@ -135,6 +135,8 @@ pub struct PlanStep {
     /// 执行器给出的一行证据（真实输出首行），不是模型描述。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    #[serde(default)]
+    pub superseded: bool,
 }
 
 /// 本轮任务的结构化计划。
@@ -163,7 +165,48 @@ pub struct AgentPlan {
 
 impl AgentPlan {
     pub fn step(&self, id: &str) -> Option<&PlanStep> {
-        self.steps.iter().find(|step| step.id == id)
+        self.steps
+            .iter()
+            .find(|step| step.id == id && !step.superseded)
+    }
+
+    /// 一次**真实**工具结果该把某一步推进到哪。
+    ///
+    /// 规则只认执行器拿到的事实，不认模型自己的说法：
+    /// * 失败 → `failed`（成功过不算数，下一步重试才会重新推进）；
+    /// * `probe` / 未分类步骤：成功即 `done`；
+    /// * `action`（写入）步骤：
+    ///   - **只读命令成功不能完成它** —— 那是探测 / 验证，不是写入。只有当这
+    ///     一步已经有写入成功（`verifying`）时，只读命令才是"按 verify 条件
+    ///     核对"的证据，此时才算 `done`；
+    ///   - 写入成功 → `verifying`：等该步骤要求的验证，绝不直接算完成；
+    ///   - `verify` 为空（旧计划）才允许写入成功即完成。
+    pub fn next_step_state(
+        &self,
+        id: &str,
+        succeeded: bool,
+        read_only: bool,
+    ) -> Option<&'static str> {
+        let step = self.step(id)?;
+        if !succeeded {
+            return Some("failed");
+        }
+        if step.kind != "action" {
+            return Some("done");
+        }
+        if read_only {
+            return Some(if step.state == "verifying" {
+                "done"
+            } else {
+                // 探测成功 ≠ 写入完成；保持原状（不新建步骤、不伪造进度）。
+                "pending"
+            });
+        }
+        Some(if step.verify.trim().is_empty() {
+            "done"
+        } else {
+            "verifying"
+        })
     }
 
     /// 带状态的一行摘要：拼进系统提示词，让模型看到真实进度。
@@ -171,6 +214,7 @@ impl AgentPlan {
         let steps = self
             .steps
             .iter()
+            .filter(|step| !step.superseded)
             .map(|step| format!("- {} [{}] {}", step.id, step.state, step.title))
             .collect::<Vec<_>>()
             .join("\n");
@@ -276,17 +320,20 @@ pub fn merge_plan(
             "probe" | "action" | "answer" => item.kind.trim().to_ascii_lowercase(),
             _ => previous.map(|step| step.kind.clone()).unwrap_or_default(),
         };
+        let unchanged = previous
+            .filter(|step| step.action == action && step.verify == verify && step.kind == kind);
         steps.push(PlanStep {
             id,
             title,
             action,
             verify,
             kind,
-            state: previous
+            state: unchanged
                 .map(|step| step.state.clone())
                 .filter(|state| !state.trim().is_empty())
                 .unwrap_or_else(pending_state),
-            evidence: previous.and_then(|step| step.evidence.clone()),
+            evidence: unchanged.and_then(|step| step.evidence.clone()),
+            superseded: false,
         });
     }
     // 修订时不再重提、但已经跑完的步骤：保留记录，不假装它没发生过。
@@ -296,7 +343,9 @@ pub fn merge_plan(
                 continue;
             }
             if matches!(step.state.as_str(), "done" | "failed") {
-                steps.push(step.clone());
+                let mut historical = step.clone();
+                historical.superseded = true;
+                steps.push(historical);
             }
         }
     }
@@ -313,7 +362,10 @@ pub fn merge_plan(
         prerequisites,
         steps,
         revision: current.map(|plan| plan.revision).unwrap_or(0) + 1,
-        created_at: current.map(|plan| plan.created_at).filter(|at| *at > 0).unwrap_or(now),
+        created_at: current
+            .map(|plan| plan.created_at)
+            .filter(|at| *at > 0)
+            .unwrap_or(now),
         updated_at: now,
     })
 }
@@ -341,6 +393,42 @@ pub struct ToolResult {
     pub truncated: bool,
     /// `write_file` 覆盖已有文件时落下的备份绝对路径。
     pub backup_path: Option<String>,
+}
+
+/// 一条步骤的类别。
+///
+/// 用户需要知道的是"服务器上发生了什么"：
+/// * `internal` —— 平台把命令退回模型改写 / 参数不合法：**没有执行**，
+///   也不是服务器失败。前端默认收纳成一条内部调整，不刷红色失败卡。
+/// * `executed` —— 工具真的跑过；成功还是失败看 `state` 与退出码。
+/// * `denied` —— 权限、审批或安全边界拦下，或用户拒绝。
+///
+/// 旧记录没有这个字段（`None`）：前端按"真实执行"保守展示，绝不隐藏。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepCategory {
+    Internal,
+    Executed,
+    Denied,
+}
+
+impl StepCategory {
+    /// 从持久化的历史记录还原类别（`plan_json` 里的字符串）。
+    ///
+    /// 认不出就返回 `None`：旧记录没有类别时必须按"真实执行"保守展示，
+    /// 不能靠猜把一次真实失败隐藏成内部纠错。
+    pub fn from_code(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "internal" => Some(StepCategory::Internal),
+            "executed" => Some(StepCategory::Executed),
+            "denied" => Some(StepCategory::Denied),
+            _ => None,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 一条工具步骤的快照（前端据此渲染任务卡）。
@@ -375,12 +463,44 @@ pub struct AgentStep {
     /// 只是一个标识：正文 Diff 按需从变更注册表取，不塞进步骤事件。
     pub change_id: Option<String>,
     pub elapsed_ms: u64,
+    /// Estimated child-agent usage, separate from the parent's context window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_usage: Option<super::state::TokenUsage>,
+    /// 子任务绑定的服务器（展示名 / 配置 id / 当时的 SSH 会话）；主 Agent 自己的步骤为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// 子任务在**父任务里的稳定 id**（模型给的 `id`，不是随机 call id）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_id: Option<String>,
+    /// 子任务目标原文：恢复时只有 id + goal + server 都一致才允许复用结果。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_goal: Option<String>,
+    /// 依赖的子任务 id（恢复时保留依赖关系，便于展示与判定）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_depends_on: Vec<String>,
+    /// 结果来自中断前、服务器状态可能已经变化：界面显示「需重新核实」。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stale: bool,
     /// 这一步属于计划的哪一步（MAX 强制计划；普通模式为空）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_step_id: Option<String>,
     /// 操作组 id：同一个目的连续执行的命令共用，前端据此只显示一次说明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// 这一步的类别（见 [`StepCategory`]）；旧记录没有时前端保守展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<StepCategory>,
+    /// 没有执行的结构化原因（只有 `internal` / `denied` 带）。
+    ///
+    /// 代码而不是句子：界面按当前语言写一句可行动的话（例如
+    /// `read_only` → 「当前是只读模式，写操作未执行」），完整原因仍留在
+    /// `stderr` 里供展开诊断。旧记录没有时只说「未执行」，不猜原因。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
 }
 
 /// 推给前端的事件。
@@ -452,6 +572,20 @@ pub struct AgentEvent {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_usage: Option<super::state::TokenUsage>,
+    /// 子任务所属服务器（主 Agent 步骤为空）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_id: Option<String>,
+    /// 结果来自中断前、需要重新核实。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
     /// 等待确认的截止时刻（毫秒时间戳）。只有 `approval_required` 带：
     /// 界面据此显示倒计时，重进后也不会从 5 分钟重新起算。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -465,6 +599,12 @@ pub struct AgentEvent {
     /// 操作组 id：说明与工具事件共享它，前端按它去重。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
+    /// 步骤类别（见 [`StepCategory`]）：实时事件与快照用同一套分类。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<StepCategory>,
+    /// 没有执行的结构化原因（与 `AgentStep.blocked` 同值）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
     /// 执行前说明（只有操作组的第一条 `tool_started` 带）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -506,10 +646,18 @@ impl AgentEvent {
             outcome: None,
             message: None,
             elapsed_ms: None,
+            child_usage: None,
+            server: None,
+            server_id: None,
+            session_id: None,
+            child_id: None,
+            stale: None,
             deadline: None,
             plan: None,
             plan_step_id: None,
             group_id: None,
+            category: None,
+            blocked: None,
             note: None,
             question: None,
             answer: None,
@@ -555,8 +703,17 @@ impl AgentEvent {
             impact: step.impact.clone(),
             change_id: step.change_id.clone(),
             elapsed_ms: Some(step.elapsed_ms),
+            child_usage: step.child_usage.clone(),
+            server: step.server.clone(),
+            server_id: step.server_id.clone(),
+            session_id: step.session_id.clone(),
+            child_id: step.child_id.clone(),
+            stale: step.stale.then_some(true),
             plan_step_id: step.plan_step_id.clone(),
             group_id: step.group_id.clone(),
+            // 分类跟着步骤走：实时事件、快照与历史恢复看到的是同一个值。
+            category: step.category,
+            blocked: step.blocked.clone(),
             ..Self::new(task_id, kind)
         }
     }
@@ -1170,6 +1327,7 @@ fn intent_guidance_zh() -> &'static str {
 2. 要改动：只做用户明确要求的那一步，不扩大范围、不顺手优化；改文件前先读原文。普通权限下写操作确认一次；完全权限下直接执行。只查询的任务里写操作会被执行器拦下。
 3. 命令用途不明确（自定义脚本、看不出参数含义的二进制）：先换成已知只读、目标明确的工具；换不到就说明具体原因，不要猜着执行。
 4. 查询失败或权限不足：按实际错误（stderr / 退出码 / 权限）汇报，不要换一条命令碰运气，也不要反复重试同一条。
+5. 查看归档清单 / 校验 / 读取归档内容都是只读的（unzip -l / -t / -p、zipinfo、tar -tf）；只有真正解压落盘才算写。为了检查而解压时先说明，并使用受控的暂存目录；查看失败不要自动升级成解压到线上目录。
 "#
 }
 
@@ -1180,6 +1338,7 @@ fn intent_guidance_en() -> &'static str {
 2. Needs a change: do exactly the step the user asked for — no widening the scope, no opportunistic cleanups; read the original file before editing. With normal permissions each write is confirmed once; with full permissions it runs directly. In a query-only task any write is blocked by the executor.
 3. Unclear command purpose (custom scripts, binaries whose flags you cannot read): switch to a known read-only tool with a clear target; if none fits, explain the specific reason instead of guessing.
 4. Query failed or permission denied: report the actual error (stderr / exit code / permissions); do not try another command in the hope it works, and do not repeat the same one.
+5. Listing, validating and reading archive contents are read-only (unzip -l / -t / -p, zipinfo, tar -tf); only writing files to disk counts as extraction. If you must extract to inspect, say so and use a controlled staging directory; never escalate a failed archive read into extracting into a live directory.
 "#
 }
 
@@ -1195,6 +1354,7 @@ pub fn reply_language_rule(lang: Lang) -> &'static str {
 【回复语言：只用简体中文】
 无论工具输出、报错原文、文档或代码注释是什么语言，所有解释、结论与下一步建议**必须全部用简体中文**。
 命令、路径、代码、配置键名与原始报错可以保留原文；**不要中英混写**，也不要把整段回答换成英文。
+`submit_plan` 的内容会直接显示在界面上：understanding / summary / prerequisites / 步骤 title / action / verify 也必须写简体中文。
 "#
         }
         Lang::En => {
@@ -1202,6 +1362,7 @@ pub fn reply_language_rule(lang: Lang) -> &'static str {
 [Reply language: English only]
 Every explanation, conclusion and next step **must be written in English only**, regardless of the language of tool output, raw errors, documentation or code comments.
 Commands, paths, code, config keys and raw error text may stay as-is; **do not mix Chinese into the reply**, and do not switch the whole answer to another language.
+`submit_plan` text is shown directly in the UI: its understanding / summary / prerequisites / step title / action / verify fields must also be written in English, even when the user writes in another language.
 "#
         }
     }
@@ -1237,12 +1398,12 @@ fn tool_prompt_zh() -> &'static str {
 6. 不要执行破坏性命令（`rm -rf /`、`mkfs`、改防火墙、格式化）。只读模式会拦截；完全访问下严重操作仍会要求确认，不要试图绕开。
 7. 无法判断一条命令会改哪些文件、路径或服务时，先用只读工具确认有效目标和范围；仍然不明确就说明具体缺哪项信息，不要猜着执行。
 8. 结论必须来自工具输出；没有输出就直说"没查到"，不要猜。
-9. **命令失败先诊断，再换命令**：读 `stderr` 判断属于哪一类 —— 权限不足（需要 root / 目录只读）、路径或文件不存在、服务名或单元名不对、文件已存在、端口被占用、命令不存在。先用一句话说明你判断到的原因，再给出**不同的**命令（加覆盖参数、换路径、换成诊断命令），不要原样重试。
+9. **命令失败先诊断，再换命令**：读 `stderr` 判断属于哪一类 —— 权限不足（需要 root / 目录只读）、路径或文件不存在、服务名或单元名不对、文件已存在、端口被占用、命令不存在。据此给出**不同的**命令（加覆盖参数、换路径、换成诊断命令），不要原样重试。对用户说明到什么程度按【用户表达规则】执行：能自行恢复的简短处理，影响结果或需要用户决定的必须说清。
 10. 解压必须在**非交互**方式下进行：用 `unzip -o`（或 `unzip -oq`）解到明确目录；不要运行会等待 `replace? [y/n]` 的裸 `unzip`。查看归档用 `unzip -l` / `tar -tf`，这是只读操作。
 11. 同一次操作在一次运行里**不会盲目重跑**：执行器按归档、目标目录和覆盖策略识别等价命令；成功后再次提交会直接返回上次结果，只应做只读验证，不要重新解压；失败最多再试一次，之后必须汇报真实错误。
 12. 连续两次失败就停下来汇报：说明已经排除了什么、还缺哪条信息、建议用户做什么（例如确认路径、提供权限）。不要无限尝试。
 13. 需要用户拍板（选环境、选方案、确认关键前提）时调用 `ask_user`，不要在正文里假装提问；调用后任务会暂停，拿到用户的真实选择再继续，不要自己编造答案。
-14. 收尾时用一小段话给：结论 + 关键证据 + 下一步建议。
+14. 收尾时用一小段话给：结论 + 关键证据；确实还有需要用户做的下一步时才写建议，不要每轮都附加。
 "#
 }
 
@@ -1268,34 +1429,48 @@ Rules:
 6. Never run destructive commands (`rm -rf /`, `mkfs`, firewall changes, formatting). Read-only blocks them; under full access severe operations still require confirmation — do not try to bypass it.
 7. When you cannot determine which files, paths or services a command will change, first use read-only tools to confirm the effective target and scope; if it is still unclear, state exactly what information is missing instead of guessing.
 8. Conclusions must come from tool output; if there is no output, say "not found" — never guess.
-9. **Diagnose before switching commands**: read `stderr` and classify it — missing permission (needs root / read-only directory), path or file does not exist, wrong service or unit name, file already exists, port already in use, command not found. State the cause in one sentence, then issue a **different** command (add override flags, change the path, use a diagnostic command) — never retry the same one unchanged.
+9. **Diagnose before switching commands**: read `stderr` and classify it — missing permission (needs root / read-only directory), path or file does not exist, wrong service or unit name, file already exists, port already in use, command not found. Then issue a **different** command (add override flags, change the path, use a diagnostic command) — never retry the same one unchanged. How much to tell the user follows the [User-facing expression] rules: keep recoverable attempts short, and state the facts when the result is affected or the user must decide.
 10. Extract archives **non-interactively**: use `unzip -o` (or `unzip -oq`) into an explicit directory; never run bare `unzip` that waits for `replace? [y/n]`. To inspect an archive use `unzip -l` / `tar -tf` — those are read-only.
 11. The same operation is not blindly re-run: the executor identifies equivalent commands by archive, target directory and overwrite policy. A duplicate after success returns the previous result — do read-only verification, do not extract again. A failed operation may be retried once; after that, report the real error.
 12. After two consecutive failures, stop and report: what has been ruled out, what information is still missing, what the user should do (e.g. confirm the path, grant permissions). Do not keep trying.
 13. When the user must decide (environment, approach, a critical prerequisite), call `ask_user` instead of pretending to ask in prose. The task pauses until the real answer arrives; never invent the answer.
-14. Wrap up with one short paragraph: conclusion + key evidence + next step.
+14. Wrap up with one short paragraph: conclusion + key evidence; add a next step only when the user actually has one to take.
 "#
 }
 
-/// 执行前说明：每个操作组一句，先说做什么、要验证什么。
+/// 用户可见表达规则：**对用户说什么、说多少**只有这一份。
+///
+/// 这里不决定权限、不改风险分级、不重复工具协议；工具协议说明"怎么执行"，
+/// 这一段说明"哪些内容进对话、哪些留在操作记录里"。风险与影响的确认要求
+/// 属于权限策略，仍由工具协议与执行器保证。
 pub fn preamble_guidance(lang: Lang) -> &'static str {
     match lang {
         Lang::Zh => {
             r#"
-【执行前说明】调用工具前，先用**一句话**说明第一件要做的事，以及它要验证什么。
-例如：「我先查看 Nginx 的站点配置，确认这个域名指向哪个目录。」
-* **按操作组说明**：同一个目的连续跑几条短命令，只在开头说明一次；发现新情况、改变操作目标时，再补一句接下来要查什么。
-* 纯聊天直接回答，不要为了凑格式加一句说明。
-* 说明要具体到这次要看的东西，不要写「我将开始处理」这种空话。
+【用户表达规则】这条只管"对用户说什么"，不改变权限与执行逻辑。
+1. 围绕用户的目标、实际进度、需要他决定的事和最终结果说话。简单查询直接给结论和必要证据；长任务开始时一句话，之后只在阶段变化、遇到阻碍、需要用户决定或长时间没有反馈时简短更新。
+2. 平台实现细节默认不进对话：工具协议与参数格式、intent 之类的内部分类、taskId / runId / callId / stepIndex、计划登记与快照更新、轮次编号，都不要写给用户。平台把命令退回给你调整（声明冲突 / 用途不明确 / 参数不合法）属于内部过程：自己改好再试，不要播报"平台识别错了""我换种写法""参数不符合格式"。
+3. 命令真的发到服务器并失败时，说明具体原因（权限不足 / 路径不存在 / 服务名不对 / 端口占用…）。可以安全自动恢复时，简短说明正在调整并在恢复后给结果；不需要为每一次尝试写一段正文。
+4. 失败影响结果、已经发生服务器变更、需要用户处理或决定时，必须如实说明：哪一步没成功、有没有已经改动服务器、用户现在能做什么。结果不确定时写"尚不能确认"，不要自动说成功或失败。
+5. `submit_plan` 是内部控制工具：不要播报"登记计划""计划已注册""更新计划"，也不要复述计划面板里的步骤；实际操作前可以简短说明接下来做什么。
+6. 结论只能来自工具结果：没有验证过的不要说"全部正常"，没有实际执行的不要说"已执行"。正式执行的重要变更仍按权限策略展示影响与确认。
+7. 服务名、容器名、域名、路径、HTTP 状态码、命令、配置项与原始报错可能是用户判断结果所必需的技术事实，保留原文；需要翻译的只是解释部分。
+8. 不要每次回复都固定附加"下一步建议"；同一个风险只说明一次；同一个问题不要反复追问用户。
+9. 纯聊天直接回答，不要为了凑格式加一句说明；说明要具体到这次在看什么，不要写「我将开始处理」这类空话。
 "#
         }
         Lang::En => {
             r#"
-[Before you act] Before calling a tool, write **one sentence** saying the first thing you will do and what it verifies.
-Example: "I’ll check the Nginx site configuration first to see which directory this domain points to."
-* **Explain once per action group**: several short commands with the same purpose get one opening line; when something new changes the goal, add one sentence about what you will check next.
-* Pure chat answers directly — never add filler just to match a format.
-* Be specific about what you are checking; avoid empty phrases like "I will start processing".
+[User-facing expression] This governs what the user reads — it does not change permissions or execution.
+1. Speak to the user's goal, real progress, the decisions they must make, and the final result. A simple query gets the conclusion and the evidence it needs; a long task gets one opening sentence, then a short update only on a phase change, a blocker, a decision, or a long silence.
+2. Keep platform internals out of the conversation: tool protocol and argument formats, internal classifications such as intent, taskId / runId / callId / stepIndex, plan registration and snapshot updates, round counters. When the platform hands a command back for adjustment (declared intent conflicts, unknown purpose, invalid arguments), fix it and retry — never narrate "the platform misclassified it", "I will rephrase", or "arguments do not match the format".
+3. When a command really reached the server and failed, state the concrete cause (missing permission, path not found, wrong service name, port already in use...). If it recovers safely, briefly say you are adjusting and report the outcome; do not write a paragraph for every attempt.
+4. When a failure affects the result, a server change already happened, or the user must act or decide, say so plainly: which step did not succeed, whether the server was changed, what the user can do now. If the outcome is unknown, say it cannot be confirmed yet — never present it as success or failure.
+5. `submit_plan` is an internal control tool: do not announce registering, updating or revising a plan, and do not repeat the steps shown in the plan panel. A short sentence about the actual action is still useful.
+6. Conclusions come only from tool output: never claim "all normal" without verification, never claim "executed" for something that did not run. Important changes still show their impact and confirmation per the permission policy.
+7. Service names, container names, domains, paths, HTTP status codes, commands, config keys and raw errors are often the facts the user needs to judge the result — keep them as-is; only the explanation needs translating.
+8. Do not end every reply with a "next step" suggestion; state a given risk once; never ask the same question twice.
+9. Pure chat answers directly — no filler to match a format; be specific about what you are checking instead of "I will start processing".
 "#
         }
     }
@@ -1307,14 +1482,14 @@ pub fn plan_guidance(lang: Lang) -> &'static str {
         Lang::Zh => {
             r#"
 【强制计划：本轮已开启】用户选择的是 MAX：这一轮必须**先计划、再执行**。
-1. 第一次调用工具前，必须先调用 `submit_plan` 提交计划；在此之前任何工具调用都不会执行（会收到「请先提交计划」）。
+1. 第一次调用工具前，必须先调用 `submit_plan` 提交计划；在此之前任何工具调用都不会执行（会收到「请先提交计划」）。唯一例外是 `ask_user`：需要用户拍板时可以先提问，拿到回答后再提交计划。
 2. 每步要有 `id` / `title` / `action` / `verify`：id 只能含字母、数字与 - _ . :；action 写要做什么；verify 写怎样算完成。
 3. 调用任何工具都必须带 `"step": "<步骤 id>"`，表示它属于哪一步；缺了或写错都不会下发。
 4. 简单查询可以只有一步；纯聊天可以列一步 `kind: "answer"` 的计划（如「直接回答」），然后直接回答。
 5. 需要先了解服务器时，把「检查当前服务和目录」这类只读探查写成第一步（`kind: "probe"`）；拿到结果后再用 `submit_plan` 充实计划。
 6. 发现前提变化时，先用 `submit_plan` 更新计划，再执行新增步骤；已完成的步骤会保留。
 7. `submit_plan` 只是登记计划，**不是**申请执行权限：不额外弹确认，也不改变现有写入审批策略。
-8. 用户目标不明确（缺目标路径 / 域名 / 期望结果）时，先在对话里问清楚，不要猜着写计划。
+8. 用户目标不明确（缺目标路径 / 域名 / 期望结果）时，先用 `ask_user` 问清楚，不要猜着写计划；提问本身不占计划步骤。
 
 文本协议（接口不支持原生工具时）：
 <tool name="submit_plan">{"understanding":"…","summary":"…","prerequisites":["…"],"steps":[{"id":"s1","title":"检查配置","action":"读取 /etc/nginx/nginx.conf","verify":"能确定站点目录","kind":"probe"}]}</tool>
@@ -1324,14 +1499,14 @@ pub fn plan_guidance(lang: Lang) -> &'static str {
         Lang::En => {
             r#"
 [Forced plan: enabled for this turn] The user selected MAX, so this turn must **plan first, then act**.
-1. Call `submit_plan` before any other tool. Until then every tool call is rejected without touching the server ("submit a plan first").
+1. Call `submit_plan` before any other tool. Until then every tool call is rejected without touching the server ("submit a plan first"). The only exception is `ask_user`: ask the user first when a decision is needed, then submit the plan.
 2. Each step needs `id` / `title` / `action` / `verify`: ids may contain letters, digits and - _ . :; action says what to do; verify says how completion is proven.
 3. Every tool call must include `"step": "<step id>"`; a missing or unknown step is not executed.
 4. A simple query may have a single step; pure chat may use a one-step `kind: "answer"` plan and then answer.
 5. When you first need to understand the server, make a read-only probe such as "check the current services and directories" step 1 with `kind: "probe"`; after seeing the result, submit an updated plan.
 6. When a premise changes, update the plan with `submit_plan` first, then execute the new steps; completed steps are preserved.
 7. `submit_plan` only records the plan — it is **not** an execution request: it adds no confirmation and does not change the existing write-approval policy.
-8. If the goal is unclear (missing target path / domain / expected result), ask in chat first instead of guessing a plan.
+8. If the goal is unclear (missing target path / domain / expected result), use `ask_user` first instead of guessing a plan; asking is not a plan step.
 
 Text protocol (when the API has no native tools):
 <tool name="submit_plan">{"understanding":"…","summary":"…","prerequisites":["…"],"steps":[{"id":"s1","title":"Inspect config","action":"read /etc/nginx/nginx.conf","verify":"the site root is known","kind":"probe"}]}</tool>
@@ -1367,16 +1542,20 @@ pub fn preamble_text(
     command: &str,
 ) -> String {
     let summary = summary.map(str::trim).filter(|text| !text.is_empty());
-    // 英文界面：操作摘要目前由 `describe_operation` 以中文生成，不能直接拼进
-    // 英文句子；改用路径 / 命令本身（本来就与语言无关）。
+    /*
+     * 只说明"现在在做什么"，**不追加**"确认结果后再继续"这类固定尾巴：
+     * 每个操作组都补一遍同样的收尾句，读起来像模板广播，也没有新信息。
+     * 英文界面：操作摘要由 `describe_operation` 以中文生成，不能直接拼进
+     * 英文句子；改用路径 / 命令本身（本来就与语言无关）。
+     */
     if let (Lang::Zh, Some(summary)) = (lang, summary) {
-        return format!("先{summary}，确认结果后再继续。");
+        return format!("先{summary}");
     }
     let path = path.unwrap_or("");
     match (lang, tool) {
-        (Lang::Zh, "read_file") => format!("先读取 {path}，确认内容后再继续。"),
-        (Lang::Zh, "list_dir") => format!("先查看目录 {path}，确认结构后再继续。"),
-        (Lang::Zh, "write_file") => format!("先写入 {path}，写完再做只读验证。"),
+        (Lang::Zh, "read_file") => format!("先读取 {path}"),
+        (Lang::Zh, "list_dir") => format!("先查看目录 {path}"),
+        (Lang::Zh, "write_file") => format!("先写入 {path}（写前会自动备份）"),
         (Lang::Zh, _) => {
             let line = command
                 .lines()
@@ -1385,14 +1564,16 @@ pub fn preamble_text(
                 .unwrap_or("");
             let line = clip_chars(line, 90);
             if line.is_empty() {
-                "先执行这一步，确认结果后再继续。".to_string()
+                "先执行这一步".to_string()
             } else {
-                format!("先执行 {line}，确认结果后再继续。")
+                format!("先执行 {line}")
             }
         }
-        (Lang::En, "read_file") => format!("Read {path} first, then continue once its content is confirmed."),
-        (Lang::En, "list_dir") => format!("Inspect {path} first, then continue once the layout is clear."),
-        (Lang::En, "write_file") => format!("Write {path} first, then verify it with a read-only check."),
+        (Lang::En, "read_file") => format!("Reading {path} first"),
+        (Lang::En, "list_dir") => format!("Inspecting {path} first"),
+        (Lang::En, "write_file") => {
+            format!("Writing {path} first (a backup is created before the write)")
+        }
         (Lang::En, _) => {
             let line = command
                 .lines()
@@ -1401,9 +1582,9 @@ pub fn preamble_text(
                 .unwrap_or("");
             let line = clip_chars(line, 90);
             if line.is_empty() {
-                "Run this step first, then continue once the result is confirmed.".to_string()
+                "Running this step first".to_string()
             } else {
-                format!("Run {line} first, then continue once the result is confirmed.")
+                format!("Running {line} first")
             }
         }
     }

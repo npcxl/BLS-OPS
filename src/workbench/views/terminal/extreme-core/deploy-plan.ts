@@ -18,6 +18,21 @@ export type StepState = "pending" | "waiting" | "running" | "success" | "failed"
 export interface DeployStep {
   id: string;
   kind: StepKind;
+  /** Agent 事件的操作组，供恢复时识别并行子任务。 */
+  groupId?: string;
+  sourceTool?: string;
+  /** 子代理模型请求累计估算量，与主任务上下文分开。 */
+  childUsage?: { requests: number; inputTokens: number; outputTokens: number };
+  /** 子任务绑定的服务器（主 Agent 自己的步骤为空）。 */
+  server?: string;
+  serverId?: string;
+  sessionId?: string;
+  /** 子任务在父任务里的稳定 id。 */
+  childId?: string;
+  childGoal?: string;
+  childDependsOn?: string[];
+  /** 结果来自中断前，服务器状态可能已变化。 */
+  stale?: boolean;
   /** 一句话动作（界面主行）。 */
   title: string;
   /** 具体目标：命令、目标路径、覆盖策略… */
@@ -32,8 +47,15 @@ export interface DeployStep {
   script?: string;
   /** upload 步骤要写入的文本内容。 */
   text?: string;
-  /** upload 步骤要写入的二进制内容（base64，图片/字体/jar/归档）。 */
+  /** upload 步骤要写入的二进制内容（base64，只在**小文件**上保留）。 */
   data?: string;
+  /**
+   * 内容来自哪个本机附件。
+   *
+   * 大文件不再把 base64 放进计划：执行时按附件 id 从 payload 缓存分块读，
+   * 计划对象本身保持小且可持久化。
+   */
+  attachmentId?: string;
   /** upload 步骤的目标路径。 */
   remotePath?: string;
   /**
@@ -65,6 +87,19 @@ export interface DeployStep {
    */
   sourcePath?: string;
   state: StepState;
+  /**
+   * Agent 步骤类别：`internal`（平台内部纠错，命令没执行）/ `denied`（权限或审批
+   * 拦下）/ `executed`（真的跑过）。
+   *
+   * 缺失 = 旧记录：界面必须按真实执行保守展示，不能隐藏。
+   */
+  category?: "internal" | "executed" | "denied";
+  /**
+   * 没有执行的原因代码（`read_only` / `user_denied` / `query_only`…）。
+   *
+   * 跟着 `plan_json` 落库，历史与恢复用的是同一个说法；缺失时只说「未执行」。
+   */
+  blocked?: string;
   stdout?: string;
   stderr?: string;
   exitCode?: number | null;
@@ -83,6 +118,31 @@ export interface ComposeService {
 
 const COMPOSE_NAME = /^(docker-)?compose\.ya?ml$/i;
 const PROJECT_DIR = "~/bls-deploy";
+
+/**
+ * 这次要用的 ZIP：**优先本次勾选的那一份**。
+ *
+ * 同名包的旧版本可能还躺在会话里（8.4 MB 的旧 `dist.zip` 与 478 KB 新包）：
+ * 按数组顺序 `find` 会拿到旧的，计划就可能把线上替换回旧版本。没有勾选时
+ * 取最后加入的一份（新加的在后），而不是第一份。
+ */
+export function pickStagedZip(
+  attachments: {
+    id: string;
+    name: string;
+    remotePath?: string;
+    uploadState?: string;
+  }[],
+  selectedIds: string[],
+): (typeof attachments)[number] | undefined {
+  const usable = (item: (typeof attachments)[number]) =>
+    /\.zip$/i.test(item.name) &&
+    Boolean(item.remotePath) &&
+    (item.uploadState === "uploaded" || item.uploadState === "deployed");
+  const selected = new Set(selectedIds);
+  const matches = attachments.filter(usable);
+  return matches.find((item) => selected.has(item.id)) ?? matches[matches.length - 1];
+}
 
 /** 从附件集合里找 compose 文件（取第一个）。 */
 export function findCompose(
@@ -160,6 +220,8 @@ export function buildDeployPlan(
     text?: string;
     /** 二进制内容的 base64（图片 / 字体 / jar / 归档）。 */
     data?: string;
+    /** 附件 id：大文件执行时按它从 payload 缓存分块读。 */
+    attachmentId?: string;
     /** 已上传到服务器临时目录的路径（有它部署时改走 `cp -a`）。 */
     remotePath?: string;
   }[],
@@ -200,7 +262,7 @@ export function buildDeployPlan(
    * 用户确认后才写，且逐个列出来源 / 目标 / 覆盖策略。二进制走 `data`。
    */
   const uploads: DeployStep[] = input
-    .filter((file) => file.name !== compose.name && (file.text !== undefined || file.data))
+    .filter((file) => file.name !== compose.name && (file.text !== undefined || file.data || file.attachmentId))
     .map((file, index) => {
       const relative = file.path ?? file.name;
       return {
@@ -208,7 +270,9 @@ export function buildDeployPlan(
         kind: "upload" as const,
         title: i18n.t("上传 {{name}}", { name: relative }),
         detail: `来源：本地附件 ${relative} · 目标：${remoteDir}/${relative} · 覆盖策略：覆盖同名文件（先建目录）`,
-        ...(file.data ? { data: file.data } : { text: file.text }),
+        ...(file.data ? { data: file.data } : file.text !== undefined ? { text: file.text } : {}),
+        // 大文件按 id 在执行时读本机句柄，不把 base64 塞进计划。
+        ...(file.attachmentId ? { attachmentId: file.attachmentId } : {}),
         remotePath: `${remoteDir}/${relative}`,
         // 附件已上传到临时目录 → 部署时直接 cp，不再走一遍 base64。
         sourcePath: file.remotePath,

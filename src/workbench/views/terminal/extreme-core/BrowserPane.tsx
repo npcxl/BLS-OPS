@@ -25,11 +25,13 @@ export function BrowserPane({
   workspaceId,
   url,
   onUrlChange,
+  suspended = false,
 }: {
   workspaceId: string;
   /** 这条对话上次打开的地址；为空时显示地址输入。 */
   url: string | null;
   onUrlChange: (url: string) => void;
+  suspended?: boolean;
 }) {
   const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
@@ -39,6 +41,8 @@ export function BrowserPane({
   const [modalBlocked, setModalBlocked] = useState(false);
   const modalBlockedRef = useRef(false);
   const paneDragging = useExtremeStore((state) => state.paneDragging);
+  const suspendedRef = useRef(suspended);
+  suspendedRef.current = suspended;
 
   const current = useRef("");
   const created = useRef(false);
@@ -96,6 +100,7 @@ export function BrowserPane({
   const showIfPossible = useCallback(
     async (token: number) => {
       if (token !== generation.current) return;
+      if (suspendedRef.current) return;
       if (!created.current) return;
       if (visible.current) return;
       const ok = await syncBounds();
@@ -185,6 +190,22 @@ export function BrowserPane({
     });
     return () => cancelAnimationFrame(frame);
   }, [workspaceId, url, hide, openAt]);
+
+  const wasSuspended = useRef(false);
+  useEffect(() => {
+    if (suspended) {
+      wasSuspended.current = true;
+      void hide();
+      return undefined;
+    }
+    if (!wasSuspended.current) return undefined;
+    wasSuspended.current = false;
+    const frame = requestAnimationFrame(() => {
+      if (created.current) void showIfPossible(generation.current);
+      else if (url) void openAt(url);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [suspended, hide, openAt, showIfPossible, url]);
 
   // 标签 / 对话卸载：立即隐藏（页面和地址由后端保留，下次复用）。
   useEffect(

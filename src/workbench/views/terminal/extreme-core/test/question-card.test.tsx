@@ -5,6 +5,7 @@ import { i18n } from "@/i18n";
 import { opsApi } from "@/api/ops-api";
 import type { AgentQuestion } from "@/api/types/agent";
 import { useExtremeStore, type ExtremeMessage } from "@/stores/extreme-store";
+import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import { QuestionCard } from "../QuestionCard";
 import type { MessageQuestionPart } from "../message-parts";
 
@@ -93,6 +94,22 @@ describe("AI 提问选择卡", () => {
     document.body.innerHTML = "";
   });
 
+  it("only saves explicit personal preference choices as global memory", async () => {
+    useExtremeSettingsStore.getState().update({ memoryEnabled: true });
+    vi.spyOn(opsApi, "aiAgentAnswer").mockResolvedValue(true);
+    const save = vi.spyOn(opsApi, "extremeMemorySave").mockResolvedValue(undefined);
+    const { holder, root, Harness } = mount(part({}, question({ question: "你的回复语言偏好？" })));
+    try {
+      await act(async () => root.render(<Harness />));
+      await act(async () => holder.querySelector<HTMLButtonElement>('[data-testid="question-option-prod"]')!.click());
+      await act(async () => holder.querySelector<HTMLButtonElement>('[data-testid="question-submit"]')!.click());
+      expect(save).toHaveBeenCalledWith(expect.objectContaining({ scope: "global", serverId: null, workspaceId: null, source: "user-choice" }));
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
+  });
+
   it("单选可以改选，完成后原地显示已选内容", async () => {
     const answer = vi.spyOn(opsApi, "aiAgentAnswer").mockResolvedValue(true);
     const { holder, root, Harness } = mount(part());
@@ -152,7 +169,10 @@ describe("AI 提问选择卡", () => {
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
       expect(submit.disabled).toBe(false);
-      await act(async () => submit.click());
+      // 自定义输入聚焦时直接回车也能提交。
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
       expect(answer).toHaveBeenCalledWith("task-1", "q-1", [], "只看生产");
       expect(currentPart()?.status).toBe("answered");
       expect(holder.textContent).toContain("自定义：只看生产");

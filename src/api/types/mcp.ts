@@ -87,11 +87,13 @@ export interface McpServerInput {
 }
 
 export interface McpRegistryRemote {
+  requiresConfiguration?: boolean;
   type: string;
   url: string;
 }
 
 export interface McpRegistryPackage {
+  requiresConfiguration?: boolean;
   registryType: string;
   identifier: string;
   version: string;
@@ -102,6 +104,7 @@ export interface McpRegistryEntry {
   id: string;
   name: string;
   registryName?: string;
+  iconUrl?: string;
   publisher: string;
   description: string;
   version: string;
@@ -111,7 +114,60 @@ export interface McpRegistryEntry {
   packages: McpRegistryPackage[];
 }
 
+export type McpRuntimeId = "uv" | "uvx" | "node" | "npx" | "docker";
+
+/**
+ * 运行环境状态：
+ * * `ready` 找到且能运行；
+ * * `missing` 找不到可执行文件；
+ * * `unavailable` 找到了但跑不起来（权限 / 损坏 / 非零退出码）；
+ * * `not_running` 只有 Docker：CLI 在但服务没起；
+ * * `unknown` 超时或无法确认（不能当成"未安装"）。
+ */
+export type McpRuntimeStatus =
+  | "ready"
+  | "missing"
+  | "unavailable"
+  | "not_running"
+  | "unknown";
+
+export interface McpRuntimeDetail {
+  id: McpRuntimeId;
+  label: string;
+  status: McpRuntimeStatus;
+  /** 已脱敏（`~` / `<user>`）。 */
+  path?: string | null;
+  version?: string | null;
+  /** process-path / user-path / system-path / common-dir / app-paths / custom */
+  source?: string | null;
+  message: string;
+  detail?: string | null;
+  durationMs: number;
+}
+
+/** 针对一条自定义命令（可能是绝对路径）的探测结果。 */
+export interface McpCommandProbe {
+  command: string;
+  resolved: boolean;
+  status: McpRuntimeStatus;
+  path?: string | null;
+  version?: string | null;
+  message: string;
+  detail?: string | null;
+  durationMs: number;
+}
+
+export interface McpRuntimeReport {
+  checkedAt: number;
+  statuses: Partial<Record<McpRuntimeId, McpRuntimeStatus>>;
+  runtimes: McpRuntimeDetail[];
+  command?: McpCommandProbe | null;
+}
+
 export interface McpRegistryResult {
+  runtimes?: Partial<Record<McpRuntimeId, McpRuntimeStatus>>;
+  runtimeDetails?: McpRuntimeDetail[];
+  runtimeCheckedAt?: number;
   servers: McpRegistryEntry[];
   nextCursor?: string | null;
 }

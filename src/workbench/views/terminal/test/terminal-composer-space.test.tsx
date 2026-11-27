@@ -136,7 +136,7 @@ it("按空格只插入空格：浮层收起，Tab 不会填入隐藏候选", asy
   // 浮层（含隐藏候选）必须消失 —— 这是"空格被提示挡住"的根因修复。
   expect(candidate()).toBeFalsy();
 
-  // 此时 Tab 恢复正常的焦点导航，不能把 `docker ` 改成任何候选。
+  // 此时 Tab 被吞掉（不跳焦点），也不能把 `docker ` 改成任何候选。
   await press({ key: "Tab" });
   expect(holder.querySelector<HTMLInputElement>("input")!.value).toBe("docker ");
 });

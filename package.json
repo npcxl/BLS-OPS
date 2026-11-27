@@ -58,6 +58,7 @@
     "liquid-glass-react": "^1.1.1",
     "lucide-react": "^1.33.0",
     "motion": "^13.1.1",
+    "ogl": "^1.0.11",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

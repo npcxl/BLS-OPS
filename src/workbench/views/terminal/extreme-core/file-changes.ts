@@ -4,6 +4,7 @@
  * 不碰 React / Tauri：目录分组、增删计数、部分成功的判定都能单测，
  * 界面只负责把结果画出来。
  */
+import { i18n } from "@/i18n";
 import type { DiffHunk, FileChangeDetail, FileChangeSummary, FileDiff } from "@/api/types/agent";
 import type { Translate } from "./agent-steps";
 
@@ -82,6 +83,59 @@ export function isConfirmedChange(change: FileChangeSummary): boolean {
  * 净变化条目由后端给出具体原因（新增空文件 / 二进制已修改 / 敏感内容已变化…）；
  * 逐条历史没有这个字段，就按状态与已知标记推一句。
  */
+/**
+ * 后端写入的**自由文本**（变更说明 / 限制 / 备注）本地化。
+ *
+ * 这些不是前端字典里的 key：Rust 在记录变更时拼了具体原因与数量（"文件超过
+ * 256 KB…"、"本轮共 3 次修改…"）。精确命中字典的走 `t()`；带数字的模式
+ * 在这里按英文重写，中文界面原样返回。
+ */
+export function backendChangeText(text: string, t: Translate): string {
+  const trimmed = text.trim();
+  if (!trimmed) return text;
+  const exact = t(trimmed);
+  if (exact !== trimmed) return exact;
+  if (!i18n.language.toLowerCase().startsWith("en")) return text;
+
+  const patterns: [RegExp, (match: RegExpMatchArray) => string][] = [
+    [/^符号链接 → (.+)$/, (m) => `Symlink → ${m[1]}`],
+    [/^文件超过 (\d+) 行，未逐行比较$/, (m) => `File exceeds ${m[1]} lines; no line-by-line diff`],
+    [/^文件超过 (\d+) KB：未抓取正文，不生成逐行 Diff$/, (m) => `File exceeds ${m[1]} KB: body not captured, no line-by-line diff`],
+    [/^回读内容不是合法 base64：(.+)$/, (m) => `Read-back is not valid base64: ${m[1]}`],
+    [
+      /^回读字节数与声明大小不一致（声明 (\d+)，实际 (\d+)），文件可能在读取期间被改动$/,
+      (m) =>
+        `Read-back size does not match the declared size (declared ${m[1]}, actual ${m[2]}); the file may have changed during the read`,
+    ],
+    [
+      /^本轮共 (\d+) 次修改：对比首次操作前与最后一次验证后$/,
+      (m) => `${m[1]} writes in this run: compared before the first write and after the last verification`,
+    ],
+    // MCP 连接 / 调用：这些错误由 Rust 直接返回，格式固定、前缀可识别。
+    [/^启动 MCP 服务失败：(.+)$/, (m) => `Failed to start the MCP server: ${m[1]}`],
+    [/^连接失败：(.+)$/, (m) => `Connection failed: ${m[1]}`],
+    [/^工具发现失败（tools\/list）：(.+)$/, (m) => `Tool discovery failed (tools/list): ${m[1]}`],
+    [/^资源列表读取失败（resources\/list）：(.+)$/, (m) => `Failed to read resources (resources/list): ${m[1]}`],
+    [/^提示模板读取失败（prompts\/list）：(.+)$/, (m) => `Failed to read prompts (prompts/list): ${m[1]}`],
+    [/^请求 MCP 服务失败：(.+)$/, (m) => `MCP request failed: ${m[1]}`],
+    [/^MCP 调用失败：(.+)$/, (m) => `MCP call failed: ${m[1]}`],
+    [/^MCP 配置已不可用：(.+)$/, (m) => `The MCP configuration is unavailable: ${m[1]}`],
+    [/^MCP 实例已停用、未通过验证或授权已撤销，这次调用没有执行。$/, () => "The MCP instance is disabled, failed validation, or its authorization was revoked; this call did not run."],
+    [/^等待 (\S+) 响应超时（已等 (\d+) 秒）$/, (m) => `Timed out after ${m[2]}s waiting for ${m[1]}`],
+    [/^MCP 进程提前退出$/, () => "The MCP process exited early"],
+    [/^读取 MCP 输出失败：(.+)$/, (m) => `Failed to read MCP output: ${m[1]}`],
+    [/^MCP 服务没有返回结果$/, () => "The MCP service returned no result"],
+    [/^服务没有返回结果$/, () => "The service returned no result"],
+    [/^服务协商到不支持的协议版本 (.+)$/, (m) => `The service negotiated an unsupported protocol version ${m[1]}`],
+    [/^服务协商到 (.+)：这是旧版 HTTP\+SSE 传输，当前客户端只支持 Streamable HTTP（(.+) 及以上）；请改用 stdio 或升级服务。$/, (m) => `The service negotiated ${m[1]}: that is the legacy HTTP+SSE transport, while this client only supports Streamable HTTP (${m[2]} and above). Use stdio or upgrade the service.`],
+  ];
+  for (const [pattern, format] of patterns) {
+    const match = trimmed.match(pattern);
+    if (match) return format(match);
+  }
+  return text;
+}
+
 export function changeReasonLabel(change: FileChangeSummary, t: Translate): string {
   // 后端给的是具体原因（新增空文件 / 二进制已修改…）：当成文案 key 交给 i18n，
   // 没有对应翻译时原样返回，不会丢信息。

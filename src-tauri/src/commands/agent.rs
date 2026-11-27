@@ -15,9 +15,9 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter as _, State};
 
 use crate::agent::{
-    plan_status_block, spawn_agent, AgentInput, AgentPlan, AgentSnapshot, AgentStep, AgentTurn,
-    FileChangeDetail, FileChangeSummary, FileSnapshot, Lang, NetChangeSet, PermissionMode,
-    StoredChange, TokenUsage,
+    normalize_carried_steps, plan_status_block, spawn_agent, AgentInput, AgentPlan, AgentServerRef,
+    AgentSnapshot, AgentStep, AgentTurn, FileChangeDetail, FileChangeSummary, FileSnapshot, Lang,
+    NetChangeSet, PermissionMode, StepCategory, StoredChange, TokenUsage,
 };
 
 fn default_true() -> bool {
@@ -102,14 +102,62 @@ pub struct AgentStartRequest {
     pub reply_language: Option<String>,
 }
 
+/// 本轮允许子代理选择的服务器。
+///
+/// 只认三件事同时成立的会话：数据库里标记 connected、SSH 管理器确认传输仍活着、
+/// serverId 非空。模型拿不到这份清单以外的东西，因此不能按名字"猜"一台机器。
+async fn authorized_servers(
+    state: &AppState,
+    parent_session: &str,
+    parent_server_id: Option<&str>,
+    parent_server: &str,
+) -> Vec<AgentServerRef> {
+    let rows = state
+        .db
+        .open()
+        .ok()
+        .and_then(|conn| crate::db::list_recent_sessions(&conn, 50).ok())
+        .unwrap_or_default();
+    let mut out: Vec<AgentServerRef> = Vec::new();
+    for row in rows {
+        if row.status != "connected" || row.server_id.trim().is_empty() {
+            continue;
+        }
+        if !state.ssh.is_connected(&row.id).await {
+            continue;
+        }
+        // 同一台服务器可能有重连后的多条历史会话：只保留最新的一条活跃会话。
+        if out.iter().any(|server| server.server_id == row.server_id) {
+            continue;
+        }
+        out.push(AgentServerRef {
+            server_id: row.server_id,
+            server_name: row.server_name,
+            session_id: row.id,
+        });
+    }
+    let parent = AgentServerRef {
+        server_id: parent_server_id.unwrap_or("").to_string(),
+        server_name: parent_server.to_string(),
+        session_id: parent_session.to_string(),
+    };
+    match out.iter().position(|server| server.session_id == parent_session) {
+        Some(index) => out[index] = parent,
+        None => out.insert(0, parent),
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn agent_start(
     app: AppHandle,
     state: State<'_, AppState>,
     request: AgentStartRequest,
 ) -> OpsResult<AgentSnapshot> {
-    let permission_mode =
-        PermissionMode::from_wire(request.permission_mode.as_deref(), request.auto_approve_writes);
+    let permission_mode = PermissionMode::from_wire(
+        request.permission_mode.as_deref(),
+        request.auto_approve_writes,
+    );
     let allow_sudo = request.allow_sudo && !permission_mode.is_read_only();
     // 只把**本会话启用**的 MCP 工具解析成绑定；配置损坏 / 库读失败时退化为无 MCP。
     let mcp_tools = crate::mcp::bindings_for(
@@ -119,6 +167,13 @@ pub async fn agent_start(
         request.workspace_id.as_deref(),
     )
     .unwrap_or_default();
+    let servers = authorized_servers(
+        &state,
+        &request.session_id,
+        request.server_id.as_deref(),
+        &request.server,
+    )
+    .await;
     let input = AgentInput {
         task_id: request.task_id,
         session_id: request.session_id,
@@ -146,6 +201,7 @@ pub async fn agent_start(
         backup_before_delete: request.backup_before_delete,
         backup_retention_days: request.backup_retention_days,
         mcp_tools,
+        servers,
         enabled_builtins: request.enabled_builtins,
         db: Some(state.db.clone()),
         plan_required: request.plan_required,
@@ -155,6 +211,7 @@ pub async fn agent_start(
         locale: request.locale,
         reply_language: request.reply_language,
         carry_steps: Vec::new(),
+            child_run: false,
     };
     spawn_agent(app, state.inner().clone(), input)
         .await
@@ -228,10 +285,16 @@ fn checkpoint_steps(plan_json: &str) -> Vec<AgentStep> {
             let state = item["state"].as_str().unwrap_or("pending");
             // 进程退出时还停在 running / waiting：命令可能已经发出去了，恢复时先核对。
             let interrupted = matches!(state, "running" | "waiting");
+            let is_child = item["sourceTool"].as_str() == Some("child_agent")
+                || item["groupId"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("children-"));
             AgentStep {
                 index: index as u32,
                 call_id: format!("resume-{index}"),
-                tool: if item["remotePath"].as_str().is_some() {
+                tool: if let Some(tool) = item["sourceTool"].as_str().filter(|s| !s.is_empty()) {
+                    tool.to_string()
+                } else if item["remotePath"].as_str().is_some() {
                     "write_file".to_string()
                 } else {
                     "run_shell".to_string()
@@ -246,14 +309,52 @@ fn checkpoint_steps(plan_json: &str) -> Vec<AgentStep> {
                 command: item["command"].as_str().unwrap_or("").to_string(),
                 summary: item["title"].as_str().map(str::to_string),
                 stdout: item["stdout"].as_str().unwrap_or("").to_string(),
-                stderr: if interrupted {
+                stderr: if interrupted && is_child {
+                    "任务中断，子任务结果未知；恢复后先核实服务器状态".to_string()
+                } else if interrupted {
                     "上次运行在这里中断：命令可能已在服务器上执行，恢复后先核对".to_string()
                 } else {
                     item["stderr"].as_str().unwrap_or("").to_string()
                 },
                 exit_code: item["exitCode"].as_i64().map(|code| code as i32),
+                group_id: item["groupId"].as_str().map(str::to_string),
+                child_usage: serde_json::from_value(item["childUsage"].clone()).ok(),
+                server: item["server"].as_str().map(str::to_string),
+                server_id: item["serverId"].as_str().map(str::to_string),
+                session_id: item["sessionId"].as_str().map(str::to_string),
+                child_id: item["childId"].as_str().map(str::to_string),
+                child_goal: item["childGoal"].as_str().map(str::to_string),
+                child_depends_on: item["childDependsOn"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|value| value.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                stale: item["stale"].as_bool().unwrap_or(false),
                 backup_path: item["backupPath"].as_str().map(str::to_string),
                 rollback: item["rollback"].as_str().map(str::to_string),
+                /*
+                 * 类别 / 未执行原因跟着历史一路带回来：恢复后的步骤与实时看到
+                 * 的必须是同一口径，否则一次内部纠错会在恢复后变成"执行失败"。
+                 * 中断改写成 failed 的那条**不继承类别**（保守当作结果未知）。
+                 */
+                category: if interrupted {
+                    None
+                } else {
+                    item["category"]
+                        .as_str()
+                        .and_then(StepCategory::from_code)
+                },
+                blocked: if interrupted {
+                    // 子任务中断：结果未知；普通命令沿用原有"先核对"语义。
+                    is_child.then(|| "interrupted_unknown".to_string())
+                } else {
+                    item["blocked"].as_str().map(str::to_string)
+                },
                 ..Default::default()
             }
         })
@@ -347,32 +448,65 @@ pub async fn agent_resume(
     request: AgentResumeRequest,
 ) -> OpsResult<AgentSnapshot> {
     let task_id = request.task_id.trim();
+    let lang = Lang::from_locale(request.locale.as_deref());
+    let ui = |zh: &str, en: &str| match lang {
+        Lang::Zh => zh.to_string(),
+        Lang::En => en.to_string(),
+    };
     if task_id.is_empty() {
-        return Err(OpsError::new("config", "taskId 不能为空"));
+        return Err(OpsError::new(
+            "config",
+            ui("taskId 不能为空", "taskId must not be empty"),
+        ));
     }
     // 先确认**当前**会话还活着：历史里的 session_id 可能早就断了。
     if !state.ssh.is_connected(&request.session_id).await {
         return Err(OpsError::new(
             "ssh",
-            "SSH 会话已断开：先重新连接这台服务器，再恢复任务",
+            ui(
+                "SSH 会话已断开：先重新连接这台服务器，再恢复任务",
+                "The SSH session is disconnected: reconnect to this server before resuming the task",
+            ),
         ));
     }
     let record = load_task_record(&state, task_id)
         .map_err(|error| OpsError::new("io", error))?
-        .ok_or_else(|| OpsError::new("config", "找不到这条任务的历史记录"))?;
+        .ok_or_else(|| {
+            OpsError::new(
+                "config",
+                ui(
+                    "找不到这条任务的历史记录",
+                    "No history record was found for this task",
+                ),
+            )
+        })?;
     if record.status == "success" {
-        return Err(OpsError::new("ai", "这条任务已经完成，不需要恢复"));
+        return Err(OpsError::new(
+            "ai",
+            ui(
+                "这条任务已经完成，不需要恢复",
+                "This task already succeeded and does not need to be resumed",
+            ),
+        ));
     }
     if let Some(handle) = state.agents.get(task_id) {
         if !handle.snapshot().terminal() {
-            return Err(OpsError::new("ai", "这条任务还在执行"));
+            return Err(OpsError::new(
+                "ai",
+                ui("这条任务还在执行", "This task is still running"),
+            ));
         }
     }
-    let steps = checkpoint_steps(&record.plan_json);
+    let mut steps = checkpoint_steps(&record.plan_json);
+    // 中断时未开始 / 结果未知的子任务不能沿用旧状态：先归一化再写进检查点说明。
+    normalize_carried_steps(&mut steps);
     if steps.is_empty() {
         return Err(OpsError::new(
             "ai",
-            "这条记录没有可恢复的 Agent 步骤（部署计划请从部署面板继续）",
+            ui(
+                "这条记录没有可恢复的 Agent 步骤（部署计划请从部署面板继续）",
+                "This record has no resumable Agent steps (resume deployment plans from the deployment panel)",
+            ),
         ));
     }
     let cwd = if record.cwd.trim().is_empty() {
@@ -386,16 +520,26 @@ pub async fn agent_resume(
         record.goal.clone()
     };
     if goal.trim().is_empty() {
-        goal = "继续完成上次未完成的任务".to_string();
+        goal = ui(
+            "继续完成上次未完成的任务",
+            "Continue the unfinished task from the last run",
+        );
     }
     let server = record.server.clone();
-    let lang = Lang::from_locale(request.locale.as_deref());
     let mut brief = resume_brief(&record, &steps, &cwd, lang);
+    if steps.iter().any(|step| step.stale) {
+        brief.push_str(match lang {
+            Lang::Zh => "\n【上次子任务结果】有的子任务在上次运行里已完成，但服务器状态可能已经变化：只能作为线索，涉及当前状态的结论必须重新用只读命令核实，不能直接当成事实。\n",
+            Lang::En => "\n[Previous child results] Some investigations completed before the interruption, but server state may have changed. Treat them only as leads; re-verify any current-state conclusion with read-only commands instead of treating them as facts.\n",
+        });
+    }
     if let Some(plan) = request.plan.as_ref() {
         brief.push_str(&plan_status_block(plan, lang));
     }
-    let permission_mode =
-        PermissionMode::from_wire(request.permission_mode.as_deref(), request.auto_approve_writes);
+    let permission_mode = PermissionMode::from_wire(
+        request.permission_mode.as_deref(),
+        request.auto_approve_writes,
+    );
     let allow_sudo = request.allow_sudo && !permission_mode.is_read_only();
     let mcp_tools = crate::mcp::bindings_for(
         &state.db,
@@ -404,6 +548,14 @@ pub async fn agent_resume(
         request.workspace_id.as_deref(),
     )
     .unwrap_or_default();
+    // 恢复只使用**当前**真正连着的会话；历史里那台机器没重连就不能拿来跑。
+    let servers = authorized_servers(
+        &state,
+        &request.session_id,
+        request.server_id.as_deref(),
+        &server,
+    )
+    .await;
     let input = AgentInput {
         task_id: task_id.to_string(),
         session_id: request.session_id,
@@ -435,12 +587,14 @@ pub async fn agent_resume(
         backup_before_delete: request.backup_before_delete,
         backup_retention_days: request.backup_retention_days,
         mcp_tools,
+        servers,
         enabled_builtins: request.enabled_builtins,
         db: Some(state.db.clone()),
         plan_required: request.plan_required,
         carry_plan: request.plan,
         max_rounds: request.max_rounds,
         carry_steps: steps,
+        child_run: false,
     };
     spawn_agent(app, state.inner().clone(), input)
         .await
@@ -718,7 +872,7 @@ pub fn agent_file_change_detail(
 
 #[cfg(test)]
 mod tests {
-    use super::checkpoint_steps;
+    use super::{checkpoint_steps, normalize_carried_steps, StepCategory};
 
     #[test]
     fn checkpoint_keeps_tool_steps_and_marks_interrupted_ones() {
@@ -756,8 +910,92 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_preserves_child_identity_and_estimated_usage() {
+        let plan = serde_json::json!([{
+            "kind": "tool", "title": "检查服务", "sourceTool": "child_agent", "groupId": "children-0",
+            "state": "success", "childUsage": { "requests": 2, "inputTokens": 120, "outputTokens": 30 },
+            "server": "生产", "serverId": "srv-a", "childId": "svc", "childGoal": "检查服务",
+            "childDependsOn": ["disk"], "stale": true
+        }]);
+        let steps = checkpoint_steps(&plan.to_string());
+        assert_eq!(steps[0].tool, "child_agent");
+        assert_eq!(steps[0].group_id.as_deref(), Some("children-0"));
+        assert_eq!(steps[0].child_usage.as_ref().unwrap().input_tokens, 120);
+        // 恢复必须带回子任务身份与服务器：否则会与另一台机器串台。
+        assert_eq!(steps[0].server.as_deref(), Some("生产"));
+        assert_eq!(steps[0].server_id.as_deref(), Some("srv-a"));
+        assert_eq!(steps[0].child_id.as_deref(), Some("svc"));
+        assert_eq!(steps[0].child_goal.as_deref(), Some("检查服务"));
+        assert_eq!(steps[0].child_depends_on, vec!["disk"]);
+        assert!(steps[0].stale);
+    }
+
+    #[test]
+    fn an_interrupted_child_is_never_restored_as_running_or_success() {
+        let plan = serde_json::json!([
+            { "kind": "tool", "title": "运行中", "sourceTool": "child_agent", "groupId": "children-0", "state": "running" },
+            { "kind": "tool", "title": "排队", "sourceTool": "child_agent", "groupId": "children-0", "state": "pending" },
+            { "kind": "tool", "title": "完成", "sourceTool": "child_agent", "groupId": "children-0", "state": "success", "childId": "done", "childGoal": "g" }
+        ]);
+        let mut steps = checkpoint_steps(&plan.to_string());
+        normalize_carried_steps(&mut steps);
+        assert_eq!(steps[0].state, "failed");
+        assert_eq!(steps[0].blocked.as_deref(), Some("interrupted_unknown"));
+        assert_eq!(steps[1].state, "skipped");
+        assert_eq!(steps[1].blocked.as_deref(), Some("interrupted_pending"));
+        assert_eq!(steps[2].state, "success");
+        assert!(steps[2].stale);
+    }
+
+    #[test]
     fn checkpoint_ignores_broken_json() {
         assert!(checkpoint_steps("{not json").is_empty());
         assert!(checkpoint_steps("[]").is_empty());
+    }
+
+    /// 历史里的类别与"没执行"原因必须带回来：恢复后不能把一次内部纠错
+    /// 显示成执行失败，也不能把用户拒绝说成服务器出错。
+    #[test]
+    fn checkpoint_keeps_step_category_and_blocked_reason() {
+        let plan = serde_json::json!([
+            {
+                "kind": "tool",
+                "title": "查看容器",
+                "command": "docker ps",
+                "risk": "read",
+                "state": "skipped",
+                "category": "internal",
+                "blocked": "duplicate"
+            },
+            {
+                "kind": "tool",
+                "title": "重启 nginx",
+                "command": "systemctl restart nginx",
+                "risk": "write",
+                "state": "skipped",
+                "category": "denied",
+                "blocked": "user_denied"
+            },
+            {
+                "kind": "tool",
+                "title": "改写配置",
+                "remotePath": "/etc/nginx/ops.conf",
+                "risk": "write",
+                "state": "running",
+                "category": "executed"
+            }
+        ]);
+        let steps = checkpoint_steps(&plan.to_string());
+        assert_eq!(steps[0].category, Some(StepCategory::Internal));
+        assert_eq!(steps[0].blocked.as_deref(), Some("duplicate"));
+        assert_eq!(steps[1].category, Some(StepCategory::Denied));
+        assert_eq!(steps[1].blocked.as_deref(), Some("user_denied"));
+        /*
+         * 中断改写成 failed 的那一步**不继承类别**：上一次可能已经写下去了，
+         * 结果未知时按真实执行保守展示，不能标成"内部调整"藏起来。
+         */
+        assert_eq!(steps[2].state, "failed");
+        assert_eq!(steps[2].category, None);
+        assert_eq!(steps[2].blocked, None);
     }
 }

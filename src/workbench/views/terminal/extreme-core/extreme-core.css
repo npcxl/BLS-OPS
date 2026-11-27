@@ -1,13 +1,18 @@
 .extreme-core {
-  background: rgb(var(--app));
+  background: linear-gradient(
+    180deg,
+    rgb(var(--shell) / var(--shell-top-alpha)) 0%,
+    rgb(var(--shell) / var(--shell-bottom-alpha)) 100%
+  );
   isolation: isolate;
 }
+
+:root[data-material="solid"] .extreme-core { background: rgb(var(--shell)); }
 
 /* 浅色对话工作台用中性纸面，品牌色留给操作与状态。 */
 :root[data-theme="light"] .extreme-core[data-welcome="false"] {
   --app: 246 246 245;
   --content: 255 255 255;
-  --shell: 246 246 245;
   --surface-1: 250 250 249;
   --surface-2: 255 255 255;
   --surface-3: 242 242 241;
@@ -53,11 +58,30 @@
   background: rgb(var(--content));
 }
 
-.extreme-core[data-welcome="false"] .extreme-core-header {
-  background: rgb(var(--app));
+/* 会话行使用中性色区分悬停与当前选中，适配浅色和深色主题。 */
+.extreme-core-task-item {
+  background: transparent;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.extreme-core-task-item:hover { background: rgb(var(--fg) / .055); color: rgb(var(--fg)); }
+.extreme-core-task-item[data-active="true"] { background: rgb(var(--fg) / .085); color: rgb(var(--fg)); }
+.extreme-core-task-item[data-active="true"]:hover { background: rgb(var(--fg) / .105); }
+
+.extreme-core .extreme-core-header {
+  border-bottom: 0;
 }
 
-.extreme-core[data-welcome="false"] :is(.extreme-core-task-rail, .extreme-core-remote-rail) {
+.extreme-core .extreme-core-header,
+.extreme-core .extreme-core-task-rail,
+.extreme-core[data-welcome="true"] :is(.extreme-core-header, .extreme-core-task-rail) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.extreme-core[data-welcome="false"] .extreme-core-remote-rail {
   background: rgb(var(--surface-1));
 }
 
@@ -79,46 +103,13 @@
   inset: 0;
 }
 
-.extreme-core-background::before {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  background:
-    radial-gradient(ellipse at 0% 78%, #704ee062, transparent 46%),
-    radial-gradient(ellipse at 100% 90%, #4c61d061, transparent 48%),
-    radial-gradient(ellipse at 76% 94%, #257eaa38, transparent 44%);
-}
-
-.extreme-core-background::after {
-  content: "";
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  background-image: radial-gradient(circle, rgb(195 205 235 / .19) .7px, transparent 1px);
-  background-size: 16px 16px;
-  mask-image: linear-gradient(#000, #0008 76%, transparent);
-}
-
 /*
- * **浅色主题下的背景装饰**。
+ * **不再叠额外的光晕 / 点阵**。
  *
- * 上面那组光晕（`#704ee0` / `#4c61d0`）与浅点阵是给深色底的：放到近白
- * 背景上会变成一块突兀的紫斑、点阵也几乎看不见。这里换成更淡的冷色光晕
- * 与偏深的点阵，背景仍然只从空白处透出来。
+ * 深色是官方 Galaxy 的星层、浅色是官方 Aero Shards 的碎片：两者本身就是
+ * 完整画面，再压一层紫斑或 16px 点阵只会把星星糊掉、让新的背景看起来
+ * 还像旧的 ShapeWaves。颜色全部交给组件自己的公开参数。
  */
-/*
- * 浅色主题：**不再叠额外的光晕与点阵**。
- *
- * 浅色背景用的是 BG Studio 里调好的那套（白底 + `#a855f7` 紫色点阵 +
- * "OPS WORK" 镂空字）。再叠一层冷色光晕与灰点会把它糊成一片，反而看不清
- * 原本的图形。深色仍保留下面那组紫/靛蓝光晕。
- */
-:root[data-theme="light"] .extreme-core-background::before,
-:root[data-theme="light"] .extreme-core-background::after {
-  display: none;
-}
-
 .extreme-core[data-welcome="true"] .extreme-core-background { opacity: 1; }
 /* 与主窗口标题栏同高（36px）：窗口按钮贴边、整条是拖拽区。 */
 /* 顶栏高度由 `page-toolbar` 决定，不再单独覆盖。 */
@@ -131,6 +122,36 @@
  * 不会贴到边缘。
  */
 .extreme-core-column { max-width: none; }
+
+.extreme-workspace-skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: var(--color-surface-1, #fff);
+}
+
+.extreme-workspace-skeleton-content {
+  width: min(100% - 48px, 720px);
+  margin: 32px auto;
+}
+
+.extreme-workspace-skeleton-user,
+.extreme-workspace-skeleton-line {
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  animation: extreme-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.extreme-workspace-skeleton-user {
+  width: 46%;
+  height: 42px;
+  margin: 0 0 38px auto;
+}
+
+.extreme-workspace-skeleton-line { width: 78%; height: 10px; margin-bottom: 14px; }
+.extreme-workspace-skeleton-line.short { width: 48%; }
+.extreme-workspace-skeleton-line.medium { width: 64%; }
+@keyframes extreme-skeleton-pulse { 50% { opacity: .5; } }
 
 .extreme-core-chat-layout {
   container: extreme-chat / inline-size;
@@ -148,6 +169,12 @@
 
 .extreme-core-timeline {
   display: none;
+}
+
+/* 仅让刻度在顶部渐隐，预览浮层和聊天正文不受影响。 */
+.extreme-core-timeline-rail {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 48px);
+  mask-image: linear-gradient(to bottom, transparent, #000 48px);
 }
 
 @media (min-width: 1180px) {
@@ -169,6 +196,16 @@
   align-items: center;
   overflow-y: auto;
   padding: clamp(24px, 14vh, 140px) 20px 28px;
+}
+
+.extreme-core[data-welcome="true"] .extreme-core-row[data-managing="true"] .extreme-core-main {
+  align-items: stretch;
+  overflow: hidden;
+  padding: 0;
+}
+
+.extreme-core-row[data-managing="true"] .extreme-core-workspace > aside[data-pane-view] {
+  display: none;
 }
 
 .extreme-core-intro {
@@ -363,14 +400,6 @@
   color: rgb(var(--fg-muted));
   font-size: 13px;
 }
-/* 小心：只给这一颗圆点设样式。加载行里嵌的是官方 LatticeLoader（span 根节点），
- * 用 `> span` 会把它的格子压成 6px。 */
-.extreme-core-reply-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgb(var(--accent));
-}
 /* ---------------- 一轮回复：正文与命令按发生顺序排列 ---------------- */
 /*
  * 正文 → 命令 → 正文 → 命令 → 结论都在这一列里。命令行是**对话的一部分**，
@@ -386,15 +415,95 @@
 .extreme-core-turn .extreme-core-markdown > :first-child { margin-top: 0; }
 .extreme-core-turn .extreme-core-markdown > :last-child { margin-bottom: 0; }
 .extreme-core-turn-stage { font-size: 12px; }
+/* 执行前说明（Codex 式轻注释）：比正文收敛一档，紧贴下面的命令行。 */
+.extreme-core-turn-note {
+  margin: 0;
+  color: rgb(var(--fg-muted));
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.extreme-core-scroll-indicator {
+  position: relative;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+}
+.extreme-core-scroll-running .glass-icon-glyph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+.extreme-core-scroll-activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  color: rgb(var(--accent));
+  transition: opacity .15s ease, transform .15s ease;
+}
+.extreme-core-scroll-activity > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: extreme-core-scroll-dot 1s ease-in-out infinite;
+}
+.extreme-core-scroll-activity > span:nth-child(2) { animation-delay: .14s; }
+.extreme-core-scroll-activity > span:nth-child(3) { animation-delay: .28s; }
+@keyframes extreme-core-scroll-dot {
+  0%, 60%, 100% { transform: translateY(2px); opacity: .65; }
+  30% { transform: translateY(-2px); opacity: 1; }
+}
+.extreme-core-scroll-arrow {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity .15s ease, transform .15s ease;
+}
+.extreme-core-scroll-control:is(:hover, :focus-within) .extreme-core-scroll-activity {
+  opacity: 0;
+  transform: translateY(3px);
+}
+.extreme-core-scroll-control:is(:hover, :focus-within) .extreme-core-scroll-arrow {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core-scroll-activity > span { animation: none; opacity: .8; }
+}
+
+.extreme-core-attempts {
+  border: 1px solid rgb(var(--line) / .6);
+  border-radius: 10px;
+  background: rgb(var(--surface-2));
+  color: rgb(var(--fg-muted));
+  font-size: 12px;
+}
+.extreme-core-attempts > summary {
+  cursor: pointer;
+  padding: 9px 12px;
+}
+.extreme-core-attempts-content {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
 
 /* AI 提问卡：与命令行同一列，不用浮层，不抢正文的阅读位置。 */
 .extreme-core-question {
   width: 100%;
   min-width: 0;
   border: 1px solid rgb(var(--line) / 0.6);
-  border-radius: 10px;
-  background: rgb(var(--surface-1) / 0.5);
-  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgb(var(--surface-2));
+  padding: 16px 20px;
 }
 .extreme-core-question-answered {
   border-color: rgb(var(--accent) / 0.3);
@@ -402,6 +511,35 @@
 }
 
 /* 运行中的步骤标题：官方 ThoughtLine，占满剩余宽度、单行截断。 */
+/* 本轮已用时间：跟在回复最后，不抢正文的视觉重量（Codex 式轻分隔）。 */
+.extreme-core-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgb(var(--fg-subtle));
+  font-variant-numeric: tabular-nums;
+}
+.extreme-core-elapsed-sep {
+  color: rgb(var(--fg-subtle) / 0.85);
+}
+
+/* 计划卡定位：目标命令短暂高亮一下，视线能跟过去。 */
+.extreme-core-locate-flash {
+  animation: extreme-locate-flash 1.4s ease-out;
+  border-radius: 6px;
+}
+@keyframes extreme-locate-flash {
+  0% {
+    background: rgb(var(--accent) / 0.22);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 /* MCP「可用能力」折叠：默认收起，箭头跟着开合转。 */
 .mcp-tools > summary > svg {
   transition: transform 150ms ease;
@@ -421,9 +559,36 @@
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgb(var(--line) / .55);
-  border-radius: 8px;
-  background: rgb(var(--surface-2) / .32);
+  border: 1px solid rgb(var(--line) / .45);
+  border-radius: 9px;
+  background: rgb(var(--surface-2) / .24);
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.extreme-core-step:hover {
+  border-color: rgb(var(--line) / .75);
+}
+.extreme-core-step-running {
+  border-color: rgb(var(--accent) / .38);
+  background: rgb(var(--accent) / .035);
+}
+.extreme-core-step[data-state="failed"] {
+  border-color: rgb(var(--danger) / .35);
+}
+.extreme-core-step-diff-link {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgb(var(--accent) / .1);
+  color: rgb(var(--accent));
+  font-size: 10.5px;
+  line-height: 16px;
+  transition: background-color 120ms ease;
+}
+.extreme-core-step-diff-link:hover {
+  background: rgb(var(--accent) / .18);
 }
 .extreme-core-step-head,
 .extreme-core-step-group-head {
@@ -441,6 +606,13 @@
 .extreme-core-step-group-head:hover {
   background: rgb(var(--surface-2) / .6);
   color: rgb(var(--fg));
+}
+.extreme-core-step-head:focus-visible,
+.extreme-core-step-group-head:focus-visible,
+.extreme-core-attempts > summary:focus-visible {
+  outline: 2px solid rgb(var(--accent) / .7);
+  outline-offset: -2px;
+  border-radius: 8px;
 }
 .extreme-core-step-icon {
   display: inline-flex;
@@ -537,8 +709,9 @@
 .extreme-core-markdown {
   min-width: 0;
   color: rgb(var(--fg));
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: 15px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 .extreme-core-message-notice .extreme-core-markdown {
   color: rgb(var(--fg-muted));
@@ -547,15 +720,15 @@
 }
 .extreme-core-markdown > :first-child { margin-block-start: 0; }
 .extreme-core-markdown > :last-child { margin-block-end: 0; }
-.extreme-core-markdown p { margin-block: .7em; }
+.extreme-core-markdown p { margin-block: .8em; }
 .extreme-core-markdown :is(h1, h2, h3, h4, h5, h6) {
   margin-block: 1.05em .35em;
   font-weight: 650;
   line-height: 1.4;
 }
-.extreme-core-markdown h1 { font-size: 20px; }
-.extreme-core-markdown h2 { font-size: 17px; }
-.extreme-core-markdown h3 { font-size: 15px; }
+.extreme-core-markdown h1 { font-size: 21px; }
+.extreme-core-markdown h2 { font-size: 18px; }
+.extreme-core-markdown h3 { font-size: 16px; }
 .extreme-core-markdown strong { font-weight: 650; }
 .extreme-core-markdown :is(ul, ol) { margin-block: .65em; padding-inline-start: 1.5em; }
 .extreme-core-markdown ul { list-style: disc; }
@@ -601,7 +774,7 @@
 .extreme-core-markdown pre code {
   padding: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.65;
 }
 .extreme-core-markdown blockquote {
@@ -622,7 +795,7 @@
   border: 1px solid rgb(var(--line));
   border-radius: 8px;
 }
-.extreme-core-markdown table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.extreme-core-markdown table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .extreme-core-markdown :is(th, td) {
   min-width: 6em;
   padding: 6px 10px;
@@ -682,9 +855,7 @@
   --extreme-rail-w: 48px;
 }
 
-.extreme-core-pane-expanded {
-  left: var(--extreme-rail-w);
-}
+.extreme-core-pane-expanded { left: 0; }
 
 @media (max-width: 960px) {
   .extreme-core-row {
@@ -699,8 +870,8 @@
  * 现在直接隐藏，退出全屏再回到对话；选择器挂到 row 上 —— 右栏不是
  * `main` 的子元素。
  */
-.extreme-core-row:has(> aside[data-pane-view="expanded"]) .extreme-core-composer-wrap,
-.extreme-core-row:has(> aside[data-pane-view="expanded"]) .extreme-core-send-queue {
+.extreme-core-workspace:has(> aside[data-pane-view="expanded"]) .extreme-core-composer-wrap,
+.extreme-core-workspace:has(> aside[data-pane-view="expanded"]) .extreme-core-send-queue {
   display: none;
 }
 
@@ -818,6 +989,13 @@
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / .08),
     inset 0 -1px 0 rgb(255 255 255 / .03);
+}
+
+.extreme-core[data-welcome="true"] :is(.extreme-core-header, .extreme-core-task-rail) {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .extreme-core-remote-files > :first-child {
@@ -1013,10 +1191,11 @@
 .extreme-core-plan-card {
   width: 288px;
   max-width: 100%;
-  border: 1px solid rgb(var(--line));
-  border-radius: 10px;
-  background: rgb(var(--surface-1));
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.09);
+  overflow: hidden;
+  border: 1px solid rgb(var(--line) / 0.6);
+  border-radius: 16px;
+  background: rgb(var(--surface-2));
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.04);
 }
 
 .extreme-core-plan-card,
@@ -1045,14 +1224,14 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 9px 8px 3px 12px;
+  padding: 14px 14px 4px 16px;
 }
 
 .extreme-core-plan-count {
   flex: none;
   padding-inline: 6px;
   border-radius: 999px;
-  background: rgb(var(--surface-2));
+  background: rgb(var(--surface-1));
   color: var(--plan-ink-subtle);
   font-size: 10px;
   line-height: 16px;
@@ -1061,7 +1240,7 @@
 
 .extreme-core-plan-current {
   margin: 0;
-  padding: 0 12px 7px;
+  padding: 0 16px 8px;
   overflow: hidden;
   color: var(--plan-ink-muted);
   font-size: 11px;
@@ -1095,7 +1274,7 @@
   max-height: min(38vh, 260px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 10px 7px;
+  padding: 0 10px 10px;
   scrollbar-width: thin;
 }
 
@@ -1104,15 +1283,16 @@
 }
 
 .extreme-core-plan-notes {
-  border-top: 1px solid var(--plan-line);
-  padding: 7px 12px;
+  margin: 0 12px 8px;
+  border-radius: 12px;
+  background: rgb(var(--surface-1));
+  padding: 9px 10px;
 }
 
 .extreme-core-plan-foot {
   margin: 0;
   overflow: hidden;
-  border-top: 1px solid var(--plan-line);
-  padding: 6px 12px;
+  padding: 2px 16px 14px;
   color: var(--plan-ink-subtle);
   font-size: 10px;
   line-height: 15px;
@@ -1126,9 +1306,9 @@
   gap: 6px;
   height: 28px;
   padding-inline: 10px;
-  border: 1px solid rgb(var(--line));
-  border-radius: 8px;
-  background: rgb(var(--surface-1));
+  border: 1px solid rgb(var(--line) / 0.6);
+  border-radius: 999px;
+  background: rgb(var(--surface-2));
   color: var(--plan-ink);
   font-size: 11px;
   cursor: pointer;

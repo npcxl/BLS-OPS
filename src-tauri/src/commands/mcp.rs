@@ -29,10 +29,7 @@ pub fn mcp_server_delete(state: State<'_, AppState>, id: String) -> OpsResult<()
 
 /// 测试连接并刷新能力（tools / resources / prompts）。
 #[tauri::command]
-pub async fn mcp_server_test(
-    state: State<'_, AppState>,
-    id: String,
-) -> OpsResult<McpTestResult> {
+pub async fn mcp_server_test(state: State<'_, AppState>, id: String) -> OpsResult<McpTestResult> {
     let db = state.db.clone();
     mcp::test(&db, &id)
         .await
@@ -45,6 +42,24 @@ pub async fn mcp_server_test_draft(request: McpServerInput) -> OpsResult<McpTest
     let config =
         mcp::draft_config(request).map_err(|error| OpsError::new("config", error.to_string()))?;
     Ok(mcp::test_draft(&config).await)
+}
+
+/// 重新检测本机运行环境（uv / uvx / Node / npx / Docker）。
+///
+/// 每次都重新读 PATH / 用户级与系统级 PATH，所以用户装完环境后点"重新检测"
+/// 就能看到最新结果，不需要重启应用。传入 `command` 时额外探测该条自定义命令。
+#[tauri::command]
+pub async fn mcp_runtime_status(command: Option<String>) -> OpsResult<Value> {
+    let report = crate::mcp_runtime::probe_all().await;
+    let mut value = serde_json::to_value(&report)
+        .map_err(|error| OpsError::new("mcp", error.to_string()))?;
+    if let Some(command) = command.map(|item| item.trim().to_string()).filter(|item| !item.is_empty())
+    {
+        let probe = crate::mcp_runtime::probe_command(&command).await;
+        value["command"] = serde_json::to_value(probe)
+            .map_err(|error| OpsError::new("mcp", error.to_string()))?;
+    }
+    Ok(value)
 }
 
 /// 官方 MCP Registry 搜索（关键词 / 分页 / 失败重试在客户端实现）。

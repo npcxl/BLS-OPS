@@ -196,6 +196,140 @@ fn db_error(error: impl ToString) -> OpsError {
     OpsError::from_stage("io", error)
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtremeMemory {
+    id: String,
+    scope: String,
+    server_id: Option<String>,
+    workspace_id: Option<String>,
+    content: String,
+    #[serde(default)]
+    title: String,
+    source: String,
+    updated_at: i64,
+}
+
+#[tauri::command]
+pub fn extreme_memory_list(state: State<'_, AppState>) -> OpsResult<Vec<ExtremeMemory>> {
+    let conn = state.db.open().map_err(db_error)?;
+    let mut stmt = conn.prepare("SELECT id, scope, server_id, workspace_id, content, source, updated_at, title FROM extreme_memories ORDER BY updated_at DESC LIMIT 2000").map_err(db_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ExtremeMemory {
+                id: row.get(0)?,
+                scope: row.get(1)?,
+                server_id: row.get(2)?,
+                workspace_id: row.get(3)?,
+                content: row.get(4)?,
+                source: row.get(5)?,
+                updated_at: row.get(6)?,
+                title: row.get(7)?,
+            })
+        })
+        .map_err(db_error)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
+}
+
+fn read_context_memories(
+    conn: &rusqlite::Connection,
+    _server_id: Option<&str>,
+    _workspace_id: &str,
+) -> OpsResult<Vec<ExtremeMemory>> {
+    let mut stmt = conn.prepare("SELECT id, scope, server_id, workspace_id, content, source, updated_at, title FROM extreme_memories WHERE scope='global' ORDER BY updated_at DESC LIMIT 2000").map_err(db_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ExtremeMemory {
+                id: row.get(0)?,
+                scope: row.get(1)?,
+                server_id: row.get(2)?,
+                workspace_id: row.get(3)?,
+                content: row.get(4)?,
+                source: row.get(5)?,
+                updated_at: row.get(6)?,
+                title: row.get(7)?,
+            })
+        })
+        .map_err(db_error)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
+}
+
+#[tauri::command]
+pub fn extreme_memory_context(
+    state: State<'_, AppState>,
+    server_id: Option<String>,
+    workspace_id: String,
+) -> OpsResult<Vec<ExtremeMemory>> {
+    let conn = state.db.open().map_err(db_error)?;
+    read_context_memories(&conn, server_id.as_deref(), &workspace_id)
+}
+
+#[tauri::command]
+pub fn extreme_memory_save(state: State<'_, AppState>, memory: ExtremeMemory) -> OpsResult<()> {
+    let content = memory.content.trim();
+    if content.is_empty()
+        || content.chars().count() > 800
+        || memory.title.chars().count() > 120
+        || memory.id.is_empty()
+        || memory.id.len() > 128
+        || !matches!(memory.scope.as_str(), "global" | "server" | "conversation")
+        || (memory.scope == "server" && memory.server_id.as_deref().unwrap_or("").is_empty())
+        || (memory.scope == "conversation"
+            && (memory.server_id.as_deref().unwrap_or("").is_empty()
+                || memory.workspace_id.as_deref().unwrap_or("").is_empty()))
+    {
+        return Err(db_error("记忆内容或作用范围无效"));
+    }
+    let lowered = format!("{} {}", memory.title, content).to_lowercase();
+    if [
+        "password",
+        "passwd",
+        "api_key",
+        "api-key",
+        "api key",
+        "secret",
+        "private key",
+        "authorization:",
+        "密码",
+        "密钥",
+        "私钥",
+        "口令",
+        "token=",
+        "bearer ",
+    ]
+    .iter()
+    .any(|word| lowered.contains(word))
+    {
+        return Err(db_error("请勿将密码、密钥或令牌保存到长期记忆"));
+    }
+    let conn = state.db.open().map_err(db_error)?;
+    let now = crate::db::AppDb::now();
+    let updated_at = if memory.source.starts_with("observed:") {
+        memory.updated_at.min(now)
+    } else {
+        now
+    };
+    conn.execute("INSERT INTO extreme_memories(id,scope,server_id,workspace_id,content,source,updated_at,title) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET scope=excluded.scope,server_id=excluded.server_id,workspace_id=excluded.workspace_id,content=excluded.content,source=excluded.source,updated_at=excluded.updated_at,title=excluded.title WHERE NOT (extreme_memories.source='user' AND excluded.source LIKE 'observed:%') AND (excluded.source NOT LIKE 'observed:%' OR excluded.updated_at >= extreme_memories.updated_at)",
+        params![memory.id, memory.scope, memory.server_id, memory.workspace_id, content, memory.source, updated_at, memory.title.trim()]).map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn extreme_memory_delete(state: State<'_, AppState>, id: String) -> OpsResult<()> {
+    let conn = state.db.open().map_err(db_error)?;
+    conn.execute("DELETE FROM extreme_memories WHERE id=?1", params![id])
+        .map_err(db_error)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn extreme_memory_clear(state: State<'_, AppState>) -> OpsResult<()> {
+    let conn = state.db.open().map_err(db_error)?;
+    conn.execute("DELETE FROM extreme_memories", [])
+        .map_err(db_error)?;
+    Ok(())
+}
+
 /// 读取全部对话（正文 / 草稿 / 上下文），按最近活跃排序。
 ///
 /// 返回原始 JSON：前端 `ExtremeWorkspace` 字段还在演进，后端不复制一份
@@ -387,6 +521,13 @@ pub(crate) fn load_task_record(
     id: &str,
 ) -> Result<Option<ExtremeTaskRecord>, String> {
     let conn = state.db.open().map_err(|error| error.to_string())?;
+    read_task_record(&conn, id)
+}
+
+fn read_task_record(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<ExtremeTaskRecord>, String> {
     let row = conn.query_row(
         "SELECT id, kind, server, server_id, workspace_id, session_id, status, name, goal, risk, summary, plan_json, outcome_json, cwd, created_at
          FROM extreme_tasks WHERE id = ?1",
@@ -416,6 +557,33 @@ pub(crate) fn load_task_record(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// Restore only task records referenced by this conversation's history.
+#[tauri::command]
+pub fn extreme_context_tasks(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    ids: Vec<String>,
+) -> OpsResult<Vec<ExtremeTaskRecord>> {
+    let conn = state.db.open().map_err(db_error)?;
+    read_context_tasks(&conn, &workspace_id, ids)
+}
+
+fn read_context_tasks(
+    conn: &rusqlite::Connection,
+    workspace_id: &str,
+    ids: Vec<String>,
+) -> OpsResult<Vec<ExtremeTaskRecord>> {
+    let mut records = Vec::new();
+    for id in ids {
+        if let Some(record) = read_task_record(conn, &id).map_err(db_error)? {
+            if record.workspace_id.as_deref() == Some(workspace_id) {
+                records.push(record);
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// 保存某次任务的变更摘要 + 脱敏 Diff（应用重启后右栏还能看）。
@@ -482,6 +650,38 @@ pub fn extreme_task_delete(state: State<'_, AppState>, id: String) -> OpsResult<
 mod workspace_tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn memory_context_is_scoped_before_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE extreme_memories(id TEXT PRIMARY KEY, scope TEXT, server_id TEXT, workspace_id TEXT, content TEXT, source TEXT, updated_at INTEGER, title TEXT NOT NULL DEFAULT '');
+          INSERT INTO extreme_memories(id,scope,server_id,workspace_id,content,source,updated_at) VALUES ('g','global',NULL,NULL,'global','user',1),
+          ('s','server','a',NULL,'server a','user',2),
+          ('w','conversation','a','one','conversation one','user',3),
+          ('x','conversation','a','other','other conversation','user',4),
+          ('y','server','b',NULL,'other server','user',5);").unwrap();
+        let result = read_context_memories(&conn, Some("a"), "one").unwrap();
+        let ids: Vec<&str> = result.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, vec!["g"]);
+        let anonymous = read_context_memories(&conn, None, "one").unwrap();
+        assert_eq!(anonymous.len(), 1);
+        assert_eq!(anonymous[0].id, "g");
+    }
+
+    #[test]
+    fn restored_context_tasks_cannot_cross_workspaces() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE extreme_tasks (id TEXT, kind TEXT, server TEXT, server_id TEXT, workspace_id TEXT, session_id TEXT, status TEXT, name TEXT, goal TEXT, risk TEXT, summary TEXT, plan_json TEXT, outcome_json TEXT, cwd TEXT, created_at INTEGER);
+          INSERT INTO extreme_tasks VALUES ('one','probe','s','a','w1','ss','success','','','','','[]','','',1), ('two','probe','s','a','w2','ss','success','','','','','[]','','',2);").unwrap();
+        let rows = read_context_tasks(
+            &conn,
+            "w1",
+            vec!["one".into(), "two".into(), "missing".into()],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "one");
+    }
 
     fn db() -> Connection {
         let conn = Connection::open_in_memory().expect("db");

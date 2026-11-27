@@ -5,6 +5,7 @@ import {
   remoteAttachment,
   remoteAttachmentId,
 } from "../attachments";
+import { attachmentFile, attachmentSource, dropAttachmentFile } from "../attachments/payload";
 
 /**
  * 远程文件 → 附件：**会话 + 路径**是身份。
@@ -61,7 +62,7 @@ describe("remoteAttachment", () => {
 });
 
 describe("readAttachment 二进制不再被 8 MB 硬限制", () => {
-  it("刚过旧上限的 dist.zip 仍然读成 ready", async () => {
+  it("刚过旧上限的 dist.zip 仍然读成 ready，且内容不进 React 状态", async () => {
     const file = new File([new Uint8Array(8 * 1024 * 1024 + 1)], "dist.zip");
     const item = await readAttachment(file, {
       id: "att-big",
@@ -69,7 +70,37 @@ describe("readAttachment 二进制不再被 8 MB 硬限制", () => {
     });
     expect(item.state).toBe("ready");
     expect(item.binary).toBe(true);
+    // 大文件只留句柄：避免 11 MB base64 常驻 store / 历史库。
+    expect(item.data).toBeUndefined();
+    expect(attachmentFile("att-big")).toBe(file);
+  });
+
+  it("小二进制仍保留 base64（预览 / 旧接口用）", async () => {
+    const file = new File([new Uint8Array(1024)], "logo.png");
+    const item = await readAttachment(file, {
+      id: "att-small",
+      t: ((key: string) => key) as never,
+    });
     expect(item.data?.length).toBeGreaterThan(0);
+    expect(attachmentFile("att-small")).toBe(file);
+  });
+
+  it("大文本截取上下文但仍可上传（不再直接判失败）", async () => {
+    const file = new File(["x".repeat(1024 * 1024)], "app.log");
+    const item = await readAttachment(file, {
+      id: "att-text",
+      t: ((key: string) => key) as never,
+    });
+    expect(item.state).toBe("ready");
+    expect(item.text?.length).toBeGreaterThan(0);
+    expect(item.text).toContain("完整文件仍会上传");
+    expect(item.textPartial).toBe(true);
+    // 上下文截断了，但上传源仍是完整文件（不是那半截文本）。
+    expect(attachmentSource(item)?.total).toBe(file.size);
+
+    // 模拟应用重启：句柄没了，绝不能拿半截文本重传覆盖完整副本。
+    dropAttachmentFile("att-text");
+    expect(attachmentSource(item)).toBeNull();
   });
 });
 

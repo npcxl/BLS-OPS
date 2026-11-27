@@ -5,6 +5,7 @@
  */
 import { opsApi } from "@/api/ops-api";
 import type { AgentApproval } from "@/api/types/agent";
+import { i18n } from "@/i18n";
 import { classifySite, parseNginxConfig, staticDirs } from "../site-discovery";
 import type { VerifiedTarget } from "../task-context";
 
@@ -39,7 +40,10 @@ export async function detectStaticSite(sessionId: string): Promise<VerifiedTarge
       return {
         kind: "static-site",
         root,
-        evidence: `nginx -T: ${server.serverNames.join(", ") || "默认 server"} → root ${root}，index.html 存在`,
+        evidence: i18n.t("nginx -T: {{names}} → root {{root}}，index.html 存在", {
+          names: server.serverNames.join(", ") || i18n.t("默认 server"),
+          root,
+        }),
       };
     }
     return null;

@@ -186,7 +186,9 @@ export function matchBudget(value: number, budgets: readonly number[]): number |
 }
 
 export function formatTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0";
   if (value >= 1024 * 1024) return `${Math.round(value / (1024 * 1024))}M`;
+  if (value < 1024) return `${Math.round(value)}`;
   return `${Math.round(value / 1024)}K`;
 }
 

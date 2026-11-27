@@ -45,6 +45,9 @@ pub const LABEL_PREFIX: &str = "desktop-notification";
 
 /// 同时可见的通知上限，同时也是窗口池的大小。
 const MAX_VISIBLE: usize = 3;
+/// 排队等待超过这个时长就不再显示：前后台切换 / 审批处理完之后补显旧结果
+/// 只会让用户以为"又发生了一次"。
+const QUEUE_MAX_AGE: Duration = Duration::from_secs(20);
 /// 卡片宽度（CSS 像素），与前端卡片的 `w-[360px]` 一致。
 const PANEL_WIDTH: f64 = 360.0;
 /// 距工作区右边/底边的间距（CSS 像素）。
@@ -139,7 +142,8 @@ struct Slot {
 
 struct NotificationManager {
     slots: Vec<Slot>,
-    queue: VecDeque<NotificationPayload>,
+    /// 等待空槽的通知 + 入队时刻：排太久的旧结果不再补显。
+    queue: VecDeque<(Instant, NotificationPayload)>,
     /// 可见通知的槽序号，**从新到旧**（index 0 = 最新 = 最底部）。
     order: Vec<usize>,
 }
@@ -665,8 +669,8 @@ fn push_ready(app: &tauri::AppHandle, payload: NotificationPayload) -> Result<()
                 }
                 _ => {
                     // 队列里同一 id 也去重：连续推送同一件事只留最新一条。
-                    manager.queue.retain(|queued| queued.id != payload.id);
-                    manager.queue.push_back(payload);
+                    manager.queue.retain(|queued| queued.1.id != payload.id);
+                    manager.queue.push_back((Instant::now(), payload));
                 }
             }
         }
@@ -874,7 +878,11 @@ pub fn desktop_notification_dismiss(app: tauri::AppHandle, id: String) -> Result
         hidden = Some(label);
 
         // 队列里还有：占用刚空出来的槽，等它 present 时统一排。
-        if let Some(next) = manager.queue.pop_front() {
+        // 排太久的旧结果直接丢掉：那是"历史"，不该在槽位空出来时补显。
+        while let Some((queued_at, next)) = manager.queue.pop_front() {
+            if queued_at.elapsed() > QUEUE_MAX_AGE {
+                continue;
+            }
             let slot = &mut manager.slots[index];
             slot.notification = Some(next.clone());
             slot.height = ESTIMATED_HEIGHT;
@@ -882,6 +890,7 @@ pub fn desktop_notification_dismiss(app: tauri::AppHandle, id: String) -> Result
             slot.geometry = None;
             manager.order.insert(0, index);
             emit = Some((slot.label.clone(), next));
+            break;
         }
     }
 
@@ -930,7 +939,7 @@ pub fn desktop_notification_clear_extreme(app: tauri::AppHandle) -> Result<(), S
 
         manager
             .queue
-            .retain(|payload| !payload.id.starts_with(PREFIX));
+            .retain(|queued| !queued.1.id.starts_with(PREFIX));
 
         let order = std::mem::take(&mut manager.order);
         for index in order {

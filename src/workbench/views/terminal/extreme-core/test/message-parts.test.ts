@@ -3,15 +3,19 @@ import type { AgentPlan } from "@/api/types/agent";
 import {
   anchoredSteps,
   appendText,
+  expireQuestions,
   latestPlan,
   partsOf,
   partsText,
   planForTask,
   replaceTrailingText,
   trailingText,
+  updateQuestionPart,
   upsertNote,
   upsertPlanPart,
+  upsertQuestion,
   upsertStep,
+  type MessageQuestionPart,
 } from "../message-parts";
 
 function planOf(revision: number, state: "pending" | "done" = "pending"): AgentPlan {
@@ -43,6 +47,31 @@ function planOf(revision: number, state: "pending" | "done" = "pending"): AgentP
   };
 }
 
+it("内部纠错的标记跟着步骤落盘，重复事件不会丢", () => {
+  let parts = upsertStep(partsOf({ id: "m1", text: "" }), {
+    taskId: "task-1",
+    stepIndex: 0,
+    label: "解压归档",
+    internal: true,
+  });
+  const again = upsertStep(parts, {
+    taskId: "task-1",
+    stepIndex: 0,
+    label: "解压归档",
+    internal: true,
+  });
+  // 幂等：内容没变就是同一个数组引用。
+  expect(again).toBe(parts);
+  const [part] = parts;
+  expect(part.kind).toBe("step");
+  expect(part.kind === "step" && part.internal).toBe(true);
+
+  // 同一 index 后续的终态事件不能把内部标记清掉。
+  parts = upsertStep(parts, { taskId: "task-1", stepIndex: 0, label: "解压归档" });
+  const [kept] = parts;
+  expect(kept.kind === "step" && kept.internal).toBe(true);
+});
+
 it("keeps the real order of prose and commands in one turn", () => {
   // 我先检查 Nginx 配置 → 命令 → 发现端口没监听 → 再看日志
   let parts = partsOf({ id: "m1", text: "" });
@@ -56,6 +85,42 @@ it("keeps the real order of prose and commands in one turn", () => {
   expect(partsText(parts)).toBe(
     "我先检查 Nginx 配置。发现 80 端口没有监听。结论：nginx 没有启动。",
   );
+});
+
+it("keeps one question card and preserves its draft across duplicate events", () => {
+  const question = {
+    questionId: "q-1",
+    taskId: "task-1",
+    workspaceId: "w",
+    serverId: null,
+    question: "查哪个环境？",
+    kind: "single" as const,
+    options: [{ id: "prod", label: "生产" }],
+    allowCustom: true,
+    deadline: 1,
+  };
+  let parts = upsertQuestion([], question);
+  expect(parts).toHaveLength(1);
+  parts = updateQuestionPart(parts, "q-1", {
+    draftSelected: ["prod"],
+    draftCustom: "补充",
+    draftCustomActive: true,
+  });
+  const duplicate = upsertQuestion(parts, question);
+  expect(duplicate).toBe(parts);
+  const card = duplicate[0] as MessageQuestionPart;
+  expect(card.draftSelected).toEqual(["prod"]);
+  expect(card.draftCustom).toBe("补充");
+
+  const answered = updateQuestionPart(duplicate, "q-1", {
+    status: "answered",
+    answer: { selected: ["prod"], custom: "补充" },
+  });
+  // 事件重放不能把已回答的卡片挂回待回答。
+  expect(upsertQuestion(answered, question)).toBe(answered);
+  // 但任务结束时未回答的卡片要失效。
+  const expired = expireQuestions(parts);
+  expect((expired[0] as MessageQuestionPart).status).toBe("expired");
 });
 
 it("merges duplicate step events and keeps the first operation name", () => {

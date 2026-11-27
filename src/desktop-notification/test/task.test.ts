@@ -18,6 +18,7 @@ vi.mock("@/desktop-notification/visibility", () => ({
   setCollapsed: () => undefined,
 }));
 
+import { i18n } from "@/i18n";
 import { useExtremeStore } from "@/stores/extreme-store";
 import { cardFromPlan } from "@/workbench/views/terminal/extreme-core/task-view";
 import { notifyTaskOutcome } from "../task";
@@ -63,7 +64,8 @@ describe("任务结果通知", () => {
     expect(bridge.push.mock.calls[0][0]).toMatchObject({
       id: "extreme-hidden-task",
       tone: "success",
-      source: "超能模式",
+      // 文案跟随界面语言（测试固定英文），不能在通知里漏中文。
+      source: i18n.t("超能模式"),
       durationMs: 9000,
     });
   });
@@ -76,5 +78,19 @@ describe("任务结果通知", () => {
       id: "extreme-hidden-failed",
       tone: "danger",
     });
+  });
+
+  it("续跑复用同一个 taskId：时间窗之外的新一轮完成仍提醒一次", async () => {
+    const done = card("resumed-task", "done");
+    await notifyTaskOutcome(done, { now: 1_000 });
+    // 同一次运行的重复事件（时间窗内）不重复弹。
+    await notifyTaskOutcome(done, { now: 2_000 });
+    expect(bridge.push).toHaveBeenCalledTimes(1);
+
+    // 续跑后的第二次真实完成：任务卡内容更新，时间也早已超出窗口。
+    const again = { ...done, result: "续跑完成" };
+    await notifyTaskOutcome(again, { now: 120_000 });
+    expect(bridge.push).toHaveBeenCalledTimes(2);
+    expect(bridge.push.mock.calls[1][0].body).toContain("续跑完成");
   });
 });

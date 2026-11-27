@@ -6,6 +6,122 @@
  * (including punctuation and `{{placeholders}}`).
  */
 export default {
+  "当前会话带上本对话历史、工具结果与附件；仅本条不带历史；自选带勾选材料。启用时，全局记忆独立生效。": "This conversation includes its history, tool results and attachments. This message excludes history; selected context uses chosen materials. Global memory applies separately when enabled.",
+  "明确表达的长期习惯和个人偏好选择可能自动保存；任务或服务器的临时选择仍只留在对话上下文中。": "Clearly stated habits and personal-preference choices may be saved automatically. Temporary task or server choices stay in the conversation context.",
+  "已将这次个人偏好保存为全局记忆。": "This personal preference was saved to global memory.",
+  "用户表达的长期记忆已保存。": "The stated long-term memory was saved.",
+  "部分历史操作记录已不存在，无法加入本次上下文。": "Some historical operation records no longer exist and could not be included in the context.",
+  "历史操作记录加载失败，本次上下文可能不完整。": "Historical operation records could not be loaded; this context may be incomplete.",
+  "记忆标题": "Memory title",
+  "记忆标题（留空时自动生成）": "Memory title (generated from details if empty)",
+  "旧记录": "Legacy",
+  "记忆现在只支持全局共享，这条指定范围的记忆未保存。": "Memory is now shared globally; the scope-specific memory was not saved.",
+  "全局记忆": "Global memory",
+  "旧记录：未自动使用，编辑保存后转为全局": "Legacy record: not used automatically; edit and save to make global",
+  "记忆保存在本机，开启后供所有对话参考。服务器状态可能变化，执行前仍会核实；请勿保存密码、密钥和令牌。": "Memories are stored locally and shared across conversations when enabled. Verify server state before acting; do not save passwords, keys or tokens.",
+  "可在对话中说“记住：部署前先备份”，保存后所有对话都可以参考。": "Say “remember: back up before deployment” to save a memory available to all conversations.",
+  "记忆": "Memory",
+  "管理所有对话共用的长期记忆": "Manage long-term memory shared across conversations",
+  "服务器观察结果未能保存到长期记忆。": "The server observation could not be saved to long-term memory.",
+  "这次选择已提交，但未能保存到长期记忆。": "Your selection was submitted, but could not be saved to long-term memory.",
+  "已保存 {{count}} 条": "{{count}} saved",
+  "清空长期记忆": "Clear long-term memory",
+  "清空所有长期记忆？": "Clear all long-term memory?",
+  "这会删除所有范围的长期记忆，已有对话历史不受影响。": "This removes long-term memories in all scopes. Conversation history is unaffected.",
+  "来源记录": "Source record",
+  "服务器实测，7 天后不自动引用": "Observed on server; not automatically used after 7 days",
+  "长期记忆已关闭，这条内容未保存。": "Long-term memory is disabled; this was not saved.",
+  "在对话中使用长期记忆": "Use long-term memory in conversations",
+  "已关闭自动读取和保存；已有记忆仍可在此管理，会话历史不受影响。": "Automatic reading and saving are disabled. Saved memories remain manageable here; conversation history is unaffected.",
+  "可在对话中说“记住：部署前先备份”，默认保存到当前对话；前面加“本服务器”或“全局”可指定范围。选择卡的预设答案也会保存。": "Say “remember: back up before deploying” to save to this conversation; prefix with “this server” or “globally” to choose a scope. Preset question choices are also saved.",
+  "长期记忆读取失败，无法确认或保存本次记忆。": "Could not read long-term memory; this memory could not be saved or checked.",
+  "当前服务器没有稳定标识，无法保存该范围的记忆。": "This server has no stable identifier, so memory cannot be saved in this scope.",
+  "用户明确要求保存的记忆已保存。": "The requested memory was saved.",
+  "这条记忆未保存，请检查内容和范围后在设置中重试。": "This memory was not saved. Check its content and scope and retry in settings.",
+  "来自用户选择": "User selection",
+  "用户保存": "Saved by user",
+  "长期记忆": "Long-term memory",
+  "管理 AI 在后续对话中可以参考的信息": "Manage information the AI can refer to in future conversations",
+  "记忆保存在本机，供当前会话请求参考。服务器状态可能变化，执行前仍会核实；请勿保存密码、密钥和令牌。": "Memories are stored locally and included in session requests. Server state may change and must be verified before acting. Do not store passwords, keys, or tokens.",
+  "作用范围": "Scope",
+  "当前对话": "Current conversation",
+  "全局偏好": "Global preference",
+  "请先选择服务器和对话": "Select a server and conversation first",
+  "例如：部署前先检查站点目录": "For example: check the site directory before deployment",
+  "添加记忆": "Add memory",
+  "保存修改": "Save changes",
+  "暂无长期记忆": "No saved memories",
+  "删除长期记忆？": "Delete this memory?",
+  "删除后，后续对话将不再使用这条记忆。已有对话记录不受影响。": "Future conversations will no longer use this memory. Existing conversation history is unaffected.",
+  "长期记忆暂不可用，本次将使用会话历史。": "Long-term memory is unavailable; this request will use conversation history.",
+  "任务状态待核对": "Task status needs verification",
+  "已结束，{{count}} 步未执行": "Ended · {{count}} step(s) not executed",
+  "任务已结束，部分步骤状态待核对":
+    "Task ended; some step statuses need verification",
+  "{{count}} 次操作未成功，查看详情":
+    "{{count}} operation(s) did not succeed · View details",
+  "这个问题已经回答或已过期":
+    "This question has been answered or has expired",
+  "已回答":
+    "Answered",
+  "自定义：{{text}}":
+    "Custom: {{text}}",
+  "这个问题已失效，任务不再等待回答。":
+    "This question is no longer active; the task is not waiting for an answer.",
+  "单选":
+    "Single choice",
+  "多选":
+    "Multiple choice",
+  "需要你决定":
+    "Needs your decision",
+  "自定义回答":
+    "Custom answer",
+  "请输入具体内容（不能为空）":
+    "Enter the details (cannot be empty)",
+  "自定义内容不能为空":
+    "Custom answer cannot be empty",
+  "回答后 AI 会继续当前任务":
+    "The AI continues the task after you answer",
+  "可添加":
+    "Can be added",
+  "需要 OAuth":
+    "Requires OAuth",
+  "需要本地运行环境":
+    "Requires a local runtime",
+  "正在启动本地进程…":
+    "Starting the local process…",
+  "正在握手并读取服务能力…":
+    "Handshaking and reading server capabilities…",
+  "等待工具发现（首次运行可能正在下载依赖包）…":
+    "Waiting for tool discovery (the first run may be downloading dependencies)…",
+  "等待工具列表…":
+    "Waiting for the tool list…",
+  "正在添加…":
+    "Adding…",
+  "查看限制":
+    "View limits",
+  "安装运行环境":
+    "Install runtime",
+  "协议版本：{{version}}":
+    "Protocol version: {{version}}",
+  "已连接，但这个服务没有声明可用的工具、资源或提示模板。":
+    "Connected, but this server declares no tools, resources or prompts.",
+  "打开授权页":
+    "Open the authorization page",
+  "安装运行环境 · {{name}}":
+    "Install runtime · {{name}}",
+  "复制安装命令":
+    "Copy install command",
+  "已安装，重试":
+    "Installed, retry",
+  "这个连接需要本机具备 {{runtime}}。":
+    "This connection needs {{runtime}} on this machine.",
+  "安装页面":
+    "Installation page",
+  "复制到终端执行":
+    "Copy and run in a terminal",
+  "安装后请重启 BLS-OPS（让新的 PATH 生效），再点「已安装，重试」。":
+    "Restart BLS-OPS after installing (so the new PATH takes effect), then click “Installed, retry”.",
   "能力来源":
     "Capability source",
   "按内置能力表识别；认不出的模型沿用供应商默认设置，不写任何覆盖值。":
@@ -219,6 +335,15 @@ export default {
   "等待你确认": "Waiting for your confirmation",
   "正在停止…": "Stopping…",
   "状态待核对": "Needs verification",
+  "等待确认：{{title}}": "Waiting for confirmation: {{title}}",
+  "停在第 {{n}} 步：{{title}}": "Stopped at step {{n}}: {{title}}",
+  "已完成 {{done}}/{{total}} 步": "{{done}}/{{total}} steps done",
+  "正在执行：{{title}}": "Running: {{title}}",
+  "准备执行（{{n}} 步）": "Ready to run ({{n}} steps)",
+  "nginx -T: {{names}} → root {{root}}，index.html 存在":
+    "nginx -T: {{names}} → root {{root}}, index.html exists",
+  "默认 server": "default server",
+  "本地运行环境": "Local runtime",
   "已停止": "Stopped",
   "状态待核对：这次运行的进度没有拿到，可能仍在服务器上执行。":
     "Needs verification: the progress of this run was lost; it may still be running on the server.",
@@ -367,6 +492,10 @@ export default {
   "本机提示": "Local note",
   "正在回答…": "Answering…",
   "思考中": "Thinking",
+  "已用时间 {{duration}}": "Elapsed {{duration}}",
+  "在聊天里定位这一步": "Locate this step in the chat",
+  "此步骤暂无执行记录": "No execution record for this step yet",
+  "暂无执行记录": "No execution record yet",
   "仍在执行…": "Still running…",
 
   "模型与思考强度": "Model & reasoning",
@@ -481,8 +610,80 @@ export default {
   "输出偏好": "Output style",
   "清空对话": "Clear conversation",
   "清空": "Clear",
-  "清空「{{title}}」的消息与附件？服务器上的临时副本也会被清理，无法恢复。":
-    "Clear messages and attachments in \"{{title}}\"? Temporary files on the server are removed too; this cannot be undone.",
+  "清空「{{title}}」的消息与附件？服务器上的暂存副本会保留，可在「附件」里单独清理。":
+    "Clear messages and attachments in \"{{title}}\"? Staged copies on the server are kept — remove them from Attachments when you want.",
+
+  "只读模式：附件只在本机读取，不会暂存到服务器。":
+    "Read-only mode: attachments stay on this device and are not staged on the server.",
+  "只读模式：附件只在本机读取，不会暂存到服务器。调整权限后才能上传。":
+    "Read-only mode: attachments stay on this device. Change permissions to upload them.",
+  "只读模式下无法暂存附件：调整权限后再上传。":
+    "Cannot stage attachments in read-only mode — change permissions first.",
+  "只读模式下无法暂存附件。请调整权限后再上传。":
+    "Cannot stage attachments in read-only mode. Change permissions, then upload.",
+  "只读模式下无法暂存附件。请调整权限或取消勾选。":
+    "Cannot stage attachments in read-only mode. Change permissions or clear the selection.",
+  "只读模式下无法暂存附件：这一步没有执行。":
+    "Cannot stage attachments in read-only mode — nothing was executed.",
+  "本机内容已不可用：请重新选择文件后再执行":
+    "The local content is no longer available — pick the file again before executing.",
+  "等待附件上传…": "Waiting for attachments to upload…",
+  "上一条消息正在发送：请稍候。": "The previous message is still being sent — please wait.",
+  "「{{name}}」正在上传：等上传结束后再删除。":
+    "\"{{name}}\" is uploading — remove it after the upload finishes.",
+  "「{{name}}」的暂存副本已清理：请重新上传或重新选择文件。":
+    "The staged copy of \"{{name}}\" was removed — upload it again or pick the file again.",
+  "这份暂存副本已清理：重新上传或重新选择文件后才能预览。":
+    "This staged copy was removed — upload it again or pick the file again to preview.",
+  "{{names}} 的本机内容已不可用：请重新选择文件后再发送。":
+    "The local content for {{names}} is no longer available — pick the files again before sending.",
+  "暂存已清理": "Staged copy removed",
+  "无效的暂存目录标识": "Invalid staging directory identifier",
+  "无效的附件相对路径": "Invalid attachment relative path",
+  "本机附件内容不可用（应用重启或文件已被删除）：请重新选择文件":
+    "The local attachment content is unavailable (the app restarted, or the file was deleted). Pick the file again.",
+  "创建暂存目录失败": "Failed to create the staging directory",
+  "这次上传已被新的上传取代": "This upload was superseded by a newer one",
+  "上传未完成：已写 {{written}} / {{total}} 字节":
+    "Upload incomplete: wrote {{written}} of {{total}} bytes",
+  "暂存文件回读失败：服务器文件大小不匹配":
+    "Staged file verification failed: the server file size does not match",
+  "暂存文件校验失败：服务器内容与本地不一致":
+    "Staged file verification failed: the server content differs from the local file",
+  "这份附件不是平台暂存副本，未删除":
+    "This attachment is not a platform-staged copy, so it was not deleted",
+  "暂存路径不合法，未删除": "Invalid staging path; nothing was deleted",
+  "暂存路径与附件身份不匹配，未删除":
+    "The staging path does not match the attachment identity; nothing was deleted",
+  "清理暂存附件失败": "Failed to clean the staged attachment",
+  "服务器未连接：重连后可以重试。":
+    "Server not connected — reconnect and retry.",
+  "服务器未连接": "Server not connected",
+  "不是平台暂存路径，未删除":
+    "Not a platform staging path; nothing was deleted",
+  "暂存已清理 · 需重新上传": "Staged copy removed — upload again",
+  "已部署 · 暂存已清理": "Deployed · staged copy removed",
+  "重新上传": "Upload again",
+  "上传中 {{n}}%": "Uploading {{n}}%",
+  "部署完成：删除这次任务的 {{n}} 个暂存副本？":
+    "Deployment finished — delete the {{n}} staged copies from this task?",
+  "删除服务器上的暂存附件？": "Delete the staged attachments on the server?",
+  "仅删除本次任务的 {{n}} 个暂存副本，不会动线上文件和站点备份。":
+    "Only the {{n}} staged copies from this task are deleted; live files and site backups are untouched.",
+  "删除暂存": "Delete staged copies",
+  "重试删除": "Retry delete",
+  "保留": "Keep",
+  "服务器未连接：重新连接后才能清理暂存附件。附件已保留。":
+    "Server not connected — reconnect before cleaning staged copies. Attachments were kept.",
+  "清理暂存失败：{{reason}}。路径与错误已保留，可以重试。":
+    "Failed to clean staged copies: {{reason}}. Paths and errors are kept so you can retry.",
+  "有 {{n}} 个暂存副本仍被运行任务或排队消息使用：已保留，稍后可再清理。":
+    "{{n}} staged copies are still used by a running task or queued message — kept for later.",
+  "已删除 {{n}} 个暂存副本。": "Deleted {{n}} staged copies.",
+  "这条对话的服务器已经更换：队列表中的附件属于原服务器，请重新入队。":
+    "This conversation is bound to a different server now — the queued attachments belong to the original one. Queue the message again.",
+  "第 {{n}} 版": "Revision {{n}}",
+  "历史 · {{title}}": "History · {{title}}",
 
   "生成部署计划": "Generate deployment plan",
   "部署计划": "Deployment plan",
@@ -498,6 +699,11 @@ export default {
   "执行中": "Running",
   "执行中…": "Running…",
   "执行失败": "Failed",
+  "平台内部调整": "Internal adjustment",
+  "平台内部调整，命令未执行": "Internal adjustment; the command did not run",
+  "未执行（权限或确认拦住）": "Not executed (blocked by permissions or approval)",
+  "{{count}} 次平台内部调整（命令未执行）":
+    "{{count}} internal adjustment(s); no command was run",
   "失败": "Failed",
   "通过": "Passed",
   "未通过": "Not passed",
@@ -509,8 +715,8 @@ export default {
   "回滚": "Rollback",
   "回滚命令已复制。": "Rollback command copied.",
   "任务已中止": "Task stopped",
-  "任务已中止：服务器上的临时文件已清理。":
-    "Task stopped — temporary files on the server were cleaned up.",
+  "任务已中止：暂存附件已保留。":
+    "Task stopped — staged attachments were kept.",
   "正在停止。当前步骤结束后不会运行后续步骤。":
     "Stopping — remaining steps won't run once the current one finishes.",
   "等待确认后执行": "Waiting for your confirmation",
@@ -784,6 +990,32 @@ export default {
   "文件超过 256 KB：只确认了大小，未逐行比较":
     "File exceeds 256 KB: only the size was confirmed, no line-by-line diff",
   "目标是目录：只记录存在状态": "Target is a directory: only its existence is recorded",
+  "服务器拒绝读取这个文件（可能无权限）":
+    "The server refused to read this file (permission may be missing)",
+  "服务器拒绝读取这个文件（可能无权限或不是普通文件）":
+    "The server refused to read this file (permission may be missing, or it is not a regular file)",
+  "文件超过 256 KB，未抓取正文": "File exceeds 256 KB; the body was not captured",
+  "目标是目录，不是文件": "The target is a directory, not a file",
+  "回读结果不完整：没有拿到文件正文":
+    "Incomplete read-back: the file body was not received",
+  "二进制文件，只记录指纹与大小":
+    "Binary file: only the fingerprint and size are recorded",
+  "已对密码 / 令牌 / 私钥等敏感内容脱敏":
+    "Passwords, tokens and private keys were masked",
+  "二进制文件：只显示指纹与大小，不做逐行比较":
+    "Binary file: only the fingerprint and size are shown; no line-by-line diff",
+  "密码 / 令牌等敏感内容已脱敏，Diff 中显示为 ***":
+    "Passwords and tokens were masked and appear as *** in the diff",
+  "文件类型发生了变化（文件 ↔ 目录）":
+    "The file type changed (file ↔ directory)",
+  "未采集文件差异：这次操作没有可比对的前后快照":
+    "No file diff was captured: this operation had no comparable before/after snapshot",
+  "没有可用的写入前快照：无法判断净变化":
+    "No usable pre-write snapshot: the net change cannot be determined",
+  "最终状态未确认：最后一次回读失败，未用更早的快照代替":
+    "Final state unconfirmed: the last read-back failed and an earlier snapshot was not substituted",
+  "缺少可信指纹：只确认了文件存在，无法判断内容是否变化":
+    "No trusted fingerprint: only the file's existence was confirmed, so content changes cannot be determined",
   "还没有对话：文件变更按对话归属，先开始一条任务。":
     "No conversation yet: file changes belong to a conversation — start a task first.",
   "这次对话还没有文件变更：上传、AI 写入或 shell 改写文件后，这里会显示预览与实际差异。":
@@ -870,8 +1102,15 @@ export default {
   "会话已断开": "Session disconnected",
   "拿不到家目录，无法写入文件":
     "Cannot resolve the home directory, so the file cannot be written",
-  "这一步没有可写入的内容（text / data / sourcePath 都为空）":
-    "This step has no content to write (text / data / sourcePath are all empty)",
+  "这一步没有可写入的内容（text / data / sourcePath / 本机附件都为空）":
+    "This step has no content to write (text / data / sourcePath / local attachment are all empty)",
+  "MCP 连接列表还在加载，请稍后再发送。":
+    "The MCP connection list is still loading — wait a moment before sending.",
+  "MCP 连接列表还在加载，请稍后再恢复任务。":
+    "The MCP connection list is still loading — wait a moment before resuming.",
+  "MCP 连接读取失败：{{error}}": "Failed to read MCP connections: {{error}}",
+  "仅绑定在{{target}}": "Only bound to {{target}}",
+  "正在加载 MCP 连接…": "Loading MCP connections…",
   "创建目录失败": "Failed to create the directory",
   "备份失败，已取消覆盖：{{detail}}":
     "Backup failed, overwrite cancelled: {{detail}}",
@@ -1143,6 +1382,10 @@ export default {
   "未测试": "Not tested",
   "未绑定当前服务器": "Not bound to this server",
   "没有启用的工具": "No enabled tools",
+  "检测失败": "Check failed",
+  "检测中…": "Checking…",
+  "检测连接": "Check connections",
+  "{{n}} 项异常": "{{n}} need attention",
   "已启用 {{n}} 项": "{{n}} enabled",
   "内置运维技能": "Built-in ops skills",
   "检查环境…": "Checking environment…",
@@ -1209,7 +1452,55 @@ export default {
   "搜索更多": "Search more",
   "官方 MCP Registry": "Official MCP Registry",
   "关键词，例如 postgres、github": "Keywords, e.g. postgres, github",
+  "需要本机安装对应的运行环境。": "The required runtime must be installed on this computer.",
+  "查看运行环境安装说明": "View runtime installation guide",
+  "运行方式：Docker 镜像": "Runs as a Docker image",
+  "运行方式：{{runtime}} 自动下载": "Runs with {{runtime}} (automatic download)",
+  "本机环境已就绪": "Local runtime ready",
+  "本机未安装运行环境": "Local runtime not installed",
+  "运行环境不可用或未启动": "Runtime unavailable or not running",
+  "运行环境状态未确认": "Runtime status not confirmed",
+  "任务中断，子任务未开始": "The task was interrupted before this subtask started",
+  "任务中断，子任务结果未知": "The task was interrupted; the subtask result is unknown",
+  "子任务累计用量（估算）：输入 {{input}}，输出 {{output}}": "Subtask total (estimated): {{input}} input, {{output}} output",
+  "前置子任务未完成，未执行": "Not run because a prerequisite did not complete",
+  "{{n}} 个子任务正在进行": "{{n}} subtasks in progress",
+  "子任务有未完成项": "Some subtasks did not complete",
+  "子任务已停止": "Subtasks stopped",
+  "{{n}} 个子任务已完成": "{{n}} subtasks completed",
+  "{{n}} 个子任务": "{{n}} subtasks",
+  "{{n}} 个子任务 · {{waiting}} 个等待确认": "{{n}} subtasks · {{waiting}} waiting for approval",
+  "{{n}} 个子任务 · {{running}} 个运行中": "{{n}} subtasks · {{running}} running",
+  "{{n}} 个子任务 · {{failed}} 个失败": "{{n}} subtasks · {{failed}} failed",
+  "{{n}} 个子任务 · {{skipped}} 个未执行": "{{n}} subtasks · {{skipped}} not run",
+  "{{count}} 个等待确认": "{{count}} waiting for approval",
+  "{{count}} 个待执行": "{{count}} queued",
+  "{{count}} 个运行中": "{{count}} running",
+  "{{count}} 个失败": "{{count}} failed",
+  "{{count}} 个未执行": "{{count}} not run",
+  "{{count}} 个完成": "{{count}} completed",
+  "Docker 服务未启动": "The Docker service is not running",
+  "MCP 进程启动失败": "The MCP process failed to start",
+  "Docker 已安装，服务尚未启动": "Docker is installed, but the service is not running",
+  "安装后点「重新检测」即可，不需要重启应用：每次检测和启动都会重新读取用户级与系统级 PATH。":
+    "After installing, click \"Check again\"; no restart is needed. Every check and launch re-reads the user-level and system-level PATH.",
+  "检测命令：{{command}}": "Check command: {{command}}",
+  "路径：{{path}}": "Path: {{path}}",
+  "版本：{{version}}": "Version: {{version}}",
+  " · {{stale}} 个需重新核实": " · {{stale}} need re-verification",
+  "子任务服务器": "Subtask server",
+  "需重新核实": "Needs re-verification",
+  "结果来自中断前，服务器状态可能已变化；使用前请重新核实。":
+    "This result predates the interruption and server state may have changed; re-verify before relying on it.",
+  "任务中断，子任务结果未知；恢复后先核实服务器状态":
+    "The task was interrupted; the subtask result is unknown. Verify server state before resuming.",
+  "目标服务器已断开，子任务没有执行":
+    "The target server is disconnected; the subtask did not run.",
+  "MCP 服务或配置当前不可用，这次调用没有执行（不是权限拒绝）":
+    "The MCP service or configuration is currently unavailable; this call did not run (this is not a permission denial).",
   "搜索中…": "Searching…",
+  "正在搜索 MCP 服务…": "Searching MCP servers…",
+  "没有找到匹配的 MCP 服务，请尝试其他关键词。": "No matching MCP servers found. Try a different search.",
   "搜索": "Search",
   "由 BLS-OPS 现有能力提供": "Provided by BLS-OPS's existing capabilities",
   "当前服务器：{{name}}。勾选后会出现在输入框下栏的 MCP 菜单里。":
@@ -1240,6 +1531,7 @@ export default {
   "无": "None",
   "当前客户端不支持这个传输方式。": "This client does not support that transport.",
   "已配置的实例": "Configured instances",
+  "正在切换任务…": "Switching tasks…",
   "已添加 · 未验证": "Added · Unverified",
   "正在连接服务…": "Connecting…",
   "已连接但无可用工具": "Connected · No tools",
@@ -1325,6 +1617,12 @@ export default {
   "读取 compose 项目里每个容器的实际状态，非 running 即视为失败":
     "Read the real state of every container in the compose project; anything not running counts as failure",
   "没有读到任何容器状态": "No container state was read",
+  "没有读到 HTTP 状态码": "No HTTP status code was read",
+  "本机带 Host: {{domain}} 请求首页，只看 HTTP 状态":
+    "Requests the home page from this machine with Host: {{domain}}; only the HTTP status is checked",
+  "（未指定域名）": "(no domain specified)",
+  "没有健康检查，退化为确认容器在 running":
+    "No health check is defined, so it falls back to confirming the container is running",
   "正在分析": "Analyzing",
   "上次运行已中断：最后一步是否生效需要先在服务器上核对。":
     "The previous run was interrupted: check on the server whether the last step took effect.",
@@ -1452,4 +1750,67 @@ export default {
     "Ask before changes: queries run directly; when a command really writes files, changes config or services, or deletes data, you are asked one by one. sudo needs confirmation.",
   "完全访问：你明确要求的写入、修改与删除（含 sudo、服务重启）直接执行；严重操作（改 SSH / 防火墙 / 磁盘 / 删系统目录等）仍会确认。备份按权限页的策略执行，备份文件带 .bls-bak. 标记。":
     "Full access: writes, edits and deletes you explicitly asked for (including sudo and service restarts) run directly; severe operations (SSH / firewall / disk / deleting system directories) still ask. Backups follow the policy on the Permissions page and carry the .bls-bak. marker.",
+
+  /* ---- 超能：未执行原因 / 失败摘要 / 通知（用户能行动的那一层） ---- */
+  "{{count}} 次命令未执行（展开查看原因）":
+    "{{count}} command(s) not executed (expand for the reason)",
+  "{{count}} 次操作失败（展开查看原因）":
+    "{{count}} operation(s) failed (expand for the reason)",
+  "平台在执行前退回了这一步，命令没有发到服务器":
+    "The platform sent this step back for adjustment before running it; the command never reached the server",
+  "当前是只读模式，写操作没有执行":
+    "Read-only mode is on, so the write did not run",
+  "这次只做查询，写操作没有执行":
+    "This task is query-only, so the write did not run",
+  "你拒绝了这个操作，没有执行":
+    "You rejected this operation; it did not run",
+  "等待确认超时，没有执行": "The approval timed out, so it did not run",
+  "任务已停止，没有执行": "The task was stopped, so it did not run",
+  "这一步需要提权（sudo），当前未允许，没有执行":
+    "This step needs sudo, which is not allowed right now; it did not run",
+  "权限或授权不足，没有执行": "Permissions or authorization are insufficient; it did not run",
+  "已按你补充的新要求撤回，没有执行":
+    "Withdrawn per your new requirement; it did not run",
+  "确认期间文件被改动，这次写入没有执行":
+    "The file changed during approval, so this write did not run",
+  "同一操作已连续失败两次，没有再重试":
+    "The same operation failed twice in a row; it was not retried",
+  "上一处写入结果未知，先核对再继续":
+    "The previous write has an unknown result; verify it before continuing",
+  "这一步失败": "This step failed",
+  "关闭通知": "Dismiss notification",
+  "还有任务在后台运行": "Tasks are still running in the background",
+  "{{count}} 个任务尚未完成，收起窗口不会中断它们。":
+    "{{count}} task(s) have not finished; hiding the window does not interrupt them.",
+  "任务已执行完成，点击回到超能模式查看结果。":
+    "The task finished. Click to return to Super Mode and review the result.",
+  "任务执行失败，点击回到超能模式查看详情。":
+    "The task failed. Click to return to Super Mode for details.",
+  "服务器：{{server}}": "Server: {{server}}",
+  "刚刚": "Just now",
+
+  /* ---- 超能：任务卡 / 历史记录的进度说法（纯 TS 模块里也会用到） ---- */
+  "查询": "Query",
+  "构建": "Build",
+  "卡在「{{title}}」": "Stopped at \"{{title}}\"",
+  "{{done}}/{{total}} 步完成": "{{done}}/{{total}} steps done",
+  "{{n}} 次未执行": "{{n}} not executed",
+
+  /* ---- 超能：Codex 式交互、队列补充与上下文快捷操作 ---- */
+  "查看文件变更": "View file changes",
+  "打开右侧文件变更与 Diff 面板": "Open the file changes and diff panel on the right",
+  "调整只读 / 确认 / 完全访问与备份策略": "Configure read-only, approval, full-access and backup policies",
+  "配置外部工具与内置能力": "Configure external tools and built-in capabilities",
+  "清空当前会话消息，重新开始上下文": "Clear messages in this conversation to start with fresh context",
+  "开启一条全新上下文的对话": "Start a new conversation with clean context",
+  "自选模式未勾选材料：本次仅发送输入的文字": "Selected context has no materials: only your typed message will be sent",
+  "Enter 补充给当前任务 · Alt+Enter 加入队列": "Enter to steer the running task · Alt+Enter to queue",
+  "Enter 加入队列 · Alt+Enter 立即补充": "Enter to queue · Alt+Enter to steer now",
+  "补充": "Steer",
+  "排队": "Queue",
+  "已压缩": "Compacted",
+  "恢复当前会话上下文": "Use full conversation context",
+  "仅带本条发送": "Send this message only",
+  "新开干净上下文": "New clean thread",
+  "立即补充给当前任务": "Steer running task now",
 } as const;

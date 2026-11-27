@@ -317,12 +317,14 @@ fn input() -> AgentInput {
         backup_before_delete: true,
         backup_retention_days: 30,
         mcp_tools: Vec::new(),
+        servers: Vec::new(),
         enabled_builtins: None,
         db: None,
         plan_required: false,
         carry_plan: None,
         max_rounds: None,
         carry_steps: Vec::new(),
+        child_run: false,
     }
 }
 

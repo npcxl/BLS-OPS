@@ -156,9 +156,9 @@ export function AgentApprovalCard({
         data-approval-task={approval.taskId}
         data-approval-key={`${approval.taskId}:${approval.callId}`}
         data-phase={phase}
-        className="shrink-0 px-4 pt-1.5"
+        className="shrink-0 px-4 pt-1.5 min-[1180px]:px-8"
       >
-        <div className="mx-auto flex w-full max-w-3xl min-w-0 items-center gap-2 text-11">
+        <div className="mx-auto flex w-full min-w-0 items-center gap-2 text-11">
           <span className={cn("shrink-0", tone)}>
             {phase === "denied" ? t("已拒绝 · 未执行") : runningLabel}
           </span>
@@ -196,17 +196,17 @@ export function AgentApprovalCard({
       /* 精确定位到**这一条**审批：同一任务的多条审批也要能各自滚到位。 */
       data-approval-key={`${approval.taskId}:${approval.callId}`}
       data-phase={phase}
-      className="shrink-0 px-4 pt-2"
+      className="shrink-0 px-4 pt-2 min-[1180px]:px-8"
     >
-      <div className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden rounded-lg border border-line bg-surface-1 text-fg">
-        <div className="px-3 pb-2 pt-2.5">
+      <div className="mx-auto w-full min-w-0 overflow-hidden rounded-2xl border border-line/60 bg-surface-2 text-fg shadow-[0_2px_12px_rgb(0_0_0/0.04)]">
+        <div className="px-5 pb-3 pt-4">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
               <ShieldAlert
                 size={14}
                 className={cn("shrink-0", danger ? "text-danger" : "text-warning")}
               />
-              <span className="truncate text-12 font-medium" title={summary}>{summary}</span>
+              <span className="min-w-0 break-words text-13 font-medium leading-5" title={summary}>{summary}</span>
             </div>
             <div className="flex shrink-0 items-center gap-2 text-10 text-fg-subtle">
               {danger && <span className="text-danger">{t("危险")}</span>}
@@ -223,7 +223,38 @@ export function AgentApprovalCard({
               )}
             </div>
           </div>
-          <p className="mt-1 whitespace-pre-wrap break-words text-11 text-fg-muted">{impact}</p>
+          <p className="mt-2 whitespace-pre-wrap break-words text-12 leading-5 text-fg-muted">{impact}</p>
+          {/* Codex 式首屏目标预览：不点展开也能一眼确认要跑的命令或要改的文件。 */}
+          {approval.tool === "write_file" && approval.path ? (
+            <div className="mt-2.5 flex items-center gap-2 rounded-lg border border-line/60 bg-surface-1 px-2.5 py-1.5 font-mono text-11 text-fg">
+              <span className="min-w-0 flex-1 truncate" title={approval.path}>
+                {approval.path}
+              </span>
+              {approval.changeId && onOpenChanges && (
+                <button
+                  type="button"
+                  onClick={onOpenChanges}
+                  className="inline-flex shrink-0 items-center gap-1 font-sans text-11 text-accent hover:underline"
+                >
+                  <FileDiff size={12} />
+                  {t("查看变更")}
+                </button>
+              )}
+            </div>
+          ) : approval.command.trim() ? (
+            <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-line/60 bg-surface-1 px-2.5 py-1.5">
+              <code className="min-w-0 flex-1 truncate font-mono text-11 text-fg" title={approval.command}>
+                {approval.command.split("\n").map((line) => line.trim()).find(Boolean) ?? approval.command}
+              </code>
+              <ExtremeIconButton
+                label={t("复制命令")}
+                icon={Copy}
+                iconSize={11}
+                className="size-5 shrink-0"
+                onClick={() => void copyTextWithFeedback(approval.command)}
+              />
+            </div>
+          ) : null}
           {phase === "failed" && (
             <p className="mt-1 break-words text-11 text-danger">
               {t("没有送达服务器：{{reason}}。可以再试一次。", {
@@ -234,7 +265,7 @@ export function AgentApprovalCard({
         </div>
 
         {expanded && (
-          <div id={detailsId} className="space-y-1.5 border-t border-line px-3 py-2 text-11">
+          <div id={detailsId} className="mx-5 space-y-1.5 rounded-xl bg-surface-1 px-3 py-3 text-11">
             {goal?.trim() && (
               <p className="break-words text-fg-muted">{t("目标")}：{goal}</p>
             )}
@@ -282,7 +313,7 @@ export function AgentApprovalCard({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line px-3 py-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 pb-4 pt-2">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
             <button
               type="button"
@@ -307,10 +338,10 @@ export function AgentApprovalCard({
           </div>
           {pending && (
             <div className="ml-auto flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDecide(false)}>
+              <Button className="rounded-full" variant="secondary" size="sm" disabled={busy} onClick={() => onDecide(false)}>
                 {t("拒绝执行")}
               </Button>
-              <Button variant={danger ? "danger" : "primary"} size="sm" disabled={busy} onClick={() => onDecide(true)}>
+              <Button className="rounded-full" variant={danger ? "danger" : "primary"} size="sm" disabled={busy} onClick={() => onDecide(true)}>
                 {busy ? t("提交中…") : t("允许本次")}
               </Button>
             </div>

@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { i18n } from "@/i18n";
+import { useExtremeStore } from "@/stores/extreme-store";
 import { TaskSidebar } from "../TaskSidebar";
 import type { ExtremeWorkspace } from "../workspace-history";
 
@@ -56,6 +57,8 @@ describe("超能左栏", () => {
   afterEach(() => {
     localStorage.clear();
     document.body.innerHTML = "";
+    // 左栏开合现在记在 store 里：用例之间复位，避免互相影响。
+    useExtremeStore.setState({ railCollapsed: false, railByWorkspace: {} });
   });
 
   it("任务分组可收起，当前对话仍可见，底部入口始终可用", () => {
@@ -113,6 +116,22 @@ describe("超能左栏", () => {
     } finally {
       act(() => second.root.unmount());
       second.holder.remove();
+    }
+  });
+
+  it("新建任务时左栏收起，只留图标与新建入口", () => {
+    // 新任务的默认收起由创建入口写进 store（这里直接模拟那一次初始化）。
+    useExtremeStore.setState({ railCollapsed: true, railByWorkspace: { w1: true } });
+    const { holder, root } = renderRail();
+    try {
+      const aside = holder.querySelector("aside")!;
+      expect(aside.getAttribute("data-collapsed")).toBe("true");
+      // 收起态仍能新建任务、也能展开回列表。
+      expect(holder.querySelector('[aria-label="新建任务"]')).toBeTruthy();
+      expect(holder.querySelector('[aria-label="展开会话列表"]')).toBeTruthy();
+    } finally {
+      act(() => root.unmount());
+      holder.remove();
     }
   });
 

@@ -334,10 +334,9 @@ export function Tooltip({
               "pointer-events-none select-none",
               "max-w-[min(280px,calc(100vw-16px))]",
               "whitespace-normal break-words",
-              "rounded-[7px] border border-line/90",
-              "bg-surface-1 px-2.5 py-1.5",
-              "text-11 leading-4 font-normal text-fg-muted",
-              "shadow-[0_8px_22px_rgb(15_23_42/0.12),0_1px_2px_rgb(15_23_42/0.08),inset_0_1px_0_rgb(255_255_255/0.7)]",
+              "rounded-lg border border-line/80",
+              "bg-surface-1 px-3 py-2",
+              "text-11 leading-[1.45] font-normal text-fg",
               "ops-tooltip-enter",
               className,
             )}

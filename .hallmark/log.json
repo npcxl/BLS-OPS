@@ -1,0 +1,20 @@
+[
+ {
+  "shape": "Workbench",
+  "theme": "Cobalt",
+  "axes": "light/grotesk-sans/cool",
+  "hero": "Stage",
+  "nav": "banner over a sticky bar",
+  "footer": "colophon",
+  "imagery": "product screenshot 1 (supplied) + 1:1 plan detail",
+  "photos": [],
+  "sections": "hero / rows (five jobs) / steps (AI assistant) / figures / statement (security) / close (download)",
+  "signature": "the AI execution plan resting over the live terminal in one capture",
+  "waived": [],
+  "entry": "BLS-OPS landing, light SEO page",
+  "fingerprint": "workbench,stage,banner-bar,colophon,rows,light",
+  "prompt": "light SEO official site for BLS-OPS with the supplied screenshot",
+  "date": "2026-11-25",
+  "mode": "build"
+ }
+]

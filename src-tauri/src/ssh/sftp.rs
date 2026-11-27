@@ -905,6 +905,75 @@ impl SshSessionManager {
         atomic_write(&sftp, &canonical, bytes).await
     }
 
+    /// 追加一段附件字节（暂存用）。
+    ///
+    /// `offset == 0` 会**重建**目标文件（截断），后续块按偏移续写 —— 前端按
+    /// 1 MiB 一块上传，既能报进度，也不用把整个大文件做成 base64 放进 React
+    /// 状态。写 `.part` 临时名，最后 [`Self::sftp_stage_finish`] 原子改名。
+    ///
+    /// 返回写入后的累计字节数，调用方据此校验"传够了没有"。
+    pub async fn sftp_write_bytes_chunk(
+        &self,
+        session_id: &str,
+        path: &str,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<u64> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt as _};
+
+        crate::safe::validate_abs_path(path, "暂存路径")?;
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        // `offset == 0` 即使没有字节也要建出空文件：空附件同样要能暂存。
+        let mut file = if offset == 0 {
+            sftp.create(path)
+                .await
+                .map_err(|error| sftp_error(path, error))?
+        } else if bytes.is_empty() {
+            return Ok(offset);
+        } else {
+            sftp.open_with_flags(path, OpenFlags::WRITE)
+                .await
+                .map_err(|error| sftp_error(path, error))?
+        };
+        if offset > 0 {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|error| anyhow!("定位暂存文件失败：{error}"))?;
+        }
+        file.write_all(bytes)
+            .await
+            .map_err(|error| anyhow!("写入暂存文件失败：{error}"))?;
+        file.flush()
+            .await
+            .map_err(|error| anyhow!("刷新暂存文件失败：{error}"))?;
+        Ok(offset + bytes.len() as u64)
+    }
+
+    /// 暂存完成：`.part` → 正式名（同目录，覆盖旧副本）。
+    ///
+    /// SFTP v3 的 rename 不覆盖已存在文件，所以先删目标再改名；两步都在同一
+    /// 目录内，最坏情况是留下 `.part`，不会出现"半个正式文件"。
+    pub async fn sftp_stage_finish(
+        &self,
+        session_id: &str,
+        part_path: &str,
+        target: &str,
+    ) -> Result<()> {
+        crate::safe::validate_abs_path(part_path, "暂存临时路径")?;
+        crate::safe::validate_abs_path(target, "暂存目标路径")?;
+        let session = self.get(session_id).await?;
+        let sftp = session.sftp_client().await?;
+        if remote_exists(&sftp, target).await {
+            sftp.remove_file(target)
+                .await
+                .map_err(|error| sftp_error(target, error))?;
+        }
+        sftp.rename(part_path, target)
+            .await
+            .map_err(|error| sftp_error(part_path, error))
+    }
+
     /// Reads any remote file as raw bytes for the in-app preview.
     ///
     /// Deliberately not limited to text: images, PDFs, Office files and

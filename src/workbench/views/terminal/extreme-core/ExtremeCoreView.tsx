@@ -6,7 +6,7 @@ import type {
   AgentStep,
 } from "@/api/types/agent";
 import AeroShards from "@/components/backgrounds/aero-shards";
-import ShapeWaves from "@/components/backgrounds/shape-waves";
+import Galaxy from "@/components/backgrounds/galaxy";
 import { isMacOS } from "@/lib/platform";
 import { toAppError } from "@/lib/app-error";
 import { cn } from "@/lib/cn";
@@ -71,6 +71,8 @@ import { ServiceCandidates } from "./ServiceCandidates";
 import { WelcomeIntro } from "./WelcomeIntro";
 import { TaskSidebar, type RailPage } from "./TaskSidebar";
 import { ExtremeSettingsPage } from "./view/ExtremeSettingsPage";
+import { MemorySettings } from "./view/MemorySettings";
+import { ExtremePageShell } from "./view/ExtremePageShell";
 import { ExtremePermissionsPage } from "./view/ExtremePermissionsPage";
 import { ExtremeMcpPage } from "./view/ExtremeMcpPage";
 import { useMcpCapabilities } from "./view/use-mcp-capabilities";
@@ -112,12 +114,22 @@ import {
 import "./extreme-core.css";
 import { focusComposerEnd, quoteBlock } from "./view/helpers";
 import { approvalKeyOf, type ActionResult } from "./view/types";
-import { anchoredSteps, latestPlan, planForTask } from "./message-parts";
+import { latestPlan, planForTask } from "./message-parts";
 import { CommandOutput } from "./view/CommandOutput";
 import { useApprovalEntries } from "./view/use-approval-entries";
 import { useApprovalActions } from "./view/use-approval-actions";
 import { usePane } from "./view/use-pane";
 import { useAttachments } from "./view/use-attachments";
+import { pickPlanRow } from "./view/locate-plan-step";
+import { hasActiveTransfers, stageWorkspaceAttachment } from "./attachments/staging";
+import { dropAttachmentFile } from "./attachments/payload";
+import {
+  cleanupItemsOf,
+  runCleanup,
+  useCleanupStore,
+  type CleanupRequest,
+} from "./attachments/cleanup";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useDeployActions } from "./view/use-deploy-actions";
 import { useAsk } from "./view/use-ask";
 import { ChatColumn } from "./view/ChatColumn";
@@ -149,6 +161,21 @@ export function ExtremeCoreView() {
   const workspaces = useExtremeStore((state) => state.workspaces);
   const workspaceId = useExtremeStore((state) => state.workspaceId);
   const openWorkspace = useExtremeStore((state) => state.openWorkspace);
+  const [switchingWorkspace, setSwitchingWorkspace] = useState<string | null>(null);
+  const switchFrame = useRef<number | null>(null);
+  const switchRequest = useRef(0);
+  useEffect(() => () => {
+    switchRequest.current += 1;
+    if (switchFrame.current !== null) cancelAnimationFrame(switchFrame.current);
+  }, []);
+  useEffect(() => {
+    if (!switchingWorkspace || switchingWorkspace !== workspaceId) return;
+    const request = switchRequest.current;
+    const frame = requestAnimationFrame(() => {
+      if (switchRequest.current === request) setSwitchingWorkspace(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [switchingWorkspace, workspaceId]);
   const addWorkspace = useExtremeStore((state) => state.addWorkspace);
   const renameWorkspace = useExtremeStore((state) => state.renameWorkspace);
   const removeWorkspace = useExtremeStore((state) => state.removeWorkspace);
@@ -191,6 +218,33 @@ export function ExtremeCoreView() {
     requestAnimationFrame(() => {
       document.querySelector<HTMLTextAreaElement>(".extreme-core textarea")?.focus();
     });
+  };
+
+  /** 把排队中的文本立即作为补充要求发给当前正在运行的任务（Codex Steer）。 */
+  const steerQueuedSend = async (item: QueuedSend) => {
+    const state = useExtremeStore.getState();
+    const runningTask = Object.values(state.tasks).find(
+      (task) =>
+        task.workspaceId === item.workspaceId &&
+        (task.status === "running" || task.status === "confirming"),
+    );
+    if (!runningTask) return;
+    try {
+      const accepted = await opsApi.aiAgentSteer(runningTask.id, item.text);
+      if (!accepted) {
+        setNotice(t("这条任务已经结束：请重新发送。"));
+        return;
+      }
+      dropSend(item.id);
+      pushMessageTo(item.workspaceId, {
+        id: `msg-${crypto.randomUUID()}`,
+        role: "user",
+        text: item.text,
+      });
+      setNotice(t("已更新当前任务：下一步开始前生效。"));
+    } catch (cause) {
+      setNotice(toAppError(cause).message);
+    }
   };
 
   /*
@@ -535,18 +589,9 @@ export function ExtremeCoreView() {
     dropApprovals,
     dropClosedApprovals,
   } = useApprovalEntries(tasks, workspaceId);
-  /*
-   * 审批画在**对应步骤**上：时间线里已有的步骤不再往输入框上方放一张卡，
-   * 否则同一件事要确认两遍，状态也会两处各说各话。
-   */
-  const inlineApprovalKeys = useMemo(() => anchoredSteps(messages), [messages]);
-  const composerApprovals = useMemo(
-    () =>
-      currentApprovals.filter(
-        (entry) =>
-          !inlineApprovalKeys.has(`${entry.approval.taskId}:${entry.approval.stepIndex}`),
-      ),
-    [currentApprovals, inlineApprovalKeys],
+  const inlineApprovals = useMemo(
+    () => Object.fromEntries(Object.entries(approvalEntries).filter(([, entry]) => entry.closed)),
+    [approvalEntries],
   );
   /**
    * 当前是否深色主题。
@@ -826,6 +871,14 @@ export function ExtremeCoreView() {
    */
   const inFlightRef = useRef<Set<string>>(new Set());
   /**
+   * 发送入口的**同步锁**：连点 / 回车重复触发时只受理一次。
+   *
+   * `asking` 是 React state，第二次点击读到的还是旧值；附件暂存与 MCP 读取
+   * 之间还有等待，不能只靠它。锁在"消息被受理"或这次调用结束时释放。
+   */
+  const sendSeqRef = useRef(0);
+  const sendingRef = useRef(false);
+  /**
    * 这一轮发起时用的上下文 / 输出 / 模型。
    *
    * 运行中改选只对下一条生效；运行记录保留**发起那一刻**的事实。
@@ -983,8 +1036,8 @@ export function ExtremeCoreView() {
       .pop();
     agentCwdRef.current = latestCwd ?? null;
     planTaskIdRef.current = state.planTaskId;
-    // Only restore the managed upload directory of this workspace.
-    const marker = workspaceId ? `/.bls-ops/extreme-${workspaceId}/` : null;
+    // Only restore the managed staging directory of this workspace.
+    const marker = workspaceId ? `/.bls-ops/staging/${workspaceId}/` : null;
     const path = state.attachments.find((item) => item.uploadState === "uploaded" &&
       marker && item.remotePath?.includes(marker))?.remotePath;
     setRemoteRoot(path && marker ? path.slice(0, path.indexOf(marker) + marker.length - 1) : null);
@@ -1018,6 +1071,58 @@ export function ExtremeCoreView() {
     if (saved !== undefined) restoreScroll(saved);
     else scrollToBottom();
   }, [active, workspaceId, stickToBottom, scrollToBottom, restoreScroll]);
+
+  /**
+   * 计划步骤定位：按 `taskId + 步骤 id` 精确命中聊天里的那条命令。
+   *
+   * 目标可能在**收起的命令组**里 —— 先让所有组展开（`store.stepReveal`），
+   * 等节点真正挂载后再滚动；定位期间暂停自动贴底，避免流式输出把视图拉走。
+   */
+  const locateStep = useCallback(
+    (stepId: string) => {
+      const taskId = planTaskIdRef.current ?? "";
+      const workspaceAt = useExtremeStore.getState().workspaceId ?? "";
+      if (!taskId) {
+        setNotice(t("此步骤暂无执行记录"));
+        return;
+      }
+      // 只在**这条计划的这一轮执行**里找：同名步骤不能跨任务命中。
+      const find = () => pickPlanRow(scrollRef.current ?? document, taskId, stepId);
+      const reveal = (node: HTMLElement) => {
+        stickToBottom.current = false;
+        node.scrollIntoView({ block: "center", behavior: "smooth" });
+        node.classList.add("extreme-core-locate-flash");
+        // 高亮结束只清高亮，**不把自动贴底打开** —— 否则流式输出立刻把
+        // 用户从定位处拉回底部。
+        window.setTimeout(() => node.classList.remove("extreme-core-locate-flash"), 1500);
+      };
+      const hit = find();
+      if (hit) {
+        reveal(hit);
+        return;
+      }
+      // 目标可能在收起的命令组里：只展开命中那一组（带 workspace 归属）。
+      useExtremeStore.setState({ stepReveal: { workspaceId: workspaceAt, taskId, planStepId: stepId } });
+      let tries = 0;
+      const tick = () => {
+        const node = find();
+        if (node) {
+          reveal(node);
+          window.setTimeout(() => useExtremeStore.setState({ stepReveal: null }), 300);
+          return;
+        }
+        tries += 1;
+        if (tries > 20) {
+          useExtremeStore.setState({ stepReveal: null });
+          setNotice(t("此步骤暂无执行记录"));
+          return;
+        }
+        window.setTimeout(tick, 30);
+      };
+      window.setTimeout(tick, 30);
+    },
+    [scrollRef, setNotice, stickToBottom, t],
+  );
 
   /*
    * 内容变了 → 跟着滚（用户翻过历史就不动）。
@@ -1263,7 +1368,6 @@ export function ExtremeCoreView() {
     uploadToServer,
     probeServices,
     planUpdate,
-    cleanupRemote,
   } = useDeployActions({
     t,
     currentScope,
@@ -1302,6 +1406,7 @@ export function ExtremeCoreView() {
    * 要求已连接 + 绑定当前服务器/工作区；勾选按会话+服务器独立保存。
    */
   const mcpCapabilities = useMcpCapabilities({
+    active,
     workspaceId,
     serverId,
     sessionId,
@@ -1310,7 +1415,38 @@ export function ExtremeCoreView() {
   const mcpSelectionRef = useRef(mcpCapabilities);
   mcpSelectionRef.current = mcpCapabilities;
 
+  /**
+   * 清理询问按 **taskId 持久化**：切换对话 / 重启后仍能找到；两个任务各自
+   * 一条记录，后完成的任务不会覆盖前一个。
+   */
+  const cleanupRequests = useCleanupStore((state) => state.requests);
+  /**
+   * 本次界面里已经问过的任务：失败 / 仍被引用时**不再弹同一个框**，但
+   * 请求留在 store 与「附件」面板里，可以重试。用户点「保留」才真正删掉。
+   */
+  const [askedCleanup, setAskedCleanup] = useState<string[]>([]);
+  const cleanupOffer =
+    cleanupRequests
+      .filter(
+        (item) =>
+          item.workspaceId === workspaceId &&
+          item.items.length > 0 &&
+          !askedCleanup.includes(item.taskId),
+      )
+      .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null;
   const { ask, cancelAsk, settleStoppedLocally } = useAsk({
+    offerAttachmentCleanup: (scope, items) => {
+      if (!scope.taskId) return;
+      const entries = cleanupItemsOf(scope.workspaceId, items);
+      if (entries.length === 0) return;
+      useCleanupStore.getState().offer({
+        taskId: scope.taskId,
+        workspaceId: scope.workspaceId,
+        serverId: scope.serverId,
+        createdAt: Date.now(),
+        items: entries,
+      });
+    },
     t,
     i18n,
     active,
@@ -1335,10 +1471,8 @@ export function ExtremeCoreView() {
     preflight,
     permission,
     envChecks,
-    getMcpSelection: () => ({
-      builtins: mcpSelectionRef.current.selectedBuiltins,
-      tools: mcpSelectionRef.current.selectedToolNames,
-    }),
+    getMcpSelection: (target) =>
+      mcpSelectionRef.current.ensureSelection(target.workspaceId, target.serverId),
     attachments,
     focusId,
     selectedAttachmentIds,
@@ -1540,8 +1674,18 @@ export function ExtremeCoreView() {
         const planRequired =
           Boolean(knownPlan) ||
           taskMessages.some((message) => message.taskId === task.id && message.planRequired);
-        // 续跑沿用当前会话的勾选快照（与发送时同一套）。
-        const mcp = mcpSelectionRef.current;
+        // 续跑按这条任务自己的对话 / 服务器读取勾选，不读当前前台菜单。
+        const mcpState = await mcpSelectionRef.current.ensureSelection(
+          task.workspaceId ?? workspaceId,
+          task.serverId ?? serverId,
+        );
+        if (mcpState.status !== "ready") {
+          throw new Error(
+            mcpState.status === "loading"
+              ? t("MCP 连接列表还在加载，请稍后再恢复任务。")
+              : t("MCP 连接读取失败：{{error}}", { error: mcpState.message }),
+          );
+        }
         await opsApi.aiAgentResume({
           taskId: task.id,
           // 重连后的会话：记录里的那个 session 只用于关联。
@@ -1574,8 +1718,8 @@ export function ExtremeCoreView() {
               backupRetentionDays: backup.retentionDays,
             };
           })(),
-          enabledMcpTools: mcp.selectedToolNames,
-          enabledBuiltins: mcp.selectedBuiltins,
+          enabledMcpTools: mcpState.tools,
+          enabledBuiltins: mcpState.builtins,
         });
         const snapshot = await finished;
         if (!snapshot) {
@@ -1618,8 +1762,11 @@ export function ExtremeCoreView() {
   const currentStep =
     plan?.find((step) => step.state === "running") ?? failedStep ?? plan?.find((step) => step.state !== "success");
   const welcome = messages.length === 0 && !plan?.length;
-  /**
-   * 附件改成"一次上传 = 一份文件夹"的 3D 展示后，这里不再需要 antd 的 items。
+  /*
+   * 右栏开合**只由 store 按任务恢复**（`paneView` / `paneViewByWorkspace`）。
+   *
+   * 这里不能再按 `welcome` 兜底收起：空白任务切走再切回时 welcome 仍是
+   * true，那样会把用户手动展开的右栏折回去，也会覆盖"新任务默认打开"的设置。
    */
 
   /**
@@ -1673,6 +1820,10 @@ export function ExtremeCoreView() {
     return ids.length > 0 ? ids[ids.length - 1] : null;
   }, [messages]);
   const activeTask = activeTaskId ? tasks[activeTaskId] : undefined;
+  const [outputSelection, setOutputSelection] = useState<{ workspaceId: string; taskId: string } | null>(null);
+  const outputTask = outputSelection?.workspaceId === workspaceId
+    ? sessionTasks[outputSelection.taskId] ?? activeTask
+    : activeTask;
   /** 发起这条任务的那条用户消息（附件数等"材料"从它读，重开后也在）。 */
   const activeTaskMessage = activeTaskId
     ? messages.find((message) => message.taskId === activeTaskId)
@@ -1786,10 +1937,24 @@ export function ExtremeCoreView() {
     /*
      * 带上这一句"在做什么"：重进接回来的卡片标题往往只是"服务器 · 自动化"，
      * 只显示"执行中"等于告诉用户有任务、却不知道是什么任务。
+     *
+     * **运行中用当前步骤 / 目标**，不再拼任务卡上的 `result`：那里的值是
+     * 「正在执行：uname -a」，拼出来就成了"执行中 · 正在执行：uname -a"。
+     * 终态才用 `result`，并且已经在说明同一件事时不重复。
      */
-    const summary = activeTask?.result?.trim() || activeTask?.goal.trim() || "";
     const label = runStateLabel(runState, t);
-    return summary ? `${label} · ${summary}` : label;
+    const detail = (() => {
+      if (!activeTask) return "";
+      if (runState === "running" || runState === "waiting" || runState === "analyzing") {
+        const current = [...activeTask.steps]
+          .reverse()
+          .find((step) => step.state === "running" || step.state === "waiting");
+        return current?.title?.trim() || activeTask.goal.trim();
+      }
+      const result = activeTask.result?.trim() ?? "";
+      return result.startsWith(label) ? "" : result;
+    })();
+    return detail ? `${label} · ${detail}` : label;
   })();
 
   /**
@@ -2198,18 +2363,65 @@ export function ExtremeCoreView() {
     [draft, setDraft],
   );
 
+  /**
+   * 执行一条清理请求：只删平台暂存副本，失败保留路径与原因可重试。
+   *
+   * 删除期间切到别的对话也继续（归属是原 workspace 的记录），只有"动界面"
+   * 的提示才按前台判断。
+   */
+  const requestCleanupDelete = useCallback(
+    async (request: CleanupRequest) => {
+      const outcome = await runCleanup(request);
+      const foreground = useExtremeStore.getState().workspaceId === request.workspaceId;
+      if (!foreground) return;
+      if (!outcome.sessionId) {
+        setNotice(t("服务器未连接：重新连接后才能清理暂存附件。附件已保留。"));
+        return;
+      }
+      if (outcome.failures.length > 0) {
+        setNotice(
+          t("清理暂存失败：{{reason}}。路径与错误已保留，可以重试。", {
+            reason: outcome.failures.map((item) => `${item.name}：${item.reason}`).join("；"),
+          }),
+        );
+        return;
+      }
+      if (outcome.blocked > 0) {
+        setNotice(
+          t("有 {{n}} 个暂存副本仍被运行任务或排队消息使用：已保留，稍后可再清理。", {
+            n: outcome.blocked,
+          }),
+        );
+        return;
+      }
+      if (outcome.removed > 0) setNotice(t("已删除 {{n}} 个暂存副本。", { n: outcome.removed }));
+    },
+    [setNotice, t],
+  );
+
   const clearContext = () => {
     /*
-     * 上传中清空会让"正在写的文件"失去归属（临时目录也可能被顺手删掉）：
-     * 明确拒绝并要求等它结束 —— 清空是独立动作，但不该打断正在进行的执行。
+     * 上传中清空会让"正在写的文件"失去归属：明确拒绝并要求等它结束 ——
+     * 清空是独立动作，但不该打断正在进行的执行。
+     *
+     * 检查的是**统一的传输状态**（store 里的 uploadState / 传输服务里的
+     * 在飞任务），不只是按钮自己的 loading。
      */
-    if (uploading) {
+    if (
+      uploading ||
+      hasActiveTransfers(workspaceId ?? "") ||
+      attachments.some((item) => item.uploadState === "uploading")
+    ) {
       setNotice(t("正在上传文件：等上传结束后再清空对话。"));
       return;
     }
-    // 附件没了，服务器上的临时副本也没有意义。
-    cleanupRemote();
+    /*
+     * **不删除服务器上的暂存副本**：清空对话只是清界面，副本该不该删由
+     * 部署成功后的清理询问（按任务）决定，避免"清个屏把线上备份也带走"。
+     */
     setMessages([]);
+    // 清空界面 = 不再持有本机句柄：大文件不能因为"清空了列表"还占着内存。
+    for (const item of attachments) dropAttachmentFile(item.id);
     setAttachments(() => []);
     setPlan(null);
     setPlanSession(null);
@@ -2345,7 +2557,7 @@ export function ExtremeCoreView() {
     /* 主题提在根节点：气泡、输入、附件、弹窗共用同一套深色 token。 */
     <ConfigProvider theme={antdThemeFor(dark)}>
     <div
-      className="extreme-core fixed inset-0 z-50 flex flex-col overflow-hidden text-fg"
+      className="app-shell extreme-core fixed inset-0 z-50 flex flex-col overflow-hidden text-fg"
       /*
        * **跟随应用主题**：不写死颜色、也不覆盖 token 变量，外层
        * `data-theme` 是浅色就是浅色、深色就是深色，和其他页面一致。
@@ -2379,29 +2591,121 @@ export function ExtremeCoreView() {
         });
       }}
     >
+
+      <ExtremeHeader
+        server={server}
+        serverHost={serverHost}
+        mac={mac}
+        onBack={back}
+        paneShown={paneShown}
+        onOpenPane={togglePane}
+        onOpenHistory={() => setHistoryOpen(true)}
+      />
+      {cleanupOffer && (
+        <ConfirmDialog
+          open
+          title={t("删除服务器上的暂存附件？")}
+          description={t("仅删除本次任务的 {{n}} 个暂存副本，不会动线上文件和站点备份。", {
+            n: cleanupOffer.items.length,
+          })}
+          confirmLabel={t("删除暂存")}
+          cancelLabel={t("保留")}
+          onCancel={() => useCleanupStore.getState().dismiss(cleanupOffer.taskId)}
+          onConfirm={() => {
+            const request = cleanupOffer;
+            // 先收起询问，但**请求本身留在 store**：失败 / 仍被引用时可以重试。
+            setAskedCleanup((ids) => [...ids, request.taskId]);
+            void requestCleanupDelete(request);
+          }}
+        />
+      )}
+
+      <div ref={rowRef} data-managing={mainView ? "true" : undefined} className="extreme-core-row relative z-10 flex min-h-0 flex-1">
+        {/*
+         * 已上传到服务器 → 左栏直接显示**服务器的那个临时目录**，用项目
+         * 自己的文件面板（浏览、预览、右键操作全都现成）。没上传时显示
+         * 本机附件树。
+         */}
+        <div ref={railRef} className="flex min-h-0 shrink-0">
+          <TaskSidebar
+            entries={workspaceEntries}
+            currentId={workspaceId}
+            currentTitle={currentWorkspaceTitle}
+            busy={executing || workspaceRunning || uploading || probing}
+            /* 新建任务 = 主动开一条空白对话（唯一会主动建记录的地方之一）。 */
+            onNew={() => {
+              switchRequest.current += 1;
+              if (switchFrame.current !== null) cancelAnimationFrame(switchFrame.current);
+              setSwitchingWorkspace(null);
+              setMainView(null);
+              handleNewWorkspace();
+            }}
+            onOpen={(id) => {
+              setMainView(null);
+              if (id === useExtremeStore.getState().workspaceId) {
+                switchRequest.current += 1;
+                if (switchFrame.current !== null) cancelAnimationFrame(switchFrame.current);
+                setSwitchingWorkspace(null);
+                openWorkspace(id);
+                return;
+              }
+              const request = ++switchRequest.current;
+              if (switchFrame.current !== null) cancelAnimationFrame(switchFrame.current);
+              setSwitchingWorkspace(id);
+              switchFrame.current = requestAnimationFrame(() => {
+                switchFrame.current = requestAnimationFrame(() => {
+                  switchFrame.current = null;
+                  if (switchRequest.current !== request) return;
+                  openWorkspace(id);
+                  if (useExtremeStore.getState().workspaceId !== id) setSwitchingWorkspace(null);
+                });
+              });
+            }}
+            onRename={renameWorkspace}
+            onDelete={removeWorkspace}
+            blockedIds={blockedIds}
+            runningIds={runningIds}
+            attentionById={attentionById}
+            unreadIds={unreadIds}
+            outputStyle={chatPrefs.output}
+            onOutputStyleChange={setOutputStyle}
+            hasContext={hasContext}
+            onClearCurrent={clearContext}
+            activePage={mainView}
+            onOpenPage={(page) => {
+              if (page === "mcp") setMcpTab("market");
+              setMainView(page);
+            }}
+            onShowChat={() => setMainView(null)}
+          />
+        </div>
+        <div className="extreme-core-workspace relative m-2 flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-[12px] bg-content">
       {/*
-       * 背景按主题分工：深色用 ShapeWaves，浅色用官方 **Aero Shards**。
+       * 背景按主题分工：深色用官方 **Galaxy**，浅色用官方 **Aero Shards**。
        *
-       * 两个都是 WebGPU 组件，互斥挂载，任何时刻只初始化一个。浅色这边只用
-       * 组件公开参数（材质、密度、颗粒、暗角）把它压到"从空白处透出来"的强度，
-       * 着色器、玻璃折射、景深、鼠标扰动全部走官方实现。
+       * 两个都是 canvas 组件，互斥挂载，任何时刻只初始化一个。这里只改公开
+       * 参数：颜色取应用主色（蓝），密度 / 亮度压到"从空白处透出来"的强度；
+       * 星层、点击曲速、鼠标斥力全部走官方实现。
        */}
       {welcome && (dark ? (
-        <div className="extreme-core-background" aria-hidden="true" style={{ opacity: 0.2 }}>
-          <ShapeWaves
-            shapes="mixed"
-            text="BLS-OPS"
-            textSize={0.42}
-            fontWeight={600}
-            cellSize={15}
-            dotSize={0.72}
-            color="#929292"
-            hoverColor="#a8d7ff"
-            backgroundColor="#08090d"
-            brightness={0.48}
-            glow={0.42}
-            speed={1}
-            interactive
+        <div className="extreme-core-background" aria-hidden="true">
+          <Galaxy
+            data-testid="galaxy"
+            starColors={["#ffffff", "#a8d7ff", "#5aa9ff", "#277ee6"]}
+            density={0.9}
+            speed={0.55}
+            starSpeed={0.5}
+            glowIntensity={0.28}
+            twinkleIntensity={0.35}
+            flareIntensity={0.9}
+            layers={4}
+            rotationSpeed={0.08}
+            repulsionStrength={1.8}
+            opacity={0.92}
+            dpr={1.5}
+            mouseInteraction
+            mouseRepulsion
+            clickWarp
           />
         </div>
       ) : (
@@ -2427,55 +2731,6 @@ export function ExtremeCoreView() {
         </div>
       ))}
 
-      <ExtremeHeader
-        server={server}
-        serverHost={serverHost}
-        mac={mac}
-        onBack={back}
-        paneShown={paneShown}
-        onOpenPane={togglePane}
-        onOpenHistory={() => setHistoryOpen(true)}
-      />
-
-      <div ref={rowRef} className="extreme-core-row relative z-10 flex min-h-0 flex-1">
-        {/*
-         * 已上传到服务器 → 左栏直接显示**服务器的那个临时目录**，用项目
-         * 自己的文件面板（浏览、预览、右键操作全都现成）。没上传时显示
-         * 本机附件树。
-         */}
-        <div ref={railRef} className="flex min-h-0 shrink-0">
-          <TaskSidebar
-            entries={workspaceEntries}
-            currentId={workspaceId}
-            currentTitle={currentWorkspaceTitle}
-            busy={executing || workspaceRunning || uploading || probing}
-            /* 新建任务 = 主动开一条空白对话（唯一会主动建记录的地方之一）。 */
-            onNew={() => {
-              setMainView(null);
-              handleNewWorkspace();
-            }}
-            onOpen={(id) => {
-              setMainView(null);
-              openWorkspace(id);
-            }}
-            onRename={renameWorkspace}
-            onDelete={removeWorkspace}
-            blockedIds={blockedIds}
-            runningIds={runningIds}
-            attentionById={attentionById}
-            unreadIds={unreadIds}
-            outputStyle={chatPrefs.output}
-            onOutputStyleChange={setOutputStyle}
-            hasContext={hasContext}
-            onClearCurrent={clearContext}
-            activePage={mainView}
-            onOpenPage={(page) => {
-              if (page === "mcp") setMcpTab("market");
-              setMainView(page);
-            }}
-            onShowChat={() => setMainView(null)}
-          />
-        </div>
         <main className="extreme-core-main relative flex min-w-0 flex-1 flex-col">
           {/*
            * 聊天区始终挂载，只用 hidden 隐藏：切到设置 / 权限 / MCP 再回来，
@@ -2548,6 +2803,7 @@ export function ExtremeCoreView() {
 
 
           <ChatColumn
+            switching={Boolean(switchingWorkspace)}
             welcome={welcome}
             scrollRef={scrollRef}
             stickToBottom={stickToBottom}
@@ -2555,6 +2811,7 @@ export function ExtremeCoreView() {
             scrollToBottom={scrollToBottom}
             messages={messages}
             asking={asking}
+            taskRunning={asking || executing || workspaceRunning}
             attachments={attachments}
             sessionTasks={sessionTasks}
             openArtifact={openArtifact}
@@ -2566,6 +2823,12 @@ export function ExtremeCoreView() {
             retryInterrupted={retryInterrupted}
             resendMessage={resendMessage}
             openChanges={openChanges}
+            onOpenOutput={(taskId) => {
+              if (!workspaceId || !sessionTasks[taskId]) return;
+              setOutputSelection({ workspaceId, taskId });
+              openPaneTab("terminal", "output");
+            }}
+            locateStep={locateStep}
             plan={plan}
             panelOpen={panelOpen}
             setPanelOpen={setPanelOpen}
@@ -2577,7 +2840,7 @@ export function ExtremeCoreView() {
             setNotice={setNotice}
             workspaceId={workspaceId}
             planCard={planCard}
-            approvals={approvalEntries}
+            approvals={inlineApprovals}
             onDecideApproval={(allow, callId, taskId) =>
               void decideApprovalById(allow, callId, taskId)
             }
@@ -2586,7 +2849,7 @@ export function ExtremeCoreView() {
           <StatusStack
             askError={askError}
             retryMessage={retryMessage}
-            currentApprovals={composerApprovals}
+            currentApprovals={currentApprovals}
             tasks={tasks}
             decideApprovalById={decideApprovalById}
             openPaneTab={openPaneTab}
@@ -2607,22 +2870,43 @@ export function ExtremeCoreView() {
 
           <SendQueuePanel
             items={currentQueue}
+            running={asking || workspaceRunning}
             onMoveUp={moveSendUp}
             onEdit={editQueuedSend}
             onDrop={dropSend}
             onRetry={retrySend}
+            onSteerNow={(item) => void steerQueuedSend(item)}
           />
 
           <ComposerPanel
             draft={draft}
             onDraftChange={setDraft}
-            onSend={(text, selection) => void ask(text, 0, undefined, { selection })}
+            onSend={(text, selection, modeOverride) => {
+              if (sendingRef.current) {
+                setNotice(t("上一条消息正在发送：请稍候。"));
+                return;
+              }
+              sendingRef.current = true;
+              const seq = (sendSeqRef.current += 1);
+              const release = () => {
+                // 只释放自己这一代：上一次运行的收尾不能解开下一次的锁。
+                if (sendSeqRef.current === seq) sendingRef.current = false;
+              };
+              void ask(text, 0, undefined, { selection, sendMode: modeOverride, onAccepted: release }).finally(release);
+            }}
             onCancel={stopRun}
             busy={canStop}
             onOpenAttachments={() => openPaneTab("attachments")}
+            onOpenChangesPane={() => openPaneTab("changes")}
+            onClearContext={clearContext}
+            onNewWorkspace={() => {
+              setMainView(null);
+              handleNewWorkspace();
+            }}
+            hasContext={hasContext}
             contextUsage={contextUsage}
             attachmentNames={activeTaskAttachmentNames}
-            planSteps={activeTask?.steps.length ?? 0}
+            planSteps={planCard?.plan.steps.filter((step) => !step.superseded).length ?? 0}
             selectedAttachments={composerAttachments.map((item) => item.path ?? item.name)}
             onRemoveAttachment={(name) => {
               // 输入区里删掉的附件 = 右栏取消勾选（文件本身仍在会话里）。
@@ -2678,7 +2962,7 @@ export function ExtremeCoreView() {
             <div className="pointer-events-none absolute inset-0 z-20 border-2 border-dashed border-accent/50 bg-accent/5" />
           )}
           </div>
-          {/* 管理页：只换 main 里的内容，右栏与聊天状态都不动。 */}
+          {/* 管理页覆盖整个主区域，聊天和右栏保持挂载。 */}
           {mainView === "settings" && (
             <ExtremeSettingsPage
               onBack={() => setMainView(null)}
@@ -2688,6 +2972,11 @@ export function ExtremeCoreView() {
                 setMainView("mcp");
               }}
             />
+          )}
+          {mainView === "memory" && (
+            <ExtremePageShell title="记忆" description="管理所有对话共用的长期记忆" onBack={() => setMainView(null)}>
+              <MemorySettings />
+            </ExtremePageShell>
           )}
           {mainView === "permissions" && (
             <ExtremePermissionsPage
@@ -2755,6 +3044,7 @@ export function ExtremeCoreView() {
                   key={workspaceId}
                   workspaceId={workspaceId}
                   url={browserByWorkspace[workspaceId] ?? null}
+                  suspended={Boolean(mainView)}
                   onUrlChange={(url) => setBrowserUrl(workspaceId, url)}
                 />
               ) : null
@@ -2790,9 +3080,26 @@ export function ExtremeCoreView() {
             selectedIds={selectedAttachmentIds}
             onSelectedChange={setSelectedAttachmentIds}
             onPreviewAttachment={(id) => handleAttachmentPreview({ uid: id })}
-            onRetryAttachment={() => void uploadToServer(currentScope())}
+            onRetryAttachment={(id) => {
+              const state = useExtremeStore.getState();
+              const item = state.attachments.find((entry) => entry.id === id);
+              if (!item || !state.sessionId || !state.workspaceId) return;
+              if (permission === "readonly") {
+                setNotice(t("只读模式下无法暂存附件：调整权限后再上传。"));
+                return;
+              }
+              void stageWorkspaceAttachment({
+                workspaceId: state.workspaceId,
+                serverId: state.serverId,
+                sessionId: state.sessionId,
+                attachment: item,
+              });
+            }}
             onUploadAttachments={() => void uploadToServer(currentScope())}
             uploadingAttachments={uploading}
+            cleanupRequests={cleanupRequests.filter((item) => item.workspaceId === workspaceId)}
+            onRunCleanup={(request) => void requestCleanupDelete(request)}
+            onDismissCleanup={(taskId) => useCleanupStore.getState().dismiss(taskId)}
             onRemoveAttachment={(id) => handleAttachmentRemove({ uid: id })}
             onOpenRemotePath={(path) => {
               setWorkspaceTarget({
@@ -2845,10 +3152,11 @@ export function ExtremeCoreView() {
 
             manual={<ManualTerminal workspaceId={workspaceId} sessionId={sessionId} />}
             output={
-              <CommandOutput key={activeTask?.id ?? workspaceId} task={activeTask} />
+              <CommandOutput key={outputTask?.id ?? workspaceId} task={outputTask} />
             }
           />
         )}
+        </div>
       </div>
 
       {/* 任务历史与统一文件预览：都是浮层，挂在最外层，切面板不会把它们带走。 */}

@@ -1041,13 +1041,11 @@ fn net_reason(
         NetDiff::Created if after.size == 0 => Some("新增空文件".to_string()),
         NetDiff::Deleted if before.size == 0 => Some("删除空文件".to_string()),
         NetDiff::TypeChanged => Some("文件类型发生了变化（文件 ↔ 目录）".to_string()),
-        _ if additions == 0 && deletions == 0 => Some(
-            if before.redacted || after.redacted {
-                "敏感内容已变化，差异已隐藏".to_string()
-            } else {
-                "内容已变化，但没有逐行差异".to_string()
-            },
-        ),
+        _ if additions == 0 && deletions == 0 => Some(if before.redacted || after.redacted {
+            "敏感内容已变化，差异已隐藏".to_string()
+        } else {
+            "内容已变化，但没有逐行差异".to_string()
+        }),
         _ => None,
     }
 }
@@ -1233,11 +1231,8 @@ impl ChangeRegistry {
         let baseline = first.before.clone();
         let final_state = last.actual.clone();
         let tries = executed.len();
-        let tries_note = (tries > 1).then(|| {
-            format!(
-                "本轮共 {tries} 次修改：对比首次操作前与最后一次验证后"
-            )
-        });
+        let tries_note =
+            (tries > 1).then(|| format!("本轮共 {tries} 次修改：对比首次操作前与最后一次验证后"));
 
         let mut net = last.clone();
         net.id = net_id;
@@ -1289,7 +1284,8 @@ impl ChangeRegistry {
                 net.status = "unavailable".to_string();
                 net.additions = 0;
                 net.deletions = 0;
-                net.reason = Some("缺少可信指纹：只确认了文件存在，无法判断内容是否变化".to_string());
+                net.reason =
+                    Some("缺少可信指纹：只确认了文件存在，无法判断内容是否变化".to_string());
                 return (net, NetVerdict::Unconfirmed);
             }
             _ => {}
@@ -1873,7 +1869,13 @@ mod tests {
     #[test]
     fn net_change_hides_untouched_and_failed_writes() {
         let registry = ChangeRegistry::default();
-        apply(&registry, "c1", snap("same\n"), Some(snap("same\n")), "unchanged");
+        apply(
+            &registry,
+            "c1",
+            snap("same\n"),
+            Some(snap("same\n")),
+            "unchanged",
+        );
         apply(
             &registry,
             "c2",

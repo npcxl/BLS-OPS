@@ -30,6 +30,7 @@ import {
   batchTone,
   buildChangeTree,
   canOpenInRemote,
+  backendChangeText,
   changeReasonLabel,
   changeStatusLabel,
   countInDir,
@@ -998,6 +999,7 @@ function FileChangeHeader({
   const additions = detail?.summary.additions ?? change.additions;
   const deletions = detail?.summary.deletions ?? change.deletions;
   const reason = detail?.summary.reason ?? change.reason ?? null;
+  const reasonText = reason ? backendChangeText(reason, t) : null;
   /** 只有真的能画 `+N / -N` 时才占位置；0 行改成一句状态文字。 */
   const hasCounts = additions > 0 || deletions > 0;
   const [copied, setCopied] = useState(false);
@@ -1056,9 +1058,9 @@ function FileChangeHeader({
         ) : (
           <span
             className="min-w-0 truncate text-10 text-fg-subtle"
-            title={reason ?? changeReasonLabel(change, t)}
+            title={reasonText ?? changeReasonLabel(change, t)}
           >
-            {reason ?? changeReasonLabel(change, t)}
+            {reasonText ?? changeReasonLabel(change, t)}
           </span>
         )}
         <span className="flex-1" />
@@ -1158,7 +1160,7 @@ function FileChangeBody({
     <ul className="mx-2 mb-1.5 space-y-0.5 rounded-md bg-surface-2/50 px-2 py-1 text-10 text-fg-subtle">
       {detail.limits.map((item) => (
         <li key={item} className="break-words">
-          {item}
+          {backendChangeText(item, t)}
         </li>
       ))}
     </ul>
@@ -1172,7 +1174,7 @@ function FileChangeBody({
         {limits}
         <p className="px-3 py-1.5 text-11 text-fg-subtle">
           {reason
-            ? t(reason)
+            ? backendChangeText(reason, t)
             : detail.diff.tooLarge
               ? t("文件过大：没有逐行比较，改动的规模见上方状态。")
               : detail.summary.status === "unchanged"

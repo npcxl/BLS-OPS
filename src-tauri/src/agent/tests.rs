@@ -1,13 +1,19 @@
 use serde_json::json;
 
 use super::protocol::{
-    looks_like_tool_call, parse_tool_calls, redact, strip_tool_calls, tail_truncate, ToolRisk,
-    MODEL_OUTPUT_LIMIT,
+    looks_like_tool_call, parse_tool_calls, redact, strip_tool_calls, tail_truncate, Lang,
+    StepCategory, ToolRisk, MODEL_OUTPUT_LIMIT,
 };
 use super::tools::{
-    absolute_path, classify_shell, describe_impact, has_sudo, plan_tool, plan_write_backup,
-    shell_may_write, shell_write_targets, strip_markers, BACKUP_MARKER, PWD_MARKER,
+    absolute_path, classify_shell, describe_impact, describe_impact_lang, has_sudo, plan_tool,
+    plan_tool_for_locale, plan_write_backup, shell_may_write, shell_write_targets, strip_markers,
+    BackupPolicy, BACKUP_MARKER, PWD_MARKER,
 };
+
+fn has_chinese(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ('\u{4e00}'..='\u{9fa5}').contains(&ch))
+}
 
 /// 模型不按我们的 `<tool>` 写、而用它自己的调用标记时，也必须识别出来。
 ///
@@ -158,7 +164,6 @@ fn interpreter_escapes_are_never_treated_as_read() {
     for command in [
         "awk 'BEGIN{system(\"rm -rf /tmp/x\")}'",
         "ls $(rm -rf /tmp/x)",
-        "cat `id`",
         "find . -name '*.log' -exec rm {} \\;",
         "grep root /etc/passwd | sh",
         "eval 'systemctl stop nginx'",
@@ -166,6 +171,18 @@ fn interpreter_escapes_are_never_treated_as_read() {
         assert!(
             classify_shell(command) != ToolRisk::Read,
             "这条命令不能自动执行：{command}"
+        );
+    }
+    /*
+     * 命令替换**逐层检查真正执行的命令**（用户裁决 2026-11-25）：
+     * 里面是纯只读就放行 —— `` cat `id` `` 只打印 `id` 的输出，什么都没改；
+     * 以前一律按"执行了任意命令"拦下，等于让用户为一次彻底只读的查询点确认。
+     */
+    for command in ["cat `id`", "echo \"$(sha256sum /x)\"", "cat <(docker ps)"] {
+        assert_eq!(
+            classify_shell(command),
+            ToolRisk::Read,
+            "纯只读的替换不该被拦：{command}"
         );
     }
     // 正常的只读查询不受影响。
@@ -526,6 +543,57 @@ fn real_redirections_and_unbalanced_quotes_need_approval() {
     }
     // 引号没闭合 = 解析不确定：宁可多问一次，也不能放行。
     assert!(classify_shell("grep 'error /var/log/app.log").needs_approval());
+}
+
+/// 英文界面下，确认卡上的摘要 / 影响必须是英文：这些字符串由后端
+/// 直接序列化给界面，前端 `t()` 查不到就会原样显示中文。
+#[test]
+fn english_locale_plans_have_english_summary_and_impact() {
+    let planned = plan_tool_for_locale(
+        "run_shell",
+        &json!({ "command": "systemctl restart nginx" }),
+        "/root",
+        1,
+        &BackupPolicy::default(),
+        Lang::En,
+    )
+    .expect("plan");
+    let summary = planned.summary.expect("summary");
+    assert_eq!(summary, "Restart service nginx");
+    assert!(!has_chinese(&summary));
+
+    let impact = describe_impact_lang(
+        "unzip -o dist.zip -d /var/www && systemctl restart nginx",
+        ToolRisk::Write,
+        Lang::En,
+    )
+    .expect("impact");
+    assert!(impact.to_ascii_lowercase().contains("extract"));
+    assert!(!has_chinese(&impact));
+
+    let write = plan_tool_for_locale(
+        "write_file",
+        &json!({ "path": "/etc/nginx/conf.d/site.conf", "content": "x" }),
+        "/root",
+        1,
+        &BackupPolicy::default(),
+        Lang::En,
+    )
+    .expect("write plan");
+    assert!(!has_chinese(&write.summary.unwrap_or_default()));
+    assert!(!has_chinese(&write.impact.unwrap_or_default()));
+    assert!(!has_chinese(&write.display));
+}
+
+/// 英文界面的工具清单不能夹中文描述：模型会顺着描述的语言写计划与解释。
+#[test]
+fn english_tool_schemas_are_fully_english() {
+    let schemas = super::tools::tool_schemas_lang(true, Lang::En);
+    let text = schemas.to_string();
+    assert!(!has_chinese(&text), "{text}");
+    assert!(text.contains("Submit or update this turn's execution plan"));
+    let zh = super::tools::tool_schemas_lang(true, Lang::Zh).to_string();
+    assert!(has_chinese(&zh));
 }
 
 #[test]
@@ -1050,6 +1118,49 @@ mod budget_tests {
         );
         assert!(report.before_tokens >= report.after_tokens);
     }
+
+    /// L1 同时瘦身旧的文本协议 `<tool_result>` 与历史 `操作记录（` 块，避免多轮历史撑爆上下文。
+    #[test]
+    fn l1_slims_old_text_tool_results_and_historical_session_facts() {
+        let long_fact = format!("操作记录（成功）：nginx -T\n标准输出：\n{}", long_tool_result(60));
+        let long_xml = format!("<tool_result name=\"run_shell\" exit=\"0\">\n{}\n</tool_result>", long_tool_result(60));
+        let mut messages = vec![
+            json!({"role": "system", "content": "系统提示"}),
+            json!({"role": "user", "content": "第一轮"}),
+            json!({"role": "assistant", "content": long_fact}),
+            json!({"role": "user", "content": long_xml}),
+            json!({"role": "assistant", "content": "中间总结"}),
+            json!({"role": "user", "content": "第二轮"}),
+            json!({"role": "assistant", "content": "第二轮回复"}),
+            json!({"role": "user", "content": "第三轮"}),
+            json!({"role": "assistant", "content": "第三轮回复"}),
+            json!({"role": "user", "content": "最新问题"}),
+        ];
+        let before: usize = messages.iter().map(estimate_tokens).sum();
+        let report = prune_conversation(&mut messages, before - 50);
+        assert_eq!(report.slimmed, 2);
+        assert!(messages[2]["content"].as_str().unwrap().contains("省略"));
+        assert!(messages[3]["content"].as_str().unwrap().contains("省略"));
+    }
+
+    /// L2 折叠连续单元时使用递增段号（第1-1段、第2-2段…），不再重复写死第2-2段。
+    #[test]
+    fn l2_fold_uses_sequential_segment_numbers() {
+        let long_a = long_tool_result(40);
+        let long_b = long_tool_result(40);
+        let mut messages = vec![
+            json!({"role": "system", "content": "系统提示"}),
+            json!({"role": "user", "content": format!("第一轮需求\n{long_a}")}),
+            json!({"role": "assistant", "content": format!("第一轮分析\n{long_b}")}),
+            json!({"role": "user", "content": "最新问题"}),
+            json!({"role": "assistant", "content": "最新回复"}),
+        ];
+        let report = prune_conversation(&mut messages, 300);
+        assert!(report.folded >= 2);
+        let system = messages[0]["content"].as_str().unwrap_or("");
+        assert!(system.contains("第1-1段"), "{system}");
+        assert!(system.contains("第2-2段"), "{system}");
+    }
 }
 
 /*
@@ -1146,6 +1257,87 @@ mod thinking_tests {
 }
 
 /*
+ * 用户可见表达只维护**一份**：工具协议说"怎么做"，表达规则说"哪些内容
+ * 进对话"。这里锁住收敛结果，防止要求又散回多个提示词里互相打架。
+ */
+mod expression_tests {
+    use super::super::protocol::{
+        intent_guidance, preamble_guidance, preamble_text, tool_prompt, Lang, StepCategory,
+    };
+
+    #[test]
+    fn expression_rules_keep_internal_mechanics_out_of_the_reply() {
+        let zh = preamble_guidance(Lang::Zh);
+        assert!(zh.contains("用户表达规则"), "要有唯一的一份表达规则");
+        for needle in ["intent", "taskId", "计划登记", "平台识别错了"] {
+            assert!(
+                zh.contains(needle),
+                "内部机制默认不进对话，规则里要明确点名：{needle}"
+            );
+        }
+        assert!(zh.contains("尚不能确认"), "结果未知时必须如实写不确定");
+        // 权限与风险披露不能被"简洁"吞掉。
+        assert!(zh.contains("影响与确认"));
+    }
+
+    #[test]
+    fn internal_correction_rules_are_not_repeated_in_scope_guidance() {
+        let zh = intent_guidance(Lang::Zh);
+        assert!(
+            !zh.contains("平台识别错了"),
+            "内部纠错不播报只写在表达规则里，不要两处重复"
+        );
+        // 范围约束本身仍然保留。
+        assert!(zh.contains("只查询"));
+        assert!(zh.contains("用途不明确"));
+    }
+
+    #[test]
+    fn tool_protocol_does_not_demand_a_sentence_per_failure() {
+        let zh = tool_prompt(Lang::Zh);
+        assert!(
+            !zh.contains("先用一句话说明你判断到的原因"),
+            "失败时是否说明、说多少由表达规则决定，工具协议不再强制逐条播报"
+        );
+        assert!(zh.contains("用户表达规则"), "失败叙事要指回唯一来源");
+        assert!(
+            !zh.contains("下一步建议。") || zh.contains("确实还有需要用户做的下一步"),
+            "收尾不再固定附加下一步建议"
+        );
+    }
+
+    #[test]
+    fn preamble_fallback_does_not_repeat_a_template_tail() {
+        let text = preamble_text(Lang::Zh, None, "run_shell", None, "docker ps");
+        assert_eq!(text, "先执行 docker ps");
+        assert!(!text.contains("确认结果后再继续"), "不要模板化的固定尾巴");
+        assert_eq!(
+            preamble_text(Lang::Zh, None, "read_file", Some("/etc/nginx/nginx.conf"), ""),
+            "先读取 /etc/nginx/nginx.conf"
+        );
+    }
+
+    /// 历史 / 快照恢复要靠它把类别带回来；认不出时必须保守放弃，不能猜。
+    #[test]
+    fn step_category_round_trips_from_history() {
+        assert_eq!(
+            StepCategory::from_code("internal"),
+            Some(StepCategory::Internal)
+        );
+        assert_eq!(
+            StepCategory::from_code(" DENIED "),
+            Some(StepCategory::Denied)
+        );
+        assert_eq!(
+            StepCategory::from_code("executed"),
+            Some(StepCategory::Executed)
+        );
+        assert_eq!(StepCategory::from_code(""), None);
+        assert_eq!(StepCategory::from_code("bogus"), None);
+    }
+}
+
+/*
  * 多轮循环本身：用假 IO 驱动，不碰真 SSH / 真模型。
  *
  * 这里验证的是"循环行为"——拒绝后绝不执行、确认前服务器无变化、取消停在当前
@@ -1161,7 +1353,7 @@ mod loop_tests {
 
     use super::super::protocol::{AgentEvent, Lang};
     use super::super::runner::{
-        evaluate_outcome, is_query_only, run_loop, AgentIo, IoFuture, StopReason,
+        evaluate_outcome, is_query_only, run_loop, AgentIo, AgentServerRef, IoFuture, StopReason,
     };
     use super::super::state::{AgentHandle, AgentSnapshot};
     use super::*;
@@ -1199,12 +1391,14 @@ mod loop_tests {
             backup_before_delete: true,
             backup_retention_days: 30,
             mcp_tools: Vec::new(),
+            servers: Vec::new(),
             enabled_builtins: None,
             db: None,
             plan_required: false,
             carry_plan: None,
             max_rounds,
             carry_steps: Vec::new(),
+            child_run: false,
         }
     }
 
@@ -1331,6 +1525,27 @@ mod loop_tests {
                 if let Ok(mut list) = self.executed.lock() {
                     list.push(command.to_string());
                 }
+                /*
+                 * `io:<片段>`：模拟 SSH 传输层中断（**没有退出码**），
+                 * 用来验证"结果不确定的写操作不能自动重放"。
+                 */
+                let disconnected = self
+                    .failures
+                    .lock()
+                    .ok()
+                    .and_then(|mut list| {
+                        list.iter()
+                            .position(|needle| {
+                                needle
+                                    .strip_prefix("io:")
+                                    .is_some_and(|inner| command.contains(inner))
+                            })
+                            .map(|at| list.remove(at))
+                    })
+                    .is_some();
+                if disconnected {
+                    return Err("SSH 连接中断".to_string());
+                }
                 let failed = self
                     .failures
                     .lock()
@@ -1414,6 +1629,553 @@ mod loop_tests {
                 }
             })
         }
+    }
+
+    fn parallel_input() -> AgentInput {
+        static TEST_SERVER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let mut input = loop_input(None);
+        input.server_id = Some(format!("test-server-{}", TEST_SERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        input
+    }
+
+    struct ParallelIo { base: FakeIo, barrier: tokio::sync::Barrier, dependent: bool, use_mcp: bool, mcp_calls: Mutex<Vec<String>> }
+    impl AgentIo for ParallelIo {
+        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
+        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
+        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> {
+            Box::pin(async move {
+                tokio::time::timeout(Duration::from_secs(3), self.barrier.wait()).await.map_err(|_| "child operations did not overlap".to_string())?;
+                self.base.exec(id, command, timeout, sink).await
+            })
+        }
+        fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+            Box::pin(async move { self.mcp_calls.lock().unwrap().push(binding.tool.clone()); Ok("mock evidence".into()) })
+        }
+        fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            Box::pin(async move {
+                let text = serde_json::to_string(&messages).unwrap();
+                let has_result = text.contains("<tool_result");
+                let child = text.contains("Assigned read-only investigation:");
+                let content = if self.use_mcp && child {
+                    if has_result { "checked with MCP" } else { r#"<tool name="mcp__selected__inspect">{}</tool>"# }
+                } else if text.contains("Assigned read-only investigation: check disk") {
+                    if has_result { "disk checked" } else { r#"<tool name="run_shell">{"command":"df -h"}</tool>"# }
+                } else if text.contains("Assigned read-only investigation: check memory") {
+                    if has_result { "memory checked" } else { r#"<tool name="run_shell">{"command":"free -h"}</tool>"# }
+                } else if has_result { "checks finished" } else if self.dependent {
+                    r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory","depends_on":["disk"]}]}</tool>"#
+                } else {
+                    r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"disk","goal":"check disk"},{"title":"memory","goal":"check memory"}]}</tool>"#
+                };
+                Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_children_are_separate_read_only_runs() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let result = run_loop(&handle, &parallel_input(), &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        let commands = io.base.executed();
+        assert!(commands.iter().any(|c| c.contains("df -h")), "{commands:?}");
+        assert!(commands.iter().any(|c| c.contains("free -h")), "{commands:?}");
+        let children: Vec<_> = handle.snapshot().steps.into_iter().filter(|s| s.tool == "child_agent").collect();
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|s| s.state == "success"), "{children:?}");
+        assert!(children.iter().all(|s| s.child_usage.as_ref().is_some_and(|usage| usage.requests >= 2)), "child usage should be retained: {children:?}");
+    }
+
+    #[tokio::test]
+    async fn selected_read_only_mcp_is_available_to_child_agents() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: true, mcp_calls: Mutex::new(Vec::new()) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.mcp_tools = vec![crate::mcp::McpBinding {
+            exposed_name: "mcp__selected__inspect".into(), server_id: "selected".into(), server_name: "selected".into(),
+            tool: "inspect".into(), description: "read-only inspection".into(), input_schema: json!({"type":"object"}),
+            read_only: true, config: crate::mcp::McpServerConfig::default(),
+        }];
+        assert!(run_loop(&handle, &input, &io, None).await.is_ok());
+        assert_eq!(io.mcp_calls.lock().unwrap().len(), 2);
+        assert!(handle.snapshot().steps.iter().filter(|s| s.tool == "child_agent").all(|s| s.state == "success"));
+    }
+
+    #[tokio::test]
+    async fn child_agents_cannot_invoke_write_mcp_even_in_full_mode() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: true, mcp_calls: Mutex::new(Vec::new()) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.permission_mode = crate::agent::PermissionMode::Full;
+        input.auto_approve_writes = true;
+        input.mcp_tools = vec![crate::mcp::McpBinding {
+            exposed_name: "mcp__selected__inspect".into(), server_id: "selected".into(), server_name: "selected".into(),
+            tool: "inspect".into(), description: "write operation".into(), input_schema: json!({"type":"object"}),
+            read_only: false, config: crate::mcp::McpServerConfig::default(),
+        }];
+        let _ = run_loop(&handle, &input, &io, None).await;
+        assert!(io.mcp_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn child_dependencies_wait_and_failure_blocks_dependents() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(1), dependent: true, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.carry_steps.push(crate::agent::AgentStep {
+            tool: "child_agent".into(),
+            state: "success".into(),
+            child_id: Some("disk".into()),
+            child_goal: Some("check disk".into()),
+            server_id: input.server_id.clone(),
+            stdout: "historical disk report".into(),
+            stale: true,
+            ..Default::default()
+        });
+        assert!(run_loop(&handle, &input, &io, None).await.is_ok());
+        let commands = io.base.executed();
+        let disk = commands.iter().position(|c| c.contains("df -h")).unwrap();
+        let memory = commands.iter().position(|c| c.contains("free -h")).unwrap();
+        assert!(disk < memory);
+
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(1), dependent: true, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        io.base.failures.lock().unwrap().push("df -h".into());
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let _ = run_loop(&handle, &parallel_input(), &io, None).await;
+        assert!(!io.base.executed().iter().any(|c| c.contains("free -h")));
+        assert!(handle.snapshot().steps.iter().any(|s| s.tool == "child_agent" && s.state == "skipped"));
+    }
+
+    #[tokio::test]
+    async fn parallel_child_failure_is_not_reported_as_success() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        io.base.failures.lock().unwrap().push("free -h".to_string());
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let _ = run_loop(&handle, &parallel_input(), &io, None).await;
+        let snapshot = handle.snapshot();
+        let aggregate = snapshot.steps.iter().find(|s| s.tool == "parallel_readonly_agents").unwrap();
+        assert_eq!(aggregate.state, "failed");
+        let children: Vec<_> = snapshot.steps.iter().filter(|s| s.tool == "child_agent").collect();
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().any(|s| s.state == "failed"));
+        assert!(children.iter().any(|s| s.state == "success"));
+    }
+
+    #[tokio::test]
+    async fn cancelling_parent_propagates_to_running_children() {
+        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(3), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let cancel = AiCancel::new();
+        let handle = AgentHandle::new(loop_snapshot(), cancel.clone());
+        let input = parallel_input();
+        let (result, _) = tokio::join!(run_loop(&handle, &input, &io, None), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel.cancel();
+        });
+        assert!(matches!(result, Err(StopReason::Cancelled(_))));
+        assert!(io.base.executed().is_empty());
+        assert!(handle.snapshot().steps.iter().filter(|s| s.tool == "child_agent").all(|s| s.state == "skipped"));
+    }
+
+    struct McpIo { base: FakeIo, calls: Mutex<Vec<String>>, fail: bool }
+    impl McpIo {
+        fn new(replies: &[&str], fail: bool) -> Self {
+            Self { base: FakeIo::new(replies), calls: Mutex::new(Vec::new()), fail }
+        }
+    }
+    impl AgentIo for McpIo {
+        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
+        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
+        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
+        fn chat<'a>(&'a self, messages: Vec<Value>, tools: Value, cancel: &'a AiCancel, delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> { self.base.chat(messages, tools, cancel, delta) }
+        fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(binding.tool.clone());
+                if self.fail {
+                    Err("transport closed while calling tools/call".to_string())
+                } else {
+                    Ok("mock mcp output".to_string())
+                }
+            })
+        }
+    }
+
+    fn mcp_binding(tool: &str, read_only: bool) -> crate::mcp::McpBinding {
+        crate::mcp::McpBinding {
+            exposed_name: format!("mcp__selected__{tool}"),
+            server_id: "selected".into(),
+            server_name: "demo".into(),
+            tool: tool.into(),
+            description: "".into(),
+            input_schema: json!({"type":"object"}),
+            read_only,
+            config: crate::mcp::McpServerConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_mcp_tool_asks_even_under_full_permissions() {
+        let call = r#"<tool name="mcp__selected__write_file">{"path":"/tmp/x","content":"a"}</tool>"#;
+        // 写后要求一次只读验证，再收尾（与现有写操作流程一致）。
+        let io = McpIo::new(&[call, r#"<tool name="run_shell">{"command":"cat /tmp/x"}</tool>"#, "done"], false);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        let mut input = loop_input(None);
+        input.permission_mode = crate::agent::PermissionMode::Full;
+        input.auto_approve_writes = true;
+        input.mcp_tools = vec![mcp_binding("write_file", false)];
+        decide_later(handle.clone(), "call-0-0", true);
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(io.base.kinds().contains(&"approval_required".to_string()), "MCP writes must still be confirmed under full permissions");
+        assert_eq!(io.calls.lock().unwrap().len(), 1);
+        assert_eq!(handle.snapshot().steps[0].state, "success");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_effect_mcp_tool_is_not_executed_without_confirmation() {
+        // readOnlyHint=true，但工具名是 delete_*：只能按"影响未知"处理。
+        let call = r#"<tool name="mcp__selected__delete_file">{"path":"/tmp/x"}</tool>"#;
+        let io = McpIo::new(&[call, "skipped"], false);
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        let mut input = loop_input(None);
+        input.permission_mode = crate::agent::PermissionMode::Full;
+        input.auto_approve_writes = true;
+        input.mcp_tools = vec![mcp_binding("delete_file", true)];
+        cancel_later(handle.clone());
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(matches!(result, Err(StopReason::Cancelled(_))), "{result:?}");
+        assert!(io.base.kinds().contains(&"approval_required".to_string()));
+        assert!(io.calls.lock().unwrap().is_empty(), "unknown effect must not run without an explicit decision");
+    }
+
+    #[tokio::test]
+    async fn a_real_mcp_transport_error_is_not_reported_as_a_permission_error() {
+        let call = r#"<tool name="mcp__selected__inspect">{}</tool>"#;
+        let io = McpIo::new(&[call, "failed"], true);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = loop_input(None);
+        input.mcp_tools = vec![mcp_binding("inspect", true)];
+        let _ = run_loop(&handle, &input, &io, None).await;
+        let step = &handle.snapshot().steps[0];
+        assert_eq!(step.state, "failed");
+        assert!(step.stderr.contains("MCP 调用失败"), "{}", step.stderr);
+        assert_eq!(step.blocked, None, "transport failures are not permission denials");
+        assert_eq!(step.category, Some(StepCategory::Executed));
+        assert!(!io.base.kinds().contains(&"approval_required".to_string()));
+    }
+
+    #[tokio::test]
+    async fn child_agents_cannot_create_more_child_agents() {
+        let io = FakeIo::new(&[
+            r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"a","goal":"x"},{"title":"b","goal":"y"}]}</tool>"#,
+            "no delegation",
+        ]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.child_run = true;
+        input.permission_mode = crate::agent::PermissionMode::ReadOnly;
+        let _ = run_loop(&handle, &input, &io, None).await;
+        let steps = handle.snapshot().steps;
+        assert!(steps.iter().all(|step| step.tool != "child_agent"));
+        let returned = serde_json::to_string(&io.last_messages()).unwrap();
+        assert!(returned.contains("cannot create child agents"), "{returned}");
+    }
+
+    #[tokio::test]
+    async fn child_read_only_scope_blocks_writes_without_user_prompt() {
+        let io = FakeIo::new(&[r#"<tool name="run_shell">{"command":"rm -rf /tmp/demo"}</tool>"#, "无法进行写入"]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.child_run = true;
+        input.permission_mode = crate::agent::PermissionMode::ReadOnly;
+        input.auto_approve_writes = false;
+        let _ = run_loop(&handle, &input, &io, None).await;
+        assert!(io.executed().is_empty());
+        assert!(!io.kinds().contains(&"approval_required".to_string()));
+        // 被拦下的写操作要作为请求回到主 Agent，不能静默少做一步。
+        let returned = serde_json::to_string(&io.last_messages()).unwrap();
+        assert!(returned.contains("WRITE_REQUEST"), "{returned}");
+    }
+
+    /// 跨服务器子任务：每条子任务带着自己的 sessionId 执行，命令不串台。
+    struct MultiServerIo {
+        base: FakeIo,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+        seen: Mutex<Vec<(String, String)>>,
+        disconnected: Vec<String>,
+    }
+
+    impl MultiServerIo {
+        fn new(disconnected: Vec<String>, parallel: bool) -> Self {
+            Self {
+                base: FakeIo::new(&[]),
+                barrier: std::sync::Arc::new(tokio::sync::Barrier::new(if parallel { 2 } else { 1 })),
+                seen: Mutex::new(Vec::new()),
+                disconnected,
+            }
+        }
+    }
+
+    impl AgentIo for MultiServerIo {
+        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+            Box::pin(async move { !self.disconnected.iter().any(|closed| closed == id) })
+        }
+        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+            self.base.verify_server(id, server)
+        }
+        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> {
+            Box::pin(async move {
+                self.seen.lock().unwrap().push((id.to_string(), command.to_string()));
+                tokio::time::timeout(Duration::from_secs(3), self.barrier.wait())
+                    .await
+                    .map_err(|_| "child operations did not overlap".to_string())?;
+                self.base.exec(id, command, timeout, sink).await
+            })
+        }
+        fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            Box::pin(async move {
+                let text = serde_json::to_string(&messages).unwrap();
+                let has_result = text.contains("<tool_result");
+                let child = text.contains("Assigned read-only investigation:");
+                let content = if child {
+                    if has_result {
+                        "checked"
+                    } else if text.contains("check disk") {
+                        r#"<tool name="run_shell">{"command":"df -h"}</tool>"#
+                    } else {
+                        r#"<tool name="run_shell">{"command":"free -h"}</tool>"#
+                    }
+                } else if has_result {
+                    "all checked"
+                } else {
+                    r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory","server":"srv-b"}]}</tool>"#
+                };
+                Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+            })
+        }
+    }
+
+    fn multi_server_input() -> AgentInput {
+        let mut input = parallel_input();
+        input.session_id = "ssh-a".to_string();
+        input.server = "prod".to_string();
+        input.server_id = Some("srv-a".to_string());
+        input.servers = vec![
+            AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
+            AgentServerRef { server_id: "srv-b".into(), server_name: "test".into(), session_id: "ssh-b".into() },
+        ];
+        input
+    }
+
+    #[tokio::test]
+    async fn children_on_different_servers_keep_their_sessions_apart() {
+        let io = MultiServerIo::new(Vec::new(), true);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let input = multi_server_input();
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        let seen = io.seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|(session, command)| session == "ssh-a" && command.contains("df -h")), "{seen:?}");
+        assert!(seen.iter().any(|(session, command)| session == "ssh-b" && command.contains("free -h")), "{seen:?}");
+        // 不同服务器各跑各的，没有把命令发到另一条会话。
+        assert_eq!(seen.iter().filter(|(_, command)| command.contains("df -h")).count(), 1);
+        assert_eq!(seen.iter().filter(|(_, command)| command.contains("free -h")).count(), 1);
+        let steps = handle.snapshot().steps;
+        let memory = steps.iter().find(|step| step.tool == "child_agent" && step.child_id.as_deref() == Some("memory")).unwrap();
+        assert_eq!(memory.server.as_deref(), Some("test"));
+        assert_eq!(memory.server_id.as_deref(), Some("srv-b"));
+        assert_eq!(memory.state, "success");
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_target_only_fails_its_own_child() {
+        let io = MultiServerIo::new(vec!["ssh-b".to_string()], false);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let input = multi_server_input();
+        let _ = run_loop(&handle, &input, &io, None).await;
+        let seen = io.seen.lock().unwrap().clone();
+        assert!(seen.iter().all(|(session, _)| session == "ssh-a"), "{seen:?}");
+        let steps = handle.snapshot().steps;
+        let disk = steps.iter().find(|step| step.child_id.as_deref() == Some("disk")).unwrap();
+        let memory = steps.iter().find(|step| step.child_id.as_deref() == Some("memory")).unwrap();
+        assert_eq!(disk.state, "success");
+        assert_eq!(memory.state, "failed");
+        assert_eq!(memory.blocked.as_deref(), Some("server_disconnected"));
+        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
+        assert_eq!(aggregate.state, "failed", "parent must not report success when one target failed");
+    }
+
+    #[tokio::test]
+    async fn a_child_timeout_is_reported_as_unverified_and_the_parent_fails() {
+        struct SlowChildIo { base: FakeIo }
+        impl AgentIo for SlowChildIo {
+            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
+            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
+            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+                Box::pin(async move {
+                    let text = serde_json::to_string(&messages).unwrap();
+                    if text.contains("Assigned read-only investigation:") {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        return Ok(ToolReply { message: json!({"role":"assistant","content":"late"}), content: "late".into(), tool_calls: Vec::new() });
+                    }
+                    if text.contains("<tool_result") {
+                        return Ok(ToolReply { message: json!({"role":"assistant","content":"done"}), content: "done".into(), tool_calls: Vec::new() });
+                    }
+                    let content = r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"a","goal":"x"},{"title":"b","goal":"y"}]}</tool>"#;
+                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                })
+            }
+        }
+        let io = SlowChildIo { base: FakeIo::new(&[]) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let input = parallel_input();
+        let _ = run_loop(&handle, &input, &io, None).await;
+        let steps = handle.snapshot().steps;
+        let children: Vec<_> = steps.iter().filter(|step| step.tool == "child_agent").collect();
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|step| step.state == "failed"), "{children:?}");
+        assert!(children.iter().all(|step| step.stderr.contains("timed out")), "{children:?}");
+        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
+        assert_eq!(aggregate.state, "failed");
+    }
+
+    #[tokio::test]
+    async fn same_server_child_slots_are_limited_to_three() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CURRENT: AtomicUsize = AtomicUsize::new(0);
+        static MAX: AtomicUsize = AtomicUsize::new(0);
+        let key = format!("limit-server-{}", crate::db::AppDb::now());
+        let mut jobs = Vec::new();
+        for _ in 0..4 {
+            let key = key.clone();
+            jobs.push(tokio::spawn(async move {
+                let permit = super::super::runner::child_slot(&key).await;
+                let now = CURRENT.fetch_add(1, Ordering::SeqCst) + 1;
+                MAX.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                CURRENT.fetch_sub(1, Ordering::SeqCst);
+                drop(permit);
+            }));
+        }
+        futures_util::future::join_all(jobs).await;
+        assert_eq!(MAX.load(Ordering::SeqCst), 3, "same server must cap concurrent child runs");
+    }
+
+    #[tokio::test]
+    async fn a_completed_child_from_the_previous_run_is_reused_but_marked_stale() {
+        struct CachedIo { base: FakeIo }
+        impl AgentIo for CachedIo {
+            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
+            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
+            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+                Box::pin(async move {
+                    let text = serde_json::to_string(&messages).unwrap();
+                    let has_result = text.contains("<tool_result");
+                    let child = text.contains("Assigned read-only investigation:");
+                    let content = if child {
+                        if has_result { "checked" }
+                        else if text.contains("check memory") { r#"<tool name="run_shell">{"command":"free -h"}</tool>"# }
+                        else { r#"<tool name="run_shell">{"command":"df -h"}</tool>"# }
+                    } else if has_result {
+                        "all checked"
+                    } else {
+                        r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory"}]}</tool>"#
+                    };
+                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                })
+            }
+        }
+        let io = CachedIo { base: FakeIo::new(&[]) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.carry_steps = vec![crate::agent::AgentStep {
+            index: 0,
+            tool: "child_agent".into(),
+            group_id: Some("children-0".into()),
+            state: "success".into(),
+            child_id: Some("disk".into()),
+            child_goal: Some("check disk".into()),
+            server_id: input.server_id.clone(),
+            stdout: "disk: previous df output".into(),
+            stale: true,
+            ..Default::default()
+        }];
+        assert!(run_loop(&handle, &input, &io, None).await.is_ok());
+        let executed = io.base.executed();
+        assert!(!executed.iter().any(|command| command.contains("df -h")), "cached child must not re-run: {executed:?}");
+        assert!(executed.iter().any(|command| command.contains("free -h")));
+        let steps = handle.snapshot().steps;
+        let disk = steps.iter().find(|step| step.child_id.as_deref() == Some("disk")).unwrap();
+        assert_eq!(disk.state, "success");
+        assert!(disk.stale, "reused result must stay marked for re-verification");
+        assert!(disk.stdout.contains("previous df output"));
+        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
+        assert!(aggregate.stale, "the parent report must carry the stale marker");
+    }
+
+    #[tokio::test]
+    async fn child_mcp_with_unknown_effect_is_not_called_and_returns_a_request() {
+        struct UnknownMcpIo { base: FakeIo, calls: Mutex<usize> }
+        impl AgentIo for UnknownMcpIo {
+            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
+            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
+            fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+                Box::pin(async move {
+                    *self.calls.lock().unwrap() += 1;
+                    Ok(format!("called {}", binding.tool))
+                })
+            }
+            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+                Box::pin(async move {
+                    let text = serde_json::to_string(&messages).unwrap();
+                    let has_result = text.contains("<tool_result");
+                    let child = text.contains("Assigned read-only investigation:");
+                    let content = if child {
+                        if has_result { "attempted" } else { r#"<tool name="mcp__selected__delete_file">{}</tool>"# }
+                    } else if has_result {
+                        "all checked"
+                    } else {
+                        r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"a","goal":"check disk"},{"title":"b","goal":"check memory"}]}</tool>"#
+                    };
+                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                })
+            }
+        }
+        let io = UnknownMcpIo { base: FakeIo::new(&[]), calls: Mutex::new(0) };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.mcp_tools = vec![crate::mcp::McpBinding {
+            exposed_name: "mcp__selected__delete_file".into(), server_id: "selected".into(), server_name: "selected".into(),
+            tool: "delete_file".into(), description: "delete a file".into(), input_schema: json!({"type":"object"}),
+            read_only: true, config: crate::mcp::McpServerConfig::default(),
+        }];
+        let _ = run_loop(&handle, &input, &io, None).await;
+        assert_eq!(*io.calls.lock().unwrap(), 0, "unknown-effect MCP tool must not run in a child");
+        // 子任务不弹审批：否则多个子任务同时等待时无法可靠路由。
+        assert!(!io.base.kinds().contains(&"approval_required".to_string()));
+        let steps = handle.snapshot().steps;
+        let children: Vec<_> = steps.iter().filter(|step| step.tool == "child_agent").collect();
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().all(|step| step.state == "failed"));
+        assert!(
+            children.iter().any(|step| step.stderr.contains("WRITE_REQUEST")),
+            "blocked MCP calls must be returned to the parent as requests: {children:?}"
+        );
     }
 
     /// 等循环挂起后表态（循环先登记再发事件，所以轮询是稳妥的握手方式）。
@@ -1538,6 +2300,8 @@ mod loop_tests {
         );
         let steps = handle.snapshot().steps;
         assert_eq!(steps[0].state, "failed");
+        // 被权限拦下：可见，但不是"执行失败"。
+        assert_eq!(steps[0].category, Some(StepCategory::Denied));
         assert!(
             steps[0].stderr.contains("只读"),
             "失败原因要说清：{}",
@@ -1557,6 +2321,9 @@ mod loop_tests {
         assert!(io.executed().is_empty(), "用户拒绝后绝不执行");
         let steps = handle.snapshot().steps;
         assert_eq!(steps[0].state, "failed");
+        // 用户拒绝：可见，但类别是"被拦下"，不是服务器执行失败。
+        assert_eq!(steps[0].category, Some(StepCategory::Denied));
+        assert_eq!(steps[0].blocked.as_deref(), Some("user_denied"));
         assert!(steps[0].stderr.contains("拒绝"), "{}", steps[0].stderr);
         // 拒绝不是失败：模型拿到原因后可以换方案，循环继续到最终答复。
         assert_eq!(result.unwrap(), "好的，我不改。");
@@ -1674,6 +2441,8 @@ mod loop_tests {
         let steps = handle.snapshot().steps;
         let first = steps.first().expect("first step");
         assert_eq!(first.state, "failed");
+        // 真的执行过并返回非零：这是用户可见的真实失败。
+        assert_eq!(first.category, Some(StepCategory::Executed));
         assert_eq!(first.exit_code, Some(1));
         assert!(first.stderr.contains("模拟失败"), "{}", first.stderr);
         assert_eq!(
@@ -1683,6 +2452,77 @@ mod loop_tests {
                 .count(),
             1,
             "重试同一操作不再重复确认"
+        );
+    }
+
+    /// SSH 中断后的写操作结果不确定：必须先只读核对，核对前不允许自动重放。
+    #[tokio::test]
+    async fn an_uncertain_write_must_be_verified_before_it_is_retried() {
+        let io = FakeIo::new(&[
+            UNZIP_CALL,
+            // 没有核对就重交等价命令：应当被拦下（不重复写）。
+            UNZIP_EQUIVALENT_CALL,
+            READ_CALL,
+            // 核对后再重试：这次允许真正执行。
+            UNZIP_EQUIVALENT_CALL,
+            "已核对并完成。",
+            // 写入后按平台要求补一次只读验证（只催一次）。
+            READ_CALL,
+            "验证完成。",
+        ]);
+        io.failures
+            .lock()
+            .expect("failures")
+            .push("io:unzip".to_string());
+        let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+        decide_later(handle.clone(), "call-0-0", true);
+
+        let result = run_loop(&handle, &loop_input(None), &io, None).await;
+        let executed = io.executed();
+        assert!(
+            result.is_ok(),
+            "loop failed: {result:?}; executed={executed:?}"
+        );
+        let content = result.unwrap();
+        assert!(content.contains("核对") || content.contains("完成"));
+
+        // 第一次：连接中断；第二次：被"先核对"拦下；第三次（核对后）：正常执行。
+        assert_eq!(
+            io.executed()
+                .iter()
+                .filter(|command| command.contains("unzip"))
+                .count(),
+            2,
+            "不确定的写操作不能自动重放：{:?}",
+            io.executed()
+        );
+        let steps = handle.snapshot().steps;
+        let blocked = steps
+            .iter()
+            .find(|step| step.category == Some(StepCategory::Internal))
+            .expect("拦截应标记为内部调整");
+        assert_eq!(
+            blocked.blocked.as_deref(),
+            Some("uncertain"),
+            "内部拦截要带结构化原因，界面才能写清为什么没执行"
+        );
+        /*
+         * 给模型看的指令不能变成步骤标题：`summary` 是界面上的操作名，
+         * 一旦写进"请先做只读核对…"这类句子，用户会以为这是自己的操作。
+         */
+        assert!(
+            blocked
+                .summary
+                .as_deref()
+                .map(|text| !text.contains("请先"))
+                .unwrap_or(true),
+            "内部纠错的指令不能写进用户可见标题：{:?}",
+            blocked.summary
+        );
+        assert!(
+            blocked.stderr.contains("核对"),
+            "完整原因仍要留在可展开的诊断里：{}",
+            blocked.stderr
         );
     }
 
@@ -1787,6 +2627,40 @@ mod loop_tests {
         let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("最后一次失败"));
+    }
+
+    #[test]
+    fn a_failed_child_dispatch_keeps_the_parent_partial_even_after_a_later_read() {
+        let mut dispatch = outcome_step(0, "read", "failed", "parallel_readonly_agents");
+        dispatch.tool = "parallel_readonly_agents".into();
+        let mut later_batch = outcome_step(1, "read", "success", "parallel_readonly_agents");
+        later_batch.tool = "parallel_readonly_agents".into();
+        let steps = vec![dispatch, later_batch, outcome_step(2, "read", "success", "curl -fsS localhost/health")];
+        let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
+        assert_eq!(outcome.level, "partial");
+        assert!(outcome.reason.contains("子任务"), "{}", outcome.reason);
+    }
+
+    #[test]
+    fn a_child_on_another_server_does_not_verify_a_parent_write() {
+        let mut child = outcome_step(1, "read", "success", "");
+        child.tool = "child_agent".into();
+        child.server_id = Some("other-server".into());
+        let steps = vec![outcome_step(0, "write", "success", "systemctl reload nginx"), child];
+        let outcome = evaluate_outcome(&steps, false, Lang::En).unwrap();
+        assert_eq!(outcome.level, "partial");
+        assert!(outcome.reason.contains("no read-only verification"));
+    }
+
+    #[test]
+    fn stale_child_results_cannot_be_reported_as_verified_current_facts() {
+        let mut dispatch = outcome_step(0, "read", "success", "parallel_readonly_agents");
+        dispatch.tool = "parallel_readonly_agents".into();
+        dispatch.stale = true;
+        let steps = vec![dispatch, outcome_step(1, "read", "success", "curl -fsS localhost/health")];
+        let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
+        assert_eq!(outcome.level, "partial");
+        assert!(outcome.reason.contains("中断前"), "{}", outcome.reason);
     }
 
     #[tokio::test]
@@ -1925,7 +2799,9 @@ mod loop_tests {
         assert_eq!(result.unwrap(), "抱歉，重来。");
         assert!(io.executed().is_empty());
         let steps = handle.snapshot().steps;
-        assert_eq!(steps[0].state, "failed");
+        // 参数错误是模型自己写错：内部纠正，不是服务器执行失败。
+        assert_eq!(steps[0].state, "skipped");
+        assert_eq!(steps[0].category, Some(StepCategory::Internal));
         assert!(steps[0].stderr.contains("JSON"), "{}", steps[0].stderr);
     }
 
@@ -2139,6 +3015,150 @@ mod loop_tests {
         assert!(context.cumulative.output_tokens > 200);
     }
 
+    /// 混合目标：不能因为一个"只查"就把整条消息锁成只读，也不能因为一个
+    /// "重启"就把纯查询当成改动。
+    #[test]
+    fn query_scope_handles_mixed_goals_instead_of_one_keyword() {
+        let turn = |text: &str| AgentTurn {
+            role: "user".to_string(),
+            content: text.to_string(),
+        };
+        // 明确要改另一项 → 整体不是只查询（写操作照常走权限，由用户决定）。
+        assert!(!is_query_only(&[turn(
+            "只查 nginx 的状态，然后重启 api 服务"
+        )]));
+        assert!(!is_query_only(&[turn("先查一下磁盘占用，再清理旧日志")]));
+        assert!(!is_query_only(&[turn("查看日志并删除旧文件")]));
+        assert!(!is_query_only(&[turn("看看状态，然后把旧日志清掉")]));
+        // 动词只是宾语 / 被否定 → 仍然是纯查询。
+        assert!(is_query_only(&[turn("查一下最近的重启记录")]));
+        assert!(is_query_only(&[turn("只查 nginx 状态")]));
+        assert!(is_query_only(&[turn("不要重启 nginx，先看看状态")]));
+        assert!(is_query_only(&[turn("不要动任何东西，只读检查")]));
+    }
+
+    /// AI 声明"只读"但命令里有写：平台把冲突回给模型，不直接问用户。
+    #[tokio::test]
+    async fn a_read_declaration_on_a_write_command_is_bounced_back() {
+        let io = FakeIo {
+            replies: Mutex::new(VecDeque::from(vec![
+                FakeReply::Native {
+                    id: "call_1".to_string(),
+                    name: "run_shell".to_string(),
+                    arguments:
+                        r#"{"command":"rm -f /srv/app/x","intent":"read","purpose":"看看目录"}"#
+                            .to_string(),
+                },
+                FakeReply::Native {
+                    id: "call_2".to_string(),
+                    name: "run_shell".to_string(),
+                    // 改成真的只读，并且这次声明对得上。
+                    arguments: r#"{"command":"docker ps","intent":"read","purpose":"列出容器"}"#
+                        .to_string(),
+                },
+                FakeReply::Text("容器正常。".to_string()),
+            ])),
+            executed: Mutex::new(Vec::new()),
+            events: Arc::new(Mutex::new(Vec::new())),
+            sent: Mutex::new(Vec::new()),
+            connected: true,
+            server_ok: true,
+            failures: Mutex::new(Vec::new()),
+        };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "容器正常。");
+
+        let executed = io.executed();
+        assert_eq!(executed.len(), 1, "写命令不该被执行：{executed:?}");
+        assert!(executed[0].contains("docker ps"), "{executed:?}");
+
+        let sent = io.sent.lock().expect("sent");
+        let tool_text = sent
+            .iter()
+            .flatten()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+            .filter_map(|message| message.get("content").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(tool_text.contains("intent=read"), "{tool_text}");
+        assert!(tool_text.contains("写操作"), "{tool_text}");
+        assert!(!io.kinds().contains(&"approval_required".to_string()));
+
+        /*
+         * 打回是**内部纠错**：命令没执行，步骤不能落成用户可见的"执行失败"，
+         * 否则聊天里会刷一张红色失败卡，看起来像服务器报错。
+         */
+        let steps = handle.snapshot().steps;
+        assert_eq!(steps[0].state, "skipped");
+        assert_eq!(steps[0].category, Some(StepCategory::Internal));
+        assert!(
+            steps.iter().all(|step| step.state != "failed"),
+            "内部纠错不能标成失败：{steps:?}"
+        );
+    }
+
+    /// 看不懂的命令**先打回给模型**（不直接弹确认）；模型改成只读命令后正常执行。
+    #[tokio::test]
+    async fn unclear_commands_are_bounced_back_to_the_model_before_asking() {
+        let io = FakeIo {
+            replies: Mutex::new(VecDeque::from(vec![
+                FakeReply::Native {
+                    id: "call_1".to_string(),
+                    name: "run_shell".to_string(),
+                    arguments: r#"{"command":"frobnicate --do-stuff"}"#.to_string(),
+                },
+                FakeReply::Native {
+                    id: "call_2".to_string(),
+                    name: "run_shell".to_string(),
+                    arguments: r#"{"command":"docker ps"}"#.to_string(),
+                },
+                FakeReply::Text("容器正常。".to_string()),
+            ])),
+            executed: Mutex::new(Vec::new()),
+            events: Arc::new(Mutex::new(Vec::new())),
+            sent: Mutex::new(Vec::new()),
+            connected: true,
+            server_ok: true,
+            failures: Mutex::new(Vec::new()),
+        };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let content = run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
+        assert_eq!(content, "容器正常。");
+
+        // 只有第二条（只读）真的下发；看不懂的那条被拦下。
+        let executed = io.executed();
+        assert_eq!(executed.len(), 1, "{executed:?}");
+        assert!(executed[0].contains("docker ps"), "{executed:?}");
+
+        // 模型拿到了原因和片段，而且**没有**弹确认打扰用户。
+        let sent = io.sent.lock().expect("sent");
+        let tool_text = sent
+            .iter()
+            .flatten()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+            .filter_map(|message| message.get("content").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(tool_text.contains("无法判断"), "{tool_text}");
+        assert!(tool_text.contains("frobnicate"), "{tool_text}");
+        assert!(!io.kinds().contains(&"approval_required".to_string()));
+
+        // 同样是内部纠错：保留完整原因，但不显示成服务器执行失败。
+        let steps = handle.snapshot().steps;
+        assert_eq!(steps[0].state, "skipped");
+        assert_eq!(steps[0].category, Some(StepCategory::Internal));
+        assert!(
+            steps[0].stderr.contains("无法判断"),
+            "{:?}",
+            steps[0].stderr
+        );
+    }
+
     /// 范围判据只看最后一条**真人**消息；平台回执不改变范围。
     #[test]
     fn query_scope_follows_the_last_human_message() {
@@ -2195,7 +3215,11 @@ mod loop_tests {
     async fn ask_user_waits_pauses_execution_and_continues_with_the_answer() {
         let io = FakeIo::new(&[ASK_CALL, "按生产环境继续。"]);
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
-        answer_later(handle.clone(), vec!["prod".to_string()], Some("  先看最近一小时  ".to_string()));
+        answer_later(
+            handle.clone(),
+            vec!["prod".to_string()],
+            Some("  先看最近一小时  ".to_string()),
+        );
 
         let content = run_loop(&handle, &loop_input(None), &io, None)
             .await
@@ -2345,7 +3369,9 @@ mod loop_tests {
         let io = FakeIo::new(&[READ_CALL, READ_CALL, "完成。"]);
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
 
-        run_loop(&handle, &loop_input(None), &io, None).await.unwrap();
+        run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
         assert_eq!(io.executed().len(), 2);
         let started: Vec<_> = io
             .events
@@ -2368,7 +3394,9 @@ mod loop_tests {
         let io = FakeIo::new(&[reply.as_str(), "机器正常。"]);
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
 
-        run_loop(&handle, &loop_input(None), &io, None).await.unwrap();
+        run_loop(&handle, &loop_input(None), &io, None)
+            .await
+            .unwrap();
         let started = io
             .events
             .lock()
@@ -2446,7 +3474,11 @@ mod loop_tests {
         )
         .unwrap();
         assert_eq!(revised.revision, 2);
-        let s1 = revised.steps.iter().find(|step| step.id == "s1").expect("完成记录要保留");
+        let s1 = revised
+            .steps
+            .iter()
+            .find(|step| step.id == "s1")
+            .expect("完成记录要保留");
         assert_eq!(s1.state, "done");
         assert_eq!(s1.evidence.as_deref(), Some("syntax is ok"));
         assert!(revised.steps.iter().any(|step| step.id == "s3"));
@@ -2485,12 +3517,19 @@ fn question_answers_follow_single_multi_and_custom_rules() {
         vec!["a".to_string()]
     );
     assert_eq!(
-        question.validate_answer(&[], Some("  自定义  ")).unwrap().custom,
+        question
+            .validate_answer(&[], Some("  自定义  "))
+            .unwrap()
+            .custom,
         Some("自定义".to_string())
     );
-    assert!(question.validate_answer(&["a".to_string()], Some("x")).is_err());
+    assert!(question
+        .validate_answer(&["a".to_string()], Some("x"))
+        .is_err());
     assert!(question.validate_answer(&[], None).is_err());
-    assert!(question.validate_answer(&["missing".to_string()], None).is_err());
+    assert!(question
+        .validate_answer(&["missing".to_string()], None)
+        .is_err());
 
     let multi = super::protocol::PendingQuestion {
         kind: "multi".to_string(),
@@ -2512,8 +3551,8 @@ mod change_tests;
 
 #[cfg(test)]
 mod permission_decision_tests {
-    use super::plan_tool;
     use super::super::runner::{permission_decision, PermissionDecision, PermissionMode};
+    use super::plan_tool;
     use serde_json::json;
 
     fn read() -> super::super::tools::PlannedTool {
@@ -2566,6 +3605,151 @@ mod permission_decision_tests {
         assert_eq!(
             permission_decision(PermissionMode::Full, &severe(), true),
             PermissionDecision::Confirm
+        );
+    }
+}
+
+/// 计划步骤只按真实执行 + 验证证据推进。
+#[test]
+fn plan_steps_need_write_then_verification() {
+    use super::protocol::{AgentPlan, PlanStep};
+
+    let mut plan = AgentPlan {
+        steps: vec![
+            PlanStep {
+                id: "s1".to_string(),
+                title: "替换站点".to_string(),
+                action: "unzip dist.zip".to_string(),
+                verify: "index.html 存在".to_string(),
+                kind: "action".to_string(),
+                state: "pending".to_string(),
+                ..PlanStep::default()
+            },
+            PlanStep {
+                id: "s2".to_string(),
+                title: "查看目录".to_string(),
+                action: "ls".to_string(),
+                verify: "看到文件".to_string(),
+                kind: "probe".to_string(),
+                state: "pending".to_string(),
+                ..PlanStep::default()
+            },
+        ],
+        ..AgentPlan::default()
+    };
+
+    // 探测成功不能完成写入步骤。
+    assert_eq!(plan.next_step_state("s1", true, true), Some("pending"));
+    plan.steps[0].state = "running".to_string();
+    assert_eq!(plan.next_step_state("s1", true, true), Some("pending"));
+    plan.steps[0].state = "pending".to_string();
+    // 写入成功也不直接算完成：等验证。
+    assert_eq!(plan.next_step_state("s1", true, false), Some("verifying"));
+    plan.steps[0].state = "verifying".to_string();
+    // 写入之后再跑一次只读核对，才是这一步要求的验证证据。
+    assert_eq!(plan.next_step_state("s1", true, true), Some("done"));
+    // 失败优先于一切（包括已经写成功过）。
+    assert_eq!(plan.next_step_state("s1", false, false), Some("failed"));
+
+    // 探查步骤成功即完成。
+    assert_eq!(plan.next_step_state("s2", true, true), Some("done"));
+    // 不存在的步骤不推进。
+    assert_eq!(plan.next_step_state("s3", true, true), None);
+}
+
+/// 归档管道必须传播失败；普通管道不能因为"没匹配到"被误判。
+#[test]
+fn archive_pipelines_propagate_failures_only() {
+    use super::tools::wrap_with_cwd;
+
+    let archive = wrap_with_cwd("/var/www", "unzip -o dist.zip -d . | tail -n 5");
+    assert!(archive.contains("pipefail"), "{archive}");
+
+    let plain = wrap_with_cwd("/var/www", "ps aux | grep nginx");
+    assert!(!plain.contains("pipefail"), "{plain}");
+}
+
+/// 缺包 / 坏包：即使管道把退出码吞掉，也要从 stderr 认出失败。
+#[test]
+fn archive_errors_are_detected_from_stderr() {
+    use super::tools::archive_error_hint;
+
+    assert!(archive_error_hint(
+        "unzip -o dist.zip -d /var/www | tail -n 3",
+        "unzip:  cannot find or open dist.zip, dist.zip.zip or dist.zip.ZIP."
+    )
+    .is_some());
+    assert!(archive_error_hint(
+        "unzip -o dist.zip -d /var/www",
+        "End-of-central-directory signature not found"
+    )
+    .is_some());
+    assert!(archive_error_hint("unzip -o dist.zip -d /var/www", "error:  not a zipfile").is_some());
+    // 普通命令的 stderr 不参与这条判定。
+    assert!(archive_error_hint("systemctl restart nginx", "Job failed").is_none());
+}
+
+/// `unzip -p` 退出 0 却没有任何输出，不能当成"读到了内容"。
+#[test]
+fn empty_archive_read_is_not_success() {
+    use super::tools::archive_read_is_empty;
+
+    assert!(archive_read_is_empty(
+        "unzip -p /opt/dist.zip index.html",
+        ""
+    ));
+    assert!(!archive_read_is_empty(
+        "unzip -p /opt/dist.zip index.html",
+        "<html>"
+    ));
+    // 经过 grep / head 过滤时，空输出是正常的。
+    assert!(!archive_read_is_empty(
+        "unzip -p /opt/dist.zip index.html | grep -q root",
+        ""
+    ));
+}
+
+/// 归档命令按**真实动作**命名：看清单 / 校验 / 读内容 / 解压，不能一律叫"解压归档"。
+#[test]
+fn archive_commands_are_named_by_what_they_do() {
+    use super::tools::describe_operation;
+    use super::ToolRisk;
+
+    let cases = [
+        ("unzip -l /opt/dist.zip", "查看归档清单 /opt/dist.zip"),
+        ("unzip -t /opt/dist.zip", "校验归档 /opt/dist.zip"),
+        (
+            "unzip -p /opt/dist.zip index.html",
+            "读取归档内容 /opt/dist.zip",
+        ),
+        // zipinfo / `unzip -Z` 只是看清单，不能叫"解压归档"。
+        ("zipinfo -1 /opt/dist.zip", "查看归档清单 /opt/dist.zip"),
+        ("unzip -Z1 /opt/dist.zip", "查看归档清单 /opt/dist.zip"),
+        // 复合只读：先 cd 再管道过滤，名称仍按归档本身。
+        (
+            "cd /opt && unzip -l dist.zip | head",
+            "查看归档清单 /opt/dist.zip",
+        ),
+        (
+            "unzip -o /opt/dist.zip -d /var/www",
+            "将 /opt/dist.zip 解压到 /var/www",
+        ),
+        // 读内容 + 写重定向：确实落盘了，不能叫"读取归档内容"。
+        (
+            "unzip -p /opt/dist.zip index.html > /srv/index.html",
+            "读取归档内容并写入文件",
+        ),
+        // 发布后的复合检查：主要是验证线上，不能因为末尾 unzip -p 叫成"读取归档"。
+        (
+            "curl -s http://example.com/ | grep -q ok; unzip -p /opt/dist.zip index.html",
+            "验证发布结果",
+        ),
+    ];
+    for (command, want) in cases {
+        assert_eq!(
+            describe_operation(command, ToolRisk::Write, None).as_deref(),
+            Some(want),
+            "{command}"
         );
     }
 }

@@ -12,12 +12,13 @@ import {
   PinOff,
   Sun,
 } from "@/components/icons";
+import ElectricLogo from "@/components/reactbits/ElectricLogo";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
-import { useThemeMode, type ThemeMode } from "@/hooks/use-theme";
+import { useIsDarkTheme, useThemeMode, type ThemeMode } from "@/hooks/use-theme";
 import type { LocaleCode } from "@/i18n";
 import { useLocale } from "@/i18n/use-locale";
-import { PageToolbar, PageToolbarDivider } from "@/workbench/page-layout";
+import { PageToolbar } from "@/workbench/page-layout";
 import { WindowControls } from "@/workbench/window-controls";
 import { ToolbarIcon } from "@/workbench/views/terminal/ToolbarIcon";
 
@@ -78,6 +79,59 @@ function useAlwaysOnTop(): [boolean, () => void] {
   return [onTop, toggle];
 }
 
+/** 顶栏底色深，随机色固定饱和度/亮度只换色相，免得抽到看不清的近黑色。 */
+function randomLogoColor(): string {
+  const hue = Math.random() * 360;
+  const s = 0.85;
+  const l = 0.6;
+  const k = (n: number) => (n + hue / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const to = (v: number) => Math.round(255 * v).toString(16).padStart(2, "0");
+  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
+}
+
+/**
+ * 超能模式 LOGO：官方 ElectricLogo 实时描出应用图标，颜色每 10 秒随机换一次。
+ *
+ * 动画参数与 React Bits 面板一致；canvas 内的颜色本来就带插值过渡，
+ * 换色时是渐变过去的，不会闪一下。
+ */
+function ExtremeLogoMark() {
+  const isDark = useIsDarkTheme();
+  const [color, setColor] = useState("#3b82f6");
+
+  useEffect(() => {
+    const timer = setInterval(() => setColor(randomLogoColor()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <span data-tauri-drag-region="false" className="pointer-events-none relative block h-8 w-8 shrink-0">
+      <ElectricLogo
+        src="/logo.png"
+        color={color}
+        glowColor={color}
+        scale={0.8}
+        intensity={0.5}
+        glow={0.65}
+        fill={0}
+        thickness={0.5}
+        strands={6}
+        bend={0.45}
+        crackle={0.95}
+        arcs={0.85}
+        flicker={0.5}
+        speed={2.4}
+        interactive={false}
+        cursorIntensity={0.75}
+        cursorRadius={100}
+        theme={isDark ? "dark" : "light"}
+      />
+    </span>
+  );
+}
+
 export interface ExtremeHeaderProps {
   server: string | null;
   serverHost: string | null;
@@ -129,14 +183,8 @@ export function ExtremeHeader({
       className={cn("extreme-core-header extreme-core-frosted relative z-20", mac ? "pl-[76px] pr-0" : "pr-0")}
     >
       <div className="page-toolbar-summary flex min-w-0 items-center gap-2 text-12" data-tauri-drag-region>
-        {/* 与应用标题栏同一枚 Logo；点击穿透给整条拖拽栏，不额外抢焦点。 */}
-        <img
-          src="/logo.png"
-          alt="Ops Workbench"
-          data-tauri-drag-region="false"
-          draggable={false}
-          className="pointer-events-none h-5 w-5 shrink-0 rounded-[4px]"
-        />
+        {/* 超能模式专属标识；点击穿透给整条拖拽栏。 */}
+        <ExtremeLogoMark />
         <span className="truncate font-medium" title={server ?? undefined}>
           {server ?? t("未绑定服务器")}
         </span>
@@ -179,12 +227,10 @@ export function ExtremeHeader({
           active={onTop}
           onClick={toggleOnTop}
         />
-        <PageToolbarDivider />
         {!paneShown && (
           <ToolbarIcon label={t("远程工作区")} icon={PanelRight} onClick={onOpenPane} />
         )}
         <ToolbarIcon label={t("任务历史")} icon={History} onClick={onOpenHistory} />
-        <PageToolbarDivider />
         <ToolbarIcon label={t("返回普通终端，会话与任务都保留")} icon={ChevronLeft} onClick={onBack} />
         {!mac && <WindowControls />}
       </div>

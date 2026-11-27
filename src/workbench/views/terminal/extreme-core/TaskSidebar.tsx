@@ -5,8 +5,13 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Sparkles,
+  ListOrdered,
+  ScrollText,
+  Quote,
   FolderOpen,
   MoreHorizontal,
+  MemoryStick,
   Pencil,
   Plug,
   Plus,
@@ -21,19 +26,19 @@ import { ContextMenu, useContextMenu, type ContextMenuItem } from "@/components/
 import { Select } from "@/components/ui/select";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
+import { useExtremeStore } from "@/stores/extreme-store";
 import type { OutputStyle } from "./chat-context";
 import { dayTime, previewSnippet } from "./format-time";
 import { displayTitle, type ExtremeWorkspace } from "./workspace-history";
 
-/** 左栏收起状态：跨会话记住，重进超能时保持上次的宽度。 */
-const RAIL_COLLAPSED_KEY = "bls-ops.extreme-task-rail-collapsed.v1";
 /** 「任务」分组的折叠状态：只收列表，不影响新建任务和后台运行。 */
 const TASKS_COLLAPSED_KEY = "bls-ops.extreme-task-group-collapsed.v1";
 
 /** 左栏底部三个管理入口。 */
-export type RailPage = "settings" | "permissions" | "mcp";
+export type RailPage = "settings" | "permissions" | "mcp" | "memory";
 
 const RAIL_PAGES: { id: RailPage; label: string; icon: typeof Settings }[] = [
+  { id: "memory", label: "记忆", icon: MemoryStick },
   { id: "settings", label: "设置", icon: Settings },
   { id: "permissions", label: "权限", icon: ShieldCheck },
   { id: "mcp", label: "MCP", icon: Plug },
@@ -48,22 +53,6 @@ const ROW_STATUS = {
   failed: { label: "失败", className: "bg-danger" },
   unread: { label: "有新结果", className: "bg-accent" },
 } as const;
-
-function readRailCollapsed(): boolean {
-  try {
-    return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeRailCollapsed(collapsed: boolean) {
-  try {
-    localStorage.setItem(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
-  } catch {
-    // 存不了就只在本次会话里生效。
-  }
-}
 
 function readTasksCollapsed(): boolean {
   try {
@@ -162,16 +151,23 @@ function TaskSidebarInner({
   const [confirming, setConfirming] = useState<ExtremeWorkspace | null>(null);
   const [clearing, setClearing] = useState(false);
   const [blocked, setBlocked] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(readRailCollapsed);
   const [tasksCollapsed, setTasksCollapsed] = useState(readTasksCollapsed);
   const inputRef = useRef<HTMLInputElement>(null);
   const menu = useContextMenu();
+  /*
+   * 左栏开合**按任务**记在 store 里。
+   *
+   * 这里不再监听 welcome：空白任务切走再切回时 welcome 仍然是 true，
+   * 以前那个 effect 会把用户手动展开的左栏又折回去。新建时的默认收起
+   * 由 `addWorkspace` / `ensureWorkspace` 只写一次。
+   */
+  const collapsed = useExtremeStore((state) => state.railCollapsed);
+  const storeSetRailCollapsed = useExtremeStore((state) => state.setRailCollapsed);
 
   /** 收/展左栏。收起时顺带把筛选放回「全部」，否则列表被一个看不见的条件限制着。 */
   const setRailCollapsed = (next: boolean) => {
-    writeRailCollapsed(next);
     if (next) setFilter("all");
-    setCollapsed(next);
+    storeSetRailCollapsed(next);
   };
 
   /** 只折叠任务列表（不动左栏宽度，也不影响运行中的任务）。 */
@@ -311,14 +307,15 @@ function TaskSidebarInner({
         icon: FileText,
         children: (
           [
-            ["auto", t("自动")],
-            ["brief", t("简洁结论")],
-            ["detailed", t("详细说明")],
-            ["structured", t("结构化结果")],
-          ] as [OutputStyle, string][]
-        ).map(([style, label]) => ({
+            ["auto", t("自动"), Sparkles],
+            ["brief", t("简洁结论"), Quote],
+            ["detailed", t("详细说明"), ScrollText],
+            ["structured", t("结构化结果"), ListOrdered],
+          ] as [OutputStyle, string, typeof FileText][]
+        ).map(([style, label, icon]) => ({
           id: `output-${style}`,
           label,
+          icon,
           hint: outputStyle === style ? "✓" : undefined,
           onSelect: () => onOutputStyleChange(style),
         })),
@@ -344,7 +341,7 @@ function TaskSidebarInner({
 
   return (
     <aside
-      className="extreme-core-task-rail extreme-core-frosted flex shrink-0 flex-col overflow-hidden border-r border-line/70"
+      className="extreme-core-task-rail extreme-core-frosted flex shrink-0 flex-col overflow-hidden"
       data-collapsed={collapsed ? "true" : "false"}
       aria-label={t("任务")}
     >
@@ -495,7 +492,7 @@ function TaskSidebarInner({
           open
           title={t("清空对话")}
           description={t(
-            "清空「{{title}}」的消息与附件？服务器上的临时副本也会被清理，无法恢复。",
+            "清空「{{title}}」的消息与附件？服务器上的暂存副本会保留，可在「附件」里单独清理。",
             { title: currentTitle },
           )}
           confirmLabel={t("清空")}
@@ -596,11 +593,9 @@ function TaskSidebarInner({
                     }}
                     onContextMenu={menu.onContextMenu(() => items(entry))}
                     className={cn(
-                      "relative grid size-8 place-items-center rounded-[8px] text-12 font-medium transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
-                      active
-                        ? "bg-surface-active/65 text-fg"
-                        : "text-fg-muted hover:bg-surface-hover hover:text-fg",
+                      "extreme-core-task-item relative grid size-8 place-items-center rounded-lg text-12 font-medium text-fg-muted focus-visible:outline-2 focus-visible:outline-accent",
                     )}
+                    data-active={active ? "true" : undefined}
                   >
                     <span aria-hidden="true">{initialOf(title)}</span>
                     {statusMark && (
@@ -632,13 +627,13 @@ function TaskSidebarInner({
                 }}
                 onContextMenu={menu.onContextMenu(() => items(entry))}
                 className={cn(
-                  "grid w-full grid-cols-[minmax(0,1fr)_12px] items-center gap-2 rounded-[7px] py-1.5 pl-2.5 pr-7 text-left transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",
-                  active ? "bg-surface-active/65" : "hover:bg-surface-hover",
+                  "extreme-core-task-item grid w-full grid-cols-[minmax(0,1fr)_12px] items-center gap-2 rounded-lg py-2 pl-3 pr-7 text-left focus-visible:outline-2 focus-visible:outline-accent",
                 )}
+                data-active={active ? "true" : undefined}
               >
                 <span className="flex min-w-0 flex-col gap-1">
                   <span
-                    className={cn("truncate text-12 leading-4", active ? "font-medium text-fg" : "text-fg-muted")}
+                    className={cn("truncate text-12 leading-4 transition-colors duration-150", active ? "font-medium text-fg" : "text-fg-muted group-hover:text-fg")}
                   >
                     {title}
                   </span>
@@ -662,7 +657,7 @@ function TaskSidebarInner({
                     // 菜单右对齐到按钮、贴着下沿展开：和工具栏「⋯」一致。
                     menu.openAt(Math.max(8, rect.right - 184), rect.bottom + 4, items(entry));
                   }}
-                  className="pointer-events-none absolute right-1 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded-[4px] text-fg-subtle opacity-0 transition duration-[120ms] ease-out hover:bg-surface-hover hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="pointer-events-none absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-md text-fg-subtle opacity-0 transition duration-150 ease-out hover:bg-fg/10 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   <MoreHorizontal size={13} />
                 </button>
@@ -678,7 +673,7 @@ function TaskSidebarInner({
        */}
       <nav
         className={cn(
-          "shrink-0 border-t border-line/60",
+          "shrink-0",
           collapsed ? "flex flex-col items-center gap-1 px-1.5 py-2" : "space-y-0.5 p-1.5",
         )}
         aria-label={t("管理")}

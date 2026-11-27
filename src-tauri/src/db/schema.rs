@@ -67,7 +67,7 @@ impl AppDb {
 /// v30 建 `mcp_servers`（MCP 服务配置与能力缓存）。
 /// 这个常量还决定 `init()` 要不要在迁移前自动备份旧库 —— 落后于真实迁移步数
 /// 时，v18 的库会**跳过**那次备份直接升上来。
-pub const SCHEMA_VERSION: u32 = 30;
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// Project and deployment tables (P3-2.2, P3-2.3).
 ///
@@ -1407,6 +1407,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
         conn.pragma_update(None, "user_version", 30u32)?;
     }
+    if version < 31 {
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS extreme_memories (
+            id TEXT PRIMARY KEY NOT NULL, scope TEXT NOT NULL, server_id TEXT,
+            workspace_id TEXT, content TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL
+        ); CREATE INDEX IF NOT EXISTS idx_extreme_memories_scope ON extreme_memories(scope, server_id, workspace_id);")?;
+        conn.pragma_update(None, "user_version", 31u32)?;
+    }
+    if version < 32 {
+        add_column(
+            conn,
+            "extreme_memories",
+            "title",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        conn.pragma_update(None, "user_version", 32u32)?;
+    }
     Ok(())
 }
 
@@ -1467,6 +1483,21 @@ fn backfill_engine_options(conn: &Connection) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn memory_title_migration_preserves_existing_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE extreme_memories (id TEXT PRIMARY KEY, scope TEXT NOT NULL, server_id TEXT, workspace_id TEXT, content TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL); INSERT INTO extreme_memories VALUES ('m','global',NULL,NULL,'keep me','user',1); PRAGMA user_version=31;").unwrap();
+        super::migrate(&conn).unwrap();
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT content,title FROM extreme_memories WHERE id='m'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("keep me".into(), "".into()));
+        super::migrate(&conn).unwrap();
+    }
     use super::*;
 
     /// v17 形态的 `database_profiles`：还没有 `engine_options` 列。

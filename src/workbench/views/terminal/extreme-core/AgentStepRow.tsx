@@ -7,22 +7,31 @@
  * 连续多条短命令由一个组承载（见 `AgentStepRun`）：只在**相邻**步骤之间合并，
  * 中间夹着正文就分开 —— 那说明模型在解释，不是一串机械执行。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useStepTitle } from "./step-title-i18n";
+import { useExtremeStore } from "@/stores/extreme-store";
 import { useExtremeSettingsStore } from "@/stores/extreme-settings-store";
 import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
+  FileDiff,
+  FileText,
+  Folder,
   Loader2,
+  Plug,
   Terminal,
   TriangleAlert,
   XCircle,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
 import ThoughtLine from "@/components/reactbits/ThoughtLine";
 import { AgentApprovalCard } from "./AgentApprovalCard";
+import { ExtremeIconButton } from "./ExtremeIconButton";
 import type { DeployStep } from "./deploy-plan";
 import { durationText } from "./format-time";
 import type { MessageStepPart } from "./message-parts";
@@ -67,11 +76,47 @@ function failureReason(step: DeployStep | undefined): string {
   return "";
 }
 
+/** 运行中步骤的实时计时（秒）：避免长命令看起来卡死。 */
+function useLiveElapsed(active: boolean): number {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setElapsed(0);
+      return undefined;
+    }
+    const began = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - began) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return elapsed;
+}
+
+function liveClock(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return mins > 0 ? `${mins}:${String(secs).padStart(2, "0")}` : `${secs}s`;
+}
+
+/** 按工具类型给一枚轻图标，让读/列/写/命令/MCP 一眼可辨。 */
+function ToolKindGlyph({ tool }: { tool?: string }) {
+  if (!tool) return null;
+  if (tool === "read_file") return <FileText size={11} className="shrink-0 text-fg-subtle" aria-hidden="true" />;
+  if (tool === "list_dir") return <Folder size={11} className="shrink-0 text-fg-subtle" aria-hidden="true" />;
+  if (tool === "write_file") return <FileDiff size={11} className="shrink-0 text-accent" aria-hidden="true" />;
+  if (tool === "run_shell") return <Terminal size={11} className="shrink-0 text-fg-subtle" aria-hidden="true" />;
+  if (tool.startsWith("mcp__")) return <Plug size={11} className="shrink-0 text-fg-subtle" aria-hidden="true" />;
+  return null;
+}
+
 export function AgentStepRow({
   step,
   part,
   approval,
   goal,
+  taskId,
   onDecide,
   onOpenOutput,
   onOpenChanges,
@@ -80,6 +125,8 @@ export function AgentStepRow({
   part: MessageStepPart;
   approval?: ApprovalEntry;
   goal?: string | null;
+  /** 只有同一任务里的步骤才能被计划卡命中（两轮都叫 s1 时靠它区分）。 */
+  taskId?: string;
   onDecide?: (allow: boolean) => void;
   onOpenOutput?: () => void;
   onOpenChanges?: () => void;
@@ -92,12 +139,38 @@ export function AgentStepRow({
   const state = rowState(step, part, approval);
   const running = state === "running";
   const waiting = state === "waiting";
-  const denied = state === "skipped" && (Boolean(part.denied) || approval?.phase === "denied");
-  const failed = state === "failed";
+  /*
+   * 类别来自后端的结构化字段（旧记录没有 → 按真实执行保守展示）：
+   * * `internal` 平台内部纠错：命令没执行，不是服务器失败；
+   * * `denied`   权限 / 审批 / 安全边界拦下，或用户拒绝。
+   */
+  const internal = step?.category === "internal";
+  const blocked = step?.category === "denied";
+  const denied =
+    (state === "skipped" && (Boolean(part.denied) || approval?.phase === "denied")) ||
+    blocked;
+  // 被平台拦下 / 内部纠错都不是红色"失败"。
+  const failed = state === "failed" && !internal && !blocked;
   // `DeployStep.title` 已经是后端 summary / 命令首行算出来的操作名。
-  const title = part.label?.trim() || step?.title || t("工具调用");
-  const duration = !running && !waiting && step?.elapsedMs ? durationText(step.elapsedMs, t) : "";
-  const reason = !denied ? failureReason(step) : "";
+  const localize = useStepTitle();
+  const title = localize(part.label?.trim() || step?.title || t("工具调用"));
+  const liveSeconds = useLiveElapsed(running);
+  const duration = running
+    ? liveSeconds > 0
+      ? liveClock(liveSeconds)
+      : ""
+    : !waiting && step?.elapsedMs
+      ? durationText(step.elapsedMs, t)
+      : "";
+  const canOpenDiff = Boolean(
+    !approvalPending &&
+      onOpenChanges &&
+      step?.remotePath &&
+      step.sourceTool === "write_file" &&
+      step.state === "success",
+  );
+  // 只有真实执行失败才在收起状态露一行红色原因；内部纠错的原因留在展开详情里。
+  const reason = !denied && !internal ? failureReason(step) : "";
   const canExpand = Boolean(
     step?.command || step?.script || step?.stdout || step?.stderr || step?.rollback || step?.backupPath,
   );
@@ -108,21 +181,26 @@ export function AgentStepRow({
    */
   const statusText = running
     ? t("运行中")
-    : state === "approved"
-      ? t("已批准")
-      : denied
-      ? t("未执行")
-      : waiting
-        ? t("等待你的确认")
-        : state === "success"
-          ? t("已完成")
-          : failed
-            ? t("失败")
-            : state === "skipped"
-              ? t("已跳过")
-              : step
-                ? t("待执行")
-                : "";
+    : internal
+      ? // 内部纠错也是"没执行"：状态只说实话，为什么由展开里的说明负责。
+        t("未执行")
+      : state === "approved"
+        ? t("已批准")
+        : denied
+          ? t("未执行")
+          : waiting
+            ? t("等待你的确认")
+            : state === "success"
+              ? step?.stale
+                ? t("需重新核实")
+                : t("已完成")
+              : failed
+                ? t("失败")
+                : state === "skipped"
+                  ? t("已跳过")
+                  : step
+                    ? t("待执行")
+                    : "";
 
   return (
     <div
@@ -133,6 +211,7 @@ export function AgentStepRow({
       )}
       data-step-part={part.id}
       data-step-index={part.stepIndex}
+      data-task-id={taskId ?? part.taskId ?? undefined}
       data-plan-step={part.planStepId}
       data-plan-group={part.groupId}
       data-state={state}
@@ -159,6 +238,7 @@ export function AgentStepRow({
             <span className="extreme-core-step-dot" />
           )}
         </span>
+        <ToolKindGlyph tool={step?.sourceTool} />
         {/*
          * 运行中用官方 ThoughtLine（呼吸 + 微光），结束后换回普通标题：
          * 快命令一结束就直接是结果，不会先亮一下再收。
@@ -176,19 +256,45 @@ export function AgentStepRow({
         ) : (
           <span className="extreme-core-step-title">{title}</span>
         )}
+        {step?.server && step.sourceTool === "child_agent" && (
+          <span className="extreme-core-step-status text-fg-subtle" title={t("子任务服务器")}>
+            @{step.server}
+          </span>
+        )}
         {statusText && (
           <span
             className={cn(
               "extreme-core-step-status",
               failed && "text-danger",
               waiting && !denied && "text-warning",
-              denied && "text-fg-subtle",
+              (denied || internal) && "text-fg-subtle",
             )}
           >
             {statusText}
           </span>
         )}
         {duration && <span className="extreme-core-step-duration">{duration}</span>}
+        {canOpenDiff && (
+          <span
+            role="button"
+            tabIndex={0}
+            className="extreme-core-step-diff-link"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenChanges?.();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                onOpenChanges?.();
+              }
+            }}
+          >
+            <FileDiff size={11} />
+            <span>{t("查看变更")}</span>
+          </span>
+        )}
         {canExpand && (
           <span className="extreme-core-step-chevron">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -223,7 +329,16 @@ export function AgentStepRow({
             </p>
           )}
           {step?.command && (
-            <pre className="extreme-core-step-code">{step.command}</pre>
+            <div className="flex items-start gap-1">
+              <pre className="extreme-core-step-code min-w-0 flex-1">{step.command}</pre>
+              <ExtremeIconButton
+                label={t("复制命令")}
+                icon={Copy}
+                iconSize={11}
+                className="size-6 shrink-0"
+                onClick={() => void copyTextWithFeedback(step.command!)}
+              />
+            </div>
           )}
           {step?.script && step.script !== step.command && (
             <details>
@@ -234,6 +349,12 @@ export function AgentStepRow({
             </details>
           )}
           {step?.exitCode != null && <p className="extreme-core-step-meta">exit {step.exitCode}</p>}
+          {step?.childUsage && <p className="extreme-core-step-meta">{t("子任务累计用量（估算）：输入 {{input}}，输出 {{output}}", { input: step.childUsage.inputTokens.toLocaleString(), output: step.childUsage.outputTokens.toLocaleString() })}</p>}
+          {step?.stale && (
+            <p className="text-warning">
+              {t("结果来自中断前，服务器状态可能已变化；使用前请重新核实。")}
+            </p>
+          )}
           {step?.stdout && (
             <div>
               <p className="extreme-core-step-meta">{t("输出")}</p>
@@ -260,7 +381,7 @@ export function AgentStepRow({
             </p>
           )}
           {onOpenOutput && (
-            <Button variant="ghost" size="xs" className="gap-1 px-1 text-accent" onClick={onOpenOutput}>
+            <Button variant="ghost" size="xs" className="gap-1.5 rounded-full bg-surface-2 px-3 text-fg-muted hover:bg-surface-hover hover:text-fg" onClick={onOpenOutput}>
               <Terminal size={12} />
               {t("在右侧终端查看")}
             </Button>
@@ -289,12 +410,18 @@ const SETTLED = new Set(["success", "skipped", "failed"]);
 export function AgentStepRun({
   items,
   goal,
+  taskId,
+  forceOpen = false,
   onDecide,
   onOpenOutput,
   onOpenChanges,
 }: {
   items: AgentStepItem[];
   goal?: string | null;
+  /** 这一组命令属于哪次运行：计划卡定位时按它 + 步骤 id 精确匹配。 */
+  taskId?: string;
+  /** 定位期间强制展开折叠组，等目标节点挂载后再滚动。 */
+  forceOpen?: boolean;
   /** 按**具体那一步**的审批表态：组里可能只有一条在等确认。 */
   onDecide?: (entry: ApprovalEntry, allow: boolean) => void;
   onOpenOutput?: () => void;
@@ -302,6 +429,25 @@ export function AgentStepRun({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  // 计划卡定位：只展开**命中的那一组**（按 workspaceId + taskId + 计划步骤 id）。
+  const reveal = useExtremeStore((state) => state.stepReveal);
+  const currentWorkspace = useExtremeStore((state) => state.workspaceId);
+  const revealHere = Boolean(
+    reveal &&
+      reveal.workspaceId === (currentWorkspace ?? "") &&
+      reveal.taskId === (taskId ?? items[0]?.part.taskId ?? "") &&
+      items.some((item) => item.part.planStepId === reveal.planStepId),
+  );
+  /*
+   * 定位到折叠组里的命令后**保持展开**。
+   *
+   * 只靠 `revealHere` 的话，300ms 后 store 复位、组重新折叠，目标行直接
+   * 消失 —— 视图被拉走，用户还得再点一次。展开状态留在组件里，定位结束
+   * 也不回弹。
+   */
+  useEffect(() => {
+    if (revealHere) setOpen(true);
+  }, [revealHere]);
   if (items.length === 1) {
     const item = items[0];
     return (
@@ -310,6 +456,7 @@ export function AgentStepRun({
         step={item.step}
         approval={item.approval}
         goal={goal}
+        taskId={taskId}
         onDecide={
           item.approval && onDecide ? (allow) => onDecide(item.approval!, allow) : undefined
         }
@@ -324,16 +471,62 @@ export function AgentStepRun({
   const runningNow = states.includes("running");
   const waitingNow = states.includes("waiting");
   const approvedNow = states.includes("approved");
-  const expanded = active || open;
+  const expanded = active || open || forceOpen || revealHere;
+  // 内部纠错 / 被拦下的步骤不是红色失败；组标题也不该报「N 个失败」。
   const failed = items.filter(
-    (item) => rowState(item.step, item.part, item.approval) === "failed",
+    (item) =>
+      rowState(item.step, item.part, item.approval) === "failed" &&
+      item.step?.category !== "denied" &&
+      item.step?.category !== "internal",
   );
-  const denied = states.some((state) => state === "skipped");
+  const denied =
+    states.some((state) => state === "skipped") ||
+    items.some((item) => item.step?.category === "denied");
   const settled = states.every((state) => SETTLED.has(state));
   const totalMs = items.reduce((sum, item) => sum + (item.step?.elapsedMs ?? 0), 0);
   const duration = settled && totalMs > 0 ? durationText(totalMs, t) : "";
   const reason = !expanded && failed.length > 0 ? failureReason(failed[0].step) : "";
-  const label = runningNow
+  const isChildGroup = items[0]?.part.groupId?.startsWith("children-") ?? false;
+  /*
+   * 子任务分组按**真实状态**计数：等待确认、运行中、失败、未执行、完成分开，
+   * 不把"被依赖 / 断线拦下"算成失败，也不把聚合步骤算成一个子任务。
+   */
+  const childItems = items.filter((item) => item.step?.sourceTool === "child_agent");
+  const childStates = childItems.map((item) => ({
+    state: rowState(item.step, item.part, item.approval),
+    blocked: Boolean(item.step?.blocked) || item.step?.category === "denied",
+    stale: Boolean(item.step?.stale),
+  }));
+  const childTotal = childItems.length || Math.max(1, items.length - 1);
+  const childWaiting = childStates.filter((item) => item.state === "waiting").length;
+  const childQueued = childStates.filter(
+    (item) => item.state === "pending" || item.state === "approved",
+  ).length;
+  const childRunning = childStates.filter((item) => item.state === "running").length;
+  const childFailed = childStates.filter(
+    (item) => item.state === "failed" && !item.blocked,
+  ).length;
+  const childSkipped = childStates.filter(
+    (item) => item.state === "skipped" || (item.state === "failed" && item.blocked),
+  ).length;
+  const childSuccess = childStates.filter((item) => item.state === "success" && !item.stale).length;
+  const childStale = childStates.filter((item) => item.stale).length;
+  const staleSuffix = childStale > 0
+    ? t(" · {{stale}} 个需重新核实", { stale: childStale })
+    : "";
+  const childBreakdown = [
+    childWaiting > 0 ? t("{{count}} 个等待确认", { count: childWaiting }) : "",
+    childQueued > 0 ? t("{{count}} 个待执行", { count: childQueued }) : "",
+    childRunning > 0 ? t("{{count}} 个运行中", { count: childRunning }) : "",
+    childFailed > 0 ? t("{{count}} 个失败", { count: childFailed }) : "",
+    childSkipped > 0 ? t("{{count}} 个未执行", { count: childSkipped }) : "",
+    childSuccess > 0 ? t("{{count}} 个完成", { count: childSuccess }) : "",
+  ].filter(Boolean);
+  const label = isChildGroup
+    ? t("{{n}} 个子任务", { n: childTotal }) +
+      (childBreakdown.length > 0 ? ` · ${childBreakdown.join(" · ")}` : "") +
+      staleSuffix
+    : runningNow
     ? t("正在执行 {{n}} 个操作", { n: items.length })
     : waitingNow
       ? t("{{n}} 个操作 · 等待你的确认", { n: items.length })
@@ -348,7 +541,12 @@ export function AgentStepRun({
           : t("{{n}} 个操作", { n: items.length });
 
   return (
-    <div className="extreme-core-step-group" data-step-group={items.length} data-state={active ? "running" : "settled"}>
+    <div
+      className="extreme-core-step-group"
+      data-step-group={items.length}
+      data-state={active ? "running" : "settled"}
+      data-task-id={taskId ?? items[0]?.part.taskId ?? undefined}
+    >
       <button
         type="button"
         className="extreme-core-step-group-head"
@@ -385,6 +583,7 @@ export function AgentStepRun({
               step={item.step}
               approval={item.approval}
               goal={goal}
+              taskId={taskId}
               onDecide={
                 item.approval && onDecide ? (allow) => onDecide(item.approval!, allow) : undefined
               }

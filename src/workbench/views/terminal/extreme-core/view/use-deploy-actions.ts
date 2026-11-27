@@ -16,7 +16,7 @@ import {
 } from "@/stores/extreme-store";
 import { notifyTaskOutcome } from "@/desktop-notification/task";
 import { planValidFor, type ActionScope } from "../action-scope";
-import { buildDeployPlan, verifyPassed, type DeployStep } from "../deploy-plan";
+import { buildDeployPlan, pickStagedZip, verifyPassed, type DeployStep } from "../deploy-plan";
 import { buildStaticUpdatePlan, verifyHttpStatus } from "../static-update-plan";
 import {
   buildUpdatePlan,
@@ -40,7 +40,10 @@ import {
   uploadReceipt,
   uploadReport,
 } from "../execution-report";
-import { detectStaticSite, shellQuote, type TFn } from "./helpers";
+import { detectStaticSite, type TFn } from "./helpers";
+import { stageWorkspaceAttachment, verifyStagedAttachment } from "../attachments/staging";
+import { cleanupItemsOf, useCleanupStore } from "../attachments/cleanup";
+import { attachmentSource, bytesToBase64 } from "../attachments/payload";
 import type { ActionResult } from "./types";
 
 type Store = ReturnType<typeof useExtremeStore.getState>;
@@ -118,9 +121,7 @@ export function useDeployActions(deps: DeployDeps) {
     planTaskIdRef,
     stopTasksRef,
     userConfirmedPlansRef,
-    remoteRoot,
     setRemoteRoot,
-    sessionId,
     uploading,
     setUploading,
     probing,
@@ -244,12 +245,7 @@ export function useDeployActions(deps: DeployDeps) {
         sessionId: scope.sessionId,
         attachmentIds: scope.attachments.map((item) => item.id),
       });
-      const zip = scope.attachments.find(
-        (item) =>
-          /\.zip$/i.test(item.name) &&
-          Boolean(item.remotePath) &&
-          (item.uploadState === "uploaded" || item.uploadState === "deployed"),
-      );
+      const zip = pickStagedZip(scope.attachments, scope.selectedAttachmentIds);
       // 没有 ZIP 在服务器上时这个探测帮不上忙：不必为一次点击去打扰服务器。
       const staticTarget = zip?.remotePath ? await detectStaticSite(scope.sessionId) : null;
       // 探测期间归属失效（换服务器 / 断连）：这版计划不能落到别处。
@@ -279,7 +275,9 @@ export function useDeployActions(deps: DeployDeps) {
       }
 
       if (kind === "compose-create") {
-        const built = buildDeployPlan(scope.attachments);
+        const built = buildDeployPlan(
+          scope.attachments.map((item) => ({ ...item, attachmentId: item.id })),
+        );
         commitPlan(scope, context, "compose-create", {
           steps: built.plan,
           result: built.blocked ?? t("等待确认后执行"),
@@ -372,11 +370,12 @@ export function useDeployActions(deps: DeployDeps) {
         const hasPayload =
           typeof step.data === "string" ||
           typeof step.sourcePath === "string" ||
-          typeof step.text === "string";
+          typeof step.text === "string" ||
+          Boolean(step.attachmentId);
         if (!hasPayload) {
           return {
             ok: false,
-            detail: t("这一步没有可写入的内容（text / data / sourcePath 都为空）"),
+            detail: t("这一步没有可写入的内容（text / data / sourcePath / 本机附件都为空）"),
             stdout: "",
             stderr: "",
             exitCode: null,
@@ -482,15 +481,42 @@ export function useDeployActions(deps: DeployDeps) {
 
         try {
           if (!copied) {
-            if (step.data) {
-              // 二进制（图片/字体/jar/归档）走 base64 通道。
+            const source = step.attachmentId
+              ? attachmentSource({
+                  id: step.attachmentId,
+                  name: step.remotePath?.split("/").pop() ?? "attachment",
+                  size: 0,
+                  state: "ready",
+                })
+              : null;
+            if (source) {
+              // 大文件按块写，避免把整份内容读成 base64 常驻内存。
+              const part = `${target}.part`;
+              const chunk = 1024 * 1024;
+              let written = 0;
+              for (let offset = 0; offset < source.total; offset += chunk) {
+                const bytes = await source.read(offset, chunk);
+                if (bytes.length === 0) break;
+                written = await opsApi.sftpWriteChunk(
+                  scope.sessionId,
+                  part,
+                  offset,
+                  bytesToBase64(bytes),
+                );
+              }
+              if (written !== source.total) {
+                throw new Error(`写入未完成：${written} / ${source.total} 字节`);
+              }
+              await opsApi.sftpStageFinish(scope.sessionId, part, target);
+            } else if (step.data) {
+              // 小二进制（图片/字体/jar/归档）走 base64 通道。
               await opsApi.sftpWriteBytes(scope.sessionId, target, step.data);
             } else if (typeof step.text === "string") {
               await opsApi.sftpWriteFile(scope.sessionId, target, step.text);
             } else {
               return {
                 ok: false,
-                detail: t("临时目录里没有这个文件，本地也没有可写入的内容"),
+                detail: t("本机内容已不可用：请重新选择文件后再执行"),
                 stdout: "",
                 stderr: "",
                 exitCode: null,
@@ -693,14 +719,6 @@ export function useDeployActions(deps: DeployDeps) {
     }
     // 同一个 taskId 重新执行：清掉上一轮留下的停止标记，只影响这一条任务。
     stopTasksRef.current.delete(taskId);
-    /** 删掉服务器上的临时目录（完成 / 取消 / 中止时都调）。 */
-    const dropRemote = () => {
-      const root = scope.remoteRoot;
-      if (!root) return;
-      scope.remoteRoot = null;
-      if (foreground()) setRemoteRoot(null);
-      void opsApi.sshExec(sessionAtStart, `rm -rf -- ${shellQuote(root)}`, 30_000).catch(() => undefined);
-    };
     /**
      * 落一条任务历史到本地库，并同步刷新卡片。
      *
@@ -750,13 +768,12 @@ export function useDeployActions(deps: DeployDeps) {
     persistTask("running", t("执行中…"));
 
     for (let index = 0; index < steps.length; index += 1) {
-      // 用户点了「取消任务」：停在当前进度，清掉临时文件，历史里记为中止。
+      // 用户点了「取消任务」：停在当前进度，保留暂存附件供重试。
       if (stopTasksRef.current.has(taskId)) {
         stopTasksRef.current.delete(taskId);
         if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
-        dropRemote();
         persistTask("cancelled", t("任务已中止"));
-        notify(t("任务已中止：服务器上的临时文件已清理。"));
+        notify(t("任务已中止：暂存附件已保留。"));
         return;
       }
       /*
@@ -815,19 +832,38 @@ export function useDeployActions(deps: DeployDeps) {
     }
     if (workspaceAtStart) setExecutingFor(workspaceAtStart, false);
     stopTasksRef.current.delete(taskId);
-    // 部署成功 = 文件已经就位，临时副本没有继续存在的理由。
-    dropRemote();
     notify(t("部署完成：全部步骤通过。"));
     persistTask("success", t("全部步骤通过"));
+    /*
+     * 部署成功：询问删除还是保留本次任务的暂存副本。
+     *
+     * 按 taskId 落一条清理请求（持久化），多个任务互不覆盖；取消 / 失败 /
+     * 仍被引用时都会保留附件，不会顺手删掉线上文件或站点备份。
+     */
+    try {
+      const now = useExtremeStore.getState();
+      const live =
+        now.workspaceId === workspaceAtStart
+          ? now.attachments
+          : now.workspaces.find((entry) => entry.id === workspaceAtStart)?.context?.attachments ?? [];
+      // 只问**这次任务用到**的那些：同会话里别的包不替它做主。
+      const wanted = new Set(scope.selectedAttachmentIds);
+      const scoped = wanted.size > 0 ? live.filter((item) => wanted.has(item.id)) : live;
+      const items = cleanupItemsOf(workspaceAtStart, scoped);
+      if (items.length > 0) {
+        useCleanupStore.getState().offer({
+          taskId,
+          workspaceId: workspaceAtStart,
+          serverId: scope.serverId,
+          createdAt: Date.now(),
+          items,
+        });
+      }
+    } catch {
+      // 询问失败不影响部署结果本身。
+    }
   };
 
-
-  const cleanupRemote = useCallback(() => {
-    const root = remoteRoot;
-    if (!sessionId || !root) return;
-    setRemoteRoot(null);
-    void opsApi.sshExec(sessionId, `rm -rf -- ${shellQuote(root)}`, 30_000).catch(() => undefined);
-  }, [remoteRoot, sessionId]);
 
   /**
    * 把附件按**原目录结构**写到服务器临时目录。
@@ -847,93 +883,115 @@ export function useDeployActions(deps: DeployDeps) {
       return { receipt: t("这一步已暂停：{{reason}}", { reason: blocked }), paused: true };
     }
     if (uploading) return { receipt: "" };
-    // 服务器上的文件（右键添加）本来就在服务器上，不参与"上传到临时目录"。
-    const ready = scope.attachments.filter(
-      (item) => item.state === "ready" && item.uploadState !== "uploaded",
-    );
+    /*
+     * 需要暂存 = 还没有**仍有效**的服务器副本。
+     *
+     * 服务器上的文件（右键添加）本来就在服务器上，不参与暂存；已清理的副本
+     * 必须显式重新上传，不能因为 `uploadState` 是历史值就跳过。
+     */
+    /*
+     * 用**当前 store** 的附件状态判断，而不是发送时的快照：自动暂存可能在
+     * 这个动作之前刚跑完 / 正在跑，拿旧快照会把已经上传的文件再写一遍。
+     */
+    const workspaceAtStart = scope.workspaceId;
+    const liveAttachments = () => {
+      const state = useExtremeStore.getState();
+      return state.workspaceId === workspaceAtStart
+        ? state.attachments
+        : state.workspaces.find((entry) => entry.id === workspaceAtStart)?.messages
+          ? state.workspaces.find((entry) => entry.id === workspaceAtStart)?.context?.attachments ?? []
+          : [];
+    };
+    const liveById = new Map(liveAttachments().map((item) => [item.id, item]));
+    const ready = scope.attachments
+      .map((item) => liveById.get(item.id) ?? item)
+      .filter(
+        (item) =>
+          item.state === "ready" &&
+          item.uploadState !== "cleaned" &&
+          /*
+           * 平台暂存过的副本也要进循环：已经传完的走"核验并复用"，报告里
+           * 才有真实的复用数量；服务器原文件（没有 `staged`）本来就在机器上，
+           * 不参与暂存，也不该算进"上传"。
+           */
+          (item.staged || item.uploadState === "uploading" || !item.remotePath),
+      );
     if (ready.length === 0) {
       if (scopeIsForeground(scope)) setNotice(t("没有可上传的附件。"));
       return { receipt: t("没有需要上传的附件：已经在服务器上了。") };
+    }
+    if (scope.permission === "readonly") {
+      if (scopeIsForeground(scope)) {
+        setNotice(t("只读模式下无法暂存附件。请调整权限后再上传。"));
+      }
+      return { receipt: t("只读模式下无法暂存附件：这一步没有执行。") };
     }
     setUploading(true);
     if (scopeIsForeground(scope)) setNotice(null);
     /**
      * 上传属于**发起时那条对话**：结果写回它自己，右栏也只在它在前台时动。
      */
-    const workspaceAtStart = scope.workspaceId;
     const stillHere = () => scopeIsForeground(scope);
-    const root = `${scope.home ?? "/tmp"}/.bls-ops/extreme-${workspaceAtStart || scope.sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
-    const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+    const root = `${scope.home ?? "/tmp"}/.bls-ops/staging/${workspaceAtStart}`;
     // 先占一行「已请求」：文件多、网慢时用户能立刻看到这一步在做什么。
     if (taskId) upsertReport(taskId, requestedUploadReport(t, { count: ready.length, root }));
     try {
-      const mk = await opsApi.sshExec(scope.sessionId, `mkdir -p ${quote(root)}`, 20_000);
-      if (mk.exit_code !== 0) throw new Error(mk.stderr || t("创建临时目录失败"));
       let written = 0;
       let reused = 0;
       const failures: string[] = [];
+      /*
+       * **统一走暂存服务**：自动暂存、面板重试、发送前补传共用同一条路径，
+       * 不会出现"手动上传传到旧目录、发送时又传一份"。
+       */
       for (const item of ready) {
         const relative = item.path ?? item.name;
-        const target = `${root}/${relative}`;
-
         /*
-         * **已经传过就核验复用**，不重传。
-         *
-         * 几十兆的目录重传一次很慢；但"我这边记着已上传"不等于服务器上还在
-         * —— 用户可能手删了、或上次退出时临时目录被清掉。所以先 `test -e`
-         * 确认，还在就跳过，不在就重新写。
+         * 快照里的附件可能已经在上传中 / 刚传完（自动暂存是后台跑的）：
+         * 读一次**当前会话**的状态再决定，避免把同一份文件再传一遍。
          */
-        if (item.uploadState === "uploaded" && item.remotePath) {
-          const probe = await opsApi.sshExec(
-            scope.sessionId,
-            `test -e ${quote(item.remotePath)} && echo yes || echo no`,
-            8_000,
-          );
-          if (probe.stdout.trim() === "yes") {
-            reused += 1;
-            continue;
-          }
+        const current = useExtremeStore.getState();
+        const live =
+          current.workspaceId === workspaceAtStart
+            ? current.attachments
+            : current.workspaces.find((entry) => entry.id === workspaceAtStart)?.context
+                ?.attachments ?? [];
+        const latest = live.find((entry) => entry.id === item.id) ?? item;
+        /*
+         * 自动暂存可能正在写同一份文件：等它结束再判断。
+         *
+         * 直接并发写会留下半截文件，也会把"后台已经传完"记成这次手动重传。
+         * 服务本身按附件去重，这里 await 的是同一个传输操作。
+         */
+        const settled =
+          latest.uploadState === "uploading"
+            ? await stageWorkspaceAttachment({
+                workspaceId: workspaceAtStart,
+                serverId: scope.serverId,
+                sessionId: scope.sessionId,
+                attachment: latest,
+              })
+            : latest;
+        if (
+          settled.remotePath &&
+          (settled.uploadState === "uploaded" || settled.uploadState === "deployed") &&
+          (await verifyStagedAttachment(scope.sessionId, settled))
+        ) {
+          reused += 1;
+          continue;
         }
-
-        // 写回**原对话**的附件：切到 B 时镜像已经是 B 的，直接写会串。
-        setAttachmentsIn(workspaceAtStart, (current) =>
-          current.map((entry) =>
-            entry.id === item.id
-              ? { ...entry, uploadState: "uploading", remoteError: undefined }
-              : entry,
-          ),
-        );
         try {
-          const dir = target.slice(0, target.lastIndexOf("/"));
-          // 子目录按需创建：`dist/static/css/…` 这种层级要一级级补。
-          const mkdir = await opsApi.sshExec(scope.sessionId, `mkdir -p ${quote(dir)}`, 15_000);
-          if (mkdir.exit_code !== 0) throw new Error(mkdir.stderr.trim() || t("创建目录失败"));
-          if (item.binary && item.data) {
-            await opsApi.sftpWriteBytes(scope.sessionId, target, item.data);
-          } else if (typeof item.text === "string") {
-            await opsApi.sftpWriteFile(scope.sessionId, target, item.text);
-          } else {
-            throw new Error(t("没有可写入的内容"));
-          }
+          const result = await stageWorkspaceAttachment({
+            workspaceId: workspaceAtStart,
+            serverId: scope.serverId,
+            sessionId: scope.sessionId,
+            attachment: settled,
+          });
+          if (!result.remotePath) throw new Error(result.remoteError || t("上传失败"));
           written += 1;
-          setAttachmentsIn(workspaceAtStart, (current) =>
-            current.map((entry) =>
-              entry.id === item.id
-                ? { ...entry, remotePath: target, uploadState: "uploaded", remoteError: undefined }
-                : entry,
-            ),
-          );
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : String(cause);
           // 具体到"哪个文件、为什么"——只报一句"上传失败"等于没信息。
           failures.push(`${relative}：${reason}`);
-          setAttachmentsIn(workspaceAtStart, (current) =>
-            current.map((entry) =>
-              entry.id === item.id
-                ? { ...entry, uploadState: "local", remoteError: reason }
-                : entry,
-            ),
-          );
         }
       }
       // 临时目录跟着快照走：同一轮里的「执行计划」要用它清理旧副本。
@@ -1049,9 +1107,7 @@ export function useDeployActions(deps: DeployDeps) {
    */
   const planUpdate = useCallback(
     (scope: ActionScope, service: ServiceCandidate, originMessageId?: string) => {
-      const zip = scope.attachments.find(
-        (item) => item.uploadState === "uploaded" && /\.zip$/i.test(item.name) && item.remotePath,
-      );
+      const zip = pickStagedZip(scope.attachments, scope.selectedAttachmentIds);
       const deployDir = pickDeployDirs(service)[0];
       const facts: PlanFacts = {
         staticSiteOnServer: false,
@@ -1114,6 +1170,5 @@ export function useDeployActions(deps: DeployDeps) {
     uploadToServer,
     probeServices,
     planUpdate,
-    cleanupRemote,
   };
 }

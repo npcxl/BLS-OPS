@@ -9,7 +9,8 @@ import { useTranslation } from "react-i18next";
 import { ChevronRight } from "@/components/icons";
 import { formatSize } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import type { ExtremeAttachment } from "@/stores/extreme-store";
+import { useExtremeStore, type ExtremeAttachment } from "@/stores/extreme-store";
+import { stageWorkspaceAttachment } from "./attachments/staging";
 import { FileKindIcon } from "./FileKindIcon";
 import { EC } from "./theme";
 
@@ -225,8 +226,14 @@ export const AttachmentTree = memo(function AttachmentTree({
                 <span className="truncate">{node.name}</span>
                 {/* 三态分开显示：只有"已部署"才是最终完成。 */}
                 {node.attachment.uploadState === "uploading" && (
-                  <span className="shrink-0 text-10" style={{ color: EC.fgSubtle }} title={t("上传中…")}>
-                    ⋯
+                  <span
+                    className="shrink-0 text-10 tabular-nums"
+                    style={{ color: EC.fgSubtle }}
+                    title={t("上传中…")}
+                  >
+                    {node.attachment.remoteProgress != null
+                      ? `${node.attachment.remoteProgress}%`
+                      : "⋯"}
                   </span>
                 )}
                 {node.attachment.uploadState === "uploaded" && (
@@ -243,14 +250,30 @@ export const AttachmentTree = memo(function AttachmentTree({
                     ✓
                   </span>
                 )}
-                {node.attachment.remoteError && (
-                  <span
-                    className="shrink-0 text-10"
+                {(node.attachment.uploadState === "cleaned" || node.attachment.stagedCleaned) && (
+                  <span className="shrink-0 text-10 text-fg-subtle">{t("暂存已清理")}</span>
+                )}
+                {node.attachment.remoteError && node.attachment.uploadState !== "uploading" && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-[3px] px-1 text-10 underline-offset-2 hover:underline"
                     style={{ color: EC.danger }}
                     title={node.attachment.remoteError}
+                    onClick={(event) => {
+                      // 只重传这一份：同一个 (workspace, server, 附件 id) 会被去重。
+                      event.stopPropagation();
+                      const state = useExtremeStore.getState();
+                      if (!state.sessionId || !state.workspaceId) return;
+                      void stageWorkspaceAttachment({
+                        workspaceId: state.workspaceId,
+                        serverId: state.serverId,
+                        sessionId: state.sessionId,
+                        attachment: node.attachment,
+                      });
+                    }}
                   >
-                    !
-                  </span>
+                    {t("重试")}
+                  </button>
                 )}
                 {node.attachment.state === "failed" && <span className="shrink-0 text-10">!</span>}
               </button>

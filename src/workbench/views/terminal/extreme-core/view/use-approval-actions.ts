@@ -4,7 +4,7 @@
  * 卡片与通知共用同一个函数（`decideApprovalRef`），避免两套状态各自判断
  * "点了没有"。后端明确回"没有这个等待者"时收起卡片，网络失败则保留按钮。
  */
-import { useCallback, useEffect, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import { opsApi } from "@/api/ops-api";
 import { toAppError } from "@/lib/app-error";
 import {
@@ -17,6 +17,12 @@ import type { TFn } from "./helpers";
 import { approvalKeyOf, type ApprovalEntry } from "./types";
 
 type Store = ReturnType<typeof useExtremeStore.getState>;
+
+/** 通知标题用的一句话：超长命令截断，避免整行看不懂。 */
+function clip(value: string, limit: number): string {
+  const text = value.trim();
+  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
+}
 
 export interface ApprovalActionsDeps {
   t: TFn;
@@ -103,32 +109,58 @@ export function useApprovalActions(deps: ApprovalActionsDeps) {
   decideApprovalRef.current = decideApprovalById;
 
   /*
+   * 翻译函数要**稳定引用**：它以前直接进 effect 依赖，切语言 / `t` 身份变化
+   * 会重装监听器（旧实例的清理还会把新实例的 handlers 摘掉）。
+   */
+  const translateRef = useRef(t);
+  translateRef.current = t;
+  const translate = useCallback(
+    (key: string, options?: Record<string, unknown>) => translateRef.current(key, options),
+    [],
+  );
+
+  /*
    * 审批 → 桌面通知。
    *
    * **每条都在**：A、B 同时等确认时各自一条通知，处理 A 不会顺手把 B 的
    * 通知撤掉；卡片与通知共享同一个状态，任一端处理完另一端同步更新。
    * 只有主窗口收起时才真的弹（判断在 `syncApprovalNotifications` 里）。
+   * 已处理 / 已过期 / 已撤下的条目由通知层过滤，不当作新提醒。
    */
   useEffect(() => {
     syncApprovalNotifications(
       Object.values(approvalEntries).map((entry) => ({
         taskId: entry.approval.taskId,
         callId: entry.approval.callId,
-        operation:
+        /*
+         * 通知标题只放一句话操作：没有 summary 时退回命令首行，但要截断 ——
+         * 一整条带参数的命令会把通知标题撑成一行看不懂的长串。
+         */
+        operation: clip(
           entry.approval.summary?.trim() ||
-          entry.approval.command.split("\n")[0]?.trim() ||
-          entry.approval.path ||
-          "",
+            entry.approval.command.split("\n")[0]?.trim() ||
+            entry.approval.path ||
+            "",
+          80,
+        ),
         server: entry.approval.server,
+        // 通知的点击归属：不带这两项，用户点开会被送到"当前对话"而不是这条审批。
+        serverId: entry.approval.serverId,
+        workspaceId:
+          entry.approval.workspaceId ??
+          useExtremeStore.getState().tasks[entry.approval.taskId]?.workspaceId ??
+          null,
         impact:
           entry.approval.impact?.trim() || t("影响未知：这一步会改动服务器上的内容。"),
         risk: entry.approval.risk === "danger" ? "danger" : "write",
         phase: entry.phase,
         failure: entry.failure,
+        closed: entry.closed,
+        deadline: entry.approval.deadline,
       })),
-      t,
+      translate,
     );
-  }, [approvalEntries, t]);
+  }, [approvalEntries, t, translate]);
 
   /** 通知按钮路由：按 taskId + callId 找到那一条，与卡片走同一个入口。 */
   useEffect(
@@ -143,9 +175,9 @@ export function useApprovalActions(deps: ApprovalActionsDeps) {
             hideApprovalNotification();
           },
         },
-        t,
+        translate,
       ),
-    [t],
+    [translate],
   );
 
   return { decideApprovalById };

@@ -7,6 +7,7 @@
  */
 import type { AgentOutcome } from "@/api/types/agent";
 import type { ExtremeTaskRecord } from "@/api/types/extreme";
+import { i18n } from "@/i18n";
 import type { DeployStep } from "./deploy-plan";
 import type { TaskKind, TaskStatus } from "./task";
 
@@ -170,11 +171,20 @@ export interface TaskCardModel {
 }
 
 export function stepProgress(steps: DeployStep[]): { done: number; total: number; current?: DeployStep } {
-  const total = steps.length;
+  /*
+   * 进度只统计**用户关心的操作**：
+   * * 平台内部纠错的步骤没有发到服务器，不该占一个分母（否则"3/5 步完成"
+   *   里有两步根本没跑过）；
+   * * 被权限 / 用户拦下的步骤是"未执行"，不能算进完成数。
+   */
+  const counted = steps.filter((step) => step.category !== "internal");
+  const total = counted.length;
   let done = 0;
   let current: DeployStep | undefined;
-  for (const step of steps) {
-    if (step.state === "success" || step.state === "skipped") done += 1;
+  for (const step of counted) {
+    const ran = step.state === "success";
+    const planSkipped = step.state === "skipped" && step.category !== "denied";
+    if (ran || planSkipped) done += 1;
     else if (!current && step.state !== "pending" && step.state !== "waiting") current = step;
   }
   return { done, total, current };
@@ -195,19 +205,29 @@ export function artifactsOf(steps: DeployStep[]): TaskArtifact[] {
   return out;
 }
 
+/** 任务类型 → 界面标签（纯 TS 模块里用 i18n 实例，跟随当前语言）。 */
+const KIND_LABEL: Record<TaskKind, string> = {
+  query: "查询",
+  probe: "检测",
+  build: "构建",
+  automation: "自动化",
+  deploy: "部署",
+};
+
 export function titleOf(kind: TaskKind, server: string): string {
-  switch (kind) {
-    case "query":
-      return `${server} · 查询`;
-    case "probe":
-      return `${server} · 检测`;
-    case "build":
-      return `${server} · 构建`;
-    case "automation":
-      return `${server} · 自动化`;
-    default:
-      return `${server} · 部署`;
-  }
+  return `${server} · ${i18n.t(KIND_LABEL[kind] ?? "部署")}`;
+}
+
+/** Never present a lost child run as still running or assume it failed remotely. */
+export function interruptedChildSteps(steps: DeployStep[], t: (key: string) => string): DeployStep[] {
+  return steps.map((step) => {
+    if (!step.groupId?.startsWith("children-")) return step;
+    if (step.state === "pending") return { ...step, state: "skipped", detail: t("任务中断，子任务未开始") };
+    if (step.state === "running") return { ...step, state: "failed", detail: t("任务中断，子任务结果未知"), stderr: t("任务中断，子任务结果未知") };
+    // 中断前的完成结果只能当线索：服务器状态可能已经变化。
+    if (step.state === "success") return { ...step, stale: true };
+    return step;
+  });
 }
 
 /** 历史记录 → 卡片。`plan_json` 解析失败时退化成"空步骤 + 记录摘要"。 */
@@ -231,6 +251,7 @@ export function cardFromRecord(
    * 从检查点恢复；不能继续显示成"执行中"。
    */
   const interrupted = record.status === "running" || record.status === "waiting";
+  if (interrupted) steps = interruptedChildSteps(steps, (key) => i18n.t(key));
   let outcome: AgentOutcome | null = null;
   if (record.outcomeJson) {
     try {
@@ -254,7 +275,7 @@ export function cardFromRecord(
     goal: recordGoal || goal,
     status: interrupted ? "interrupted" : statusOf(record.status),
     result: interrupted
-      ? "上次运行已中断：最后一步是否生效需要先在服务器上核对。"
+      ? i18n.t("上次运行已中断：最后一步是否生效需要先在服务器上核对。")
       : record.summary,
     server: record.server,
     sessionId: record.sessionId,
@@ -301,8 +322,11 @@ export function cardFromPlan(input: {
     result:
       input.result ??
       (failed
-        ? `卡在「${failed.title}」`
-        : `${progress.done}/${progress.total} 步完成`),
+        ? i18n.t("卡在「{{title}}」", { title: failed.title })
+        : i18n.t("{{done}}/{{total}} 步完成", {
+            done: progress.done,
+            total: progress.total,
+          })),
     server: input.server,
     sessionId: input.sessionId,
     createdAt: input.createdAt ?? now,

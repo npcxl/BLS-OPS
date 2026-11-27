@@ -74,6 +74,61 @@ async function render(
   };
 }
 
+it("renders the AI question card inline after its prose", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const questionPart: MessagePart = {
+    kind: "question",
+    id: "question-q1",
+    taskId: "task-1",
+    question: {
+      questionId: "q1",
+      taskId: "task-1",
+      workspaceId: "w",
+      serverId: null,
+      question: "查哪个环境？",
+      kind: "single",
+      options: [{ id: "prod", label: "生产" }],
+      allowCustom: true,
+      deadline: Date.now() + 60_000,
+    },
+    status: "pending",
+    draftSelected: [],
+    draftCustom: "",
+    draftCustomActive: false,
+    answer: null,
+    error: null,
+  };
+  const view = await render([
+    {
+      id: "m-question",
+      role: "assistant",
+      text: "需要你确认一下。",
+      parts: [
+        { kind: "text", id: "text-1", text: "需要你确认一下。" },
+        questionPart,
+      ],
+    },
+  ]);
+  try {
+    expect(view.holder.textContent).toContain("查哪个环境？");
+    expect(view.holder.textContent).toContain("生产");
+    expect(view.holder.querySelector('[data-testid="question-submit"]')).toBeTruthy();
+    await view.rerender(
+      <MessageList
+        messages={[{ id: "m-question", role: "assistant", text: "", parts: [questionPart] }]}
+        asking
+        tasks={{ "task-1": taskOf([stepOf()]) }}
+      />,
+    );
+    expect(view.holder.querySelector('[data-testid="question-submit"]')).toBeTruthy();
+    expect(view.holder.querySelector('[data-testid="extreme-thinking"]')).toBeNull();
+  } finally {
+    await view.cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
 it("renders prose → command → prose in the order they happened", async () => {
   const language = i18n.language;
   await i18n.changeLanguage("zh-CN");

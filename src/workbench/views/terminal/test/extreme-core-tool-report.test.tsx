@@ -48,12 +48,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
-vi.mock("@/components/backgrounds/shape-waves", () => ({ default: () => null }));
+vi.mock("@/components/backgrounds/galaxy", () => ({ default: () => null }));
 vi.mock("@/components/backgrounds/aero-shards", () => ({ default: () => null }));
 vi.mock("@/hooks/use-theme", () => ({
   getThemeMode: () => "dark",
   setThemeMode: () => undefined,
   useThemeMode: () => ["dark", () => undefined],
+  useIsDarkTheme: () => true,
 }));
 vi.mock("../extreme-core/preflight", () => ({
   runPreflight: () => Promise.reject(new Error("Preflight unavailable in test")),
@@ -119,10 +120,27 @@ it("上传结果挂在操作链下面，不再变成用户气泡，模型拿到�
   // `aiAgentRun` 只负责"启动"：真正结束由 `finished` 事件驱动。
   const run = vi.spyOn(opsApi, "aiAgentRun").mockResolvedValue(snapshot());
   const snap = vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot());
-  const ssh = vi
-    .spyOn(opsApi, "sshExec")
-    .mockResolvedValue({ stdout: "no", stderr: "", exit_code: 0, truncated: false });
-  const write = vi.spyOn(opsApi, "sftpWriteFile").mockResolvedValue(undefined);
+  const sizes = new Map<string, number>();
+  const ssh = vi.spyOn(opsApi, "sshExec").mockImplementation(async (_session, command) => {
+    if (command.includes("mkdir -p")) {
+      const parent = /mkdir -p -- '([^']+)'/.exec(command)?.[1] ?? "";
+      return { stdout: `/root/${parent}`, stderr: "", exit_code: 0, truncated: false };
+    }
+    if (command.includes("wc -c")) {
+      const path = /test -f '([^']+)'/.exec(command)?.[1] ?? "";
+      const size = sizes.get(path) ?? sizes.get(`${path}.part`) ?? 0;
+      return { stdout: String(size), stderr: "", exit_code: 0, truncated: false };
+    }
+    return { stdout: "no", stderr: "", exit_code: 0, truncated: false };
+  });
+  const write = vi.spyOn(opsApi, "sftpWriteChunk").mockImplementation(
+    async (_session, path, offset, base64) => {
+      const total = offset + atob(base64).length;
+      sizes.set(path, total);
+      return total;
+    },
+  );
+  const finish = vi.spyOn(opsApi, "sftpStageFinish").mockResolvedValue(undefined);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const holder = document.body.appendChild(document.createElement("div"));
   const root = createRoot(holder);
@@ -157,10 +175,11 @@ it("上传结果挂在操作链下面，不再变成用户气泡，模型拿到�
 
     // 2) 操作链下面只有一行上传结果，目录可点。
     expect(write).toHaveBeenCalledTimes(3);
-    expect(holder.textContent).toContain("已上传 3 个文件到服务器临时目录");
+    // 自动暂存已经传过：这次 [[upload]] 只核验并复用，不再重传。
+    expect(holder.textContent).toContain("复用 3 个");
     expect(holder.querySelectorAll(".extreme-core-report")).toHaveLength(1);
     const path = holder.querySelector(".extreme-core-report-path");
-    expect(path?.textContent).toContain("/.bls-ops/extreme-");
+    expect(path?.textContent).toContain("/.bls-ops/staging/");
 
     // 3) 模型拿到了真实回执，并且续跑仍挂在同一个 taskId 上。
     expect(run).toHaveBeenCalledTimes(2);
@@ -168,7 +187,7 @@ it("上传结果挂在操作链下面，不再变成用户气泡，模型拿到�
     expect(followUp.taskId).toBe(taskId);
     expect(
       followUp.messages.some((message: { content: string }) =>
-        message.content.includes("已上传 3 个文件到"),
+        message.content.includes("复用 3 个"),
       ),
     ).toBe(true);
     await emitAgent({ taskId, kind: "text_delta", content: "正在检查上传结果。[[up" });
@@ -188,6 +207,7 @@ it("上传结果挂在操作链下面，不再变成用户气泡，模型拿到�
     snap.mockRestore();
     ssh.mockRestore();
     write.mockRestore();
+    finish.mockRestore();
     vi.unstubAllGlobals();
     channels.clear();
     await i18n.changeLanguage(language);
@@ -197,12 +217,17 @@ it("上传结果挂在操作链下面，不再变成用户气泡，模型拿到�
 it("上传失败：步骤自己写清原因，用户正在输入的草稿不动", async () => {
   const run = vi.spyOn(opsApi, "aiAgentRun").mockResolvedValue(snapshot());
   const snap = vi.spyOn(opsApi, "aiAgentSnapshot").mockResolvedValue(snapshot());
-  const ssh = vi
-    .spyOn(opsApi, "sshExec")
-    .mockResolvedValue({ stdout: "no", stderr: "", exit_code: 0, truncated: false });
+  const ssh = vi.spyOn(opsApi, "sshExec").mockImplementation(async (_session, command) => {
+    if (command.includes("mkdir -p")) {
+      const parent = /mkdir -p -- '([^']+)'/.exec(command)?.[1] ?? "";
+      return { stdout: `/root/${parent}`, stderr: "", exit_code: 0, truncated: false };
+    }
+    return { stdout: "no", stderr: "", exit_code: 0, truncated: false };
+  });
   const write = vi
-    .spyOn(opsApi, "sftpWriteFile")
+    .spyOn(opsApi, "sftpWriteChunk")
     .mockRejectedValue(new Error("Permission denied"));
+  const finish = vi.spyOn(opsApi, "sftpStageFinish").mockResolvedValue(undefined);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const holder = document.body.appendChild(document.createElement("div"));
   const root = createRoot(holder);
@@ -256,6 +281,7 @@ it("上传失败：步骤自己写清原因，用户正在输入的草稿不动"
     snap.mockRestore();
     ssh.mockRestore();
     write.mockRestore();
+    finish.mockRestore();
     vi.unstubAllGlobals();
     channels.clear();
     await i18n.changeLanguage(language);
@@ -279,12 +305,16 @@ it("模型正文按增量上屏：同一条气泡长大，内部标记不显示"
     const taskId = run.mock.calls[0][0].taskId;
 
     await emitAgent({ taskId, kind: "text_delta", content: "先看一下。" });
+    // 正文按帧合并、按节奏补间上屏：等补间跑完再断言。
+    await flush();
     expect(holder.textContent).toContain("先看一下。");
 
     // 半截标记（`[[up`）先压住不显示，等 `]]` 到了再当标记删掉。
     await emitAgent({ taskId, kind: "text_delta", content: "\n[[up" });
+    await flush(1);
     expect(holder.textContent).not.toContain("[[up");
     await emitAgent({ taskId, kind: "text_delta", content: "load]]" });
+    await flush();
     expect(holder.textContent).not.toContain("[[upload]]");
     expect(holder.textContent).toContain("先看一下。");
 

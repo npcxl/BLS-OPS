@@ -203,6 +203,13 @@ export function PlanCard({
           </button>
         </header>
 
+        <div className="mx-4 mt-1 h-1 overflow-hidden rounded-full bg-surface-3/80" aria-hidden="true">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out"
+            style={{ width: `${total > 0 ? Math.round((done / total) * 100) : 0}%` }}
+          />
+        </div>
+
         <p className="extreme-core-plan-current" title={current?.title || plan.summary}>
           {current
             ? statusUnknown

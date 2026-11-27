@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEventHandler } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -112,6 +112,7 @@ function TaskSidebarInner({
   onClearCurrent,
   activePage,
   onOpenPage,
+  onPageMouseDown,
   onShowChat,
 }: {
   entries: ExtremeWorkspace[];
@@ -140,6 +141,7 @@ function TaskSidebarInner({
   /** 主内容区当前打开的管理页；null = 聊天。 */
   activePage?: RailPage | null;
   onOpenPage?: (page: RailPage) => void;
+  onPageMouseDown?: MouseEventHandler<HTMLButtonElement>;
   /** 正在管理页时点当前对话：回到聊天，不重新加载会话。 */
   onShowChat?: () => void;
 }) {
@@ -687,6 +689,7 @@ function TaskSidebarInner({
               data-testid={`rail-${id}`}
               aria-current={active ? "page" : undefined}
               aria-label={t(label)}
+              onMouseDown={onPageMouseDown}
               onClick={() => onOpenPage?.(id)}
               className={cn(
                 "transition-colors duration-[120ms] ease-out focus-visible:outline-2 focus-visible:outline-accent",

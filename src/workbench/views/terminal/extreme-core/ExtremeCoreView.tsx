@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ConfigProvider } from "antd";
 import { useTranslation } from "react-i18next";
 import { opsApi } from "@/api/ops-api";
@@ -561,6 +561,28 @@ export function ExtremeCoreView() {
    * 草稿、滚动位置和右栏都不重置；后台任务也照常继续。
    */
   const [mainView, setMainView] = useState<RailPage | null>(null);
+  const chatContentRef = useRef<HTMLDivElement>(null);
+  const composerFocusOnReturn = useRef<{ input: HTMLTextAreaElement; workspaceId: typeof workspaceId } | null>(null);
+
+  const focusedComposer = () => {
+    const input = chatContentRef.current?.querySelector<HTMLTextAreaElement>("[data-extreme-composer] textarea");
+    return input && document.activeElement === input ? input : null;
+  };
+  const openManagementPage = (page: RailPage) => {
+    if (!mainView) {
+      const input = focusedComposer();
+      composerFocusOnReturn.current = input ? { input, workspaceId } : null;
+    }
+    setMainView(page);
+  };
+  useLayoutEffect(() => {
+    if (mainView) return;
+    const restore = composerFocusOnReturn.current;
+    composerFocusOnReturn.current = null;
+    if (restore && restore.workspaceId === workspaceId && restore.input.isConnected) {
+      restore.input.focus({ preventScroll: true });
+    }
+  }, [mainView, workspaceId]);
   /** MCP 页默认标签：从输入区「打开市场 / 管理连接」进来时直达对应页。 */
   const [mcpTab, setMcpTab] = useState<"market" | "connections">("market");
   /**
@@ -2634,6 +2656,7 @@ export function ExtremeCoreView() {
             busy={executing || workspaceRunning || uploading || probing}
             /* 新建任务 = 主动开一条空白对话（唯一会主动建记录的地方之一）。 */
             onNew={() => {
+              composerFocusOnReturn.current = null;
               switchRequest.current += 1;
               if (switchFrame.current !== null) cancelAnimationFrame(switchFrame.current);
               setSwitchingWorkspace(null);
@@ -2641,6 +2664,7 @@ export function ExtremeCoreView() {
               handleNewWorkspace();
             }}
             onOpen={(id) => {
+              if (id !== workspaceId) composerFocusOnReturn.current = null;
               setMainView(null);
               if (id === useExtremeStore.getState().workspaceId) {
                 switchRequest.current += 1;
@@ -2672,9 +2696,13 @@ export function ExtremeCoreView() {
             hasContext={hasContext}
             onClearCurrent={clearContext}
             activePage={mainView}
+            onPageMouseDown={(event) => {
+              // 鼠标打开管理页时，先保留文本框焦点供页面切回后恢复。
+              if (event.button === 0 && !mainView && focusedComposer()) event.preventDefault();
+            }}
             onOpenPage={(page) => {
               if (page === "mcp") setMcpTab("market");
-              setMainView(page);
+              openManagementPage(page);
             }}
             onShowChat={() => setMainView(null)}
           />
@@ -2736,7 +2764,7 @@ export function ExtremeCoreView() {
            * 聊天区始终挂载，只用 hidden 隐藏：切到设置 / 权限 / MCP 再回来，
            * 滚动位置、草稿和输入区状态都保持原样，后台任务继续输出。
            */}
-          <div className={cn("flex min-h-0 flex-1 flex-col", mainView && "hidden")}>
+          <div ref={chatContentRef} className={cn("flex min-h-0 flex-1 flex-col", mainView && "hidden")}>
           {/*
            * 只读提示：这条对话所属的服务器现在没有连接。
            *
@@ -2871,6 +2899,7 @@ export function ExtremeCoreView() {
           <SendQueuePanel
             items={currentQueue}
             running={asking || workspaceRunning}
+            waitingLabel={activeTask?.goal?.trim() || activeTask?.title?.trim() || null}
             onMoveUp={moveSendUp}
             onEdit={editQueuedSend}
             onDrop={dropSend}
@@ -2900,6 +2929,7 @@ export function ExtremeCoreView() {
             onOpenChangesPane={() => openPaneTab("changes")}
             onClearContext={clearContext}
             onNewWorkspace={() => {
+              composerFocusOnReturn.current = null;
               setMainView(null);
               handleNewWorkspace();
             }}
@@ -2929,7 +2959,7 @@ export function ExtremeCoreView() {
             onClearFocus={() => setFocusId(null)}
             permission={permission}
             onPermissionChange={setPermission}
-            onManagePermissions={() => setMainView("permissions")}
+            onManagePermissions={() => openManagementPage("permissions")}
             connected={Boolean(sessionId)}
             contextMode={chatPrefs.context}
             onContextModeChange={setContextMode}
@@ -2944,14 +2974,16 @@ export function ExtremeCoreView() {
             sendWhileRunning={sendWhileRunning}
             onSendWhileRunningChange={setSendWhileRunning}
             maxRows={composerMaxRows}
+            minRows={welcome ? 1 : 2}
+            suspended={Boolean(mainView)}
             mcp={mcpCapabilities}
             onOpenMcpMarket={() => {
               setMcpTab("market");
-              setMainView("mcp");
+              openManagementPage("mcp");
             }}
             onManageMcp={() => {
               setMcpTab("connections");
-              setMainView("mcp");
+              openManagementPage("mcp");
             }}
           />
           {/*
@@ -3095,8 +3127,6 @@ export function ExtremeCoreView() {
                 attachment: item,
               });
             }}
-            onUploadAttachments={() => void uploadToServer(currentScope())}
-            uploadingAttachments={uploading}
             cleanupRequests={cleanupRequests.filter((item) => item.workspaceId === workspaceId)}
             onRunCleanup={(request) => void requestCleanupDelete(request)}
             onDismissCleanup={(taskId) => useCleanupStore.getState().dismiss(taskId)}

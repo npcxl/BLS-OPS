@@ -39,9 +39,18 @@ interface TriggerProps {
   ref?: Ref<HTMLElement>;
   onPointerEnter?: (event: ReactPointerEvent<HTMLElement>) => void;
   onPointerLeave?: (event: ReactPointerEvent<HTMLElement>) => void;
+  onPointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
   onFocus?: (event: FocusEvent<HTMLElement>) => void;
   onBlur?: (event: FocusEvent<HTMLElement>) => void;
   "aria-describedby"?: string;
+}
+
+function isKeyboardFocus(element: HTMLElement): boolean {
+  try {
+    return element.matches(":focus-visible");
+  } catch {
+    return false;
+  }
 }
 
 const GAP = 8;
@@ -267,6 +276,15 @@ export function Tooltip({
     };
   }, [open, closeNow]);
 
+  const hasLabel = label != null && label !== "";
+
+  useEffect(() => {
+    if (hasLabel) return;
+    clearEnterTimer();
+    clearLeaveTimer();
+    closeNow();
+  }, [hasLabel, closeNow]);
+
   useEffect(
     () => () => {
       clearEnterTimer();
@@ -275,7 +293,7 @@ export function Tooltip({
     [],
   );
 
-  if (!isValidElement(children) || label == null || label === "") {
+  if (!isValidElement(children) || !hasLabel) {
     return children;
   }
 
@@ -304,10 +322,19 @@ export function Tooltip({
       scheduleClose();
     },
 
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      child.props.onPointerDown?.(event);
+      clearEnterTimer();
+      clearLeaveTimer();
+      closeNow();
+    },
+
     onFocus: (event: FocusEvent<HTMLElement>) => {
       child.props.onFocus?.(event);
 
-      // 键盘聚焦立即显示，不让键盘用户等待。
+      // 仅键盘聚焦（:focus-visible）才自动展示提示；鼠标点击或下拉关闭后
+      // 程序回焦绝不把 tooltip 弹出来钉死在屏幕上。
+      if (!isKeyboardFocus(event.currentTarget)) return;
       clearEnterTimer();
       openNow();
     },

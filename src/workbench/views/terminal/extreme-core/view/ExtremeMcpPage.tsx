@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/input";
 import { PaneTabBar } from "@/components/ui/pane-tab-bar";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ErrorState } from "@/components/ui/error-state";
@@ -678,18 +679,18 @@ function ConnectionForm({
           </p>
         </div>
         <div className="flex flex-wrap gap-4 text-11 text-fg-muted">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
+          <label className="flex cursor-pointer items-center gap-2">
+            <Checkbox
+              className="cursor-pointer"
               data-testid="mcp-enabled"
               checked={draft.enabled}
               onChange={(event) => onChange({ ...draft, enabled: event.target.checked })}
             />
             {t("启用这个连接")}
           </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
+          <label className="flex cursor-pointer items-center gap-2">
+            <Checkbox
+              className="cursor-pointer"
               data-testid="mcp-default-enabled"
               checked={draft.defaultEnabled}
               onChange={(event) =>
@@ -1375,9 +1376,8 @@ export function ExtremeMcpPage({
                       key={skill.id}
                       className="flex cursor-pointer items-start gap-3 rounded-2xl border border-line/60 bg-surface-2 px-4 py-3 shadow-[0_2px_12px_rgb(0_0_0/0.04)] transition-colors hover:border-line-strong hover:bg-surface-hover/40"
                     >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
+                      <Checkbox
+                        className="mt-0.5 cursor-pointer"
                         checked={on}
                         onChange={(event) => setChoice(sessionKey, id, event.target.checked)}
                       />
@@ -1588,9 +1588,8 @@ export function ExtremeMcpPage({
                               key={tool.name}
                               className="flex items-start gap-2 rounded px-1 py-1 hover:bg-surface-hover/60"
                             >
-                              <input
-                                type="checkbox"
-                                className="mt-0.5"
+                              <Checkbox
+                                className="mt-0.5 cursor-pointer"
                                 data-testid={`mcp-tool-${server.id}-${tool.name}`}
                                 checked={tool.enabled}
                                 onChange={(event) =>

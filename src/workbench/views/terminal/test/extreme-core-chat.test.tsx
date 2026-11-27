@@ -1946,6 +1946,65 @@ it("左侧会话右键可重命名（Enter 保存）并删除；删完回到欢�
   }
 });
 
+it("保留模型加载前的输入焦点，并在返回同一对话时恢复光标", async () => {
+  type Providers = Awaited<ReturnType<typeof opsApi.aiProviderList>>;
+  let resolveProviders!: (providers: Providers) => void;
+  const providerList = vi.spyOn(opsApi, "aiProviderList").mockImplementation(
+    () => new Promise((resolve) => { resolveProviders = resolve; }),
+  );
+  const memories = vi.spyOn(opsApi, "extremeMemoryList").mockResolvedValue([]);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  useExtremeStore.getState().enter("srv-focus", "测试", "extreme-focus", "root@127.0.0.1:22");
+  useExtremeStore.getState().ensureWorkspace();
+  try {
+    await act(async () => root.render(<ExtremeCoreView />));
+    const composer = holder.querySelector("[data-extreme-composer]")!;
+    const input = composer.querySelector("textarea")!;
+    await act(async () => {
+      input.focus();
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "保留草稿");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.setSelectionRange(2, 2);
+      resolveProviders([{ id: "p1", name: "Test", model: "test-model", enabled: true, is_default: true }] as Providers);
+    });
+    expect(composer.querySelector("textarea")).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(2);
+    expect(composer.textContent).toContain("test-model");
+
+    const memory = holder.querySelector<HTMLButtonElement>('[data-testid="rail-memory"]')!;
+    const back = () => holder.querySelector<HTMLButtonElement>('button[aria-label="返回对话"]')!;
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 });
+    await act(async () => memory.dispatchEvent(down));
+    expect(down.defaultPrevented).toBe(true);
+    await act(async () => memory.click());
+    // jsdom does not move focus automatically when the chat becomes hidden.
+    back().focus();
+    await act(async () => back().click());
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("保留草稿");
+    expect(input.selectionStart).toBe(2);
+
+    memory.focus();
+    await act(async () => memory.click());
+    await act(async () => back().click());
+    expect(document.activeElement).toBe(memory);
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    useExtremeStore.getState().exit();
+    providerList.mockRestore();
+    memories.mockRestore();
+    vi.unstubAllGlobals();
+    channels.clear();
+    await i18n.changeLanguage(language);
+  }
+});
+
 it("输入区是官方 Prompt Bar：模型 / 思考强度 / 上下文都在组件里选，并按模型记住", async () => {
   const providers = vi.spyOn(opsApi, "aiProviderList").mockResolvedValue([
     {

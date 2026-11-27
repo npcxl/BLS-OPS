@@ -247,8 +247,12 @@ export function ExportDialog({
       <div className="flex flex-col gap-5">
         <Field label={t("文件格式")}>
           <Select ariaLabel={t("文件格式")} value={format} disabled={busy}
-            options={EXPORT_FORMATS.map(option => ({ ...option, disabled: option.value === "sql" && !table,
-              hint: option.value === "sql" && !table ? t("仅表数据") : option.hint }))}
+            options={EXPORT_FORMATS.map(option => ({
+              value: option.value,
+              label: option.label,
+              disabled: option.value === "sql" && !table,
+              hint: option.value === "sql" && !table ? t("仅表数据") : option.hint,
+            }))}
             onChange={value => {
               const next = value as ExportFormat;
               setFormat(next);

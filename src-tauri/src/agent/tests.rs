@@ -1122,8 +1122,14 @@ mod budget_tests {
     /// L1 同时瘦身旧的文本协议 `<tool_result>` 与历史 `操作记录（` 块，避免多轮历史撑爆上下文。
     #[test]
     fn l1_slims_old_text_tool_results_and_historical_session_facts() {
-        let long_fact = format!("操作记录（成功）：nginx -T\n标准输出：\n{}", long_tool_result(60));
-        let long_xml = format!("<tool_result name=\"run_shell\" exit=\"0\">\n{}\n</tool_result>", long_tool_result(60));
+        let long_fact = format!(
+            "操作记录（成功）：nginx -T\n标准输出：\n{}",
+            long_tool_result(60)
+        );
+        let long_xml = format!(
+            "<tool_result name=\"run_shell\" exit=\"0\">\n{}\n</tool_result>",
+            long_tool_result(60)
+        );
         let mut messages = vec![
             json!({"role": "system", "content": "系统提示"}),
             json!({"role": "user", "content": "第一轮"}),
@@ -1312,7 +1318,13 @@ mod expression_tests {
         assert_eq!(text, "先执行 docker ps");
         assert!(!text.contains("确认结果后再继续"), "不要模板化的固定尾巴");
         assert_eq!(
-            preamble_text(Lang::Zh, None, "read_file", Some("/etc/nginx/nginx.conf"), ""),
+            preamble_text(
+                Lang::Zh,
+                None,
+                "read_file",
+                Some("/etc/nginx/nginx.conf"),
+                ""
+            ),
             "先读取 /etc/nginx/nginx.conf"
         );
     }
@@ -1634,87 +1646,274 @@ mod loop_tests {
     fn parallel_input() -> AgentInput {
         static TEST_SERVER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let mut input = loop_input(None);
-        input.server_id = Some(format!("test-server-{}", TEST_SERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        input.server_id = Some(format!(
+            "test-server-{}",
+            TEST_SERVER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         input
     }
 
-    struct ParallelIo { base: FakeIo, barrier: tokio::sync::Barrier, dependent: bool, use_mcp: bool, mcp_calls: Mutex<Vec<String>> }
+    struct ParallelIo {
+        base: FakeIo,
+        barrier: tokio::sync::Barrier,
+        dependent: bool,
+        use_mcp: bool,
+        scripted_parent: bool,
+        mcp_calls: Mutex<Vec<String>>,
+    }
     impl AgentIo for ParallelIo {
-        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
-        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
-        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
-        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> {
+        fn emit(&self, event: AgentEvent) {
+            self.base.emit(event);
+        }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+            self.base.sink()
+        }
+        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+            self.base.connected(id)
+        }
+        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+            self.base.verify_server(id, server)
+        }
+        fn exec<'a>(
+            &'a self,
+            id: &'a str,
+            command: &'a str,
+            timeout: Duration,
+            sink: UnboundedSender<ExecChunk>,
+        ) -> IoFuture<'a, Result<ExecOutput, String>> {
             Box::pin(async move {
-                tokio::time::timeout(Duration::from_secs(3), self.barrier.wait()).await.map_err(|_| "child operations did not overlap".to_string())?;
+                tokio::time::timeout(Duration::from_secs(3), self.barrier.wait())
+                    .await
+                    .map_err(|_| "child operations did not overlap".to_string())?;
                 self.base.exec(id, command, timeout, sink).await
             })
         }
-        fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
-            Box::pin(async move { self.mcp_calls.lock().unwrap().push(binding.tool.clone()); Ok("mock evidence".into()) })
+        fn call_mcp<'a>(
+            &'a self,
+            binding: &'a crate::mcp::McpBinding,
+            _args: &'a Value,
+        ) -> IoFuture<'a, Result<String, String>> {
+            Box::pin(async move {
+                self.mcp_calls.lock().unwrap().push(binding.tool.clone());
+                Ok("mock evidence".into())
+            })
         }
-        fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+        fn chat<'a>(
+            &'a self,
+            messages: Vec<Value>,
+            tools: Value,
+            cancel: &'a AiCancel,
+            delta: Arc<dyn Fn(&str) + Send + Sync>,
+        ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
             Box::pin(async move {
                 let text = serde_json::to_string(&messages).unwrap();
                 let has_result = text.contains("<tool_result");
                 let child = text.contains("Assigned read-only investigation:");
+                if self.scripted_parent && !child {
+                    return self.base.chat(messages, tools, cancel, delta).await;
+                }
                 let content = if self.use_mcp && child {
-                    if has_result { "checked with MCP" } else { r#"<tool name="mcp__selected__inspect">{}</tool>"# }
+                    if has_result {
+                        "checked with MCP"
+                    } else {
+                        r#"<tool name="mcp__selected__inspect">{}</tool>"#
+                    }
                 } else if text.contains("Assigned read-only investigation: check disk") {
-                    if has_result { "disk checked" } else { r#"<tool name="run_shell">{"command":"df -h"}</tool>"# }
+                    if has_result {
+                        "disk checked"
+                    } else {
+                        r#"<tool name="run_shell">{"command":"df -h"}</tool>"#
+                    }
                 } else if text.contains("Assigned read-only investigation: check memory") {
-                    if has_result { "memory checked" } else { r#"<tool name="run_shell">{"command":"free -h"}</tool>"# }
-                } else if has_result { "checks finished" } else if self.dependent {
+                    if has_result {
+                        "memory checked"
+                    } else {
+                        r#"<tool name="run_shell">{"command":"free -h"}</tool>"#
+                    }
+                } else if has_result {
+                    "checks finished"
+                } else if self.dependent {
                     r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory","depends_on":["disk"]}]}</tool>"#
                 } else {
                     r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"disk","goal":"check disk"},{"title":"memory","goal":"check memory"}]}</tool>"#
                 };
-                Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                Ok(ToolReply {
+                    message: json!({"role":"assistant","content":content}),
+                    content: content.to_string(),
+                    tool_calls: Vec::new(),
+                })
             })
         }
     }
 
     #[tokio::test]
     async fn parallel_children_are_separate_read_only_runs() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(2),
+            dependent: false,
+            use_mcp: false,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let result = run_loop(&handle, &parallel_input(), &io, None).await;
         assert!(result.is_ok(), "{result:?}");
         let commands = io.base.executed();
         assert!(commands.iter().any(|c| c.contains("df -h")), "{commands:?}");
-        assert!(commands.iter().any(|c| c.contains("free -h")), "{commands:?}");
-        let children: Vec<_> = handle.snapshot().steps.into_iter().filter(|s| s.tool == "child_agent").collect();
+        assert!(
+            commands.iter().any(|c| c.contains("free -h")),
+            "{commands:?}"
+        );
+        let children: Vec<_> = handle
+            .snapshot()
+            .steps
+            .into_iter()
+            .filter(|s| s.tool == "child_agent")
+            .collect();
         assert_eq!(children.len(), 2);
-        assert!(children.iter().all(|s| s.state == "success"), "{children:?}");
-        assert!(children.iter().all(|s| s.child_usage.as_ref().is_some_and(|usage| usage.requests >= 2)), "child usage should be retained: {children:?}");
+        assert!(
+            children.iter().all(|s| s.state == "success"),
+            "{children:?}"
+        );
+        assert!(
+            children.iter().all(|s| s
+                .child_usage
+                .as_ref()
+                .is_some_and(|usage| usage.requests >= 2)),
+            "child usage should be retained: {children:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_delegation_is_reconsidered_before_serial_probes_start() {
+        let io = ParallelIo {
+            base: FakeIo::new(&[
+                r#"<tool name="submit_plan">{"steps":[{"id":"disk","title":"磁盘","action":"查磁盘","verify":"使用量","kind":"probe"},{"id":"memory","title":"内存","action":"查内存","verify":"使用量","kind":"probe"}]}</tool>"#,
+                r#"<tool name="run_shell">{"step":"disk","command":"df -h"}</tool><tool name="run_shell">{"step":"memory","command":"free -h"}</tool>"#,
+                r#"<tool name="submit_plan">{"steps":[{"id":"health","title":"健康检查","action":"核查磁盘和内存","verify":"各项有输出","kind":"probe"}]}</tool>"#,
+                r#"<tool name="parallel_readonly_agents">{"step":"health","tasks":[{"title":"磁盘","goal":"check disk"},{"title":"内存","goal":"check memory"}]}</tool>"#,
+                "健康检查完成。",
+            ]),
+            barrier: tokio::sync::Barrier::new(2),
+            dependent: false,
+            use_mcp: false,
+            scripted_parent: true,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.plan_required = true;
+        input.messages = vec![AgentTurn {
+            role: "user".into(),
+            content: "看看这台服务器最近稳不稳".into(),
+        }];
+
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(io.base.executed().len(), 2);
+        let snapshot = handle.snapshot();
+        assert_eq!(
+            snapshot
+                .steps
+                .iter()
+                .filter(|step| step.tool == "child_agent" && step.state == "success")
+                .count(),
+            2
+        );
+        assert_eq!(
+            snapshot
+                .steps
+                .iter()
+                .filter(|step| step.category == Some(crate::agent::StepCategory::Internal))
+                .count(),
+            2
+        );
+        assert_eq!(snapshot.plan.unwrap().step("health").unwrap().state, "done");
+    }
+
+    #[tokio::test]
+    async fn child_delegation_review_allows_serial_fallback_after_one_round() {
+        let lookup = r#"<tool name="run_shell">{"step":"service","command":"systemctl status nginx"}</tool>"#;
+        let io = FakeIo::new(&[
+            r#"<tool name="submit_plan">{"steps":[{"id":"service","title":"定位服务","action":"获取服务信息","verify":"找到服务","kind":"probe"},{"id":"logs","title":"查日志","action":"读取已定位服务的日志","verify":"取得日志","kind":"probe"}]}</tool>"#,
+            lookup,
+            lookup,
+            r#"<tool name="run_shell">{"step":"logs","command":"journalctl -u nginx -n 10"}</tool>"#,
+            "已定位服务并读取日志。",
+        ]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.plan_required = true;
+
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        let commands = io.executed();
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].contains("systemctl status nginx"));
+        assert!(commands[1].contains("journalctl -u nginx"));
+        assert!(!handle
+            .snapshot()
+            .steps
+            .iter()
+            .any(|step| step.tool == "child_agent"));
     }
 
     #[tokio::test]
     async fn selected_read_only_mcp_is_available_to_child_agents() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: true, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(2),
+            dependent: false,
+            use_mcp: true,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.mcp_tools = vec![crate::mcp::McpBinding {
-            exposed_name: "mcp__selected__inspect".into(), server_id: "selected".into(), server_name: "selected".into(),
-            tool: "inspect".into(), description: "read-only inspection".into(), input_schema: json!({"type":"object"}),
-            read_only: true, config: crate::mcp::McpServerConfig::default(),
+            exposed_name: "mcp__selected__inspect".into(),
+            server_id: "selected".into(),
+            server_name: "selected".into(),
+            tool: "inspect".into(),
+            description: "read-only inspection".into(),
+            input_schema: json!({"type":"object"}),
+            read_only: true,
+            config: crate::mcp::McpServerConfig::default(),
         }];
         assert!(run_loop(&handle, &input, &io, None).await.is_ok());
         assert_eq!(io.mcp_calls.lock().unwrap().len(), 2);
-        assert!(handle.snapshot().steps.iter().filter(|s| s.tool == "child_agent").all(|s| s.state == "success"));
+        assert!(handle
+            .snapshot()
+            .steps
+            .iter()
+            .filter(|s| s.tool == "child_agent")
+            .all(|s| s.state == "success"));
     }
 
     #[tokio::test]
     async fn child_agents_cannot_invoke_write_mcp_even_in_full_mode() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: true, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(2),
+            dependent: false,
+            use_mcp: true,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.permission_mode = crate::agent::PermissionMode::Full;
         input.auto_approve_writes = true;
         input.mcp_tools = vec![crate::mcp::McpBinding {
-            exposed_name: "mcp__selected__inspect".into(), server_id: "selected".into(), server_name: "selected".into(),
-            tool: "inspect".into(), description: "write operation".into(), input_schema: json!({"type":"object"}),
-            read_only: false, config: crate::mcp::McpServerConfig::default(),
+            exposed_name: "mcp__selected__inspect".into(),
+            server_id: "selected".into(),
+            server_name: "selected".into(),
+            tool: "inspect".into(),
+            description: "write operation".into(),
+            input_schema: json!({"type":"object"}),
+            read_only: false,
+            config: crate::mcp::McpServerConfig::default(),
         }];
         let _ = run_loop(&handle, &input, &io, None).await;
         assert!(io.mcp_calls.lock().unwrap().is_empty());
@@ -1722,7 +1921,14 @@ mod loop_tests {
 
     #[tokio::test]
     async fn child_dependencies_wait_and_failure_blocks_dependents() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(1), dependent: true, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(1),
+            dependent: true,
+            use_mcp: false,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.carry_steps.push(crate::agent::AgentStep {
@@ -1741,24 +1947,50 @@ mod loop_tests {
         let memory = commands.iter().position(|c| c.contains("free -h")).unwrap();
         assert!(disk < memory);
 
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(1), dependent: true, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(1),
+            dependent: true,
+            use_mcp: false,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         io.base.failures.lock().unwrap().push("df -h".into());
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let _ = run_loop(&handle, &parallel_input(), &io, None).await;
         assert!(!io.base.executed().iter().any(|c| c.contains("free -h")));
-        assert!(handle.snapshot().steps.iter().any(|s| s.tool == "child_agent" && s.state == "skipped"));
+        assert!(handle
+            .snapshot()
+            .steps
+            .iter()
+            .any(|s| s.tool == "child_agent" && s.state == "skipped"));
     }
 
     #[tokio::test]
     async fn parallel_child_failure_is_not_reported_as_success() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(2), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(2),
+            dependent: false,
+            use_mcp: false,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         io.base.failures.lock().unwrap().push("free -h".to_string());
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let _ = run_loop(&handle, &parallel_input(), &io, None).await;
         let snapshot = handle.snapshot();
-        let aggregate = snapshot.steps.iter().find(|s| s.tool == "parallel_readonly_agents").unwrap();
+        let aggregate = snapshot
+            .steps
+            .iter()
+            .find(|s| s.tool == "parallel_readonly_agents")
+            .unwrap();
         assert_eq!(aggregate.state, "failed");
-        let children: Vec<_> = snapshot.steps.iter().filter(|s| s.tool == "child_agent").collect();
+        let children: Vec<_> = snapshot
+            .steps
+            .iter()
+            .filter(|s| s.tool == "child_agent")
+            .collect();
         assert_eq!(children.len(), 2);
         assert!(children.iter().any(|s| s.state == "failed"));
         assert!(children.iter().any(|s| s.state == "success"));
@@ -1766,7 +1998,14 @@ mod loop_tests {
 
     #[tokio::test]
     async fn cancelling_parent_propagates_to_running_children() {
-        let io = ParallelIo { base: FakeIo::new(&[]), barrier: tokio::sync::Barrier::new(3), dependent: false, use_mcp: false, mcp_calls: Mutex::new(Vec::new()) };
+        let io = ParallelIo {
+            base: FakeIo::new(&[]),
+            barrier: tokio::sync::Barrier::new(3),
+            dependent: false,
+            use_mcp: false,
+            scripted_parent: false,
+            mcp_calls: Mutex::new(Vec::new()),
+        };
         let cancel = AiCancel::new();
         let handle = AgentHandle::new(loop_snapshot(), cancel.clone());
         let input = parallel_input();
@@ -1776,23 +2015,64 @@ mod loop_tests {
         });
         assert!(matches!(result, Err(StopReason::Cancelled(_))));
         assert!(io.base.executed().is_empty());
-        assert!(handle.snapshot().steps.iter().filter(|s| s.tool == "child_agent").all(|s| s.state == "skipped"));
+        assert!(handle
+            .snapshot()
+            .steps
+            .iter()
+            .filter(|s| s.tool == "child_agent")
+            .all(|s| s.state == "skipped"));
     }
 
-    struct McpIo { base: FakeIo, calls: Mutex<Vec<String>>, fail: bool }
+    struct McpIo {
+        base: FakeIo,
+        calls: Mutex<Vec<String>>,
+        fail: bool,
+    }
     impl McpIo {
         fn new(replies: &[&str], fail: bool) -> Self {
-            Self { base: FakeIo::new(replies), calls: Mutex::new(Vec::new()), fail }
+            Self {
+                base: FakeIo::new(replies),
+                calls: Mutex::new(Vec::new()),
+                fail,
+            }
         }
     }
     impl AgentIo for McpIo {
-        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
-        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
-        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
-        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
-        fn chat<'a>(&'a self, messages: Vec<Value>, tools: Value, cancel: &'a AiCancel, delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> { self.base.chat(messages, tools, cancel, delta) }
-        fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+        fn emit(&self, event: AgentEvent) {
+            self.base.emit(event);
+        }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+            self.base.sink()
+        }
+        fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+            self.base.connected(id)
+        }
+        fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+            self.base.verify_server(id, server)
+        }
+        fn exec<'a>(
+            &'a self,
+            id: &'a str,
+            command: &'a str,
+            timeout: Duration,
+            sink: UnboundedSender<ExecChunk>,
+        ) -> IoFuture<'a, Result<ExecOutput, String>> {
+            self.base.exec(id, command, timeout, sink)
+        }
+        fn chat<'a>(
+            &'a self,
+            messages: Vec<Value>,
+            tools: Value,
+            cancel: &'a AiCancel,
+            delta: Arc<dyn Fn(&str) + Send + Sync>,
+        ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            self.base.chat(messages, tools, cancel, delta)
+        }
+        fn call_mcp<'a>(
+            &'a self,
+            binding: &'a crate::mcp::McpBinding,
+            _args: &'a Value,
+        ) -> IoFuture<'a, Result<String, String>> {
             Box::pin(async move {
                 self.calls.lock().unwrap().push(binding.tool.clone());
                 if self.fail {
@@ -1819,9 +2099,17 @@ mod loop_tests {
 
     #[tokio::test]
     async fn a_write_mcp_tool_asks_even_under_full_permissions() {
-        let call = r#"<tool name="mcp__selected__write_file">{"path":"/tmp/x","content":"a"}</tool>"#;
+        let call =
+            r#"<tool name="mcp__selected__write_file">{"path":"/tmp/x","content":"a"}</tool>"#;
         // 写后要求一次只读验证，再收尾（与现有写操作流程一致）。
-        let io = McpIo::new(&[call, r#"<tool name="run_shell">{"command":"cat /tmp/x"}</tool>"#, "done"], false);
+        let io = McpIo::new(
+            &[
+                call,
+                r#"<tool name="run_shell">{"command":"cat /tmp/x"}</tool>"#,
+                "done",
+            ],
+            false,
+        );
         let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
         let mut input = loop_input(None);
         input.permission_mode = crate::agent::PermissionMode::Full;
@@ -1830,7 +2118,10 @@ mod loop_tests {
         decide_later(handle.clone(), "call-0-0", true);
         let result = run_loop(&handle, &input, &io, None).await;
         assert!(result.is_ok(), "{result:?}");
-        assert!(io.base.kinds().contains(&"approval_required".to_string()), "MCP writes must still be confirmed under full permissions");
+        assert!(
+            io.base.kinds().contains(&"approval_required".to_string()),
+            "MCP writes must still be confirmed under full permissions"
+        );
         assert_eq!(io.calls.lock().unwrap().len(), 1);
         assert_eq!(handle.snapshot().steps[0].state, "success");
     }
@@ -1847,9 +2138,15 @@ mod loop_tests {
         input.mcp_tools = vec![mcp_binding("delete_file", true)];
         cancel_later(handle.clone());
         let result = run_loop(&handle, &input, &io, None).await;
-        assert!(matches!(result, Err(StopReason::Cancelled(_))), "{result:?}");
+        assert!(
+            matches!(result, Err(StopReason::Cancelled(_))),
+            "{result:?}"
+        );
         assert!(io.base.kinds().contains(&"approval_required".to_string()));
-        assert!(io.calls.lock().unwrap().is_empty(), "unknown effect must not run without an explicit decision");
+        assert!(
+            io.calls.lock().unwrap().is_empty(),
+            "unknown effect must not run without an explicit decision"
+        );
     }
 
     #[tokio::test]
@@ -1863,7 +2160,10 @@ mod loop_tests {
         let step = &handle.snapshot().steps[0];
         assert_eq!(step.state, "failed");
         assert!(step.stderr.contains("MCP 调用失败"), "{}", step.stderr);
-        assert_eq!(step.blocked, None, "transport failures are not permission denials");
+        assert_eq!(
+            step.blocked, None,
+            "transport failures are not permission denials"
+        );
         assert_eq!(step.category, Some(StepCategory::Executed));
         assert!(!io.base.kinds().contains(&"approval_required".to_string()));
     }
@@ -1882,12 +2182,53 @@ mod loop_tests {
         let steps = handle.snapshot().steps;
         assert!(steps.iter().all(|step| step.tool != "child_agent"));
         let returned = serde_json::to_string(&io.last_messages()).unwrap();
-        assert!(returned.contains("cannot create child agents"), "{returned}");
+        assert!(
+            returned.contains("cannot create child agents"),
+            "{returned}"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_retries_unclassified_queries_as_separate_read_only_calls() {
+        let io = FakeIo::new(&[
+            r#"<tool name="run_shell">{"command":"df -h; frobnicate --stats; ss -lnt"}</tool>"#,
+            r#"<tool name="run_shell">{"command":"df -h"}</tool><tool name="run_shell">{"command":"ss -lnt"}</tool>"#,
+            "Disk and listening ports checked.",
+        ]);
+        let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
+        let mut input = parallel_input();
+        input.child_run = true;
+        input.permission_mode = crate::agent::PermissionMode::ReadOnly;
+
+        let result = run_loop(&handle, &input, &io, None).await;
+        assert!(result.is_ok(), "{result:?}");
+        let commands = io.executed();
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands.iter().any(|command| command.contains("df -h")));
+        assert!(commands.iter().any(|command| command.contains("ss -lnt")));
+        assert!(commands
+            .iter()
+            .all(|command| !command.contains("frobnicate")));
+        assert!(!io.kinds().contains(&"approval_required".to_string()));
+
+        let steps = handle.snapshot().steps;
+        let retry = steps
+            .iter()
+            .find(|step| step.command.contains("frobnicate"))
+            .unwrap();
+        assert_eq!(retry.state, "skipped");
+        assert_eq!(retry.category, Some(crate::agent::StepCategory::Internal));
+        let feedback = serde_json::to_string(&io.last_messages()).unwrap();
+        assert!(feedback.contains("frobnicate"), "{feedback}");
+        assert!(!feedback.contains("WRITE_REQUEST"), "{feedback}");
     }
 
     #[tokio::test]
     async fn child_read_only_scope_blocks_writes_without_user_prompt() {
-        let io = FakeIo::new(&[r#"<tool name="run_shell">{"command":"rm -rf /tmp/demo"}</tool>"#, "无法进行写入"]);
+        let io = FakeIo::new(&[
+            r#"<tool name="run_shell">{"command":"rm -rf /tmp/demo"}</tool>"#,
+            "无法进行写入",
+        ]);
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.child_run = true;
@@ -1913,7 +2254,11 @@ mod loop_tests {
         fn new(disconnected: Vec<String>, parallel: bool) -> Self {
             Self {
                 base: FakeIo::new(&[]),
-                barrier: std::sync::Arc::new(tokio::sync::Barrier::new(if parallel { 2 } else { 1 })),
+                barrier: std::sync::Arc::new(tokio::sync::Barrier::new(if parallel {
+                    2
+                } else {
+                    1
+                })),
                 seen: Mutex::new(Vec::new()),
                 disconnected,
             }
@@ -1921,24 +2266,43 @@ mod loop_tests {
     }
 
     impl AgentIo for MultiServerIo {
-        fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
+        fn emit(&self, event: AgentEvent) {
+            self.base.emit(event);
+        }
+        fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+            self.base.sink()
+        }
         fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
             Box::pin(async move { !self.disconnected.iter().any(|closed| closed == id) })
         }
         fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
             self.base.verify_server(id, server)
         }
-        fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> {
+        fn exec<'a>(
+            &'a self,
+            id: &'a str,
+            command: &'a str,
+            timeout: Duration,
+            sink: UnboundedSender<ExecChunk>,
+        ) -> IoFuture<'a, Result<ExecOutput, String>> {
             Box::pin(async move {
-                self.seen.lock().unwrap().push((id.to_string(), command.to_string()));
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push((id.to_string(), command.to_string()));
                 tokio::time::timeout(Duration::from_secs(3), self.barrier.wait())
                     .await
                     .map_err(|_| "child operations did not overlap".to_string())?;
                 self.base.exec(id, command, timeout, sink).await
             })
         }
-        fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+        fn chat<'a>(
+            &'a self,
+            messages: Vec<Value>,
+            _tools: Value,
+            _cancel: &'a AiCancel,
+            _delta: Arc<dyn Fn(&str) + Send + Sync>,
+        ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
             Box::pin(async move {
                 let text = serde_json::to_string(&messages).unwrap();
                 let has_result = text.contains("<tool_result");
@@ -1956,7 +2320,11 @@ mod loop_tests {
                 } else {
                     r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory","server":"srv-b"}]}</tool>"#
                 };
-                Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                Ok(ToolReply {
+                    message: json!({"role":"assistant","content":content}),
+                    content: content.to_string(),
+                    tool_calls: Vec::new(),
+                })
             })
         }
     }
@@ -1967,8 +2335,16 @@ mod loop_tests {
         input.server = "prod".to_string();
         input.server_id = Some("srv-a".to_string());
         input.servers = vec![
-            AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
-            AgentServerRef { server_id: "srv-b".into(), server_name: "test".into(), session_id: "ssh-b".into() },
+            AgentServerRef {
+                server_id: "srv-a".into(),
+                server_name: "prod".into(),
+                session_id: "ssh-a".into(),
+            },
+            AgentServerRef {
+                server_id: "srv-b".into(),
+                server_name: "test".into(),
+                session_id: "ssh-b".into(),
+            },
         ];
         input
     }
@@ -1981,13 +2357,34 @@ mod loop_tests {
         let result = run_loop(&handle, &input, &io, None).await;
         assert!(result.is_ok(), "{result:?}");
         let seen = io.seen.lock().unwrap().clone();
-        assert!(seen.iter().any(|(session, command)| session == "ssh-a" && command.contains("df -h")), "{seen:?}");
-        assert!(seen.iter().any(|(session, command)| session == "ssh-b" && command.contains("free -h")), "{seen:?}");
+        assert!(
+            seen.iter()
+                .any(|(session, command)| session == "ssh-a" && command.contains("df -h")),
+            "{seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|(session, command)| session == "ssh-b" && command.contains("free -h")),
+            "{seen:?}"
+        );
         // 不同服务器各跑各的，没有把命令发到另一条会话。
-        assert_eq!(seen.iter().filter(|(_, command)| command.contains("df -h")).count(), 1);
-        assert_eq!(seen.iter().filter(|(_, command)| command.contains("free -h")).count(), 1);
+        assert_eq!(
+            seen.iter()
+                .filter(|(_, command)| command.contains("df -h"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            seen.iter()
+                .filter(|(_, command)| command.contains("free -h"))
+                .count(),
+            1
+        );
         let steps = handle.snapshot().steps;
-        let memory = steps.iter().find(|step| step.tool == "child_agent" && step.child_id.as_deref() == Some("memory")).unwrap();
+        let memory = steps
+            .iter()
+            .find(|step| step.tool == "child_agent" && step.child_id.as_deref() == Some("memory"))
+            .unwrap();
         assert_eq!(memory.server.as_deref(), Some("test"));
         assert_eq!(memory.server_id.as_deref(), Some("srv-b"));
         assert_eq!(memory.state, "success");
@@ -2000,51 +2397,118 @@ mod loop_tests {
         let input = multi_server_input();
         let _ = run_loop(&handle, &input, &io, None).await;
         let seen = io.seen.lock().unwrap().clone();
-        assert!(seen.iter().all(|(session, _)| session == "ssh-a"), "{seen:?}");
+        assert!(
+            seen.iter().all(|(session, _)| session == "ssh-a"),
+            "{seen:?}"
+        );
         let steps = handle.snapshot().steps;
-        let disk = steps.iter().find(|step| step.child_id.as_deref() == Some("disk")).unwrap();
-        let memory = steps.iter().find(|step| step.child_id.as_deref() == Some("memory")).unwrap();
+        let disk = steps
+            .iter()
+            .find(|step| step.child_id.as_deref() == Some("disk"))
+            .unwrap();
+        let memory = steps
+            .iter()
+            .find(|step| step.child_id.as_deref() == Some("memory"))
+            .unwrap();
         assert_eq!(disk.state, "success");
         assert_eq!(memory.state, "failed");
         assert_eq!(memory.blocked.as_deref(), Some("server_disconnected"));
-        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
-        assert_eq!(aggregate.state, "failed", "parent must not report success when one target failed");
+        let aggregate = steps
+            .iter()
+            .find(|step| step.tool == "parallel_readonly_agents")
+            .unwrap();
+        assert_eq!(
+            aggregate.state, "failed",
+            "parent must not report success when one target failed"
+        );
     }
 
     #[tokio::test]
     async fn a_child_timeout_is_reported_as_unverified_and_the_parent_fails() {
-        struct SlowChildIo { base: FakeIo }
+        struct SlowChildIo {
+            base: FakeIo,
+        }
         impl AgentIo for SlowChildIo {
-            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
-            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
-            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
-            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
-            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            fn emit(&self, event: AgentEvent) {
+                self.base.emit(event);
+            }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+                self.base.sink()
+            }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+                self.base.connected(id)
+            }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+                self.base.verify_server(id, server)
+            }
+            fn exec<'a>(
+                &'a self,
+                id: &'a str,
+                command: &'a str,
+                timeout: Duration,
+                sink: UnboundedSender<ExecChunk>,
+            ) -> IoFuture<'a, Result<ExecOutput, String>> {
+                self.base.exec(id, command, timeout, sink)
+            }
+            fn chat<'a>(
+                &'a self,
+                messages: Vec<Value>,
+                _tools: Value,
+                _cancel: &'a AiCancel,
+                _delta: Arc<dyn Fn(&str) + Send + Sync>,
+            ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
                 Box::pin(async move {
                     let text = serde_json::to_string(&messages).unwrap();
                     if text.contains("Assigned read-only investigation:") {
                         tokio::time::sleep(Duration::from_secs(3)).await;
-                        return Ok(ToolReply { message: json!({"role":"assistant","content":"late"}), content: "late".into(), tool_calls: Vec::new() });
+                        return Ok(ToolReply {
+                            message: json!({"role":"assistant","content":"late"}),
+                            content: "late".into(),
+                            tool_calls: Vec::new(),
+                        });
                     }
                     if text.contains("<tool_result") {
-                        return Ok(ToolReply { message: json!({"role":"assistant","content":"done"}), content: "done".into(), tool_calls: Vec::new() });
+                        return Ok(ToolReply {
+                            message: json!({"role":"assistant","content":"done"}),
+                            content: "done".into(),
+                            tool_calls: Vec::new(),
+                        });
                     }
                     let content = r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"a","goal":"x"},{"title":"b","goal":"y"}]}</tool>"#;
-                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                    Ok(ToolReply {
+                        message: json!({"role":"assistant","content":content}),
+                        content: content.to_string(),
+                        tool_calls: Vec::new(),
+                    })
                 })
             }
         }
-        let io = SlowChildIo { base: FakeIo::new(&[]) };
+        let io = SlowChildIo {
+            base: FakeIo::new(&[]),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let input = parallel_input();
         let _ = run_loop(&handle, &input, &io, None).await;
         let steps = handle.snapshot().steps;
-        let children: Vec<_> = steps.iter().filter(|step| step.tool == "child_agent").collect();
+        let children: Vec<_> = steps
+            .iter()
+            .filter(|step| step.tool == "child_agent")
+            .collect();
         assert_eq!(children.len(), 2);
-        assert!(children.iter().all(|step| step.state == "failed"), "{children:?}");
-        assert!(children.iter().all(|step| step.stderr.contains("timed out")), "{children:?}");
-        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
+        assert!(
+            children.iter().all(|step| step.state == "failed"),
+            "{children:?}"
+        );
+        assert!(
+            children
+                .iter()
+                .all(|step| step.stderr.contains("timed out")),
+            "{children:?}"
+        );
+        let aggregate = steps
+            .iter()
+            .find(|step| step.tool == "parallel_readonly_agents")
+            .unwrap();
         assert_eq!(aggregate.state, "failed");
     }
 
@@ -2067,37 +2531,75 @@ mod loop_tests {
             }));
         }
         futures_util::future::join_all(jobs).await;
-        assert_eq!(MAX.load(Ordering::SeqCst), 3, "same server must cap concurrent child runs");
+        assert_eq!(
+            MAX.load(Ordering::SeqCst),
+            3,
+            "same server must cap concurrent child runs"
+        );
     }
 
     #[tokio::test]
     async fn a_completed_child_from_the_previous_run_is_reused_but_marked_stale() {
-        struct CachedIo { base: FakeIo }
+        struct CachedIo {
+            base: FakeIo,
+        }
         impl AgentIo for CachedIo {
-            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
-            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
-            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
-            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
-            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            fn emit(&self, event: AgentEvent) {
+                self.base.emit(event);
+            }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+                self.base.sink()
+            }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+                self.base.connected(id)
+            }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+                self.base.verify_server(id, server)
+            }
+            fn exec<'a>(
+                &'a self,
+                id: &'a str,
+                command: &'a str,
+                timeout: Duration,
+                sink: UnboundedSender<ExecChunk>,
+            ) -> IoFuture<'a, Result<ExecOutput, String>> {
+                self.base.exec(id, command, timeout, sink)
+            }
+            fn chat<'a>(
+                &'a self,
+                messages: Vec<Value>,
+                _tools: Value,
+                _cancel: &'a AiCancel,
+                _delta: Arc<dyn Fn(&str) + Send + Sync>,
+            ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
                 Box::pin(async move {
                     let text = serde_json::to_string(&messages).unwrap();
                     let has_result = text.contains("<tool_result");
                     let child = text.contains("Assigned read-only investigation:");
                     let content = if child {
-                        if has_result { "checked" }
-                        else if text.contains("check memory") { r#"<tool name="run_shell">{"command":"free -h"}</tool>"# }
-                        else { r#"<tool name="run_shell">{"command":"df -h"}</tool>"# }
+                        if has_result {
+                            "checked"
+                        } else if text.contains("check memory") {
+                            r#"<tool name="run_shell">{"command":"free -h"}</tool>"#
+                        } else {
+                            r#"<tool name="run_shell">{"command":"df -h"}</tool>"#
+                        }
                     } else if has_result {
                         "all checked"
                     } else {
                         r#"<tool name="parallel_readonly_agents">{"tasks":[{"id":"disk","title":"disk","goal":"check disk"},{"id":"memory","title":"memory","goal":"check memory"}]}</tool>"#
                     };
-                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                    Ok(ToolReply {
+                        message: json!({"role":"assistant","content":content}),
+                        content: content.to_string(),
+                        tool_calls: Vec::new(),
+                    })
                 })
             }
         }
-        let io = CachedIo { base: FakeIo::new(&[]) };
+        let io = CachedIo {
+            base: FakeIo::new(&[]),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.carry_steps = vec![crate::agent::AgentStep {
@@ -2114,66 +2616,135 @@ mod loop_tests {
         }];
         assert!(run_loop(&handle, &input, &io, None).await.is_ok());
         let executed = io.base.executed();
-        assert!(!executed.iter().any(|command| command.contains("df -h")), "cached child must not re-run: {executed:?}");
+        assert!(
+            !executed.iter().any(|command| command.contains("df -h")),
+            "cached child must not re-run: {executed:?}"
+        );
         assert!(executed.iter().any(|command| command.contains("free -h")));
         let steps = handle.snapshot().steps;
-        let disk = steps.iter().find(|step| step.child_id.as_deref() == Some("disk")).unwrap();
+        let disk = steps
+            .iter()
+            .find(|step| step.child_id.as_deref() == Some("disk"))
+            .unwrap();
         assert_eq!(disk.state, "success");
-        assert!(disk.stale, "reused result must stay marked for re-verification");
+        assert!(
+            disk.stale,
+            "reused result must stay marked for re-verification"
+        );
         assert!(disk.stdout.contains("previous df output"));
-        let aggregate = steps.iter().find(|step| step.tool == "parallel_readonly_agents").unwrap();
-        assert!(aggregate.stale, "the parent report must carry the stale marker");
+        let aggregate = steps
+            .iter()
+            .find(|step| step.tool == "parallel_readonly_agents")
+            .unwrap();
+        assert!(
+            aggregate.stale,
+            "the parent report must carry the stale marker"
+        );
     }
 
     #[tokio::test]
     async fn child_mcp_with_unknown_effect_is_not_called_and_returns_a_request() {
-        struct UnknownMcpIo { base: FakeIo, calls: Mutex<usize> }
+        struct UnknownMcpIo {
+            base: FakeIo,
+            calls: Mutex<usize>,
+        }
         impl AgentIo for UnknownMcpIo {
-            fn emit(&self, event: AgentEvent) { self.base.emit(event); }
-            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { self.base.sink() }
-            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.base.connected(id) }
-            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.base.verify_server(id, server) }
-            fn exec<'a>(&'a self, id: &'a str, command: &'a str, timeout: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.base.exec(id, command, timeout, sink) }
-            fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, _args: &'a Value) -> IoFuture<'a, Result<String, String>> {
+            fn emit(&self, event: AgentEvent) {
+                self.base.emit(event);
+            }
+            fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+                self.base.sink()
+            }
+            fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+                self.base.connected(id)
+            }
+            fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+                self.base.verify_server(id, server)
+            }
+            fn exec<'a>(
+                &'a self,
+                id: &'a str,
+                command: &'a str,
+                timeout: Duration,
+                sink: UnboundedSender<ExecChunk>,
+            ) -> IoFuture<'a, Result<ExecOutput, String>> {
+                self.base.exec(id, command, timeout, sink)
+            }
+            fn call_mcp<'a>(
+                &'a self,
+                binding: &'a crate::mcp::McpBinding,
+                _args: &'a Value,
+            ) -> IoFuture<'a, Result<String, String>> {
                 Box::pin(async move {
                     *self.calls.lock().unwrap() += 1;
                     Ok(format!("called {}", binding.tool))
                 })
             }
-            fn chat<'a>(&'a self, messages: Vec<Value>, _tools: Value, _cancel: &'a AiCancel, _delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+            fn chat<'a>(
+                &'a self,
+                messages: Vec<Value>,
+                _tools: Value,
+                _cancel: &'a AiCancel,
+                _delta: Arc<dyn Fn(&str) + Send + Sync>,
+            ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
                 Box::pin(async move {
                     let text = serde_json::to_string(&messages).unwrap();
                     let has_result = text.contains("<tool_result");
                     let child = text.contains("Assigned read-only investigation:");
                     let content = if child {
-                        if has_result { "attempted" } else { r#"<tool name="mcp__selected__delete_file">{}</tool>"# }
+                        if has_result {
+                            "attempted"
+                        } else {
+                            r#"<tool name="mcp__selected__delete_file">{}</tool>"#
+                        }
                     } else if has_result {
                         "all checked"
                     } else {
                         r#"<tool name="parallel_readonly_agents">{"tasks":[{"title":"a","goal":"check disk"},{"title":"b","goal":"check memory"}]}</tool>"#
                     };
-                    Ok(ToolReply { message: json!({"role":"assistant","content":content}), content: content.to_string(), tool_calls: Vec::new() })
+                    Ok(ToolReply {
+                        message: json!({"role":"assistant","content":content}),
+                        content: content.to_string(),
+                        tool_calls: Vec::new(),
+                    })
                 })
             }
         }
-        let io = UnknownMcpIo { base: FakeIo::new(&[]), calls: Mutex::new(0) };
+        let io = UnknownMcpIo {
+            base: FakeIo::new(&[]),
+            calls: Mutex::new(0),
+        };
         let handle = AgentHandle::new(loop_snapshot(), AiCancel::new());
         let mut input = parallel_input();
         input.mcp_tools = vec![crate::mcp::McpBinding {
-            exposed_name: "mcp__selected__delete_file".into(), server_id: "selected".into(), server_name: "selected".into(),
-            tool: "delete_file".into(), description: "delete a file".into(), input_schema: json!({"type":"object"}),
-            read_only: true, config: crate::mcp::McpServerConfig::default(),
+            exposed_name: "mcp__selected__delete_file".into(),
+            server_id: "selected".into(),
+            server_name: "selected".into(),
+            tool: "delete_file".into(),
+            description: "delete a file".into(),
+            input_schema: json!({"type":"object"}),
+            read_only: true,
+            config: crate::mcp::McpServerConfig::default(),
         }];
         let _ = run_loop(&handle, &input, &io, None).await;
-        assert_eq!(*io.calls.lock().unwrap(), 0, "unknown-effect MCP tool must not run in a child");
+        assert_eq!(
+            *io.calls.lock().unwrap(),
+            0,
+            "unknown-effect MCP tool must not run in a child"
+        );
         // 子任务不弹审批：否则多个子任务同时等待时无法可靠路由。
         assert!(!io.base.kinds().contains(&"approval_required".to_string()));
         let steps = handle.snapshot().steps;
-        let children: Vec<_> = steps.iter().filter(|step| step.tool == "child_agent").collect();
+        let children: Vec<_> = steps
+            .iter()
+            .filter(|step| step.tool == "child_agent")
+            .collect();
         assert_eq!(children.len(), 2);
         assert!(children.iter().all(|step| step.state == "failed"));
         assert!(
-            children.iter().any(|step| step.stderr.contains("WRITE_REQUEST")),
+            children
+                .iter()
+                .any(|step| step.stderr.contains("WRITE_REQUEST")),
             "blocked MCP calls must be returned to the parent as requests: {children:?}"
         );
     }
@@ -2635,7 +3206,11 @@ mod loop_tests {
         dispatch.tool = "parallel_readonly_agents".into();
         let mut later_batch = outcome_step(1, "read", "success", "parallel_readonly_agents");
         later_batch.tool = "parallel_readonly_agents".into();
-        let steps = vec![dispatch, later_batch, outcome_step(2, "read", "success", "curl -fsS localhost/health")];
+        let steps = vec![
+            dispatch,
+            later_batch,
+            outcome_step(2, "read", "success", "curl -fsS localhost/health"),
+        ];
         let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("子任务"), "{}", outcome.reason);
@@ -2646,7 +3221,10 @@ mod loop_tests {
         let mut child = outcome_step(1, "read", "success", "");
         child.tool = "child_agent".into();
         child.server_id = Some("other-server".into());
-        let steps = vec![outcome_step(0, "write", "success", "systemctl reload nginx"), child];
+        let steps = vec![
+            outcome_step(0, "write", "success", "systemctl reload nginx"),
+            child,
+        ];
         let outcome = evaluate_outcome(&steps, false, Lang::En).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("no read-only verification"));
@@ -2657,7 +3235,10 @@ mod loop_tests {
         let mut dispatch = outcome_step(0, "read", "success", "parallel_readonly_agents");
         dispatch.tool = "parallel_readonly_agents".into();
         dispatch.stale = true;
-        let steps = vec![dispatch, outcome_step(1, "read", "success", "curl -fsS localhost/health")];
+        let steps = vec![
+            dispatch,
+            outcome_step(1, "read", "success", "curl -fsS localhost/health"),
+        ];
         let outcome = evaluate_outcome(&steps, false, Lang::Zh).unwrap();
         assert_eq!(outcome.level, "partial");
         assert!(outcome.reason.contains("中断前"), "{}", outcome.reason);
@@ -3437,6 +4018,34 @@ mod loop_tests {
             .count();
         assert_eq!(approvals, 1, "只有真实写入需要确认");
         assert_eq!(handle.snapshot().plan.unwrap().steps[0].state, "done");
+    }
+
+    #[tokio::test]
+    async fn a_separate_plan_check_only_completes_the_action_it_verifies() {
+        let plan = r#"<tool name="submit_plan">{"steps":[{"id":"restart","title":"重启站点","action":"重启 nginx","verify":"服务恢复 active","kind":"action"},{"id":"verify-site","title":"验证站点","action":"检查状态","verify":"取得实际状态","kind":"probe"}]}</tool>"#;
+        let restart = r#"<tool name="run_shell">{"command":"systemctl restart nginx","step":"restart"}</tool>"#;
+        let linked = r#"<tool name="run_shell">{"command":"systemctl is-active nginx","step":"verify-site","verifies":"restart"}</tool>"#;
+        let unrelated =
+            r#"<tool name="run_shell">{"command":"uptime","step":"verify-site"}</tool>"#;
+
+        for (inspect, expected_step, expected_outcome) in [
+            (linked, "done", "verified"),
+            (unrelated, "verifying", "partial"),
+        ] {
+            let io = FakeIo::new(&[plan, restart, inspect, "执行结束。", "改动缺少验收证据。"]);
+            let handle = Arc::new(AgentHandle::new(loop_snapshot(), AiCancel::new()));
+            let mut input = loop_input(None);
+            input.plan_required = true;
+            decide_later(handle.clone(), "call-1-0", true);
+
+            run_loop(&handle, &input, &io, None).await.unwrap();
+            let snapshot = handle.snapshot();
+            let plan = snapshot.plan.unwrap();
+            assert_eq!(plan.step("restart").unwrap().state, expected_step);
+            assert_eq!(plan.step("verify-site").unwrap().state, "done");
+            assert_eq!(snapshot.outcome.unwrap().level, expected_outcome);
+            assert_eq!(io.executed().len(), 2);
+        }
     }
 
     /// 修订计划：同 id 保留已完成状态，未再提的已完成步骤也保留。

@@ -1,5 +1,6 @@
 import { XMarkdown } from "@ant-design/x-markdown";
 import {
+  isValidElement,
   memo,
   useCallback,
   useEffect,
@@ -10,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Copy, FileArchive, Pencil, Quote } from "@/components/icons";
+import { Check, Copy, FileArchive, Pencil, Quote } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { copyTextWithFeedback } from "@/lib/clipboard-feedback";
@@ -322,12 +323,16 @@ function ElapsedTime({
   if (!duration) return null;
   return (
     <div className="extreme-core-elapsed" role="note">
-      <span>{t("已用时间 {{duration}}", { duration })}</span>
-      {executedSteps > 0 && (
-        <span className="extreme-core-elapsed-sep">
-          · {t("{{n}} 个操作", { n: executedSteps })}
-        </span>
-      )}
+      <span className="extreme-core-elapsed-line" aria-hidden="true" />
+      <span className="extreme-core-elapsed-label">
+        <span>{t("已用时间 {{duration}}", { duration })}</span>
+        {executedSteps > 0 && (
+          <span className="extreme-core-elapsed-sep">
+            · {t("{{n}} 个操作", { n: executedSteps })}
+          </span>
+        )}
+      </span>
+      <span className="extreme-core-elapsed-line" aria-hidden="true" />
     </div>
   );
 }
@@ -559,26 +564,50 @@ function LinkedCode({ children, block, className, sessionId, onOpen }: LinkProps
   );
 }
 
+function extractCodeLanguage(children: ReactNode): string {
+  if (!isValidElement<{ className?: string; lang?: string }>(children)) return "";
+  const { className, lang } = children.props;
+  if (typeof lang === "string" && lang.trim()) return lang.trim();
+  if (typeof className === "string") {
+    const match = /\blanguage-([a-z0-9_+#.-]+)/i.exec(className);
+    if (match?.[1]) return match[1].toLowerCase();
+  }
+  return "";
+}
+
 function ReplyCodeBlock({ children }: { children?: ReactNode }) {
   const { t } = useTranslation();
   const codeRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number>(0);
+  const language = extractCodeLanguage(children);
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), []);
 
   return (
     <div className="extreme-core-reply-code">
-      <Tooltip label={t("复制代码")}>
-        <button
-          type="button"
-          className="extreme-core-reply-copy"
-          aria-label={t("复制代码")}
-          onClick={() => {
-            const text = codeRef.current?.textContent;
-            if (text) void copyTextWithFeedback(text);
-          }}
-        >
-          <Copy size={14} />
-        </button>
-      </Tooltip>
-      <pre ref={codeRef}>{children}</pre>
+      <div className="extreme-core-reply-code-head">
+        <span className="extreme-core-reply-code-lang">{language || "text"}</span>
+        <Tooltip label={copied ? t("已复制") : t("复制代码")}>
+          <button
+            type="button"
+            className="extreme-core-reply-copy"
+            aria-label={t("复制代码")}
+            onClick={() => {
+              const text = codeRef.current?.textContent;
+              if (!text) return;
+              void copyTextWithFeedback(text);
+              setCopied(true);
+              window.clearTimeout(timerRef.current);
+              timerRef.current = window.setTimeout(() => setCopied(false), 1600);
+            }}
+          >
+            {copied ? <Check size={12} strokeWidth={2.5} className="text-success" /> : <Copy size={12} />}
+            <span>{copied ? t("已复制") : t("复制")}</span>
+          </button>
+        </Tooltip>
+      </div>
+      <pre ref={codeRef} className="select-menu">{children}</pre>
     </div>
   );
 }
@@ -710,7 +739,7 @@ const MessageRow = memo(function MessageRow({
    * 不给按钮。复制走项目剪贴板插件，失败会提示，不会假装成功。
    */
   const canAct = !waiting && !streaming && message.text.trim().length > 0;
-  const author = mine ? t("你") : message.model ? `${t("模型")}：${message.model}` : null;
+  const author = mine ? null : message.model ? `${t("模型")}：${message.model}` : null;
   const time = chatTime(message.createdAt, t);
   /**
    * 气泡上的文件条：**消息快照优先**。
@@ -749,7 +778,7 @@ const MessageRow = memo(function MessageRow({
     <div
       data-role={message.role}
       data-message-id={message.id}
-      className={cn("flex min-w-0 flex-col gap-1.5", mine ? "items-end" : "items-start")}
+      className={cn("group/msg flex min-w-0 flex-col gap-1.5", mine ? "items-end" : "items-start")}
     >
       {/*
        * 随这条消息发出的附件：发完就从输入区挪到这里。
@@ -759,13 +788,13 @@ const MessageRow = memo(function MessageRow({
        * 那个文件；快照没有的老消息才退回会话里的附件列表。
        */}
       {mine && sentFiles.length > 0 && (
-        <div className="flex max-w-[78%] flex-wrap justify-end gap-1">
+        <div className="flex max-w-[82%] flex-wrap justify-end gap-1.5">
           {sentFiles.map((item) => {
             const uploaded = item.uploadState === "uploaded" || item.uploadState === "deployed";
             return (
               <span
                 key={item.id}
-                className="flex max-w-[240px] items-center gap-1.5 rounded-md px-2 py-1 text-11"
+                className="flex max-w-[240px] items-center gap-1.5 rounded-full px-2.5 py-1 text-11"
                 style={{
                   background: EC.surfaceRaised,
                   border: `1px solid ${EC.border}`,
@@ -882,40 +911,52 @@ const MessageRow = memo(function MessageRow({
           )}
         </div>
       )}
-      {/* 署名与操作同一行：自己的靠右（操作在左），模型靠左（操作在右）。 */}
-      {!waiting && (author || time || canAct) && <div className={cn("extreme-core-message-meta flex items-center gap-1", mine && "flex-row-reverse")}>
-        {author && (
-          <span className="px-1 text-10" style={{ color: EC.fgSubtle }}>{author}</span>
-        )}
-        {/* 消息时间：旧记录没有 createdAt 时整段不出现，不拿"现在"冒充。 */}
-        {time && (
-          <span className="text-10" style={{ color: EC.fgSubtle }}>
-            {time}
-          </span>
-        )}
-        {canAct && (
-          <div className="extreme-core-actions flex items-center gap-0.5">
-            <ExtremeIconButton
-              label={t("复制")}
-              icon={Copy}
-              onClick={() => void copyTextWithFeedback(message.text)}
-            />
-            {mine ? (
+      {/* Codex 式轻尾栏：用户消息悬停才显操作与时间；回复操作在左、模型与时间轻置右侧。 */}
+      {!waiting && (author || time || canAct) && (
+        <div
+          className={cn(
+            "extreme-core-message-meta flex items-center gap-1.5 transition-opacity duration-150",
+            mine
+              ? "flex-row-reverse opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100"
+              : !isLast && "opacity-75 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
+          )}
+        >
+          {canAct && (
+            <div
+              className={cn(
+                "extreme-core-actions flex items-center gap-0.5 transition-opacity duration-150",
+                !mine && !isLast && "opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100",
+              )}
+            >
               <ExtremeIconButton
-                label={t("编辑")}
-                icon={Pencil}
-                onClick={() => onEdit?.(message)}
+                label={t("复制")}
+                icon={Copy}
+                onClick={() => void copyTextWithFeedback(message.text)}
               />
-            ) : message.local ? null : (
-              <ExtremeIconButton
-                label={t("引用")}
-                icon={Quote}
-                onClick={() => onQuote?.(message)}
-              />
-            )}
-          </div>
-        )}
-      </div>}
+              {mine ? (
+                <ExtremeIconButton
+                  label={t("编辑")}
+                  icon={Pencil}
+                  onClick={() => onEdit?.(message)}
+                />
+              ) : message.local ? null : (
+                <ExtremeIconButton
+                  label={t("引用")}
+                  icon={Quote}
+                  onClick={() => onQuote?.(message)}
+                />
+              )}
+            </div>
+          )}
+          {(author || time) && (
+            <span className="inline-flex items-center gap-1.5 px-0.5 text-[11px] tabular-nums" style={{ color: EC.fgSubtle }}>
+              {author && <span>{author}</span>}
+              {author && time && <span aria-hidden="true" className="opacity-50">·</span>}
+              {time && <span>{time}</span>}
+            </span>
+          )}
+        </div>
+      )}
       {task && (
         isAgentActivity(task)
           ? (

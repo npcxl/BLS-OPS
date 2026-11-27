@@ -32,6 +32,9 @@ interface Turn {
 
 const QUESTION_LIMIT = 120;
 const ANSWER_LIMIT = 180;
+/** 指针距时间轴右缘多少像素以内时淡入显示（留足缓冲，避免精准瞄准 32px 窄条）。 */
+const TIMELINE_PROXIMITY_RIGHT_PX = 76;
+const TIMELINE_PROXIMITY_LEFT_PX = 16;
 
 /** 一行预览：问题 + 本轮回复（生成中显示已有正文或「回复中」）。 */
 function TurnPreview({ turn }: { turn: Turn }) {
@@ -64,8 +67,14 @@ export function MessageTimeline({
   stick: ChatScroll["stick"];
 }) {
   const { t } = useTranslation();
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
   const railRef = useRef<HTMLDivElement | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [near, setNear] = useState(false);
+  const [focusedWithin, setFocusedWithin] = useState(false);
+  const nearRef = useRef(false);
+  const visible = near || focusedWithin;
 
   /**
    * 一轮 = 一条用户消息 + 它后面、下一条用户消息之前的全部助手内容。
@@ -264,19 +273,76 @@ export function MessageTimeline({
   };
 
   useEffect(() => {
-    window.addEventListener("blur", stopEdgeScroll);
+    const onBlur = () => {
+      stopEdgeScroll();
+      if (nearRef.current) {
+        nearRef.current = false;
+        setNear(false);
+      }
+    };
+    window.addEventListener("blur", onBlur);
     return () => {
-      window.removeEventListener("blur", stopEdgeScroll);
+      window.removeEventListener("blur", onBlur);
       stopEdgeScroll();
     };
   }, [stopEdgeScroll]);
 
+  useEffect(() => {
+    if (!visible) stopEdgeScroll();
+  }, [visible, stopEdgeScroll]);
+
+  /** 指针进入时间轴附近才淡入显示，移开或离开聊天容器自动隐藏。 */
+  useEffect(() => {
+    const container = hostRef.current?.parentElement;
+    if (!container) return undefined;
+
+    const updateNear = (next: boolean) => {
+      if (next === nearRef.current) return;
+      nearRef.current = next;
+      setNear(next);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      const host = hostRef.current;
+      const dock = dockRef.current;
+      if (!host || !dock) return;
+      const hostRect = host.getBoundingClientRect();
+      const dockRect = dock.getBoundingClientRect();
+      if (hostRect.width === 0 || hostRect.height === 0) return;
+      const withinY = event.clientY >= hostRect.top && event.clientY <= hostRect.bottom;
+      const withinX =
+        event.clientX >= dockRect.left - TIMELINE_PROXIMITY_LEFT_PX &&
+        event.clientX <= dockRect.right + TIMELINE_PROXIMITY_RIGHT_PX;
+      updateNear(withinX && withinY);
+    };
+
+    const onPointerLeave = () => updateNear(false);
+
+    container.addEventListener("pointermove", onPointerMove, { passive: true });
+    container.addEventListener("pointerleave", onPointerLeave);
+    return () => {
+      container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerleave", onPointerLeave);
+    };
+  }, [turns.length]);
+
   if (turns.length === 0) return null;
 
   return (
-    <div className="extreme-core-timeline pointer-events-none absolute inset-0 z-10">
+    <div ref={hostRef} className="extreme-core-timeline pointer-events-none absolute inset-0 z-10">
       <div className="extreme-core-column relative mx-auto h-full w-full">
-        <div className="pointer-events-auto absolute inset-y-0 -left-8 flex w-8 flex-col">
+        <div
+          ref={dockRef}
+          data-visible={visible ? "true" : "false"}
+          onFocusCapture={() => setFocusedWithin(true)}
+          onBlurCapture={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setFocusedWithin(false);
+            }
+          }}
+          className="extreme-core-timeline-dock absolute inset-y-0 -left-8 flex w-8 flex-col"
+        >
           <div
             ref={railRef}
             onPointerMove={onRailPointerMove}

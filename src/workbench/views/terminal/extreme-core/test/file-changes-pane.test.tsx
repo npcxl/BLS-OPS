@@ -452,6 +452,43 @@ it("never renders +0 / -0 and uses the reason text instead", async () => {
 });
 
 /** 确认后 actual Diff 到达（updatedAt 变大）：详情必须重新拉，不能留旧预览。 */
+  it("supports collapsing and expanding individual file cards without losing selection", async () => {
+    const a = change({ id: "c1", path: "/etc/nginx/a.conf" });
+    const b = change({ id: "c2", path: "/etc/nginx/b.conf" });
+    useExtremeStore.setState({ fileChanges: { c1: a, c2: b } });
+    list.mockResolvedValue([a, b]);
+    detail.mockImplementation((id: string) => Promise.resolve(detailOf(id === "c1" ? a : b)));
+
+    const language = i18n.language;
+    await i18n.changeLanguage("zh-CN");
+    const { holder, cleanup } = await renderPane(
+      <FileChangesPane
+        workspaceId="w1"
+        serverName="prod"
+        sessionId="ssh-1"
+        onOpenRemotePath={() => undefined}
+      />,
+    );
+    try {
+      const firstToggle = holder.querySelector<HTMLButtonElement>('[data-change-id="c1"] button[aria-expanded]')!;
+      expect(firstToggle.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => firstToggle.click());
+      expect(firstToggle.getAttribute("aria-expanded")).toBe("false");
+      expect(holder.querySelector('[data-change-id="c1"] .extreme-core-diff')).toBeNull();
+      // 点击树中对应文件会自动展开并滚动到位。
+      const treeBtn = Array.from(holder.querySelectorAll<HTMLButtonElement>("aside button")).find(
+        (btn) => btn.textContent?.includes("a.conf"),
+      )!;
+      await act(async () => treeBtn.click());
+      expect(firstToggle.getAttribute("aria-expanded")).toBe("true");
+      expect(holder.querySelector('[data-change-id="c1"] .extreme-core-diff')).toBeTruthy();
+  } finally {
+    await cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
+/** 确认后 actual Diff 到达（updatedAt 变大）：详情必须重新拉，不能留旧预览。 */
 it("refetches the detail when the actual diff supersedes the preview", async () => {
   const proposed = change({ id: "c9", stage: "proposed", status: "proposed", updatedAt: 2 });
   useExtremeStore.setState({ fileChanges: { [proposed.id]: proposed } });

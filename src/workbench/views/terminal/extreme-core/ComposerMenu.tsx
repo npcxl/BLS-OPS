@@ -112,7 +112,7 @@ export function ComposerMenu({
       ref={panelRef}
       role="menu"
       aria-label={label}
-      className="page-overlay-surface overlay-enter fixed overflow-y-auto p-1.5"
+      className="page-overlay-surface overlay-enter fixed overflow-y-auto rounded-2xl border border-line/70 p-1.5 backdrop-blur-md"
       style={{
         left: position.left,
         width: position.width,
@@ -121,6 +121,9 @@ export function ComposerMenu({
           : { bottom: position.bottom }),
         maxHeight: position.maxHeight,
         zIndex: OVERLAY_Z.popover,
+        transformOrigin: placement === "bottom" ? "top left" : "bottom left",
+        boxShadow:
+          "0 14px 36px -10px rgb(0 0 0 / 0.28), 0 2px 6px -1px rgb(0 0 0 / 0.08)",
         ...(opaque ? { backgroundColor: "rgb(var(--overlay))" } : {}),
       }}
     >

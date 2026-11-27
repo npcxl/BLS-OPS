@@ -168,6 +168,34 @@ it("renders prose → command → prose in the order they happened", async () =>
   }
 });
 
+it("counts a successful and a blocked operation separately in the group header", async () => {
+  const language = i18n.language;
+  await i18n.changeLanguage("zh-CN");
+  const view = await render([{
+    id: "mixed-operations",
+    role: "assistant",
+    taskId: "task-1",
+    text: "",
+    parts: [
+      { kind: "step", id: "s0", taskId: "task-1", stepIndex: 0, groupId: "op-group", label: "查端口" },
+      { kind: "step", id: "s1", taskId: "task-1", stepIndex: 1, groupId: "op-group", label: "额外检查" },
+    ],
+  }], {
+    steps: [
+      stepOf(),
+      stepOf({ id: "agent-1", state: "failed", category: "denied", blocked: "read_only" }),
+    ],
+  });
+  try {
+    const group = view.holder.querySelector(".extreme-core-step-group-head");
+    expect(group?.textContent).toContain("2 个操作 · 1 个完成 · 1 个未执行");
+    expect(group?.querySelector(".extreme-core-step-icon .text-success")).toBeNull();
+  } finally {
+    await view.cleanup();
+    await i18n.changeLanguage(language);
+  }
+});
+
 it("shows one stage hint: running row, then '整理结果', hidden once prose starts", async () => {
   const language = i18n.language;
   await i18n.changeLanguage("zh-CN");

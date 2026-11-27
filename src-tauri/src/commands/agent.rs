@@ -141,7 +141,10 @@ async fn authorized_servers(
         server_name: parent_server.to_string(),
         session_id: parent_session.to_string(),
     };
-    match out.iter().position(|server| server.session_id == parent_session) {
+    match out
+        .iter()
+        .position(|server| server.session_id == parent_session)
+    {
         Some(index) => out[index] = parent,
         None => out.insert(0, parent),
     }
@@ -211,7 +214,7 @@ pub async fn agent_start(
         locale: request.locale,
         reply_language: request.reply_language,
         carry_steps: Vec::new(),
-            child_run: false,
+        child_run: false,
     };
     spawn_agent(app, state.inner().clone(), input)
         .await
@@ -345,9 +348,7 @@ fn checkpoint_steps(plan_json: &str) -> Vec<AgentStep> {
                 category: if interrupted {
                     None
                 } else {
-                    item["category"]
-                        .as_str()
-                        .and_then(StepCategory::from_code)
+                    item["category"].as_str().and_then(StepCategory::from_code)
                 },
                 blocked: if interrupted {
                     // 子任务中断：结果未知；普通命令沿用原有"先核对"语义。

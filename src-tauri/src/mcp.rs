@@ -1,4 +1,4 @@
-﻿//! MCP（Model Context Protocol）服务管理 + 最小客户端。
+//! MCP（Model Context Protocol）服务管理 + 最小客户端。
 //!
 //! 只实现客户端需要的三件事：
 //! * stdio / Streamable HTTP 的 JSON-RPC 2.0 会话（initialize → 请求）；
@@ -133,18 +133,73 @@ pub enum McpEffect {
 
 /// 工具名里出现这些动词时，即使声明只读也按"影响未知"处理。
 const MUTATING_NAME_TOKENS: &[&str] = &[
-    "create", "update", "delete", "remove", "write", "modify", "edit", "set", "put", "post",
-    "patch", "insert", "upsert", "drop", "truncate", "purge", "destroy", "kill", "restart",
-    "stop", "start", "execute", "exec", "run", "apply", "deploy", "upload", "install",
-    "uninstall", "publish", "push", "commit", "merge", "move", "copy", "rename", "chmod",
-    "chown", "mkdir", "touch", "grant", "revoke", "enable", "disable", "reset", "rollback",
-    "send", "submit", "trigger", "invoke", "call",
+    "create",
+    "update",
+    "delete",
+    "remove",
+    "write",
+    "modify",
+    "edit",
+    "set",
+    "put",
+    "post",
+    "patch",
+    "insert",
+    "upsert",
+    "drop",
+    "truncate",
+    "purge",
+    "destroy",
+    "kill",
+    "restart",
+    "stop",
+    "start",
+    "execute",
+    "exec",
+    "run",
+    "apply",
+    "deploy",
+    "upload",
+    "install",
+    "uninstall",
+    "publish",
+    "push",
+    "commit",
+    "merge",
+    "move",
+    "copy",
+    "rename",
+    "chmod",
+    "chown",
+    "mkdir",
+    "touch",
+    "grant",
+    "revoke",
+    "enable",
+    "disable",
+    "reset",
+    "rollback",
+    "send",
+    "submit",
+    "trigger",
+    "invoke",
+    "call",
 ];
 
 /// 参数里出现这些字段时，工具通常会携带要写入的内容 / 命令。
 const WRITE_PAYLOAD_KEYS: &[&str] = &[
-    "content", "newcontent", "new_content", "text", "body", "payload", "patch", "command",
-    "script", "stdin", "sql", "query",
+    "content",
+    "newcontent",
+    "new_content",
+    "text",
+    "body",
+    "payload",
+    "patch",
+    "command",
+    "script",
+    "stdin",
+    "sql",
+    "query",
 ];
 
 fn mutating_name_signal(name: &str) -> bool {
@@ -178,9 +233,9 @@ fn write_payload_signal(schema: &Value) -> bool {
         let Some(object) = schema.get(*section).and_then(Value::as_object) else {
             return false;
         };
-        object.keys().any(|key| {
-            WRITE_PAYLOAD_KEYS.contains(&key.to_ascii_lowercase().as_str())
-        })
+        object
+            .keys()
+            .any(|key| WRITE_PAYLOAD_KEYS.contains(&key.to_ascii_lowercase().as_str()))
     })
 }
 
@@ -246,7 +301,11 @@ impl McpReject {
     pub fn blocked_code(self) -> &'static str {
         match self {
             Self::ConfigUnavailable | Self::Disconnected => "mcp_unavailable",
-            Self::Disabled | Self::ToolDisabled | Self::ToolMissing | Self::ReadOnlyRevoked | Self::EffectUnknown => "permission",
+            Self::Disabled
+            | Self::ToolDisabled
+            | Self::ToolMissing
+            | Self::ReadOnlyRevoked
+            | Self::EffectUnknown => "permission",
         }
     }
 
@@ -290,7 +349,9 @@ impl McpReject {
         if child_run {
             text.push_str(match lang {
                 Lang::Zh => " 子任务不能直接执行这一步：把它作为需要主 Agent 处理的请求返回。",
-                Lang::En => " Child agents cannot run this; return it as a request for the parent agent.",
+                Lang::En => {
+                    " Child agents cannot run this; return it as a request for the parent agent."
+                }
             });
         }
         text
@@ -527,13 +588,23 @@ pub struct McpBinding {
 impl McpBinding {
     /// 当前绑定携带的影响等级。调用前必须再用 [`revalidate_binding`] 复查。
     pub fn effect(&self) -> McpEffect {
-        classify_effect(&self.tool, &self.description, &self.input_schema, self.read_only)
+        classify_effect(
+            &self.tool,
+            &self.description,
+            &self.input_schema,
+            self.read_only,
+        )
     }
 
     /// 用刚读到的配置刷新工具声明；声明变化时返回变化前后的等级。
     fn refresh_from(&mut self, config: McpServerConfig) -> Option<(McpEffect, McpEffect)> {
         let before = self.effect();
-        if let Some(tool) = config.tools.iter().find(|tool| tool.name == self.tool).cloned() {
+        if let Some(tool) = config
+            .tools
+            .iter()
+            .find(|tool| tool.name == self.tool)
+            .cloned()
+        {
             self.read_only = tool.read_only;
             self.input_schema = tool.input_schema.clone();
             self.description = tool
@@ -1607,7 +1678,10 @@ where
         if let Some(status) = exit_status {
             message.push_str(&format!(
                 "\n进程退出码：{}",
-                status.code().map(|code| code.to_string()).unwrap_or_else(|| "未知".to_string())
+                status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "未知".to_string())
             ));
         }
         let tail = logs.trim();
@@ -1748,7 +1822,8 @@ fn failure_hint(command: &str, logs: &str) -> Option<String> {
                 .to_string(),
         );
     }
-    if lower.contains("permission denied") || lower.contains("eacces") || logs.contains("拒绝访问") {
+    if lower.contains("permission denied") || lower.contains("eacces") || logs.contains("拒绝访问")
+    {
         return Some(
             "提示：当前用户没有执行权限或访问 Docker 的权限，请检查文件权限／用户组。\n\
              Hint: Permission denied. Check the file permissions or Docker group membership."
@@ -2183,7 +2258,7 @@ mod tests {
         );
         // 没有声明只读 = 写入。
         assert_eq!(
-            classify_effect("inspect", "" , &json!({}), false),
+            classify_effect("inspect", "", &json!({}), false),
             McpEffect::Write
         );
     }
@@ -2253,7 +2328,10 @@ mod tests {
             revalidate_binding(Some(&db), &mut current, true),
             Err(McpReject::ReadOnlyRevoked)
         );
-        assert!(!current.read_only, "fresh declaration must replace the stale binding");
+        assert!(
+            !current.read_only,
+            "fresh declaration must replace the stale binding"
+        );
 
         // 服务停用 / 连接失效 / 工具消失。
         config.enabled = false;
@@ -2383,7 +2461,10 @@ mod tests {
         assert_eq!(runtime_label("uvx"), "uv / uvx");
         assert_eq!(runtime_label(r"C:\Users\me\.local\bin\uvx.exe"), "uv / uvx");
         assert_eq!(runtime_label("/opt/homebrew/bin/uv"), "uv / uvx");
-        assert_eq!(runtime_label(r"C:\Program Files\nodejs\npx.cmd"), "Node.js / npx");
+        assert_eq!(
+            runtime_label(r"C:\Program Files\nodejs\npx.cmd"),
+            "Node.js / npx"
+        );
         assert_eq!(runtime_label("npx"), "Node.js / npx");
         assert_eq!(runtime_label("docker.exe"), "Docker");
         // 以前用 `contains("uv")` 判断，会把自定义命令误归类。
@@ -2392,14 +2473,26 @@ mod tests {
 
     #[test]
     fn package_download_failure_is_not_reported_as_missing_runtime() {
-        let hint = failure_hint("npx", "npm ERR! code E404\nnpm ERR! 404 Not Found - GET https://registry.npmjs.org/demo").unwrap();
+        let hint = failure_hint(
+            "npx",
+            "npm ERR! code E404\nnpm ERR! 404 Not Found - GET https://registry.npmjs.org/demo",
+        )
+        .unwrap();
         assert!(hint.contains("包"));
         assert!(!hint.contains("找不到 Node.js / npx 可执行文件"));
 
-        let network = failure_hint("npx", "npm ERR! code ENOTFOUND\nnpm ERR! network request failed").unwrap();
+        let network = failure_hint(
+            "npx",
+            "npm ERR! code ENOTFOUND\nnpm ERR! network request failed",
+        )
+        .unwrap();
         assert!(network.contains("下载失败"));
 
-        let docker = failure_hint("docker", "error during connect: docker daemon is not running").unwrap();
+        let docker = failure_hint(
+            "docker",
+            "error during connect: docker daemon is not running",
+        )
+        .unwrap();
         assert!(docker.contains("Docker"));
         assert!(docker.contains("服务尚未启动"));
 

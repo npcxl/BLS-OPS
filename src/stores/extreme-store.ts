@@ -1306,20 +1306,14 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     const prefs = defaultChatPrefs();
     const chatMap = { ...state.chatPrefsByWorkspace, [entry.id]: prefs };
     writeChatPrefs(chatMap);
-    // 新任务默认右栏：设置页可选“收起 / 打开”；已有会话保留自己的。
-    const newPane: WorkspacePaneView =
-      useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
+    // 新建任务时：右侧面板若开着就收起，没开就保持收起；已有会话保留各自的展开状态。
+    const newPane: WorkspacePaneView = "hidden";
     const paneMap = { ...state.paneViewByWorkspace, [entry.id]: newPane };
     writePaneViews(paneMap);
-    /*
-     * 左栏默认收起，**只写在这次真正新建的任务上**。
-     *
-     * 不能由 TaskSidebar 的"welcome 就收起"来兜：空白任务切走再切回时
-     * welcome 仍是 true，那会把用户手动展开的左栏又折回去。
-     */
-    const railMap = { ...state.railByWorkspace, [entry.id]: true };
+    // 新建任务不收起左栏：沿用当前左栏的开合状态并记在这条新任务上。
+    const keepRail = state.railCollapsed;
+    const railMap = { ...state.railByWorkspace, [entry.id]: keepRail };
     writeRailViews(railMap);
-    writeLegacyRailCollapsed(true);
     set({
       ...emptyContext(),
       attachments,
@@ -1333,7 +1327,7 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       paneMru: { ...state.paneMru, [entry.id]: ["files"] },
       paneView: newPane,
       paneViewByWorkspace: paneMap,
-      railCollapsed: true,
+      railCollapsed: keepRail,
       railByWorkspace: railMap,
       rightTab: null,
       lastWorkspaceByServer: state.serverId
@@ -1570,13 +1564,12 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
     const prefs = defaultChatPrefs();
     const chatMap = { ...state.chatPrefsByWorkspace, [entry.id]: prefs };
     writeChatPrefs(chatMap);
-    const lazyPane: WorkspacePaneView =
-      useExtremeSettingsStore.getState().newTaskPane === "open" ? "split" : "hidden";
+    const lazyPane: WorkspacePaneView = "hidden";
     const paneMap = { ...state.paneViewByWorkspace, [entry.id]: lazyPane };
     writePaneViews(paneMap);
-    const railMap = { ...state.railByWorkspace, [entry.id]: true };
+    const keepRail = state.railCollapsed;
+    const railMap = { ...state.railByWorkspace, [entry.id]: keepRail };
     writeRailViews(railMap);
-    writeLegacyRailCollapsed(true);
     set({
       workspaceId: entry.id,
       chatPrefs: prefs,
@@ -1585,11 +1578,10 @@ export const useExtremeStore = create<ExtremeState>()((set, get) => ({
       paneTab: "files",
       paneLists: { ...state.paneLists, [entry.id]: ["files"] },
       paneMru: { ...state.paneMru, [entry.id]: ["files"] },
-      // 懒创建也是新任务：按“新任务默认”决定右栏，已有会话切回时仍用各自的值。
+      // 懒创建也是新任务：右栏默认收起，左栏沿用当前状态不强制收起。
       paneView: lazyPane,
       paneViewByWorkspace: paneMap,
-      // 左栏同样只在这条新记录上写一次默认值。
-      railCollapsed: true,
+      railCollapsed: keepRail,
       railByWorkspace: railMap,
       lastWorkspaceByServer: {
         ...state.lastWorkspaceByServer,

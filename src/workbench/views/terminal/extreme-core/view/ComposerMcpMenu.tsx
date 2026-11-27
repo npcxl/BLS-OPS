@@ -7,6 +7,7 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plug } from "@/components/icons";
+import { Checkbox } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { ComposerMenu } from "../ComposerMenu";
 import type { McpCapabilityRow, McpCapabilityState } from "./use-mcp-capabilities";
@@ -61,35 +62,52 @@ function CapabilityRow({
 }) {
   const { t } = useTranslation();
   const status = statusText(row, t);
+  const hasError = row.status === "error" || row.status === "no-tools" || Boolean(checkError);
+  const dotClass = hasError
+    ? "bg-warning"
+    : row.status === "ready" && row.available
+      ? "bg-success"
+      : "bg-fg-subtle/40";
   return (
     <div
       /* 内置能力的说明是中文常量：走 t() 才能跟着语言切换。 */
       title={t(row.detail)}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button,a,input,label")) return;
+        onToggle(!row.enabled);
+      }}
       className={cn(
-        "flex items-start gap-2 rounded-[6px] px-2 py-1.5 transition-colors hover:bg-surface-hover/70",
+        "group flex cursor-pointer items-start gap-2.5 rounded-[10px] px-2 py-1.5 transition-colors duration-150 hover:bg-fg/[0.045]",
         !row.available && "opacity-70",
       )}
     >
-      <input
-        type="checkbox"
-        className="mt-0.5 shrink-0"
+      <Checkbox
+        className="mt-[3px] cursor-pointer"
         checked={row.enabled}
         data-testid={`mcp-cap-${row.id}`}
         onChange={(event) => onToggle(event.target.checked)}
       />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="truncate text-11 text-fg">{t(row.name)}</span>
-          <span className="rounded border border-line/60 px-1 text-9 text-fg-subtle">
+          <span
+            className={cn(
+              "truncate text-12 font-medium transition-colors duration-150",
+              row.enabled ? "text-fg" : "text-fg-muted group-hover:text-fg",
+            )}
+          >
+            {t(row.name)}
+          </span>
+          <span className="rounded-full bg-fg/[0.05] px-1.5 py-0.5 text-[10px] leading-[14px] font-medium text-fg-subtle">
             {t(row.source)}
           </span>
         </div>
         <div
           className={cn(
-            "mt-0.5 flex flex-wrap items-center gap-2 text-10",
-            (row.status === "error" || row.status === "no-tools" || checkError) ? "text-warning" : "text-fg-subtle",
+            "mt-0.5 flex flex-wrap items-center gap-1.5 text-10",
+            hasError ? "text-warning" : "text-fg-subtle",
           )}
         >
+          <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", dotClass)} />
           <span className="min-w-0 truncate">{checkError ? t("检测失败") : status}</span>
           {onRetry && (row.status === "error" || row.status === "no-tools" || row.status === "untested" || checkError) && (
             <button type="button" disabled={checking} className="shrink-0 text-accent hover:underline disabled:opacity-50" onClick={onRetry}>
@@ -108,7 +126,9 @@ function CapabilityRow({
           )}
         </div>
         {(checkError || (row.status === "error" && row.detail)) && (
-          <p className="mt-1 break-words text-10 leading-4 text-fg-muted">{checkError || row.detail}</p>
+          <p className="mt-1 break-words rounded-md bg-warning/[0.08] px-2 py-1 text-10 leading-4 text-fg-muted">
+            {checkError || row.detail}
+          </p>
         )}
       </div>
     </div>
@@ -166,19 +186,19 @@ export function ComposerMcpMenu({
         opaque
       >
         <div
-          className="max-h-[320px] overflow-y-auto px-1.5 pb-1 pt-1.5"
+          className="select-menu max-h-[320px] overflow-y-auto px-1 pb-1 pt-1"
           role="group"
           aria-label={t("MCP 能力")}
         >
-          <div className="flex items-center justify-between px-1 pb-1">
-            <span className="text-10 font-medium uppercase tracking-wide text-fg-subtle">
+          <div className="flex items-center justify-between px-2 pb-1 pt-0.5">
+            <span className="text-[11px] font-medium text-fg-subtle">
               {t("内置运维技能")}
             </span>
             <span className="flex items-center gap-1.5">
-              {state.probing && <span className="text-9 text-fg-subtle">{t("检查环境…")}</span>}
+              {state.probing && <span className="text-[10px] text-fg-subtle">{t("检查环境…")}</span>}
               <button
                 type="button"
-                className="text-9 text-fg-subtle hover:text-fg"
+                className="rounded-md px-1.5 py-0.5 text-[11px] font-medium text-fg-subtle transition-colors hover:bg-fg/[0.06] hover:text-fg"
                 onClick={() => state.refresh()}
               >
                 {t("重新检测")}
@@ -197,9 +217,14 @@ export function ComposerMcpMenu({
             />
           ))}
 
-          <div className="mt-1 border-t border-line/60 px-1 pb-1 pt-2 text-10 font-medium uppercase tracking-wide text-fg-subtle">
-            {t("已连接 MCP")}
-            <button type="button" disabled={state.checkingMcp} className="float-right text-accent disabled:opacity-50" onClick={() => void state.checkMcp?.()}>
+          <div className="mt-1.5 flex items-center justify-between border-t border-line/60 px-2 pb-1 pt-2 text-[11px] font-medium text-fg-subtle">
+            <span>{t("已连接 MCP")}</span>
+            <button
+              type="button"
+              disabled={state.checkingMcp}
+              className="rounded-md px-1.5 py-0.5 text-[11px] font-medium text-fg-subtle transition-colors hover:bg-fg/[0.06] hover:text-fg disabled:opacity-50"
+              onClick={() => void state.checkMcp?.()}
+            >
               {state.checkingMcp ? t("检测中…") : t("检测连接")}
             </button>
           </div>
@@ -243,11 +268,11 @@ export function ComposerMcpMenu({
             ))
           )}
         </div>
-        <div className="flex items-center justify-between border-t border-line/60 px-2 py-1.5">
+        <div className="flex items-center justify-between gap-2 border-t border-line/60 px-2 py-1.5">
           <button
             type="button"
             data-testid="mcp-open-market"
-            className="rounded px-1.5 py-1 text-10 text-fg-muted hover:bg-surface-hover hover:text-fg"
+            className="rounded-lg px-2 py-1 text-11 font-medium text-fg-muted transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={() => {
               setOpen(false);
               onOpenMarket();
@@ -258,7 +283,7 @@ export function ComposerMcpMenu({
           <button
             type="button"
             data-testid="mcp-manage"
-            className="rounded px-1.5 py-1 text-10 text-fg-muted hover:bg-surface-hover hover:text-fg"
+            className="rounded-lg px-2 py-1 text-11 font-medium text-fg-muted transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={() => {
               setOpen(false);
               onManage();

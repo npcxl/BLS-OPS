@@ -45,6 +45,8 @@ interface ModalProps {
    * "标题栏 + 分隔线 + 内容 + 分隔线 + 按钮" 的九宫格。
    */
   bare?: boolean;
+  /** 可选标题前缀图标徽章（确认框风险徽章等），不写入 aria-labelledby 的文本节点。 */
+  headerPrefix?: React.ReactNode;
   className?: string;
   /**
    * 关闭入口。`undefined` = 不可关闭（保存中 / 执行中），此时 Esc 与点遮罩
@@ -77,6 +79,7 @@ export function Modal({
   size = "md",
   fullscreen = false,
   bare = false,
+  headerPrefix,
   className,
   onClose,
   footer,
@@ -110,7 +113,7 @@ export function Modal({
   return createPortal(
     <div
       className={cn(
-        "fixed inset-0 flex items-center justify-center bg-black/24 px-4",
+        "fixed inset-0 flex items-center justify-center bg-black/28 px-4 backdrop-blur-[2px]",
         exiting ? "opacity-0 transition-opacity duration-150" : "overlay-scrim",
       )}
       style={{ zIndex: layer.zIndex }}
@@ -135,7 +138,7 @@ export function Modal({
         className={cn(
           "flex max-h-[85vh] flex-col overflow-hidden outline-none",
           // 默认：带描边与分隔线的玻璃面板；bare：一张干净的确认卡。
-          bare ? "dialog-plain rounded-[24px]" : "glass-panel-strong rounded-[14px]",
+          bare ? "dialog-plain rounded-[20px]" : "glass-panel-strong rounded-[14px]",
           className,
           exiting
             ? "opacity-0 translate-y-2 scale-[0.985] transition-[opacity,transform] duration-150 ease-out"
@@ -147,15 +150,16 @@ export function Modal({
       >
         <div
           className={cn(
-            "flex items-start gap-2",
-            bare ? "px-6 pb-1 pt-6" : "border-b border-line px-4 py-3",
+            "flex items-start",
+            bare ? "gap-3 px-6 pb-1 pt-6" : "gap-2 border-b border-line px-4 py-3",
           )}
         >
+          {headerPrefix && <div className="shrink-0">{headerPrefix}</div>}
           <div className="min-w-0 flex-1">
             <h2
               id={titleId}
               className={cn(
-                "font-semibold text-fg",
+                "font-semibold tracking-[-0.015em] text-fg",
                 bare ? "text-[18px] leading-6" : "text-13",
               )}
             >
@@ -166,26 +170,26 @@ export function Modal({
                 id={descriptionId}
                 className={cn(
                   "text-fg-muted",
-                  bare ? "mt-1.5 text-[13px] leading-6" : "mt-0.5 text-11 leading-relaxed",
+                  bare ? "mt-2 text-[13.5px] leading-6" : "mt-0.5 text-11 leading-relaxed",
                 )}
               >
                 {description}
               </p>
             )}
           </div>
-          {/* bare：不画右上角关闭键（参考的确认卡没有），Esc / 取消按钮仍在。 */}
-          {onClose && !bare && (
+          {onClose && (
             <button
               type="button"
               aria-label={t("Close")}
               aria-disabled={busy || undefined}
               className={cn(
-                "shrink-0 rounded-[5px] p-1 text-fg-subtle hover:bg-surface-hover hover:text-fg",
+                "shrink-0 rounded-[8px] p-1 text-fg-subtle transition-colors hover:bg-fg/8 hover:text-fg",
+                bare && "-mr-1 -mt-0.5",
                 busy && "pointer-events-none opacity-40",
               )}
               onClick={requestClose}
             >
-              <X size={14} />
+              <X size={bare ? 16 : 14} />
             </button>
           )}
         </div>
@@ -194,7 +198,7 @@ export function Modal({
         <div
           className={cn(
             "min-h-0 flex-1 overflow-y-auto",
-            bare ? "px-6 pb-6 pt-3" : "px-4 py-3",
+            bare ? "px-6 pb-5 pt-2" : "px-4 py-3",
           )}
         >
           <OverlayDepthContext.Provider value={layer.childDepth}>

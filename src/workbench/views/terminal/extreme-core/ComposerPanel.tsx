@@ -101,6 +101,8 @@ export interface ComposerPanelProps {
   onSendWhileRunningChange: (mode: "steer" | "queue") => void;
   /** 正文最多几行（约聊天区三分之一），超出后在输入框内部滚动。 */
   maxRows: number;
+  minRows: number;
+  suspended?: boolean;
   /** 下栏的 MCP 能力勾选（内置技能 + 已连接 MCP）。 */
   mcp?: McpCapabilityState;
   onOpenMcpMarket?: () => void;
@@ -132,7 +134,7 @@ function PermissionSelect({
     <Select
       variant="menu"
       className="shrink-0"
-      menuMinWidth={340}
+      menuMinWidth={292}
       tone={permission === "full" ? "warning" : "default"}
       ariaLabel={t("权限")}
       title={permissionHint}
@@ -148,26 +150,28 @@ function PermissionSelect({
         {
           value: "readonly",
           label: t("只读"),
-          hint: t("只执行查询；写入 / 删除会被拒绝，提权禁用"),
-          icon: <Lock size={11} />,
+          description: t("只执行查询；写入 / 删除会被拒绝，提权禁用"),
+          icon: <Lock size={12} />,
         },
         {
           value: "ask",
           label: t("按需确认"),
-          hint: t("查询直接执行；写 / 改 / 删逐条确认"),
-          icon: <ShieldCheck size={11} />,
+          description: t("查询直接执行；写 / 改 / 删逐条确认"),
+          icon: <ShieldCheck size={12} />,
         },
         {
           value: "full",
           label: t("完全访问"),
-          hint: t("写入 / 修改 / 删除直接执行；严重操作仍确认"),
-          icon: <ShieldCheck size={11} />,
+          description: t("写入 / 修改 / 删除直接执行；严重操作仍确认"),
+          icon: <ShieldCheck size={12} />,
+          tone: "warning",
         },
         {
           value: "manage",
           label: t("管理权限"),
-          hint: t("默认值、提权、备份与外部工具"),
-          icon: <Settings size={11} />,
+          description: t("默认值、提权、备份与外部工具"),
+          icon: <Settings size={12} />,
+          separatorBefore: true,
         },
       ]}
     />
@@ -205,14 +209,27 @@ function ContextSelects({
       <Select
         variant="menu"
         className="shrink-0"
+        menuMinWidth={248}
         ariaLabel={t("上下文范围")}
         title={runningHint ?? t("上下文范围")}
         value={contextMode}
         onChange={(value) => onContextModeChange(value as ContextMode)}
         options={[
-          { value: "session", label: t("当前会话") },
-          { value: "only", label: t("仅本条") },
-          { value: "picked", label: t("自选") },
+          {
+            value: "session",
+            label: t("当前会话"),
+            description: t("携带本对话历史、工具结果与附件"),
+          },
+          {
+            value: "only",
+            label: t("仅本条"),
+            description: t("忽略历史消息，只发送本条内容"),
+          },
+          {
+            value: "picked",
+            label: t("自选"),
+            description: t("仅携带你在右侧勾选的参考材料"),
+          },
         ]}
       />
       {budgets.length > 0 ? (
@@ -286,6 +303,8 @@ export function ComposerPanel({
   sendWhileRunning,
   onSendWhileRunningChange,
   maxRows,
+  minRows,
+  suspended,
   mcp,
   onOpenMcpMarket,
   onManageMcp,
@@ -537,11 +556,6 @@ export function ComposerPanel({
         )}
 
         <PromptBar
-          /*
-           * 模型列表是异步加载的：第一次拿到后重建一次，让 `defaultModel` /
-           * `defaultEffort`（初始值只在挂载时读）对准真实配置。草稿是受控的，不会丢。
-           */
-          key={models.length > 0 ? "prompt-bar-ready" : "prompt-bar-loading"}
           className="extreme-core-prompt-bar"
           value={draft}
           onChange={onDraftChange}
@@ -651,10 +665,12 @@ export function ComposerPanel({
           sparkColor="rgb(var(--ai))"
           width={880}
           radius={16}
-          maxRows={Math.max(2, maxRows)}
+          minRows={minRows}
+          maxRows={maxRows}
+          suspended={suspended}
         />
 
-        <div className="flex min-w-0 items-center gap-1.5 px-1 pt-1.5">
+        <div className="extreme-core-composer-meta flex min-w-0 items-center gap-1.5 px-1 pt-1">
           {/*
            * 能力未登记就明说：后端不认识这个模型名时，思考强度只剩「默认」、
            * 上下文只剩「自动」，不说清楚会被当成功能坏了。修的地方在设置页。

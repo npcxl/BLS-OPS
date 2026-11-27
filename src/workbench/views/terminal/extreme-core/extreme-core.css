@@ -56,6 +56,7 @@
 
 .extreme-core[data-welcome="false"] .extreme-core-main {
   background: rgb(var(--content));
+  container: extreme-main / inline-size;
 }
 
 /* 会话行使用中性色区分悬停与当前选中，适配浅色和深色主题。 */
@@ -114,14 +115,18 @@
 /* 与主窗口标题栏同高（36px）：窗口按钮贴边、整条是拖拽区。 */
 /* 顶栏高度由 `page-toolbar` 决定，不再单独覆盖。 */
 /*
- * 正文列宽与输入框**同一把尺子**。
+ * 正文列宽与输入框**同一把尺子**（Codex 居中阅读列）。
  *
- * 以前固定 880：窗口一展开（最大化 / 全屏）就在两侧空出大片，正文挤在中间，
- * 与"整个超能对话铺满、只让开头部和左侧任务列表"的要求相反。现在不再封顶，
- * 由容器宽度决定；两侧留白只靠 `padding-inline`（1rem / 2rem）控制，宽屏也
- * 不会贴到边缘。
+ * 宽屏下控制在 704px（44rem）紧凑行长，既便于阅读，也能在全屏下
+ * 为右上角「执行计划」留出清晰显示空间；正文、时间轴、排队卡与
+ * 输入框共用同一条左右边界。
  */
-.extreme-core-column { max-width: none; }
+.extreme-core {
+  --extreme-chat-max-w: 44rem;
+}
+.extreme-core-column {
+  max-width: var(--extreme-chat-max-w);
+}
 
 .extreme-workspace-skeleton {
   position: absolute;
@@ -175,6 +180,30 @@
 .extreme-core-timeline-rail {
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 48px);
   mask-image: linear-gradient(to bottom, transparent, #000 48px);
+}
+
+/* 默认隐藏，仅指针靠近时间轴或键盘聚焦时平滑淡入。 */
+.extreme-core-timeline-dock {
+  opacity: 0;
+  transform: translateX(-4px);
+  pointer-events: none;
+  transition: opacity 200ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.extreme-core-timeline-dock[data-visible="true"] {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .extreme-core-timeline-dock,
+  .extreme-core-timeline-dock[data-visible="true"] {
+    transform: none;
+    transition: opacity 150ms ease;
+  }
 }
 
 @media (min-width: 1180px) {
@@ -237,38 +266,19 @@
 }
 
 /*
- * 消息行：**只负责排版方向与间距**，气泡外观交给内层的 LiquidGlass。
- *
- * 之前这里是 `display: flex`（行向）+ user 侧再加 border / background /
- * padding —— 换玻璃气泡后变成"CSS 一层、玻璃一层"的双层框，还会把
- * Tailwind 的 `flex-col` / `items-end` 覆盖掉，于是整页错位。
+ * Codex 式消息节奏：问→答紧密衔接，答→下一问适当拉开呼吸感。
+ * 去掉原先 `.extreme-core-message` 上多余的 `margin-bottom: 18px`（那会把
+ * 尾栏的时间与复制按钮顶到气泡下面 24px 远）。
  */
-.extreme-core-message {
+.extreme-core-messages {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 18px;
-  padding: 0;
+  gap: 16px;
+  padding-bottom: 16px;
 }
-
-.extreme-core-message[data-role="user"] {
-  margin-left: auto;
-  width: fit-content;
-  max-width: 92%;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+.extreme-core-messages > [data-role="user"]:not(:first-child) {
+  margin-top: 12px;
 }
-
-/*
- * 按钮与提示条的配色**全部交回组件**（`Button` / `StatusNotice` 各自的
- * token），这里不再写死深色 —— 之前那几条 `!important` 在浅色主题下会把
- * 提示条压成深底 + 深字，反而看不见。
- */
-
-/* Keep the reply, task card, and message metadata visually distinct. */
-.extreme-core-messages { display: flex; flex-direction: column; gap: 22px; }
 /*
  * 气泡正文必须可选：`globals.css` 给 `body` 设了 `user-select: none`（桌面应用
  * 不该被整体框选），例外只开给 input / textarea / [data-selectable] /
@@ -276,24 +286,33 @@
  * 选不中，也没法 Ctrl+C。
  */
 .extreme-core-message {
+  display: flex;
+  flex-direction: column;
   max-width: 100%;
+  padding: 0;
   overflow-wrap: anywhere;
   user-select: text;
   -webkit-user-select: text;
 }
 .extreme-core-message-user {
-  background: var(--extreme-user-bubble, rgb(var(--accent)));
-  color: var(--extreme-user-text, #fff);
-  max-width: min(86%, 40rem);
-  padding: 9px 13px;
-  border-radius: 16px 16px 5px 16px;
+  /* Codex 风格：对称大圆角柔和中性气泡，无尖角、无厚边框，不抢正文焦点。 */
+  background: var(--extreme-user-bubble, rgb(var(--fg) / .055));
+  color: var(--extreme-user-text, rgb(var(--fg)));
+  border: 1px solid rgb(var(--line) / .38);
+  max-width: min(82%, 38rem);
+  padding: 9px 15px;
+  border-radius: 18px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.58;
   white-space: pre-wrap;
+}
+:root[data-theme="dark"] .extreme-core-message-user {
+  background: rgb(var(--fg) / .075);
+  border-color: rgb(var(--line) / .42);
 }
 .extreme-core-message-reply {
   width: 100%;
-  padding: 2px 0;
+  padding: 1px 0;
 }
 .extreme-core-agent-activity {
   align-self: stretch;
@@ -392,7 +411,7 @@
   padding: 4px 10px;
   border-inline-start: 2px solid rgb(var(--line-strong));
 }
-.extreme-core-message-meta { min-height: 23px; }
+.extreme-core-message-meta { min-height: 22px; }
 .extreme-core-reply-wait {
   display: inline-flex;
   align-items: center;
@@ -408,20 +427,13 @@
 .extreme-core-turn {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   min-width: 0;
 }
 .extreme-core-turn .extreme-core-markdown > :first-child { margin-top: 0; }
 .extreme-core-turn .extreme-core-markdown > :last-child { margin-bottom: 0; }
 .extreme-core-turn-stage { font-size: 12px; }
-/* 执行前说明（Codex 式轻注释）：比正文收敛一档，紧贴下面的命令行。 */
-.extreme-core-turn-note {
-  margin: 0;
-  color: rgb(var(--fg-muted));
-  font-size: 13px;
-  line-height: 1.55;
-}
 
 .extreme-core-scroll-indicator {
   position: relative;
@@ -480,47 +492,62 @@
 }
 
 .extreme-core-attempts {
-  border: 1px solid rgb(var(--line) / .6);
+  border: 1px solid rgb(var(--line) / .55);
   border-radius: 10px;
-  background: rgb(var(--surface-2));
+  background: rgb(var(--surface-2) / .55);
   color: rgb(var(--fg-muted));
   font-size: 12px;
 }
 .extreme-core-attempts > summary {
   cursor: pointer;
-  padding: 9px 12px;
+  padding: 7px 11px;
+  user-select: none;
 }
 .extreme-core-attempts-content {
   display: grid;
-  gap: 6px;
-  padding: 0 10px 10px;
+  gap: 4px;
+  padding: 0 8px 8px;
 }
 
 /* AI 提问卡：与命令行同一列，不用浮层，不抢正文的阅读位置。 */
 .extreme-core-question {
   width: 100%;
   min-width: 0;
-  border: 1px solid rgb(var(--line) / 0.6);
+  border: 1px solid rgb(var(--line) / 0.65);
   border-radius: 16px;
-  background: rgb(var(--surface-2));
-  padding: 16px 20px;
+  background: rgb(var(--surface-1) / 0.96);
+  box-shadow: 0 6px 22px -10px rgb(0 0 0 / 0.14);
+  padding: 15px 18px;
 }
 .extreme-core-question-answered {
-  border-color: rgb(var(--accent) / 0.3);
-  background: rgb(var(--accent) / 0.05);
+  border-color: rgb(var(--accent) / 0.28);
+  background: rgb(var(--accent) / 0.045);
+  box-shadow: none;
 }
 
 /* 运行中的步骤标题：官方 ThoughtLine，占满剩余宽度、单行截断。 */
-/* 本轮已用时间：跟在回复最后，不抢正文的视觉重量（Codex 式轻分隔）。 */
+/* 本轮已用时间：Codex 式细线居中分隔，安静收尾，不抢正文焦点。 */
 .extreme-core-elapsed {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 10.5px;
+  gap: 10px;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 11px;
   line-height: 1.4;
   color: rgb(var(--fg-subtle));
   font-variant-numeric: tabular-nums;
+}
+.extreme-core-elapsed-line {
+  flex: 1;
+  height: 1px;
+  background: rgb(var(--line) / 0.55);
+}
+.extreme-core-elapsed-label {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
 }
 .extreme-core-elapsed-sep {
   color: rgb(var(--fg-subtle) / 0.85);
@@ -555,35 +582,38 @@
   color: rgb(var(--fg-muted));
 }
 
+/* Codex 式极简工具活动行：静息态无硬边框，运行/失败/展开态呈现柔和层次。 */
 .extreme-core-step {
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgb(var(--line) / .45);
+  border: 1px solid transparent;
   border-radius: 9px;
-  background: rgb(var(--surface-2) / .24);
+  background: transparent;
   transition: border-color 140ms ease, background-color 140ms ease;
 }
 .extreme-core-step:hover {
-  border-color: rgb(var(--line) / .75);
+  background: rgb(var(--fg) / .035);
 }
 .extreme-core-step-running {
-  border-color: rgb(var(--accent) / .38);
-  background: rgb(var(--accent) / .035);
+  border-color: rgb(var(--accent) / .28);
+  background: rgb(var(--accent) / .04);
 }
 .extreme-core-step[data-state="failed"] {
-  border-color: rgb(var(--danger) / .35);
+  border-color: rgb(var(--danger) / .28);
+  background: rgb(var(--danger) / .03);
 }
 .extreme-core-step-diff-link {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: 3px;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: rgb(var(--accent) / .1);
   color: rgb(var(--accent));
   font-size: 10.5px;
+  font-weight: 500;
   line-height: 16px;
   transition: background-color 120ms ease;
 }
@@ -594,17 +624,21 @@
 .extreme-core-step-group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
   min-width: 0;
-  padding: 5px 9px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
   color: rgb(var(--fg-muted));
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
   text-align: start;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 .extreme-core-step-head:hover,
 .extreme-core-step-group-head:hover {
-  background: rgb(var(--surface-2) / .6);
+  background: rgb(var(--fg) / .04);
   color: rgb(var(--fg));
 }
 .extreme-core-step-head:focus-visible,
@@ -658,31 +692,37 @@
 .extreme-core-step-reason {
   padding: 0 9px 6px 29px;
   color: rgb(var(--danger));
-  font-size: 11px;
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 .extreme-core-step-detail {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 0 9px 8px 29px;
+  gap: 8px;
+  margin: 4px 4px 6px 22px;
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--line) / .55);
+  border-radius: 10px;
+  background: rgb(var(--surface-2) / .55);
   color: rgb(var(--fg-muted));
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .extreme-core-step-code {
-  max-height: 180px;
+  max-height: 200px;
   overflow: auto;
-  padding: 4px 7px;
-  border-radius: 6px;
-  background: rgb(var(--surface-2) / .85);
-  color: rgb(var(--fg-muted));
+  padding: 7px 10px;
+  border: 1px solid rgb(var(--line) / .45);
+  border-radius: 8px;
+  background: rgb(var(--surface-1));
+  color: rgb(var(--fg));
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11.5px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .extreme-core-step-stderr { color: rgb(var(--danger)); }
-.extreme-core-step-meta { color: rgb(var(--fg-subtle)); font-size: 10px; }
+.extreme-core-step-meta { color: rgb(var(--fg-subtle)); font-size: 10.5px; }
 .extreme-core-step-with-approval {
   border-color: transparent;
   background: transparent;
@@ -693,24 +733,26 @@
 .extreme-core-step-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   width: 100%;
   min-width: 0;
 }
-.extreme-core-step-group-head { padding-inline: 2px; }
+.extreme-core-step-group-head { padding-inline: 6px; }
 .extreme-core-step-group-rows {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-inline-start: 8px;
-  border-inline-start: 1px solid rgb(var(--line) / .7);
+  gap: 2px;
+  margin-inline-start: 12px;
+  padding-inline-start: 10px;
+  border-inline-start: 1.5px solid rgb(var(--line) / .55);
 }
 
 .extreme-core-markdown {
   min-width: 0;
   color: rgb(var(--fg));
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 14px;
+  line-height: 1.68;
+  letter-spacing: -.004em;
   overflow-wrap: anywhere;
 }
 .extreme-core-message-notice .extreme-core-markdown {
@@ -720,109 +762,187 @@
 }
 .extreme-core-markdown > :first-child { margin-block-start: 0; }
 .extreme-core-markdown > :last-child { margin-block-end: 0; }
-.extreme-core-markdown p { margin-block: .8em; }
+.extreme-core-markdown p { margin-block: .65em; }
 .extreme-core-markdown :is(h1, h2, h3, h4, h5, h6) {
-  margin-block: 1.05em .35em;
-  font-weight: 650;
-  line-height: 1.4;
+  margin-block: 1.15em .4em;
+  color: rgb(var(--fg));
+  font-weight: 600;
+  line-height: 1.38;
+  letter-spacing: -.014em;
 }
-.extreme-core-markdown h1 { font-size: 21px; }
-.extreme-core-markdown h2 { font-size: 18px; }
-.extreme-core-markdown h3 { font-size: 16px; }
-.extreme-core-markdown strong { font-weight: 650; }
-.extreme-core-markdown :is(ul, ol) { margin-block: .65em; padding-inline-start: 1.5em; }
+.extreme-core-markdown h1 { font-size: 18px; letter-spacing: -.018em; }
+.extreme-core-markdown h2 { font-size: 15.5px; }
+.extreme-core-markdown h3 { font-size: 14.5px; margin-block: .95em .32em; }
+.extreme-core-markdown h4 { font-size: 14px; margin-block: .85em .25em; }
+.extreme-core-markdown strong { font-weight: 600; color: rgb(var(--fg)); }
+.extreme-core-markdown :is(ul, ol) { margin-block: .55em; padding-inline-start: 1.4em; }
 .extreme-core-markdown ul { list-style: disc; }
 .extreme-core-markdown ol { list-style: decimal; }
-.extreme-core-markdown li { margin-block: .24em; padding-inline-start: .12em; }
-.extreme-core-markdown li > :is(p, ul, ol) { margin-block: .3em; }
-.extreme-core-markdown code {
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: rgb(var(--surface-3));
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: .9em;
+.extreme-core-markdown li { margin-block: .26em; padding-inline-start: .14em; }
+.extreme-core-markdown li::marker {
+  color: rgb(var(--fg-subtle) / .85);
+  font-variant-numeric: tabular-nums;
+}
+.extreme-core-markdown li > :is(p, ul, ol) { margin-block: .28em; }
+.extreme-core-markdown :not(pre) > code {
+  padding: .12em .42em;
+  border: 1px solid rgb(var(--line) / .5);
+  border-radius: 5px;
+  background: rgb(var(--fg) / .045);
+  font-family: var(--font-mono);
+  font-size: .86em;
+  font-weight: 450;
+}
+:root[data-theme="dark"] .extreme-core-markdown :not(pre) > code {
+  border-color: rgb(var(--line) / .6);
+  background: rgb(var(--fg) / .08);
 }
 .extreme-core-reply-code {
   position: relative;
   min-width: 0;
-  margin-block: .9em;
-  padding-block-start: 29px;
-  border: 1px solid rgb(var(--line));
-  border-radius: 9px;
-  background: rgb(var(--surface-2));
+  margin-block: .85em;
+  overflow: hidden;
+  border: 1px solid rgb(var(--line) / .72);
+  border-radius: 12px;
+  background: rgb(var(--surface-1));
+}
+.extreme-core-reply-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid rgb(var(--line) / .55);
+  background: rgb(var(--surface-2) / .9);
+}
+.extreme-core-reply-code-lang {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(var(--fg-subtle));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
 }
 .extreme-core-reply-copy {
-  position: absolute;
-  inset: 4px 6px auto auto;
-  display: grid;
-  width: 24px;
-  height: 23px;
-  place-items: center;
-  border-radius: 5px;
-  color: rgb(var(--fg-muted));
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: rgb(var(--fg-subtle));
+  font-size: 11px;
+  font-weight: 500;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 .extreme-core-reply-copy:hover, .extreme-core-reply-copy:focus-visible {
-  background: rgb(var(--surface-hover));
+  background: rgb(var(--fg) / .06);
   color: rgb(var(--fg));
 }
 .extreme-core-markdown pre {
   margin: 0;
-  padding: 9px 12px 11px;
+  padding: 11px 14px;
   overflow-x: auto;
   overflow-wrap: normal;
+  background: rgb(var(--surface-2) / .32);
+}
+:root[data-theme="dark"] .extreme-core-markdown pre {
+  background: rgb(var(--surface-1));
 }
 .extreme-core-markdown pre code {
   padding: 0;
+  border: 0;
   background: transparent;
-  font-size: 13px;
-  line-height: 1.65;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.62;
+  font-weight: 400;
 }
 .extreme-core-markdown blockquote {
   margin-block: .75em;
-  padding-inline-start: 12px;
-  border-inline-start: 2px solid rgb(var(--line-strong));
+  padding: 2px 0 2px 13px;
+  border-inline-start: 2.5px solid rgb(var(--line-strong) / .85);
   color: rgb(var(--fg-muted));
 }
 .extreme-core-markdown a {
   color: rgb(var(--accent));
   text-decoration: underline;
+  text-decoration-color: rgb(var(--accent) / .42);
   text-underline-offset: 3px;
+  transition: text-decoration-color 120ms ease;
+}
+.extreme-core-markdown a:hover {
+  text-decoration-color: rgb(var(--accent));
 }
 .extreme-core-reply-table {
   max-width: 100%;
-  margin-block: .9em;
+  margin-block: .85em;
   overflow-x: auto;
-  border: 1px solid rgb(var(--line));
-  border-radius: 8px;
+  border: 1px solid rgb(var(--line) / .7);
+  border-radius: 10px;
+  background: rgb(var(--surface-1));
 }
-.extreme-core-markdown table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.extreme-core-markdown table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.55; }
 .extreme-core-markdown :is(th, td) {
-  min-width: 6em;
-  padding: 6px 10px;
-  border-bottom: 1px solid rgb(var(--line));
+  padding: 7px 12px;
+  border-bottom: 1px solid rgb(var(--line) / .45);
   text-align: start;
   vertical-align: top;
 }
-.extreme-core-markdown th { background: rgb(var(--surface-2)); font-weight: 650; }
+.extreme-core-markdown th {
+  background: rgb(var(--surface-2) / .85);
+  border-bottom-color: rgb(var(--line) / .75);
+  color: rgb(var(--fg-muted));
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.extreme-core-markdown tbody tr:hover td { background: rgb(var(--fg) / .022); }
 .extreme-core-markdown tbody tr:last-child td { border-bottom: 0; }
-.extreme-core-markdown hr { margin-block: 1em; border: 0; border-top: 1px solid rgb(var(--line)); }
+.extreme-core-markdown hr { margin-block: 1.15em; border: 0; border-top: 1px solid rgb(var(--line) / .65); }
 
 @media (max-width: 700px) {
-  .extreme-core-messages { gap: 17px; }
+  .extreme-core-messages { gap: 14px; }
 }
 
-.extreme-core-composer-wrap { width: 100%; padding: 8px 16px 16px; }
+.extreme-core-composer-wrap { width: 100%; padding: 8px 16px 14px; }
+.extreme-core[data-welcome="false"] .extreme-core-composer {
+  max-width: var(--extreme-chat-max-w);
+}
 
 /*
- * 发送队列在**输入框上方**、铺满整个对话宽度：它把聊天区往上撑，
- * 不与输入框抢空间，也不是一张只敢占 880px 的小卡。
+ * 排队消息卡（参考 Antigravity）：独立圆角浮卡与输入卡同宽对齐，
+ * 之间留 8px 呼吸间隙与轻投影，保持舒展简洁。
  */
-.extreme-core-send-queue { width: 100%; padding: 0 16px 8px; }
+.extreme-core-send-queue { width: 100%; padding: 4px 16px 0; }
+.extreme-core-queue-tray {
+  width: 100%;
+  max-width: var(--extreme-chat-max-w);
+  margin-inline: auto;
+  box-shadow: 0 2px 12px -4px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.04);
+}
+:root[data-theme="dark"] .extreme-core-queue-tray {
+  box-shadow: 0 6px 22px -8px rgb(0 0 0 / 0.45);
+}
+.extreme-core-send-queue + .extreme-core-composer-wrap { padding-top: 8px; }
 @media (min-width: 1180px) {
   .extreme-core-send-queue { padding-inline: 2rem; }
 }
 .extreme-core[data-welcome="true"] .extreme-core-send-queue { display: none; }
 .extreme-core[data-welcome="true"] .extreme-core-composer-wrap { padding: 0; }
+.extreme-core-composer-meta {
+  opacity: .88;
+  transition: opacity 140ms ease;
+}
+.extreme-core-composer-meta:hover,
+.extreme-core-composer-meta:focus-within {
+  opacity: 1;
+}
 /*
  * 输入框与正文**同一条边**：宽屏下都留 2rem。
  *
@@ -837,6 +957,19 @@
   /* 欢迎页不要内边距：输入区在那里是整块居中，加了反而缩一圈。 */
   .extreme-core[data-welcome="true"] .extreme-core-composer-wrap {
     padding: 0;
+  }
+}
+
+/*
+ * 全屏 / 宽屏且右上角「执行计划」卡片（288px + 12px）展开时，按对称方式
+ * 收窄主列最大宽度，保证左右留白严格一致、正文与输入框边缘对齐，同时右侧
+ * 留出 ≥ 312px 空间让计划卡完整显示不遮挡内容。
+ */
+@container extreme-main (min-width: 1120px) {
+  .extreme-core-main:has(.extreme-core-plan-card) .extreme-core-column,
+  .extreme-core-main:has(.extreme-core-plan-card) .extreme-core-queue-tray,
+  .extreme-core-main:has(.extreme-core-plan-card) .extreme-core-composer {
+    max-width: min(var(--extreme-chat-max-w), calc(100cqi - 624px));
   }
 }
 
@@ -934,15 +1067,15 @@
  */
 .extreme-core-prompt-bar > [role="presentation"] {
   box-shadow:
-    0 0 0 1px rgb(var(--line) / .6),
-    0 2px 8px rgb(0 0 0 / .06);
-  transition: box-shadow .16s ease;
+    0 0 0 1px rgb(var(--line) / .65),
+    0 6px 22px -10px rgb(0 0 0 / .16);
+  transition: box-shadow .18s ease;
 }
 
 .extreme-core-prompt-bar:focus-within > [role="presentation"] {
   box-shadow:
-    0 0 0 1px var(--extreme-composer-focus, rgb(var(--accent) / .45)),
-    0 2px 8px rgb(0 0 0 / .06);
+    0 0 0 1px var(--extreme-composer-focus, rgb(var(--accent) / .48)),
+    0 8px 26px -10px rgb(var(--accent) / .16);
 }
 
 /*
@@ -1055,25 +1188,28 @@
   color: rgb(var(--fg));
 }
 
-/* ---------------- 文件变更：统一 Diff ---------------- */
+/* ---------------- 文件变更：统一 Diff（Codex 风格） ---------------- */
 /*
- * 双列行号 + 左侧 2px 增删色条；不印 +/- 字符，靠底色与色条区分。
- * 颜色全部走 token：深色下只叠一层透明底，不出现整块亮色高光。
+ * 紧凑双列行号 + 左侧 2px 增删色条 + 横向滚动不强行断词；
+ * 颜色全部走 token，深浅主题皆保持柔和层次。
  */
 .extreme-core-diff {
-  --diff-gutter: 2.8rem;
+  --diff-gutter: 2.35rem;
   --diff-add-bg: rgb(var(--success) / .1);
-  --diff-del-bg: rgb(var(--danger) / .08);
+  --diff-del-bg: rgb(var(--danger) / .085);
   --diff-add-strip: rgb(var(--success) / .85);
   --diff-del-strip: rgb(var(--danger) / .85);
+  overflow-x: auto;
+  overflow-y: hidden;
   font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 22px;
+  font-size: 12px;
+  line-height: 20px;
+  scrollbar-width: thin;
 }
 
 :root[data-theme="dark"] .extreme-core-diff {
-  --diff-add-bg: rgb(var(--success) / .14);
-  --diff-del-bg: rgb(var(--danger) / .13);
+  --diff-add-bg: rgb(var(--success) / .13);
+  --diff-del-bg: rgb(var(--danger) / .12);
 }
 
 .extreme-core-diff-row {
@@ -1081,6 +1217,11 @@
   display: grid;
   grid-template-columns: var(--diff-gutter) var(--diff-gutter) minmax(0, 1fr);
   align-items: start;
+  min-width: max-content;
+}
+
+.extreme-core-diff-row:hover {
+  background: rgb(var(--fg) / .035);
 }
 
 .extreme-core-diff-row[data-kind="add"] {
@@ -1109,18 +1250,22 @@
 }
 
 .extreme-core-diff-no {
-  padding-inline-end: .5rem;
-  color: rgb(var(--fg-subtle) / .85);
-  font-size: 11.5px;
-  line-height: 22px;
+  padding-inline-end: .45rem;
+  color: rgb(var(--fg-subtle) / .75);
+  font-size: 11px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
   text-align: end;
   user-select: none;
 }
 
+.extreme-core-diff-no:nth-child(2) {
+  border-inline-end: 1px solid rgb(var(--line) / .35);
+}
+
 .extreme-core-diff-text {
-  padding-inline-end: 1rem;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  padding-inline: .65rem 1rem;
+  white-space: pre;
   tab-size: 4;
 }
 
@@ -1132,8 +1277,9 @@
   height: 24px;
   padding-inline: .75rem;
   border-block: 1px solid rgb(var(--line) / .35);
-  background: rgb(var(--surface-2) / .55);
+  background: rgb(var(--surface-2) / .5);
   color: rgb(var(--fg-muted));
+  font-family: var(--font-sans);
   font-size: 11px;
   text-align: start;
   transition: background-color .12s ease, color .12s ease;
@@ -1141,7 +1287,7 @@
 
 .extreme-core-diff-gap:hover,
 .extreme-core-diff-gap:focus-visible {
-  background: rgb(var(--surface-3) / .85);
+  background: rgb(var(--fg) / .06);
   color: rgb(var(--fg));
 }
 
@@ -1192,10 +1338,12 @@
   width: 288px;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid rgb(var(--line) / 0.6);
+  border: 1px solid rgb(var(--line) / 0.65);
   border-radius: 16px;
-  background: rgb(var(--surface-2));
-  box-shadow: 0 2px 12px rgb(0 0 0 / 0.04);
+  background: rgb(var(--surface-2) / 0.92);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 28px -12px rgb(0 0 0 / 0.2);
 }
 
 .extreme-core-plan-card,

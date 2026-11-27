@@ -33,10 +33,16 @@ export interface SelectOption {
   value: string;
   label: string;
   disabled?: boolean;
-  /** 右侧浅色补充信息（例如 `root@host`）。 */
+  /** 右侧浅色补充信息（短元数据，例如 `root@host`）。 */
   hint?: string;
+  /** 第二行完整说明文案（适合权限、上下文模式等需要完整阅读的选项）。 */
+  description?: string;
   /** 左侧图标（例如数据库引擎标志），选中项与选项都会显示。 */
   icon?: ReactNode;
+  /** 在该选项上方绘制一条细分隔线（用于将“管理/配置”入口与普通值隔开）。 */
+  separatorBefore?: boolean;
+  /** 选项语气：高风险模式可用 warning / danger 弱高亮。 */
+  tone?: "default" | "warning" | "danger";
 }
 
 interface MenuPosition {
@@ -130,6 +136,8 @@ export function Select({
   const glowRef = useRef<HTMLSpanElement | null>(null);
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const lastOpen = useRef(false);
+  /** 打开态键盘快速检索（typeahead）：连续键入字符跳到匹配选项。 */
+  const typeaheadRef = useRef({ query: "", timer: 0 });
   const generatedId = useId();
   const listId = `select-list-${id ?? generatedId}`;
   /**
@@ -138,6 +146,46 @@ export function Select({
    * 同时面板会登记为浮层，Esc / 全局快捷键按栈顺序让路。
    */
   const layer = useOverlayLayer(open, "select");
+
+  useEffect(() => {
+    if (!open) {
+      window.clearTimeout(typeaheadRef.current.timer);
+      typeaheadRef.current = { query: "", timer: 0 };
+    }
+  }, [open]);
+
+  const jumpByTypeahead = (key: string) => {
+    const state = typeaheadRef.current;
+    window.clearTimeout(state.timer);
+    state.query = (state.query + key).toLowerCase();
+    state.timer = window.setTimeout(() => {
+      typeaheadRef.current.query = "";
+    }, 650);
+
+    const n = options.length;
+    if (n === 0) return;
+    const start = activeIndex >= 0 ? (activeIndex + (state.query.length === 1 ? 1 : 0)) % n : 0;
+    let substringMatch = -1;
+    for (let step = 0; step < n; step += 1) {
+      const idx = (start + step) % n;
+      const opt = options[idx];
+      if (!opt || opt.disabled) continue;
+      const label = opt.label.toLowerCase();
+      if (label.startsWith(state.query)) {
+        setActiveIndex(idx);
+        return;
+      }
+      if (
+        substringMatch === -1 &&
+        (label.includes(state.query) ||
+          opt.description?.toLowerCase().includes(state.query) ||
+          opt.hint?.toLowerCase().includes(state.query))
+      ) {
+        substringMatch = idx;
+      }
+    }
+    if (substringMatch >= 0) setActiveIndex(substringMatch);
+  };
 
   const selected = options.find((option) => option.value === value) ?? null;
 
@@ -254,11 +302,11 @@ export function Select({
     if (focusButton) buttonRef.current?.focus();
   };
 
-  const choose = (index: number) => {
+  const choose = (index: number, focusButton = true) => {
     const option = options[index];
     if (!option || option.disabled) return;
     onChange(option.value);
-    close();
+    close(focusButton);
   };
 
   const move = (delta: number) => {
@@ -275,7 +323,7 @@ export function Select({
     <div
       ref={listRef}
       tabIndex={-1}
-      className="select-menu fixed overflow-y-auto rounded-[12px] p-1 text-fg outline-none"
+      className="select-menu fixed overflow-y-auto rounded-[14px] border border-line/75 p-1 text-fg outline-none backdrop-blur-md"
       style={{
         left: position.left,
         width: position.width,
@@ -284,8 +332,9 @@ export function Select({
         bottom: position.bottom,
         // 高于所在弹窗（含嵌套），低于右键菜单与 tooltip。
         zIndex: OVERLAY_Z.select + Math.min(layer.depth, 8) * 2,
-        background: "rgb(var(--surface-2))",
-        boxShadow: "0 10px 30px -10px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.08)",
+        background: "rgb(var(--surface-2) / 0.96)",
+        boxShadow:
+          "0 14px 36px -10px rgb(0 0 0 / 0.32), 0 2px 6px -1px rgb(0 0 0 / 0.1)",
         transformOrigin: position.dropUp ? "bottom left" : "top left",
         animation: position.dropUp
           ? "select-pop-up 180ms cubic-bezier(0.23, 1, 0.32, 1) both"
@@ -317,6 +366,13 @@ export function Select({
           close();
         } else if (event.key === "Tab") {
           close(false);
+        } else if (
+          event.key.length === 1 &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          jumpByTypeahead(event.key);
         }
       }}
     >
@@ -325,7 +381,7 @@ export function Select({
       <span
         ref={glowRef}
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-1 rounded-[8px] bg-fg/8 opacity-0 [transition:top_220ms_cubic-bezier(0.23,1,0.32,1),height_220ms_cubic-bezier(0.23,1,0.32,1),opacity_150ms_ease] motion-reduce:[transition:opacity_150ms_ease]"
+        className="pointer-events-none absolute inset-x-1 rounded-[9px] bg-fg/8 opacity-0 [transition:top_220ms_cubic-bezier(0.23,1,0.32,1),height_220ms_cubic-bezier(0.23,1,0.32,1),opacity_150ms_ease] motion-reduce:[transition:opacity_150ms_ease]"
       />
       {/* listbox 只包选项，光晕与关键帧留在外层，语义树里不出现装饰元素。 */}
       <div id={listId} role="listbox" aria-label={ariaLabel}>
@@ -334,52 +390,101 @@ export function Select({
         )}
         {options.map((option, index) => {
           const active = option.value === value;
+          const hasDesc = Boolean(option.description);
+          const toneClass =
+            option.tone === "danger"
+              ? "text-danger"
+              : option.tone === "warning"
+                ? "text-[rgb(var(--warning))]"
+                : undefined;
           return (
-            <button
-              key={option.value || index}
-              ref={(element) => {
-                rowRefs.current[index] = element;
-              }}
-              type="button"
-              role="option"
-              data-index={index}
-              aria-selected={active}
-              disabled={option.disabled}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => choose(index)}
-              className={cn(
-                "relative z-[1] flex min-h-9 w-full cursor-pointer items-center gap-2 rounded-[8px] border-0 bg-transparent px-2 py-1.5 text-left text-inherit outline-none [font:inherit] [-webkit-tap-highlight-color:transparent]",
-                option.disabled && "cursor-not-allowed opacity-40",
+            <div key={option.value || index} role="none">
+              {option.separatorBefore && index > 0 && (
+                <div role="separator" className="mx-1.5 my-1 h-px bg-line/60" />
               )}
-            >
-              {option.icon && <span className="flex shrink-0 items-center">{option.icon}</span>}
-              <span className="min-w-0 flex-1 truncate text-12 font-medium">{option.label}</span>
-              {option.hint && (
-                <span className="max-w-[150px] shrink-0 truncate text-10 text-fg-subtle">
-                  {option.hint}
-                </span>
-              )}
-              <span
+              <button
+                ref={(element) => {
+                  rowRefs.current[index] = element;
+                }}
+                type="button"
+                role="option"
+                data-index={index}
+                aria-selected={active}
+                disabled={option.disabled}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(index, false)}
                 className={cn(
-                  "inline-flex w-4 shrink-0 justify-center transition-opacity duration-150",
-                  active ? "opacity-100" : "opacity-0",
+                  "relative z-[1] flex w-full cursor-pointer gap-2 rounded-[9px] border-0 bg-transparent px-2.5 text-left text-inherit outline-none [font:inherit] [-webkit-tap-highlight-color:transparent]",
+                  hasDesc ? "min-h-10 items-start py-2" : "min-h-9 items-center py-1.5",
+                  option.disabled && "cursor-not-allowed opacity-40",
                 )}
               >
-                <Check size={13} strokeWidth={2.5} aria-hidden="true" />
-              </span>
-            </button>
+                {option.icon && (
+                  <span
+                    className={cn(
+                      "flex shrink-0 items-center",
+                      hasDesc && "mt-0.5",
+                      toneClass ?? "text-fg-muted",
+                    )}
+                  >
+                    {option.icon}
+                  </span>
+                )}
+                {hasDesc ? (
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className={cn("min-w-0 truncate text-12 font-medium", toneClass)}>
+                        {option.label}
+                      </span>
+                      {option.hint && (
+                        <span className="shrink-0 text-10 text-fg-subtle">{option.hint}</span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block break-words text-11 leading-[1.4] text-fg-subtle">
+                      {option.description}
+                    </span>
+                  </span>
+                ) : (
+                  <>
+                    <span className={cn("min-w-0 flex-1 truncate text-12 font-medium", toneClass)}>
+                      {option.label}
+                    </span>
+                    {option.hint && (
+                      <span className="max-w-[150px] shrink-0 truncate text-10 text-fg-subtle">
+                        {option.hint}
+                      </span>
+                    )}
+                  </>
+                )}
+                <span
+                  className={cn(
+                    "inline-flex w-4 shrink-0 justify-center text-accent transition-opacity duration-150",
+                    hasDesc && "mt-0.5",
+                    active ? "opacity-100" : "opacity-0",
+                  )}
+                >
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                </span>
+              </button>
+            </div>
           );
         })}
       </div>
     </div>
   );
 
+  const tooltipLabel = open
+    ? undefined
+    : iconOnly
+      ? (title ?? selected?.label ?? ariaLabel ?? "")
+      : variant === "menu"
+        ? title
+        : undefined;
+
   return (
     <div ref={rootRef} className={cn("relative min-w-0", className)}>
-      <Tooltip
-        label={iconOnly ? (title ?? selected?.label ?? ariaLabel ?? "") : undefined}
-      >
+      <Tooltip label={tooltipLabel}>
       <button
         ref={buttonRef}
         type="button"
@@ -412,7 +517,7 @@ export function Select({
                 controlBase,
                 CONTROL_HEIGHT[size],
                 CONTROL_TEXT[size],
-                "flex w-full items-center justify-between gap-1 px-2 text-left",
+                "flex w-full items-center justify-between gap-1 px-2 text-left transition-colors",
                 open
                   ? "border-accent/60 hover:border-accent/60"
                   : invalid
@@ -440,7 +545,10 @@ export function Select({
           // 只留图标：当前值靠图标 + `title` 说明，面板里仍是完整文字。
           <span className="flex shrink-0 items-center justify-center">
             {selected?.icon ?? (
-              <ChevronDown size={variant === "menu" ? 11 : size === "sm" ? 11 : 12} className="text-fg-subtle" />
+              <ChevronDown
+                size={variant === "menu" ? 11 : size === "sm" ? 11 : 12}
+                className={cn("text-fg-subtle transition-transform duration-150", open && "rotate-180")}
+              />
             )}
           </span>
         ) : (
@@ -453,7 +561,10 @@ export function Select({
             </span>
             <ChevronDown
               size={variant === "menu" ? 11 : size === "sm" ? 11 : 12}
-              className="shrink-0 text-fg-subtle"
+              className={cn(
+                "shrink-0 text-fg-subtle transition-transform duration-150",
+                open && "rotate-180",
+              )}
             />
           </>
         )}

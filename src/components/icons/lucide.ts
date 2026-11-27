@@ -16,6 +16,7 @@ export {
   Ban,
   Bot,
   CaseSensitive,
+  Check,
   CircleDashed,
   ClipboardPaste,
   Columns2,

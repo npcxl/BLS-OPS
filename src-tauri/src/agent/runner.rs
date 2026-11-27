@@ -260,8 +260,16 @@ pub(crate) trait AgentIo: Send + Sync {
 
     /// MCP transport is injectable in tests; production uses the ordinary
     /// connection and the same permission revalidation as the main agent.
-    fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, args: &'a Value) -> IoFuture<'a, Result<String, String>> {
-        Box::pin(async move { crate::mcp::call_tool(binding, args).await.map_err(|error| error.to_string()) })
+    fn call_mcp<'a>(
+        &'a self,
+        binding: &'a crate::mcp::McpBinding,
+        args: &'a Value,
+    ) -> IoFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            crate::mcp::call_tool(binding, args)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// 文件变更记录的存储。生产实现用 `AppState` 里的注册表；测试默认拿到的
@@ -286,15 +294,45 @@ pub(crate) trait AgentIo: Send + Sync {
 
 /// Child events stay inside their own run: only the parent publishes the
 /// aggregated task state. The parent cancellation token is shared by every child.
-struct ChildIo<'a> { inner: &'a dyn AgentIo }
+struct ChildIo<'a> {
+    inner: &'a dyn AgentIo,
+}
 impl AgentIo for ChildIo<'_> {
     fn emit(&self, _: AgentEvent) {}
-    fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> { Arc::new(|_| {}) }
-    fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> { self.inner.connected(id) }
-    fn verify_server(&self, id: &str, server: &str) -> Result<(), String> { self.inner.verify_server(id, server) }
-    fn exec<'a>(&'a self, id: &'a str, command: &'a str, budget: Duration, sink: UnboundedSender<ExecChunk>) -> IoFuture<'a, Result<ExecOutput, String>> { self.inner.exec(id, command, budget, sink) }
-    fn chat<'a>(&'a self, messages: Vec<Value>, tools: Value, cancel: &'a AiCancel, delta: Arc<dyn Fn(&str) + Send + Sync>) -> IoFuture<'a, Result<ToolReply, AiProviderError>> { self.inner.chat(messages, tools, cancel, delta) }
-    fn call_mcp<'a>(&'a self, binding: &'a crate::mcp::McpBinding, args: &'a Value) -> IoFuture<'a, Result<String, String>> { self.inner.call_mcp(binding, args) }
+    fn sink(&self) -> Arc<dyn Fn(AgentEvent) + Send + Sync> {
+        Arc::new(|_| {})
+    }
+    fn connected<'a>(&'a self, id: &'a str) -> IoFuture<'a, bool> {
+        self.inner.connected(id)
+    }
+    fn verify_server(&self, id: &str, server: &str) -> Result<(), String> {
+        self.inner.verify_server(id, server)
+    }
+    fn exec<'a>(
+        &'a self,
+        id: &'a str,
+        command: &'a str,
+        budget: Duration,
+        sink: UnboundedSender<ExecChunk>,
+    ) -> IoFuture<'a, Result<ExecOutput, String>> {
+        self.inner.exec(id, command, budget, sink)
+    }
+    fn chat<'a>(
+        &'a self,
+        messages: Vec<Value>,
+        tools: Value,
+        cancel: &'a AiCancel,
+        delta: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> IoFuture<'a, Result<ToolReply, AiProviderError>> {
+        self.inner.chat(messages, tools, cancel, delta)
+    }
+    fn call_mcp<'a>(
+        &'a self,
+        binding: &'a crate::mcp::McpBinding,
+        args: &'a Value,
+    ) -> IoFuture<'a, Result<String, String>> {
+        self.inner.call_mcp(binding, args)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -310,16 +348,50 @@ struct ChildSpec {
 }
 
 fn parse_child_specs(args: &Value) -> Result<Vec<ChildSpec>, &'static str> {
-    let items = args.get("tasks").and_then(Value::as_array).filter(|v| (2..=6).contains(&v.len())).ok_or("Provide 2–6 child tasks")?;
+    let items = args
+        .get("tasks")
+        .and_then(Value::as_array)
+        .filter(|v| (2..=6).contains(&v.len()))
+        .ok_or("Provide 2–6 child tasks")?;
     let mut specs = Vec::new();
     for (index, task) in items.iter().enumerate() {
-        let id = task.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_else(|| format!("child-{}", index + 1));
-        let title = task.get("title").and_then(Value::as_str).unwrap_or("").trim();
-        let goal = task.get("goal").and_then(Value::as_str).unwrap_or("").trim();
-        if id.len() > 80 || title.is_empty() || title.len() > 200 || goal.is_empty() || goal.len() > 2000 { return Err("Invalid child task title, goal or id"); }
+        let id = task
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("child-{}", index + 1));
+        let title = task
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let goal = task
+            .get("goal")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if id.len() > 80
+            || title.is_empty()
+            || title.len() > 200
+            || goal.is_empty()
+            || goal.len() > 2000
+        {
+            return Err("Invalid child task title, goal or id");
+        }
         let depends_on = match task.get("depends_on") {
             None => Vec::new(),
-            Some(Value::Array(values)) => values.iter().map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).ok_or("Invalid child dependency")).collect::<Result<Vec<_>, _>>()?,
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .ok_or("Invalid child dependency")
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             _ => return Err("Invalid child dependencies"),
         };
         let server = match task.get("server") {
@@ -338,18 +410,39 @@ fn parse_child_specs(args: &Value) -> Result<Vec<ChildSpec>, &'static str> {
             Some(Value::Bool(value)) => *value,
             _ => return Err("Invalid child recheck flag"),
         };
-        specs.push(ChildSpec { id, title: title.to_string(), goal: goal.to_string(), depends_on, server, recheck });
+        specs.push(ChildSpec {
+            id,
+            title: title.to_string(),
+            goal: goal.to_string(),
+            depends_on,
+            server,
+            recheck,
+        });
     }
     let ids: HashSet<&str> = specs.iter().map(|s| s.id.as_str()).collect();
-    if ids.len() != specs.len() || specs.iter().any(|task| task.depends_on.iter().any(|dep| dep == &task.id || !ids.contains(dep.as_str()))) { return Err("Duplicate task id or invalid dependency"); }
+    if ids.len() != specs.len()
+        || specs.iter().any(|task| {
+            task.depends_on
+                .iter()
+                .any(|dep| dep == &task.id || !ids.contains(dep.as_str()))
+        })
+    {
+        return Err("Duplicate task id or invalid dependency");
+    }
     let mut done = HashSet::new();
     loop {
         let before = done.len();
         for task in &specs {
-            if task.depends_on.iter().all(|id| done.contains(id)) { done.insert(task.id.clone()); }
+            if task.depends_on.iter().all(|id| done.contains(id)) {
+                done.insert(task.id.clone());
+            }
         }
-        if done.len() == specs.len() { return Ok(specs); }
-        if before == done.len() { return Err("Cyclic child-task dependencies"); }
+        if done.len() == specs.len() {
+            return Ok(specs);
+        }
+        if before == done.len() {
+            return Err("Cyclic child-task dependencies");
+        }
     }
 }
 
@@ -407,7 +500,10 @@ fn unique_server(
     matches: Vec<&AgentServerRef>,
     requested: &str,
 ) -> Result<Option<AgentServerRef>, String> {
-    let mut ids: Vec<&str> = matches.iter().map(|server| server.server_id.as_str()).collect();
+    let mut ids: Vec<&str> = matches
+        .iter()
+        .map(|server| server.server_id.as_str())
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     match ids.len() {
@@ -421,7 +517,11 @@ fn unique_server(
 }
 
 fn is_child_step(step: &AgentStep) -> bool {
-    step.tool == "child_agent" || step.group_id.as_deref().is_some_and(|id| id.starts_with("children-"))
+    step.tool == "child_agent"
+        || step
+            .group_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("children-"))
 }
 
 /// 中断恢复时**不猜**子任务的结局：
@@ -1577,12 +1677,16 @@ fn context_breakdown(messages: &[Value]) -> ContextBreakdown {
  * 需要拦住的场景。
  */
 // Limit child agents across conversations sharing the same server identity.
-static CHILD_SLOTS: OnceLock<AsyncMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> = OnceLock::new();
+static CHILD_SLOTS: OnceLock<AsyncMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>> =
+    OnceLock::new();
 pub(crate) async fn child_slot(session: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
     let map = CHILD_SLOTS.get_or_init(|| AsyncMutex::new(HashMap::new()));
     let semaphore = {
         let mut guard = map.lock().await;
-        guard.entry(session.to_string()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(3))).clone()
+        guard
+            .entry(session.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(3)))
+            .clone()
     };
     semaphore.acquire_owned().await.ok()
 }
@@ -1728,14 +1832,18 @@ fn conversation(input: &AgentInput, effort: Option<&str>, query_only: bool) -> V
         };
         system.push_str(&match lang {
             Lang::Zh => format!(
-                "复杂任务可按需调用 parallel_readonly_agents 执行 2 至 6 个只读调查；相互独立的任务并行，有依赖的任务通过 id 和 depends_on 串行；简单任务不必拆分。\
+                "首次执行前根据用户目标判断是否需要子代理，用户不必提到并行。多项互不依赖且分别需要取证的调查，优先调用 parallel_readonly_agents，一次分派 2 至 6 项。\
+                 例如整体稳定性排查，可分别查运行与重启历史、内核与 OOM、服务与日志。简单查询直接执行；依赖某项结果才能确定目标时，先完成前置检查。\
+                 计划模式下，将并行调查登记为一个 probe 步骤，把该步骤 id 传给 parallel_readonly_agents 的 step；子任务分别描述证据要求。\
                  子任务默认在当前服务器；要检查其他机器时，server 必须是下列**已授权且当前连通**的精确 id 或唯一名称，不能凭名字猜测或编造：{server_list}。\
                  用户没有明确目标、或出现同名服务器时，先用 ask_user 问清，不要自行选择一个。不同服务器可以在总并发预算内并行，同一服务器仍受并发上限限制。\
                  子任务只能使用本轮启用的只读 MCP 工具，不能写入或询问用户；需要写入或使用不可用的 MCP 工具时，让它返回 WRITE_REQUEST，由你按原有确认流程执行。\
                  请依据各子任务的真实证据汇总，不要假装未验证的步骤已完成。文本工具协议示例：<tool name=\"parallel_readonly_agents\">{{\"tasks\":[{{\"title\":\"检查磁盘\",\"goal\":\"检查磁盘使用量\"}},{{\"title\":\"检查服务\",\"goal\":\"检查运行中的服务\",\"server\":\"<id>\"}}]}}</tool>。计划模式还须提供 step；用户明确要求重新检查时对相应子任务设 recheck=true。\n"
             ),
             Lang::En => format!(
-                "For complex tasks only, parallel_readonly_agents can run 2–6 read-only investigations, with task IDs and depends_on for dependent work. \
+                "Before executing, decide from the user's goal whether to delegate; the user need not ask for parallelism. Prefer a single parallel_readonly_agents call for 2–6 independent investigations that each need evidence. \
+                 For an overall stability check, divide uptime and reboot history, kernel and OOM events, and service and log checks as appropriate. Run simple queries directly and resolve prerequisites first when the next target depends on their result. \
+                 In plan mode, register the parallel investigations as one probe step, pass its ID as step, and specify the evidence needed from each child. \
                  Children default to the current server; to inspect another machine, `server` must be an exact id or unique name from this **authorized and currently connected** list — never guess or invent one: {server_list}. \
                  If the user did not name explicit targets, or names are ambiguous, use ask_user first; do not pick one yourself. Different servers may run in parallel within the total budget; the same server still obeys its concurrency limit. \
                  Children may use enabled read-only MCP tools, but cannot write or ask questions. If a write or an unavailable MCP tool is needed, have the child return a WRITE_REQUEST and run it through the normal approval flow yourself. \
@@ -1829,7 +1937,10 @@ pub(crate) fn evaluate_outcome(
             step.index > last
                 && step.risk == "read"
                 && !step.stale
-                && !matches!(step.tool.as_str(), "child_agent" | "parallel_readonly_agents")
+                && !matches!(
+                    step.tool.as_str(),
+                    "child_agent" | "parallel_readonly_agents"
+                )
         })
     });
 
@@ -1874,15 +1985,11 @@ pub(crate) fn evaluate_outcome(
      * * 复用了中断前的结果 → 只能算部分完成，必须重新核实当前状态。
      */
     if let Some(dispatch) = steps.iter().rev().find(|step| {
-        step.tool == "parallel_readonly_agents"
-            && (step.state == "failed" || step.stale)
+        step.tool == "parallel_readonly_agents" && (step.state == "failed" || step.stale)
     }) {
         let mut child_evidence: Vec<String> = steps
             .iter()
-            .filter(|step| {
-                step.tool == "child_agent"
-                    && (step.state == "failed" || step.stale)
-            })
+            .filter(|step| step.tool == "child_agent" && (step.state == "failed" || step.stale))
             .rev()
             .take(3)
             .map(|step| {
@@ -2490,6 +2597,7 @@ pub(crate) async fn run_loop(
         .unwrap_or(0);
     let mut total_bytes: usize = 0;
     let mut delegated_children: usize = 0;
+    let mut reviewed_parallel_probes = false;
     /// 改写后是否已经催过一次"先验证再收尾"（只催一次，避免来回拉扯）。
     let mut verification_nudged = false;
     // 预算来自**这次启动的模型**：切模型只影响下一条消息。
@@ -2573,12 +2681,18 @@ pub(crate) async fn run_loop(
         );
         if let Some(items) = schemas.as_array_mut() {
             if input.child_run {
-                items.retain(|item| item.pointer("/function/name").and_then(Value::as_str) != Some("ask_user"));
+                items.retain(|item| {
+                    item.pointer("/function/name").and_then(Value::as_str) != Some("ask_user")
+                });
             } else {
                 let mut parameters = json!({"type":"object","properties":{"tasks":{"type":"array","minItems":2,"maxItems":6,"items":{"type":"object","properties":{"id":{"type":"string"},"title":{"type":"string"},"goal":{"type":"string"},"server":{"type":"string","description":"Exact authorized server id or unique name; omit for the current server. Never guess."},"depends_on":{"type":"array","items":{"type":"string"},"description":"IDs of prerequisite tasks; omit for independent investigations"},"recheck":{"type":"boolean","description":"Set true only when the user explicitly asks to check again instead of reusing a previous completed result."}},"required":["title","goal"]}}},"required":["tasks"]});
                 if input.plan_required {
-                    parameters["properties"]["step"] = json!({"type":"string","description":"Existing plan step ID"});
-                    parameters["required"].as_array_mut().unwrap().push(json!("step"));
+                    parameters["properties"]["step"] =
+                        json!({"type":"string","description":"Existing plan step ID"});
+                    parameters["required"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!("step"));
                 }
                 items.push(json!({"type":"function","function":{"name":"parallel_readonly_agents","description":"For complex requests only, run 2–6 read-only investigations. Independent tasks run in parallel; use depends_on with task IDs for dependencies. Use server only with an exact id/name from the authorized list; omit for the current server, and ask the user when targets are unclear or ambiguous. Each child returns evidence; writes and questions are unavailable. Do not use for simple queries.","parameters":parameters}}));
             }
@@ -2671,29 +2785,52 @@ pub(crate) async fn run_loop(
              * 让模型去做配置语法 / 服务状态 / 文件内容核对；催过一次仍不验证，
              * 就明确标成「部分完成」，不再假装已验证。
              */
-            let outcome = evaluate_outcome(
-                &handle.snapshot().steps,
-                query_only,
-                Lang::from_locale(input.locale.as_deref()),
-            );
+            let snapshot = handle.snapshot();
+            let unverified_actions = snapshot
+                .plan
+                .iter()
+                .flat_map(|plan| &plan.steps)
+                .filter(|step| {
+                    !step.superseded && step.kind == "action" && step.state == "verifying"
+                })
+                .map(|step| step.id.as_str())
+                .collect::<Vec<_>>();
+            let mut outcome = evaluate_outcome(&snapshot.steps, query_only, lang);
             let needs_verification = outcome.as_ref().is_some_and(|result| {
                 result.level == "partial"
                     && (result.reason.contains("没有只读验证")
                         || result.reason.contains("no read-only verification"))
             });
-            if needs_verification && !verification_nudged {
+            if (needs_verification || !unverified_actions.is_empty()) && !verification_nudged {
                 verification_nudged = true;
                 conversation.push(json!({
                     "role": "assistant",
                     "content": reply.content,
                 }));
-                conversation.push(json!({
-                    "role": "user",
-                    "content": "【验证要求】改动已经执行，但还没有在服务器上核对结果。\
-                        请先用只读命令验证（配置语法 / 服务状态 / 端口 / 文件内容），\
-                        再给结论；确实无法验证时明确说明未验证的原因。"
-                }));
+                let ids = unverified_actions.join(", ");
+                let requirement = if ids.is_empty() {
+                    ui(lang, "【验证要求】改动已经执行，请先在服务器上用只读命令核对结果，再给结论。确实无法核对时说明原因。",
+                        "[Verification required] The change ran. Verify the result on the server with a read-only tool before concluding, or explain why it could not be verified.")
+                } else {
+                    ui(lang, &format!("【验证要求】计划中的动作 {ids} 仍待验收。执行能证明 verify 条件的只读核对：step 用动作 ID，或用独立验收步骤 ID 并通过 verifies 关联动作。确实无法核对时说明原因。"),
+                        &format!("[Verification required] Plan actions {ids} still need verification. Run a read-only check that proves the verify condition. Set step to the action ID, or use a separate check step and link the action with verifies. Explain if verification is unavailable."))
+                };
+                conversation.push(json!({"role": "user", "content": requirement}));
                 continue;
+            }
+            if !unverified_actions.is_empty()
+                && outcome
+                    .as_ref()
+                    .is_some_and(|result| result.level == "verified")
+            {
+                if let Some(verified) = outcome.take() {
+                    let reason = ui(
+                        lang,
+                        "部分改动仍缺少对应的验收证据。",
+                        "Some changes still lack matching verification evidence.",
+                    );
+                    outcome = Some(AgentOutcome::partial(reason, verified.evidence));
+                }
             }
             handle.update(|snapshot| snapshot.outcome = outcome);
             // 纯聊天 / 单步回答计划：整轮成功才算这一步完成。
@@ -2713,6 +2850,10 @@ pub(crate) async fn run_loop(
         if !visible_text.is_empty() {
             group_open = None;
         }
+        let requests_parallel = calls
+            .iter()
+            .any(|call| call.name.trim() == "parallel_readonly_agents");
+        let mut parallel_review_reason: Option<String> = None;
         let mut tool_messages: Vec<Value> = Vec::new();
         for raw in &mut calls {
             if handle.is_cancelled() {
@@ -2947,6 +3088,28 @@ pub(crate) async fn run_loop(
             } else {
                 None
             };
+            if !input.child_run
+                && !reviewed_parallel_probes
+                && delegated_children == 0
+                && !requests_parallel
+            {
+                if let Some(ids) = plan_step_id
+                    .as_deref()
+                    .and_then(|id| pending_probe_batch(&handle.snapshot().plan?, id))
+                {
+                    reviewed_parallel_probes = true;
+                    parallel_review_reason = Some(ui(
+                        lang,
+                        &format!("计划中有多项待执行的只读检查（{ids}）。若它们能独立取证，请先更新计划，用一个 probe 步骤归纳这些检查，再用 parallel_readonly_agents 分派，step 填该步骤 ID。若存在依赖、用户要求串行或工作量很小，请继续按原计划执行。这项检查只提示一次。"),
+                        &format!("The plan has multiple pending read-only checks ({ids}). If they can gather evidence independently, revise the plan to group them in one probe step, then delegate with parallel_readonly_agents using that step ID. If they depend on one another, the user wants sequential work, or the work is trivial, continue with the original plan. This check is applied once."),
+                    ));
+                }
+            }
+            if let Some(reason) = parallel_review_reason.as_deref() {
+                bounce_step(io, handle, &input.task_id, index, reason);
+                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
+                continue;
+            }
             if raw.name.trim() == "parallel_readonly_agents" {
                 if input.child_run {
                     let reason = "Child agents cannot create child agents.";
@@ -2958,7 +3121,8 @@ pub(crate) async fn run_loop(
                     Ok(specs) => specs,
                     Err(reason) => {
                         bounce_step(io, handle, &input.task_id, index, reason);
-                        tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
+                        tool_messages
+                            .push(tool_error_message(&raw.id, raw.native, &raw.name, reason));
                         continue;
                     }
                 };
@@ -3003,7 +3167,9 @@ pub(crate) async fn run_loop(
                     step.plan_step_id = plan_step_id.clone();
                     step.category = Some(StepCategory::Executed);
                 });
-                if let Some(step) = handle.step(index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step)); }
+                if let Some(step) = handle.step(index) {
+                    io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
+                }
                 /*
                  * 子任务能看到本轮启用的 MCP 工具，但**声明可写 / 影响未知**的
                  * 名字会写进子任务说明，并在每次调用前被 `child_run` 复查拦下；
@@ -3016,11 +3182,13 @@ pub(crate) async fn run_loop(
                     .map(|binding| format!("{} · {}", binding.server_name, binding.tool))
                     .collect();
                 let carried = carried_child_results(&input.carry_steps);
-                let prerequisites: HashSet<String> = resolved.iter()
+                let prerequisites: HashSet<String> = resolved
+                    .iter()
                     .flat_map(|(spec, _)| spec.depends_on.iter().cloned())
                     .collect();
                 let child_io = ChildIo { inner: io };
-                let mut remaining: Vec<(usize, ChildSpec, AgentServerRef, u32, String)> = Vec::new();
+                let mut remaining: Vec<(usize, ChildSpec, AgentServerRef, u32, String)> =
+                    Vec::new();
                 let mut completed: HashMap<String, (bool, String)> = HashMap::new();
                 for (n, (spec, server)) in resolved.into_iter().enumerate() {
                     let child_index = next_index;
@@ -3044,12 +3212,17 @@ pub(crate) async fn run_loop(
                         step.child_goal = Some(spec.goal.clone());
                         step.child_depends_on = spec.depends_on.clone();
                     });
-                    if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step)); }
+                    if let Some(step) = handle.step(child_index) {
+                        io.emit(AgentEvent::from_step(&input.task_id, "tool_started", &step));
+                    }
                     // 上次运行已经成功过、目标 / id / goal 都一致：不重复花模型与命令预算，
                     // 但结果明确标成"需重新核实"，不能当成当前事实。
                     // Cached evidence is historical. A task participating in the
                     // current dependency graph must run against current evidence.
-                    if !spec.recheck && spec.depends_on.is_empty() && !prerequisites.contains(&spec.id) {
+                    if !spec.recheck
+                        && spec.depends_on.is_empty()
+                        && !prerequisites.contains(&spec.id)
+                    {
                         let key = child_cache_key(&server.server_id, &spec.id, &spec.goal);
                         if let Some(prior) = carried.get(&key) {
                             let text = format!(
@@ -3062,7 +3235,13 @@ pub(crate) async fn run_loop(
                                 step.stale = true;
                                 step.stdout = text.clone();
                             });
-                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                            if let Some(step) = handle.step(child_index) {
+                                io.emit(AgentEvent::from_step(
+                                    &input.task_id,
+                                    "tool_finished",
+                                    &step,
+                                ));
+                            }
                             completed.insert(spec.id.clone(), (true, text));
                             continue;
                         }
@@ -3075,7 +3254,11 @@ pub(crate) async fn run_loop(
                     let mut wave = Vec::new();
                     let mut waiting = Vec::new();
                     for (n, spec, server, child_index, child_cwd) in remaining {
-                        if spec.depends_on.iter().any(|id| completed.get(id).is_some_and(|(ok, _)| !ok)) {
+                        if spec
+                            .depends_on
+                            .iter()
+                            .any(|id| completed.get(id).is_some_and(|(ok, _)| !ok))
+                        {
                             let text = format!("{}: prerequisite failed; not executed", spec.title);
                             handle.patch_step(child_index, |step| {
                                 step.state = "skipped".into();
@@ -3083,12 +3266,25 @@ pub(crate) async fn run_loop(
                                 step.blocked = Some("dependency".into());
                                 step.stderr = text.clone();
                             });
-                            if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                            if let Some(step) = handle.step(child_index) {
+                                io.emit(AgentEvent::from_step(
+                                    &input.task_id,
+                                    "tool_finished",
+                                    &step,
+                                ));
+                            }
                             completed.insert(spec.id.clone(), (false, text));
                         } else if spec.depends_on.iter().all(|id| completed.contains_key(id)) {
-                            let evidence = spec.depends_on.iter().filter_map(|id| completed.get(id).map(|(_, text)| text.as_str())).collect::<Vec<_>>().join("\n");
+                            let evidence = spec
+                                .depends_on
+                                .iter()
+                                .filter_map(|id| completed.get(id).map(|(_, text)| text.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n");
                             wave.push((n, spec, server, child_index, child_cwd, evidence));
-                        } else { waiting.push((n, spec, server, child_index, child_cwd)); }
+                        } else {
+                            waiting.push((n, spec, server, child_index, child_cwd));
+                        }
                     }
                     remaining = waiting;
                     if wave.is_empty() {
@@ -3101,14 +3297,23 @@ pub(crate) async fn run_loop(
                             stalled += 1;
                             if stalled >= 2 {
                                 for (_, spec, _, child_index, _) in remaining.drain(..) {
-                                    let text = format!("{}: dependency state could not be resolved; not executed", spec.title);
+                                    let text = format!(
+                                        "{}: dependency state could not be resolved; not executed",
+                                        spec.title
+                                    );
                                     handle.patch_step(child_index, |step| {
                                         step.state = "skipped".into();
                                         step.category = Some(StepCategory::Denied);
                                         step.blocked = Some("dependency".into());
                                         step.stderr = text.clone();
                                     });
-                                    if let Some(step) = handle.step(child_index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                                    if let Some(step) = handle.step(child_index) {
+                                        io.emit(AgentEvent::from_step(
+                                            &input.task_id,
+                                            "tool_finished",
+                                            &step,
+                                        ));
+                                    }
                                     completed.insert(spec.id.clone(), (false, text));
                                 }
                             }
@@ -3260,14 +3465,38 @@ pub(crate) async fn run_loop(
                 let mut outcomes: Vec<_> = completed.into_values().collect();
                 outcomes.sort_by(|a, b| a.1.cmp(&b.1));
                 let all_ok = outcomes.iter().all(|(ok, _)| *ok);
-                let any_stale = handle.snapshot().steps.iter().any(|step| step.group_id.as_deref() == Some(group_id.as_str()) && step.stale);
-                let results = outcomes.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n\n");
+                let any_stale =
+                    handle.snapshot().steps.iter().any(|step| {
+                        step.group_id.as_deref() == Some(group_id.as_str()) && step.stale
+                    });
+                let results = outcomes
+                    .into_iter()
+                    .map(|(_, text)| text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
                 handle.patch_step(index, |step| {
-                    step.state = if handle.is_cancelled() { "skipped" } else if all_ok { "success" } else { "failed" }.into();
+                    step.state = if handle.is_cancelled() {
+                        "skipped"
+                    } else if all_ok {
+                        "success"
+                    } else {
+                        "failed"
+                    }
+                    .into();
                     step.stale = any_stale;
-                    if all_ok { step.stdout = results.clone(); } else { step.stderr = results.clone(); }
+                    if all_ok {
+                        step.stdout = results.clone();
+                    } else {
+                        step.stderr = results.clone();
+                    }
                 });
-                if let Some(step) = handle.step(index) { io.emit(AgentEvent::from_step(&input.task_id, "tool_finished", &step)); }
+                if let Some(step) = handle.step(index) {
+                    io.emit(AgentEvent::from_step(
+                        &input.task_id,
+                        "tool_finished",
+                        &step,
+                    ));
+                }
                 let plan_state = plan_step_id.as_deref().and_then(|id| {
                     let plan = handle.snapshot().plan?;
                     let step = plan.step(id)?;
@@ -3279,9 +3508,28 @@ pub(crate) async fn run_loop(
                     }
                     plan.next_step_state(id, all_ok, true)
                 });
-                if let Some(state) = plan_state { sync_plan_step(io, handle, &input.task_id, index, state, Some(if all_ok && !any_stale { "Read-only investigations completed" } else { "Some investigations failed or remain unverified" })); }
-                tool_messages.push(if all_ok { tool_ok_message(&raw.id, raw.native, &raw.name, &results) } else { tool_error_message(&raw.id, raw.native, &raw.name, &results) });
-                if handle.is_cancelled() { return Err(StopReason::Cancelled(ui(lang, "已停止", "Stopped"))); }
+                if let Some(state) = plan_state {
+                    sync_plan_step(
+                        io,
+                        handle,
+                        &input.task_id,
+                        index,
+                        state,
+                        Some(if all_ok && !any_stale {
+                            "Read-only investigations completed"
+                        } else {
+                            "Some investigations failed or remain unverified"
+                        }),
+                    );
+                }
+                tool_messages.push(if all_ok {
+                    tool_ok_message(&raw.id, raw.native, &raw.name, &results)
+                } else {
+                    tool_error_message(&raw.id, raw.native, &raw.name, &results)
+                });
+                if handle.is_cancelled() {
+                    return Err(StopReason::Cancelled(ui(lang, "已停止", "Stopped")));
+                }
                 continue;
             }
             /*
@@ -3323,11 +3571,9 @@ pub(crate) async fn run_loop(
                 .find(|item| item.exposed_name == raw.name)
                 .cloned();
             if let Some(binding) = mcp_binding.as_mut() {
-                if let Err(reject) = crate::mcp::revalidate_binding(
-                    input.db.as_deref(),
-                    binding,
-                    input.child_run,
-                ) {
+                if let Err(reject) =
+                    crate::mcp::revalidate_binding(input.db.as_deref(), binding, input.child_run)
+                {
                     let reason = reject.reason_lang(lang, input.child_run);
                     let blocked = reject.blocked_code();
                     // 先把这次调用的目标写进步骤：子任务回传写需求 / 展开审计时要看得到。
@@ -3613,6 +3859,36 @@ pub(crate) async fn run_loop(
              * 工具；同一条签名第二次出现说明它确实改不了，才按正常审批交给
              * 用户决定（不反复问同一个问题）。
              */
+            if let Some(fragment) = planned
+                .unknown
+                .as_deref()
+                .filter(|_| input.child_run && risk == ToolRisk::Write)
+            {
+                // 未知片段留给子代理拆解；明确的写入仍走原有只读拦截。
+                let reason = match lang {
+                    Lang::Zh => format!(
+                        "无法验证命令片段 `{fragment}` 是否只读，未执行。请按子任务目标拆成独立的只读命令后重试，\
+                         例如 `df -h`、`free -h`、`ss -lnt`。若仍无法获取证据，将该项标为未验证。"
+                    ),
+                    Lang::En => format!(
+                        "Could not verify that `{fragment}` is read-only; it was not executed. Retry the relevant query \
+                         as separate read-only calls, such as `df -h`, `free -h`, or `ss -lnt`. \
+                         If evidence is still unavailable, report the item as unverified."
+                    ),
+                };
+                handle.patch_step(index, |step| {
+                    step.risk = risk.as_str().to_string();
+                    step.command = display_command.clone();
+                    step.summary = Some(ui(
+                        lang,
+                        "只读查询需要拆分",
+                        "Read-only query needs to be split",
+                    ));
+                });
+                bounce_step(io, handle, &input.task_id, index, &reason);
+                tool_messages.push(tool_error_message(&raw.id, raw.native, &raw.name, &reason));
+                continue;
+            }
             if planned.unknown.is_some()
                 && needs_approval
                 && !out_of_scope
@@ -4266,7 +4542,11 @@ pub(crate) async fn run_loop(
             }
 
             if input.child_run && handle.is_cancelled() {
-                let reason = ui(lang, "任务已停止，这一步未执行。", "Stopped before this operation was sent.");
+                let reason = ui(
+                    lang,
+                    "任务已停止，这一步未执行。",
+                    "Stopped before this operation was sent.",
+                );
                 skip_step(io, handle, &input.task_id, index, &reason, "cancelled");
                 return Err(StopReason::Cancelled(reason));
             }
@@ -4298,7 +4578,9 @@ pub(crate) async fn run_loop(
                 ) {
                     Ok(()) => {
                         // 批准的是"只读"，执行时却变成了写入 / 未知：不能放行。
-                        if declared_read && binding.effect() != crate::mcp::McpEffect::DeclaredReadOnly {
+                        if declared_read
+                            && binding.effect() != crate::mcp::McpEffect::DeclaredReadOnly
+                        {
                             rejected = Some((
                                 ui(
                                     lang,
@@ -4309,7 +4591,12 @@ pub(crate) async fn run_loop(
                             ));
                         }
                     }
-                    Err(reject) => rejected = Some((reject.reason_lang(lang, input.child_run), reject.blocked_code())),
+                    Err(reject) => {
+                        rejected = Some((
+                            reject.reason_lang(lang, input.child_run),
+                            reject.blocked_code(),
+                        ))
+                    }
                 }
                 if let Some((reason, blocked)) = rejected {
                     fail_step_denied(io, handle, index, &reason, blocked);
@@ -4535,6 +4822,53 @@ pub(crate) async fn run_loop(
                     state,
                     Some(&plan_evidence),
                 );
+            }
+            if ok
+                && risk == ToolRisk::Read
+                && matches!(planned.call.name.as_str(), "run_shell" | "read_file")
+            {
+                if let (Some(probe), Some(action)) = (
+                    plan_step_id.as_deref(),
+                    args.get("verifies").and_then(Value::as_str).map(str::trim),
+                ) {
+                    let snapshot = handle.snapshot();
+                    let checks_pending_action = snapshot.plan.as_ref().is_some_and(|plan| {
+                        plan.step(probe).is_some_and(|step| step.kind == "probe")
+                            && plan.step(action).is_some_and(|step| {
+                                step.kind == "action" && step.state == "verifying"
+                            })
+                    });
+                    let successful_write = snapshot
+                        .steps
+                        .iter()
+                        .rev()
+                        .find(|step| {
+                            step.plan_step_id.as_deref() == Some(action)
+                                && step.index < index
+                                && matches!(step.risk.as_str(), "write" | "danger")
+                                && step.category == Some(StepCategory::Executed)
+                        })
+                        .is_some_and(|step| {
+                            step.state == "success"
+                                && !step.stale
+                                && matches!(step.tool.as_str(), "run_shell" | "write_file")
+                        });
+                    if checks_pending_action && successful_write {
+                        let evidence = if plan_evidence.trim().is_empty() {
+                            &display_command
+                        } else {
+                            &plan_evidence
+                        };
+                        update_plan_step(
+                            io,
+                            handle,
+                            &input.task_id,
+                            action,
+                            "done",
+                            Some(evidence),
+                        );
+                    }
+                }
             }
 
             /*
@@ -4984,7 +5318,15 @@ fn skip_step(
     reason: &str,
     blocked: &str,
 ) {
-    skip_step_with(io, handle, task_id, index, reason, StepCategory::Denied, blocked);
+    skip_step_with(
+        io,
+        handle,
+        task_id,
+        index,
+        reason,
+        StepCategory::Denied,
+        blocked,
+    );
 }
 
 /// 平台自身的去重 / 重试边界拦下的步骤：属于内部决策，不是权限拒绝。
@@ -4996,7 +5338,15 @@ fn skip_step_internal(
     reason: &str,
     blocked: &str,
 ) {
-    skip_step_with(io, handle, task_id, index, reason, StepCategory::Internal, blocked);
+    skip_step_with(
+        io,
+        handle,
+        task_id,
+        index,
+        reason,
+        StepCategory::Internal,
+        blocked,
+    );
 }
 
 fn skip_step_with(
@@ -5132,6 +5482,23 @@ fn plan_step_message(lang: Lang, known: &[String]) -> String {
     }
 }
 
+fn pending_probe_batch(plan: &AgentPlan, current_id: &str) -> Option<String> {
+    let active: Vec<_> = plan.steps.iter().filter(|step| !step.superseded).collect();
+    let batch = active
+        .split(|step| step.kind != "probe" || step.state != "pending")
+        .find(|batch| batch.iter().any(|step| step.id == current_id))?;
+    if batch.len() < 2 {
+        return None;
+    }
+    Some(
+        batch
+            .iter()
+            .map(|step| step.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 fn plan_ack_text(plan: &AgentPlan, lang: Lang) -> String {
     let ids = plan
         .steps
@@ -5225,31 +5592,68 @@ mod child_graph_tests {
     #[test]
     fn child_server_must_be_in_the_authorized_list() {
         let servers = vec![
-            super::AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
-            super::AgentServerRef { server_id: "srv-b".into(), server_name: "test".into(), session_id: "ssh-b".into() },
+            super::AgentServerRef {
+                server_id: "srv-a".into(),
+                server_name: "prod".into(),
+                session_id: "ssh-a".into(),
+            },
+            super::AgentServerRef {
+                server_id: "srv-b".into(),
+                server_name: "test".into(),
+                session_id: "ssh-b".into(),
+            },
         ];
-        let resolved = super::resolve_child_server(Some("srv-b"), Some("srv-a"), "prod", "ssh-a", &servers).unwrap();
+        let resolved =
+            super::resolve_child_server(Some("srv-b"), Some("srv-a"), "prod", "ssh-a", &servers)
+                .unwrap();
         assert_eq!(resolved.session_id, "ssh-b");
         assert_eq!(resolved.server_name, "test");
         // 省略 = 当前服务器。
-        let parent = super::resolve_child_server(None, Some("srv-a"), "prod", "ssh-a", &servers).unwrap();
+        let parent =
+            super::resolve_child_server(None, Some("srv-a"), "prod", "ssh-a", &servers).unwrap();
         assert_eq!(parent.session_id, "ssh-a");
         // 未知 / 伪造的会话 id 不能被当成目标。
-        assert!(super::resolve_child_server(Some("ssh-evil"), Some("srv-a"), "prod", "ssh-a", &servers).is_err());
-        assert!(super::resolve_child_server(Some("unknown"), Some("srv-a"), "prod", "ssh-a", &servers).is_err());
+        assert!(super::resolve_child_server(
+            Some("ssh-evil"),
+            Some("srv-a"),
+            "prod",
+            "ssh-a",
+            &servers
+        )
+        .is_err());
+        assert!(super::resolve_child_server(
+            Some("unknown"),
+            Some("srv-a"),
+            "prod",
+            "ssh-a",
+            &servers
+        )
+        .is_err());
     }
 
     #[test]
     fn ambiguous_server_names_are_rejected_instead_of_guessed() {
         let servers = vec![
-            super::AgentServerRef { server_id: "srv-a".into(), server_name: "prod".into(), session_id: "ssh-a".into() },
-            super::AgentServerRef { server_id: "srv-b".into(), server_name: "prod".into(), session_id: "ssh-b".into() },
+            super::AgentServerRef {
+                server_id: "srv-a".into(),
+                server_name: "prod".into(),
+                session_id: "ssh-a".into(),
+            },
+            super::AgentServerRef {
+                server_id: "srv-b".into(),
+                server_name: "prod".into(),
+                session_id: "ssh-b".into(),
+            },
         ];
-        let error = super::resolve_child_server(Some("prod"), Some("srv-c"), "other", "ssh-c", &servers).unwrap_err();
+        let error =
+            super::resolve_child_server(Some("prod"), Some("srv-c"), "other", "ssh-c", &servers)
+                .unwrap_err();
         assert!(error.contains("ambiguous"), "{error}");
         // 用精确 id 仍然可以选中。
         assert_eq!(
-            super::resolve_child_server(Some("srv-b"), Some("srv-c"), "other", "ssh-c", &servers).unwrap().session_id,
+            super::resolve_child_server(Some("srv-b"), Some("srv-c"), "other", "ssh-c", &servers)
+                .unwrap()
+                .session_id,
             "ssh-b"
         );
     }
@@ -5257,9 +5661,29 @@ mod child_graph_tests {
     #[test]
     fn carried_child_steps_are_not_reported_as_completed_or_running() {
         let mut steps = vec![
-            crate::agent::AgentStep { index: 0, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "running".into(), ..Default::default() },
-            crate::agent::AgentStep { index: 1, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "pending".into(), ..Default::default() },
-            crate::agent::AgentStep { index: 2, tool: "child_agent".into(), group_id: Some("children-0".into()), state: "success".into(), child_id: Some("disk".into()), child_goal: Some("check disk".into()), ..Default::default() },
+            crate::agent::AgentStep {
+                index: 0,
+                tool: "child_agent".into(),
+                group_id: Some("children-0".into()),
+                state: "running".into(),
+                ..Default::default()
+            },
+            crate::agent::AgentStep {
+                index: 1,
+                tool: "child_agent".into(),
+                group_id: Some("children-0".into()),
+                state: "pending".into(),
+                ..Default::default()
+            },
+            crate::agent::AgentStep {
+                index: 2,
+                tool: "child_agent".into(),
+                group_id: Some("children-0".into()),
+                state: "success".into(),
+                child_id: Some("disk".into()),
+                child_goal: Some("check disk".into()),
+                ..Default::default()
+            },
         ];
         super::normalize_carried_steps(&mut steps);
         assert_eq!(steps[0].state, "failed");
@@ -5267,7 +5691,10 @@ mod child_graph_tests {
         assert_eq!(steps[1].state, "skipped");
         assert_eq!(steps[1].blocked.as_deref(), Some("interrupted_pending"));
         assert_eq!(steps[2].state, "success");
-        assert!(steps[2].stale, "completed results must be marked for re-verification");
+        assert!(
+            steps[2].stale,
+            "completed results must be marked for re-verification"
+        );
     }
 
     #[test]
@@ -5300,7 +5727,8 @@ mod child_graph_tests {
         assert!(parse_child_specs(&cyclic).is_err());
         let missing = json!({"tasks":[{"id":"a","title":"A","goal":"x","depends_on":["missing"]},{"id":"b","title":"B","goal":"y"}]});
         assert!(parse_child_specs(&missing).is_err());
-        let duplicate = json!({"tasks":[{"id":"a","title":"A","goal":"x"},{"id":"a","title":"B","goal":"y"}]});
+        let duplicate =
+            json!({"tasks":[{"id":"a","title":"A","goal":"x"},{"id":"a","title":"B","goal":"y"}]});
         assert!(parse_child_specs(&duplicate).is_err());
         let self_dependency = json!({"tasks":[{"id":"a","title":"A","goal":"x","depends_on":["a"]},{"id":"b","title":"B","goal":"y"}]});
         assert!(parse_child_specs(&self_dependency).is_err());

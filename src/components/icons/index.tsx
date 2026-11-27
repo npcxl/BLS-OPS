@@ -83,7 +83,7 @@ export const RotateCw: IconComponent = RefreshIcon;
 export const RotateCcw: IconComponent = RefreshIcon;
 export const ChevronRight: IconComponent = RightChevron;
 export const ChevronDown: IconComponent = DownChevron;
-export const Check: IconComponent = CheckedIcon;
+// `Check`（纯对勾）由 ./lucide 导出；CheckedIcon 带外圈，专用于圆形勾选图标。
 export const CheckCircle2: IconComponent = CheckedIcon;
 export const CircleCheck: IconComponent = CheckedIcon;
 export const SquareCheck: IconComponent = CheckedIcon;

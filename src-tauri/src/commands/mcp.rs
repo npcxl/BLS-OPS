@@ -51,13 +51,15 @@ pub async fn mcp_server_test_draft(request: McpServerInput) -> OpsResult<McpTest
 #[tauri::command]
 pub async fn mcp_runtime_status(command: Option<String>) -> OpsResult<Value> {
     let report = crate::mcp_runtime::probe_all().await;
-    let mut value = serde_json::to_value(&report)
-        .map_err(|error| OpsError::new("mcp", error.to_string()))?;
-    if let Some(command) = command.map(|item| item.trim().to_string()).filter(|item| !item.is_empty())
+    let mut value =
+        serde_json::to_value(&report).map_err(|error| OpsError::new("mcp", error.to_string()))?;
+    if let Some(command) = command
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
     {
         let probe = crate::mcp_runtime::probe_command(&command).await;
-        value["command"] = serde_json::to_value(probe)
-            .map_err(|error| OpsError::new("mcp", error.to_string()))?;
+        value["command"] =
+            serde_json::to_value(probe).map_err(|error| OpsError::new("mcp", error.to_string()))?;
     }
     Ok(value)
 }

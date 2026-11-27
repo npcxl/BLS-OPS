@@ -29,6 +29,54 @@ async function renderBar(props: Record<string, unknown>) {
   };
 }
 
+it("keeps the minimum height and measures again after hidden and width changes", async () => {
+  let width = 400;
+  let naturalHeight = 22;
+  let onResize: () => void = () => undefined;
+  const bounds = vi.spyOn(HTMLTextAreaElement.prototype, "getBoundingClientRect")
+    .mockImplementation(() => new DOMRect(0, 0, width, naturalHeight));
+  const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+    .mockImplementation(() => naturalHeight);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { onResize = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  const holder = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(holder);
+  const show = async (value: string, suspended = false) => act(async () => {
+    root.render(<PromptBar value={value} minRows={2} maxRows={4} suspended={suspended} />);
+  });
+  try {
+    await show("");
+    const input = holder.querySelector("textarea")!;
+    expect(input.style.height).toBe("44px");
+
+    width = 0;
+    naturalHeight = 0;
+    await show("新的长草稿", true);
+    expect(input.style.height).toBe("44px");
+
+    width = 400;
+    naturalHeight = 66;
+    await show("新的长草稿");
+    expect(input.style.height).toBe("66px");
+
+    width = 180;
+    naturalHeight = 110;
+    await act(async () => onResize());
+    expect(input.style.height).toBe("88px");
+    expect(input.style.overflowY).toBe("auto");
+  } finally {
+    await act(async () => root.unmount());
+    holder.remove();
+    bounds.mockRestore();
+    scrollHeight.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
 it("disables send with a reason when the server is not connected", async () => {
   const language = i18n.language;
   await i18n.changeLanguage("zh-CN");

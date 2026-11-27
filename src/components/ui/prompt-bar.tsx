@@ -144,7 +144,9 @@ export interface PromptBarProps {
   sparkBoost?: number;
   width?: number;
   radius?: number;
+  minRows?: number;
   maxRows?: number;
+  suspended?: boolean;
   pressScale?: number;
   className?: string;
   /**
@@ -271,7 +273,9 @@ const PromptBar: React.FC<PromptBarProps> = ({
   sparkBoost = 1,
   width = 400,
   radius = 16,
+  minRows = 1,
   maxRows = 5,
+  suspended = false,
   pressScale = 0.96,
   className = '',
   trailing,
@@ -411,14 +415,35 @@ const PromptBar: React.FC<PromptBarProps> = ({
     return () => document.removeEventListener('pointerdown', onDown);
   }, [plusOpen, modelOpen, effortOpen, closeMenus]);
 
+  const resizeInput = useCallback(() => {
+    const el = inputRef.current;
+    if (suspended || !el || el.getBoundingClientRect().width === 0) return;
+    const previousScrollTop = el.scrollTop;
+    el.style.overflowY = 'hidden';
+    el.style.height = '0px';
+    const naturalHeight = el.scrollHeight;
+    const maxHeight = LINE * Math.max(minRows, maxRows);
+    el.style.height = `${Math.max(LINE * minRows, Math.min(naturalHeight, maxHeight))}px`;
+    el.style.overflowY = naturalHeight > maxHeight ? 'auto' : 'hidden';
+    if (naturalHeight > maxHeight) el.scrollTop = previousScrollTop;
+  }, [minRows, maxRows, suspended]);
+  useLayoutEffect(() => {
+    resizeInput();
+  }, [draft, resizeInput]);
+
   useLayoutEffect(() => {
     const el = inputRef.current;
-    if (!el) return;
-    el.style.height = '0px';
-    const max = LINE * maxRows;
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
-    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
-  }, [draft, maxRows]);
+    if (suspended || !el || typeof ResizeObserver === 'undefined') return;
+    let width = el.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = el.getBoundingClientRect().width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      resizeInput();
+    });
+    observer.observe(el, { box: 'border-box' });
+    return () => observer.disconnect();
+  }, [resizeInput, suspended]);
 
   useEffect(
     () => () => {
@@ -866,7 +891,8 @@ const PromptBar: React.FC<PromptBarProps> = ({
         <textarea
           ref={inputRef}
           className="block w-full resize-none border-0 bg-transparent p-0 text-[14px] leading-[22px] text-inherit outline-none [font:inherit] [overflow-wrap:anywhere] placeholder:[color:color-mix(in_srgb,var(--pb-ink)_45%,transparent)] [@media(pointer:coarse)]:text-[16px]"
-          rows={1}
+          rows={minRows}
+          style={{ minHeight: LINE * minRows }}
           value={draft}
           placeholder={listening ? t('Listening…') : placeholder}
           aria-label={t('Prompt')}

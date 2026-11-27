@@ -36,7 +36,7 @@ function ResizeHandle({
       aria-valuenow={width}
       tabIndex={0}
       className={cn(
-        "page-resizer absolute right-0 top-0 flex h-full w-[5px] cursor-col-resize items-center justify-center",
+        "page-resizer absolute right-0 top-0 z-40 flex h-full w-[5px] cursor-col-resize items-center justify-center",
         dragging ? "bg-accent/25" : "hover:bg-accent/15",
       )}
       onMouseDown={onResizeStart}

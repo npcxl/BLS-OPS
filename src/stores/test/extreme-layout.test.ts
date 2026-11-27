@@ -58,29 +58,39 @@ describe("超能左右栏布局", () => {
     resetStore();
   });
 
-  it("新建任务只初始化一次：左栏收起、右栏按设置", () => {
+  it("新建任务不收起左栏，右栏若开着则收起、没开则保持收起", () => {
+    resetStore({ railCollapsed: false, paneView: "split" });
     useExtremeStore.getState().addWorkspace([]);
     const a = useExtremeStore.getState().workspaceId!;
+    expect(useExtremeStore.getState().railCollapsed).toBe(false);
+    expect(useExtremeStore.getState().paneView).toBe("hidden");
+    expect(layout(a)).toEqual({ rail: false, pane: "hidden" });
+
+    // 原本左栏收起、右栏已隐藏时新建：两者各自保持原样（左栏仍收起，右栏仍隐藏）。
+    useExtremeStore.getState().setRailCollapsed(true);
+    useExtremeStore.getState().addWorkspace([]);
+    const b = useExtremeStore.getState().workspaceId!;
     expect(useExtremeStore.getState().railCollapsed).toBe(true);
     expect(useExtremeStore.getState().paneView).toBe("hidden");
-    expect(layout(a)).toEqual({ rail: true, pane: "hidden" });
+    expect(layout(b)).toEqual({ rail: true, pane: "hidden" });
   });
 
-  it("设置「新任务右栏默认打开」只影响真正新建的任务", () => {
+  it("在右栏开启的会话中新建任务会收起右栏，但不改动旧会话记录", () => {
     useExtremeStore.getState().addWorkspace([]);
     const a = useExtremeStore.getState().workspaceId!;
-    useExtremeStore.getState().setPaneView("hidden");
-
+    useExtremeStore.getState().setPaneView("split");
     useExtremeSettingsStore.getState().update({ newTaskPane: "open" });
+
     useExtremeStore.getState().addWorkspace([]);
     const b = useExtremeStore.getState().workspaceId!;
 
-    expect(layout(b)).toEqual({ rail: true, pane: "split" });
-    // A 的记录没有被设置页改动。
-    expect(layout(a)).toEqual({ rail: true, pane: "hidden" });
+    expect(layout(b)).toEqual({ rail: false, pane: "hidden" });
+    expect(useExtremeStore.getState().paneView).toBe("hidden");
+    // 旧会话 A 原本的右栏展开状态保留。
+    expect(layout(a)).toEqual({ rail: false, pane: "split" });
 
     useExtremeStore.getState().openWorkspace(a);
-    expect(useExtremeStore.getState().paneView).toBe("hidden");
+    expect(useExtremeStore.getState().paneView).toBe("split");
   });
 
   it("空白任务手动展开后，切走再切回保持原样", () => {
@@ -91,12 +101,12 @@ describe("超能左右栏布局", () => {
     useExtremeStore.getState().setRailCollapsed(false);
     useExtremeStore.getState().setPaneView("split");
 
-    // B 是新任务：按默认值初始化，不继承 A 的临时展开。
+    // B 是新任务：左栏保持不收起，右栏从 split 收起为 hidden。
     useExtremeStore.getState().addWorkspace([]);
     const b = useExtremeStore.getState().workspaceId!;
     expect(b).not.toBe(a);
-    expect(layout(b)).toEqual({ rail: true, pane: "hidden" });
-    expect(useExtremeStore.getState().railCollapsed).toBe(true);
+    expect(layout(b)).toEqual({ rail: false, pane: "hidden" });
+    expect(useExtremeStore.getState().railCollapsed).toBe(false);
     expect(useExtremeStore.getState().paneView).toBe("hidden");
 
     useExtremeStore.getState().openWorkspace(a);

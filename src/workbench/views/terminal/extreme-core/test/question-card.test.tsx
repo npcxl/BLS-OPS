@@ -287,6 +287,30 @@ describe("AI 提问选择卡", () => {
     }
   });
 
+  it("支持数字键 1–9 快选并用 Ctrl/Cmd+Enter 提交", async () => {
+    const answer = vi.spyOn(opsApi, "aiAgentAnswer").mockResolvedValue(true);
+    const { holder, root, Harness } = mount(part());
+    try {
+      await act(async () => root.render(<Harness />));
+      const card = holder.querySelector<HTMLElement>('[data-testid="agent-question"]')!;
+      await act(async () => {
+        card.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+      });
+      expect(currentPart()?.draftSelected).toEqual(["test"]);
+
+      await act(async () => {
+        card.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }),
+        );
+      });
+      expect(answer).toHaveBeenCalledWith("task-1", "q-1", ["test"], null);
+      expect(currentPart()?.status).toBe("answered");
+    } finally {
+      await act(async () => root.unmount());
+      holder.remove();
+    }
+  });
+
   it("已回答的历史卡只展示结果", async () => {
     const q = question();
     const { holder, root, Harness } = mount(

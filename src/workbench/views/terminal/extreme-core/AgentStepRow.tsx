@@ -162,6 +162,12 @@ export function AgentStepRow({
     : !waiting && step?.elapsedMs
       ? durationText(step.elapsedMs, t)
       : "";
+  // 只有真实执行失败才在收起状态露一行红色原因；内部纠错的原因留在展开详情里。
+  const reason = !denied && !internal ? failureReason(step) : "";
+  const canExpand = Boolean(
+    step?.command || step?.script || step?.stdout || step?.stderr || step?.rollback || step?.backupPath,
+  );
+  const approvalPending = waiting && approval && onDecide;
   const canOpenDiff = Boolean(
     !approvalPending &&
       onOpenChanges &&
@@ -169,12 +175,6 @@ export function AgentStepRow({
       step.sourceTool === "write_file" &&
       step.state === "success",
   );
-  // 只有真实执行失败才在收起状态露一行红色原因；内部纠错的原因留在展开详情里。
-  const reason = !denied && !internal ? failureReason(step) : "";
-  const canExpand = Boolean(
-    step?.command || step?.script || step?.stdout || step?.stderr || step?.rollback || step?.backupPath,
-  );
-  const approvalPending = waiting && approval && onDecide;
   /*
    * 状态文案。任务卡还没接回来（`step` 缺失）时不写「待执行」——
    * 那会让一条已经跑完的历史命令看起来像还没开始。
@@ -479,9 +479,12 @@ export function AgentStepRun({
       item.step?.category !== "denied" &&
       item.step?.category !== "internal",
   );
-  const denied =
-    states.some((state) => state === "skipped") ||
-    items.some((item) => item.step?.category === "denied");
+  const succeeded = states.filter((state) => state === "success").length;
+  const skipped = items.filter((item, index) => {
+    const state = states[index];
+    return state === "skipped" || (state === "failed" &&
+      (item.step?.category === "denied" || item.step?.category === "internal"));
+  }).length;
   const settled = states.every((state) => SETTLED.has(state));
   const totalMs = items.reduce((sum, item) => sum + (item.step?.elapsedMs ?? 0), 0);
   const duration = settled && totalMs > 0 ? durationText(totalMs, t) : "";
@@ -522,6 +525,11 @@ export function AgentStepRun({
     childSkipped > 0 ? t("{{count}} 个未执行", { count: childSkipped }) : "",
     childSuccess > 0 ? t("{{count}} 个完成", { count: childSuccess }) : "",
   ].filter(Boolean);
+  const actionBreakdown = [
+    succeeded > 0 ? t("{{count}} 个完成", { count: succeeded }) : "",
+    failed.length > 0 ? t("{{count}} 个失败", { count: failed.length }) : "",
+    skipped > 0 ? t("{{count}} 个未执行", { count: skipped }) : "",
+  ].filter(Boolean);
   const label = isChildGroup
     ? t("{{n}} 个子任务", { n: childTotal }) +
       (childBreakdown.length > 0 ? ` · ${childBreakdown.join(" · ")}` : "") +
@@ -532,13 +540,12 @@ export function AgentStepRun({
       ? t("{{n}} 个操作 · 等待你的确认", { n: items.length })
       : approvedNow
         ? t("{{n}} 个操作 · 已批准，等待执行", { n: items.length })
-        : failed.length > 0
-      ? t("{{n}} 个操作 · {{failed}} 个失败", { n: items.length, failed: failed.length })
-      : denied
-        ? t("{{n}} 个操作 · 未执行", { n: items.length })
-        : settled
+        : settled && succeeded === items.length
           ? t("{{n}} 个操作 · 已完成", { n: items.length })
-          : t("{{n}} 个操作", { n: items.length });
+          : t("{{n}} 个操作", { n: items.length }) +
+            (actionBreakdown.length > 0 ? ` · ${actionBreakdown.join(" · ")}` : "");
+  const hasFailures = isChildGroup ? childFailed > 0 : failed.length > 0;
+  const allSucceeded = isChildGroup ? childSuccess === childTotal : succeeded === items.length;
 
   return (
     <div
@@ -561,10 +568,12 @@ export function AgentStepRun({
         <span className="extreme-core-step-icon">
           {active ? (
             <Loader2 size={12} className="animate-spin" />
-          ) : failed.length > 0 ? (
+          ) : hasFailures ? (
             <XCircle size={12} className="text-danger" />
-          ) : (
+          ) : allSucceeded ? (
             <Check size={12} className="text-success" />
+          ) : (
+            <span className="extreme-core-step-minus">–</span>
           )}
         </span>
         <span className="extreme-core-step-title">{label}</span>

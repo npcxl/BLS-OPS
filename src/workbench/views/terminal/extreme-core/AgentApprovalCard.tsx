@@ -198,22 +198,44 @@ export function AgentApprovalCard({
       data-phase={phase}
       className="shrink-0 px-4 pt-2 min-[1180px]:px-8"
     >
-      <div className="mx-auto w-full min-w-0 overflow-hidden rounded-2xl border border-line/60 bg-surface-2 text-fg shadow-[0_2px_12px_rgb(0_0_0/0.04)]">
-        <div className="px-5 pb-3 pt-4">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
-              <ShieldAlert
-                size={14}
-                className={cn("shrink-0", danger ? "text-danger" : "text-warning")}
-              />
-              <span className="min-w-0 break-words text-13 font-medium leading-5" title={summary}>{summary}</span>
+      <div
+        className={cn(
+          "mx-auto w-full min-w-0 overflow-hidden rounded-2xl border bg-surface-1/95 text-fg shadow-[0_6px_24px_-10px_rgb(0_0_0/0.18)] backdrop-blur-sm",
+          danger ? "border-danger/45" : "border-line/70",
+        )}
+      >
+        <div className="px-4 pb-3 pt-3.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span
+                className={cn(
+                  "grid size-6 shrink-0 place-items-center rounded-lg",
+                  danger ? "bg-danger/12 text-danger" : "bg-warning/12 text-warning",
+                )}
+              >
+                <ShieldAlert size={13} />
+              </span>
+              <span className="min-w-0 break-words text-13 font-medium leading-5 text-fg" title={summary}>
+                {summary}
+              </span>
             </div>
-            <div className="flex shrink-0 items-center gap-2 text-10 text-fg-subtle">
-              {danger && <span className="text-danger">{t("危险")}</span>}
-              {approval.server && <span>{approval.server}</span>}
+            <div className="flex shrink-0 items-center gap-1.5 text-10 text-fg-subtle">
+              {danger && (
+                <span className="rounded-full bg-danger/12 px-1.5 py-0.5 font-medium text-danger">
+                  {t("危险")}
+                </span>
+              )}
+              {approval.server && (
+                <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-fg-muted">
+                  {approval.server}
+                </span>
+              )}
               {pending && (
                 <span
-                  className={cn("tabular-nums", remaining <= 60 && "text-danger")}
+                  className={cn(
+                    "rounded-full bg-surface-2 px-1.5 py-0.5 tabular-nums",
+                    remaining <= 60 ? "bg-danger/12 text-danger" : "text-fg-subtle",
+                  )}
                   title={t("超时后任务将停止")}
                 >
                   {t("剩余 {{time}}", {
@@ -223,10 +245,12 @@ export function AgentApprovalCard({
               )}
             </div>
           </div>
-          <p className="mt-2 whitespace-pre-wrap break-words text-12 leading-5 text-fg-muted">{impact}</p>
-          {/* Codex 式首屏目标预览：不点展开也能一眼确认要跑的命令或要改的文件。 */}
-          {approval.tool === "write_file" && approval.path ? (
-            <div className="mt-2.5 flex items-center gap-2 rounded-lg border border-line/60 bg-surface-1 px-2.5 py-1.5 font-mono text-11 text-fg">
+          <p className="mt-2.5 whitespace-pre-wrap break-words pl-8 text-12 leading-5 text-fg-muted">
+            {impact}
+          </p>
+          {/* 写文件在首屏仅展示目标路径与 Diff 入口；原始 shell 命令保持收在详情里。 */}
+          {approval.tool === "write_file" && approval.path && (
+            <div className="ml-8 mt-2 flex items-center gap-2 rounded-lg border border-line/55 bg-surface-2/60 px-2.5 py-1.5 font-mono text-11 text-fg">
               <span className="min-w-0 flex-1 truncate" title={approval.path}>
                 {approval.path}
               </span>
@@ -241,22 +265,9 @@ export function AgentApprovalCard({
                 </button>
               )}
             </div>
-          ) : approval.command.trim() ? (
-            <div className="mt-2.5 flex items-center gap-1.5 rounded-lg border border-line/60 bg-surface-1 px-2.5 py-1.5">
-              <code className="min-w-0 flex-1 truncate font-mono text-11 text-fg" title={approval.command}>
-                {approval.command.split("\n").map((line) => line.trim()).find(Boolean) ?? approval.command}
-              </code>
-              <ExtremeIconButton
-                label={t("复制命令")}
-                icon={Copy}
-                iconSize={11}
-                className="size-5 shrink-0"
-                onClick={() => void copyTextWithFeedback(approval.command)}
-              />
-            </div>
-          ) : null}
+          )}
           {phase === "failed" && (
-            <p className="mt-1 break-words text-11 text-danger">
+            <p className="mt-1.5 pl-8 break-words text-11 text-danger">
               {t("没有送达服务器：{{reason}}。可以再试一次。", {
                 reason: failure?.trim() || t("连接中断"),
               })}
@@ -265,7 +276,7 @@ export function AgentApprovalCard({
         </div>
 
         {expanded && (
-          <div id={detailsId} className="mx-5 space-y-1.5 rounded-xl bg-surface-1 px-3 py-3 text-11">
+          <div id={detailsId} className="mx-4 mb-2.5 space-y-1.5 rounded-xl border border-line/50 bg-surface-2/60 px-3 py-2.5 text-11">
             {goal?.trim() && (
               <p className="break-words text-fg-muted">{t("目标")}：{goal}</p>
             )}
@@ -273,7 +284,7 @@ export function AgentApprovalCard({
               <p className="break-all font-mono text-fg-muted">{approval.path}</p>
             )}
             <div className="flex items-start gap-1.5">
-              <pre className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-2 px-2 py-1 font-mono text-11">
+              <pre className="max-h-40 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface-1 px-2.5 py-1.5 font-mono text-11">
                 {approval.command}
               </pre>
               <ExtremeIconButton
@@ -305,7 +316,7 @@ export function AgentApprovalCard({
                 <summary className="cursor-pointer text-fg-subtle">
                   {t("实际执行脚本（调试）")}
                 </summary>
-                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-2 px-2 py-1 font-mono text-10 text-fg-muted">
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface-1 px-2.5 py-1.5 font-mono text-10 text-fg-muted">
                   {approval.script}
                 </pre>
               </details>
@@ -313,13 +324,13 @@ export function AgentApprovalCard({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 pb-4 pt-2">
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-line/45 bg-surface-2/40 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <button
               type="button"
               aria-expanded={expanded}
               aria-controls={expanded ? detailsId : undefined}
-              className="flex items-center gap-0.5 text-11 text-fg-muted hover:text-fg"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-11 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
               onClick={() => setExpanded((value) => !value)}
             >
               {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -329,7 +340,7 @@ export function AgentApprovalCard({
               <button
                 type="button"
                 onClick={onOpenChanges}
-                className="flex items-center gap-0.5 text-11 text-accent hover:underline"
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-11 text-accent transition-colors hover:bg-accent/10"
               >
                 <FileDiff size={12} />
                 {t("查看变更")}
@@ -338,10 +349,25 @@ export function AgentApprovalCard({
           </div>
           {pending && (
             <div className="ml-auto flex items-center gap-1.5">
-              <Button className="rounded-full" variant="secondary" size="sm" disabled={busy} onClick={() => onDecide(false)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => onDecide(false)}
+              >
                 {t("拒绝执行")}
               </Button>
-              <Button className="rounded-full" variant={danger ? "danger" : "primary"} size="sm" disabled={busy} onClick={() => onDecide(true)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                className={
+                  danger
+                    ? "text-danger hover:bg-danger/12 hover:text-danger"
+                    : "text-accent hover:bg-accent/12 hover:text-accent"
+                }
+                onClick={() => onDecide(true)}
+              >
                 {busy ? t("提交中…") : t("允许本次")}
               </Button>
             </div>

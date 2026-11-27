@@ -29,6 +29,8 @@ export default defineConfig(async () => ({
     environment: "happy-dom",
     // 剪贴板在测试环境没有 Tauri IPC 后端，统一替身（见文件内说明）。
     setupFiles: ["./src/test/setup-clipboard.ts"],
+    // 全量并行跑 235 个测试文件时，重型 ExtremeCoreView 集成用例偶发超过默认 5s。
+    testTimeout: 15_000,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

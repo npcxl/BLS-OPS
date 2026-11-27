@@ -85,8 +85,6 @@ export function WorkspacePanel({
   onSelectedChange,
   onPreviewAttachment,
   onRetryAttachment,
-  onUploadAttachments,
-  uploadingAttachments = false,
   onRemoveAttachment,
   cleanupRequests = [],
   onRunCleanup,
@@ -155,9 +153,6 @@ export function WorkspacePanel({
   onPreviewAttachment: (id: string) => void;
   /** 上传失败后重试（只对已经读到内容、但写服务器失败的附件有效）。 */
   onRetryAttachment: (id: string) => void;
-  /** 把当前对话里可上传的附件写到服务器临时目录。 */
-  onUploadAttachments?: () => void;
-  uploadingAttachments?: boolean;
   onRemoveAttachment: (id: string) => void;
   /** 部署成功后的暂存清理询问（按任务持久化，多个任务互不覆盖）。 */
   cleanupRequests?: import("./attachments/cleanup").CleanupRequest[];
@@ -423,7 +418,7 @@ export function WorkspacePanel({
           title={t("拖动调整宽度；聚焦后可用左右方向键（Shift 加大步长）")}
           onPointerDown={onHandleDown}
           onKeyDown={onHandleKey}
-          className="page-resizer absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize hover:bg-accent/40"
+          className="page-resizer absolute inset-y-0 left-0 z-40 w-[5px] cursor-col-resize hover:bg-accent/40"
         />
       )}
       {view === "split" && (
@@ -440,7 +435,7 @@ export function WorkspacePanel({
             event.preventDefault();
             onOuterDragStart(event);
           }}
-          className="page-resizer absolute inset-y-0 right-0 z-20 w-[5px] cursor-ew-resize hover:bg-accent/40"
+          className="page-resizer absolute inset-y-0 right-0 z-40 w-[5px] cursor-ew-resize hover:bg-accent/40"
         />
       )}
 
@@ -710,24 +705,6 @@ export function WorkspacePanel({
               })}
             </ul>
           )}
-
-          {onUploadAttachments &&
-            attachments.some(
-              (item) => item.state === "ready" && item.uploadState !== "uploaded",
-            ) && (
-              <div className="flex shrink-0 items-center gap-1 border-t border-line/70 px-2 py-1">
-                <span className="min-w-0 flex-1 truncate text-10 text-fg-subtle">
-                  {t("附件只在本机；上传后模型和部署可直接按路径使用")}
-                </span>
-                <Button
-                  size="xs"
-                  disabled={uploadingAttachments}
-                  onClick={onUploadAttachments}
-                >
-                  {uploadingAttachments ? t("上传中…") : t("上传到服务器")}
-                </Button>
-              </div>
-            )}
 
           {selectedIds.length > 0 && (
             <div className="flex shrink-0 items-center gap-1 border-t border-line/70 px-2 py-1">

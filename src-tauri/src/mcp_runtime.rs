@@ -118,25 +118,16 @@ impl Resolver {
         }
         #[cfg(windows)]
         {
-            if let Some(raw) = registry_value(
-                windows_registry::CURRENT_USER,
-                "Environment",
-                "Path",
-            ) {
-                dirs.extend(split_path_list(
-                    &expand_env(&raw),
-                    Source::UserPath,
-                ));
+            if let Some(raw) = registry_value(windows_registry::CURRENT_USER, "Environment", "Path")
+            {
+                dirs.extend(split_path_list(&expand_env(&raw), Source::UserPath));
             }
             if let Some(raw) = registry_value(
                 windows_registry::LOCAL_MACHINE,
                 r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
                 "Path",
             ) {
-                dirs.extend(split_path_list(
-                    &expand_env(&raw),
-                    Source::SystemPath,
-                ));
+                dirs.extend(split_path_list(&expand_env(&raw), Source::SystemPath));
             }
         }
         for path in common_dirs() {
@@ -173,9 +164,8 @@ impl Resolver {
             return None;
         }
         let expanded = expand_env(name);
-        let looks_like_path = expanded.contains('/')
-            || expanded.contains('\\')
-            || Path::new(&expanded).is_absolute();
+        let looks_like_path =
+            expanded.contains('/') || expanded.contains('\\') || Path::new(&expanded).is_absolute();
         if looks_like_path {
             let path = home_relative(&expanded)?;
             let found = self.complete_path(&path)?;
@@ -311,12 +301,7 @@ impl Resolver {
 
     /// 诊断摘要：查了哪些来源、多少个目录。不包含目录内容。
     pub fn summary(&self) -> String {
-        let count = |source: Source| {
-            self.dirs
-                .iter()
-                .filter(|dir| dir.source == source)
-                .count()
-        };
+        let count = |source: Source| self.dirs.iter().filter(|dir| dir.source == source).count();
         let mut parts = Vec::new();
         if count(Source::ProcessPath) > 0 {
             parts.push(format!("应用 PATH {} 个目录", count(Source::ProcessPath)));
@@ -471,7 +456,12 @@ fn common_dirs() -> Vec<PathBuf> {
         if let Some(program_files) = std::env::var_os("ProgramFiles") {
             let base = PathBuf::from(program_files);
             out.push(base.join("nodejs"));
-            out.push(base.join("Docker").join("Docker").join("resources").join("bin"));
+            out.push(
+                base.join("Docker")
+                    .join("Docker")
+                    .join("resources")
+                    .join("bin"),
+            );
         }
         if let Some(program_files) = std::env::var_os("ProgramFiles(x86)") {
             out.push(PathBuf::from(program_files).join("nodejs"));
@@ -549,9 +539,7 @@ fn needs_cmd_shim(path: &Path) -> bool {
     {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| {
-                ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat")
-            })
+            .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
             .unwrap_or(false)
     }
     #[cfg(not(windows))]
@@ -628,9 +616,9 @@ fn quote_cmd_token(token: &str) -> String {
     if token.is_empty() {
         return "\"\"".to_string();
     }
-    let needs_quotes = token
-        .chars()
-        .any(|c| c.is_whitespace() || matches!(c, '"' | '&' | '<' | '>' | '(' | ')' | '@' | '^' | '|'));
+    let needs_quotes = token.chars().any(|c| {
+        c.is_whitespace() || matches!(c, '"' | '&' | '<' | '>' | '(' | ')' | '@' | '^' | '|')
+    });
     if !needs_quotes {
         return token.to_string();
     }
@@ -725,7 +713,11 @@ impl ExecOutput {
 }
 
 /// 跑一次短命令。`args` 是版本参数，**不**包含 `ResolvedProgram::prefix`。
-async fn run(program: &ResolvedProgram, args: &[String], budget: Duration) -> std::io::Result<ExecOutput> {
+async fn run(
+    program: &ResolvedProgram,
+    args: &[String],
+    budget: Duration,
+) -> std::io::Result<ExecOutput> {
     // 版本探测不带 prefix：uvx 回退到 uv 时，`uv tool run --version` 不是版本命令。
     let mut command = build_command(program, args, false);
     command
@@ -951,7 +943,10 @@ async fn probe_docker(program: ResolvedProgram, started: Instant) -> RuntimeProb
                 version: None,
                 source: Some(program.source.as_str().to_string()),
                 message: "Docker 检测超时，无法确认状态".to_string(),
-                detail: Some(format!("`docker --version` 在 {} 秒内没有结束", VERSION_TIMEOUT.as_secs())),
+                detail: Some(format!(
+                    "`docker --version` 在 {} 秒内没有结束",
+                    VERSION_TIMEOUT.as_secs()
+                )),
                 duration_ms: started.elapsed().as_millis() as u64,
             };
         }
@@ -1123,7 +1118,12 @@ pub async fn probe_all() -> RuntimeReport {
 pub async fn probe_command(command: &str) -> CommandProbe {
     let started = Instant::now();
     let resolver = Resolver::system();
-    let probe = |status: &str, path: Option<String>, version: Option<String>, message: String, detail: String, elapsed: u64| CommandProbe {
+    let probe = |status: &str,
+                 path: Option<String>,
+                 version: Option<String>,
+                 message: String,
+                 detail: String,
+                 elapsed: u64| CommandProbe {
         command: command.to_string(),
         resolved: path.is_some(),
         status: status.to_string(),
@@ -1146,7 +1146,10 @@ pub async fn probe_command(command: &str) -> CommandProbe {
     };
     let path_text = mask_path(&program.path.to_string_lossy());
     let base = base_name(&program.path);
-    let known = ["uv", "uvx", "node", "npx", "npm", "pnpm", "yarn", "bun", "docker", "python", "python3", "py"];
+    let known = [
+        "uv", "uvx", "node", "npx", "npm", "pnpm", "yarn", "bun", "docker", "python", "python3",
+        "py",
+    ];
     if !known.iter().any(|name| base.starts_with(name)) {
         return probe(
             status::READY,
@@ -1171,7 +1174,10 @@ pub async fn probe_command(command: &str) -> CommandProbe {
             Some(path_text.clone()),
             None,
             format!("{command} 检测超时，无法确认状态"),
-            format!("路径：{path_text}；`--version` 在 {} 秒内没有结束", VERSION_TIMEOUT.as_secs()),
+            format!(
+                "路径：{path_text}；`--version` 在 {} 秒内没有结束",
+                VERSION_TIMEOUT.as_secs()
+            ),
             started.elapsed().as_millis() as u64,
         ),
         Ok(output) => {
@@ -1187,7 +1193,10 @@ pub async fn probe_command(command: &str) -> CommandProbe {
                 },
                 format!(
                     "路径：{path_text}；退出码：{}；输出：{}",
-                    output.code.map(|code| code.to_string()).unwrap_or_else(|| "未知".to_string()),
+                    output
+                        .code
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "未知".to_string()),
                     excerpt(&text)
                 ),
                 started.elapsed().as_millis() as u64,
@@ -1237,7 +1246,14 @@ fn excerpt(text: &str) -> String {
     if trimmed.is_empty() {
         return "（无输出）".to_string();
     }
-    trimmed.lines().take(3).collect::<Vec<_>>().join(" / ").chars().take(300).collect()
+    trimmed
+        .lines()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" / ")
+        .chars()
+        .take(300)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1284,7 +1300,8 @@ mod tests {
     fn assert_same_path(left: &Path, right: &Path) {
         #[cfg(windows)]
         assert!(
-            left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy()),
+            left.to_string_lossy()
+                .eq_ignore_ascii_case(&right.to_string_lossy()),
             "{} != {}",
             left.display(),
             right.display()
@@ -1441,7 +1458,10 @@ exit 1"#,
     async fn custom_absolute_path_is_respected() {
         let bin = temp_dir("custom-absolute");
         let script = write_script(&bin, "my-mcp", "echo custom");
-        let resolver = Resolver::from_dirs(search_dirs(&[(&temp_dir("custom-unused"), Source::ProcessPath)]));
+        let resolver = Resolver::from_dirs(search_dirs(&[(
+            &temp_dir("custom-unused"),
+            Source::ProcessPath,
+        )]));
         let found = resolver
             .resolve(&script.to_string_lossy())
             .expect("absolute path must resolve");
@@ -1531,10 +1551,10 @@ exit 1"#,
         let Some(home) = dirs::home_dir() else {
             return;
         };
-        let uvx = home
-            .join(".local")
-            .join("bin")
-            .join(if cfg!(windows) { "uvx.exe" } else { "uvx" });
+        let uvx =
+            home.join(".local")
+                .join("bin")
+                .join(if cfg!(windows) { "uvx.exe" } else { "uvx" });
         if !uvx.is_file() {
             // 本机没装 uv（CI）时跳过，不把测试变成环境依赖。
             return;

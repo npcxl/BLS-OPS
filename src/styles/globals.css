@@ -342,8 +342,8 @@
    */
   .dialog-plain {
     background: rgb(var(--overlay));
-    border: 0;
-    box-shadow: 0 24px 64px rgb(15 23 42 / 0.18);
+    border: 1px solid rgb(var(--line) / 0.65);
+    box-shadow: 0 24px 64px -12px rgb(15 23 42 / 0.2), 0 4px 16px -4px rgb(15 23 42 / 0.08);
   }
 
   :root[data-theme="dark"] .glass-panel {
@@ -351,7 +351,8 @@
   }
 
   :root[data-theme="dark"] .dialog-plain {
-    box-shadow: 0 28px 72px rgb(0 0 0 / 0.6);
+    border-color: rgb(var(--line) / 0.55);
+    box-shadow: 0 28px 72px -12px rgb(0 0 0 / 0.65), 0 0 0 1px rgb(255 255 255 / 0.04) inset;
   }
 
   :root[data-theme="dark"] .glass-panel-strong {

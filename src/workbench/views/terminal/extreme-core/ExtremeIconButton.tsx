@@ -39,7 +39,7 @@ export function ExtremeIconButton({
         onClick={onClick}
         className={cn(
           "grid size-7 shrink-0 place-items-center rounded-[8px] text-fg-subtle transition-colors",
-          "hover:bg-surface-hover hover:text-fg",
+          "hover:bg-fg/8 hover:text-fg",
           "focus-visible:outline-2 focus-visible:outline-accent",
           "disabled:pointer-events-none disabled:opacity-40",
           active && "bg-accent/10 text-accent hover:text-accent",

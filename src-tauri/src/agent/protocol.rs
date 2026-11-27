@@ -195,7 +195,7 @@ impl AgentPlan {
             return Some("done");
         }
         if read_only {
-            return Some(if step.state == "verifying" {
+            return Some(if matches!(step.state.as_str(), "verifying" | "done") {
                 "done"
             } else {
                 // 探测成功 ≠ 写入完成；保持原状（不新建步骤、不伪造进度）。
@@ -1490,6 +1490,7 @@ pub fn plan_guidance(lang: Lang) -> &'static str {
 6. 发现前提变化时，先用 `submit_plan` 更新计划，再执行新增步骤；已完成的步骤会保留。
 7. `submit_plan` 只是登记计划，**不是**申请执行权限：不额外弹确认，也不改变现有写入审批策略。
 8. 用户目标不明确（缺目标路径 / 域名 / 期望结果）时，先用 `ask_user` 问清楚，不要猜着写计划；提问本身不占计划步骤。
+9. 写入后用该动作的 step 执行只读验收。若另列了验收步骤，给真正核对该改动的 `run_shell` 或 `read_file` 调用同时传 `"step":"<验收步骤 id>"` 和 `"verifies":"<被验收的动作步骤 id>"`。等核对通过才能说验收完成；命令应在不满足 verify 条件时失败。
 
 文本协议（接口不支持原生工具时）：
 <tool name="submit_plan">{"understanding":"…","summary":"…","prerequisites":["…"],"steps":[{"id":"s1","title":"检查配置","action":"读取 /etc/nginx/nginx.conf","verify":"能确定站点目录","kind":"probe"}]}</tool>
@@ -1507,6 +1508,7 @@ pub fn plan_guidance(lang: Lang) -> &'static str {
 6. When a premise changes, update the plan with `submit_plan` first, then execute the new steps; completed steps are preserved.
 7. `submit_plan` only records the plan — it is **not** an execution request: it adds no confirmation and does not change the existing write-approval policy.
 8. If the goal is unclear (missing target path / domain / expected result), use `ask_user` first instead of guessing a plan; asking is not a plan step.
+9. Use the action's own step for its read-only acceptance check. If the plan has a separate check step, attach `"step":"<check step id>"` and `"verifies":"<action step id>"` to the `run_shell` or `read_file` call that actually verifies the change. Report verification only after it passes; ensure the command fails when the verify condition is unmet.
 
 Text protocol (when the API has no native tools):
 <tool name="submit_plan">{"understanding":"…","summary":"…","prerequisites":["…"],"steps":[{"id":"s1","title":"Inspect config","action":"read /etc/nginx/nginx.conf","verify":"the site root is known","kind":"probe"}]}</tool>

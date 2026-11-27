@@ -74,6 +74,34 @@ export default {
     "Multiple choice",
   "需要你决定":
     "Needs your decision",
+  "按 1–{{n}} 快选":
+    "Press 1–{{n}} to pick",
+  "携带本对话历史、工具结果与附件":
+    "Includes chat history, tool outputs, and attachments",
+  "忽略历史消息，只发送本条内容":
+    "Ignores previous messages and sends only this prompt",
+  "仅携带你在右侧勾选的参考材料":
+    "Includes only the reference items checked in the side pane",
+  "折叠全部":
+    "Collapse all",
+  "展开全部":
+    "Expand all",
+  "显示文件树":
+    "Show file tree",
+  "隐藏文件树":
+    "Hide file tree",
+  "折叠文件":
+    "Collapse file",
+  "展开文件":
+    "Expand file",
+  "排队消息":
+    "Queued Messages",
+  "等待当前任务：{{task}}":
+    "Waiting on current task: {{task}}",
+  "等待当前任务完成":
+    "Waiting on current task",
+  "有消息发送失败，请重试":
+    "Failed to send queued message",
   "自定义回答":
     "Custom answer",
   "请输入具体内容（不能为空）":
@@ -1812,5 +1840,6 @@ export default {
   "恢复当前会话上下文": "Use full conversation context",
   "仅带本条发送": "Send this message only",
   "新开干净上下文": "New clean thread",
+  "立即补充": "Steer",
   "立即补充给当前任务": "Steer running task now",
 } as const;

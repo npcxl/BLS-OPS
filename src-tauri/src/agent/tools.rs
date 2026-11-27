@@ -387,9 +387,11 @@ pub fn tool_schemas_lang(plan_required: bool, lang: Lang) -> Value {
         if let Some(list) = tools.as_array_mut() {
             for tool in list.iter_mut() {
                 // 控制工具不属于计划步骤，不注入 step。
-                if tool.pointer("/function/name").and_then(Value::as_str) == Some("ask_user") {
+                let name = tool.pointer("/function/name").and_then(Value::as_str);
+                if name == Some("ask_user") {
                     continue;
                 }
+                let supports_verification = matches!(name, Some("run_shell" | "read_file"));
                 let params = &mut tool["function"]["parameters"];
                 params["properties"]["step"] = json!({
                     "type": "string",
@@ -401,6 +403,14 @@ pub fn tool_schemas_lang(plan_required: bool, lang: Lang) -> Value {
                 });
                 if let Some(required) = params["required"].as_array_mut() {
                     required.push(json!("step"));
+                }
+                if supports_verification {
+                    params["properties"]["verifies"] = json!({
+                        "type": "string",
+                        "description": tr(lang,
+                            "仅限只读验收：若本调用属于独立验收步骤，填写本次实际核对的动作步骤 id。",
+                            "Read-only verification only: ID of the action step this separate check actually verifies.")
+                    });
                 }
             }
             list.insert(

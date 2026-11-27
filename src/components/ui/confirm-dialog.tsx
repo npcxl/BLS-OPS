@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, TriangleAlert } from "@/components/icons";
+import { Check, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ErrorText, Modal, fieldClass } from "@/components/ui/modal";
 import { stageLabel, toAppError } from "@/lib/app-error";
@@ -29,7 +29,7 @@ const SUBMIT_GUARD_MS = 400;
  * 当前权限重新核对版本"）会被拆成五六行；这里放到 520px —— 说明仍是一段，
  * 但不会把弹窗拉成竖条。窄窗口由 `max-w-[calc(100vw-32px)]` 兜住。
  */
-const CONFIRM_WIDTH = 520;
+const CONFIRM_WIDTH = 448;
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -135,33 +135,29 @@ export function ConfirmDialog({
       closeOnBackdrop={!pending}
     >
       <div className="flex flex-col gap-3" onKeyDown={onContentKeyDown}>
-        {/*
-         * 风险提示只占一行：图标 + 一句话，不画背景块。
-         * 整块红底会把"这次真的危险"喊成噪音，也把确认卡撑得零碎。
-         */}
-        {level !== "normal" && (
-          <p
-            className={cn(
-              "flex items-start gap-1.5 text-12 leading-5",
-              level === "irreversible" ? "text-danger" : "text-warning",
-            )}
-          >
-            <TriangleAlert size={13} strokeWidth={2} className="mt-0.5 shrink-0" />
-            <span className="min-w-0 flex-1 break-words">
-              {level === "irreversible"
-                ? t("This action cannot be undone.")
-                : t("This action changes data. Please check the target before continuing.")}
-            </span>
-          </p>
+        <div className="text-[13.5px] leading-[1.65] break-words text-fg-muted">
+          {description}
+          {level === "irreversible" && !confirmPhrase && (
+            <span className="ml-1 text-fg-subtle">{t("This action cannot be undone.")}</span>
+          )}
+        </div>
+
+        {level === "irreversible" && confirmPhrase && (
+          <p className="text-12 leading-5 text-danger/90">{t("This action cannot be undone.")}</p>
         )}
 
-        <div className="text-[13px] leading-6 break-words text-fg-muted">{description}</div>
-
         {consequences && consequences.length > 0 && (
-          <ul className="flex list-disc flex-col gap-0.5 pl-5 text-12 leading-6 text-fg-subtle">
+          <ul className="flex flex-col gap-1 rounded-xl border border-line/55 bg-surface-2/55 px-3.5 py-2.5 text-12 leading-5 text-fg-muted">
             {consequences.map((item) => (
-              <li key={item} className="break-words">
-                {item}
+              <li key={item} className="flex items-start gap-2 break-words">
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "mt-2 size-1 shrink-0 rounded-full",
+                    level === "irreversible" ? "bg-danger/70" : "bg-fg-subtle/70",
+                  )}
+                />
+                <span className="min-w-0 flex-1">{item}</span>
               </li>
             ))}
           </ul>
@@ -170,14 +166,31 @@ export function ConfirmDialog({
         {children}
 
         {confirmPhrase && (
-          <label className="flex flex-col gap-1">
-            <span className="text-11 text-fg-muted">
-              {t("Type {{phrase}} to confirm", { phrase: confirmPhrase })}
-            </span>
+          <label className="flex flex-col gap-1.5 rounded-xl border border-line/55 bg-surface-2/45 p-3">
+            <div className="flex items-center justify-between gap-2 text-11 text-fg-muted">
+              <span className="min-w-0 break-words">
+                {t("Type {{phrase}} to confirm", { phrase: confirmPhrase })}
+              </span>
+              {phraseOk && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/12 px-1.5 py-0.5 text-10 font-medium text-success">
+                  <Check size={10} strokeWidth={2.5} />
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <code className="select-text rounded-md border border-line/65 bg-surface-1 px-1.5 py-0.5 font-mono text-11 text-fg">
+                {confirmPhrase}
+              </code>
+            </div>
             <input
-              className={fieldClass}
+              className={cn(
+                fieldClass,
+                "font-mono text-12 transition-colors",
+                phraseOk && typed.length > 0 && "border-success/60 focus:border-success",
+              )}
               data-confirm-phrase
               value={typed}
+              placeholder={confirmPhrase}
               autoComplete="off"
               spellCheck={false}
               onChange={(event) => setTyped(event.target.value)}
@@ -194,26 +207,29 @@ export function ConfirmDialog({
           </ErrorText>
         )}
 
-        {/* 右下角两颗胶囊：取消是浅色无描边，确认按风险上色（红 / 主色）。 */}
-        <div className="mt-2 flex items-center justify-end gap-2">
+        {/* 按钮沿用项目统一 ghost 风格：静息无底色无描边，悬停才浮出底色。 */}
+        <div className="mt-3 flex items-center justify-end gap-2">
           <Button
             variant="ghost"
             size="sm"
             disabled={pending}
             data-autofocus={destructive ? true : undefined}
             onClick={onCancel}
-            className="h-9 rounded-full bg-surface-2 px-4 text-12 font-medium text-fg hover:bg-surface-3"
           >
             {cancelText}
           </Button>
           <Button
-            variant={destructive ? "danger" : "primary"}
+            variant="ghost"
             size="sm"
             disabled={pending || !phraseOk}
             aria-busy={pending || undefined}
             data-autofocus={destructive ? undefined : true}
             onClick={submit}
-            className="h-9 rounded-full px-4 text-12 font-medium"
+            className={
+              destructive
+                ? "text-danger hover:bg-danger/12 hover:text-danger"
+                : "text-accent hover:bg-accent/12 hover:text-accent"
+            }
           >
             {pending && <Loader2 size={12} className="animate-spin" />}
             {pending ? t("Processing") : confirmText}
